@@ -1248,18 +1248,17 @@ impl KnowledgeService {
     /// in [`Self::repair_primary_unlocked`] must not depend on registry
     /// insertion order, which differs between machines.
     pub fn session_kb_ids(&self, session_id: Option<&str>) -> anyhow::Result<Vec<String>> {
-        let hidden = match session_id {
-            Some(session_id) => self.get_hidden_for_session_or_persisted(session_id)?,
-            None => self.get_hidden_persisted()?,
-        };
-        let mut ids = self
-            .list_bases()?
+        let _lock = self.lock_root()?;
+        self.session_kb_ids_unlocked(session_id)
+    }
+
+    fn session_kb_ids_unlocked(&self, session_id: Option<&str>) -> anyhow::Result<Vec<String>> {
+        let hidden = self.hidden_for_scope_unlocked(session_id)?;
+        Ok(self
+            .installed_kb_ids_unlocked()?
             .into_iter()
-            .map(|base| base.id)
             .filter(|id| !hidden.contains(id))
-            .collect::<Vec<_>>();
-        ids.sort();
-        Ok(ids)
+            .collect())
     }
 
     /// This scope's **primary** knowledge base: the write target for KB-less
@@ -1271,16 +1270,25 @@ impl KnowledgeService {
     /// "no primary" unreachable and let a KB-less *write* silently land in a
     /// base the user never ranked. Promotion happens once, at the moment the
     /// set changes, in [`Self::repair_primary_unlocked`].
+    ///
     /// Only an *absent* session file inherits. A session file that exists but
     /// is blank is an explicit "no primary here" and stops the fallback dead —
     /// otherwise clearing a session's primary would be a no-op whenever the
     /// machine had one, and a KB-less write would silently re-arm.
     pub fn primary_for_session(&self, session_id: Option<&str>) -> anyhow::Result<Option<String>> {
+        let _lock = self.lock_root()?;
+        self.primary_for_session_unlocked(session_id)
+    }
+
+    fn primary_for_session_unlocked(
+        &self,
+        session_id: Option<&str>,
+    ) -> anyhow::Result<Option<String>> {
         let stored = self.stored_primary_unlocked(session_id)?;
         let Some(stored) = stored.pinned() else {
             return Ok(None);
         };
-        let ids = self.session_kb_ids(session_id)?;
+        let ids = self.session_kb_ids_unlocked(session_id)?;
         Ok(ids.into_iter().find(|id| id == stored))
     }
 
@@ -1362,7 +1370,7 @@ impl KnowledgeService {
     fn repair_primary_unlocked(&self, session_id: Option<&str>) -> anyhow::Result<Option<String>> {
         let path = self.primary_path_for_scope(session_id);
         let own = self.read_primary_file_unlocked(&path)?;
-        let next_ids = self.session_kb_ids(session_id)?;
+        let next_ids = self.session_kb_ids_unlocked(session_id)?;
         if let Some(value) = Self::repair_decision(&own, &next_ids, session_id) {
             self.write_primary_file_unlocked(&path, &value)?;
             return Ok(value.pinned().map(ToOwned::to_owned));
@@ -1371,14 +1379,38 @@ impl KnowledgeService {
     }
 
     /// Read-only snapshot of a scope's selection.
+    ///
+    /// Taken under the root lock, because a `KbSelection` is a *claim*: its
+    /// `primary_kb` is a member of its own `kb_ids`. Composing it from three
+    /// separately-unlocked reads made that claim false whenever a writer landed
+    /// between them — the reader could measure the set while a base was hidden
+    /// and then read the pointer after it had been re-added and pinned, and
+    /// hand back a primary that was not in the set it just reported.
     pub fn selection(&self, session_id: Option<&str>) -> anyhow::Result<KbSelection> {
+        let _lock = self.lock_root()?;
+        self.selection_unlocked(session_id)
+    }
+
+    /// One coherent snapshot from one pass over the store. Callers must already
+    /// hold the root lock — the public [`Self::selection`] is the one that takes
+    /// it, because acquiring `lock_root` twice in a call stack deadlocks.
+    fn selection_unlocked(&self, session_id: Option<&str>) -> anyhow::Result<KbSelection> {
+        let hidden_kbs = self.hidden_for_scope_unlocked(session_id)?;
+        let kb_ids = self
+            .installed_kb_ids_unlocked()?
+            .into_iter()
+            .filter(|id| !hidden_kbs.contains(id))
+            .collect::<Vec<_>>();
+        let primary_kb = self
+            .stored_primary_unlocked(session_id)?
+            .pinned()
+            .filter(|id| kb_ids.iter().any(|known| known == id))
+            .map(ToOwned::to_owned);
+
         Ok(KbSelection {
-            kb_ids: self.session_kb_ids(session_id)?,
-            hidden_kbs: match session_id {
-                Some(session_id) => self.get_hidden_for_session_or_persisted(session_id)?,
-                None => self.get_hidden_persisted()?,
-            },
-            primary_kb: self.primary_for_session(session_id)?,
+            kb_ids,
+            hidden_kbs,
+            primary_kb,
         })
     }
 
@@ -2409,6 +2441,65 @@ mod tests {
 
         let sel = svc.set_selection(Some("session-a"), None, PrimaryUpdate::Clear)?;
         assert_eq!(sel.primary_kb, None);
+        Ok(())
+    }
+
+    /// A `KbSelection` is a claim — its `primary_kb` is a member of its own
+    /// `kb_ids` — and `selection()` composed it from three separately-unlocked
+    /// reads, so a writer landing between them made the claim false. Genuinely
+    /// concurrent on purpose: this interleaving does not exist on one thread,
+    /// so no single-threaded test can catch it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn selection_is_a_coherent_snapshot_under_a_concurrent_writer() -> anyhow::Result<()> {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let tmp = tempfile::TempDir::new()?;
+        let svc = KnowledgeService::new(tmp.path().to_path_buf());
+        svc.create_base("alpha", "Alpha", None)?;
+        svc.create_base("beta", "Beta", None)?;
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let writer = {
+            let svc = svc.clone();
+            let stop = stop.clone();
+            tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+                while !stop.load(Ordering::Relaxed) {
+                    // beta in the set and pinned …
+                    svc.set_selection(Some("s1"), Some(&[]), PrimaryUpdate::Set("beta"))?;
+                    // … then beta out of the set entirely, which repairs the
+                    // pointer onto alpha. The reader must never see a snapshot
+                    // that straddles the two.
+                    svc.set_selection(
+                        Some("s1"),
+                        Some(&["beta".to_string()]),
+                        PrimaryUpdate::Unchanged,
+                    )?;
+                }
+                Ok(())
+            })
+        };
+
+        let reader = {
+            let svc = svc.clone();
+            tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+                for _ in 0..3000 {
+                    let sel = svc.selection(Some("s1"))?;
+                    if let Some(primary) = &sel.primary_kb {
+                        anyhow::ensure!(
+                            sel.kb_ids.contains(primary),
+                            "incoherent snapshot: primary {primary} is not in kb_ids {:?}",
+                            sel.kb_ids
+                        );
+                    }
+                }
+                Ok(())
+            })
+        };
+
+        let observed = reader.await?;
+        stop.store(true, Ordering::Relaxed);
+        writer.await??;
+        observed?;
         Ok(())
     }
 
