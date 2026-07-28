@@ -1844,3 +1844,110 @@ async fn agent_visible_frontend_tool_request(h: &Harness, id: &str) -> bool {
         .flat_map(|m| m.content.iter())
         .any(|c| matches!(c, MessageContent::FrontendToolRequest(r) if r.id == id))
 }
+
+// ── NF-D follow-on: can a live client actually satisfy `expectedMessageIds`? ──
+
+/// Every message id a client could possibly know after streaming a whole turn:
+/// the `id` on each streamed `Message`, plus the ids in a `HistoryReplaced`
+/// (which the desktop applies wholesale as `UpdateConversation`).
+fn ids_a_client_can_learn(events: &[AgentEvent]) -> std::collections::HashSet<String> {
+    let mut ids = std::collections::HashSet::new();
+    for ev in events {
+        match ev {
+            AgentEvent::Message(m) => {
+                if let Some(id) = &m.id {
+                    ids.insert(id.clone());
+                }
+            }
+            AgentEvent::HistoryReplaced(conversation) => {
+                ids.extend(conversation.iter().filter_map(|m| m.id.clone()));
+            }
+            _ => {}
+        }
+    }
+    ids
+}
+
+async fn stored_ids(h: &Harness) -> Vec<(String, String)> {
+    h.session_manager
+        .get_session(&h.session_id, true)
+        .await
+        .unwrap()
+        .conversation
+        .unwrap()
+        .messages()
+        .iter()
+        .map(|m| {
+            (
+                m.id.clone().unwrap_or_else(|| "<none>".to_string()),
+                m.as_concat_text().chars().take(48).collect::<String>(),
+            )
+        })
+        .collect()
+}
+
+/// **KNOWN RED — this is a reproduction of an open defect, not a passing gate.**
+/// Run it with `cargo test -p biorouter --test conversation_writeback_freshness
+/// -- --ignored a_client_that_watched`; it fails in ~0.2s.
+///
+/// `POST /sessions/{id}/edit_message` with `edit_type: "edit"` now REQUIRES
+/// `expectedMessageIds` — the ids of every message the client's view holds — and
+/// answers 409 if the store holds one the view does not name. That precondition
+/// is only satisfiable if a client that has watched a whole turn go by actually
+/// ends up knowing every id the store persisted.
+///
+/// It does not. `Message::user()` / `Message::assistant()` mint no id, the reply
+/// loop yields those messages *before* persisting them, and `add_message` then
+/// mints a UUIDv7 that is never published back to the stream. On the minimal
+/// turn below the client can learn **zero** of the two stored ids. Three
+/// independent sources of the same gap:
+///
+/// 1. the ordinary assistant reply — `response_to_message` builds a bare
+///    `Message::assistant()`, so the client sees `id: null` and the store holds
+///    a uid it was never told;
+/// 2. the tool-call split (`agent.rs`, `next_assistant_id`) — one streamed
+///    response becomes up to three stored rows, and every row after the first
+///    gets a freshly minted uuid;
+/// 3. the BR-47 post-edit diagnostics and the loop-guard nudges, which are
+///    `with_visibility(false, true)` and so are persisted without ever being
+///    yielded at all.
+///
+/// Consequence: the desktop's "Edit in Place" button 409s on a session nobody
+/// else has touched, from the first assistant reply onward, until the session is
+/// reloaded. That is loud and safe — nothing is deleted, and "Diverge Session"
+/// (the default button) is unaffected — but the feature is dead in a live chat.
+///
+/// The fix belongs on the server side of the stream: a message must be yielded
+/// under the id it was persisted under, the rule `add_message_adopting_uid`
+/// already encodes for the six sites that persist before yielding. Re-reading
+/// the session from the client instead would be theatre for the same reason
+/// spelled out for this endpoint in
+/// `docs/agent-loop/conversation-writeback-freshness.md` — the re-read happens
+/// *after* the concurrent append has committed, so it would name the very row
+/// the guard exists to protect and pass every time.
+#[ignore = "reproduces an open defect: the reply stream does not publish the ids \
+            messages are persisted under, so `expectedMessageIds` is unsatisfiable"]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_client_that_watched_the_turn_knows_every_stored_message_id() {
+    let (h, _provider) = harness(|p| p).await;
+
+    let events = h.run_turn(USER_PROMPT).await.unwrap();
+    let known = ids_a_client_can_learn(&events);
+    let stored = stored_ids(&h).await;
+
+    let unknowable: Vec<&(String, String)> = stored
+        .iter()
+        .filter(|(id, _)| !known.contains(id))
+        .collect();
+
+    assert!(
+        unknowable.is_empty(),
+        "the store holds {} message(s) whose id never reached the client, so \
+         `expectedMessageIds` can never name them and every in-place edit 409s.\n\
+         unknowable: {:#?}\nstreamed ids: {:#?}\nstored: {:#?}",
+        unknowable.len(),
+        unknowable,
+        known,
+        stored
+    );
+}
