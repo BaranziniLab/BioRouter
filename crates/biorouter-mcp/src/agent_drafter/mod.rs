@@ -26,6 +26,7 @@ pub mod store;
 pub mod validate;
 pub mod vault;
 
+use crate::developer::shell::strip_daemon_private_env_std;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use indoc::formatdoc;
 use rmcp::{
@@ -821,6 +822,28 @@ pub fn default_root() -> PathBuf {
 /// browser dispatches native range key handling, real pointer drags, and computed
 /// styles — the three things the remaining findings depend on. jsdom cannot see any
 /// of them, which is exactly why the audit could not either.
+///
+/// **Environment (issue #62).** This is the one Agent Drafter path that
+/// *executes* agent-authored application code — the siblings only parse it
+/// (`bundle.rs` runs esbuild, `render.rs` runs `node --check`). The Node harness
+/// serves the app to a chromium launched with `--no-sandbox`, so the daemon's
+/// auth secret must not be in the environment either process inherits: holding
+/// `BIOROUTER_SERVER__SECRET_KEY` makes the holder a fully authenticated client
+/// of `biorouterd`'s REST API, which is a cross-session read of everything
+/// (issue #57).
+///
+/// The rule is the *shared* one — [`strip_daemon_private_env_std`], the same
+/// function the developer shell, stdio extensions, `computer_controller` and
+/// `computer_control` now call. A second, stricter mechanism here (an
+/// allow-list of, say, `PATH` + `HOME`) was considered and rejected: it would
+/// be a parallel copy of one security rule, which is how the next hole appears,
+/// and it would break the harness in ordinary configurations. Playwright
+/// resolves its browser cache from `HOME` *or* `PLAYWRIGHT_BROWSERS_PATH`,
+/// chromium wants `TMPDIR`/`XDG_*`, corporate installs need the proxy
+/// variables, and on Windows a child holding only `PATH` cannot even open the
+/// loopback socket the harness's mock daemon binds (no `SystemRoot`). Issue #24
+/// was that regression in miniature, for `PATH` alone. Nothing here needs a
+/// credential; if it ever does, it should be passed explicitly.
 fn run_smoke(dir: &Path) -> Result<String, String> {
     if std::env::var("BIOROUTER_APP_SMOKE")
         .unwrap_or_default()
@@ -830,9 +853,11 @@ fn run_smoke(dir: &Path) -> Result<String, String> {
     }
 
     let script = smoke_script_path().ok_or_else(|| "app-smoke.mjs not found".to_string())?;
-    let out = std::process::Command::new("node")
-        .arg(&script)
-        .arg(dir)
+    let mut cmd = std::process::Command::new("node");
+    cmd.arg(&script).arg(dir);
+    // Last, so nothing set above can leave a daemon credential in the child.
+    strip_daemon_private_env_std(&mut cmd);
+    let out = cmd
         .output()
         .map_err(|e| format!("could not run node: {e}"))?;
 
@@ -845,6 +870,20 @@ fn run_smoke(dir: &Path) -> Result<String, String> {
         )),
         _ => Err(format!("{stderr}{stdout}").trim().to_string()),
     }
+}
+
+/// Absolute path to `printenv`, for the environment-probe shims in this
+/// module's and `bundle`'s tests.
+///
+/// The shims must not resolve it through `PATH`: sibling tests in this binary
+/// swap `PATH` process-wide (`env_lock`), so a `PATH`-resolved `printenv`
+/// execs fine alone and fails only in a full parallel run.
+#[cfg(all(test, unix))]
+pub(crate) fn printenv_bin() -> &'static str {
+    ["/usr/bin/printenv", "/bin/printenv"]
+        .into_iter()
+        .find(|c| Path::new(c).exists())
+        .unwrap_or("printenv")
 }
 
 /// Locate the smoke script relative to the running binary or the source tree.
@@ -4154,5 +4193,150 @@ br.run("hello", "#missing");
             s.store().load_manifest("byo").unwrap().surface.is_empty(),
             "no surface when the caller supplies their own main.ts"
         );
+    }
+
+    /// Issue #62 — the environment [`run_smoke`] hands to the smoke child.
+    ///
+    /// `smoke_app` boots the agent-authored application in a real browser
+    /// (chromium, launched with `--no-sandbox`) driven by a Node harness. That
+    /// makes it the one Agent Drafter path that **executes** model-authored
+    /// code rather than parsing it, so the daemon's auth secret must not be in
+    /// the environment those processes are launched with — holding it makes the
+    /// holder a fully authenticated client of `biorouterd`'s REST API (issue
+    /// #57).
+    ///
+    /// Same probe shape as `developer::shell` and `computercontroller`: the
+    /// leak lives in the *inherited* environment, so exercising it means
+    /// controlling this process's environment, and `set_var` is unsound in a
+    /// threaded test binary. The parent re-invokes this test binary with the
+    /// daemon's environment exported and a `node` shim first on `PATH`, so the
+    /// real `run_smoke` spawn resolves the shim and reports the environment the
+    /// smoke child actually received.
+    #[cfg(unix)]
+    mod smoke_child_env {
+        use super::*;
+        use std::os::unix::fs::PermissionsExt;
+
+        /// Child half. `#[ignore]` keeps it out of a normal run.
+        #[test]
+        #[ignore]
+        fn leak_probe_prints_app_smoke_child_env() {
+            let app = TempDir::new().unwrap();
+            let raw = run_smoke(app.path()).expect("the smoke child must spawn");
+            let canary = std::env::var("BR_TEST_CANARY").unwrap_or_default();
+            // Report BioRouter's namespace, the variables the parent injected,
+            // and any line carrying the canary under *any* key — so a copy of
+            // the secret under a different name is still caught. Everything
+            // else is dropped: printing the whole environment of whoever runs
+            // the suite would be its own small leak.
+            let report = raw
+                .lines()
+                .filter(|line| {
+                    let key = line.split('=').next().unwrap_or("");
+                    if key == "BR_TEST_CANARY" {
+                        return false; // the channel carrying the canary is not the leak
+                    }
+                    key.starts_with("BIOROUTER_")
+                        || key.starts_with("GOOSE_")
+                        || matches!(key, "PATH" | "HOME" | "BR_TEST_USER_VAR")
+                        || (!canary.is_empty() && line.contains(&canary))
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            println!("BEGIN_CHILD_ENV");
+            println!("{report}");
+            println!("END_CHILD_ENV");
+        }
+
+        /// Run the probe in a fresh copy of this test binary whose environment
+        /// is the daemon's: the auth secret, the port, and an ordinary user
+        /// variable. `node` on that copy's `PATH` is a shim that prints its own
+        /// environment, so the real `run_smoke` command is what gets measured.
+        fn run_app_smoke_leak_probe(canary: &str) -> String {
+            let shim = TempDir::new().expect("temp dir");
+            let node = shim.path().join("node");
+            // Absolute `printenv`, and `PATH`/`HOME` pinned below: sibling tests
+            // in this binary swap those two process-wide (`env_lock`), so a shim
+            // that resolved `printenv` through the ambient `PATH` failed only in
+            // a full parallel run.
+            std::fs::write(&node, format!("#!/bin/sh\nexec {}\n", printenv_bin()))
+                .expect("write node shim");
+            std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod node shim");
+            let path = format!("{}:/usr/bin:/bin", shim.path().display());
+
+            let m = module_path!();
+            let without_crate = m.split_once("::").map(|(_, rest)| rest).unwrap_or(m);
+            let probe = format!("{without_crate}::leak_probe_prints_app_smoke_child_env");
+            let exe = std::env::current_exe().expect("test binary path");
+            let out = std::process::Command::new(exe)
+                .args([
+                    "--exact",
+                    &probe,
+                    "--ignored",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env("PATH", path)
+                .env("HOME", shim.path())
+                .env("BIOROUTER_SERVER__SECRET_KEY", canary)
+                .env("BR_TEST_CANARY", canary)
+                .env("BIOROUTER_PORT", "54321")
+                .env("BIOROUTER_APP_SMOKE", "on")
+                .env("BR_TEST_USER_VAR", "user-env-ok")
+                .output()
+                .expect("re-invoking the test binary must work");
+            let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+            stdout
+                .split_once("BEGIN_CHILD_ENV\n")
+                .and_then(|(_, rest)| rest.split_once("END_CHILD_ENV"))
+                .map(|(body, _)| body.to_string())
+                .unwrap_or_else(|| {
+                    panic!(
+                        "probe produced no child environment.\nstdout:\n{stdout}\nstderr:\n{}",
+                        String::from_utf8_lossy(&out.stderr)
+                    )
+                })
+        }
+
+        /// Issue #62. Before the fix, `printenv` in the smoke child printed
+        /// `BIOROUTER_SERVER__SECRET_KEY`.
+        #[test]
+        fn daemon_secret_never_reaches_the_app_smoke_child() {
+            const CANARY: &str = "canary-daemon-secret-drafter-62";
+            let child_env = run_app_smoke_leak_probe(CANARY);
+            assert!(
+                !child_env.contains(CANARY),
+                "issue #62: the daemon's auth secret reached the app smoke child, which \
+                 executes agent-authored application code — so that code's host can call \
+                 biorouterd as an authenticated client.\nchild env:\n{child_env}"
+            );
+            assert!(
+                !child_env.contains("BIOROUTER_SERVER__SECRET_KEY"),
+                "the key name itself must be gone, not just the value:\n{child_env}"
+            );
+        }
+
+        /// The other direction. The smoke harness boots a real browser: it
+        /// resolves `node` and the browser binary through `PATH`, finds
+        /// playwright's browser cache under `HOME`, and honours the user's own
+        /// `PLAYWRIGHT_*`/proxy/temp settings. A truncated child environment is
+        /// its own regression — issue #24 was exactly that, for `PATH`.
+        #[test]
+        fn app_smoke_child_still_gets_the_environment_it_needs() {
+            let child_env = run_app_smoke_leak_probe("canary-unused-62");
+            for expected in [
+                "PATH=",
+                "HOME=",
+                "BIOROUTER_PORT=54321",
+                "BR_TEST_USER_VAR=user-env-ok",
+            ] {
+                assert!(
+                    child_env.lines().any(|l| l.starts_with(expected)),
+                    "{expected} — stripping the daemon credential must not censor the \
+                     environment the smoke harness needs to boot a browser:\n{child_env}"
+                );
+            }
+        }
     }
 }

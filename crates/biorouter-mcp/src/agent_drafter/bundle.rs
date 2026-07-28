@@ -15,6 +15,7 @@ use std::process::Command;
 use std::sync::{Mutex, MutexGuard};
 
 use crate::agent_drafter::store::{ArtifactKind, Manifest};
+use crate::developer::shell::strip_daemon_private_env_std;
 
 // ---------------------------------------------------------------------------
 // Build-time guardrail harness
@@ -931,6 +932,16 @@ pub fn build_app(project_dir: &Path) -> std::io::Result<BuildReport> {
     fallback_bundle(project_dir, &out).map(note)
 }
 
+/// Bundle `entry` with esbuild.
+///
+/// **Environment (issue #62).** The child gets the shared curated environment —
+/// [`strip_daemon_private_env_std`], the same rule every other spawn on the
+/// agent's behalf uses. esbuild only parses the agent's TypeScript, so this is
+/// a weaker boundary than the smoke test's; the reason it gets the rule anyway
+/// is the `npx --yes esbuild` fallback in [`find_esbuild`], which downloads a
+/// package from the public registry at build time and runs it, lifecycle
+/// scripts included. Handing a just-fetched third-party package `biorouterd`'s
+/// auth key buys nothing — a bundler needs no credential.
 fn run_esbuild(
     program: &str,
     lead: &[String],
@@ -950,6 +961,8 @@ fn run_esbuild(
     cmd.arg("--loader:.ts=ts");
     cmd.arg(format!("--outfile={}", out.display()));
     cmd.arg("--log-level=warning");
+    // Last, so nothing set above can leave a daemon credential in the child.
+    strip_daemon_private_env_std(&mut cmd);
     let output = cmd.output()?;
     drop(npx_guard);
     let log = format!(
@@ -1984,5 +1997,141 @@ document.getElementById("run")!.addEventListener("click", () => br.run("visualiz
         let typed = "import { createApp } from \"./sdk\";\nconst br = createApp();\nbr.actions.register(\"run_query\", () => {});\nbr.call(\"run_query\", { q: \"genes\" });\n";
         let ok = lint_with(CHATTY_INDEX, typed, Some(&manifest_with_surface(surface)));
         assert!(!ok.contains("prefer br.call(name, args)"), "{ok}");
+    }
+
+    /// Issue #62, second half — the environment [`run_esbuild`] spawns with.
+    ///
+    /// esbuild only *parses* the agent's TypeScript, so this child is weaker
+    /// than the smoke test's. It still gets the same rule, for a different
+    /// reason: when no local esbuild exists the bundler falls back to
+    /// `npx --yes esbuild`, which downloads a package from the public registry
+    /// at build time and runs it (lifecycle scripts included). A just-fetched
+    /// third-party package has no business holding `biorouterd`'s auth key, and
+    /// the tool needs no credential of any kind.
+    #[cfg(unix)]
+    mod esbuild_child_env {
+        use super::*;
+        use std::os::unix::fs::PermissionsExt;
+
+        /// Child half. `#[ignore]` keeps it out of a normal run.
+        #[test]
+        #[ignore]
+        fn leak_probe_prints_esbuild_child_env() {
+            let (program, lead) = find_esbuild().expect("BIOROUTER_ESBUILD_BIN shim");
+            let work = TempDir::new().unwrap();
+            let entry = work.path().join("main.ts");
+            std::fs::write(&entry, "const x: number = 1;\n").unwrap();
+            let report =
+                run_esbuild(&program, &lead, &entry, &work.path().join("app.js")).expect("spawn");
+            let canary = std::env::var("BR_TEST_CANARY").unwrap_or_default();
+            // Report BioRouter's namespace, the variables the parent injected,
+            // and any line carrying the canary under *any* key. Everything else
+            // is dropped: printing the whole environment of whoever runs the
+            // suite would be its own small leak.
+            let filtered = report
+                .log
+                .lines()
+                .filter(|line| {
+                    let key = line.split('=').next().unwrap_or("");
+                    if key == "BR_TEST_CANARY" {
+                        return false; // the channel carrying the canary is not the leak
+                    }
+                    key.starts_with("BIOROUTER_")
+                        || matches!(key, "PATH" | "HOME" | "BR_TEST_USER_VAR")
+                        || (!canary.is_empty() && line.contains(&canary))
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            println!("BEGIN_CHILD_ENV");
+            println!("{filtered}");
+            println!("END_CHILD_ENV");
+        }
+
+        /// Run the probe in a fresh copy of this test binary whose environment
+        /// is the daemon's, with `BIOROUTER_ESBUILD_BIN` pointing at a shim that
+        /// prints its own environment — so the real `run_esbuild` command is
+        /// what gets measured.
+        fn run_esbuild_leak_probe(canary: &str) -> String {
+            let shim_dir = TempDir::new().expect("temp dir");
+            let shim = shim_dir.path().join("esbuild");
+            // Absolute `printenv`, and `PATH`/`HOME` pinned below — see
+            // [`crate::agent_drafter::printenv_bin`].
+            std::fs::write(
+                &shim,
+                format!("#!/bin/sh\nexec {}\n", crate::agent_drafter::printenv_bin()),
+            )
+            .expect("write esbuild shim");
+            std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod esbuild shim");
+
+            let m = module_path!();
+            let without_crate = m.split_once("::").map(|(_, rest)| rest).unwrap_or(m);
+            let probe = format!("{without_crate}::leak_probe_prints_esbuild_child_env");
+            let exe = std::env::current_exe().expect("test binary path");
+            let out = std::process::Command::new(exe)
+                .args([
+                    "--exact",
+                    &probe,
+                    "--ignored",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env("BIOROUTER_ESBUILD_BIN", &shim)
+                .env("PATH", "/usr/bin:/bin")
+                .env("HOME", shim_dir.path())
+                .env("BIOROUTER_SERVER__SECRET_KEY", canary)
+                .env("BR_TEST_CANARY", canary)
+                .env("BIOROUTER_PORT", "54321")
+                .env("BR_TEST_USER_VAR", "user-env-ok")
+                .output()
+                .expect("re-invoking the test binary must work");
+            let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+            stdout
+                .split_once("BEGIN_CHILD_ENV\n")
+                .and_then(|(_, rest)| rest.split_once("END_CHILD_ENV"))
+                .map(|(body, _)| body.to_string())
+                .unwrap_or_else(|| {
+                    panic!(
+                        "probe produced no child environment.\nstdout:\n{stdout}\nstderr:\n{}",
+                        String::from_utf8_lossy(&out.stderr)
+                    )
+                })
+        }
+
+        #[test]
+        fn daemon_secret_never_reaches_the_esbuild_child() {
+            const CANARY: &str = "canary-daemon-secret-esbuild-62";
+            let child_env = run_esbuild_leak_probe(CANARY);
+            assert!(
+                !child_env.contains(CANARY),
+                "issue #62: the daemon's auth secret reached the bundler child — with the \
+                 `npx --yes esbuild` fallback that hands biorouterd's key to a package \
+                 downloaded at build time.\nchild env:\n{child_env}"
+            );
+            assert!(
+                !child_env.contains("BIOROUTER_SERVER__SECRET_KEY"),
+                "the key name itself must be gone, not just the value:\n{child_env}"
+            );
+        }
+
+        /// The other direction: esbuild is resolved through `PATH`, and the npx
+        /// fallback needs `HOME` for the npm cache. A truncated child
+        /// environment is its own regression — issue #24 was exactly that.
+        #[test]
+        fn esbuild_child_still_gets_the_environment_it_needs() {
+            let child_env = run_esbuild_leak_probe("canary-unused-esbuild-62");
+            for expected in [
+                "PATH=",
+                "HOME=",
+                "BIOROUTER_PORT=54321",
+                "BR_TEST_USER_VAR=user-env-ok",
+            ] {
+                assert!(
+                    child_env.lines().any(|l| l.starts_with(expected)),
+                    "{expected} — stripping the daemon credential must not censor the \
+                     environment the bundler needs:\n{child_env}"
+                );
+            }
+        }
     }
 }
