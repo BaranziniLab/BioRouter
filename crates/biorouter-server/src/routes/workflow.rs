@@ -689,6 +689,7 @@ pub fn routes(state: Arc<AppState>) -> Router {
 #[cfg(test)]
 mod knowledge_capture_tests {
     use super::workflow_knowledge_bases_for_session;
+    use biorouter::workflow::Workflow;
     use biorouter_mcp::knowledge::service::{KnowledgeService, PrimaryUpdate};
 
     fn service_with(ids: &[&str]) -> (tempfile::TempDir, KnowledgeService) {
@@ -718,6 +719,28 @@ mod knowledge_capture_tests {
             "the authored set was empty; capture must say so"
         );
         assert_eq!(captured.default, None);
+
+        // Capturing it is only half the fix: both fields are
+        // `skip_serializing_if`, so the empty selection serializes to a bare
+        // `{}` and would be indistinguishable from an absent `knowledge_bases`
+        // if the OUTER field ever gained a "skip if empty" rule. Replay reads
+        // `Option::is_none` to decide whether to touch the session at all, so
+        // pin the round trip here — a saved workflow that loses the empty set
+        // on the way to disk defeats the capture silently.
+        let mut workflow = Workflow::builder()
+            .title("t")
+            .description("d")
+            .instructions("i")
+            .build()
+            .unwrap();
+        workflow.knowledge_bases = Some(captured);
+        let yaml = serde_yaml::to_string(&workflow).unwrap();
+        let round_tripped: Workflow = serde_yaml::from_str(&yaml).unwrap();
+        let replayed = round_tripped
+            .knowledge_bases
+            .expect("an explicitly empty set must survive being saved and reloaded");
+        assert!(replayed.visible.is_empty());
+        assert_eq!(replayed.default, None);
     }
 
     /// The one case with genuinely nothing to say: no bases exist at all, so
