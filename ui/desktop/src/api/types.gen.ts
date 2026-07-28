@@ -1064,7 +1064,29 @@ export type MessageMetadata = {
  * Where a message came from, when it did not originate with this session's own
  * user↔agent pair. Cross-session control without provenance is
  * indistinguishable from prompt injection (BR-71 §2.4) — stamped in storage,
- * not just in the UI, and never suppressible.
+ * not just in the UI.
+ *
+ * **The guarantee, stated as what is actually enforced.** A stamp is not
+ * suppressible by anything on the normalize → compact → write-back path, which
+ * is the path that decides what the model sees and what the store keeps. Three
+ * places had to be taught it, because each rebuilds or replaces metadata rather
+ * than updating it:
+ *
+ * - [`crate::conversation::merge_consecutive_messages`] keeps only the first
+ * message's metadata, so a change of origin is a merge boundary
+ * (`is_provenance_boundary`), exactly as `pinned` is.
+ * - the legacy compaction path replaces the archived original's metadata with
+ * `MessageMetadata::invisible()`, and rebuilds the preserved copy from its
+ * text alone; both carry the stamp across explicitly
+ * (`crate::context_mgmt`).
+ *
+ * It is deliberately NOT a claim about anything outside that path. A caller
+ * holding a `Message` can always construct an unstamped one, and a stamp whose
+ * `kind` a reader does not recognise degrades to `None` rather than taking the
+ * rest of the metadata down with it (see `MessageMetadata::provenance`). The
+ * defence a stamp *enables* — [`frame_workspace_injection`] — is baked into
+ * message content, not metadata, precisely so it cannot be undone by a metadata
+ * edit.
  *
  * `Hash` is derived deliberately: this value is part of
  * [`crate::conversation::normalize`]'s per-message cache validator. See

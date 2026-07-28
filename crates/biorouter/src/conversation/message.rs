@@ -603,10 +603,13 @@ impl From<PromptMessage> for Message {
 ///   text alone; both carry the stamp across explicitly
 ///   (`crate::context_mgmt`).
 ///
-/// It is deliberately NOT a claim about anything outside that path — a caller
-/// holding a `Message` can always construct an unstamped one. The defence a
-/// stamp *enables* — [`frame_workspace_injection`] — is baked into message
-/// content, not metadata, precisely so it cannot be undone by a metadata edit.
+/// It is deliberately NOT a claim about anything outside that path. A caller
+/// holding a `Message` can always construct an unstamped one, and a stamp whose
+/// `kind` a reader does not recognise degrades to `None` rather than taking the
+/// rest of the metadata down with it (see `MessageMetadata::provenance`). The
+/// defence a stamp *enables* — [`frame_workspace_injection`] — is baked into
+/// message content, not metadata, precisely so it cannot be undone by a metadata
+/// edit.
 ///
 /// `Hash` is derived deliberately: this value is part of
 /// [`crate::conversation::normalize`]'s per-message cache validator. See
@@ -630,6 +633,24 @@ pub enum ProvenanceKind {
     UserDirect,
     /// The persisted spawn-context record of a subagent session (BR-71 §4.4).
     SpawnContext,
+}
+
+/// Decode `MessageMetadata::provenance` without letting an unreadable stamp fail
+/// its whole parent. See the note on that field for why that matters; in short,
+/// the caller's `.ok().unwrap_or_default()` turns a field-level parse error into
+/// a total loss of visibility state.
+///
+/// Buffering through `serde_json::Value` requires a self-describing format,
+/// which every deserializer this type sees is (it is decoded from a JSON blob
+/// column and from HTTP bodies).
+fn deserialize_lenient_provenance<'de, D>(
+    deserializer: D,
+) -> Result<Option<MessageProvenance>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(serde_json::from_value(value).ok().flatten())
 }
 
 /// Maximum size (in bytes) of the body one session may inject into another via
@@ -821,7 +842,23 @@ pub struct MessageMetadata {
     /// Orthogonal to `pinned` above: that answers "survive compaction?", this
     /// answers "who wrote this?". A `workspace_send_prompt { mode: "note" }`
     /// message carries both.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    //
+    // `deserialize_with` is load-bearing for the same reason `#[serde(default)]`
+    // on `pinned` is, and it is the reason spelled out immediately above.
+    // `ProvenanceKind` is a CLOSED enum that now lives inside the durable
+    // `metadata_json` blob, so without leniency a single unrecognised `kind`
+    // fails the whole `MessageMetadata`, and the read path's
+    // `from_str(..).ok().unwrap_or_default()` then discards `user_visible`,
+    // `agent_visible` and `pinned` along with it — turning an agent-invisible
+    // message agent-visible. That needs no bug to reach: a newer binary writing
+    // a fourth variant and a lagging PATH-installed CLI reading the same
+    // sessions DB is a documented, ordinary situation. Degrading one unreadable
+    // field beats losing three readable ones.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_lenient_provenance",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub provenance: Option<MessageProvenance>,
 }
 
@@ -2095,6 +2132,59 @@ mod tests {
             // Empty optionals stay off the wire.
             assert!(v.get("fromSessionId").is_none());
         }
+    }
+
+    /// `ProvenanceKind` is a closed enum living inside the durable
+    /// `metadata_json` blob, and both production read paths decode with
+    /// `from_str(..).ok().unwrap_or_default()` (`session_manager.rs`). So an
+    /// unrecognised `kind` would take the WHOLE `MessageMetadata` down with it —
+    /// resetting `agentVisible` to true (an agent-invisible message becomes
+    /// visible: context leakage) and losing every pin. This is the exact hazard
+    /// the `#[serde(default)]` comment on `pinned` documents, reopened from a
+    /// different direction, and it needs no bug to trigger: a newer binary
+    /// writing a fourth variant into the same SQLite sessions DB that a lagging
+    /// PATH-installed CLI reads is a scenario CLAUDE.md describes as ordinary.
+    ///
+    /// Degrading the one unreadable field beats losing three readable ones.
+    #[test]
+    fn an_unknown_provenance_kind_does_not_reset_the_whole_metadata() {
+        let json = r#"{
+            "userVisible": false,
+            "agentVisible": false,
+            "pinned": true,
+            "provenance": {"kind": "some_future_kind", "fromSessionId": "s-parent"}
+        }"#;
+        let metadata: MessageMetadata = serde_json::from_str(json).unwrap();
+
+        assert!(!metadata.user_visible, "visibility must survive");
+        assert!(
+            !metadata.agent_visible,
+            "an unreadable stamp must not make a hidden message agent-visible"
+        );
+        assert!(metadata.pinned, "the #51 pin marker must survive");
+        assert_eq!(
+            metadata.provenance, None,
+            "the unreadable field is the only thing that degrades"
+        );
+
+        // A malformed provenance value of the wrong SHAPE degrades the same way.
+        let junk: MessageMetadata = serde_json::from_str(
+            r#"{"userVisible":true,"agentVisible":false,"provenance":"not-an-object"}"#,
+        )
+        .unwrap();
+        assert!(!junk.agent_visible);
+        assert_eq!(junk.provenance, None);
+
+        // An explicit null is still None, and a well-formed stamp still parses.
+        let nulled: MessageMetadata =
+            serde_json::from_str(r#"{"userVisible":true,"agentVisible":true,"provenance":null}"#)
+                .unwrap();
+        assert_eq!(nulled.provenance, None);
+        let good: MessageMetadata = serde_json::from_str(
+            r#"{"userVisible":true,"agentVisible":true,"provenance":{"kind":"user_direct"}}"#,
+        )
+        .unwrap();
+        assert_eq!(good.provenance.unwrap().kind, ProvenanceKind::UserDirect);
     }
 
     #[test]
