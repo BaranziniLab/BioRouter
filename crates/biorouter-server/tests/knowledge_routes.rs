@@ -1859,6 +1859,63 @@ async fn primary_kb_can_be_scoped_per_session() {
     assert_eq!(other["kb_ids"], serde_json::json!(["act", "session-kb"]));
 }
 
+async fn create_bases(app: &Router, ids: &[&str]) {
+    for id in ids {
+        let body = serde_json::to_vec(&serde_json::json!({"id": id, "name": id})).unwrap();
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/bases")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(res.status().is_success(), "failed to create base {id}");
+    }
+}
+
+/// The deprecated `kb_id` alias exists so a renderer bundle built before
+/// `primary_kb` keeps working against a fresh daemon. That bundle's *only*
+/// spelling for "forget the primary" is `kb_id: null` — it always sends the
+/// field, and sends `null` to clear (the pre-branch route read
+/// `body.kb_id.as_deref()` straight into the setter, where `None` meant clear).
+///
+/// Typed `Option<String>`, an explicit `null` and an omitted field both arrive
+/// as `None`, so the alias could express every value except the one it was
+/// kept for: a stale bundle's clear became a silent no-op, and the generated
+/// TypeScript still advertised `kb_id?: string | null` as if it worked.
+#[tokio::test]
+async fn the_deprecated_alias_distinguishes_an_explicit_null_from_an_omission() {
+    let (_d, app) = build_test_router();
+    create_bases(&app, &["alpha", "beta"]).await;
+
+    let set = post_active(&app, serde_json::json!({"kb_id": "alpha"})).await;
+    assert_eq!(set.0, 200);
+    assert_eq!(set.1["primary_kb"].as_str(), Some("alpha"));
+
+    let cleared = post_active(&app, serde_json::json!({"kb_id": null})).await;
+    assert_eq!(cleared.0, 200);
+    assert!(
+        cleared.1["primary_kb"].is_null(),
+        "an explicit null on the deprecated alias must clear, as it always did"
+    );
+    assert!(cleared.1["active_kb"].is_null());
+
+    // And an omitted alias still means "leave the pointer alone", so a modern
+    // set-only edit does not clear the primary as a side effect.
+    post_active(&app, serde_json::json!({"kb_id": "alpha"})).await;
+    let set_only = post_active(&app, serde_json::json!({"hidden_kbs": ["beta"]})).await;
+    assert_eq!(
+        set_only.1["primary_kb"].as_str(),
+        Some("alpha"),
+        "an absent alias is not a clear"
+    );
+}
+
 /// The merged model's one invariant, at the wire. A primary that is not in the
 /// resulting set is rejected with both halves named; the un-hide and the
 /// re-point travel in ONE body so the GUI's "make primary" on an off row is a

@@ -604,17 +604,38 @@ pub struct ReadPageResponse {
 // the state the request produces, not the state it started from.
 // ──────────────────────────────────────────────────────────────────────────────
 
+/// Deserialize a nullable field while keeping "absent" and "explicitly null"
+/// apart: absent → `None`, `null` → `Some(None)`, a value → `Some(Some(v))`.
+///
+/// A plain `Option<String>` collapses the first two, which costs a meaning the
+/// wire needs. On this body the three primary-pointer states are *leave it*,
+/// *forget it*, and *set it*, and the deprecated `kb_id` alias only ever spoke
+/// the first and third — so the one gesture the alias was kept alive for, a
+/// pre-`primary_kb` bundle sending `kb_id: null` to clear, silently did nothing.
+fn present_or_null<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
+}
+
 #[derive(Deserialize, ToSchema)]
 pub struct SetActiveBody {
     /// Make this base the session's primary — the KB-less write target. It
     /// must be a member of the **resulting** set, so `hidden_kbs` in the same
-    /// body is applied first. Omit to leave the pointer alone.
-    #[serde(default)]
-    pub primary_kb: Option<String>,
+    /// body is applied first. Omit to leave the pointer alone; send `null` to
+    /// forget it (the same as `clear_primary`).
+    #[serde(default, deserialize_with = "present_or_null")]
+    #[schema(value_type = Option<String>)]
+    pub primary_kb: Option<Option<String>>,
     /// Deprecated alias for `primary_kb`, kept for one release so a stale
-    /// renderer bundle talking to a fresh daemon keeps working.
-    #[serde(default)]
-    pub kb_id: Option<String>,
+    /// renderer bundle talking to a fresh daemon keeps working. Follows the
+    /// same rule: omitted leaves the pointer alone, `null` forgets it — which
+    /// is exactly how such a bundle clears.
+    #[serde(default, deserialize_with = "present_or_null")]
+    #[schema(value_type = Option<String>)]
+    pub kb_id: Option<Option<String>>,
     /// Forget the primary. Wins over `primary_kb`.
     #[serde(default)]
     pub clear_primary: bool,
@@ -625,6 +646,26 @@ pub struct SetActiveBody {
     /// not a request to inherit the machine-wide list.
     #[serde(default)]
     pub hidden_kbs: Option<Vec<String>>,
+}
+
+impl SetActiveBody {
+    /// Fold the three spellings of a primary change — `clear_primary`, the
+    /// current `primary_kb`, and the deprecated `kb_id` — into one decision.
+    ///
+    /// Precedence is `clear_primary`, then `primary_kb`, then `kb_id`, and a
+    /// field that is merely absent never votes. That is what lets a modern
+    /// set-only edit (`{"hidden_kbs": [...]}`) leave the pointer where it is
+    /// instead of clearing it as a side effect.
+    fn primary_update(&self) -> PrimaryUpdate<'_> {
+        if self.clear_primary {
+            return PrimaryUpdate::Clear;
+        }
+        match self.primary_kb.as_ref().or(self.kb_id.as_ref()) {
+            Some(Some(id)) => PrimaryUpdate::Set(id),
+            Some(None) => PrimaryUpdate::Clear,
+            None => PrimaryUpdate::Unchanged,
+        }
+    }
 }
 
 #[derive(Serialize, ToSchema)]
@@ -686,20 +727,11 @@ pub async fn set_active(
     State(svc): State<Arc<KnowledgeService>>,
     Json(body): Json<SetActiveBody>,
 ) -> Result<Json<ActiveKbResponse>, (StatusCode, String)> {
-    let primary_id = body.primary_kb.clone().or_else(|| body.kb_id.clone());
-    let primary = if body.clear_primary {
-        PrimaryUpdate::Clear
-    } else {
-        match primary_id.as_deref() {
-            Some(id) => PrimaryUpdate::Set(id),
-            None => PrimaryUpdate::Unchanged,
-        }
-    };
     let selection = svc
         .set_selection(
             body.session_id.as_deref(),
             body.hidden_kbs.as_deref(),
-            primary,
+            body.primary_update(),
         )
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("{e:#}")))?;
     Ok(Json(ActiveKbResponse {
