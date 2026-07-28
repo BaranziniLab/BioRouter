@@ -96,6 +96,21 @@ pub enum SessionBusEvent {
     /// Normal closure. `token_state` is the authoritative end-of-turn read
     /// (BR-52) when the runner performed one; `None` for brackets published
     /// without a store read (subagent runs headless of the daemon).
+    ///
+    /// **`None` must never become `TokenState::default()` on the wire.** The
+    /// server's `MessageEvent::Finish` takes a non-optional `TokenState`
+    /// (`routes/reply.rs`, filled from `get_token_state`), so the mapper faces
+    /// an `Option` it has to resolve, and `unwrap_or_default()` is the obvious
+    /// wrong answer: every counter on `TokenState` is a number, so the default
+    /// is a *plausible-looking* all-zero reading rather than an absent one. The
+    /// desktop's only defence against a zeroed live reading —
+    /// `liveCountersAreAmbiguousZeros` in `ui/desktop/src/utils/billedTokens.ts`
+    /// — suppresses it **only when the persisted session counters are all
+    /// NULL**, so on any established session the invented zeros win over the
+    /// real persisted row and the user is shown 0 tokens and $0 for a turn that
+    /// cost both. Task 7/8 must either re-read the store (as `get_token_state`
+    /// already does for `/reply`'s own `Finish`) or omit the field — never
+    /// synthesise one.
     TurnFinished {
         reason: String,
         token_state: Option<TokenState>,
