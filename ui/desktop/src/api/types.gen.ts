@@ -1605,13 +1605,16 @@ export type SetActiveBody = {
     hidden_kbs?: Array<string> | null;
     /**
      * Deprecated alias for `primary_kb`, kept for one release so a stale
-     * renderer bundle talking to a fresh daemon keeps working.
+     * renderer bundle talking to a fresh daemon keeps working. Follows the
+     * same rule: omitted leaves the pointer alone, `null` forgets it — which
+     * is exactly how such a bundle clears.
      */
     kb_id?: string | null;
     /**
      * Make this base the session's primary — the KB-less write target. It
      * must be a member of the **resulting** set, so `hidden_kbs` in the same
-     * body is applied first. Omit to leave the pointer alone.
+     * body is applied first. Omit to leave the pointer alone; send `null` to
+     * forget it (the same as `clear_primary`).
      */
     primary_kb?: string | null;
     session_id?: string | null;

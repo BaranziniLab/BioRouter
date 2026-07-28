@@ -8694,12 +8694,12 @@
           },
           "kb_id": {
             "type": "string",
-            "description": "Deprecated alias for `primary_kb`, kept for one release so a stale\nrenderer bundle talking to a fresh daemon keeps working.",
+            "description": "Deprecated alias for `primary_kb`, kept for one release so a stale\nrenderer bundle talking to a fresh daemon keeps working. Follows the\nsame rule: omitted leaves the pointer alone, `null` forgets it — which\nis exactly how such a bundle clears.",
             "nullable": true
           },
           "primary_kb": {
             "type": "string",
-            "description": "Make this base the session's primary — the KB-less write target. It\nmust be a member of the **resulting** set, so `hidden_kbs` in the same\nbody is applied first. Omit to leave the pointer alone.",
+            "description": "Make this base the session's primary — the KB-less write target. It\nmust be a member of the **resulting** set, so `hidden_kbs` in the same\nbody is applied first. Omit to leave the pointer alone; send `null` to\nforget it (the same as `clear_primary`).",
             "nullable": true
           },
           "session_id": {
