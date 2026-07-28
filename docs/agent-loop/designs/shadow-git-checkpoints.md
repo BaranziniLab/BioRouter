@@ -378,6 +378,12 @@ Overall **L**.
    GC on session delete?
 4. **Conversation-axis semantics:** does restore **truncate** (destructive, like
    `truncate_conversation`) or **hide** messages with a redo (OpenCode-style, recoverable)?
+   *Still open, and now load-bearing:* #51 gave truncation a bounded variant that keeps
+   whatever landed after the caller's view, and the restore path deliberately does **not**
+   use it, because a bounded rewind is an incomplete one reported as complete. The tension
+   is written up in
+   [Conversation writeback freshness](../conversation-writeback-freshness.md#checkpoint-restore--open-and-it-is-a-semantics-question),
+   with the two honest options (refuse, or rewind and report what was discarded).
 5. **Fork vs in-place:** does `/rewind` mutate the current session, or branch a new one (like
    `diverge`)? Cline offers both; picking one keeps the UX simple.
 6. **External side effects:** DB writes, network calls, and files written *outside* the

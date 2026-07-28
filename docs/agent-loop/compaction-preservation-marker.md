@@ -16,8 +16,10 @@ A message appended to a live session had two independent ways of never reaching 
 and fixing only one of them makes the failure slower rather than rarer.
 
 The first is a write: a whole-history rewrite computed from a stale snapshot deletes it.
-That is [conversation writeback freshness](conversation-writeback-freshness.md), and it is
-fixed.
+That is [conversation writeback freshness](conversation-writeback-freshness.md). The rewrite
+paths are fixed — a write-back can no longer destroy an append it was never shown — and that
+page's scoreboard says which of the *deletion* paths are and are not, because they are not
+all the same question.
 
 The second is compaction. Compaction keeps only the last `keep_last_turns` turns verbatim
 (default 4, `DEFAULT_COMPACT_KEEP_LAST_TURNS`) and summarizes the older prefix, flipping it
@@ -188,7 +190,7 @@ before the feature that needs it exists — would fix the shape of the API aroun
 ## Related documentation
 
 - [Conversation writeback freshness](conversation-writeback-freshness.md) — the other half of
-  the same guarantee: why a concurrent append is no longer destroyed by a write-back.
+  the same guarantee: why a write-back can no longer destroy an append it was never shown.
 - [The agent loop](README.md) — the loop that runs the compaction sites.
 - [Agent lifecycle hooks](hooks/README.md) — `PreCompact` / `PostCompact`, which bracket the
   same compactions.
