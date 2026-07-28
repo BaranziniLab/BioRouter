@@ -2974,8 +2974,10 @@ impl Agent {
                 .await?;
         }
 
-        let session = session_manager
-            .get_session(&session_config.id, true)
+        // Snapshot with the revision this view is based on, so an auto-compaction
+        // below can tell a concurrent append apart from its own edits.
+        let (session, compaction_basis) = session_manager
+            .snapshot_for_rewrite(&session_config.id)
             .await?;
         let conversation = session
             .conversation
@@ -3058,7 +3060,59 @@ impl Agent {
                 let usage_event_key = uuid::Uuid::new_v4().to_string();
                 match compact_messages(self.provider().await?.as_ref(), &conversation_to_compact, false).await {
                     Ok((compacted_conversation, summarization_usage)) => {
-                        session_manager.replace_conversation(&session_config.id, &compacted_conversation).await?;
+                        // Swap under the store's freshness guard: a message another
+                        // writer appended while the summarizer ran is carried over
+                        // rather than deleted, and the conversation that actually
+                        // landed is what the turn (and the client) continues from.
+                        let (outcome, stored_conversation) = session_manager
+                            .replace_conversation_preserving_tail(
+                                &session_config.id,
+                                &compacted_conversation,
+                                compaction_basis,
+                                &conversation_to_compact,
+                            )
+                            .await?;
+
+                        if !outcome.stored() {
+                            // The basis was truncated or rewritten under us (a
+                            // checkpoint restore, a message edit, another turn).
+                            // Declining here must NOT fail the turn — that would
+                            // trade a data-loss bug for a liveness bug. Continue on
+                            // the fresh history and let the overflow-recovery ladder
+                            // handle it if it really is too large.
+                            warn!(
+                                "Auto-compaction skipped for session {} ({:?}); the history \
+                                 changed while it was being summarized",
+                                session_config.id, outcome
+                            );
+                            // The round-trip was spent and billed by the provider
+                            // either way. `is_compaction_usage = false` because this
+                            // usage did NOT replace the context: claiming it did
+                            // would reset the live gauge to the summary's size and
+                            // suppress the next compaction check on a history that
+                            // never shrank.
+                            self.update_session_metrics(
+                                &session_config,
+                                &summarization_usage,
+                                false,
+                                &usage_event_key,
+                            ).await?;
+                            // No PostCompact: nothing was compacted.
+                            yield AgentEvent::Message(
+                                Message::assistant().with_system_notification(
+                                    SystemNotificationType::InlineMessage,
+                                    "Compaction skipped: this conversation changed while it was \
+                                     being summarized. Continuing with the full history.",
+                                )
+                            );
+                            match session_manager.get_session(&session_config.id, true).await {
+                                Ok(fresh) => fresh.conversation.unwrap_or(conversation_to_compact),
+                                Err(e) => {
+                                    warn!("Could not re-read session {} after a skipped compaction: {e}", session_config.id);
+                                    conversation_to_compact
+                                }
+                            }
+                        } else {
                         self.update_session_metrics(
                             &session_config,
                             &summarization_usage,
@@ -3079,7 +3133,7 @@ impl Agent {
                             yield AgentEvent::TokenUsage(token_state);
                         }
 
-                        yield AgentEvent::HistoryReplaced(compacted_conversation.clone());
+                        yield AgentEvent::HistoryReplaced(stored_conversation.clone());
 
                         yield AgentEvent::Message(
                             Message::assistant().with_system_notification(
@@ -3088,7 +3142,8 @@ impl Agent {
                             )
                         );
 
-                        compacted_conversation
+                        stored_conversation
+                        }
                     }
                     Err(e) => {
                         yield AgentEvent::Message(
