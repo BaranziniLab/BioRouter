@@ -1096,13 +1096,18 @@
    --accent-bar strip along its bottom edge — the same token as the
    sidebar rail and D-07's nav underline, so the "you are here" colour is
    one vocabulary across every surface. The pill remains the primary
-   signal (fill + weight + shadow are unchanged); the strip is drawn as an
-   INSET box-shadow because both pseudo-elements are taken (::before is
-   the sibling divider, ::after the drop-insertion hairline). It rides the
-   pill's box-shadow stack, so the unfocused-group dim rule — which zeroes
-   box-shadow — puts the strip out for free: two lit strips would be two
-   answers to "where am I typing?". Applies to the small (--sm, terminal
-   dock) strip too: one tab language, both sizes.
+   signal (fill + weight + shadow are unchanged); the strip is drawn as a
+   bottom-anchored BACKGROUND-IMAGE stripe because both pseudo-elements
+   are taken (::before is the sibling divider, ::after the drop-insertion
+   hairline) and an inset box-shadow follows the pill's border-radius —
+   the strip read as a curved smile hugging the corners, not a line. The
+   gradient stripe is dead straight, inset 11px each side (≥ the 8px
+   radius, and matching the tab's content padding) so the rounded corners
+   never clip it. The unfocused-group dim rule resets the `background`
+   shorthand, which wipes background-image — so the strip goes out there
+   for free: two lit strips would be two answers to "where am I typing?".
+   Applies to the small (--sm, terminal dock) strip too: one tab
+   language, both sizes.
    ============================================================ */
 .br-tabstrip {
   display: flex;
@@ -1222,15 +1227,19 @@
 }
 
 .br-tab[data-active='true'] {
-  background: var(--background-default);
+  /* Longhand color + image, NOT the `background` shorthand: the stripe is the
+     #37 accent strip (see the header note), drawn as a straight 2px gradient
+     line at the bottom edge. The 11px side insets keep it clear of the 8px
+     corner radius and align it with the tab's content padding. */
+  background-color: var(--background-default);
+  background-image: linear-gradient(var(--accent-bar), var(--accent-bar));
+  background-repeat: no-repeat;
+  background-size: calc(100% - 22px) 2px;
+  background-position: 50% 100%;
   color: var(--text-default);
   font-weight: 500;
-  /* The inset line is the #37 accent strip (see the header note); the drop
-     shadow is the original pill lift. Order matters only for reading: insets
-     paint over the background either way. */
-  box-shadow:
-    inset 0 -2px 0 0 var(--accent-bar),
-    0px 1px 2px 0px rgba(32, 25, 15, 0.07);
+  /* The drop shadow is the original pill lift. */
+  box-shadow: 0px 1px 2px 0px rgba(32, 25, 15, 0.07);
   /* Selection settles with a small spring (#37). The keyframes animate the
      STANDALONE `scale` property, never `transform`: when closing the active
      tab, the successor gains data-active (starting this animation) in the same
@@ -1249,9 +1258,9 @@
 }
 
 .dark .br-tab[data-active='true'] {
-  box-shadow:
-    inset 0 -2px 0 0 var(--accent-bar),
-    0px 1px 3px 0px rgba(0, 0, 0, 0.45);
+  /* The accent stripe rides the background-image from the base rule; only the
+     pill lift needs a dark-mode weight. */
+  box-shadow: 0px 1px 3px 0px rgba(0, 0, 0, 0.45);
 }
 
 @keyframes br-tab-select {
@@ -1271,7 +1280,11 @@
 
    The attribute is only ever 'false' on a strip that knows it is unfocused;
    default (absent) reads as active, so a bare strip — and every strip in the
-   single-group case — is unchanged. */
+   single-group case — is unchanged.
+
+   The `background` SHORTHAND here is load-bearing: it resets
+   background-image, which is what removes the active tab's accent stripe on
+   an unfocused group. Do not narrow it to background-color. */
 .br-tabstrip[data-group-active='false'] .br-tab[data-active='true'] {
   background: color-mix(in srgb, var(--background-default) 45%, transparent);
   color: var(--text-muted);
