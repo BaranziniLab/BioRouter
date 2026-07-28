@@ -34,8 +34,18 @@ interface Props {
 type DraftMode = { kind: 'create' } | { kind: 'rename'; base: Manifest } | null;
 
 export function KBSelectorPalette({ onClose }: Props) {
-  const { bases, primaryKbId, hiddenKbIds, refresh, setPrimaryKbId, toggleKbHidden } =
-    useKnowledge();
+  const {
+    bases,
+    primaryKbId,
+    hiddenKbIds,
+    defaultPrimaryKb,
+    canFollowDefaultPrimary,
+    followDefaultPrimary,
+    refreshDefaultPrimary,
+    refresh,
+    setPrimaryKbId,
+    toggleKbHidden,
+  } = useKnowledge();
   const { create, exportArchive, importArchive, remove, rename } = useKnowledgeBases();
   const [query, setQuery] = useState('');
   const [draft, setDraft] = useState('');
@@ -52,7 +62,10 @@ export function KBSelectorPalette({ onClose }: Props) {
     // created elsewhere (e.g. via chat / the knowledge MCP tools) appear here
     // without requiring a full app reload.
     void refresh();
-  }, [refresh]);
+    // Same reasoning for the machine-wide default: it is not part of the base
+    // list and another chat may have moved it since this one last looked.
+    void refreshDefaultPrimary();
+  }, [refresh, refreshDefaultPrimary]);
 
   const filtered = useMemo(() => {
     const value = query.trim().toLowerCase();
@@ -291,6 +304,37 @@ export function KBSelectorPalette({ onClose }: Props) {
 
             {error && <div className="mt-3 text-sm text-text-danger">{error}</div>}
           </div>
+
+          {/*
+            The way back to the default. It is deliberately not a third state on
+            every row — the row is "in this chat" plus "make it primary", and a
+            third control there would make the invariant look violable. This is
+            one notice about the whole chat, and it exists only while the chat is
+            holding a primary of its own: a chat already following the default
+            has nothing to inherit, and saying so would be noise on every open.
+          */}
+          {canFollowDefaultPrimary && defaultPrimaryKb && (
+            <div className="border-b border-border-subtle px-6 py-3">
+              <div className="biorouter-modal-panel flex flex-col gap-3 rounded-xl p-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="min-w-0 text-xs text-text-muted">
+                  {primaryKbId
+                    ? `This chat uses its own primary, so it no longer follows your default knowledge base, ${defaultPrimaryKb.name}.`
+                    : `This chat has no primary knowledge base, even though your default is ${defaultPrimaryKb.name}. Deleting the base a chat was using leaves it this way.`}
+                </div>
+                <Button
+                  data-testid="knowledge-kb-follow-default"
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="shrink-0"
+                  onClick={followDefaultPrimary}
+                  title={`This chat will use ${defaultPrimaryKb.name}, and will keep following your default if it changes.`}
+                >
+                  Follow the default ({defaultPrimaryKb.name})
+                </Button>
+              </div>
+            </div>
+          )}
 
           <div className="max-h-[420px] overflow-y-auto px-4 py-4">
             {filtered.length === 0 ? (
