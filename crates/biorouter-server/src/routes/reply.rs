@@ -9,6 +9,7 @@ use axum::{
 use biorouter::agents::{AgentEvent, ReasoningEffort, SessionConfig, TurnAbortCode};
 use biorouter::conversation::message::{Message, MessageContent, TokenState};
 use biorouter::conversation::Conversation;
+use biorouter::session::session_manager::ReplaceOutcome;
 use biorouter::session::SessionManager;
 use bytes::Bytes;
 use futures::{stream::StreamExt, Stream};
@@ -76,6 +77,13 @@ fn track_tool_telemetry(content: &MessageContent, all_messages: &[Message]) {
 #[derive(Debug, Deserialize, Serialize, utoipa::ToSchema)]
 pub struct ChatRequest {
     user_message: Message,
+    /// The client's own copy of the session's history, which REPLACES what the
+    /// server has stored.
+    ///
+    /// DEPRECATED as an authoritative overwrite (#51 W5). It is now conditional:
+    /// the copy must already contain every message the server holds, and the
+    /// request is refused with 409 if it does not. See
+    /// [`apply_client_writeback`]. The desktop app has never sent this field.
     #[serde(default)]
     conversation_so_far: Option<Vec<Message>>,
     session_id: String,
@@ -93,6 +101,125 @@ pub struct ChatRequest {
     /// still running", instead of being mistaken for a genuine second turn.
     #[serde(default)]
     turn_id: Option<String>,
+}
+
+/// Why a client-supplied `conversation_so_far` was refused (#51 W5).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WritebackConflict {
+    /// Ids of messages the server holds that the client's copy does not
+    /// contain. Storing that copy would delete them.
+    pub missing: Vec<String>,
+    /// How many messages the server holds.
+    pub stored_message_count: usize,
+}
+
+/// Ids of messages `stored` holds that `client` does not, in stored order.
+///
+/// Message ids are durable and server-assigned (BR-45/#41), so a client's copy
+/// naming a message is proof it has seen it. Anything stored that the copy does
+/// not name would be DELETED by storing that copy — either an append the client
+/// never saw or one it deliberately dropped, and the server cannot tell the two
+/// apart. A stored row without an id cannot be reasoned about and is not
+/// reported (the read path always synthesizes one, so this is defensive only).
+fn unacknowledged_stored_ids(stored: &[Message], client: &[Message]) -> Vec<String> {
+    let acknowledged: std::collections::HashSet<&str> =
+        client.iter().filter_map(|m| m.id.as_deref()).collect();
+    stored
+        .iter()
+        .filter_map(|m| m.id.as_deref())
+        .filter(|id| !acknowledged.contains(id))
+        .map(str::to_string)
+        .collect()
+}
+
+/// The 409 a refused write-back answers with. Machine-readable: `code` names
+/// the condition and `missing_message_ids` names exactly what the client's copy
+/// would have deleted, so it can re-read the session and retry rather than
+/// guess.
+fn writeback_conflict_response(conflict: &WritebackConflict) -> axum::response::Response {
+    (
+        StatusCode::CONFLICT,
+        Json(serde_json::json!({
+            "type": "Error",
+            "error": "conversation_so_far is missing messages this session already holds; \
+                      nothing was written. Re-read the session and retry.",
+            "code": "conversation_out_of_date",
+            "missing_message_ids": conflict.missing,
+            "stored_message_count": conflict.stored_message_count,
+        })),
+    )
+        .into_response()
+}
+
+/// Store the client's copy of the history, IF it is safe to (#51 W5).
+///
+/// This used to be an unconditional [`SessionManager::replace_conversation`] —
+/// the NAMED EXCEPTION, meant for a caller that owns the whole history — driven
+/// by an HTTP client's copy of arbitrary staleness. `/reply`'s per-session turn
+/// lock does not help: it is process-local and only `/reply` takes it, so the
+/// CLI, `biorouter term log`, an apps agent socket and a second daemon on the
+/// same `sessions.db` all append underneath it. Every one of those appends was
+/// acknowledged before this write deleted it.
+///
+/// It is now conditional on the client's copy already containing everything the
+/// server holds, and the write itself goes through the guarded rewrite so a
+/// message landing between the check and the write is carried over rather than
+/// destroyed. On [`WritebackConflict`] NOTHING is written and `/reply` answers
+/// 409; the client re-reads the session and retries.
+///
+/// This is a deliberate DEPRECATION of the field's authoritative-overwrite
+/// semantics. Nothing in this repository sends it — the desktop client posts
+/// `session_id` + `user_message` only — so the compatibility cost falls
+/// entirely on out-of-tree API clients, which now get a loud 409 instead of
+/// silently deleting a user's messages.
+async fn apply_client_writeback(
+    session_manager: &SessionManager,
+    session_id: &str,
+    history: Vec<Message>,
+) -> Result<Conversation, WritebackConflict> {
+    let client = Conversation::new_unvalidated(history);
+
+    // Read the revision BEFORE the conversation, so a message landing between
+    // the two reads is inside the snapshot rather than looking foreign.
+    let (session, basis) = match session_manager.snapshot_for_rewrite(session_id).await {
+        Ok(snapshot) => snapshot,
+        Err(e) => {
+            // No session to overwrite, or the store is unreadable: there is no
+            // precondition to evaluate, so nothing is written. The turn task's
+            // own `get_session` surfaces the real failure to the client.
+            tracing::warn!("Cannot check the client history for {session_id}: {e}");
+            return Ok(client);
+        }
+    };
+    let stored = session.conversation.unwrap_or_default();
+
+    let missing = unacknowledged_stored_ids(stored.messages(), client.messages());
+    if !missing.is_empty() {
+        return Err(WritebackConflict {
+            missing,
+            stored_message_count: stored.messages().len(),
+        });
+    }
+
+    match session_manager
+        .replace_conversation_preserving_tail(session_id, &client, basis, &client)
+        .await
+    {
+        // Stale: the store moved between the check above and the write, which
+        // the guard caught inside its own transaction. Same answer as a stale
+        // client copy — refuse, write nothing.
+        Ok((ReplaceOutcome::Stale, _)) => Err(WritebackConflict {
+            missing: Vec::new(),
+            stored_message_count: stored.messages().len(),
+        }),
+        // The session vanished under us; let the turn task report it.
+        Ok((ReplaceOutcome::SessionNotFound, _)) => Ok(client),
+        Ok((_, stored_now)) => Ok(stored_now),
+        Err(e) => {
+            tracing::warn!("Failed to replace session conversation for {session_id}: {e}");
+            Ok(client)
+        }
+    }
 }
 
 pub struct SseResponse {
@@ -408,13 +535,17 @@ async fn flush_coalesced(
         (status = 200, description = "Streaming response initiated",
          body = MessageEvent,
          content_type = "text/event-stream"),
+        (status = 409, description = "A turn is already in flight for this session, or the \
+                                      supplied `conversation_so_far` is missing messages the \
+                                      server holds (nothing was written; re-read the session \
+                                      and retry)"),
         (status = 424, description = "Agent not initialized"),
         (status = 500, description = "Internal server error")
     )
 )]
 pub async fn reply(
     State(state): State<Arc<AppState>>,
-    Json(request): Json<ChatRequest>,
+    Json(mut request): Json<ChatRequest>,
 ) -> axum::response::Response {
     let session_start = std::time::Instant::now();
 
@@ -492,11 +623,32 @@ pub async fn reply(
         }
     }
 
+    // #51 W5: the client's copy of the history is stored HERE, before the turn
+    // task is spawned, because it can now be REFUSED — once the SSE response has
+    // been returned there is no status code left to say so with. Refusing drops
+    // `turn_guard`, so the session is free again.
+    let client_conversation = match request.conversation_so_far.take() {
+        Some(history) => {
+            match apply_client_writeback(state.session_manager(), &session_id, history).await {
+                Ok(conversation) => Some(conversation),
+                Err(conflict) => {
+                    tracing::warn!(
+                        "Rejected a stale conversation_so_far for session {}: {} stored \
+                         message(s) it does not contain",
+                        session_id,
+                        conflict.missing.len()
+                    );
+                    return writeback_conflict_response(&conflict);
+                }
+            }
+        }
+        None => None,
+    };
+
     let (tx, rx) = mpsc::channel(100);
     let stream = ReceiverStream::new(rx);
 
     let user_message = request.user_message;
-    let conversation_so_far = request.conversation_so_far;
     let reasoning_effort = request.reasoning_effort;
 
     let task_cancel = cancel_token.clone();
@@ -570,24 +722,10 @@ pub async fn reply(
         // can. Previously every single streamed chunk re-read this from SQLite.
         let mut token_state = TokenState::from(&session);
 
-        let mut all_messages = match conversation_so_far {
-            Some(history) => {
-                let conv = Conversation::new_unvalidated(history);
-                if let Err(e) = state
-                    .session_manager()
-                    .replace_conversation(&session_id, &conv)
-                    .await
-                {
-                    tracing::warn!(
-                        "Failed to replace session conversation for {}: {}",
-                        session_id,
-                        e
-                    );
-                }
-                conv
-            }
-            None => session.conversation.unwrap_or_default(),
-        };
+        // Either what the client's (accepted) copy actually became on disk, or
+        // the stored history when it sent none.
+        let mut all_messages =
+            client_conversation.unwrap_or_else(|| session.conversation.unwrap_or_default());
         all_messages.push(user_message.clone());
 
         let mut stream = match agent
@@ -1020,6 +1158,196 @@ mod tests {
         assert_eq!(value["scope"], "provider");
         assert_eq!(value["retryable"], false);
         assert_eq!(value["provider_kind"], "quota");
+    }
+
+    /// #51 W5: `conversation_so_far` overwriting a live session.
+    ///
+    /// Driven against an ISOLATED `SessionManager` over a temp dir rather than
+    /// the process-global store, so these can seed real sessions without
+    /// touching the developer's own `sessions.db`.
+    mod writeback_tests {
+        use super::*;
+        use biorouter::session::session_manager::SessionType;
+        use std::path::PathBuf;
+        use tempfile::TempDir;
+
+        async fn seeded() -> (TempDir, SessionManager, String) {
+            let temp_dir = TempDir::new().unwrap();
+            let sm = SessionManager::new(temp_dir.path().to_path_buf());
+            let id = sm
+                .create_session(PathBuf::from("/tmp/wb"), "wb".into(), SessionType::User)
+                .await
+                .unwrap()
+                .id;
+            (temp_dir, sm, id)
+        }
+
+        async fn stored_texts(sm: &SessionManager, id: &str) -> Vec<String> {
+            sm.get_session(id, true)
+                .await
+                .unwrap()
+                .conversation
+                .unwrap()
+                .messages()
+                .iter()
+                .map(|m| m.as_concat_text())
+                .collect()
+        }
+
+        /// THE defect. A client whose copy of the history predates a message
+        /// another writer appended — `biorouter term log`, a second socket, a
+        /// note tool, the CLI on the same `sessions.db` — used to have that
+        /// copy stored verbatim, deleting a message whose writer had already
+        /// been told the append succeeded. The `/reply` turn lock does not
+        /// cover any of those writers.
+        #[tokio::test]
+        async fn a_stale_client_copy_cannot_delete_an_acknowledged_message() {
+            let (_temp, sm, id) = seeded().await;
+            sm.add_message(&id, &Message::user().with_text("one"))
+                .await
+                .unwrap();
+            let client = sm
+                .get_session(&id, true)
+                .await
+                .unwrap()
+                .conversation
+                .unwrap();
+
+            // ...and only now does somebody else append.
+            sm.add_message(&id, &Message::user().with_text("NOTE from elsewhere"))
+                .await
+                .unwrap();
+
+            let conflict = apply_client_writeback(&sm, &id, client.messages().to_vec())
+                .await
+                .expect_err("a stale client copy must be refused");
+
+            assert_eq!(conflict.stored_message_count, 2);
+            assert_eq!(conflict.missing.len(), 1);
+            assert_eq!(
+                stored_texts(&sm, &id).await,
+                vec!["one".to_string(), "NOTE from elsewhere".to_string()],
+                "a refused write-back must leave the store untouched"
+            );
+        }
+
+        /// The compatible path: a client that is up to date still gets its copy
+        /// stored, so an API client using the field keeps working.
+        #[tokio::test]
+        async fn an_up_to_date_client_copy_is_still_stored() {
+            let (_temp, sm, id) = seeded().await;
+            sm.add_message(&id, &Message::user().with_text("one"))
+                .await
+                .unwrap();
+            let mut client = sm
+                .get_session(&id, true)
+                .await
+                .unwrap()
+                .conversation
+                .unwrap()
+                .messages()
+                .to_vec();
+            client.push(Message::assistant().with_text("client-side answer"));
+
+            let stored = apply_client_writeback(&sm, &id, client).await.unwrap();
+
+            assert_eq!(
+                stored
+                    .messages()
+                    .iter()
+                    .map(|m| m.as_concat_text())
+                    .collect::<Vec<_>>(),
+                vec!["one".to_string(), "client-side answer".to_string()]
+            );
+            assert_eq!(
+                stored_texts(&sm, &id).await,
+                vec!["one".to_string(), "client-side answer".to_string()]
+            );
+        }
+
+        /// A client that deliberately drops a stored message is refused too:
+        /// from the server there is no way to tell "I edited this away" apart
+        /// from "I never saw it". Message edits have their own endpoint
+        /// (`POST /sessions/{id}/edit_message`), which is where that intent
+        /// belongs.
+        #[tokio::test]
+        async fn a_client_copy_that_drops_a_stored_message_is_refused() {
+            let (_temp, sm, id) = seeded().await;
+            sm.add_message(&id, &Message::user().with_text("one"))
+                .await
+                .unwrap();
+            sm.add_message(&id, &Message::user().with_text("two"))
+                .await
+                .unwrap();
+            let full = sm
+                .get_session(&id, true)
+                .await
+                .unwrap()
+                .conversation
+                .unwrap();
+            let trimmed = vec![full.messages()[0].clone()];
+
+            apply_client_writeback(&sm, &id, trimmed)
+                .await
+                .expect_err("dropping a stored message must be refused");
+            assert_eq!(
+                stored_texts(&sm, &id).await,
+                vec!["one".to_string(), "two".to_string()]
+            );
+        }
+
+        /// An empty client copy would wipe the session outright.
+        #[tokio::test]
+        async fn an_empty_client_copy_cannot_wipe_a_session() {
+            let (_temp, sm, id) = seeded().await;
+            sm.add_message(&id, &Message::user().with_text("one"))
+                .await
+                .unwrap();
+
+            apply_client_writeback(&sm, &id, Vec::new())
+                .await
+                .expect_err("an empty copy must be refused");
+            assert_eq!(stored_texts(&sm, &id).await, vec!["one".to_string()]);
+        }
+
+        /// A session that does not exist has no history to protect, and the
+        /// turn task reports the missing session itself — so the write-back is
+        /// a silent no-op rather than a 409 the client cannot act on.
+        #[tokio::test]
+        async fn an_unknown_session_is_not_reported_as_a_conflict() {
+            let (_temp, sm, _id) = seeded().await;
+            let conv = apply_client_writeback(
+                &sm,
+                "no-such-session",
+                vec![Message::user().with_text("hi")],
+            )
+            .await
+            .expect("a missing session is the turn task's error to report");
+            assert_eq!(conv.messages().len(), 1);
+        }
+
+        /// The refusal has to be actionable: a status the client can branch on
+        /// and the exact ids its copy would have destroyed.
+        #[tokio::test]
+        async fn the_conflict_response_names_what_would_have_been_destroyed() {
+            let conflict = WritebackConflict {
+                missing: vec!["msg-a".into(), "msg-b".into()],
+                stored_message_count: 7,
+            };
+            let response = writeback_conflict_response(&conflict);
+            assert_eq!(response.status(), StatusCode::CONFLICT);
+
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(body["code"], "conversation_out_of_date");
+            assert_eq!(
+                body["missing_message_ids"],
+                serde_json::json!(["msg-a", "msg-b"])
+            );
+            assert_eq!(body["stored_message_count"], serde_json::json!(7));
+        }
     }
 
     /// BR-53a: the pure state machine that batches streamed text deltas.
