@@ -8494,6 +8494,11 @@
             "format": "int32",
             "nullable": true
           },
+          "parent_session_id": {
+            "type": "string",
+            "description": "Id of the parent session that spawned this one as a subagent (BR-71).\nSibling of `diverged_from` (branch lineage): `diverged_from` records a\nuser fork; this records a delegation. `None` for non-subagent sessions.",
+            "nullable": true
+          },
           "provider_name": {
             "type": "string",
             "nullable": true

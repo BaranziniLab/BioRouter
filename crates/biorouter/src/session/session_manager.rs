@@ -26,7 +26,7 @@ use std::sync::{Arc, LazyLock};
 use tracing::{debug, info, warn};
 use utoipa::ToSchema;
 
-pub const CURRENT_SCHEMA_VERSION: i32 = 16;
+pub const CURRENT_SCHEMA_VERSION: i32 = 17;
 pub const SESSIONS_FOLDER: &str = "sessions";
 pub const DB_NAME: &str = "sessions.db";
 
@@ -159,6 +159,11 @@ pub struct Session {
     /// whole-second timestamp is what fixes the same-second over-truncation.
     #[serde(default)]
     pub branch_point_msg_uid: Option<String>,
+    /// Id of the parent session that spawned this one as a subagent (BR-71).
+    /// Sibling of `diverged_from` (branch lineage): `diverged_from` records a
+    /// user fork; this records a delegation. `None` for non-subagent sessions.
+    #[serde(default)]
+    pub parent_session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema, sqlx::FromRow)]
@@ -230,6 +235,7 @@ pub struct SessionUpdateBuilder<'a> {
     model_config: Option<Option<ModelConfig>>,
     diverged_from: Option<Option<String>>,
     branch_point_msg_uid: Option<Option<String>>,
+    parent_session_id: Option<Option<String>>,
 }
 
 #[derive(Serialize, ToSchema, Debug)]
@@ -858,6 +864,7 @@ impl<'a> SessionUpdateBuilder<'a> {
             model_config: None,
             diverged_from: None,
             branch_point_msg_uid: None,
+            parent_session_id: None,
         }
     }
 
@@ -989,6 +996,13 @@ impl<'a> SessionUpdateBuilder<'a> {
     /// session was branched at (BR-45 divergence point).
     pub fn branch_point_msg_uid(mut self, branch_point_msg_uid: Option<String>) -> Self {
         self.branch_point_msg_uid = Some(branch_point_msg_uid);
+        self
+    }
+
+    /// Record (or clear) the id of the session that spawned this one as a
+    /// subagent (BR-71 delegation lineage).
+    pub fn parent_session_id(mut self, parent_session_id: Option<String>) -> Self {
+        self.parent_session_id = Some(parent_session_id);
         self
     }
 }
@@ -1803,6 +1817,7 @@ impl Default for Session {
             model_config: None,
             diverged_from: None,
             branch_point_msg_uid: None,
+            parent_session_id: None,
         }
     }
 }
@@ -1974,6 +1989,7 @@ impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for Session {
             // Tolerant read: SELECTs that omit the column (e.g. the session
             // list) yield None rather than erroring, mirroring `model_config`.
             branch_point_msg_uid: row.try_get("branch_point_msg_uid").ok().flatten(),
+            parent_session_id: row.try_get("parent_session_id").ok().flatten(),
         })
     }
 }
@@ -2091,6 +2107,7 @@ impl SessionStorage {
                 provider_name TEXT,
                 model_config_json TEXT,
                 diverged_from TEXT,
+                parent_session_id TEXT,
                 external_key TEXT,
                 branch_point_msg_uid TEXT,
                 incarnation INTEGER NOT NULL DEFAULT 0
@@ -2266,8 +2283,8 @@ impl SessionStorage {
             total_tokens, input_tokens, output_tokens,
             accumulated_total_tokens, accumulated_input_tokens, accumulated_output_tokens,
             schedule_id, workflow_json, user_workflow_values_json,
-            provider_name, model_config_json, diverged_from, incarnation
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, random())
+            provider_name, model_config_json, diverged_from, parent_session_id, incarnation
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, random())
         "#,
         )
         .bind(&session.id)
@@ -2290,6 +2307,7 @@ impl SessionStorage {
         .bind(&session.provider_name)
         .bind(model_config_json)
         .bind(&session.diverged_from)
+        .bind(&session.parent_session_id)
         .execute(&mut *tx)
         .await?;
 
@@ -2729,6 +2747,15 @@ impl SessionStorage {
                 // inline messages remain untouched.
                 Self::create_message_blobs_table(pool).await?;
             }
+            17 => {
+                sqlx::query(
+                    r#"
+                    ALTER TABLE sessions ADD COLUMN parent_session_id TEXT
+                "#,
+                )
+                .execute(pool)
+                .await?;
+            }
             _ => {
                 anyhow::bail!("Unknown migration version: {}", version);
             }
@@ -2988,7 +3015,7 @@ impl SessionStorage {
                total_tokens, input_tokens, output_tokens,
                accumulated_total_tokens, accumulated_input_tokens, accumulated_output_tokens,
                schedule_id, workflow_json, user_workflow_values_json,
-               provider_name, model_config_json, diverged_from, branch_point_msg_uid
+               provider_name, model_config_json, diverged_from, branch_point_msg_uid, parent_session_id
         FROM sessions
         WHERE id = ?
     "#,
@@ -3130,6 +3157,7 @@ impl SessionStorage {
         add_update!(builder.model_config, "model_config_json");
         add_update!(builder.diverged_from, "diverged_from");
         add_update!(builder.branch_point_msg_uid, "branch_point_msg_uid");
+        add_update!(builder.parent_session_id, "parent_session_id");
 
         if updates.is_empty() {
             return Ok(());
@@ -3209,6 +3237,9 @@ impl SessionStorage {
         }
         if let Some(branch_point_msg_uid) = builder.branch_point_msg_uid {
             q = q.bind(branch_point_msg_uid);
+        }
+        if let Some(parent_session_id) = builder.parent_session_id {
+            q = q.bind(parent_session_id);
         }
 
         let pool = self.pool().await?;
@@ -4062,7 +4093,7 @@ impl SessionStorage {
                    s.total_tokens, s.input_tokens, s.output_tokens,
                    s.accumulated_total_tokens, s.accumulated_input_tokens, s.accumulated_output_tokens,
                    s.schedule_id, s.workflow_json, s.user_workflow_values_json,
-                   s.provider_name, s.model_config_json, s.diverged_from,
+                   s.provider_name, s.model_config_json, s.diverged_from, s.parent_session_id,
                    COUNT(m.id) as message_count
             FROM sessions s
             INNER JOIN messages m ON s.id = m.session_id
@@ -9108,6 +9139,7 @@ mod tests {
             model_config: None,
             diverged_from: None,
             branch_point_msg_uid: None,
+            parent_session_id: None,
         };
         SessionStorage::import_legacy_session(pool, &legacy)
             .await
@@ -10750,6 +10782,42 @@ mod tests {
             "LIKE fallback still finds the message"
         );
         assert_eq!(res.results[0].session_id, "s1");
+    }
+
+    #[tokio::test]
+    async fn parent_session_id_round_trips() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let manager = SessionManager::new(temp.path().to_path_buf());
+
+        let parent = manager
+            .create_session(
+                temp.path().to_path_buf(),
+                "parent".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        let child = manager
+            .create_session(
+                temp.path().to_path_buf(),
+                "child".to_string(),
+                SessionType::SubAgent,
+            )
+            .await
+            .unwrap();
+
+        // Normally-created sessions carry no parent.
+        assert_eq!(child.parent_session_id, None);
+
+        manager
+            .update(&child.id)
+            .parent_session_id(Some(parent.id.clone()))
+            .apply()
+            .await
+            .unwrap();
+
+        let reread = manager.get_session(&child.id, false).await.unwrap();
+        assert_eq!(reread.parent_session_id, Some(parent.id));
     }
 }
 

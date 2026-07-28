@@ -1586,6 +1586,12 @@ export type Session = {
     model_config?: ModelConfig | null;
     name: string;
     output_tokens?: number | null;
+    /**
+     * Id of the parent session that spawned this one as a subagent (BR-71).
+     * Sibling of `diverged_from` (branch lineage): `diverged_from` records a
+     * user fork; this records a delegation. `None` for non-subagent sessions.
+     */
+    parent_session_id?: string | null;
     provider_name?: string | null;
     schedule_id?: string | null;
     session_type?: SessionType;
