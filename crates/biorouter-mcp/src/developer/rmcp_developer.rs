@@ -2637,6 +2637,38 @@ mod tests {
         );
     }
 
+    /// #64, the sibling site: `get_info` runs during `initialize` and carried
+    /// the same `expect()`. It now reads the one base helper, so it reports the
+    /// missing directory rather than panicking — and, because that helper is the
+    /// jail base, the instructions can no longer advertise a directory the tools
+    /// would refuse to work in.
+    #[test]
+    #[serial]
+    fn get_info_reports_a_missing_working_directory() {
+        let saved = std::env::var("BIOROUTER_WORKING_DIR").ok();
+        std::env::remove_var("BIOROUTER_WORKING_DIR");
+
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
+        drop(tmp);
+        let server = DeveloperServer::new().with_working_dir(dir.clone());
+
+        let instructions = server.get_info().instructions.unwrap_or_default();
+
+        if let Some(v) = saved {
+            std::env::set_var("BIOROUTER_WORKING_DIR", v);
+        }
+
+        assert!(
+            instructions.contains("current directory: unavailable"),
+            "the instructions must say the working directory is gone, got: {instructions}"
+        );
+        assert!(
+            !instructions.contains(&dir.display().to_string()),
+            "and must not advertise the directory that no longer exists"
+        );
+    }
+
     /// Creates a test transport using in-memory streams instead of stdio
     /// This avoids the hanging issues caused by multiple tests competing for stdio
     fn create_test_transport() -> impl rmcp::transport::IntoTransport<
