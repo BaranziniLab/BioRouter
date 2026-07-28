@@ -337,7 +337,25 @@ The chat is the product, and these are the changes least safe to describe withou
 | Lists | `my-2` / `mb-3` | 4px grid, `gap` on the list rather than margins per item |
 | Links | accent ink, 40% underline | unchanged — already correct |
 | Chain-of-thought | a native `<details>`, browser triangle, 4px radius, no motion | the standard 32px disclosure row, chevron **visible at rest** |
-| Tool-call line | a line, not a card (D-17) | unchanged, except the chevron is visible at rest |
+| Tool-call line | a line, not a card (D-17) | unchanged, plus a visible chevron and a legible state (below) |
+
+**One left edge.** Every row in the transcript — a thinking disclosure, a tool call, a paragraph — starts at the same x. The hover wash still breathes 8px wider than the text, achieved with a negative margin against an equal padding, so a row can feel roomy without its content stepping right. The shipped app already does this; it is written down because it is easy to break by giving one row type its own padding.
+
+#### Tool state — running versus finished
+
+A tool row currently conveys its state almost entirely through its opening verb ("Working on / Ran / Problem with / Stopped") plus an 8px dot on the glyph, and `interrupted` is drawn with the same grey dot as `pending` — so *Stopped* and *never started* are indistinguishable. Five states, one row:
+
+| State | Glyph | Motion | Right slot |
+|---|---|---|---|
+| Queued | tool glyph, 55% opacity | none | — |
+| **Running** | tool glyph + breathing ring | a 2px accent hairline sweeps the row, 1.5s | elapsed, counting, after 2s |
+| Done | check in `--text-success` | none | elapsed + result summary |
+| Failed | alert in `--text-danger`, 5% danger wash on the row | none | elapsed |
+| Stopped | its own glyph, muted — never the pending dot | none | elapsed |
+
+The rules that make it work: **movement always means "still going"**, because the sweep is the only animated thing in the transcript; the sweep **stops and fades over `--dur-fast` rather than finishing its loop**, so motion ending *is* the completion signal; a finished row is completely still, which is what makes a running one findable three rows away; the live detail replaces itself rather than appending, so the row never grows; and under `prefers-reduced-motion` the sweep becomes a static 40%-opacity bar — the state still reads, the movement goes.
+
+This is additive. The collapsed row, the verb grammar and the humanised summaries are all kept; what it adds is a state the eye can find without reading.
 
 #### A long paste — collapsed by default (not built yet)
 
