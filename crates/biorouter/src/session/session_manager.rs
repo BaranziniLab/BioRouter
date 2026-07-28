@@ -174,6 +174,12 @@ pub struct SessionSummary {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub message_count: i64,
+    /// BR-71: `sub_agent` rows are grouped under this parent in History.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_session_id: Option<String>,
+    /// BR-71: the session's type as stored (`user`/`scheduled`/`sub_agent`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_type: Option<String>,
 }
 
 /// One turn's token usage, applied additively and atomically in SQL.
@@ -1414,12 +1420,22 @@ impl SessionManager {
         self.storage.list_sessions().await
     }
 
+    /// Lightweight session rows for the History sidebar.
+    ///
+    /// `include_subagents` widens the type filter to `sub_agent` rows (BR-71);
+    /// `include_empty` swaps the `messages` INNER JOIN for a LEFT JOIN so a
+    /// session that has not yet recorded a message is still listed (used by
+    /// `workspace_list`, never by the sidebar).
     pub async fn list_session_summaries(
         &self,
         limit: u32,
         offset: u32,
+        include_subagents: bool,
+        include_empty: bool,
     ) -> Result<Vec<SessionSummary>> {
-        self.storage.list_session_summaries(limit, offset).await
+        self.storage
+            .list_session_summaries(limit, offset, include_subagents, include_empty)
+            .await
     }
 
     pub async fn list_sessions_by_types(&self, types: &[SessionType]) -> Result<Vec<Session>> {
@@ -4118,29 +4134,54 @@ impl SessionStorage {
             .await
     }
 
-    async fn list_session_summaries(&self, limit: u32, offset: u32) -> Result<Vec<SessionSummary>> {
-        let pool = self.pool().await?;
-        sqlx::query_as::<_, SessionSummary>(
+    async fn list_session_summaries(
+        &self,
+        limit: u32,
+        offset: u32,
+        include_subagents: bool,
+        include_empty: bool,
+    ) -> Result<Vec<SessionSummary>> {
+        let type_filter = if include_subagents {
+            "('user', 'scheduled', 'sub_agent')"
+        } else {
+            "('user', 'scheduled')"
+        };
+        // The sidebar deliberately hides message-less sessions (an INNER JOIN on
+        // `messages`) so "Untitled chat" placeholders never appear in History.
+        // `workspace_list` needs the opposite: a session `workspace_open` just
+        // created has no message yet and must still be listable. `COUNT(m.id)`
+        // ignores NULLs, so the LEFT JOIN still yields 0.
+        let join = if include_empty {
+            "LEFT JOIN messages m ON s.id = m.session_id"
+        } else {
+            "INNER JOIN messages m ON s.id = m.session_id"
+        };
+        let query = format!(
             r#"
             SELECT s.id,
                    s.working_dir,
                    COALESCE(NULLIF(s.name, ''), NULLIF(s.description, ''), 'Untitled chat') AS name,
                    s.created_at,
                    s.updated_at,
+                   s.parent_session_id,
+                   s.session_type,
                    COUNT(m.id) AS message_count
             FROM sessions s
-            INNER JOIN messages m ON s.id = m.session_id
-            WHERE s.session_type IN ('user', 'scheduled')
+            {join}
+            WHERE s.session_type IN {type_filter}
             GROUP BY s.id
             ORDER BY s.updated_at DESC, s.id ASC
             LIMIT ? OFFSET ?
-            "#,
-        )
-        .bind(i64::from(limit))
-        .bind(i64::from(offset))
-        .fetch_all(pool)
-        .await
-        .map_err(Into::into)
+            "#
+        );
+
+        let pool = self.pool().await?;
+        sqlx::query_as::<_, SessionSummary>(&query)
+            .bind(i64::from(limit))
+            .bind(i64::from(offset))
+            .fetch_all(pool)
+            .await
+            .map_err(Into::into)
     }
 
     async fn delete_session(&self, session_id: &str) -> Result<()> {
@@ -6489,8 +6530,8 @@ mod tests {
             seed_session_with_messages(&sm, 3).await,
         ];
 
-        let first_page = sm.list_session_summaries(2, 0).await.unwrap();
-        let second_page = sm.list_session_summaries(2, 2).await.unwrap();
+        let first_page = sm.list_session_summaries(2, 0, false, false).await.unwrap();
+        let second_page = sm.list_session_summaries(2, 2, false, false).await.unwrap();
 
         assert_eq!(first_page.len(), 2);
         assert_eq!(second_page.len(), 1);
@@ -6507,6 +6548,67 @@ mod tests {
             .map(|session| session.id)
             .collect();
         assert_eq!(actual_ids, expected_ids);
+    }
+
+    #[tokio::test]
+    async fn list_session_summaries_hides_subagents_unless_asked() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let manager = SessionManager::new(temp.path().to_path_buf());
+        let parent = manager
+            .create_session(temp.path().to_path_buf(), "p".to_string(), SessionType::User)
+            .await
+            .unwrap();
+        let child = manager
+            .create_session(
+                temp.path().to_path_buf(),
+                "c".to_string(),
+                SessionType::SubAgent,
+            )
+            .await
+            .unwrap();
+        manager
+            .update(&child.id)
+            .parent_session_id(Some(parent.id.clone()))
+            .apply()
+            .await
+            .unwrap();
+
+        // `list_session_summaries` INNER JOINs `messages` and `create_session`
+        // writes NO message, so a freshly created session is invisible to this
+        // query until it has one. The pre-existing paging test uses
+        // `seed_session_with_messages` for exactly this reason. Without these
+        // two writes both assertions below fail against an empty row set.
+        for s in [&parent, &child] {
+            manager
+                .add_message(
+                    &s.id,
+                    &crate::conversation::message::Message::user().with_text("x"),
+                )
+                .await
+                .unwrap();
+        }
+
+        // (limit, offset, include_subagents, include_empty) — see Step 3.
+        let default_list = manager
+            .list_session_summaries(50, 0, false, false)
+            .await
+            .unwrap();
+        assert!(default_list.iter().any(|s| s.id == parent.id));
+        assert!(!default_list.iter().any(|s| s.id == child.id));
+
+        let full = manager
+            .list_session_summaries(50, 0, true, false)
+            .await
+            .unwrap();
+        let child_row = full
+            .iter()
+            .find(|s| s.id == child.id)
+            .expect("child listed");
+        assert_eq!(
+            child_row.parent_session_id.as_deref(),
+            Some(parent.id.as_str())
+        );
+        assert_eq!(child_row.session_type.as_deref(), Some("sub_agent"));
     }
 
     #[tokio::test]

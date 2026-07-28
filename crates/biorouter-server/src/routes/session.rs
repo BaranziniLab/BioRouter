@@ -18,7 +18,7 @@ use biorouter::session::extension_data::ExtensionState;
 use biorouter::session::session_manager::{
     ActivityWindow, ModelUsageRow, SessionInsights, TruncateOutcome,
 };
-use biorouter::session::{EnabledExtensionsState, Session, SessionSummary};
+use biorouter::session::{EnabledExtensionsState, Session, SessionSummary, SessionType};
 use biorouter::workflow::Workflow;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -42,6 +42,17 @@ pub struct SidebarSessionsQuery {
     limit: u32,
     #[serde(default)]
     offset: u32,
+    /// BR-71: include `sub_agent` sessions (grouped under `parent_session_id`).
+    #[serde(default)]
+    include_subagents: bool,
+}
+
+/// Query parameters for `GET /sessions`.
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+pub struct ListSessionsQuery {
+    /// BR-71: include `sub_agent` sessions (grouped under `parent_session_id`).
+    #[serde(default)]
+    pub include_subagents: bool,
 }
 
 fn default_sidebar_session_limit() -> u32 {
@@ -227,6 +238,9 @@ fn is_valid_session_id(id: &str) -> bool {
 #[utoipa::path(
     get,
     path = "/sessions",
+    params(
+        ("include_subagents" = Option<bool>, Query, description = "Include sub_agent sessions (grouped under parent_session_id); default false")
+    ),
     responses(
         (status = 200, description = "List of available sessions retrieved successfully", body = SessionListResponse),
         (status = 401, description = "Unauthorized - Invalid or missing API key"),
@@ -239,10 +253,20 @@ fn is_valid_session_id(id: &str) -> bool {
 )]
 async fn list_sessions(
     State(state): State<Arc<AppState>>,
+    Query(query): Query<ListSessionsQuery>,
 ) -> Result<Json<SessionListResponse>, StatusCode> {
+    let types: &[SessionType] = if query.include_subagents {
+        &[
+            SessionType::User,
+            SessionType::Scheduled,
+            SessionType::SubAgent,
+        ]
+    } else {
+        &[SessionType::User, SessionType::Scheduled]
+    };
     let sessions = state
         .session_manager()
-        .list_sessions()
+        .list_sessions_by_types(types)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
@@ -254,7 +278,8 @@ async fn list_sessions(
     path = "/sessions/sidebar",
     params(
         ("limit" = Option<u32>, Query, description = "Session summaries per page (default 10, clamped to 1..=50)"),
-        ("offset" = Option<u32>, Query, description = "Number of session summaries to skip")
+        ("offset" = Option<u32>, Query, description = "Number of session summaries to skip"),
+        ("include_subagents" = Option<bool>, Query, description = "Include sub_agent sessions (grouped under parent_session_id); default false")
     ),
     responses(
         (status = 200, description = "Paginated lightweight session summaries for the sidebar", body = SidebarSessionListResponse),
@@ -273,7 +298,12 @@ async fn list_sidebar_sessions(
     let limit = query.limit.clamp(1, MAX_SIDEBAR_SESSION_LIMIT);
     let mut sessions = state
         .session_manager()
-        .list_session_summaries(limit.saturating_add(1), query.offset)
+        .list_session_summaries(
+            limit.saturating_add(1),
+            query.offset,
+            query.include_subagents,
+            false,
+        )
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
