@@ -3640,6 +3640,22 @@ impl SessionStorage {
     /// `externalize` mints nothing, the existing handle joins `live_blob_uids`,
     /// and the sweep spares it. Hydrating and re-externalizing would mint a
     /// duplicate blob row for the same payload.
+    ///
+    /// That makes this function's output STORAGE-shaped, not caller-shaped.
+    /// The conversation handed back to a live turn is hydrated separately, on
+    /// the returned copy only — see
+    /// [`SessionStorage::hydrate_recovered_tail`]. Do not "simplify" by
+    /// hydrating here.
+    ///
+    /// Parsing `content_json` into `Vec<MessageContent>` only for the insert
+    /// loop to re-serialize it looks like a removable round-trip. It is not:
+    /// the parsed form is what `referenced_uids` reads for blob liveness, what
+    /// `index_message_fts` extracts search text from, and what the returned
+    /// `Conversation` is made of. Only the *re-serialization* is avoidable, and
+    /// only by threading a parallel raw-JSON array through the insert loop and
+    /// branching its `content_json` binding — which costs more clarity than the
+    /// microseconds it saves on a rare path, and gives up the guarantee that
+    /// every row this rewrite writes went through one serializer.
     async fn scan_foreign_tail(
         tx: &mut sqlx::Transaction<'_, Sqlite>,
         session_id: &str,
@@ -3788,6 +3804,17 @@ impl SessionStorage {
 
     /// Whole-history rewrite that carries over anything appended since `basis`.
     /// See [`SessionManager::replace_conversation_preserving_tail`].
+    ///
+    /// PRECONDITION: `basis` and `known` must come from ONE
+    /// [`Self::snapshot_for_rewrite`] of `session_id`. In particular a
+    /// default/synthetic `(0, 0)` basis paired with a NON-EMPTY session is
+    /// incoherent and is not refused: the prefix check trivially passes
+    /// (`COUNT(*) WHERE id <= 0` is 0), every existing row scans as foreign,
+    /// and the whole real history is appended AFTER `replacement` — i.e. the
+    /// replacement is silently prepended to the transcript rather than
+    /// replacing it. No in-tree caller constructs a basis by hand (all three
+    /// compaction sites thread one through from `snapshot_for_rewrite`); keep
+    /// it that way.
     pub async fn replace_conversation_preserving_tail(
         &self,
         session_id: &str,
@@ -3796,18 +3823,67 @@ impl SessionStorage {
         known: &Conversation,
     ) -> Result<(ReplaceOutcome, Conversation)> {
         let pool = self.pool().await?;
-        let (outcome, stored) = Self::replace_conversation_inner(
+        let (outcome, mut stored) = Self::replace_conversation_inner(
             pool,
             session_id,
             replacement,
             RewriteGuard::PreserveTail { basis, known },
         )
         .await?;
-        if outcome.stored() {
-            Ok((outcome, Conversation::new_unvalidated(stored)))
-        } else {
-            Ok((outcome, replacement.clone()))
+        if !outcome.stored() {
+            return Ok((outcome, replacement.clone()));
         }
+        if let ReplaceOutcome::ReplacedPreservingTail { preserved } = outcome {
+            self.hydrate_recovered_tail(session_id, &mut stored, preserved)
+                .await?;
+        }
+        Ok((outcome, Conversation::new_unvalidated(stored)))
+    }
+
+    /// Splice the payloads back into the tail `scan_foreign_tail` recovered,
+    /// on the copy handed BACK to the caller only.
+    ///
+    /// The rewrite deliberately re-inserts a recovered row's `content_json`
+    /// verbatim, stubs and all, so `externalize` mints no duplicate blob (see
+    /// `scan_foreign_tail`). But those same `Message` objects are what the
+    /// caller adopts as live turn state — `conversation = stored` and
+    /// `AgentEvent::HistoryReplaced(stored)` in the agent loop. Handing back the
+    /// stub means the rest of the turn reasons over a ~1 KB placeholder where a
+    /// concurrently-appended oversized tool response should be, and the UI
+    /// transcript renders the placeholder too, until a reload heals it.
+    ///
+    /// So: hydrate the returned copy, never the one written. Mirrors
+    /// `get_conversation_inner` exactly, including honouring
+    /// `BIOROUTER_SESSION_BLOB_LAZY_LOAD` — under lazy load a stub is what a
+    /// re-read would give, and the model pulls the payload back with
+    /// `platform__read_session_blob`.
+    async fn hydrate_recovered_tail(
+        &self,
+        session_id: &str,
+        merged: &mut [Message],
+        preserved: usize,
+    ) -> Result<()> {
+        if preserved == 0 || message_blobs::lazy_load_enabled() {
+            return Ok(());
+        }
+        // The recovered rows are exactly the suffix: `merged` is
+        // `replacement ++ recovered`, built in that order by the rewrite.
+        let start = merged.len().saturating_sub(preserved);
+        let tail = &mut merged[start..];
+        // A session that never externalized anything pays one uid scan and no
+        // query at all — the same "only when a row actually carries a stub"
+        // discipline as the read path.
+        if !tail
+            .iter()
+            .any(|m| !message_blobs::referenced_uids(&m.content).is_empty())
+        {
+            return Ok(());
+        }
+        let blobs = self.load_blobs(session_id).await?;
+        for message in tail.iter_mut() {
+            message_blobs::hydrate(&mut message.content, &blobs);
+        }
+        Ok(())
     }
 
     /// [`ConversationRevision`] of one session, read from the pool.
@@ -5060,6 +5136,62 @@ mod blob_tests {
             payload,
             "the recovered message must still hydrate to its full payload"
         );
+    }
+
+    /// The conversation RETURNED by a tail-preserving rewrite is what the live
+    /// turn adopts (`conversation = stored`) and what the UI is told to render
+    /// (`HistoryReplaced`). It must therefore carry the recovered tail's real
+    /// payload, not the storage-shaped stub the rewrite (correctly) re-inserted.
+    ///
+    /// Before this was fixed the returned tail was ~1 KB of stub while the row
+    /// on disk held the full 130 KB — so the model spent the rest of the turn
+    /// reasoning over a placeholder, and only a reload healed the transcript.
+    #[tokio::test]
+    async fn preserving_tail_returns_a_hydrated_conversation_to_the_caller() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let id = session(&sm).await;
+
+        sm.add_message(&id, &Message::user().with_text("prompt"))
+            .await
+            .unwrap();
+        let (snap, basis) = sm.snapshot_for_rewrite(&id).await.unwrap();
+        let known = snap.conversation.unwrap();
+
+        // A concurrent writer appends an oversized tool result while the
+        // summarizer runs; it is externalized on the way in.
+        let payload = huge("recovered");
+        sm.add_message(&id, &tool_response_message("call_1", payload.clone()))
+            .await
+            .unwrap();
+
+        let replacement = Conversation::new_unvalidated(vec![Message::user().with_text("summary")]);
+        let (outcome, returned) = sm
+            .replace_conversation_preserving_tail(&id, &replacement, basis, &known)
+            .await
+            .unwrap();
+        assert_eq!(
+            outcome,
+            ReplaceOutcome::ReplacedPreservingTail { preserved: 1 }
+        );
+
+        assert_eq!(returned.messages().len(), 2);
+        assert_eq!(
+            response_text(&returned, 1),
+            payload,
+            "the RETURNED tail must carry the payload, not the stub"
+        );
+
+        // And hydrating the returned copy must not have disturbed storage: one
+        // blob, still exactly one, and a re-read still agrees.
+        assert_eq!(blob_count(&sm, &id).await, 1);
+        let reread = sm
+            .get_session(&id, true)
+            .await
+            .unwrap()
+            .conversation
+            .unwrap();
+        assert_eq!(response_text(&reread, 1), payload);
     }
 
     /// A rewrite of a *lazily* loaded conversation carries stubs, not payloads.
