@@ -2044,3 +2044,59 @@ async fn set_only_edit_keeps_the_primary_until_it_leaves_the_set() {
         "hiding the primary promotes to the first remaining member"
     );
 }
+
+/// The same promotion, from the chat the user is actually in. Most chats never
+/// pin their own primary — they display the machine-wide one — so this is the
+/// common path, and it used to be the broken one: the repair only fired for a
+/// chat with its own stored pin, so hiding "this chat's primary" left the
+/// pinning chat on beta and the inheriting chat with nothing.
+#[tokio::test]
+async fn hiding_the_primary_promotes_for_an_inheriting_chat_too() {
+    let (_d, app) = build_test_router();
+    create_bases(&app, &["alpha", "beta", "gamma"]).await;
+
+    // The machine default every chat starts out displaying.
+    post_active(&app, serde_json::json!({"primary_kb": "alpha"})).await;
+    // One chat pins it explicitly; the other never says anything.
+    post_active(
+        &app,
+        serde_json::json!({"primary_kb": "alpha", "session_id": "pinned"}),
+    )
+    .await;
+    assert_eq!(
+        get_active(&app, Some("inherits")).await["primary_kb"].as_str(),
+        Some("alpha"),
+        "the two chats show the user the same primary"
+    );
+
+    let pinned = post_active(
+        &app,
+        serde_json::json!({"hidden_kbs": ["alpha"], "session_id": "pinned"}),
+    )
+    .await;
+    let inherits = post_active(
+        &app,
+        serde_json::json!({"hidden_kbs": ["alpha"], "session_id": "inherits"}),
+    )
+    .await;
+    assert_eq!(
+        inherits.1["primary_kb"], pinned.1["primary_kb"],
+        "one gesture, one answer — whether the chat pinned its primary or inherited it"
+    );
+    assert_eq!(inherits.1["primary_kb"].as_str(), Some("beta"));
+    assert_eq!(
+        get_active(&app, Some("inherits")).await["primary_kb"].as_str(),
+        Some("beta"),
+        "the promotion is persisted for the chat, not re-derived per response"
+    );
+
+    // The machine pointer is untouched, so every other chat still follows it.
+    assert_eq!(
+        get_active(&app, None).await["primary_kb"].as_str(),
+        Some("alpha")
+    );
+    assert_eq!(
+        get_active(&app, Some("bystander")).await["primary_kb"].as_str(),
+        Some("alpha")
+    );
+}

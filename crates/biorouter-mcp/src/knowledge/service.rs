@@ -1307,15 +1307,26 @@ impl KnowledgeService {
     /// The tri-state that governs this scope, after the session → machine
     /// fallback but before the set-membership filter.
     fn stored_primary_unlocked(&self, session_id: Option<&str>) -> anyhow::Result<StoredPrimary> {
-        let machine_path = crate::knowledge::paths::primary_kb_path(self.root());
-        match session_id {
-            Some(session_id) => {
-                match self.read_primary_file_unlocked(&self.primary_session_path(session_id))? {
-                    StoredPrimary::Inherit => self.read_primary_file_unlocked(&machine_path),
-                    owned => Ok(owned),
-                }
-            }
-            None => self.read_primary_file_unlocked(&machine_path),
+        let own = self.read_primary_file_unlocked(&self.primary_path_for_scope(session_id))?;
+        self.effective_primary_unlocked(&own, session_id)
+    }
+
+    /// Resolve a scope's *own* tri-state into the one it is actually **using**:
+    /// only an absent session file inherits, and only a session has anything
+    /// above it to inherit from.
+    ///
+    /// Split out of [`Self::stored_primary_unlocked`] because the repair path
+    /// needs both halves — it decides against the pointer the scope is using
+    /// and writes the answer to the file the scope owns.
+    fn effective_primary_unlocked(
+        &self,
+        own: &StoredPrimary,
+        session_id: Option<&str>,
+    ) -> anyhow::Result<StoredPrimary> {
+        match (own, session_id) {
+            (StoredPrimary::Inherit, Some(_)) => self
+                .read_primary_file_unlocked(&crate::knowledge::paths::primary_kb_path(self.root())),
+            _ => Ok(own.clone()),
         }
     }
 
@@ -1357,10 +1368,27 @@ impl KnowledgeService {
     /// What a scope's primary file must become for "the primary is a member of
     /// the set" to hold against `next_ids`. `None` = leave the file alone.
     ///
-    /// Pure, so the decision can be taken before anything is written. It never
-    /// invents a pointer: the two "no id" states are returned untouched, and a
-    /// pointer at a base that no longer exists is *cleared* rather than
-    /// promoted.
+    /// Pure, so the decision can be taken before anything is written.
+    ///
+    /// It reasons about `effective` — the pointer the scope is actually
+    /// *using*, which for a session that has pinned nothing is the machine-wide
+    /// one it inherits — and writes the answer to `own`, the file that scope
+    /// owns. Reasoning about `own` alone made the common case wrong: most chats
+    /// never pin their own primary, so hiding the base the chat displayed as
+    /// *its* primary repaired nothing and the chat came back with no primary at
+    /// all, while a chat that had pinned that very same base came back promoted.
+    /// Same visible starting state, same click, two answers. Writing the
+    /// promotion at session scope is what keeps the machine pointer intact for
+    /// every other chat — a session that has moved off the default is exactly
+    /// what a session-scope pin represents.
+    ///
+    /// It still never *invents* a pointer, which is a different thing from
+    /// moving one the user already had:
+    ///
+    /// - the two "no id" states are returned untouched, so a scope that has
+    ///   never chosen a primary is never handed one;
+    /// - a pointer at a base that no longer **exists** is *cleared*, never
+    ///   promoted — deletion clears, hiding promotes.
     ///
     /// That last distinction is the whole reason `installed` is a parameter.
     /// Promotion is only defensible for a base the user genuinely ranked and
@@ -1369,18 +1397,26 @@ impl KnowledgeService {
     /// `.active-kb`) is a dangling reference: it correctly reads as no-primary,
     /// and treating it as "hidden" meant the next unrelated hide silently
     /// promoted a base nobody had chosen, which is precisely the invention the
-    /// merged model forbids.
+    /// merged model forbids. A session that merely *inherits* a dangling
+    /// pointer has nothing of its own to clear, so it is left alone: writing the
+    /// blank override anyway would silently sever that chat from the machine
+    /// default over a pointer it never chose, and both spellings read the same
+    /// way today — no primary.
     fn repair_decision(
         own: &StoredPrimary,
+        effective: &StoredPrimary,
         installed: &[String],
         next_ids: &[String],
         session_id: Option<&str>,
     ) -> Option<StoredPrimary> {
-        let StoredPrimary::Pinned(stored) = own else {
+        let StoredPrimary::Pinned(stored) = effective else {
             return None;
         };
         if !installed.iter().any(|id| id == stored) {
-            return Some(no_primary_for(session_id));
+            return match own {
+                StoredPrimary::Inherit => None,
+                _ => Some(no_primary_for(session_id)),
+            };
         }
         if next_ids.iter().any(|id| id == stored) {
             return None;
@@ -1397,6 +1433,7 @@ impl KnowledgeService {
     fn repair_primary_unlocked(&self, session_id: Option<&str>) -> anyhow::Result<Option<String>> {
         let path = self.primary_path_for_scope(session_id);
         let own = self.read_primary_file_unlocked(&path)?;
+        let effective = self.effective_primary_unlocked(&own, session_id)?;
         let installed = self.installed_kb_ids_unlocked()?;
         let hidden = self.hidden_for_scope_unlocked(session_id)?;
         let next_ids = installed
@@ -1404,11 +1441,13 @@ impl KnowledgeService {
             .filter(|id| !hidden.contains(id))
             .cloned()
             .collect::<Vec<_>>();
-        if let Some(value) = Self::repair_decision(&own, &installed, &next_ids, session_id) {
+        if let Some(value) =
+            Self::repair_decision(&own, &effective, &installed, &next_ids, session_id)
+        {
             self.write_primary_file_unlocked(&path, &value)?;
             return Ok(value.pinned().map(ToOwned::to_owned));
         }
-        Ok(own.pinned().map(ToOwned::to_owned))
+        Ok(effective.pinned().map(ToOwned::to_owned))
     }
 
     /// Read-only snapshot of a scope's selection.
@@ -1580,12 +1619,17 @@ impl KnowledgeService {
 
         let primary_path = self.primary_path_for_scope(session_id);
         let own_primary = self.read_primary_file_unlocked(&primary_path)?;
+        let effective_primary = self.effective_primary_unlocked(&own_primary, session_id)?;
 
         // `None` means "leave this scope's primary file exactly as it is".
         let next_primary: Option<StoredPrimary> = match primary {
-            PrimaryUpdate::Unchanged => {
-                Self::repair_decision(&own_primary, &installed, &next_ids, session_id)
-            }
+            PrimaryUpdate::Unchanged => Self::repair_decision(
+                &own_primary,
+                &effective_primary,
+                &installed,
+                &next_ids,
+                session_id,
+            ),
             PrimaryUpdate::Clear => Some(no_primary_for(session_id)),
             PrimaryUpdate::Inherit => Some(StoredPrimary::Inherit),
             PrimaryUpdate::Set(id) => {
@@ -1627,11 +1671,15 @@ impl KnowledgeService {
         // Report what we just decided rather than re-reading it: the values are
         // known-coherent here, and a re-read would be three more chances to
         // observe someone else's half-finished edit.
-        let effective = match next_primary.unwrap_or(own_primary) {
-            StoredPrimary::Inherit if session_id.is_some() => self.read_primary_file_unlocked(
-                &crate::knowledge::paths::primary_kb_path(self.root()),
-            )?,
-            settled => settled,
+        let effective = match next_primary {
+            // Just written: this scope now defers upwards, so what governs is
+            // the machine pointer and not the one it held a moment ago.
+            Some(StoredPrimary::Inherit) if session_id.is_some() => self
+                .read_primary_file_unlocked(&crate::knowledge::paths::primary_kb_path(
+                    self.root(),
+                ))?,
+            Some(settled) => settled,
+            None => effective_primary,
         };
         let primary_kb = effective
             .pinned()
@@ -2470,9 +2518,82 @@ mod tests {
         );
         svc.set_hidden_for_session("session-b", &["gamma".to_string()])?;
         assert_eq!(
-            svc.primary_for_session(Some("session-b"))?,
-            None,
-            "a machine default this session hides must not leak in as its primary"
+            svc.primary_for_session(Some("session-b"))?.as_deref(),
+            Some("alpha"),
+            "hiding the inherited primary promotes inside the session, exactly as \
+             hiding a pinned one does"
+        );
+        assert_eq!(
+            svc.get_primary_persisted()?.as_deref(),
+            Some("gamma"),
+            "and it leaves the machine pointer alone for every other chat"
+        );
+        Ok(())
+    }
+
+    /// Two chats, one gesture, one answer. A chat that *pinned* alpha and a
+    /// chat that *inherited* alpha from the machine pointer show the user the
+    /// same thing — "alpha is this chat's primary" — so hiding alpha must land
+    /// them in the same place.
+    ///
+    /// It did not. `repair_decision` returned early unless the scope's own file
+    /// was `Pinned`, and an inheriting session's own file is `Inherit`, so the
+    /// repair never saw the pointer it was meant to repair: the pinning chat
+    /// came back promoted to beta, the inheriting chat came back with no
+    /// primary at all. The inheriting case is the common one — most chats never
+    /// pin their own primary — so the divergence was the default experience.
+    #[test]
+    fn hiding_the_primary_promotes_whether_the_chat_pinned_or_inherited_it() -> anyhow::Result<()> {
+        let tmp = tempfile::TempDir::new()?;
+        let svc = KnowledgeService::new(tmp.path().to_path_buf());
+        for id in ["alpha", "beta", "gamma"] {
+            svc.create_base(id, id, None)?;
+        }
+        svc.set_primary_persisted(Some("alpha"))?;
+        svc.set_primary_for_session("pinned", Some("alpha"))?;
+
+        // Identical starting state as far as the user can tell.
+        assert_eq!(
+            svc.primary_for_session(Some("pinned"))?.as_deref(),
+            Some("alpha")
+        );
+        assert_eq!(
+            svc.primary_for_session(Some("inherits"))?.as_deref(),
+            Some("alpha")
+        );
+
+        let pinned = svc.hide_kb(Some("pinned"), "alpha", PrimaryUpdate::Unchanged)?;
+        let inherits = svc.hide_kb(Some("inherits"), "alpha", PrimaryUpdate::Unchanged)?;
+        assert_eq!(
+            pinned.primary_kb, inherits.primary_kb,
+            "the same gesture from the same visible state must give the same primary"
+        );
+        assert_eq!(inherits.primary_kb.as_deref(), Some("beta"));
+
+        // The promotion is persisted as this chat's *own* pin: it has diverged
+        // from the machine default, which is what a session pin means.
+        assert_eq!(
+            svc.get_primary_for_session("inherits")?.as_deref(),
+            Some("beta"),
+            "the promotion must be persisted, not re-derived on every read"
+        );
+        // And the machine pointer is untouched, so every other chat still
+        // follows it.
+        assert_eq!(svc.get_primary_persisted()?.as_deref(), Some("alpha"));
+        assert_eq!(
+            svc.primary_for_session(Some("bystander"))?.as_deref(),
+            Some("alpha")
+        );
+
+        // Hiding the rest leaves the chat with no primary — and it stays gone
+        // rather than re-inheriting the machine default it has moved away from,
+        // and is never re-invented when a base comes back into the set.
+        let emptied = svc.set_visible_kbs(Some("inherits"), &[], PrimaryUpdate::Unchanged)?;
+        assert_eq!(emptied.primary_kb, None);
+        let restored = svc.include_kb(Some("inherits"), "gamma", PrimaryUpdate::Unchanged)?;
+        assert_eq!(
+            restored.primary_kb, None,
+            "a chat that has been left with no primary must not be handed one"
         );
         Ok(())
     }
