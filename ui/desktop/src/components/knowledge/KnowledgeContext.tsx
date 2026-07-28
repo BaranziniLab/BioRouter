@@ -83,6 +83,9 @@ export function KnowledgeProvider({
   sessionId?: string | null;
 }) {
   const [bases, setBases] = useState<Manifest[]>([]);
+  // Has a base list ever arrived? Until it has, `bases` being empty says nothing
+  // about which bases exist, so nothing may be pruned against it.
+  const [basesLoaded, setBasesLoaded] = useState(false);
   const [loading, setLoading] = useState(true);
   const storageKey = useMemo(() => storageKeyForSession(sessionId), [sessionId]);
   const hiddenStorageKey = useMemo(() => hiddenStorageKeyForSession(sessionId), [sessionId]);
@@ -258,9 +261,12 @@ export function KnowledgeProvider({
     try {
       const res = await listBases({ throwOnError: true });
       setBases(res.data || []);
+      setBasesLoaded(true);
     } catch (err) {
+      // Keep the list we already had. A failed request is not a list of zero
+      // bases, and emptying it here is what let the prune below read "every
+      // stored id names a base that no longer exists".
       console.error('listBases failed:', err);
-      setBases([]);
     } finally {
       setLoading(false);
     }
@@ -288,12 +294,17 @@ export function KnowledgeProvider({
   }, [primaryKbId, bases, setPrimaryKbId]);
 
   useEffect(() => {
+    // Drop ids naming bases that no longer exist — but only once a list has
+    // actually arrived. Pruning against the empty list this starts out with
+    // would persist an empty set on every mount, erasing the session's working
+    // set before the daemon had said a word about which bases exist.
+    if (!basesLoaded) return;
     const validIds = new Set(bases.map((base) => base.id));
     const nextHiddenKbIds = hiddenKbIds.filter((id) => validIds.has(id));
     if (nextHiddenKbIds.length !== hiddenKbIds.length) {
       setHiddenKbIds(nextHiddenKbIds);
     }
-  }, [bases, hiddenKbIds, setHiddenKbIds]);
+  }, [basesLoaded, bases, hiddenKbIds, setHiddenKbIds]);
 
   useEffect(() => {
     const local = localStorage.getItem(storageKey);

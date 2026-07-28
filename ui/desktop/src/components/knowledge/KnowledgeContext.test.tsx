@@ -40,12 +40,16 @@ function base(id: string) {
 }
 
 function Probe() {
-  const { primaryKbId, hiddenKbIds, visibleBases, setPrimaryKbId, toggleKbHidden } = useKnowledge();
+  const { primaryKbId, hiddenKbIds, visibleBases, setPrimaryKbId, toggleKbHidden, refresh } =
+    useKnowledge();
   return (
     <div>
       <span data-testid="primary">{primaryKbId ?? 'none'}</span>
       <span data-testid="hidden">{hiddenKbIds.join(',') || 'none'}</span>
       <span data-testid="visible">{visibleBases.map((b) => b.id).join(',') || 'none'}</span>
+      <button type="button" onClick={() => void refresh()}>
+        refresh
+      </button>
       <button type="button" onClick={() => setPrimaryKbId('beta')}>
         make beta primary
       </button>
@@ -262,5 +266,33 @@ describe('KnowledgeContext', () => {
     );
     expect(screen.getByTestId('primary').textContent).toBe('alpha');
     expect(screen.getByTestId('hidden').textContent).toBe('none');
+  });
+
+  // The prune drops ids naming bases that no longer exist. An empty base list is
+  // not evidence that nothing exists — on mount it only means the list has not
+  // arrived — and pruning against it writes the session's whole set away.
+  it('does not prune the set before the base list has arrived', async () => {
+    mocks.listBases.mockReturnValue(new Promise(() => {}));
+    renderProvider();
+    await waitFor(() => expect(mocks.getActive).toHaveBeenCalled());
+    await settle(() => {});
+
+    expect(mocks.setActive).not.toHaveBeenCalled();
+    expect(screen.getByTestId('hidden').textContent).toBe('beta');
+  });
+
+  // Same, by the other door: a list request that fails is not a list of zero
+  // bases. Emptying the list on failure hands the prune the same false evidence.
+  it('keeps the base list when a refresh fails', async () => {
+    renderProvider();
+    await waitFor(() => expect(screen.getByTestId('visible').textContent).toBe('alpha'));
+
+    mocks.listBases.mockRejectedValue(new Error('daemon down'));
+    await userEvent.click(screen.getByRole('button', { name: 'refresh' }));
+    await settle(() => {});
+
+    expect(screen.getByTestId('visible').textContent).toBe('alpha');
+    expect(screen.getByTestId('hidden').textContent).toBe('beta');
+    expect(mocks.setActive).not.toHaveBeenCalled();
   });
 });
