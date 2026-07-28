@@ -314,6 +314,26 @@ struct OverflowCompactionSwap {
     usages: Vec<crate::providers::base::ProviderUsage>,
 }
 
+impl OverflowCompactionSwap {
+    /// The compaction could not be persisted — the store errored, the basis
+    /// could not be re-read, or the retry was declined too.
+    ///
+    /// The turn adopts `compacted` in memory anyway so it can still finish, and
+    /// `usages` rides along so already-billed spend is still reported. Every
+    /// give-up path in this file goes through here, so none of them can
+    /// accidentally drop the spend on its way out.
+    fn unpersisted(
+        compacted: Conversation,
+        usages: Vec<crate::providers::base::ProviderUsage>,
+    ) -> Self {
+        Self {
+            stored: None,
+            compacted,
+            usages,
+        }
+    }
+}
+
 /// BR-56: normalize the transcript before every provider call, not just once per
 /// reply. Kill switch: `BIOROUTER_NORMALIZE_EACH_TURN=false`.
 fn normalize_each_turn() -> bool {
@@ -1923,11 +1943,7 @@ impl Agent {
                     "Could not persist the overflow-recovery compaction for session \
                      {session_id} ({e}); continuing in memory with the stored history intact"
                 );
-                return Ok(OverflowCompactionSwap {
-                    stored: None,
-                    compacted,
-                    usages,
-                });
+                return Ok(OverflowCompactionSwap::unpersisted(compacted, usages));
             }
         };
         if outcome.stored() {
@@ -1942,13 +1958,32 @@ impl Agent {
             "Overflow-recovery compaction for session {session_id} was declined ({outcome:?}); \
              recomputing against the current history and retrying once"
         );
-        // Same rule as above — `compacted` is a perfectly usable in-memory
-        // result and `usages` is already-charged spend, so every failure below
-        // degrades to "could not persist" rather than propagating.
-        //
-        // The retry re-seeds `basis` before recomputing: the decline means the
-        // stored history moved, so the pair the retry writes against has to be
-        // re-read as a PAIR, never a fresh revision against the stale view.
+        self.retry_overflow_compaction(session_id, basis, recovery, compacted, usages)
+            .await
+    }
+
+    /// The second and last attempt behind [`Self::swap_overflow_compaction`],
+    /// reached only when the first was DECLINED (the stored history moved, so
+    /// there is a fresh basis to recompute against).
+    ///
+    /// Same rule as the first attempt — `compacted` is a perfectly usable
+    /// in-memory result and `usages` is already-charged spend, so every failure
+    /// here degrades to [`OverflowCompactionSwap::unpersisted`] rather than
+    /// propagating.
+    ///
+    /// It re-seeds `basis` BEFORE recomputing: the decline means the stored
+    /// history moved, so the pair the retry writes against has to be re-read as
+    /// a PAIR, never a fresh revision against the stale view.
+    async fn retry_overflow_compaction(
+        &self,
+        session_id: &str,
+        basis: &mut RewriteBasis,
+        recovery: crate::context_mgmt::OverflowRecovery,
+        compacted: Conversation,
+        mut usages: Vec<crate::providers::base::ProviderUsage>,
+    ) -> Result<OverflowCompactionSwap> {
+        let session_manager = self.config.session_manager.clone();
+
         match RewriteBasis::read(&session_manager, session_id).await {
             Ok(fresh) => *basis = fresh,
             Err(e) => {
@@ -1956,11 +1991,7 @@ impl Agent {
                     "Could not re-read session {session_id} to retry the overflow-recovery \
                      compaction ({e}); continuing in memory with the first compaction"
                 );
-                return Ok(OverflowCompactionSwap {
-                    stored: None,
-                    compacted,
-                    usages,
-                });
+                return Ok(OverflowCompactionSwap::unpersisted(compacted, usages));
             }
         }
         let fresh = basis.known().clone();
@@ -1971,11 +2002,7 @@ impl Agent {
                     "No provider to retry the overflow-recovery compaction for session \
                      {session_id} ({e}); continuing in memory with the first compaction"
                 );
-                return Ok(OverflowCompactionSwap {
-                    stored: None,
-                    compacted,
-                    usages,
-                });
+                return Ok(OverflowCompactionSwap::unpersisted(compacted, usages));
             }
         };
         let (recompacted, retry_usage) =
@@ -1986,11 +2013,7 @@ impl Agent {
                         "Retry summarization for session {session_id} failed ({e}); continuing \
                          in memory with the first compaction"
                     );
-                    return Ok(OverflowCompactionSwap {
-                        stored: None,
-                        compacted,
-                        usages,
-                    });
+                    return Ok(OverflowCompactionSwap::unpersisted(compacted, usages));
                 }
             };
         usages.push(retry_usage);
@@ -2016,11 +2039,7 @@ impl Agent {
                     "Could not persist the retried overflow-recovery compaction for session \
                      {session_id} ({e}); continuing in memory with the stored history intact"
                 );
-                Ok(OverflowCompactionSwap {
-                    stored: None,
-                    compacted: recompacted,
-                    usages,
-                })
+                Ok(OverflowCompactionSwap::unpersisted(recompacted, usages))
             }
         }
     }
