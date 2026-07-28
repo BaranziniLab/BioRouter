@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
     primaryKbId: 'kb-1' as string | null,
     primaryKb: { id: 'kb-1', name: 'Notes', default_model: null as ModelRef | null },
     loading: false,
+    basesError: null as string | null,
     refresh: vi.fn(),
     triggerGraphRefresh: vi.fn(),
   },
@@ -105,6 +106,7 @@ beforeEach(() => {
   mocks.knowledge.primaryKbId = 'kb-1';
   mocks.knowledge.primaryKb = { id: 'kb-1', name: 'Notes', default_model: null };
   mocks.knowledge.loading = false;
+  mocks.knowledge.basesError = null;
   mocks.modelAndProvider.currentProvider = null;
   mocks.modelAndProvider.currentModel = null;
   mocks.modelAndProvider.modelConfigStatus = 'ready';
@@ -299,5 +301,97 @@ describe('IngestPanel model freshness', () => {
     expect(mocks.checkModel).toHaveBeenCalledWith({
       body: { model: { provider: 'versa_azure', model: 'gpt-5.5-2026-04-24' } },
     });
+  });
+});
+
+// A primary id whose manifest never arrived. The list read is over — so
+// "loading" no longer covers it — but `bases` does not describe the daemon's
+// state, and this base's own `default_model` outranks the app's. Falling
+// through to the app config here names, and dispatches, a model the base may
+// override, at an id nothing has confirmed still exists.
+describe('IngestPanel with an unresolvable knowledge base', () => {
+  function unresolvedPrimary(basesError: string | null) {
+    mocks.knowledge.primaryKbId = 'kb-1';
+    mocks.knowledge.primaryKb = null as unknown as (typeof mocks.knowledge)['primaryKb'];
+    mocks.knowledge.loading = false;
+    mocks.knowledge.basesError = basesError;
+    mocks.modelAndProvider.currentProvider = 'versa_azure';
+    mocks.modelAndProvider.currentModel = 'gpt-5.5-2026-04-24';
+  }
+
+  it('does not fall back to the app model once the base list read has failed', async () => {
+    unresolvedPrimary('daemon down');
+
+    render(<IngestPanel />);
+
+    const trigger = await screen.findByTestId('knowledge-model-picker-trigger');
+    // Not "settles on nothing eventually" — the app's model must never be
+    // named for a base whose own default is unknown, on any commit.
+    expect(modelLabels()).not.toContain('versa_azure / gpt-5.5-2026-04-24');
+    expect(trigger.textContent).not.toContain('versa_azure');
+    expect(trigger).toHaveTextContent(/unavailable/i);
+  });
+
+  it('never dispatches a digest at an id whose base it could not resolve', async () => {
+    unresolvedPrimary('daemon down');
+
+    render(<IngestPanel />);
+    stageSomeText();
+
+    const digest = screen.getByTestId('knowledge-digest-button');
+    expect(digest).toHaveAttribute('aria-disabled', 'true');
+    await act(async () => {
+      fireEvent.click(digest);
+    });
+
+    expect(mocks.checkModel).not.toHaveBeenCalled();
+    expect(mocks.start).not.toHaveBeenCalled();
+    expect(mocks.startMultipart).not.toHaveBeenCalled();
+  });
+
+  it('offers a retry instead of blaming the user’s configuration', async () => {
+    unresolvedPrimary('daemon down');
+
+    render(<IngestPanel />);
+    await screen.findByTestId('knowledge-model-picker-trigger');
+
+    // "No model is configured" is advice about a setup that is not broken.
+    expect(screen.queryByText(/no model is configured/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/could not load your knowledge bases/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('knowledge-ingest-retry'));
+    expect(mocks.knowledge.refresh).toHaveBeenCalled();
+  });
+
+  it('says the base is unavailable when the list arrived without it', async () => {
+    unresolvedPrimary(null);
+
+    render(<IngestPanel />);
+    await screen.findByTestId('knowledge-model-picker-trigger');
+
+    expect(screen.getByText(/knowledge base is unavailable/i)).toBeInTheDocument();
+    expect(screen.queryByText(/no model is configured/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/could not load your knowledge bases/i)).not.toBeInTheDocument();
+  });
+
+  it('does not offer to save a default model to a base it cannot address', async () => {
+    unresolvedPrimary('daemon down');
+
+    render(<IngestPanel />);
+
+    expect(await screen.findByTestId('knowledge-model-picker-trigger')).toBeDisabled();
+  });
+
+  it('still tells a genuinely unconfigured setup apart from an unavailable base', async () => {
+    // Base resolved, nothing else configured: this *is* the user's setup, and
+    // the unavailable wording must not swallow the one honest verdict.
+    mocks.modelAndProvider.currentProvider = null;
+    mocks.modelAndProvider.currentModel = null;
+
+    render(<IngestPanel />);
+    await screen.findByTestId('knowledge-model-picker-trigger');
+
+    expect(screen.getByText(/no model is configured/i)).toBeInTheDocument();
+    expect(screen.queryByTestId('knowledge-ingest-retry')).not.toBeInTheDocument();
   });
 });

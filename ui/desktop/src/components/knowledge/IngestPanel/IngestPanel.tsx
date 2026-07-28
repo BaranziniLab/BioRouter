@@ -28,6 +28,7 @@ export function IngestPanel() {
     primaryKbId,
     primaryKb,
     loading: basesLoading,
+    basesError,
     refresh,
     triggerGraphRefresh,
   } = useKnowledge();
@@ -59,31 +60,56 @@ export function IngestPanel() {
     null
   );
 
+  // Everything a digest is aimed at comes off the manifest we actually hold,
+  // never off the stored pointer — an id with nothing behind it is precisely
+  // the stale-or-deleted id a digest must not be dispatched to.
+  const dispatchKbId = primaryKb?.id || null;
+
+  // A primary id with no manifest behind it. The base's own `default_model`
+  // outranks the app config, so until the manifest arrives there is nothing to
+  // resolve *from*: falling through to the app's would name, and dispatch, a
+  // model this base may override — at an id nothing has confirmed still exists.
+  // This is a property of the manifest, not of the request that would have
+  // carried it: a list read that FAILED ends with `basesLoading` false and the
+  // stored id retained, which is exactly when a stale id is most likely.
+  const primaryKbUnresolved = Boolean(primaryKbId) && !dispatchKbId;
+  // Three states, three different things to tell the user, and only the last is
+  // a verdict on their setup: still arriving; arrived and this base is not in
+  // it (or the read failed); everything resolved and nothing is configured.
+  const kbPending = primaryKbUnresolved && basesLoading;
+  const kbUnavailable = primaryKbUnresolved && !basesLoading;
+
   // The base's own default wins; otherwise fall back to the app's configured
   // model. Never a hardcoded vendor — an unresolvable model leaves this null and
   // digestion stays disabled (issue #46).
-  //
-  // Because the base's default outranks the app config, a base whose manifest
-  // has not arrived yet has no resolvable model at all: falling through to the
-  // app's would name, and dispatch to, a model that base overrides.
-  const kbDefaultUnknown = Boolean(primaryKbId) && !primaryKb && basesLoading;
-  const resolvedModel = kbDefaultUnknown
+  const resolvedModel = primaryKbUnresolved
     ? null
     : resolveIngestModel(primaryKb?.default_model, currentProvider, currentModel);
+  // An override belongs to the base it was picked for, and an unresolved base
+  // has no `dispatchKbId` to match — so it cannot revive a model here either.
   const model =
-    modelOverride && modelOverride.kbId === primaryKbId ? modelOverride.model : resolvedModel;
+    modelOverride && modelOverride.kbId === dispatchKbId ? modelOverride.model : resolvedModel;
 
   // Whether a null `model` means "nothing is configured" or only "not known
   // yet". Both inputs to the resolver arrive asynchronously, and reporting the
   // first while either is in flight told users with a perfectly good
   // configuration to go and set one up.
-  const modelPending = !model && (kbDefaultUnknown || modelConfigStatus === 'loading');
+  const modelPending = !model && (kbPending || modelConfigStatus === 'loading');
+  const modelValueState = model
+    ? 'resolved'
+    : kbUnavailable
+      ? 'unavailable'
+      : modelPending
+        ? 'loading'
+        : 'resolved';
 
   async function onDefaultModelChange(next: ModelRef) {
-    if (!primaryKbId) {
+    // Saving a default to an id whose manifest never arrived writes to a base
+    // we have not seen — the same unresolved target the digest guard refuses.
+    if (!dispatchKbId) {
       return;
     }
-    const kbId = primaryKbId;
+    const kbId = dispatchKbId;
     const previousOverride = modelOverride;
     setModelOverride({ kbId, model: next });
 
@@ -209,7 +235,7 @@ export function IngestPanel() {
   }
 
   async function onDigest() {
-    if (!primaryKbId || !model || digestState !== 'idle') return;
+    if (!dispatchKbId || !model || digestState !== 'idle') return;
     stopRequestedRef.current = false;
     setDigestState('checking');
     const queue = [...items];
@@ -251,7 +277,7 @@ export function IngestPanel() {
             formData.append('model', model.model);
 
             const result = await stream.startMultipart(
-              `/knowledge/bases/${primaryKbId}/ingest`,
+              `/knowledge/bases/${dispatchKbId}/ingest`,
               formData
             );
 
@@ -283,7 +309,7 @@ export function IngestPanel() {
         if (item.kind === 'path') {
           update(item.id, { status: 'ingesting', error: undefined });
           try {
-            const result = await stream.start(`/knowledge/bases/${primaryKbId}/ingest`, {
+            const result = await stream.start(`/knowledge/bases/${dispatchKbId}/ingest`, {
               source: { path: item.path },
               model,
             });
@@ -323,7 +349,7 @@ export function IngestPanel() {
 
           // POST /knowledge/bases/:id/ingest — SSE streamed digestion.
           // The macro materialises the raw source and then runs the sub-agent.
-          const result = await stream.start(`/knowledge/bases/${primaryKbId}/ingest`, {
+          const result = await stream.start(`/knowledge/bases/${dispatchKbId}/ingest`, {
             source: sourceBody,
             model,
           });
@@ -370,16 +396,23 @@ export function IngestPanel() {
   // K-04: the one primary action stays full-opacity even with nothing staged,
   // guarded by a cursor + helper line, so it never trains the eye to ignore a
   // permanently half-lit button.
-  const nothingToDigest = !primaryKbId || !model || items.length === 0;
+  const nothingToDigest = !dispatchKbId || !model || items.length === 0;
   const digestBlockedReason = !primaryKbId
     ? 'Choose or create a primary knowledge base above to enable digestion.'
-    : modelPending
-      ? 'Checking which model this knowledge base digests with…'
-      : !model
-        ? 'No model is configured. Choose a model above to enable digestion.'
-        : items.length === 0
-          ? 'Stage a file to digest.'
-          : null;
+    : // Ahead of every model verdict: with no manifest, "which model" has no
+      // answer yet, and "no model is configured" would send the user to fix a
+      // configuration that is not what is broken.
+      kbUnavailable
+      ? basesError
+        ? 'Could not load your knowledge bases, so digestion is on hold.'
+        : 'This knowledge base is unavailable, so digestion is on hold.'
+      : modelPending
+        ? 'Checking which model this knowledge base digests with…'
+        : !model
+          ? 'No model is configured. Choose a model above to enable digestion.'
+          : items.length === 0
+            ? 'Stage a file to digest.'
+            : null;
   const digestLabel =
     digestState === 'checking'
       ? 'Checking model…'
@@ -431,9 +464,9 @@ export function IngestPanel() {
       <div className="flex flex-col gap-2 border-t border-border-subtle p-4">
         <IngestModelPicker
           value={model}
-          loading={modelPending}
+          valueState={modelValueState}
           onChange={(next) => void onDefaultModelChange(next)}
-          disabled={!primaryKbId || savingDefaultModel}
+          disabled={!dispatchKbId || savingDefaultModel}
           saving={savingDefaultModel}
         />
         <Button
@@ -450,7 +483,27 @@ export function IngestPanel() {
           {digestLabel}
         </Button>
         {digestBlockedReason && !busy && (
-          <p className="text-center text-[11px] text-text-muted">{digestBlockedReason}</p>
+          <p
+            className="text-center text-[11px] text-text-muted"
+            // Only where it explains the line being shown — hung on an
+            // unrelated reason it is a tooltip about someone else's problem.
+            title={(kbUnavailable && basesError) || undefined}
+          >
+            {digestBlockedReason}
+            {/* The one state the user can act on from here: re-read the list.
+                Offered for a missing base too — a base that came back, or one
+                the prune has since cleared, both settle this line. */}
+            {kbUnavailable && (
+              <button
+                data-testid="knowledge-ingest-retry"
+                type="button"
+                onClick={() => void refresh()}
+                className="ml-1 underline underline-offset-2 transition-colors duration-[var(--motion-fast)] hover:text-text-default"
+              >
+                Retry
+              </button>
+            )}
+          </p>
         )}
       </div>
     </div>

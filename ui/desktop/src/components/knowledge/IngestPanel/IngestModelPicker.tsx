@@ -21,11 +21,12 @@ interface Props {
   /** `null` when no model could be resolved — the trigger says so instead of naming a vendor. */
   value: ModelRef | null;
   /**
-   * A `null` `value` that is still being resolved. "No model configured" is a
-   * verdict on the user's setup, so it must not be shown while the answer is
-   * still in flight.
+   * Why `value` is null, when it is. "No model configured" is a verdict on the
+   * user's setup, and it is wrong in both of the other states: `loading` is an
+   * answer still in flight, `unavailable` is a knowledge base whose manifest
+   * could not be read — nothing there is the user's configuration to fix.
    */
-  loading?: boolean;
+  valueState?: 'resolved' | 'loading' | 'unavailable';
   onChange: (v: ModelRef) => void;
   disabled?: boolean;
   saving?: boolean;
@@ -37,7 +38,7 @@ interface ProviderModelsSection extends OrderedProviderGroup {
 
 export function IngestModelPicker({
   value,
-  loading = false,
+  valueState = 'resolved',
   onChange,
   disabled = false,
   saving = false,
@@ -113,13 +114,15 @@ export function IngestModelPicker({
         : null,
     [sections, value]
   );
-  const triggerLabel = !value
-    ? loading
-      ? 'Loading model…'
-      : 'No model configured'
-    : selectedProvider
+  const triggerLabel = value
+    ? selectedProvider
       ? `${currentProviderLabel} / ${value.model}`
-      : `${value.provider} / ${value.model}`;
+      : `${value.provider} / ${value.model}`
+    : valueState === 'loading'
+      ? 'Loading model…'
+      : valueState === 'unavailable'
+        ? 'Knowledge base unavailable'
+        : 'No model configured';
 
   function renderProvider(provider: ProviderDetails, section: ProviderModelsSection) {
     const models = section.modelsByProvider[provider.name] ?? [];
