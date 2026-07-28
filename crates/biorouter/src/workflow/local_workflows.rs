@@ -10,6 +10,22 @@ use crate::workflow::WORKFLOW_FILE_EXTENSIONS;
 
 const BIOROUTER_WORKFLOW_PATH_ENV_VAR: &str = "BIOROUTER_WORKFLOW_PATH";
 
+/// Opts the working directory *root* back into the workflow listing.
+///
+/// Listing used to enumerate it unconditionally, which meant opening and
+/// parsing every top-level `.json`/`.yaml` in whatever directory a session
+/// happened to point at — another tool's config, a lockfile, a large data
+/// export. Setting this to `1`/`true`/`yes`/`on` restores that behaviour for
+/// anyone who keeps workflows loose in a project root.
+///
+/// This is deliberately *not* the same as putting `.` on
+/// [`BIOROUTER_WORKFLOW_PATH_ENV_VAR`]: an entry on the workflow path is a
+/// declared workflow library, so anything in it that fails to load is reported
+/// as a broken workflow. The working directory root stays
+/// [`ScanOrigin::WorkingDirectory`] however it is reached, so unrelated files
+/// in it are still skipped quietly.
+const BIOROUTER_WORKFLOW_SCAN_WORKING_DIR_ENV_VAR: &str = "BIOROUTER_WORKFLOW_SCAN_WORKING_DIR";
+
 pub fn get_workflow_library_dir(is_global: bool) -> PathBuf {
     if is_global {
         Paths::config_dir().join("workflows")
@@ -30,29 +46,82 @@ enum ScanOrigin {
     /// Intent is established by *location*, so any `.yaml`/`.json` in it that
     /// does not load is a broken workflow and worth an error.
     WorkflowLibrary,
-    /// The process working directory, scanned opportunistically. It belongs to
-    /// the user, not to Biorouter: nearly every `.yaml`/`.json` in it — package
-    /// manifests, lockfiles, CI config — has nothing to do with workflows, so
-    /// intent has to be established from the *content* instead.
+    /// The process working directory root. It belongs to the user, not to
+    /// Biorouter: nearly every `.yaml`/`.json` in it — package manifests,
+    /// lockfiles, CI config — has nothing to do with workflows, so intent has
+    /// to be established from the *content* instead.
+    ///
+    /// Listing no longer enumerates it by default (that is what made an
+    /// unrelated tool's config get parsed at all); it is reached by a named
+    /// lookup, which opens only the file the caller named, or by opting in with
+    /// [`BIOROUTER_WORKFLOW_SCAN_WORKING_DIR_ENV_VAR`]. Opting in says "look
+    /// here too", not "everything here is mine", so the content test still
+    /// applies.
     WorkingDirectory,
 }
 
-fn local_workflow_dirs() -> Vec<(PathBuf, ScanOrigin)> {
+/// Whether an on/off environment variable is set to something affirmative.
+fn env_flag_is_on(value: Option<&str>) -> bool {
+    matches!(
+        value.map(|v| v.trim().to_ascii_lowercase()).as_deref(),
+        Some("1" | "true" | "yes" | "on")
+    )
+}
+
+/// The directories *enumerated* when listing every available workflow.
+///
+/// Only directories that exist to hold workflows, unless the user has opted the
+/// working directory root back in. Everything here gets `read_dir`'d and every
+/// `.yaml`/`.json` in it opened, so membership is a licence to read the user's
+/// files and is granted by intent — a dedicated location, an entry on
+/// `BIOROUTER_WORKFLOW_PATH`, or an explicit opt-in — never by proximity.
+fn local_workflow_scan_dirs() -> Vec<(PathBuf, ScanOrigin)> {
     collect_workflow_dirs(
         env::var(BIOROUTER_WORKFLOW_PATH_ENV_VAR).ok().as_deref(),
         get_workflow_library_dir(true),
         get_workflow_library_dir(false),
+        env_flag_is_on(
+            env::var(BIOROUTER_WORKFLOW_SCAN_WORKING_DIR_ENV_VAR)
+                .ok()
+                .as_deref(),
+        ),
     )
 }
 
-/// The env-free half of [`local_workflow_dirs`], so the origin tagging can be
-/// tested without mutating process state.
+/// The directories searched when the caller *names* a workflow.
+///
+/// This always includes the working directory, and that is not the behaviour
+/// the listing scan gives up. A named lookup opens exactly one path per
+/// directory — `<dir>/<name>.yaml` and `<dir>/<name>.json` — so it never reads
+/// a file the caller did not ask for by name, and `biorouter run --recipe
+/// my-workflow` keeps finding `./my-workflow.yaml`. The CLI's `/workflow`
+/// command still saves there by default, so this is the compatibility that
+/// matters.
+fn local_workflow_lookup_dirs() -> Vec<PathBuf> {
+    collect_workflow_dirs(
+        env::var(BIOROUTER_WORKFLOW_PATH_ENV_VAR).ok().as_deref(),
+        get_workflow_library_dir(true),
+        get_workflow_library_dir(false),
+        true,
+    )
+    .into_iter()
+    .map(|(dir, _origin)| dir)
+    .collect()
+}
+
+/// The env-free core of [`local_workflow_scan_dirs`] and
+/// [`local_workflow_lookup_dirs`], so the origin tagging and the
+/// working-directory decision can be tested without mutating process state.
 fn collect_workflow_dirs(
     workflow_path_env: Option<&str>,
     global_library: PathBuf,
     project_library: PathBuf,
+    include_working_directory: bool,
 ) -> Vec<(PathBuf, ScanOrigin)> {
-    let mut local_dirs = vec![(PathBuf::from("."), ScanOrigin::WorkingDirectory)];
+    let mut local_dirs = Vec::new();
+    if include_working_directory {
+        local_dirs.push((PathBuf::from("."), ScanOrigin::WorkingDirectory));
+    }
 
     if let Some(workflow_path_env) = workflow_path_env {
         let path_separator = if cfg!(windows) { ';' } else { ':' };
@@ -93,8 +162,8 @@ pub fn load_local_workflow_file(workflow_name: &str) -> Result<WorkflowFile> {
         ));
     }
 
-    let search_dirs = local_workflow_dirs();
-    for (dir, _origin) in &search_dirs {
+    let search_dirs = local_workflow_lookup_dirs();
+    for dir in &search_dirs {
         if let Ok(result) = load_workflow_file_from_dir(dir, workflow_name) {
             return Ok(result);
         }
@@ -102,7 +171,7 @@ pub fn load_local_workflow_file(workflow_name: &str) -> Result<WorkflowFile> {
 
     let search_dirs_str = search_dirs
         .iter()
-        .map(|(dir, _origin)| dir.display().to_string())
+        .map(|dir| dir.display().to_string())
         .collect::<Vec<_>>()
         .join(":");
     Err(anyhow!(
@@ -115,7 +184,7 @@ pub fn load_local_workflow_file(workflow_name: &str) -> Result<WorkflowFile> {
 
 pub fn list_local_workflows() -> Result<Vec<(PathBuf, Workflow)>> {
     let mut workflows = Vec::new();
-    for (dir, origin) in local_workflow_dirs() {
+    for (dir, origin) in local_workflow_scan_dirs() {
         if let Ok(dir_workflows) = scan_directory_for_workflows(&dir, origin) {
             workflows.extend(dir_workflows);
         }
@@ -430,7 +499,7 @@ mod tests {
 
         // The project library resolves to the working directory itself, so the
         // same path arrives twice with two different origins.
-        let dirs = collect_workflow_dirs(None, library.path().to_path_buf(), cwd.clone());
+        let dirs = collect_workflow_dirs(None, library.path().to_path_buf(), cwd.clone(), true);
 
         let origins: Vec<ScanOrigin> = dirs
             .iter()
@@ -445,7 +514,7 @@ mod tests {
     }
 
     #[test]
-    fn only_the_working_directory_is_scanned_as_an_arbitrary_directory() {
+    fn no_workflow_library_is_ever_treated_as_an_arbitrary_directory() {
         let global = tempfile::tempdir().unwrap();
         let project = tempfile::tempdir().unwrap();
         let on_path = tempfile::tempdir().unwrap();
@@ -455,6 +524,7 @@ mod tests {
             Some(&path_env),
             global.path().to_path_buf(),
             project.path().to_path_buf(),
+            true,
         );
 
         let ambient: Vec<&PathBuf> = dirs
@@ -474,6 +544,94 @@ mod tests {
                 canonical.display()
             );
         }
+    }
+
+    #[test]
+    fn listing_does_not_enumerate_the_working_directory_by_default() {
+        let global = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let cwd = env::current_dir().unwrap().canonicalize().unwrap();
+
+        let dirs = collect_workflow_dirs(
+            None,
+            global.path().to_path_buf(),
+            project.path().to_path_buf(),
+            false,
+        );
+
+        assert!(
+            !dirs.iter().any(|(dir, _)| *dir == cwd),
+            "the working directory root is the user's, not a workflow library; \
+             listing must not open every .json/.yaml in it. dirs were {dirs:?}"
+        );
+    }
+
+    /// The guard on the real listing entry point: the previous test proves the
+    /// core can leave the working directory out, this one proves the caller
+    /// asks it to. No environment is set here, which is exactly the point —
+    /// unset must mean "off".
+    #[test]
+    fn the_default_listing_scan_touches_only_workflow_libraries() {
+        let dirs = local_workflow_scan_dirs();
+
+        assert!(
+            dirs.iter()
+                .all(|(_, origin)| *origin == ScanOrigin::WorkflowLibrary),
+            "with no opt-in, every directory listing reads must be one that \
+             exists to hold workflows; dirs were {dirs:?}"
+        );
+    }
+
+    /// The compatibility this fix keeps. `/workflow` in the CLI still saves to
+    /// `./workflow.yaml` by default, and a named lookup opens exactly the file
+    /// it was asked for, so narrowing the *scan* must not stop `--recipe
+    /// my-workflow` from finding a workflow sitting in the working directory.
+    #[test]
+    fn a_named_lookup_still_searches_the_working_directory() {
+        let cwd = env::current_dir().unwrap().canonicalize().unwrap();
+
+        assert!(
+            local_workflow_lookup_dirs().contains(&cwd),
+            "a named lookup reads only <dir>/<name>.yaml, so the working \
+             directory costs nothing there and is where the CLI saves; \
+             dirs were {:?}",
+            local_workflow_lookup_dirs()
+        );
+    }
+
+    #[test]
+    fn the_working_directory_can_be_scanned_by_explicit_opt_in() {
+        let global = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let cwd = env::current_dir().unwrap().canonicalize().unwrap();
+
+        let dirs = collect_workflow_dirs(
+            None,
+            global.path().to_path_buf(),
+            project.path().to_path_buf(),
+            true,
+        );
+
+        // Opting in must not also promote the directory to a workflow library:
+        // that would resurrect the error log about everyone else's files.
+        assert!(
+            dirs.contains(&(cwd.clone(), ScanOrigin::WorkingDirectory)),
+            "the opt-in restores the scan while keeping the lenient origin; \
+             dirs were {dirs:?}"
+        );
+    }
+
+    #[test]
+    fn only_affirmative_values_turn_the_working_directory_scan_on() {
+        for on in ["1", "true", "TRUE", "yes", "on", " true "] {
+            assert!(env_flag_is_on(Some(on)), "{on:?} should opt in");
+        }
+        // `BIOROUTER_WORKFLOW_SCAN_WORKING_DIR=0` in a shell profile must mean
+        // off, not "set, therefore on".
+        for off in ["0", "false", "no", "off", "", "  "] {
+            assert!(!env_flag_is_on(Some(off)), "{off:?} should not opt in");
+        }
+        assert!(!env_flag_is_on(None));
     }
 
     #[test]

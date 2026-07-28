@@ -220,6 +220,7 @@ These variables control workflow discovery and management.
 | Variable | Purpose | Values | Default |
 |----------|---------|---------|---------|
 | `BIOROUTER_WORKFLOW_PATH` | Additional directories to search for workflows | Colon-separated paths on Unix, semicolon-separated on Windows | None |
+| `BIOROUTER_WORKFLOW_SCAN_WORKING_DIR` | Also list workflows found loose in the working directory root. Off by default: listing would otherwise open every top-level `.yaml`/`.json` in whatever directory a session points at. Running a workflow *by name* searches the working directory either way | `"1"`, `"true"`, `"yes"`, `"on"` to enable | false |
 | `BIOROUTER_WORKFLOW_GITHUB_REPO` | GitHub repository to search for workflows | Format: `"owner/repo"` (e.g. `"BaranziniLab/biorouter-workflows"`) | None |
 | `BIOROUTER_WORKFLOW_RETRY_TIMEOUT_SECONDS` | Global timeout for workflow success check commands | Integer (seconds) | Workflow-specific default |
 | `BIOROUTER_WORKFLOW_ON_FAILURE_TIMEOUT_SECONDS` | Global timeout for workflow `on_failure` commands | Integer (seconds) | Workflow-specific default |
