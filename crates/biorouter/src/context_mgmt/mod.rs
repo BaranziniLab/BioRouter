@@ -283,7 +283,7 @@ fn drop_oldest_agent_visible_turns(messages: &[Message]) -> Vec<Message> {
         .map(|(idx, msg)| {
             if idx < cut && msg.is_agent_visible() && !pin_is_eligible(msg) {
                 msg.clone()
-                    .with_metadata(msg.metadata.with_agent_invisible())
+                    .with_metadata(msg.metadata.clone().with_agent_invisible())
             } else {
                 msg.clone()
             }
@@ -350,7 +350,7 @@ async fn compact_messages_with_window(
             if pins.is_honoured(idx) {
                 final_messages.push(msg.clone());
             } else {
-                let updated_metadata = msg.metadata.with_agent_invisible();
+                let updated_metadata = msg.metadata.clone().with_agent_invisible();
                 final_messages.push(msg.clone().with_metadata(updated_metadata));
             }
         }
@@ -488,7 +488,7 @@ async fn compact_messages_with_window(
                 // This is the most recent message and we're preserving it by adding a fresh copy
                 MessageMetadata::invisible()
             } else {
-                msg.metadata.with_agent_invisible()
+                msg.metadata.clone().with_agent_invisible()
             };
         let updated_msg = msg.clone().with_metadata(updated_metadata);
         final_messages.push(updated_msg);
