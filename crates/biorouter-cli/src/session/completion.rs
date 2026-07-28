@@ -154,6 +154,33 @@ fn enabled_extension_reference_names() -> Vec<String> {
     names
 }
 
+/// The `/ext:` token to insert for an extension named `name` (issue #60, CLI
+/// half — the desktop's `MentionPopover.extensionMarkerName` is the same rule).
+///
+/// The agent extracts inline markers with `extract_inline_refs`, which splits
+/// the message on whitespace, so `/ext:Chat Recall` reaches the resolver as
+/// `Chat`, matches nothing, and comes back as "not a known built-in extension" —
+/// indistinguishable from a policy refusal. The names offered here are
+/// `ExtensionConfig::name()`, which for a Platform extension is its DISPLAY
+/// string, and two of those contain a space (`Extension Manager`, `Chat
+/// Recall`); `COMPACT_EXTENSION_CANONICALS` rescues the first and nothing
+/// rescues the second. A user extension may have a space too.
+///
+/// Dropping *only* the whitespace is lossless: an extension's canonical key is
+/// `config::extensions::name_to_key`, i.e. the name with whitespace removed and
+/// lowercased, and both `/ext:` consumers already discard it —
+/// `resolve_bundled_extension` compares a reference stripped to alphanumerics,
+/// and `Agent::extension_resource_context` falls back to `normalize`, which
+/// strips whitespace. So `/ext:ChatRecall` resolves to exactly what an
+/// untruncated `/ext:Chat Recall` would have.
+///
+/// Nothing else may be collapsed: `normalize` KEEPS `_` and `-`, so they are
+/// part of a user extension's key and mapping them away would stop
+/// `/ext:my_tool` matching the extension enabled under `my_tool`.
+pub(super) fn extension_marker_name(name: &str) -> String {
+    name.split_whitespace().collect()
+}
+
 fn is_subsequence(needle: &str, haystack: &str) -> bool {
     if needle.is_empty() {
         return true;
@@ -220,8 +247,11 @@ where
             "extension",
         ) {
             pairs.push(Pair {
+                // The display keeps the space — that is the name the user is
+                // picking. Only the inserted token is compacted; see
+                // `extension_marker_name`.
                 display: format!("/{key}"),
-                replacement: format!("/ext:{name} "),
+                replacement: format!("/ext:{} ", extension_marker_name(&name)),
             });
         }
     }
@@ -533,6 +563,85 @@ mod tests {
         );
         assert_eq!(pairs.len(), 1);
         assert_eq!(pairs[0].replacement, "/ext:pubmed ");
+    }
+
+    /// Issue #60, the CLI half. `extract_inline_refs` splits the message on
+    /// whitespace, so a completion that inserts `/ext:Chat Recall ` reaches the
+    /// resolver as `/ext:Chat` — matches nothing, and the agent answers "not a
+    /// known built-in extension", which reads as a policy refusal.
+    ///
+    /// The names come from `enabled_extension_reference_names`, which is
+    /// `get_enabled_extensions().map(|e| e.name())`, and a Platform extension's
+    /// `name` is its DISPLAY string: `chatrecall` is registered as
+    /// `"Chat Recall"` (`agents::chatrecall_extension::EXTENSION_NAME`). It is
+    /// not one of the three names `COMPACT_EXTENSION_CANONICALS` swaps for a
+    /// compact alias, so nothing rescues it — and any user extension may have a
+    /// space too.
+    ///
+    /// The display string keeps its space (that is what the user is picking);
+    /// only the inserted token loses it. Whitespace is the ONLY thing dropped:
+    /// `_` and `-` are part of a user extension's key (`normalize` keeps them),
+    /// so collapsing those would stop `/ext:my_tool` matching `my_tool`.
+    #[test]
+    fn extension_completion_inserts_a_single_token_for_a_spaced_name() {
+        let pairs = reference_pairs_from_names(
+            "/chat",
+            Vec::<String>::new(),
+            vec!["Chat Recall".to_string()],
+        );
+
+        assert_eq!(
+            pairs.len(),
+            1,
+            "expected the Chat Recall extension; got {:?}",
+            pairs
+                .iter()
+                .map(|p| p.replacement.clone())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(pairs[0].display, "/ext:Chat Recall");
+        assert_eq!(pairs[0].replacement, "/ext:ChatRecall ");
+
+        // ...and nothing but whitespace is collapsed.
+        let pairs = reference_pairs_from_names(
+            "/my_tool",
+            Vec::<String>::new(),
+            vec!["my_tool".to_string()],
+        );
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0].replacement, "/ext:my_tool ");
+    }
+
+    /// The guard for the reason the fix above is needed at all: every name this
+    /// completer can offer must survive `extract_inline_refs`' whitespace split
+    /// intact. `Chat Recall` is the live case, and a spaced user extension is
+    /// the general one.
+    #[test]
+    fn no_offered_extension_completion_contains_whitespace_in_its_marker() {
+        let pairs = reference_pairs_from_names(
+            "/",
+            Vec::<String>::new(),
+            vec![
+                "Chat Recall".to_string(),
+                "Extension Manager".to_string(),
+                "my spaced tool".to_string(),
+                "developer".to_string(),
+            ],
+        );
+
+        for pair in &pairs {
+            let marker = pair
+                .replacement
+                .trim_end()
+                .strip_prefix("/ext:")
+                .expect("every pair here is an extension marker");
+            assert!(
+                !marker.chars().any(char::is_whitespace),
+                "`{}` is split by extract_inline_refs and reaches the resolver \
+                 truncated",
+                pair.replacement
+            );
+        }
     }
 
     #[test]
