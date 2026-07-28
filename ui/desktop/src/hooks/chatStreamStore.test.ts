@@ -724,7 +724,7 @@ describe('ChatStreamRegistry', () => {
 
     expect(editMessage).toHaveBeenCalledWith({
       path: { session_id: sourceSessionId },
-      body: { timestamp: 10, editType: 'diverge' },
+      body: { timestamp: 10, editType: 'diverge', expectedMessageIds: ['u1'] },
       throwOnError: true,
     });
     expect(onDiverged).toHaveBeenCalledTimes(1);
@@ -740,6 +740,58 @@ describe('ChatStreamRegistry', () => {
     });
 
     window.removeEventListener('session-diverged', onDiverged);
+  });
+
+  // #51 NF-D: `edit` truncates the LIVE session, and the server now refuses a
+  // cut it cannot check — a 400 when `expectedMessageIds` is absent, a 409 when
+  // it is missing something the store holds. If this client ever stops sending
+  // its full view, every in-place edit breaks, so pin it: every message we hold,
+  // ids only, including the ones the transcript does not render.
+  it('sends its whole view of the session when truncating in place', async () => {
+    const registry = new ChatStreamRegistry();
+    const sessionId = 'edit-in-place';
+    const conversation: Message[] = [
+      {
+        id: 'u1',
+        role: 'user',
+        created: 10,
+        content: [{ type: 'text', text: 'original prompt' }],
+        metadata: { userVisible: true, agentVisible: true },
+      },
+      {
+        id: 'a1',
+        role: 'assistant',
+        created: 20,
+        content: [{ type: 'text', text: 'an answer' }],
+        metadata: { userVisible: true, agentVisible: true },
+      },
+      {
+        id: 'a2',
+        role: 'assistant',
+        created: 30,
+        content: [{ type: 'text', text: 'a message the transcript hides' }],
+        metadata: { userVisible: false, agentVisible: true },
+      },
+    ];
+    vi.mocked(resumeAgent).mockResolvedValue({
+      data: { session: { ...session(sessionId), conversation } },
+    } as never);
+    vi.mocked(editMessage).mockResolvedValue({ data: { sessionId } } as never);
+    vi.mocked(getSession).mockResolvedValue({ data: { conversation: [conversation[0]] } } as never);
+
+    const controller = registry.getController(sessionId);
+    await controller.loadSession();
+    await controller.onMessageUpdate('u1', 'updated prompt', 'edit');
+
+    expect(editMessage).toHaveBeenCalledWith({
+      path: { session_id: sessionId },
+      body: {
+        timestamp: 10,
+        editType: 'edit',
+        expectedMessageIds: ['u1', 'a1', 'a2'],
+      },
+      throwOnError: true,
+    });
   });
 
   it('reports a rejected soft interrupt so the caller can fall back', async () => {

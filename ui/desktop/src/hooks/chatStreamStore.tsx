@@ -1276,6 +1276,14 @@ class ChatStreamController {
         body: {
           timestamp: message.created,
           editType,
+          // #51 NF-D: `edit` truncates the LIVE session, so the server checks
+          // that we are deleting the history we actually have. Send the ids of
+          // every message we hold; if the session has moved on (another window,
+          // the CLI, a scheduled run) the server refuses with 409 rather than
+          // silently destroying what we never saw. `diverge` ignores it.
+          expectedMessageIds: this.messagesRef
+            .map((m) => m.id)
+            .filter((id): id is string => typeof id === 'string'),
         },
         throwOnError: true,
       });
