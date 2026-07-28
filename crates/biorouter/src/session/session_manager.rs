@@ -10238,3 +10238,281 @@ mod activity_tests {
         assert!(w.days[1].tokens_complete);
     }
 }
+
+/// #51: the preservation marker must survive every way a session's history is
+/// rewritten, copied or moved. A pin that is honoured by compaction but erased
+/// by a fork is worse than no pin at all, because callers would trust it.
+///
+/// `replace_conversation` DELETEs and re-INSERTs every row, and export/import,
+/// copy and diverge all funnel through it — so these are one guarantee tested
+/// six ways, not six independent guarantees.
+#[cfg(test)]
+mod pin_persistence_tests {
+    use super::*;
+    use crate::conversation::message::MessageMetadata;
+    use crate::conversation::Conversation;
+    use tempfile::TempDir;
+
+    const PIN_TEXT: &str = "NOTE: always cite the 2019 cohort";
+
+    /// A session holding: a plain turn, a PINNED note, another plain turn.
+    async fn seeded(sm: &SessionManager) -> String {
+        let session = sm
+            .create_session(
+                PathBuf::from("/tmp/pin"),
+                "pin-persistence".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+
+        for (i, message) in [
+            Message::user().with_text("first"),
+            Message::assistant().with_text("ok"),
+            Message::user().with_text(PIN_TEXT).pinned(),
+            Message::user().with_text("second"),
+            Message::assistant().with_text("done"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut message = message;
+            message.created = 1_700_000_000 + i as i64;
+            sm.add_message(&session.id, &message).await.unwrap();
+        }
+        session.id
+    }
+
+    async fn pinned_texts(sm: &SessionManager, session_id: &str) -> Vec<String> {
+        sm.get_session(session_id, true)
+            .await
+            .unwrap()
+            .conversation
+            .unwrap()
+            .messages()
+            .iter()
+            .filter(|m| m.is_pinned())
+            .map(|m| m.as_concat_text())
+            .collect()
+    }
+
+    /// The baseline: `add_message` → `get_conversation` keeps the marker.
+    #[tokio::test]
+    async fn a_pin_survives_the_plain_store_round_trip() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let id = seeded(&sm).await;
+
+        assert_eq!(pinned_texts(&sm, &id).await, vec![PIN_TEXT.to_string()]);
+    }
+
+    /// The dangerous one: the whole-history DELETE + re-INSERT that compaction,
+    /// message editing and every fork path run.
+    #[tokio::test]
+    async fn a_pin_survives_a_whole_history_rewrite() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let id = seeded(&sm).await;
+
+        let current = sm
+            .get_session(&id, true)
+            .await
+            .unwrap()
+            .conversation
+            .unwrap();
+        sm.replace_conversation(&id, &current).await.unwrap();
+
+        assert_eq!(pinned_texts(&sm, &id).await, vec![PIN_TEXT.to_string()]);
+    }
+
+    /// The guarded rewrite from part (a) of #51 — including the FOREIGN-TAIL
+    /// path, which decodes recovered rows itself rather than reusing the read
+    /// path, and so could drop the marker independently.
+    #[tokio::test]
+    async fn a_pin_survives_the_guarded_rewrite_and_the_recovered_tail() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let id = seeded(&sm).await;
+
+        let (session, basis) = sm.snapshot_for_rewrite(&id).await.unwrap();
+        let known = session.conversation.clone().unwrap();
+
+        // A concurrent writer appends a PINNED note after the snapshot: it is
+        // foreign to the rewrite and must come back through `scan_foreign_tail`
+        // with its marker intact.
+        sm.add_message(
+            &id,
+            &Message::user()
+                .with_text("NOTE: appended mid-rewrite")
+                .pinned(),
+        )
+        .await
+        .unwrap();
+
+        // The rewrite drops the tail entirely; only the guard can save the note.
+        let shrunk = Conversation::new_unvalidated(known.messages()[..3].to_vec());
+        let (outcome, stored) = sm
+            .replace_conversation_preserving_tail(&id, &shrunk, basis, &known)
+            .await
+            .unwrap();
+        assert!(
+            outcome.stored(),
+            "the guarded rewrite must land: {outcome:?}"
+        );
+
+        let stored_pins: Vec<String> = stored
+            .messages()
+            .iter()
+            .filter(|m| m.is_pinned())
+            .map(|m| m.as_concat_text())
+            .collect();
+        assert_eq!(
+            stored_pins,
+            vec![
+                PIN_TEXT.to_string(),
+                "NOTE: appended mid-rewrite".to_string()
+            ],
+            "both the kept pin and the recovered foreign pin must stay marked"
+        );
+        assert_eq!(pinned_texts(&sm, &id).await, stored_pins);
+    }
+
+    #[tokio::test]
+    async fn a_pin_survives_a_copy() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let id = seeded(&sm).await;
+
+        let copy = sm.copy_session(&id, "Copy".to_string()).await.unwrap();
+        assert_eq!(
+            pinned_texts(&sm, &copy.id).await,
+            vec![PIN_TEXT.to_string()]
+        );
+        // And the parent is untouched.
+        assert_eq!(pinned_texts(&sm, &id).await, vec![PIN_TEXT.to_string()]);
+    }
+
+    #[tokio::test]
+    async fn a_pin_survives_a_branch() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let id = seeded(&sm).await;
+
+        let branch = sm.diverge_session(&id, None, None).await.unwrap();
+        assert_eq!(
+            pinned_texts(&sm, &branch.id).await,
+            vec![PIN_TEXT.to_string()],
+            "a branch must inherit the pin, or a note vanishes at the fork"
+        );
+    }
+
+    /// The edit fork truncates at a timestamp. A pin BEFORE the cut is kept;
+    /// this asserts the truncation path does not launder the marker off it.
+    #[tokio::test]
+    async fn a_pin_survives_a_fork_for_edit() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let id = seeded(&sm).await;
+
+        // Cut just after the pinned note (created = 1_700_000_002).
+        let fork = sm
+            .diverge_session_for_edit(&id, 1_700_000_003)
+            .await
+            .unwrap();
+        assert_eq!(
+            pinned_texts(&sm, &fork.id).await,
+            vec![PIN_TEXT.to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_pin_survives_export_and_import() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let id = seeded(&sm).await;
+
+        let exported = sm.export_session(&id).await.unwrap();
+        assert!(
+            exported.contains("\"pinned\": true"),
+            "the marker must be in the exported document, not just in memory"
+        );
+
+        let imported = sm.import_session(&exported).await.unwrap();
+        assert_eq!(
+            pinned_texts(&sm, &imported.id).await,
+            vec![PIN_TEXT.to_string()]
+        );
+    }
+
+    /// An IMPORT of a document written before the marker existed must decode,
+    /// with every message unpinned and its visibility intact. This is the
+    /// regression the `#[serde(default)]` on `MessageMetadata::pinned` exists
+    /// for; without it the whole import fails.
+    #[tokio::test]
+    async fn a_legacy_export_without_the_marker_still_imports() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let id = seeded(&sm).await;
+
+        let exported = sm.export_session(&id).await.unwrap();
+        let legacy = exported.replace(",\n        \"pinned\": true", "");
+        let legacy = legacy.replace(",\n        \"pinned\": false", "");
+        assert!(!legacy.contains("\"pinned\""), "stripped the marker");
+
+        let imported = sm.import_session(&legacy).await.unwrap();
+        let conversation = sm
+            .get_session(&imported.id, true)
+            .await
+            .unwrap()
+            .conversation
+            .unwrap();
+        assert_eq!(conversation.messages().len(), 5);
+        assert!(conversation.messages().iter().all(|m| !m.is_pinned()));
+        assert!(conversation.messages().iter().all(|m| m.is_agent_visible()));
+    }
+
+    /// #41's idempotent-replay probe compares the STORED metadata json with the
+    /// candidate's. A pin difference is a real difference: re-adding the same
+    /// uid with the marker flipped must not be swallowed as a replay.
+    #[tokio::test]
+    async fn the_replay_probe_treats_a_pin_change_as_a_difference() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let session = sm
+            .create_session(
+                PathBuf::from("/tmp/pin"),
+                "replay".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+
+        let mut plain = Message::user().with_text("note").with_id("fixed-uid");
+        plain.created = 1_700_000_000;
+        sm.add_message(&session.id, &plain).await.unwrap();
+
+        // Identical apart from the marker: a distinct message, so it gets its
+        // own row under a re-minted uid rather than being dropped as a replay.
+        let pinned = plain
+            .clone()
+            .with_metadata(MessageMetadata::default().with_pinned());
+        let uid = sm.add_message(&session.id, &pinned).await.unwrap();
+        assert_ne!(uid, "fixed-uid", "a pin change must re-mint, not collapse");
+
+        let conversation = sm
+            .get_session(&session.id, true)
+            .await
+            .unwrap()
+            .conversation
+            .unwrap();
+        assert_eq!(conversation.messages().len(), 2);
+        assert_eq!(
+            conversation
+                .messages()
+                .iter()
+                .filter(|m| m.is_pinned())
+                .count(),
+            1
+        );
+    }
+}
