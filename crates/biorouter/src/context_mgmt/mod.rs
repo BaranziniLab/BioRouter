@@ -11,6 +11,13 @@ use serde::Serialize;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
 
+pub mod pins;
+
+pub use pins::{
+    pin_is_eligible, select_pins, EvictedPin, PinEvictionReason, PinLimits, PinSelection,
+    DEFAULT_MAX_PINNED_CONTEXT_SHARE, DEFAULT_MAX_PINNED_MESSAGES,
+};
+
 pub const DEFAULT_COMPACTION_THRESHOLD: f64 = 0.8;
 
 /// BR-14: a usable compaction summary must clear this many characters. Below it
@@ -458,6 +465,54 @@ fn bytes_per_token() -> f64 {
     }
 }
 
+/// The byte size of one message's model-visible payload.
+///
+/// Shared by the compaction TRIGGER estimate and the #51 pinned-set BUDGET, so
+/// the two can never disagree about how big a message is — a pinned set that
+/// looked affordable to one and unaffordable to the other would make the
+/// compaction outcome depend on which check ran.
+fn message_payload_bytes(message: &Message) -> usize {
+    let mut bytes = 0;
+    for content in &message.content {
+        match content {
+            MessageContent::Text(text) => bytes += text.text.len(),
+            MessageContent::Thinking(thinking) => bytes += thinking.thinking.len(),
+            MessageContent::RedactedThinking(redacted) => bytes += redacted.data.len(),
+            MessageContent::Image(image) => bytes += image.data.len(),
+            MessageContent::ToolRequest(request) => {
+                bytes += request.id.len();
+                if let Ok(call) = &request.tool_call {
+                    bytes += call.name.len();
+                    bytes += call
+                        .arguments
+                        .as_ref()
+                        .map(|args| serde_json::to_string(args).map(|s| s.len()).unwrap_or(0))
+                        .unwrap_or(0);
+                }
+            }
+            MessageContent::ToolResponse(response) => {
+                bytes += response.id.len();
+                if let Ok(result) = &response.tool_result {
+                    for item in result.content.iter() {
+                        if let Some(text) = item.as_text() {
+                            bytes += text.text.len();
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    bytes
+}
+
+/// The byte-based token estimate for a SINGLE message, including its per-message
+/// overhead. What the #51 pinned-set budget is measured in.
+fn estimate_message_tokens(message: &Message) -> usize {
+    ((message_payload_bytes(message) as f64) / bytes_per_token()).ceil() as usize
+        + ESTIMATE_TOKENS_PER_MESSAGE
+}
+
 /// A byte-count-based token estimate for the whole request (system prompt +
 /// agent-visible messages + tool schemas). No tokenizer, no allocation per
 /// message — it walks the text that is already in memory.
@@ -471,36 +526,7 @@ fn estimate_request_tokens(messages: &[Message], system_prompt: &str, tools: &[T
 
     for message in messages.iter().filter(|m| m.is_agent_visible()) {
         overhead += ESTIMATE_TOKENS_PER_MESSAGE;
-        for content in &message.content {
-            match content {
-                MessageContent::Text(text) => bytes += text.text.len(),
-                MessageContent::Thinking(thinking) => bytes += thinking.thinking.len(),
-                MessageContent::RedactedThinking(redacted) => bytes += redacted.data.len(),
-                MessageContent::Image(image) => bytes += image.data.len(),
-                MessageContent::ToolRequest(request) => {
-                    bytes += request.id.len();
-                    if let Ok(call) = &request.tool_call {
-                        bytes += call.name.len();
-                        bytes += call
-                            .arguments
-                            .as_ref()
-                            .map(|args| serde_json::to_string(args).map(|s| s.len()).unwrap_or(0))
-                            .unwrap_or(0);
-                    }
-                }
-                MessageContent::ToolResponse(response) => {
-                    bytes += response.id.len();
-                    if let Ok(result) = &response.tool_result {
-                        for item in result.content.iter() {
-                            if let Some(text) = item.as_text() {
-                                bytes += text.text.len();
-                            }
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
+        bytes += message_payload_bytes(message);
     }
 
     for tool in tools {
