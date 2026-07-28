@@ -1353,13 +1353,29 @@ impl Agent {
                 .map(|target| target.key())
                 .unwrap_or_else(|| normalize(requested));
 
-            if !self
-                .extension_manager
-                .is_extension_enabled(&canonical)
-                .await
-            {
+            let target_is_enabled = if let Some(target) = target.as_ref() {
+                self.extension_manager
+                    .is_bundled_target_enabled(target)
+                    .await
+            } else {
+                self.extension_manager
+                    .is_extension_enabled(&canonical)
+                    .await
+            };
+
+            if !target_is_enabled {
                 if let Some(target) = target {
-                    let config = target.into_config(format!(
+                    if self
+                        .extension_manager
+                        .is_extension_enabled(&canonical)
+                        .await
+                    {
+                        notes.push(format!(
+                            "`{canonical}` is occupied by a different extension, so the selected bundled extension was not enabled."
+                        ));
+                        continue;
+                    }
+                    let config = target.clone().into_config(format!(
                         "Selected via explicit resource marker /ext:{canonical}"
                     ));
                     match self.add_extension(config).await {
@@ -1378,10 +1394,18 @@ impl Agent {
                             "`{canonical}` could not be enabled: {error}. Tell the user instead of silently substituting another extension."
                         )),
                     }
+                    if !self
+                        .extension_manager
+                        .is_bundled_target_enabled(&target)
+                        .await
+                    {
+                        continue;
+                    }
                 } else {
                     notes.push(format!(
                         "`{canonical}` is not currently enabled and is not a known built-in extension. Tell the user instead of silently substituting another extension."
                     ));
+                    continue;
                 }
             }
 

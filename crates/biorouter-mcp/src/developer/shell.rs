@@ -1,5 +1,8 @@
 use std::{env, ffi::OsString, process::Stdio, sync::Once};
 
+pub use biorouter_sandbox::environment::{
+    is_daemon_private_env_key, strip_daemon_private_env, strip_daemon_private_env_std,
+};
 use biorouter_sandbox::shell_sandbox::{
     self, SandboxMode, SandboxPolicy, SandboxReport, SandboxTier,
 };
@@ -307,140 +310,6 @@ pub(crate) fn augmented_path() -> OsString {
     augment_path_with(env::var_os("PATH").as_deref(), &standard_user_tool_dirs())
 }
 
-// ---------------------------------------------------------------------------
-// Daemon-private environment (issue #57)
-// ---------------------------------------------------------------------------
-
-/// BioRouter's own environment namespaces. Everything outside them belongs to
-/// the user or the OS and is passed through to children untouched.
-const BIOROUTER_ENV_PREFIXES: &[&str] = &["BIOROUTER_", "GOOSE_"];
-
-/// The daemon's private server configuration. `Settings` is the flat struct
-/// behind the `__` form, so *every* variable that configures `biorouterd`
-/// itself — today `BIOROUTER_SERVER__SECRET_KEY`, tomorrow whatever a future
-/// auth or signing key is called — lands in this namespace by construction.
-/// Nothing in it may reach a child: the allow set is empty, deliberately.
-const DAEMON_PRIVATE_PREFIXES: &[&str] = &["BIOROUTER_SERVER__", "GOOSE_SERVER__"];
-
-/// Credential-shaped name fragments, applied **only inside**
-/// [`BIOROUTER_ENV_PREFIXES`]. A second, overlapping net for BioRouter
-/// credentials that do not live under `BIOROUTER_SERVER__`: today
-/// `BIOROUTER_ACP_WS_TOKEN` and `BIOROUTER_EDITOR_API_KEY`.
-///
-/// Bare `KEY` is intentionally absent: `BIOROUTER_CLIENT_KEY_PATH` names a file,
-/// not a secret, and a child that does mTLS still needs it.
-const BIOROUTER_SECRET_MARKERS: &[&str] = &[
-    "SECRET",
-    "TOKEN",
-    "PASSWORD",
-    "PASSWD",
-    "PASSPHRASE",
-    "PASSCODE",
-    "CREDENTIAL",
-    "API_KEY",
-    "APIKEY",
-    "PRIVATE_KEY",
-    "SIGNING_KEY",
-    "AUTH",
-];
-
-/// Whether `key` names a BioRouter-private variable that must never reach a
-/// process spawned on the agent's behalf.
-///
-/// **Why this shape.** The desktop app puts `BIOROUTER_SERVER__SECRET_KEY` into
-/// `biorouterd`'s environment; `developer`'s shell runs in-process inside the
-/// daemon and stdio extensions are its children, so both inherited it. Holding
-/// that key makes the caller a fully authenticated client of the daemon's own
-/// REST API — `GET /sessions/{id}/export` for *any* session, `POST
-/// /sessions/import` — which is a cross-session read of everything and defeats
-/// every control that lives in the agent loop (issue #57).
-///
-/// The fix has to hold up against the *next* secret, so the namespace we own is
-/// **deny-by-default** — an allow-list with an empty allow set. A new
-/// `BIOROUTER_SERVER__…` credential is denied the day it is added, with no edit
-/// here; a deny-list of literal names is the shape that silently stops working.
-///
-/// A *global* allow-list was rejected on evidence, not taste. BioRouter alone
-/// defines ~220 environment knobs, of which four are credentials, so a global
-/// allow-list would need ~216 entries just to stand still — and outside our
-/// namespace it would have to enumerate the user's whole world (`PATH`, `HOME`,
-/// locale, proxies, `SSH_AUTH_SOCK`, conda/venv/nvm/rbenv roots, `JAVA_HOME`,
-/// `DISPLAY`, …). Issue #24 was exactly that regression in miniature: a
-/// truncated `PATH` made every Homebrew binary invisible. A global *deny*-list
-/// on secret-shaped names is no better: it would strip `GH_TOKEN`,
-/// `AWS_SECRET_ACCESS_KEY` and `HF_TOKEN` and break `gh`, `aws` and
-/// `huggingface-cli` in the shell tool, and an extension's declared
-/// `SPOKEAGENT_PASSCODE` / `CLINICAL_RECORDS_*` on the way in.
-///
-/// So: deny-all inside `BIOROUTER_SERVER__`, plus a credential-name net over
-/// the rest of BioRouter's namespace, and pass-through for everything else.
-/// The user's environment is not ours to censor — an agent with shell access
-/// can already read `~/.aws/credentials` — whereas the daemon's own key is a
-/// privilege it holds and the agent does not.
-///
-/// `BIOROUTER_PORT` stays: a port is not a credential (any local process can
-/// list listeners), and `biorouter`/`biorouterd` children read it.
-pub fn is_daemon_private_env_key(key: &str) -> bool {
-    let key = key.to_ascii_uppercase();
-    if DAEMON_PRIVATE_PREFIXES.iter().any(|p| key.starts_with(p)) {
-        return true;
-    }
-    BIOROUTER_ENV_PREFIXES.iter().any(|p| key.starts_with(p))
-        && BIOROUTER_SECRET_MARKERS.iter().any(|m| key.contains(m))
-}
-
-/// Remove every [`is_daemon_private_env_key`] variable from `command`'s
-/// environment — both the ones it would inherit from this process and any that
-/// were set on the command explicitly.
-///
-/// Call this **last**, after every other `env`/`envs` call: `env_remove` and
-/// `env` write to the same map, so the last write wins. Removing afterwards is
-/// what stops an extension's declared `envs` (which a `.brxt` bundle can carry)
-/// from re-admitting the daemon's key.
-pub fn strip_daemon_private_env(command: &mut tokio::process::Command) {
-    let explicit = command
-        .as_std()
-        .get_envs()
-        .filter(|(_, v)| v.is_some())
-        .map(|(k, _)| k.to_os_string())
-        .collect::<Vec<_>>();
-
-    for key in doomed_env_keys(explicit) {
-        command.env_remove(key);
-    }
-}
-
-/// [`strip_daemon_private_env`] for a synchronous [`std::process::Command`].
-///
-/// Some spawn sites are not async — `computer_controller`'s per-platform
-/// system automation (`osascript` / `powershell` / `python3`) runs a script the
-/// model wrote and builds a `std::process::Command`. It needs the same policy,
-/// and must not grow a second copy of it: both variants share
-/// [`is_daemon_private_env_key`] and [`doomed_env_keys`], so the policy cannot
-/// drift between the async and sync paths.
-pub fn strip_daemon_private_env_std(command: &mut std::process::Command) {
-    let explicit = command
-        .get_envs()
-        .filter(|(_, v)| v.is_some())
-        .map(|(k, _)| k.to_os_string())
-        .collect::<Vec<_>>();
-
-    for key in doomed_env_keys(explicit) {
-        command.env_remove(key);
-    }
-}
-
-/// Every key a child must not receive: the daemon-private names this process
-/// would pass down by inheritance, plus any that were set on the command
-/// explicitly. Shared by both `strip_daemon_private_env*` variants.
-fn doomed_env_keys(explicit: Vec<OsString>) -> Vec<OsString> {
-    env::vars_os()
-        .map(|(k, _)| k)
-        .chain(explicit)
-        .filter(|k| k.to_str().is_some_and(is_daemon_private_env_key))
-        .collect()
-}
-
 /// Configure a shell command with process group support for proper child process tracking.
 ///
 /// On Unix systems, creates a new process group so child processes can be killed together.
@@ -550,10 +419,10 @@ pub async fn kill_process_group(
     {
         if let Some(pid) = pid {
             // Use taskkill to kill the process tree on Windows
-            let _kill_result = tokio::process::Command::new("taskkill")
-                .args(&["/F", "/T", "/PID", &pid.to_string()])
-                .output()
-                .await;
+            let mut command = tokio::process::Command::new("taskkill");
+            command.args(["/F", "/T", "/PID", &pid.to_string()]);
+            strip_daemon_private_env(&mut command);
+            let _kill_result = command.output().await;
         }
 
         // Return the result of tokio's kill
@@ -716,9 +585,9 @@ mod tests {
         assert_eq!(stripped, vec!["BIOROUTER_SERVER__SECRET_KEY"]);
     }
 
-    /// The property the allow-list shape buys: a credential added to the
-    /// daemon's own namespace later is denied without editing this file. Only
-    /// the second group needs the credential-name net.
+    /// The property the namespace-deny shape buys: a credential added to the
+    /// daemon's own server namespace later is denied without editing this file.
+    /// Only the second group needs the credential-name net.
     #[test]
     fn policy_denies_future_daemon_credentials() {
         for key in [

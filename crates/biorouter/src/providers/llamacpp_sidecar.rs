@@ -25,6 +25,12 @@ use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 use utoipa::ToSchema;
 
+fn system_command(program: &str) -> std::process::Command {
+    let mut command = std::process::Command::new(program);
+    biorouter_mcp::developer::shell::strip_daemon_private_env_std(&mut command);
+    command
+}
+
 /// The llama.cpp release this Biorouter version is pinned to. Keep in sync
 /// with `ui/desktop/scripts/fetch-llama-server.js`.
 pub const LLAMA_SERVER_BUILD: &str = "b9611";
@@ -512,7 +518,7 @@ fn detect_discrete_vram_gib_uncached() -> Option<u64> {
 }
 
 fn detect_macos_vram_gib() -> Option<u64> {
-    let output = std::process::Command::new("system_profiler")
+    let output = system_command("system_profiler")
         .args(["SPDisplaysDataType", "-json"])
         .output()
         .ok()?;
@@ -549,7 +555,7 @@ fn collect_vram_from_json(value: &serde_json::Value, best: &mut Option<u64>) {
 }
 
 fn detect_windows_vram_gib() -> Option<u64> {
-    let output = std::process::Command::new("powershell")
+    let output = system_command("powershell")
         .args([
             "-NoProfile",
             "-Command",
@@ -569,7 +575,7 @@ fn detect_windows_vram_gib() -> Option<u64> {
 }
 
 fn detect_linux_vram_gib() -> Option<u64> {
-    let output = std::process::Command::new("nvidia-smi")
+    let output = system_command("nvidia-smi")
         .args(["--query-gpu=memory.total", "--format=csv,noheader,nounits"])
         .output()
         .ok()?;
@@ -856,13 +862,13 @@ fn run_dir() -> PathBuf {
 fn pid_alive(pid: u32) -> bool {
     let pid = pid.to_string();
     if cfg!(target_os = "windows") {
-        std::process::Command::new("tasklist")
+        system_command("tasklist")
             .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
             .output()
             .map(|o| String::from_utf8_lossy(&o.stdout).contains(&format!("\"{pid}\"")))
             .unwrap_or(false)
     } else {
-        std::process::Command::new("kill")
+        system_command("kill")
             .args(["-0", &pid])
             .output()
             .map(|o| o.status.success())
@@ -875,13 +881,13 @@ fn pid_alive(pid: u32) -> bool {
 fn pid_is_llama_server(pid: u32) -> bool {
     let pid = pid.to_string();
     if cfg!(target_os = "windows") {
-        std::process::Command::new("tasklist")
+        system_command("tasklist")
             .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
             .output()
             .map(|o| String::from_utf8_lossy(&o.stdout).contains("llama-server"))
             .unwrap_or(false)
     } else {
-        std::process::Command::new("ps")
+        system_command("ps")
             .args(["-p", &pid, "-o", "comm="])
             .output()
             .map(|o| String::from_utf8_lossy(&o.stdout).contains("llama-server"))
@@ -892,13 +898,11 @@ fn pid_is_llama_server(pid: u32) -> bool {
 fn kill_pid(pid: u32) {
     let pid = pid.to_string();
     if cfg!(target_os = "windows") {
-        let _ = std::process::Command::new("taskkill")
+        let _ = system_command("taskkill")
             .args(["/PID", &pid, "/F"])
             .output();
     } else {
-        let _ = std::process::Command::new("kill")
-            .args(["-9", &pid])
-            .output();
+        let _ = system_command("kill").args(["-9", &pid]).output();
     }
 }
 
@@ -1038,12 +1042,15 @@ fn spawn_child_with_launch_source(
     inner.last_error = None;
     inner.launch_source = Some(launch_source);
 
-    let mut child = Command::new(binary)
+    let mut command = Command::new(binary);
+    command
         .args(&args)
         .env("LLAMA_CACHE", cache_dir)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
-        .kill_on_drop(true)
+        .kill_on_drop(true);
+    crate::subprocess::prepare_agent_child_command(&mut command);
+    let mut child = command
         .spawn()
         .map_err(|e| anyhow!("Failed to start llama-server at {}: {e}", binary.display()))?;
 

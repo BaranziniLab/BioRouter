@@ -27,6 +27,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 pub mod docker;
+pub mod environment;
 pub mod local;
 pub mod seatbelt;
 pub mod shell_sandbox;

@@ -950,6 +950,7 @@ fn run_esbuild(
     cmd.arg("--loader:.ts=ts");
     cmd.arg(format!("--outfile={}", out.display()));
     cmd.arg("--log-level=warning");
+    super::prepare_agent_drafter_child(&mut cmd);
     let output = cmd.output()?;
     drop(npx_guard);
     let log = format!(

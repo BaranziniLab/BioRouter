@@ -66,8 +66,10 @@ async fn get_shell_path_async() -> Result<String> {
 }
 
 async fn get_unix_path_async(shell: &str) -> Result<String> {
-    let output = Command::new(shell)
-        .args(["-l", "-i", "-c", "echo $PATH"])
+    let mut command = Command::new(shell);
+    command.args(["-l", "-i", "-c", "echo $PATH"]);
+    crate::developer::shell::strip_daemon_private_env(&mut command);
+    let output = command
         .output()
         .await
         .map_err(|e| anyhow::anyhow!("Failed to execute shell command: {}", e))?;
@@ -97,16 +99,16 @@ async fn get_windows_path_async(shell: &str) -> Result<String> {
 
     let output = match shell_name {
         "pwsh" | "powershell" => {
-            Command::new(shell)
-                .args(["-NoLogo", "-Command", "$env:PATH"])
-                .output()
-                .await
+            let mut command = Command::new(shell);
+            command.args(["-NoLogo", "-Command", "$env:PATH"]);
+            crate::developer::shell::strip_daemon_private_env(&mut command);
+            command.output().await
         }
         _ => {
-            Command::new(shell)
-                .args(["/c", "echo %PATH%"])
-                .output()
-                .await
+            let mut command = Command::new(shell);
+            command.args(["/c", "echo %PATH%"]);
+            crate::developer::shell::strip_daemon_private_env(&mut command);
+            command.output().await
         }
     };
 

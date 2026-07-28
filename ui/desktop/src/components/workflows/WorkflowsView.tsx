@@ -50,11 +50,13 @@ import BuiltInBadge from '../ui/BuiltInBadge';
 import { BUILTIN_RECREATED_TITLE, isBuiltinWorkflow } from '../../utils/builtins';
 import { ConfirmationModal } from '../ui/ConfirmationModal';
 import { EmptyState } from '../ui/empty-state';
+import { useConfig } from '../ConfigContext';
 
 const WorkflowIcon = ENTITY_ICONS.workflow;
 
 export default function WorkflowsView() {
   const setView = useNavigation();
+  const { refreshConfig } = useConfig();
   const [savedWorkflows, setSavedWorkflows] = useState<WorkflowManifest[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -343,6 +345,14 @@ export default function WorkflowsView() {
     setShowSlashCommandDialog(true);
   };
 
+  const refreshConfigAfterSlashCommandWrite = async () => {
+    try {
+      await refreshConfig();
+    } catch (error) {
+      console.error('Failed to refresh config after updating a workflow slash command:', error);
+    }
+  };
+
   const handleSaveSlashCommand = async () => {
     if (!slashCommandWorkflowManifest || isSavingSlashCommand) return;
 
@@ -354,6 +364,7 @@ export default function WorkflowsView() {
           slash_command: slashCommand || null,
         },
       });
+      await refreshConfigAfterSlashCommandWrite();
 
       toastSuccess({
         title: 'Slash command saved',
@@ -383,6 +394,7 @@ export default function WorkflowsView() {
           slash_command: null,
         },
       });
+      await refreshConfigAfterSlashCommandWrite();
 
       toastSuccess({
         title: 'Slash command removed',

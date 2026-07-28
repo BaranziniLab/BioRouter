@@ -80,11 +80,10 @@ fn path_jail_relaxed() -> bool {
 /// it adds no noise to non-versioned tasks.
 fn git_context_block(cwd: &std::path::Path) -> String {
     let git = |args: &[&str]| -> Option<String> {
-        let out = std::process::Command::new("git")
-            .args(args)
-            .current_dir(cwd)
-            .output()
-            .ok()?;
+        let mut command = std::process::Command::new("git");
+        command.args(args).current_dir(cwd);
+        crate::developer::shell::strip_daemon_private_env_std(&mut command);
+        let out = command.output().ok()?;
         if !out.status.success() {
             return None;
         }

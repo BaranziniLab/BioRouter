@@ -398,6 +398,7 @@ pub async fn execute_shell_command_in(
             cmd.current_dir(dir);
         }
 
+        crate::subprocess::prepare_agent_child_command(&mut cmd);
         let output = cmd
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

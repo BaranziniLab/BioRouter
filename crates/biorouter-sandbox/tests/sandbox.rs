@@ -78,6 +78,32 @@ async fn local_exec_injects_env_without_leaking_to_wire() {
 }
 
 #[tokio::test]
+async fn local_exec_strips_daemon_credentials_but_keeps_declared_env() {
+    let dir = ws();
+    let spec = SandboxSpec::new(dir.path()).with_env(vec![
+        (
+            "BIOROUTER_SERVER__SECRET_KEY".into(),
+            "daemon-private".into(),
+        ),
+        ("SPOKEAGENT_PASSCODE".into(), "extension-private".into()),
+    ]);
+    let sb = LocalProcessSandbox::new(spec);
+    let out = sb
+        .exec(
+            &[
+                "sh".into(),
+                "-c".into(),
+                "printf 'daemon=%s extension=%s' \"${BIOROUTER_SERVER__SECRET_KEY-unset}\" \"$SPOKEAGENT_PASSCODE\""
+                    .into(),
+            ],
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(out.stdout, "daemon=unset extension=extension-private");
+}
+
+#[tokio::test]
 async fn local_exec_timeout_kills_runaway_promptly() {
     let dir = ws();
     let spec = SandboxSpec::new(dir.path()).with_timeout(Duration::from_millis(200));
@@ -257,6 +283,25 @@ fn docker_run_args_honor_host_network_mounts_and_env() {
     assert!(joined.contains("-v /data/cohort:/data:ro"), "{joined}");
     assert!(joined.contains("-e API_KEY=k123"), "{joined}");
     assert!(joined.ends_with("alpine:3 ls /data"), "{joined}");
+}
+
+#[test]
+fn docker_run_args_strip_daemon_credentials_but_keep_declared_env() {
+    let spec = SandboxSpec::new("/tmp/ws").with_env(vec![
+        (
+            "BIOROUTER_SERVER__SECRET_KEY".into(),
+            "daemon-private".into(),
+        ),
+        ("CLINICAL_RECORDS_TOKEN".into(), "extension-private".into()),
+    ]);
+    let joined = DockerSandbox::new(spec)
+        .build_run_args(&["printenv".into()])
+        .join(" ");
+    assert!(!joined.contains("BIOROUTER_SERVER__SECRET_KEY"), "{joined}");
+    assert!(
+        joined.contains("-e CLINICAL_RECORDS_TOKEN=extension-private"),
+        "{joined}"
+    );
 }
 
 #[tokio::test]

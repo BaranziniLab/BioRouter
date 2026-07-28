@@ -830,9 +830,10 @@ fn run_smoke(dir: &Path) -> Result<String, String> {
     }
 
     let script = smoke_script_path().ok_or_else(|| "app-smoke.mjs not found".to_string())?;
-    let out = std::process::Command::new("node")
-        .arg(&script)
-        .arg(dir)
+    let mut command = std::process::Command::new("node");
+    command.arg(&script).arg(dir);
+    prepare_agent_drafter_child(&mut command);
+    let out = command
         .output()
         .map_err(|e| format!("could not run node: {e}"))?;
 
@@ -845,6 +846,10 @@ fn run_smoke(dir: &Path) -> Result<String, String> {
         )),
         _ => Err(format!("{stderr}{stdout}").trim().to_string()),
     }
+}
+
+pub(super) fn prepare_agent_drafter_child(command: &mut std::process::Command) {
+    crate::developer::shell::strip_daemon_private_env_std(command);
 }
 
 /// Locate the smoke script relative to the running binary or the source tree.
@@ -2851,6 +2856,32 @@ mod tests {
     use super::*;
     use rmcp::model::RawContent;
     use tempfile::TempDir;
+
+    #[test]
+    fn agent_drafter_children_strip_daemon_credentials_only() {
+        let mut command = std::process::Command::new("node");
+        command
+            .env("BIOROUTER_SERVER__SECRET_KEY", "daemon-private")
+            .env("BIOROUTER_PORT", "4931")
+            .env("SPOKEAGENT_PASSCODE", "extension-private");
+        prepare_agent_drafter_child(&mut command);
+
+        let envs = command
+            .get_envs()
+            .map(|(key, value)| {
+                (
+                    key.to_string_lossy().into_owned(),
+                    value.map(|value| value.to_string_lossy().into_owned()),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert!(envs.contains(&("BIOROUTER_SERVER__SECRET_KEY".to_string(), None)));
+        assert!(envs.contains(&("BIOROUTER_PORT".to_string(), Some("4931".to_string()))));
+        assert!(envs.contains(&(
+            "SPOKEAGENT_PASSCODE".to_string(),
+            Some("extension-private".to_string())
+        )));
+    }
 
     /// Opt this test out of catalog strictness.
     ///

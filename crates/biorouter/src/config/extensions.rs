@@ -54,25 +54,62 @@ fn get_extensions_map() -> IndexMap<String, ExtensionEntry> {
         }
     }
 
-    // Always inject platform extensions (code_execution, todo, skills, etc.)
-    // These are internal agent extensions that should always be available
-    for (name, def) in PLATFORM_EXTENSIONS.iter() {
-        if !extensions_map.contains_key(*name) {
-            extensions_map.insert(
-                name.to_string(),
-                ExtensionEntry {
-                    config: ExtensionConfig::Platform {
-                        name: def.name.to_string(),
-                        description: def.description.to_string(),
-                        bundled: Some(true),
-                        available_tools: Vec::new(),
-                    },
-                    enabled: def.default_enabled,
-                },
+    inject_platform_extensions(&mut extensions_map);
+    extensions_map
+}
+
+fn inject_platform_extensions(extensions: &mut IndexMap<String, ExtensionEntry>) {
+    for (key, def) in PLATFORM_EXTENSIONS.iter() {
+        let configured_platform = extensions
+            .get(*key)
+            .filter(|entry| platform_entry_matches_key(entry, key))
+            .cloned()
+            .or_else(|| {
+                extensions
+                    .values()
+                    .find(|entry| platform_entry_matches_key(entry, key))
+                    .cloned()
+            });
+        let colliding_keys = extensions
+            .iter()
+            .filter(|(stored_key, entry)| *stored_key == key || entry.config.key() == *key)
+            .map(|(stored_key, _)| stored_key.clone())
+            .collect::<Vec<_>>();
+        let has_non_platform_collision = colliding_keys.iter().any(|stored_key| {
+            extensions
+                .get(stored_key)
+                .is_some_and(|entry| !platform_entry_matches_key(entry, key))
+        });
+        for stored_key in colliding_keys {
+            extensions.shift_remove(&stored_key);
+        }
+
+        if has_non_platform_collision {
+            warn!(
+                key,
+                "Ignoring extension that occupies a reserved platform extension key"
             );
         }
+        extensions.insert(
+            key.to_string(),
+            configured_platform.unwrap_or_else(|| ExtensionEntry {
+                config: ExtensionConfig::Platform {
+                    name: def.name.to_string(),
+                    description: def.description.to_string(),
+                    bundled: Some(true),
+                    available_tools: Vec::new(),
+                },
+                enabled: def.default_enabled,
+            }),
+        );
     }
-    extensions_map
+}
+
+fn platform_entry_matches_key(entry: &ExtensionEntry, key: &str) -> bool {
+    matches!(
+        &entry.config,
+        ExtensionConfig::Platform { name, .. } if name_to_key(name) == key
+    )
 }
 
 fn save_extensions_map(extensions: IndexMap<String, ExtensionEntry>) {
@@ -328,6 +365,51 @@ mod entry_lookup_tests {
         assert!(!entry.enabled);
 
         assert!(find_entry_by_name(&extensions, "missing").is_none());
+    }
+}
+
+#[cfg(test)]
+mod platform_extension_tests {
+    use super::*;
+
+    #[test]
+    fn custom_extension_cannot_shadow_reserved_platform_key() {
+        let mut extensions = IndexMap::from([(
+            "custom-key".to_string(),
+            ExtensionEntry {
+                enabled: true,
+                config: ExtensionConfig::stdio("skills", "untrusted", "custom", 30_u64),
+            },
+        )]);
+
+        inject_platform_extensions(&mut extensions);
+
+        assert!(matches!(
+            extensions["skills"].config,
+            ExtensionConfig::Platform { ref name, .. } if name == "skills"
+        ));
+        assert!(!extensions.contains_key("custom-key"));
+    }
+
+    #[test]
+    fn persisted_platform_enabled_state_is_preserved() {
+        let mut extensions = IndexMap::from([(
+            "chatrecall".to_string(),
+            ExtensionEntry {
+                enabled: true,
+                config: ExtensionConfig::Platform {
+                    name: "Chat Recall".to_string(),
+                    description: "configured".to_string(),
+                    bundled: Some(true),
+                    available_tools: Vec::new(),
+                },
+            },
+        )]);
+
+        inject_platform_extensions(&mut extensions);
+
+        assert!(extensions["chatrecall"].enabled);
+        assert_eq!(extensions["chatrecall"].config.name(), "Chat Recall");
     }
 }
 
