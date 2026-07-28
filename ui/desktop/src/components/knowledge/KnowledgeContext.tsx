@@ -29,8 +29,19 @@ function hiddenStorageKeyForSession(sessionId: string | null | undefined): strin
  * (promote to the first remaining base, or clear when none remain). Sending the
  * current primary back on a set-only edit would instead be *rejected* the
  * moment the user hides the primary, which is exactly when the repair matters.
+ *
+ * `inherit` is not a nicer spelling of `clear`. `clear` writes a *durable* "this
+ * chat has no primary" that outranks the machine-wide default and survives every
+ * other gesture, and deleting the base a chat had pinned installs exactly that
+ * override in the chat. `inherit` drops the chat's own pointer so it follows the
+ * machine-wide default again — the only way out of that state, and the reason
+ * the daemon grew the third gesture at all.
  */
-type PrimaryUpdate = { kind: 'unchanged' } | { kind: 'clear' } | { kind: 'set'; id: string };
+type PrimaryUpdate =
+  | { kind: 'unchanged' }
+  | { kind: 'clear' }
+  | { kind: 'inherit' }
+  | { kind: 'set'; id: string };
 
 /** The shape both selection endpoints answer with — GET /active and POST /active. */
 type SelectionPayload =
@@ -61,6 +72,23 @@ interface KnowledgeContextType {
   primaryKb: Manifest | null;
   primaryKbId: string | null;
   hiddenKbIds: string[];
+  /**
+   * The machine-wide default primary — what a chat that has chosen nothing
+   * shows. Read lazily by whoever offers the way back to it, since it is the
+   * only thing that needs it; `null` until `refreshDefaultPrimary` has run, at
+   * machine scope (there is nothing above to inherit), and when it names a base
+   * that is not installed.
+   */
+  defaultPrimaryKb: Manifest | null;
+  /**
+   * Whether offering "follow the default" would change anything a user can see:
+   * this chat is holding its own pointer, the default names one of *this
+   * chat's* bases, and it is not what the chat already shows.
+   */
+  canFollowDefaultPrimary: boolean;
+  refreshDefaultPrimary: () => Promise<void>;
+  /** Drop this chat's own primary so it follows the machine-wide default again. */
+  followDefaultPrimary: () => void;
   setPrimaryKbId: (id: string | null) => void;
   setHiddenKbIds: (ids: string[]) => void;
   toggleKbHidden: (id: string) => void;
@@ -106,6 +134,10 @@ export function KnowledgeProvider({
       return [];
     }
   });
+  // The machine-wide default, read on demand rather than on mount: only the
+  // surface that offers the way back to it needs it, and hydrating it eagerly
+  // would spend a request per chat switch on a value most chats never show.
+  const [defaultPrimaryKbId, setDefaultPrimaryKbId] = useState<string | null>(null);
   const graphRefreshRef = useRef<(() => Promise<void>) | null>(null);
   // Every selection round-trip — a write, its recovery read, a hydrate — takes a
   // generation. Only the newest may write state back, so a slow answer cannot
@@ -150,13 +182,25 @@ export function KnowledgeProvider({
     [applyHidden, applyPrimary, sessionId]
   );
 
+  /**
+   * @param nextHiddenKbIds the set this edit establishes, or `null` to leave the
+   * set alone — the daemon's "omit `hidden_kbs`". A pointer-only gesture must
+   * use `null`: this chat may be *inheriting* the machine-wide hidden list, and
+   * echoing the resolved list back would install a session-scope set override
+   * the user never asked for.
+   */
   const syncSelection = useCallback(
-    (primary: PrimaryUpdate, nextHiddenKbIds: string[]) => {
+    (primary: PrimaryUpdate, nextHiddenKbIds: string[] | null) => {
       const generation = ++selectionGenerationRef.current;
       // Optimistic: show the caller's intent now, then adopt whatever the
       // daemon says it actually applied.
       if (primary.kind === 'set') setPrimaryKbIdState(primary.id);
       if (primary.kind === 'clear') setPrimaryKbIdState(null);
+      // `inherit` gets no optimistic value at all. Which base the chat lands on
+      // is resolved by the daemon — it re-reads the machine pointer and filters
+      // it through this chat's set — so guessing here is guessing at the very
+      // rule this gesture exists to defer to, and a guess that never lands is a
+      // chat claiming to follow a default it does not.
       if (primary.kind === 'unchanged') {
         // A set-only edit can orphan the primary — hiding the primary's own
         // base is precisely the case the daemon's repair exists for. Until that
@@ -168,18 +212,22 @@ export function KnowledgeProvider({
         // one stays until an authoritative answer replaces it, so a reload
         // during the in-flight window still has a last-known value to show.
         setPrimaryKbIdState((current) =>
-          current && nextHiddenKbIds.includes(current) ? null : current
+          current && nextHiddenKbIds?.includes(current) ? null : current
         );
       }
-      setHiddenKbIdsState(nextHiddenKbIds);
+      if (nextHiddenKbIds) setHiddenKbIdsState(nextHiddenKbIds);
       if (primary.kind === 'set') localStorage.setItem(storageKey, primary.id);
       if (primary.kind === 'clear') localStorage.removeItem(storageKey);
-      localStorage.setItem(hiddenStorageKey, JSON.stringify(nextHiddenKbIds));
+      if (nextHiddenKbIds) localStorage.setItem(hiddenStorageKey, JSON.stringify(nextHiddenKbIds));
       void setActive({
         body: {
+          // The three primary gestures are mutually exclusive on the wire: two
+          // of them in one body is a 400 naming both fields, not a precedence
+          // rule. At most one of these is ever true.
           primary_kb: primary.kind === 'set' ? primary.id : undefined,
           clear_primary: primary.kind === 'clear',
-          hidden_kbs: nextHiddenKbIds,
+          inherit_primary: primary.kind === 'inherit',
+          hidden_kbs: nextHiddenKbIds ?? undefined,
           session_id: sessionId || undefined,
         },
         throwOnError: false,
@@ -228,6 +276,41 @@ export function KnowledgeProvider({
     },
     [hiddenKbIds, syncSelection]
   );
+
+  /**
+   * Re-read the machine-wide default primary — `GET /active` with no
+   * `session_id`. It is not derivable from anything the chat-scoped answer
+   * carries: a chat that pins alpha and a chat that inherits an alpha default
+   * report the identical selection.
+   */
+  const refreshDefaultPrimary = useCallback(async () => {
+    // At machine scope there is nothing above to inherit, so "the default" and
+    // "this scope's own pointer" are the same value and the distinction the
+    // caller wants to draw does not exist.
+    if (!sessionId) {
+      setDefaultPrimaryKbId(null);
+      return;
+    }
+    try {
+      const res = await getActive({ query: undefined, throwOnError: true });
+      setDefaultPrimaryKbId(readPrimary(res.data));
+    } catch (err) {
+      // Keep the last known default: a failed read is not evidence that there
+      // is none, and inventing one would offer a base nobody chose.
+      console.warn('getActive (machine-wide default) failed:', err);
+    }
+  }, [sessionId]);
+
+  const followDefaultPrimary = useCallback(() => {
+    // At machine scope `inherit` coincides with `clear` — a different and
+    // destructive gesture — so this one only exists inside a chat. The
+    // affordance is gated on `canFollowDefaultPrimary`; this is the backstop.
+    if (!sessionId) return;
+    // The set travels separately and is deliberately left alone: a gesture that
+    // means "stop overriding the pointer here" must not install a set override
+    // on the way past.
+    syncSelection({ kind: 'inherit' }, null);
+  }, [sessionId, syncSelection]);
 
   const setHiddenKbIds = useCallback(
     (ids: string[]) => {
@@ -322,6 +405,11 @@ export function KnowledgeProvider({
     }
     setPrimaryKbIdState(local);
     setHiddenKbIdsState(localHidden);
+    // The default belongs to whoever asks for it next. Carrying the previous
+    // chat's read across a switch would offer the new chat a way back to a
+    // pointer nobody has re-checked — and at machine scope, to one that does
+    // not exist.
+    setDefaultPrimaryKbId(null);
     let cancelled = false;
     // The hydrate takes a generation of its own: switching sessions must not
     // leave a write from the previous one able to answer into the new one.
@@ -356,6 +444,23 @@ export function KnowledgeProvider({
     () => bases.filter((base) => !hiddenKbIds.includes(base.id)),
     [bases, hiddenKbIds]
   );
+  const defaultPrimaryKb = useMemo(
+    () => bases.find((b) => b.id === defaultPrimaryKbId) ?? null,
+    [bases, defaultPrimaryKbId]
+  );
+  const canFollowDefaultPrimary = useMemo(
+    () =>
+      // A chat already showing the default has nothing to inherit…
+      defaultPrimaryKb !== null &&
+      defaultPrimaryKb.id !== primaryKbId &&
+      // …and a default this chat has left out of its set is not a member of the
+      // set it would be primary of, so inheriting it resolves to no primary at
+      // all. Offering a click that visibly does nothing is worse than offering
+      // none: the membership switch is the gesture for that, and turning it on
+      // is what makes this offer appear.
+      !hiddenKbIds.includes(defaultPrimaryKb.id),
+    [defaultPrimaryKb, hiddenKbIds, primaryKbId]
+  );
 
   const value: KnowledgeContextType = {
     bases,
@@ -364,6 +469,10 @@ export function KnowledgeProvider({
     primaryKb,
     primaryKbId,
     hiddenKbIds,
+    defaultPrimaryKb,
+    canFollowDefaultPrimary,
+    refreshDefaultPrimary,
+    followDefaultPrimary,
     setPrimaryKbId,
     setHiddenKbIds,
     toggleKbHidden,

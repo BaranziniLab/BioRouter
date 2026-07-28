@@ -39,16 +39,52 @@ function base(id: string) {
   return { id, name: id, color: '#cf6d47', created_at: '', schema_version: 1 };
 }
 
+type Selection = {
+  kb_ids: string[];
+  primary_kb: string | null;
+  active_kb: string | null;
+  hidden_kbs: string[];
+};
+
+/**
+ * What the daemon answers at each scope. `GET /active` with a `session_id` is
+ * the chat's resolved selection; without one it is the machine-wide default —
+ * the thing a chat inherits when it holds no pointer of its own. Tests move
+ * these two apart to describe a chat that has overridden the default.
+ */
+const daemon: { session: Selection; machine: Selection } = {
+  session: { kb_ids: [], primary_kb: null, active_kb: null, hidden_kbs: [] },
+  machine: { kb_ids: [], primary_kb: null, active_kb: null, hidden_kbs: [] },
+};
+
 function Probe() {
-  const { primaryKbId, hiddenKbIds, visibleBases, setPrimaryKbId, toggleKbHidden, refresh } =
-    useKnowledge();
+  const {
+    primaryKbId,
+    hiddenKbIds,
+    visibleBases,
+    defaultPrimaryKb,
+    canFollowDefaultPrimary,
+    followDefaultPrimary,
+    refreshDefaultPrimary,
+    setPrimaryKbId,
+    toggleKbHidden,
+    refresh,
+  } = useKnowledge();
   return (
     <div>
       <span data-testid="primary">{primaryKbId ?? 'none'}</span>
       <span data-testid="hidden">{hiddenKbIds.join(',') || 'none'}</span>
       <span data-testid="visible">{visibleBases.map((b) => b.id).join(',') || 'none'}</span>
+      <span data-testid="default-primary">{defaultPrimaryKb?.id ?? 'none'}</span>
+      <span data-testid="can-follow-default">{canFollowDefaultPrimary ? 'yes' : 'no'}</span>
       <button type="button" onClick={() => void refresh()}>
         refresh
+      </button>
+      <button type="button" onClick={() => void refreshDefaultPrimary()}>
+        read the default
+      </button>
+      <button type="button" onClick={() => followDefaultPrimary()}>
+        follow the default
       </button>
       <button type="button" onClick={() => setPrimaryKbId('beta')}>
         make beta primary
@@ -63,21 +99,42 @@ function Probe() {
   );
 }
 
-function renderProvider() {
+function renderProvider(sessionId: string | null = 'chat-1') {
   return render(
-    <KnowledgeProvider sessionId="chat-1">
+    <KnowledgeProvider sessionId={sessionId}>
       <Probe />
     </KnowledgeProvider>
   );
+}
+
+/** Render, wait for the hydrate, then read the machine-wide default. */
+async function renderWithDefault(sessionId: string | null = 'chat-1') {
+  const result = renderProvider(sessionId);
+  await waitFor(() => expect(mocks.getActive).toHaveBeenCalled());
+  await userEvent.click(screen.getByRole('button', { name: 'read the default' }));
+  await settle(() => {});
+  return result;
 }
 
 beforeEach(() => {
   localStorage.clear();
   vi.clearAllMocks();
   mocks.listBases.mockResolvedValue({ data: [base('alpha'), base('beta')] });
-  mocks.getActive.mockResolvedValue({
-    data: { kb_ids: ['alpha'], primary_kb: 'alpha', active_kb: 'alpha', hidden_kbs: ['beta'] },
-  });
+  daemon.session = {
+    kb_ids: ['alpha'],
+    primary_kb: 'alpha',
+    active_kb: 'alpha',
+    hidden_kbs: ['beta'],
+  };
+  daemon.machine = {
+    kb_ids: ['alpha', 'beta'],
+    primary_kb: 'alpha',
+    active_kb: 'alpha',
+    hidden_kbs: [],
+  };
+  mocks.getActive.mockImplementation((options?: { query?: { session_id?: string } }) =>
+    Promise.resolve({ data: options?.query?.session_id ? daemon.session : daemon.machine })
+  );
   mocks.setActive.mockResolvedValue({
     data: { kb_ids: ['alpha', 'beta'], primary_kb: 'beta', active_kb: 'beta', hidden_kbs: [] },
   });
@@ -294,5 +351,171 @@ describe('KnowledgeContext', () => {
     expect(screen.getByTestId('visible').textContent).toBe('alpha');
     expect(screen.getByTestId('hidden').textContent).toBe('beta');
     expect(mocks.setActive).not.toHaveBeenCalled();
+  });
+
+  // The fourth intent. `clear` writes a *durable* "this chat has no primary",
+  // and deleting the base a chat had pinned installs exactly that — so without
+  // a way to drop the chat's own pointer, such a chat could never follow the
+  // machine-wide default again from the GUI.
+  describe('following the default again', () => {
+    it('reads the machine-wide default from the unscoped selection', async () => {
+      daemon.machine.primary_kb = 'beta';
+      daemon.machine.active_kb = 'beta';
+      await renderWithDefault();
+
+      expect(screen.getByTestId('default-primary').textContent).toBe('beta');
+      const scopes = mocks.getActive.mock.calls.map(
+        (call: unknown[]) =>
+          (call[0] as { query?: { session_id?: string } } | undefined)?.query?.session_id ?? null
+      );
+      expect(scopes).toContain('chat-1');
+      expect(scopes).toContain(null);
+    });
+
+    // A chat that is already showing the default has nothing to inherit, so
+    // offering it the gesture is noise.
+    it('offers nothing to a chat that is already on the default', async () => {
+      await renderWithDefault();
+
+      expect(screen.getByTestId('primary').textContent).toBe('alpha');
+      expect(screen.getByTestId('can-follow-default').textContent).toBe('no');
+    });
+
+    it('offers the default to a chat that pinned something else', async () => {
+      daemon.session = {
+        kb_ids: ['alpha', 'beta'],
+        primary_kb: 'beta',
+        active_kb: 'beta',
+        hidden_kbs: [],
+      };
+      await renderWithDefault();
+
+      expect(screen.getByTestId('can-follow-default').textContent).toBe('yes');
+      expect(screen.getByTestId('default-primary').textContent).toBe('alpha');
+    });
+
+    // The state a delete leaves behind: an explicit "no primary here" that
+    // survives every other gesture. This is the one the affordance exists for.
+    it('offers the default to a chat left with no primary at all', async () => {
+      daemon.session = {
+        kb_ids: ['alpha', 'beta'],
+        primary_kb: null,
+        active_kb: null,
+        hidden_kbs: [],
+      };
+      await renderWithDefault();
+
+      expect(screen.getByTestId('primary').textContent).toBe('none');
+      expect(screen.getByTestId('can-follow-default').textContent).toBe('yes');
+    });
+
+    // The primary must be a member of the set, so inheriting a default this
+    // chat has left out resolves to *no* primary — the offer would do nothing
+    // the user can see. The membership switch is the gesture for that, and once
+    // it is on the offer appears.
+    it('does not offer a default this chat has left out of its set', async () => {
+      daemon.session = {
+        kb_ids: ['alpha'],
+        primary_kb: 'alpha',
+        active_kb: 'alpha',
+        hidden_kbs: ['beta'],
+      };
+      daemon.machine.primary_kb = 'beta';
+      daemon.machine.active_kb = 'beta';
+      await renderWithDefault();
+
+      expect(screen.getByTestId('default-primary').textContent).toBe('beta');
+      expect(screen.getByTestId('can-follow-default').textContent).toBe('no');
+    });
+
+    // The three primary gestures are mutually exclusive on the wire: two of
+    // them in one body is a 400 naming both fields, not a precedence rule.
+    // The set travels separately and is left alone — a gesture that means
+    // "stop overriding here" must not install a different override on the way.
+    it('sends inherit_primary alone', async () => {
+      daemon.session = {
+        kb_ids: ['alpha', 'beta'],
+        primary_kb: 'beta',
+        active_kb: 'beta',
+        hidden_kbs: [],
+      };
+      await renderWithDefault();
+
+      await userEvent.click(screen.getByRole('button', { name: 'follow the default' }));
+
+      await waitFor(() => expect(mocks.setActive).toHaveBeenCalled());
+      const calls = mocks.setActive.mock.calls;
+      const body = calls[calls.length - 1]?.[0]?.body;
+      expect(body.inherit_primary).toBe(true);
+      expect(body.primary_kb).toBeUndefined();
+      expect(body.clear_primary).toBe(false);
+      expect(body.hidden_kbs).toBeUndefined();
+      expect(body.session_id).toBe('chat-1');
+    });
+
+    // Which base "the default" resolves to is the daemon's to decide — it
+    // re-reads the machine pointer and filters it through this chat's set. The
+    // renderer adopts that answer rather than assuming its own cached default.
+    it('adopts whatever primary the daemon reports back', async () => {
+      daemon.session = {
+        kb_ids: ['alpha', 'beta'],
+        primary_kb: 'beta',
+        active_kb: 'beta',
+        hidden_kbs: [],
+      };
+      mocks.setActive.mockResolvedValue({
+        data: {
+          kb_ids: ['alpha', 'beta'],
+          primary_kb: 'alpha',
+          active_kb: 'alpha',
+          hidden_kbs: [],
+        },
+      });
+      await renderWithDefault();
+
+      await userEvent.click(screen.getByRole('button', { name: 'follow the default' }));
+
+      await waitFor(() => expect(screen.getByTestId('primary')).toHaveTextContent('alpha'));
+      expect(screen.getByTestId('can-follow-default').textContent).toBe('no');
+    });
+
+    // A write that never landed must not leave the chat looking like it
+    // inherited: the pointer is never guessed forward, and the failure is
+    // recovered by re-reading the truth, which still offers the way back.
+    it('does not claim the chat inherited when the write fails', async () => {
+      daemon.session = {
+        kb_ids: ['alpha', 'beta'],
+        primary_kb: 'beta',
+        active_kb: 'beta',
+        hidden_kbs: [],
+      };
+      const pending = deferred<unknown>();
+      await renderWithDefault();
+      const readsBefore = mocks.getActive.mock.calls.length;
+
+      mocks.setActive.mockReturnValue(pending.promise);
+      await userEvent.click(screen.getByRole('button', { name: 'follow the default' }));
+      expect(screen.getByTestId('primary').textContent).toBe('beta');
+
+      await settle(() => pending.reject(new Error('network down')));
+
+      expect(mocks.getActive.mock.calls.length).toBe(readsBefore + 1);
+      expect(screen.getByTestId('primary').textContent).toBe('beta');
+      expect(screen.getByTestId('can-follow-default').textContent).toBe('yes');
+    });
+
+    // At machine scope there is nothing above to inherit, so the gesture
+    // coincides with "this scope has no primary" — a different, destructive
+    // thing. It is not offered, and asking for it writes nothing.
+    it('has nothing to inherit outside a chat', async () => {
+      daemon.machine.primary_kb = 'beta';
+      daemon.machine.active_kb = 'beta';
+      await renderWithDefault(null);
+
+      expect(screen.getByTestId('can-follow-default').textContent).toBe('no');
+      await userEvent.click(screen.getByRole('button', { name: 'follow the default' }));
+      await settle(() => {});
+      expect(mocks.setActive).not.toHaveBeenCalled();
+    });
   });
 });
