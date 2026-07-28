@@ -17,7 +17,7 @@ use crate::config::search_path::SearchPaths;
 use crate::config::{Config, BioRouterMode};
 use crate::conversation::message::{Message, MessageContent};
 use crate::model::ModelConfig;
-use crate::subprocess::configure_command_no_window;
+use crate::subprocess::prepare_agent_child_command;
 use rmcp::model::Role;
 use rmcp::model::Tool;
 
@@ -176,7 +176,6 @@ impl CodexProvider {
         }
 
         let mut cmd = Command::new(&self.command);
-        configure_command_no_window(&mut cmd);
 
         // Use 'exec' subcommand for non-interactive mode
         cmd.arg("exec");
@@ -211,6 +210,10 @@ impl CodexProvider {
 
         // Pass the prompt via stdin using '-' argument
         cmd.arg("-");
+
+        // Last, after every arg/env: the child is a coding agent with shell
+        // access, so it must not inherit the daemon's credentials (issue #57).
+        prepare_agent_child_command(&mut cmd);
 
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
