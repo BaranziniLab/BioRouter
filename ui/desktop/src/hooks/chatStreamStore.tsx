@@ -308,7 +308,8 @@ class ChatStreamController {
    * loop-guard / stall / budget nudges, hook context) are never yielded at all.
    * `conversation_writeback_freshness.rs
    * ::a_reply_split_into_several_stored_rows_publishes_every_one_of_their_ids`
-   * asserts that inequality from the server side.
+   * asserts that inequality from the server side. #67: submitting a turn clears
+   * it too, since `retryTurn` reaches no `messagesRef` assignment at all.
    *
    * FOLLOW-UP: #59 publishes those ids on `MessagesPersisted`, which this store
    * does not yet consume. Folding them into a per-session id set would let a
@@ -987,6 +988,20 @@ class ChatStreamController {
     currentMessages: Message[],
     updateMessageList: boolean
   ): Promise<void> => {
+    // #67 — launching a turn invalidates the completeness claim, whatever that
+    // turn goes on to do. `updateMessages` drops it on every path that appends a
+    // message, but `retryTurn` re-sends the row already at the tail
+    // (`updateMessageList: false`) and so reaches neither it nor `loadSession`,
+    // which is a no-op once loaded. A resume's claim therefore used to survive a
+    // retry that died before delivering a single frame, while the server may
+    // already have persisted rows this client was never shown. Clearing it here
+    // covers the submit itself, so the property does not depend on which of the
+    // two branches below runs.
+    //
+    // This becomes redundant once the client consumes `MessagesPersisted`: with
+    // the ids a turn persisted folded into a per-session set, a watched turn
+    // could KEEP the claim rather than drop it. See `viewNamesEveryStoredRow`.
+    this.viewNamesEveryStoredRow = false;
     if (updateMessageList) {
       this.updateMessages(currentMessages);
     }
