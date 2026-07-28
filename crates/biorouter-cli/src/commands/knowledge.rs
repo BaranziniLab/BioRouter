@@ -3,8 +3,12 @@
 //! or set the primary base, create a base, and run the ingest / lint / query
 //! macros (each backed by a bounded knowledge sub-agent).
 //!
-//! The CLI has no session concept, so every command here is machine-wide: the
-//! primary it reads and writes is the one in `.active-kb`, not a chat's.
+//! The CLI has no session of its own, so every command here is machine-wide by
+//! default: the primary it reads and writes is the one in `.active-kb`, not a
+//! chat's. The single exception is `knowledge active --session <id>`, which
+//! addresses one chat's pointer on purpose — a chat can hold an explicit "no
+//! primary" override that only a session-scoped gesture can lift, and the CLI
+//! is the escape hatch when the GUI is not the surface in front of the user.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -240,43 +244,115 @@ fn unhide_command(svc: &KnowledgeService, id: &str) -> Result<String> {
 // active
 // ──────────────────────────────────────────────────────────────────────────────
 
-pub async fn handle_active(set: Option<String>, clear: bool) -> Result<()> {
+pub async fn handle_active(
+    set: Option<String>,
+    clear: bool,
+    inherit: bool,
+    session: Option<String>,
+) -> Result<()> {
     let svc = service()?;
-    println!("{}", active_command(&svc, set, clear)?);
+    println!(
+        "{}",
+        active_command(&svc, session.as_deref(), set, clear, inherit)?
+    );
     Ok(())
 }
 
-/// Show, set or clear the **primary** knowledge base — the base a `--kb`-less
-/// ingest/query/lint writes to. Setting one validates membership: a base the
-/// CLI hides from the agent can never be the primary.
-fn active_command(svc: &KnowledgeService, set: Option<String>, clear: bool) -> Result<String> {
+/// Show, set, clear or un-override the **primary** knowledge base — the base a
+/// `--kb`-less ingest/query/lint writes to. Setting one validates membership: a
+/// base the CLI hides from the agent can never be the primary.
+///
+/// `session` is the one thing the CLI addresses that is not its own: everything
+/// else here is machine-wide (see the module header). It exists because
+/// `--inherit` only means something at session scope — a chat can hold an
+/// explicit "no primary" override that survives every other gesture, and
+/// deleting the base a chat had pinned *installs* one. Without a way to drop
+/// that override from outside the GUI, such a chat could never follow the
+/// machine-wide default again.
+fn active_command(
+    svc: &KnowledgeService,
+    session: Option<&str>,
+    set: Option<String>,
+    clear: bool,
+    inherit: bool,
+) -> Result<String> {
+    // Three incompatible outcomes; clap rejects the combination first, but the
+    // check belongs with the semantics, not only with the parser.
+    if [set.is_some(), clear, inherit]
+        .iter()
+        .filter(|asked| **asked)
+        .count()
+        > 1
+    {
+        bail!("--set, --clear and --inherit are three different gestures; pass at most one.");
+    }
+
+    let scope = match session {
+        Some(id) => format!(" for chat {}", style(id).fg(ACCENT).bold()),
+        None => String::new(),
+    };
+
+    if inherit {
+        let Some(session) = session else {
+            bail!(
+                "--inherit drops a chat's own primary so it follows the machine-wide one, so it \
+                 needs --session <id>. The machine-wide primary has nothing above it to inherit \
+                 — use --clear to unset it."
+            );
+        };
+        let selection = svc.set_selection(Some(session), None, PrimaryUpdate::Inherit)?;
+        return Ok(match selection.primary_kb {
+            Some(id) => format!(
+                "  {} chat {} now follows the machine-wide primary knowledge base ({})",
+                style("✓").green(),
+                style(session).fg(ACCENT).bold(),
+                style(&id).fg(ACCENT).bold()
+            ),
+            None => format!(
+                "  {} chat {} now follows the machine-wide primary knowledge base (none is set)",
+                style("✓").green(),
+                style(session).fg(ACCENT).bold()
+            ),
+        });
+    }
+
     if clear {
-        svc.set_selection(None, None, PrimaryUpdate::Clear)?;
+        svc.set_selection(session, None, PrimaryUpdate::Clear)?;
         return Ok(format!(
-            "  {} primary knowledge base cleared",
-            style("✓").green()
+            "  {} primary knowledge base cleared{}",
+            style("✓").green(),
+            scope
         ));
     }
 
     if let Some(id) = set {
-        svc.set_selection(None, None, PrimaryUpdate::Set(&id))
+        svc.set_selection(session, None, PrimaryUpdate::Set(&id))
             .map_err(|e| anyhow!("{e} Run `biorouter knowledge list` to see them."))?;
         return Ok(format!(
-            "  {} primary knowledge base set to {}",
+            "  {} primary knowledge base{} set to {}",
             style("✓").green(),
+            scope,
             style(&id).fg(ACCENT).bold()
         ));
     }
 
-    Ok(match svc.primary_for_session(None)? {
+    Ok(match svc.primary_for_session(session)? {
         Some(id) => format!(
-            "  {} {}",
+            "  {} {}{}",
             style("primary:").dim(),
-            style(id).fg(ACCENT).bold()
+            style(id).fg(ACCENT).bold(),
+            scope
         ),
         None => format!(
             "  {}",
-            style("no primary knowledge base (use --set <id>)").dim()
+            style(format!(
+                "no primary knowledge base{} (use --set <id>)",
+                match session {
+                    Some(id) => format!(" for chat {id}"),
+                    None => String::new(),
+                }
+            ))
+            .dim()
         ),
     })
 }
@@ -696,12 +772,16 @@ mod tests {
     fn active_command_shows_sets_validates_and_clears_the_primary() -> anyhow::Result<()> {
         let (_tmp, svc) = svc();
 
-        assert!(active_command(&svc, None, false)?.contains("no primary knowledge base"));
-        assert!(active_command(&svc, Some("beta".to_string()), false)?.contains("beta"));
-        assert!(active_command(&svc, None, false)?.contains("beta"));
+        assert!(
+            active_command(&svc, None, None, false, false)?.contains("no primary knowledge base")
+        );
+        assert!(
+            active_command(&svc, None, Some("beta".to_string()), false, false)?.contains("beta")
+        );
+        assert!(active_command(&svc, None, None, false, false)?.contains("beta"));
 
         svc.set_hidden_persisted(&["alpha".to_string()])?;
-        let err = active_command(&svc, Some("alpha".to_string()), false)
+        let err = active_command(&svc, None, Some("alpha".to_string()), false, false)
             .unwrap_err()
             .to_string();
         assert!(
@@ -709,8 +789,95 @@ mod tests {
             "a hidden base cannot be the primary, and the error must say how to look, got: {err}"
         );
 
-        assert!(active_command(&svc, None, true)?.contains("cleared"));
+        assert!(active_command(&svc, None, None, true, false)?.contains("cleared"));
         assert_eq!(svc.primary_for_session(None)?, None);
+        Ok(())
+    }
+
+    /// The explicit "no primary" override is durable by design — that is the
+    /// whole point of the blank-file state — but it used to be a **one-way
+    /// door**. `delete_base` installs one in every chat that had pinned the
+    /// deleted base, and nothing on the CLI or the HTTP surface could take it
+    /// back off, so such a chat could never follow the machine-wide default
+    /// again. `--inherit` is the way back.
+    #[test]
+    fn inherit_reopens_a_chat_that_was_left_with_an_explicit_no_primary() -> anyhow::Result<()> {
+        let (_tmp, svc) = svc();
+        svc.create_base("gamma", "Gamma", None)?;
+        svc.set_selection(None, None, PrimaryUpdate::Set("alpha"))?;
+
+        // The chat pinned a base of its own, and that base was then deleted —
+        // which must not silently hand the chat the machine-wide default.
+        svc.set_primary_for_session("s1", Some("gamma"))?;
+        svc.delete_base("gamma")?;
+        assert_eq!(svc.primary_for_session(Some("s1"))?, None);
+        // Every other gesture leaves the override in place.
+        assert!(active_command(&svc, Some("s1"), None, false, false)?
+            .contains("no primary knowledge base for chat s1"));
+
+        let out = active_command(&svc, Some("s1"), None, false, true)?;
+        assert!(
+            out.contains("s1") && out.contains("alpha"),
+            "the confirmation must name the chat and the default it now follows, got: {out}"
+        );
+        assert_eq!(
+            svc.primary_for_session(Some("s1"))?.as_deref(),
+            Some("alpha"),
+            "the chat must follow the machine-wide primary again"
+        );
+        // And it keeps following it, rather than having copied the value once.
+        svc.set_selection(None, None, PrimaryUpdate::Set("beta"))?;
+        assert_eq!(
+            svc.primary_for_session(Some("s1"))?.as_deref(),
+            Some("beta")
+        );
+
+        // The machine-wide scope has nothing above it to inherit, so asking is
+        // a clean error naming the gesture that does apply …
+        let err = active_command(&svc, None, None, false, true)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("--session") && err.contains("--clear"),
+            "got: {err}"
+        );
+        // … and the three gestures are mutually exclusive.
+        let err = active_command(&svc, Some("s1"), Some("beta".to_string()), false, true)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("at most one"), "got: {err}");
+        Ok(())
+    }
+
+    /// `--session` makes the machine-wide CLI able to address one chat's
+    /// pointer, which is what `--inherit` needs to mean anything. It must not
+    /// leak in either direction.
+    #[test]
+    fn a_session_scoped_primary_does_not_disturb_the_machine_one() -> anyhow::Result<()> {
+        let (_tmp, svc) = svc();
+        svc.set_selection(None, None, PrimaryUpdate::Set("alpha"))?;
+
+        assert!(
+            active_command(&svc, Some("s1"), Some("beta".to_string()), false, false)?
+                .contains("beta")
+        );
+        assert_eq!(
+            svc.primary_for_session(Some("s1"))?.as_deref(),
+            Some("beta")
+        );
+        assert_eq!(
+            svc.primary_for_session(None)?.as_deref(),
+            Some("alpha"),
+            "a chat's pin must not move the machine-wide pointer"
+        );
+
+        assert!(active_command(&svc, Some("s1"), None, true, false)?.contains("for chat s1"));
+        assert_eq!(svc.primary_for_session(Some("s1"))?, None);
+        assert_eq!(
+            svc.primary_for_session(None)?.as_deref(),
+            Some("alpha"),
+            "clearing a chat's primary must not clear the machine-wide one"
+        );
         Ok(())
     }
 

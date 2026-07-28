@@ -916,11 +916,29 @@ enum KnowledgeCommand {
         #[arg(
             long = "set",
             value_name = "ID",
+            conflicts_with_all = ["clear", "inherit"],
             help = "Make this base the primary (it must not be hidden)"
         )]
         set: Option<String>,
-        #[arg(long = "clear", help = "Clear the primary knowledge base")]
+        #[arg(
+            long = "clear",
+            conflicts_with = "inherit",
+            help = "Clear the primary knowledge base"
+        )]
         clear: bool,
+        #[arg(
+            long = "inherit",
+            requires = "session",
+            help = "Drop a chat's own primary so it follows the machine-wide one again \
+                    (needs --session)"
+        )]
+        inherit: bool,
+        #[arg(
+            long = "session",
+            value_name = "ID",
+            help = "Act on this chat session's primary instead of the machine-wide one"
+        )]
+        session: Option<String>,
     },
 
     /// Create a new knowledge base
@@ -1948,7 +1966,12 @@ async fn handle_knowledge_subcommand(command: KnowledgeCommand) -> Result<()> {
     biorouter::knowledge::soul::install_assets();
     match command {
         KnowledgeCommand::List { format } => knowledge::handle_list(&format).await,
-        KnowledgeCommand::Active { set, clear } => knowledge::handle_active(set, clear).await,
+        KnowledgeCommand::Active {
+            set,
+            clear,
+            inherit,
+            session,
+        } => knowledge::handle_active(set, clear, inherit, session).await,
         KnowledgeCommand::Create { id, name, color } => {
             knowledge::handle_create(id, name, color).await
         }
