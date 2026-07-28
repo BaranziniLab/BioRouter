@@ -18,22 +18,62 @@ pub fn get_workflow_library_dir(is_global: bool) -> PathBuf {
     }
 }
 
-fn local_workflow_dirs() -> Vec<PathBuf> {
-    let mut local_dirs = vec![PathBuf::from(".")];
+/// Why a directory is being scanned — which is what decides how loudly a file
+/// in it that fails to load should be reported.
+///
+/// Variant order is load-bearing: `WorkflowLibrary` sorts first so that a
+/// directory reached both ways keeps the stricter origin through `dedup_by`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum ScanOrigin {
+    /// A directory that exists to hold workflows: `~/.config/biorouter/workflows`,
+    /// `<project>/.biorouter/workflows`, or an entry of `BIOROUTER_WORKFLOW_PATH`.
+    /// Intent is established by *location*, so any `.yaml`/`.json` in it that
+    /// does not load is a broken workflow and worth an error.
+    WorkflowLibrary,
+    /// The process working directory, scanned opportunistically. It belongs to
+    /// the user, not to Biorouter: nearly every `.yaml`/`.json` in it — package
+    /// manifests, lockfiles, CI config — has nothing to do with workflows, so
+    /// intent has to be established from the *content* instead.
+    WorkingDirectory,
+}
 
-    if let Ok(workflow_path_env) = env::var(BIOROUTER_WORKFLOW_PATH_ENV_VAR) {
+fn local_workflow_dirs() -> Vec<(PathBuf, ScanOrigin)> {
+    collect_workflow_dirs(
+        env::var(BIOROUTER_WORKFLOW_PATH_ENV_VAR).ok().as_deref(),
+        get_workflow_library_dir(true),
+        get_workflow_library_dir(false),
+    )
+}
+
+/// The env-free half of [`local_workflow_dirs`], so the origin tagging can be
+/// tested without mutating process state.
+fn collect_workflow_dirs(
+    workflow_path_env: Option<&str>,
+    global_library: PathBuf,
+    project_library: PathBuf,
+) -> Vec<(PathBuf, ScanOrigin)> {
+    let mut local_dirs = vec![(PathBuf::from("."), ScanOrigin::WorkingDirectory)];
+
+    if let Some(workflow_path_env) = workflow_path_env {
         let path_separator = if cfg!(windows) { ';' } else { ':' };
-        local_dirs.extend(workflow_path_env.split(path_separator).map(PathBuf::from));
+        local_dirs.extend(
+            workflow_path_env
+                .split(path_separator)
+                .map(|dir| (PathBuf::from(dir), ScanOrigin::WorkflowLibrary)),
+        );
     }
-    local_dirs.push(get_workflow_library_dir(true));
-    local_dirs.push(get_workflow_library_dir(false));
+    local_dirs.push((global_library, ScanOrigin::WorkflowLibrary));
+    local_dirs.push((project_library, ScanOrigin::WorkflowLibrary));
 
-    let mut dirs: Vec<PathBuf> = local_dirs
+    let mut dirs: Vec<(PathBuf, ScanOrigin)> = local_dirs
         .into_iter()
-        .map(|dir| dir.canonicalize().unwrap_or(dir))
+        .map(|(dir, origin)| (dir.canonicalize().unwrap_or(dir), origin))
         .collect();
     dirs.sort();
-    dirs.dedup();
+    // Keep one entry per path. Sorting put `WorkflowLibrary` first within a
+    // path, so a workflow library that also happens to be the working directory
+    // is still treated as a workflow library.
+    dirs.dedup_by(|a, b| a.0 == b.0);
     dirs
 }
 
@@ -54,7 +94,7 @@ pub fn load_local_workflow_file(workflow_name: &str) -> Result<WorkflowFile> {
     }
 
     let search_dirs = local_workflow_dirs();
-    for dir in &search_dirs {
+    for (dir, _origin) in &search_dirs {
         if let Ok(result) = load_workflow_file_from_dir(dir, workflow_name) {
             return Ok(result);
         }
@@ -62,7 +102,7 @@ pub fn load_local_workflow_file(workflow_name: &str) -> Result<WorkflowFile> {
 
     let search_dirs_str = search_dirs
         .iter()
-        .map(|p| p.display().to_string())
+        .map(|(dir, _origin)| dir.display().to_string())
         .collect::<Vec<_>>()
         .join(":");
     Err(anyhow!(
@@ -75,8 +115,8 @@ pub fn load_local_workflow_file(workflow_name: &str) -> Result<WorkflowFile> {
 
 pub fn list_local_workflows() -> Result<Vec<(PathBuf, Workflow)>> {
     let mut workflows = Vec::new();
-    for dir in local_workflow_dirs() {
-        if let Ok(dir_workflows) = scan_directory_for_workflows(&dir) {
+    for (dir, origin) in local_workflow_dirs() {
+        if let Ok(dir_workflows) = scan_directory_for_workflows(&dir, origin) {
             workflows.extend(dir_workflows);
         }
     }
@@ -110,7 +150,10 @@ fn load_workflow_file_from_dir(dir: &Path, workflow_name: &str) -> Result<Workfl
     )))
 }
 
-fn scan_directory_for_workflows(dir: &Path) -> Result<Vec<(PathBuf, Workflow)>> {
+fn scan_directory_for_workflows(
+    dir: &Path,
+    origin: ScanOrigin,
+) -> Result<Vec<(PathBuf, Workflow)>> {
     let mut workflows = Vec::new();
 
     if !dir.exists() || !dir.is_dir() {
@@ -126,7 +169,7 @@ fn scan_directory_for_workflows(dir: &Path) -> Result<Vec<(PathBuf, Workflow)>> 
                 if WORKFLOW_FILE_EXTENSIONS.contains(&extension.to_string_lossy().as_ref()) {
                     match Workflow::from_file_path(&path) {
                         Ok(workflow) => workflows.push((path.clone(), workflow)),
-                        Err(e) => report_workflow_load_failure(&path, &e),
+                        Err(e) => report_workflow_load_failure(&path, &e, origin),
                     }
                 }
             }
@@ -136,27 +179,23 @@ fn scan_directory_for_workflows(dir: &Path) -> Result<Vec<(PathBuf, Workflow)>> 
     Ok(workflows)
 }
 
-/// Keys that mark a document as an attempt at a workflow. The scanned
-/// directories (the working directory, `~/.config/biorouter/workflows`, any
-/// `BIOROUTER_WORKFLOW_PATH` entry) also hold JSON belonging to other tools —
-/// `~/.claude.json` is the canonical example — and those are not failures.
-const WORKFLOW_MARKER_KEYS: &[&str] = &[
-    "title",
-    "description",
-    "instructions",
-    "prompt",
-    "activities",
-    "parameters",
-    "extensions",
-    "sub_workflows",
-    "version",
-];
+/// Keys that only a workflow document plausibly carries, used to establish
+/// intent when location cannot — i.e. in the working directory, which is full
+/// of other people's `.yaml`/`.json`.
+///
+/// Deliberately excluded are `version`, `title` and `description`: every
+/// package manifest, lockfile and CI config in existence carries some
+/// combination of them, and `ui/desktop/package.json` in this very repo carries
+/// `version` *and* `description`. Requiring two such generic keys does not make
+/// them evidence — it only makes the false positive need one more line of JSON.
+const WORKFLOW_INTENT_KEYS: &[&str] = &["instructions", "prompt", "activities", "sub_workflows"];
 
-/// A document is workflow-shaped when it is a mapping carrying at least two
-/// workflow keys, or a mapping with the `workflow:` envelope
-/// `Workflow::from_content` accepts. One key alone is too weak a signal — a
-/// great many unrelated config files carry `version` or `description`.
-fn is_workflow_shaped(value: &serde_yaml::Value) -> bool {
+/// Whether a document in an arbitrary directory declares itself a workflow.
+///
+/// The `workflow:` envelope is a declaration on its own — it is the key
+/// `Workflow::from_content` branches on. Otherwise at least one distinctive
+/// workflow key must be present.
+fn declares_workflow_intent(value: &serde_yaml::Value) -> bool {
     let serde_yaml::Value::Mapping(map) = value else {
         return false;
     };
@@ -165,27 +204,30 @@ fn is_workflow_shaped(value: &serde_yaml::Value) -> bool {
             return true;
         }
     }
-    let markers = WORKFLOW_MARKER_KEYS
+    WORKFLOW_INTENT_KEYS
         .iter()
-        .filter(|key| map.contains_key(serde_yaml::Value::from(**key)))
-        .count();
-    markers >= 2
+        .any(|key| map.contains_key(serde_yaml::Value::from(*key)))
 }
 
-/// Log a file that did not load as a workflow at the level its shape deserves.
+/// Log a file that did not load as a workflow at the level it deserves.
 ///
 /// A file that was never a workflow is not a failed workflow: it is skipped at
-/// `debug`. `error` is reserved for a document that looks like a workflow and
-/// still does not load — the case someone actually needs to see in the log.
-fn report_workflow_load_failure(path: &Path, error: &anyhow::Error) {
-    let looks_like_workflow = fs::read_to_string(path).map_or(true, |content| {
-        // Unparseable content is reported as an error: a `.yaml`/`.json` file
-        // that is not even valid YAML/JSON is broken, whoever owns it.
-        serde_yaml::from_str::<serde_yaml::Value>(&content)
-            .map_or(true, |value| is_workflow_shaped(&value))
-    });
+/// `debug`. `error` is reserved for a document someone meant to be a workflow
+/// and that still does not load — the case someone actually needs to see.
+/// Intent comes from the directory when the directory is ours, and from the
+/// document's own keys when it is not.
+fn report_workflow_load_failure(path: &Path, error: &anyhow::Error, origin: ScanOrigin) {
+    let is_broken_workflow = match origin {
+        ScanOrigin::WorkflowLibrary => true,
+        ScanOrigin::WorkingDirectory => fs::read_to_string(path).map_or(true, |content| {
+            // Unparseable content is reported as an error: a `.yaml`/`.json` file
+            // that is not even valid YAML/JSON is broken, whoever owns it.
+            serde_yaml::from_str::<serde_yaml::Value>(&content)
+                .map_or(true, |value| declares_workflow_intent(&value))
+        }),
+    };
 
-    if looks_like_workflow {
+    if is_broken_workflow {
         tracing::error!(
             "Failed to load workflow from file {}: {}",
             path.display(),
@@ -280,7 +322,7 @@ mod tests {
         }
     }
 
-    fn scan_with_logs(dir: &Path) -> (Vec<(PathBuf, Workflow)>, String) {
+    fn scan_with_logs(dir: &Path, origin: ScanOrigin) -> (Vec<(PathBuf, Workflow)>, String) {
         let logs = CapturedLogs::default();
         let subscriber = tracing_subscriber::fmt()
             .with_writer(logs.clone())
@@ -288,7 +330,7 @@ mod tests {
             .with_ansi(false)
             .finish();
         let workflows = tracing::subscriber::with_default(subscriber, || {
-            scan_directory_for_workflows(dir).unwrap()
+            scan_directory_for_workflows(dir, origin).unwrap()
         });
         (workflows, logs.text())
     }
@@ -308,7 +350,7 @@ mod tests {
             r#"{"numStartups": 12, "installMethod": "brew", "projects": {}}"#,
         );
 
-        let (workflows, logs) = scan_with_logs(dir.path());
+        let (workflows, logs) = scan_with_logs(dir.path(), ScanOrigin::WorkingDirectory);
 
         assert!(workflows.is_empty());
         assert!(
@@ -322,6 +364,105 @@ mod tests {
     }
 
     #[test]
+    fn a_package_manifest_in_the_working_directory_is_not_a_broken_workflow() {
+        let dir = tempfile::tempdir().unwrap();
+        // An ordinary npm manifest — `ui/desktop/package.json` is the one in
+        // this repo. It carries `version` and `description` like almost every
+        // package manifest on earth, and nothing that is workflow-specific.
+        write_file(
+            dir.path(),
+            "package.json",
+            r#"{"name": "biorouter", "version": "1.88.5", "description": "an app", "scripts": {}}"#,
+        );
+
+        let (workflows, logs) = scan_with_logs(dir.path(), ScanOrigin::WorkingDirectory);
+
+        assert!(workflows.is_empty());
+        assert!(
+            !logs.contains("ERROR"),
+            "generic keys shared by every config file are not workflow intent; logs were:\n{logs}"
+        );
+        assert!(
+            logs.contains("DEBUG") && logs.contains("package.json"),
+            "the skip should still be recorded at debug; logs were:\n{logs}"
+        );
+    }
+
+    #[test]
+    fn an_unrelated_file_in_a_workflow_directory_is_a_broken_workflow() {
+        let dir = tempfile::tempdir().unwrap();
+        // The same manifest, but sitting in ~/.config/biorouter/workflows or a
+        // BIOROUTER_WORKFLOW_PATH entry. Nothing but workflows belongs there,
+        // so location settles intent and content never gets a vote.
+        write_file(
+            dir.path(),
+            "package.json",
+            r#"{"name": "biorouter", "version": "1.88.5", "description": "an app", "scripts": {}}"#,
+        );
+
+        let (workflows, logs) = scan_with_logs(dir.path(), ScanOrigin::WorkflowLibrary);
+
+        assert!(workflows.is_empty());
+        assert!(
+            logs.contains("ERROR") && logs.contains("package.json"),
+            "a file that fails to load in a workflow directory is a broken workflow; logs were:\n{logs}"
+        );
+    }
+
+    #[test]
+    fn a_workflow_library_that_is_also_the_working_directory_keeps_the_stricter_origin() {
+        let library = tempfile::tempdir().unwrap();
+        let cwd = env::current_dir().unwrap().canonicalize().unwrap();
+
+        // The project library resolves to the working directory itself, so the
+        // same path arrives twice with two different origins.
+        let dirs = collect_workflow_dirs(None, library.path().to_path_buf(), cwd.clone());
+
+        let origins: Vec<ScanOrigin> = dirs
+            .iter()
+            .filter(|(dir, _)| *dir == cwd)
+            .map(|(_, origin)| *origin)
+            .collect();
+        assert_eq!(
+            origins,
+            vec![ScanOrigin::WorkflowLibrary],
+            "dedup must keep one entry, and it must be the stricter one; dirs were {dirs:?}"
+        );
+    }
+
+    #[test]
+    fn only_the_working_directory_is_scanned_as_an_arbitrary_directory() {
+        let global = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let on_path = tempfile::tempdir().unwrap();
+        let path_env = on_path.path().display().to_string();
+
+        let dirs = collect_workflow_dirs(
+            Some(&path_env),
+            global.path().to_path_buf(),
+            project.path().to_path_buf(),
+        );
+
+        let ambient: Vec<&PathBuf> = dirs
+            .iter()
+            .filter(|(_, origin)| *origin == ScanOrigin::WorkingDirectory)
+            .map(|(dir, _)| dir)
+            .collect();
+        assert_eq!(
+            ambient,
+            vec![&env::current_dir().unwrap().canonicalize().unwrap()]
+        );
+        for dir in [global.path(), project.path(), on_path.path()] {
+            let canonical = dir.canonicalize().unwrap();
+            assert!(
+                dirs.contains(&(canonical.clone(), ScanOrigin::WorkflowLibrary)),
+                "{} should be a workflow library; dirs were {dirs:?}",
+                canonical.display()
+            );
+        }
+    }
+
+    #[test]
     fn a_malformed_workflow_is_still_an_error() {
         let dir = tempfile::tempdir().unwrap();
         // Carries workflow keys but is missing the required `title`.
@@ -331,7 +472,7 @@ mod tests {
             "description: does something\nprompt: do the thing\n",
         );
 
-        let (workflows, logs) = scan_with_logs(dir.path());
+        let (workflows, logs) = scan_with_logs(dir.path(), ScanOrigin::WorkingDirectory);
 
         assert!(workflows.is_empty());
         assert!(
@@ -350,7 +491,7 @@ mod tests {
         );
         write_file(dir.path(), "unrelated.json", r#"{"machineID": "abc"}"#);
 
-        let (workflows, logs) = scan_with_logs(dir.path());
+        let (workflows, logs) = scan_with_logs(dir.path(), ScanOrigin::WorkingDirectory);
 
         assert_eq!(workflows.len(), 1);
         assert_eq!(workflows[0].1.title, "Good");
