@@ -1703,6 +1703,14 @@ export type SessionSummary = {
     id: string;
     message_count: number;
     name: string;
+    /**
+     * BR-71: `sub_agent` rows are grouped under this parent in History.
+     */
+    parent_session_id?: string | null;
+    /**
+     * BR-71: the session's type as stored (`user`/`scheduled`/`sub_agent`).
+     */
+    session_type?: string | null;
     updated_at: string;
     working_dir: string;
 };
@@ -4736,7 +4744,12 @@ export type UnpauseScheduleResponse = UnpauseScheduleResponses[keyof UnpauseSche
 export type ListSessionsData = {
     body?: never;
     path?: never;
-    query?: never;
+    query?: {
+        /**
+         * Include sub_agent sessions (grouped under parent_session_id); default false
+         */
+        include_subagents?: boolean | null;
+    };
     url: '/sessions';
 };
 
@@ -4862,6 +4875,10 @@ export type ListSidebarSessionsData = {
          * Number of session summaries to skip
          */
         offset?: number | null;
+        /**
+         * Include sub_agent sessions (grouped under parent_session_id); default false
+         */
+        include_subagents?: boolean | null;
     };
     url: '/sessions/sidebar';
 };

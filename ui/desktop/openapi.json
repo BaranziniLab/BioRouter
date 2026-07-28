@@ -3103,6 +3103,18 @@
           "Session Management"
         ],
         "operationId": "list_sessions",
+        "parameters": [
+          {
+            "name": "include_subagents",
+            "in": "query",
+            "description": "Include sub_agent sessions (grouped under parent_session_id); default false",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "nullable": true
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "List of available sessions retrieved successfully",
@@ -3276,6 +3288,16 @@
               "format": "int32",
               "nullable": true,
               "minimum": 0
+            }
+          },
+          {
+            "name": "include_subagents",
+            "in": "query",
+            "description": "Include sub_agent sessions (grouped under parent_session_id); default false",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "nullable": true
             }
           }
         ],
@@ -8747,6 +8769,16 @@
           },
           "name": {
             "type": "string"
+          },
+          "parent_session_id": {
+            "type": "string",
+            "description": "BR-71: `sub_agent` rows are grouped under this parent in History.",
+            "nullable": true
+          },
+          "session_type": {
+            "type": "string",
+            "description": "BR-71: the session's type as stored (`user`/`scheduled`/`sub_agent`).",
+            "nullable": true
           },
           "updated_at": {
             "type": "string",
