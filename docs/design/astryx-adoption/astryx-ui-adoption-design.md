@@ -366,13 +366,25 @@ That leaves the transcript with exactly **one** running motif at three scales: t
 
 This is additive. The collapsed row, the verb grammar and the humanised summaries are all kept; what it adds is a state the eye can find without reading.
 
-#### A long paste — collapsed by default (not built yet)
+#### A long message — collapsed by default (not built yet)
 
-Paste a stack trace, a CSV, or half a log file and the bubble currently renders every line, so one message can push the conversation off screen and the reply after it becomes unreachable without a long scroll back. Nothing truncates. This is **not** part of the ten phases; it is written down so the next round starts from a decided shape:
+Paste a stack trace, or simply write a long message — the bubble currently renders every line either way, so one message can push the conversation off screen and the reply after it becomes unreachable without a long scroll back. Nothing truncates. This is **not** part of the ten phases; it is written down so the next round starts from a decided shape.
 
-- Clamp above the threshold — roughly **10 lines or 600 characters** — and never below it. A three-line paste that collapses is worse than no collapse at all.
+**One mechanism, two contents.** The clamp knows nothing about what it clamps; only the type treatment and the meta unit differ:
+
+| | A pasted log | A long typed message |
+|---|---|---|
+| Type | mono, own line breaks — it is quoted matter, visibly not prose | the bubble's normal 14px prose, unchanged |
+| Container | none — no inner box separates the pasted part from the message | none, for the same reason: it is all one message |
+| Meta | `214 lines · 8.4 KB` | `128 words` |
+
+Nothing becomes a box in either case. The only additions are the clamp, the fade and the control below it.
+
+The rules both carry:
+
+- Clamp above the threshold — roughly **10 lines or 600 characters** — and never below it. A three-line message that collapses is worse than no collapse at all.
 - Fade the cut using the bubble's **own fill token**, so it reads as "there is more" rather than as a rendering bug, and works in every family without a second colour being chosen.
-- The control sits **below** the bubble, not inside it: it belongs to the message, not to the text. It carries the count — `214 lines · 8.4 KB` — because that is what tells you whether expanding is worth it; a bare "Show more" does not.
+- The control sits **below** the bubble, not inside it: it belongs to the message, not to the text. It carries the count, because that is what tells you whether expanding is worth it; a bare "Show more" does not.
 - Expanded is **sticky per message** and never re-collapses while you are reading.
 - **Copy takes the whole thing**, collapsed or not: the clamp is a view state, never a content state.
 - The same clamp applies to the composer's queued-message chip, so a long paste does not push the toolbar off screen before it is even sent.

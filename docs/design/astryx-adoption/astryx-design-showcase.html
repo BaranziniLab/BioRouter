@@ -640,9 +640,15 @@ dialog::backdrop { animation:fade var(--dur-med) var(--ease) backwards; }
 
 /* a long paste, clamped. The fade is drawn in the bubble's OWN fill token so
    it works in every family without a second colour being picked. */
-.umsg--clamped { position:relative; max-height:200px; overflow:hidden; white-space:pre-wrap;
-                 font-family:ui-monospace,"SF Mono",Menlo,monospace; font-size:12.5px; line-height:20px;
-                 max-width:100%; transition:max-height var(--dur-med) var(--ease); }
+/* The clamp is mechanics only — it knows nothing about what it is clamping,
+   so a pasted log and a long typed message share one behaviour. */
+.umsg--clamped { position:relative; max-height:200px; overflow:hidden; max-width:100%;
+                 transition:max-height var(--dur-med) var(--ease); }
+/* A PASTE is set in mono and keeps its own line breaks — it is quoted matter,
+   visibly not prose. A long TYPED message stays exactly as the bubble renders
+   any other message; nothing about it becomes a box. */
+.umsg--paste { white-space:pre-wrap; font-family:ui-monospace,"SF Mono",Menlo,monospace;
+               font-size:12.5px; line-height:20px; }
 .umsg--clamped::after { content:""; position:absolute; inset:auto 0 0 0; height:56px; pointer-events:none;
                         background:linear-gradient(to bottom, transparent, var(--medium)); }
 .umsg--open { max-height:1200px; }
@@ -1637,16 +1643,15 @@ test result: <span class="p">ok</span>. 122 passed; 0 failed; 2 ignored
 
       <div class="card">
         <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap">
-          <h3 style="margin:0">A long paste — collapsed by default</h3>
+          <h3 style="margin:0">A long message — collapsed by default</h3>
           <span class="pill" style="background:color-mix(in srgb,var(--info) 18%,transparent);color:var(--info)">Not built yet · next round</span>
         </div>
-        <p class="rule">Paste a stack trace, a CSV or half a log file and today the bubble renders every line of it, so one message can push the whole conversation off screen and the reply that followed becomes unreachable without a long scroll back. Nothing truncates. This is the pre-design for the fix; it is <b>not</b> in the ten phases, and is written down here so the next round starts from a decided shape rather than an invented one.</p>
+        <p class="rule">Paste a stack trace, or simply write a long one — today the bubble renders every line either way, so one message can push the whole conversation off screen and the reply that followed becomes unreachable without a long scroll back. Nothing truncates, and the two cases are not the same: a paste is quoted matter, a long message is just prose. This is the pre-design for the fix; it is <b>not</b> in the ten phases, and is written down here so the next round starts from a decided shape rather than an invented one.</p>
         <div class="vs">
           <div class="vs-col">
-            <div class="vs-tag">Collapsed — the default above the threshold</div>
+            <div class="vs-tag">A pasted log — quoted matter</div>
             <div class="chatpane">
-              <div class="umsg umsg--clamped" id="pasteDemo">
-<span class="pasteinner">Traceback (most recent call last):
+              <div class="umsg umsg--clamped umsg--paste" id="pasteDemo">Traceback (most recent call last):
   File "run_pipeline.py", line 118, in &lt;module&gt;
     main(parse_args())
   File "run_pipeline.py", line 94, in main
@@ -1654,33 +1659,50 @@ test result: <span class="p">ok</span>. 122 passed; 0 failed; 2 ignored
   File "/opt/conda/lib/python3.12/site-packages/qc/filters.py", line 61
     mask = counts &gt;= min_genes
 ValueError: operands could not be broadcast together with shapes (18452,) (0,)
-  File "/opt/conda/lib/python3.12/site-packages/qc/filters.py", line 62
-    adata = adata[mask].copy()
   File "/opt/conda/lib/python3.12/site-packages/anndata/_core/anndata.py", line 1102
     raise IndexError(msg)
-IndexError: index out of range for axis 0 with size 18452</span>
-              </div>
+IndexError: index out of range for axis 0 with size 18452</div>
               <div class="pastefoot">
                 <button class="btn btn--ghost btn--sm" id="pasteToggle">Show more</button>
-                <span class="pastemeta">214 lines · 8.4 KB pasted</span>
+                <span class="pastemeta">214 lines · 8.4 KB</span>
               </div>
               <div class="meta">9:34 AM · <span style="color:var(--accent-ink)">Copy</span> · <span style="color:var(--accent-ink)">Diverge</span></div>
             </div>
-            <p class="vnote">Clamped to <b>10 lines</b>, with the bubble's own fill fading the cut so it reads as "there is more" rather than as a rendering bug — a gradient in the fill token, so it works in every family without a second colour. The control sits <i>below</i> the bubble, not inside it: it belongs to the message, not to the text.</p>
+            <p class="vnote">Set in mono, keeping its own line breaks: it is <b>quoted matter</b>, visibly not something the user wrote in prose. The meta counts what a log is measured in — lines and bytes.</p>
           </div>
           <div class="vs-col">
-            <div class="vs-tag on">The rules it carries</div>
-            <div class="stage" style="padding:14px">
-              <ul style="margin:0;padding-left:18px;font-size:var(--t-secondary);color:var(--ink-muted);display:flex;flex-direction:column;gap:8px">
-                <li><b>Threshold, not always-on.</b> Collapse only above ~10 lines or ~600 characters. A three-line paste that collapses is worse than no collapse at all.</li>
-                <li><b>The count is the value.</b> "214 lines · 8.4 KB" tells you whether expanding is worth it; a bare "Show more" does not.</li>
-                <li><b>Expanded is sticky per message</b>, and never re-collapses while you are reading. Re-collapsing on scroll is the behaviour people hate in every app that does it.</li>
-                <li><b>Copy takes the whole thing</b>, collapsed or not — the clamp is a view state, never a content state.</li>
-                <li><b>Send it collapsed too.</b> The same clamp applies in the composer's queued-message chip, so a long paste does not push the toolbar off screen before you have sent it.</li>
-                <li><b>A very large paste is an attachment.</b> Past ~50KB the right answer is not a taller bubble — it is a file chip with a preview, which the composer already knows how to render.</li>
-              </ul>
+            <div class="vs-tag">A long typed message — just prose</div>
+            <div class="chatpane">
+              <div class="umsg umsg--clamped" id="proseDemo">I want to redo the MS cohort analysis end to end, but with the QC thresholds from the 2025 paper rather than the ones currently in the pipeline. Specifically: filter cells at 200 genes instead of 500, keep the mitochondrial cutoff at 15%, and drop the doublet removal step entirely since the paper did not use it. After that, run Leiden at resolution 0.8 rather than 1.0, because the higher resolution was splitting the CD8 compartment into clusters that the marker genes do not actually distinguish. Then compare the resulting cluster assignments against the ones we generated last week and tell me which cells moved between compartments — I mostly care about anything that moved into or out of the cytotoxic T grouping, since that is the population the reviewers questioned.</div>
+              <div class="pastefoot">
+                <button class="btn btn--ghost btn--sm" id="proseToggle">Show more</button>
+                <span class="pastemeta">128 words</span>
+              </div>
+              <div class="meta">9:36 AM · <span style="color:var(--accent-ink)">Copy</span> · <span style="color:var(--accent-ink)">Diverge</span></div>
             </div>
-            <p class="vnote">Motion: expanding animates <code>max-height</code> at <code>--dur-med</code>, the tier for layout rearrangement. Collapsing is instant — you are moving away from it.</p>
+            <p class="vnote"><b>Nothing becomes a box.</b> Same bubble, same 14px prose, same fill — the only additions are the clamp, the fade and the control below it. There is no inner surface separating "the long part" from the rest of the message, because it is all one message. The meta counts what prose is measured in.</p>
+          </div>
+        </div>
+
+        <div class="grid2" style="margin-top:20px">
+          <div>
+            <div class="lbl">The rules it carries</div>
+            <ul style="margin:0;padding-left:18px;font-size:var(--t-secondary);color:var(--ink-muted);display:flex;flex-direction:column;gap:8px">
+              <li><b>One mechanism, two contents.</b> The clamp knows nothing about what it clamps; only the type treatment and the meta unit differ.</li>
+              <li><b>Threshold, not always-on.</b> Collapse only above ~10 lines or ~600 characters. A three-line message that collapses is worse than no collapse at all.</li>
+              <li><b>The count is the value.</b> "214 lines · 8.4 KB" or "128 words" tells you whether expanding is worth it; a bare "Show more" does not.</li>
+              <li><b>The control sits below the bubble</b>, not inside it — it belongs to the message, not to the text.</li>
+            </ul>
+          </div>
+          <div>
+            <div class="lbl">And the behaviour</div>
+            <ul style="margin:0;padding-left:18px;font-size:var(--t-secondary);color:var(--ink-muted);display:flex;flex-direction:column;gap:8px">
+              <li><b>Expanded is sticky per message</b> and never re-collapses while you are reading.</li>
+              <li><b>Copy takes the whole thing</b>, collapsed or not — the clamp is a view state, never a content state.</li>
+              <li><b>Send it collapsed too.</b> The same clamp applies to the composer's queued-message chip, so a long message does not push the toolbar off screen before it is sent.</li>
+              <li><b>Past ~50KB it is an attachment</b>, not a taller bubble — a file chip with a preview, which the composer already knows how to render.</li>
+              <li>Motion: expanding animates <code>max-height</code> at <code>--dur-med</code>, the tier for layout rearrangement. Collapsing is instant — you are moving away from it.</li>
+            </ul>
           </div>
         </div>
       </div>
@@ -2084,11 +2106,14 @@ IndexError: index out of range for axis 0 with size 18452</span>
   dlg.addEventListener('click', function (e) { if (e.target === dlg) dlg.close(); });
 
   // The long-paste clamp (pre-design; not shipped)
-  var pasteDemo = document.getElementById('pasteDemo');
-  var pasteToggle = document.getElementById('pasteToggle');
-  pasteToggle.addEventListener('click', function () {
-    var open = pasteDemo.classList.toggle('umsg--open');
-    pasteToggle.textContent = open ? 'Show less' : 'Show more';
+  [['pasteDemo', 'pasteToggle'], ['proseDemo', 'proseToggle']].forEach(function (pair) {
+    var body = document.getElementById(pair[0]);
+    var btn = document.getElementById(pair[1]);
+    if (!body || !btn) return;
+    btn.addEventListener('click', function () {
+      var open = body.classList.toggle('umsg--open');
+      btn.textContent = open ? 'Show less' : 'Show more';
+    });
   });
 
   // "New Session" is an action, not a destination: a pointer click fires it and
