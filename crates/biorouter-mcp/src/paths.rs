@@ -11,12 +11,25 @@
 //!   * `knowledge::paths::knowledge_root()` — knowledge bases (and with a
 //!     *different* app-strategy tuple, `io/biorouter/biorouter`)
 //!
+//! A fourth, `memory::global_memory_dir()` — the global memory store — was
+//! found the same way and now routes through here too.
+//!
 //! The consequence was that a sandboxed run — a test drive, a worktree, a
-//! per-app jail — wrote drafted apps into, and read knowledge bases out of, the
-//! user's **global** store. Every resolver in this crate now goes through here,
-//! and `biorouter` carries a cross-crate test asserting this module agrees with
-//! `biorouter::config::Paths` byte for byte, so a new hand-rolled
-//! `choose_app_strategy` call fails CI.
+//! per-app jail — wrote drafted apps into, read knowledge bases out of, and
+//! rewrote the memories in, the user's **global** store.
+//!
+//! `biorouter` carries a cross-crate test (`tests/path_resolver_agreement.rs`)
+//! asserting this module agrees with `biorouter::config::Paths` byte for byte,
+//! and each store that routes through here is pinned to it. Note what that does
+//! **not** buy: nothing detects a *new* hand-rolled `choose_app_strategy` call
+//! — the agreement test can only check the resolvers it already names, so a
+//! fifth one would be caught by review or not at all. Adding a store here means
+//! adding its assertion too.
+//!
+//! Not every `choose_app_strategy` call in this crate is a defect: the cache-dir
+//! resolvers (`computercontroller`, `autovisualiser`) are deliberately outside
+//! this module's remit, and `developer::undo_history` hand-rolls the same
+//! `BIOROUTER_PATH_ROOT` branch correctly.
 
 use etcetera::{choose_app_strategy, AppStrategy};
 use std::path::{Path, PathBuf};

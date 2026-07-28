@@ -1,4 +1,3 @@
-use etcetera::{choose_app_strategy, AppStrategy};
 use indoc::formatdoc;
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
@@ -67,6 +66,21 @@ pub struct MemoryServer {
     instructions: String,
     global_memory_dir: PathBuf,
     local_memory_dir: PathBuf,
+}
+
+/// Where the *global* (cross-project) memory store lives.
+///
+/// `<config>/memory`, resolved through [`crate::paths`] — the one resolver in
+/// this crate that honours `BIOROUTER_PATH_ROOT`:
+/// - macOS/Linux: `~/.config/biorouter/memory/`
+/// - Windows:     `~\AppData\Roaming\BaranziniLab\Biorouter\config\memory`
+/// - sandboxed:   `$BIOROUTER_PATH_ROOT/config/memory`
+///
+/// This used to hand-roll `choose_app_strategy(…).in_config_dir("memory")`, a
+/// fourth resolver that ignored the override — so a sandboxed run (test drive,
+/// worktree, per-app jail) read *and rewrote* the user's real global memories.
+fn global_memory_dir() -> PathBuf {
+    crate::paths::in_config_dir("memory")
 }
 
 impl Default for MemoryServer {
@@ -189,13 +203,7 @@ impl MemoryServer {
             .join(".biorouter")
             .join("memory");
 
-        // choose_app_strategy().config_dir()
-        // - macOS/Linux: ~/.config/biorouter/memory/
-        // - Windows:     ~\AppData\Roaming\BaranziniLab\Biorouter\config\memory
-        // if it fails, fall back to `.config/biorouter/memory` (relative to the current dir)
-        let global_memory_dir = choose_app_strategy(crate::APP_STRATEGY.clone())
-            .map(|strategy| strategy.in_config_dir("memory"))
-            .unwrap_or_else(|_| PathBuf::from(".config/biorouter/memory"));
+        let global_memory_dir = global_memory_dir();
 
         let mut memory_router = Self {
             tool_router: Self::tool_router(),
@@ -539,6 +547,38 @@ impl ServerHandler for MemoryServer {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    /// The global memory store is user data the agent reads *and writes*, so a
+    /// sandboxed run — a test drive, a worktree, a per-app jail — must not
+    /// reach the real one. `BIOROUTER_PATH_ROOT` is how a run declares that
+    /// sandbox, and `crate::paths` is the one resolver that honours it
+    /// (pinned to `biorouter::config::Paths` by the cross-crate agreement
+    /// test). Resolving the store with a bare `choose_app_strategy` call
+    /// instead ignored the override entirely and pointed a jailed run straight
+    /// at `~/.config/biorouter/memory`.
+    #[test]
+    #[serial_test::serial]
+    fn global_memory_store_honours_the_sandbox_root() {
+        let sandbox = tempdir().unwrap();
+        let _env = env_lock::lock_env([(
+            "BIOROUTER_PATH_ROOT",
+            Some(sandbox.path().to_string_lossy().into_owned()),
+        )]);
+
+        assert_eq!(
+            global_memory_dir(),
+            crate::paths::in_config_dir("memory"),
+            "the global memory store must resolve through crate::paths, the one \
+             resolver that honours BIOROUTER_PATH_ROOT"
+        );
+        assert!(
+            global_memory_dir().starts_with(sandbox.path()),
+            "a sandboxed run resolved the global memory store to {}, outside its \
+             own root {} — it would read and write the user's real memories",
+            global_memory_dir().display(),
+            sandbox.path().display()
+        );
+    }
 
     #[test]
     fn test_lazy_directory_creation() {
