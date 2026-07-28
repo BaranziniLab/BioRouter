@@ -4,6 +4,7 @@ use crate::routes::workflow_utils::{
 };
 use crate::state::AppState;
 use axum::extract::{Query, State};
+use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::{
     extract::Path,
@@ -12,13 +13,17 @@ use axum::{
     Json, Router,
 };
 use biorouter::agents::ExtensionConfig;
+use biorouter::conversation::message::Message;
 use biorouter::session::extension_data::ExtensionState;
-use biorouter::session::session_manager::{ActivityWindow, ModelUsageRow, SessionInsights};
+use biorouter::session::session_manager::{
+    ActivityWindow, ModelUsageRow, SessionInsights, TruncateOutcome,
+};
 use biorouter::session::{EnabledExtensionsState, Session, SessionSummary};
 use biorouter::workflow::Workflow;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 use utoipa::ToSchema;
 
 #[derive(Serialize, ToSchema)]
@@ -89,14 +94,76 @@ pub struct EditMessageRequest {
     timestamp: i64,
     #[serde(default = "default_edit_type")]
     edit_type: EditType,
-    /// The client's view of this session: the durable ids (`Message.id`) of
-    /// every message it holds.
+    /// Your view of this session: the durable ids (`Message.id`) of every
+    /// message it holds, in any order.
+    ///
+    /// REQUIRED for `edit`, which truncates the live session: it is how the
+    /// server checks that you are deleting the history you actually saw. Ignored
+    /// for `diverge`, which writes only to a new session and cannot destroy
+    /// anything.
+    //
+    // The same precondition `/reply`'s `conversation_so_far` carries (#51 W5),
+    // reduced to what a truncation needs: ids alone prove the client has seen
+    // everything stored, and unlike that field this one supplies no content.
     #[serde(default)]
     expected_message_ids: Option<Vec<String>>,
 }
 
 fn default_edit_type() -> EditType {
     EditType::Diverge
+}
+
+/// Ids of messages `stored` holds that `client_view` does not name, in stored
+/// order.
+///
+/// Message ids are durable and server-assigned (BR-45/#41), so a client naming
+/// one is proof it has seen it. Anything stored that the view does not name is a
+/// message that landed after the client rendered the conversation — and an
+/// open-above cut would delete it, after its writer was already told the append
+/// succeeded.
+///
+/// The twin of `reply::unacknowledged_stored_ids`, which answers the same
+/// question for `conversation_so_far`; that one compares against whole messages
+/// because the client is also supplying content. Keep the two in step.
+fn unacknowledged_stored_ids(stored: &[Message], client_view: &[String]) -> Vec<String> {
+    let acknowledged: HashSet<&str> = client_view.iter().map(String::as_str).collect();
+    stored
+        .iter()
+        .filter_map(|message| message.id.as_deref())
+        .filter(|id| !acknowledged.contains(id))
+        .map(str::to_string)
+        .collect()
+}
+
+/// The 409 a refused truncation answers with, in the shape `/reply` already uses
+/// for a refused write-back: `code` names the condition and `missing_message_ids`
+/// names exactly what the cut would have destroyed, so the client can re-read the
+/// session and retry rather than guess.
+fn edit_conflict_response(missing: Vec<String>, stored_message_count: usize) -> Response {
+    (
+        StatusCode::CONFLICT,
+        Json(serde_json::json!({
+            "type": "Error",
+            "error": "This session has messages your view does not contain; nothing was \
+                      deleted. Re-read the session and retry.",
+            "code": "conversation_out_of_date",
+            "missing_message_ids": missing,
+            "stored_message_count": stored_message_count,
+        })),
+    )
+        .into_response()
+}
+
+fn edit_error_response(status: StatusCode, code: &str, error: &str) -> Response {
+    (
+        status,
+        Json(serde_json::json!({
+            "type": "Error",
+            "error": error,
+            "code": code,
+        })),
+    )
+        .into_response()
 }
 
 #[derive(Serialize, ToSchema)]
@@ -590,6 +657,18 @@ async fn import_session(
     Ok(Json(session))
 }
 
+/// Prepare a session for an edited message.
+///
+/// `diverge` (the default) copies the history into a NEW session, trimmed at the
+/// edited message, and returns that session's id. The original is untouched.
+///
+/// `edit` truncates THIS session in place, dropping every message from
+/// `timestamp` onwards. Because that destroys history a concurrent writer may
+/// already have been told was saved, it must carry `expectedMessageIds` — the
+/// ids of every message your view of the session holds. The cut is refused, with
+/// nothing deleted, if a turn is in flight or if the session holds a message
+/// your view does not name; the 409 body's `missing_message_ids` says which, so
+/// you can re-read the session and retry.
 #[utoipa::path(
     post,
     path = "/sessions/{session_id}/edit_message",
@@ -599,9 +678,13 @@ async fn import_session(
     ),
     responses(
         (status = 200, description = "Session prepared for editing - frontend should submit the edited message", body = EditMessageResponse),
-        (status = 400, description = "Bad request - Invalid message timestamp"),
+        (status = 400, description = "Bad request - invalid session id, or an `edit` with no \
+                                      `expectedMessageIds` to check the truncation against"),
         (status = 401, description = "Unauthorized - Invalid or missing API key"),
         (status = 404, description = "Session or message not found"),
+        (status = 409, description = "A turn is in flight for this session, or \
+                                      `expectedMessageIds` is missing messages the server holds \
+                                      (nothing was deleted; re-read the session and retry)"),
         (status = 500, description = "Internal server error")
     ),
     security(
@@ -613,37 +696,161 @@ async fn edit_message(
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
     Json(request): Json<EditMessageRequest>,
-) -> Result<Json<EditMessageResponse>, StatusCode> {
+) -> Response {
     if !is_valid_session_id(&session_id) {
-        return Err(StatusCode::BAD_REQUEST);
+        return StatusCode::BAD_REQUEST.into_response();
     }
     let manager = state.session_manager();
     match request.edit_type {
         EditType::Diverge => {
-            let new_session = manager
+            match manager
                 .diverge_session_for_edit(&session_id, request.timestamp)
                 .await
-                .map_err(|e| {
+            {
+                Ok(new_session) => Json(EditMessageResponse {
+                    session_id: new_session.id,
+                })
+                .into_response(),
+                Err(e) => {
                     tracing::error!("Failed to diverge session for message edit: {}", e);
-                    StatusCode::INTERNAL_SERVER_ERROR
-                })?;
-
-            Ok(Json(EditMessageResponse {
-                session_id: new_session.id,
-            }))
+                    StatusCode::INTERNAL_SERVER_ERROR.into_response()
+                }
+            }
         }
-        EditType::Edit => {
-            manager
-                .truncate_conversation(&session_id, request.timestamp)
-                .await
-                .map_err(|e| {
-                    tracing::error!("Failed to truncate conversation: {}", e);
-                    StatusCode::INTERNAL_SERVER_ERROR
-                })?;
+        EditType::Edit => edit_in_place(&state, &session_id, &request).await,
+    }
+}
 
-            Ok(Json(EditMessageResponse {
-                session_id: session_id.clone(),
-            }))
+/// The destructive half of [`edit_message`]: truncate the LIVE session.
+///
+/// #51 NF-D. This used to delete an arbitrary tail from a client-supplied
+/// timestamp with no freshness check, no expected state and no turn lock —
+/// strictly more dangerous than the `/reply` write-back hardened alongside it,
+/// which at least carried the client's own copy for the server to compare
+/// against. It now takes the same three guards, in the same order, answering
+/// with the same codes:
+///
+/// 1. the BR-33 per-session turn lock, so a cut cannot land in a session an
+///    agent is generating into — `/reply` refuses a second writer with 409 and
+///    so does this;
+/// 2. the client's view of the conversation (`expected_message_ids`), refused
+///    with 409 + `missing_message_ids` when the store holds a message that view
+///    never saw — the WIDE race, between the client rendering the conversation
+///    and the user clicking edit;
+/// 3. [`biorouter::session::session_manager::SessionManager::truncate_conversation_bounded`]
+///    rather than the open-above `truncate_conversation`, so a message landing
+///    between the check above and the DELETE — the NARROW race, which no
+///    client-side check can close — is kept rather than destroyed, and a basis
+///    from a previous incarnation of a recycled session id is refused outright.
+async fn edit_in_place(
+    state: &Arc<AppState>,
+    session_id: &str,
+    request: &EditMessageRequest,
+) -> Response {
+    // (1) Hold the BR-33 turn lock for the whole check-and-cut, so a `/reply`
+    // cannot start against the rows being deleted. Named binding: `let _ =`
+    // would drop the guard immediately and hold nothing.
+    let _turn_guard = match state.try_begin_turn_idempotent(
+        session_id,
+        CancellationToken::new(),
+        // No idempotency key: an edit is not a turn a client retries under a
+        // name, so every conflict here is a genuine "someone else has the
+        // session", never a `duplicate: true`.
+        None,
+    ) {
+        Ok(guard) => guard,
+        Err(conflict) => {
+            tracing::warn!(
+                "Refused an in-place edit of session {}: turn {} is in flight",
+                session_id,
+                conflict.running_turn_id
+            );
+            return (
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({
+                    "type": "Error",
+                    "error": "A turn is in progress for this session; nothing was deleted. \
+                              Stop it and retry.",
+                    "code": "turn_in_flight",
+                    "running_turn_id": conflict.running_turn_id,
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    // (2) An `edit` with no view of the conversation is a cut the server cannot
+    // check. Refusing is the whole point of NF-D: the unverifiable case is
+    // exactly the one that silently deleted acknowledged messages.
+    let Some(client_view) = request.expected_message_ids.as_deref() else {
+        return edit_error_response(
+            StatusCode::BAD_REQUEST,
+            "expected_message_ids_required",
+            "An `edit` deletes a tail of this live session, so it must carry \
+             `expectedMessageIds` — the ids of every message your view holds. Use `diverge` to \
+             branch instead of truncating.",
+        );
+    };
+
+    // Revision first, then conversation (see `snapshot_for_rewrite`): a message
+    // landing between the two reads is then inside the snapshot rather than
+    // looking foreign.
+    let (session, basis) = match state
+        .session_manager()
+        .snapshot_for_rewrite(session_id)
+        .await
+    {
+        Ok(snapshot) => snapshot,
+        Err(e) => {
+            let status = if e.to_string().contains("not found") {
+                StatusCode::NOT_FOUND
+            } else {
+                tracing::error!("Failed to snapshot session {} for edit: {}", session_id, e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+            return status.into_response();
+        }
+    };
+    let stored = session.conversation.unwrap_or_default();
+
+    // (3) The wide race: anything stored the client never saw would be deleted
+    // by a cut it planned without knowing about it.
+    let missing = unacknowledged_stored_ids(stored.messages(), client_view);
+    if !missing.is_empty() {
+        tracing::warn!(
+            "Refused an in-place edit of session {}: {} stored message(s) the client's view does \
+             not contain",
+            session_id,
+            missing.len()
+        );
+        return edit_conflict_response(missing, stored.messages().len());
+    }
+
+    // (4) The narrow race: `basis` bounds the delete to the rows this check
+    // actually saw, inside the truncation's own transaction.
+    match state
+        .session_manager()
+        .truncate_conversation_bounded(session_id, request.timestamp, basis)
+        .await
+    {
+        Ok(TruncateOutcome::Truncated { .. }) => Json(EditMessageResponse {
+            session_id: session_id.to_string(),
+        })
+        .into_response(),
+        // The session was wiped and recreated under this id between the snapshot
+        // and the cut, so the basis describes a conversation that no longer
+        // exists. Same answer as a stale view — refuse, delete nothing.
+        Ok(TruncateOutcome::Stale) => {
+            tracing::warn!(
+                "Refused an in-place edit of session {}: the conversation moved under the check",
+                session_id
+            );
+            edit_conflict_response(Vec::new(), stored.messages().len())
+        }
+        Ok(TruncateOutcome::SessionNotFound) => StatusCode::NOT_FOUND.into_response(),
+        Err(e) => {
+            tracing::error!("Failed to truncate conversation: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
 }
