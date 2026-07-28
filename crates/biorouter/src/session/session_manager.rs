@@ -2236,6 +2236,21 @@ impl SessionStorage {
                 RewriteGuard::Unconditional,
             )
             .await?;
+
+            // ...and put the historical mtime back. `replace_conversation_inner`
+            // opens with `UPDATE sessions SET updated_at = datetime('now')` —
+            // that write IS how the transaction takes SQLite's write lock up
+            // front, so it is not optional and it beats the back-dated value
+            // this function just INSERTed. Right for a live rewrite, wrong for
+            // an import: without this every legacy JSONL session would sort as
+            // "just now" under `ORDER BY updated_at DESC`, collapsing a user's
+            // whole history to today in the session list on the one migration
+            // run that imports it.
+            sqlx::query("UPDATE sessions SET updated_at = ? WHERE id = ?")
+                .bind(session.updated_at)
+                .bind(&session.id)
+                .execute(pool)
+                .await?;
         }
         Ok(())
     }
@@ -8596,6 +8611,66 @@ mod tests {
             after > before,
             "a whole-history rewrite must bump updated_at ({before} -> {after})"
         );
+    }
+
+    /// ...but an IMPORT is the one caller that must not inherit that bump.
+    ///
+    /// `import_legacy_session` INSERTs the historical `created_at`/`updated_at`
+    /// and then writes the conversation through `replace_conversation_inner`,
+    /// whose write-first statement stamps `updated_at = datetime('now')` and
+    /// beats the back-dated value (the test above is what proves it beats it).
+    /// Every legacy JSONL session would then sort as "just now", collapsing a
+    /// user's whole history to today in the sidebar on the single migration run
+    /// that imports it.
+    #[tokio::test]
+    async fn importing_a_legacy_session_keeps_its_historical_updated_at() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        // Any call opens (and migrates) the database.
+        sm.create_session(PathBuf::from("/tmp/live"), "live".into(), SessionType::User)
+            .await
+            .unwrap();
+        let pool = sm.storage().pool().await.unwrap();
+
+        let historical: DateTime<Utc> = "2021-03-04T05:06:07Z".parse().unwrap();
+        let legacy = Session {
+            id: "legacy-1".into(),
+            working_dir: PathBuf::from("/tmp/legacy"),
+            name: "an old chat".into(),
+            user_set_name: false,
+            session_type: SessionType::User,
+            created_at: historical,
+            updated_at: historical,
+            extension_data: Default::default(),
+            total_tokens: None,
+            input_tokens: None,
+            output_tokens: None,
+            accumulated_total_tokens: None,
+            accumulated_input_tokens: None,
+            accumulated_output_tokens: None,
+            schedule_id: None,
+            workflow: None,
+            user_workflow_values: None,
+            conversation: Some(Conversation::new_unvalidated(vec![umsg(1, "hi")])),
+            message_count: 1,
+            provider_name: None,
+            model_config: None,
+            diverged_from: None,
+            branch_point_msg_uid: None,
+        };
+        SessionStorage::import_legacy_session(pool, &legacy)
+            .await
+            .unwrap();
+
+        let imported = sm.get_session("legacy-1", true).await.unwrap();
+        assert_eq!(
+            imported.updated_at, historical,
+            "an imported session must keep its historical mtime, not the \
+             import's wall clock"
+        );
+        assert_eq!(imported.created_at, historical);
+        // The conversation itself still landed.
+        assert_eq!(imported.conversation.unwrap().messages().len(), 1);
     }
 
     // ── replace_conversation_preserving_tail ─────────────────────────────────
