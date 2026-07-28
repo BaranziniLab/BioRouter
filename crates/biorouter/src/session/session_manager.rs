@@ -6576,13 +6576,28 @@ mod tests {
             .apply()
             .await
             .unwrap();
+        // `include_subagents` widens the type filter by exactly one type. A
+        // regression that dropped the `WHERE s.session_type IN (…)` clause
+        // altogether would satisfy every assertion about `child` while quietly
+        // leaking `hidden` sessions, which this codebase excludes from user-
+        // facing listings everywhere else (see
+        // `usage_report_includes_subagent_spend_and_excludes_hidden_sessions`).
+        // This row is the sentinel for that.
+        let hidden = manager
+            .create_session(
+                temp.path().to_path_buf(),
+                "h".to_string(),
+                SessionType::Hidden,
+            )
+            .await
+            .unwrap();
 
         // `list_session_summaries` INNER JOINs `messages` and `create_session`
         // writes NO message, so a freshly created session is invisible to this
         // query until it has one. The pre-existing paging test uses
         // `seed_session_with_messages` for exactly this reason. Without these
         // two writes both assertions below fail against an empty row set.
-        for s in [&parent, &child] {
+        for s in [&parent, &child, &hidden] {
             manager
                 .add_message(
                     &s.id,
@@ -6599,6 +6614,7 @@ mod tests {
             .unwrap();
         assert!(default_list.iter().any(|s| s.id == parent.id));
         assert!(!default_list.iter().any(|s| s.id == child.id));
+        assert!(!default_list.iter().any(|s| s.id == hidden.id));
 
         let full = manager
             .list_session_summaries(50, 0, true, false)
@@ -6613,6 +6629,7 @@ mod tests {
             Some(parent.id.as_str())
         );
         assert_eq!(child_row.session_type.as_deref(), Some("sub_agent"));
+        assert!(!full.iter().any(|s| s.id == hidden.id));
     }
 
     #[tokio::test]
