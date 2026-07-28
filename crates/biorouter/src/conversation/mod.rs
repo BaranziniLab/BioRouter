@@ -1346,11 +1346,7 @@ mod tests {
 
         let (fixed, _issues) = fix_conversation(Conversation::new_unvalidated(messages));
 
-        let ids: Vec<Option<&str>> = fixed
-            .messages()
-            .iter()
-            .map(|m| m.id.as_deref())
-            .collect();
+        let ids: Vec<Option<&str>> = fixed.messages().iter().map(|m| m.id.as_deref()).collect();
         assert_eq!(
             ids,
             vec![Some("m-note-1"), Some("m-note-2")],

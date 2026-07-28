@@ -435,8 +435,10 @@ mod tests {
     }
 
     /// Grow a conversation one turn at a time and assert the incremental result is
-    /// byte-identical to a from-scratch `fix_conversation` at every step.
-    fn assert_matches_full_fix(steps: Vec<Vec<Message>>) {
+    /// byte-identical to a from-scratch `fix_conversation` at every step. Returns
+    /// the normalizer so a caller can assert the cache was actually exercised —
+    /// without a hit this comparison is a full fix against itself.
+    fn assert_matches_full_fix(steps: Vec<Vec<Message>>) -> ConversationNormalizer {
         let mut normalizer = ConversationNormalizer::new();
         let mut messages: Vec<Message> = Vec::new();
 
@@ -464,6 +466,8 @@ mod tests {
                 messages.len()
             );
         }
+
+        normalizer
     }
 
     #[test]
@@ -552,6 +556,58 @@ mod tests {
             ]);
         }
         assert_matches_full_fix(steps);
+    }
+
+    /// The frozen prefix is only sound because every body pass is
+    /// segment-decomposable, and `merge_consecutive_messages` is the one that
+    /// merges ACROSS the cut. Making the #51 marker a merge boundary keeps that
+    /// property — the predicate reads only the two adjacent messages, and merging
+    /// never changes either message's marker — but the argument is worth a test.
+    ///
+    /// The turn deliberately mixes both: two plain user messages that DO merge
+    /// (so a merge really does span the cut) and a pin that must not, with a
+    /// five-message turn against a `TAIL_SLACK` of 8 so the cut lands at every
+    /// offset relative to the pin as the history grows.
+    #[test]
+    fn incremental_matches_full_fix_with_pinned_messages() {
+        let turn = |i: usize| {
+            vec![
+                user(&format!("q{i}")),
+                user("and another thing"),
+                user(&format!("standing note {i}")).pinned(),
+                user("after the note"),
+                assistant(&format!("a{i}")),
+            ]
+        };
+
+        // The fixture is only meaningful if the pass it stresses actually fires.
+        let (_, issues) =
+            fix_conversation(Conversation::new_unvalidated([turn(0), turn(1)].concat()));
+        assert!(
+            issues.iter().any(|i| i.contains("Merged consecutive")),
+            "fixture must still merge across the seam, got: {issues:?}"
+        );
+
+        let normalizer = assert_matches_full_fix((0..20).map(turn).collect());
+        let (hits, _misses) = normalizer.stats();
+        assert!(hits > 10, "the frozen prefix was never reused: {hits} hits");
+    }
+
+    /// The same seam, one message at a time, so the frozen cut falls between a
+    /// pin and a mergeable neighbour rather than only on turn boundaries.
+    #[test]
+    fn incremental_matches_full_fix_when_a_pin_lands_alone() {
+        let mut steps = Vec::new();
+        for i in 0..25 {
+            steps.push(vec![user(&format!("q{i}"))]);
+            steps.push(vec![user("and another thing")]);
+            steps.push(vec![user(&format!("note {i}")).pinned()]);
+            steps.push(vec![user("after the note")]);
+            steps.push(vec![assistant(&format!("a{i}"))]);
+        }
+        let normalizer = assert_matches_full_fix(steps);
+        let (hits, _misses) = normalizer.stats();
+        assert!(hits > 10, "the frozen prefix was never reused: {hits} hits");
     }
 
     #[test]
