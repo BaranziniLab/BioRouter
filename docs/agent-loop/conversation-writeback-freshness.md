@@ -4,11 +4,12 @@
 > guard, how that guard works, exactly what it does and does not promise, and a scoreboard
 > of which writeback paths are closed and which are deliberately not — so "the root cause is
 > fixed" is not read more broadly than it should be.
-> **Status:** Current. The rewrite paths — the three compaction sites and the client
-> write-back on `POST /reply` — are closed. Of the three *deletion* paths, one is now
-> bounded and two are deliberately left alone, for two different reasons. The scoreboard is
-> [What is closed and what is not](#what-is-closed-and-what-is-not) — read it before
-> concluding anything about "the truncation race".
+> **Status:** Current. The rewrite paths — the four compaction sites and the client
+> write-back on `POST /reply` — are closed. Of the three *deletion* paths, two are now
+> bounded and one is deliberately left alone; and the second of those two is bounded only
+> as far as its client can name what it holds, which today's desktop client cannot. The
+> scoreboard is [What is closed and what is not](#what-is-closed-and-what-is-not) — read it
+> before concluding anything about "the truncation race".
 > **Audience:** developers touching the session store, the compaction paths, or any code
 > that appends to a session another turn might be running on.
 
@@ -171,7 +172,7 @@ Two things this claim does not say, both covered elsewhere on this page:
 
 ## What each caller does with a declined swap
 
-The three compaction sites want different failure modes, and getting this wrong trades a
+The four compaction sites want different failure modes, and getting this wrong trades a
 data-loss bug for a liveness bug.
 
 | Site | On `Stale` |
@@ -212,7 +213,7 @@ clear.
 | The compaction rewrites (`run_eager_compaction`, `reply()`'s auto-compaction, the `ContextLengthExceeded` arm, `/compact`) | **Closed**, and structurally so — `replace_conversation_preserving_tail` is the only rewrite they can reach, and its check runs inside the rewrite's own transaction. |
 | `truncate_conversation` from `biorouter term run` | **Closed** — bounded by the caller's own basis (below). |
 | `truncate_conversation` from checkpoint restore | **Open, deliberately.** The mechanism exists and is not wired up, because bounding it makes a rewind incomplete. Needs an operator decision (below). |
-| `truncate_conversation` from `POST /sessions/{id}/edit_message` | **Open, and not fixable server-side.** The decision is the client's; the server never saw the view it was made from (below). |
+| `truncate_conversation` from `POST /sessions/{id}/edit_message` | **Closed by refusal, and currently refusing everything.** The decision is made in the browser, so the endpoint requires the client's view of the conversation and refuses a cut it cannot check. No client can supply that view yet, because the reply stream never publishes the ids messages are persisted under — so the endpoint is safe and the "Edit in Place" button is dead until that is fixed (below). |
 | `conversation_so_far` on `POST /reply` | **Closed by refusal**, not by merging — a client copy that does not name every stored message gets a 409 and nothing is written (below). |
 
 ### Why truncation needed its own mechanism
@@ -294,28 +295,75 @@ changes `RestoreOutcome` and the GUI that renders it. Until one is made, the sit
 unbounded call **on purpose**: a complete rewind that can destroy a racing append is a
 defensible reading of "restore"; an incomplete rewind reported as a complete one is not.
 
-### `POST /sessions/{id}/edit_message` — open, and the server cannot fix it alone
+### `POST /sessions/{id}/edit_message` — closed by refusal, and refusing everything
 
 `crates/biorouter-server/src/routes/session.rs`, the `EditType::Edit` arm. Threading a
-server-side basis through it would be theatre. **The decision is made in the browser**: the
-user scrolls to a rendered message, opens the edit box, and types — and the request that
-arrives carries only a `timestamp`. The view that decision was based on is the client's
-rendered transcript, of unbounded age; the server never saw it. Any revision the handler
-reads is taken *after* the concurrent append has already committed, so it would bound the
-delete to a watermark that includes exactly the row the bound exists to protect. The guard
-would pass every time and protect nothing — a strictly worse outcome than today's honest
-lack of a guard, because it would look fixed.
+server-side basis through this endpoint on its own would have been theatre, and it is worth
+understanding why before touching it, because the shape of the fix follows from it.
 
-Bounding it correctly means the client sends what it saw — an expected revision, or the
-`msg_uid` of the last message it had rendered. That is a public API change
-(`EditMessageRequest` gains a field, plus an OpenAPI and TypeScript-client regeneration) and
-a product decision about the refusal path: what should the GUI do when an edit is rejected
-because the transcript moved underneath it? That is the same shape as `conversation_so_far`
-below, and it likely wants the same answer — refuse loudly rather than merge — because an
-edit, like a rewind, is a statement about a transcript the user was looking at.
+**The decision is made in the browser.** The user scrolls to a rendered message, opens the
+edit box, and types; the request that arrives says only "cut from this timestamp". The view
+that decision was based on is the client's rendered transcript, of unbounded age, and the
+server never saw it. Any revision the handler reads for itself is taken *after* the
+concurrent append has already committed, so it would bound the DELETE to a watermark that
+includes exactly the row the bound exists to protect. That guard would pass every time and
+protect nothing — worse than no guard, because it would look fixed.
 
-The sibling `EditType::Diverge` arm has none of this: it truncates a session it just
-created, which is the owned-history exception.
+So the endpoint stopped accepting an uncheckable cut. `EditType::Edit` now requires
+`expectedMessageIds`, the durable ids of every message the client's view holds, and takes
+three guards in the same order and with the same codes `/reply` uses for
+`conversation_so_far`:
+
+1. the BR-33 per-session **turn lock**, held across the whole check-and-cut, so rows cannot
+   be deleted out from under an agent generating into them — 409 `turn_in_flight`;
+2. the **client's view**, for the wide race between rendering the transcript and clicking
+   edit: a stored message the view does not name landed after the client saw the
+   conversation, so the cut is refused with 409 `conversation_out_of_date` +
+   `missing_message_ids` and nothing is deleted. Absent entirely, the cut is unverifiable
+   and is refused **400** — that unverifiable case is the whole defect;
+3. **`truncate_conversation_bounded`**, for the narrow race between the check and the DELETE
+   that no client-side check can close. A `Stale` verdict (the id was recycled underneath
+   the snapshot) is answered exactly like a stale view.
+
+Message ids are durable and server-assigned (BR-45/#41), which is what makes a list of ids
+sufficient: naming one is proof the client has seen it, and unlike `conversation_so_far`
+this field supplies no content the server has to trust.
+
+The sibling `EditType::Diverge` arm — the default, and what the desktop app mostly uses —
+needs none of this: it truncates a session it just created, which is the owned-history
+exception, so it still works with no client view and with a turn in flight.
+
+#### No client can satisfy the precondition yet
+
+The guard is right and the desktop cannot pass it. **A client that watches a whole turn go
+by does not learn the ids that turn's messages were persisted under**, so the list it sends
+is missing them and the endpoint refuses a session nobody else has touched.
+`a_client_that_watched_the_turn_knows_every_stored_message_id` (in
+`crates/biorouter/tests/conversation_writeback_freshness.rs`, landed `#[ignore]`d because it
+reproduces an open defect rather than guarding a fixed one) drives the real reply loop and
+finds the client can name **zero** of the two ids a minimal turn stores.
+
+`Message::user()` / `Message::assistant()` mint no id; the loop yields a message *before* it
+persists it; `add_message` then mints a UUIDv7 that is never published back to the stream.
+Three independent sources of the same gap:
+
+- the ordinary assistant reply — `response_to_message` returns a bare `Message::assistant()`,
+  so the client is streamed `id: null` and the store holds a uid it was never told;
+- the tool-call split (`agent.rs`, `next_assistant_id`) — one streamed response becomes up
+  to three stored rows, and every row after the first takes a freshly minted uuid;
+- the BR-47 post-edit diagnostics and the loop-guard nudges, which are
+  `with_visibility(false, true)` and are therefore persisted without ever being yielded.
+
+The failure is loud and safe — 409, nothing deleted, and "Diverge Session" (the default
+button) is unaffected — but "Edit in Place" does not work in a live chat from the first
+assistant reply until the session is reloaded.
+
+**The fix is on the server side of the stream:** a message must be yielded under the id it
+was persisted under, which is the rule `add_message_adopting_uid` already encodes at the six
+sites that persist before yielding. Re-reading the session from the client instead is
+**theatre for exactly the reason given above** — the re-read happens after the concurrent
+append has committed, so it would hand back the very row the guard exists to protect, and
+the check would pass every time.
 
 ### `conversation_so_far` on `POST /reply` — closed by refusal
 
@@ -401,7 +449,7 @@ reports `database is locked` means its transaction read before it wrote, which i
 
 - [The compaction preservation marker](compaction-preservation-marker.md) — the other
   half of the same guarantee: keeping a stored message out of the summary.
-- [The agent loop](README.md) — the loop that runs the three compaction sites.
+- [The agent loop](README.md) — the loop that runs the four compaction sites.
 - [Agent lifecycle hooks](hooks/README.md) — the `PreCompact`/`PostCompact` pair discussed above.
 - [Session branching design](designs/session-branching.md) — the other consumer of stable `msg_uid`s across a rewrite.
 - [Shadow-git checkpoints design](designs/shadow-git-checkpoints.md) — checkpoint restore, one of the `truncate_conversation` callers named above.
