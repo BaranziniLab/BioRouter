@@ -262,10 +262,19 @@ fn clean_cut(messages: &[Message], limit: usize) -> usize {
 ///
 /// This is a *cache validator*, not a content hash for security: it must change
 /// whenever anything the normalization pipeline reads about the message changes —
-/// role, visibility metadata, text bodies, tool ids/pairing, and the shape of the
-/// content list. It hashes the message body itself (not just a shape summary), so
-/// an in-place rewrite (context pruning replacing a tool result, a large-response
-/// swap) misses the cache and forces a full re-normalization.
+/// role, visibility metadata, the #51 preservation marker, text bodies, tool
+/// ids/pairing, and the shape of the content list. It hashes the message body
+/// itself (not just a shape summary), so an in-place rewrite (context pruning
+/// replacing a tool result, a large-response swap) misses the cache and forces a
+/// full re-normalization.
+///
+/// `metadata.pinned` belongs here for two reasons, and the second is the sharp
+/// one. It steers a merge (see `is_pin_boundary`), so the cached prefix would be
+/// wrong on its own terms. And it is *durable state the output carries*: the
+/// normalized transcript is what the overflow path compacts and writes back, so
+/// serving a stale marker from the frozen prefix silently reverses a pin — or an
+/// unpin. A flip is also the ONLY edit a pin makes to a message, so a fingerprint
+/// blind to it cannot see the change at all.
 fn message_fingerprint(message: &Message) -> u64 {
     let mut hasher = AHasher::default();
     matches!(message.role, Role::Assistant).hash(&mut hasher);
@@ -273,6 +282,7 @@ fn message_fingerprint(message: &Message) -> u64 {
     message.created.hash(&mut hasher);
     message.metadata.agent_visible.hash(&mut hasher);
     message.metadata.user_visible.hash(&mut hasher);
+    message.metadata.pinned.hash(&mut hasher);
     message.content.len().hash(&mut hasher);
 
     for content in &message.content {
@@ -425,8 +435,10 @@ mod tests {
     }
 
     /// Grow a conversation one turn at a time and assert the incremental result is
-    /// byte-identical to a from-scratch `fix_conversation` at every step.
-    fn assert_matches_full_fix(steps: Vec<Vec<Message>>) {
+    /// byte-identical to a from-scratch `fix_conversation` at every step. Returns
+    /// the normalizer so a caller can assert the cache was actually exercised —
+    /// without a hit this comparison is a full fix against itself.
+    fn assert_matches_full_fix(steps: Vec<Vec<Message>>) -> ConversationNormalizer {
         let mut normalizer = ConversationNormalizer::new();
         let mut messages: Vec<Message> = Vec::new();
 
@@ -454,6 +466,8 @@ mod tests {
                 messages.len()
             );
         }
+
+        normalizer
     }
 
     #[test]
@@ -542,6 +556,58 @@ mod tests {
             ]);
         }
         assert_matches_full_fix(steps);
+    }
+
+    /// The frozen prefix is only sound because every body pass is
+    /// segment-decomposable, and `merge_consecutive_messages` is the one that
+    /// merges ACROSS the cut. Making the #51 marker a merge boundary keeps that
+    /// property — the predicate reads only the two adjacent messages, and merging
+    /// never changes either message's marker — but the argument is worth a test.
+    ///
+    /// The turn deliberately mixes both: two plain user messages that DO merge
+    /// (so a merge really does span the cut) and a pin that must not, with a
+    /// five-message turn against a `TAIL_SLACK` of 8 so the cut lands at every
+    /// offset relative to the pin as the history grows.
+    #[test]
+    fn incremental_matches_full_fix_with_pinned_messages() {
+        let turn = |i: usize| {
+            vec![
+                user(&format!("q{i}")),
+                user("and another thing"),
+                user(&format!("standing note {i}")).pinned(),
+                user("after the note"),
+                assistant(&format!("a{i}")),
+            ]
+        };
+
+        // The fixture is only meaningful if the pass it stresses actually fires.
+        let (_, issues) =
+            fix_conversation(Conversation::new_unvalidated([turn(0), turn(1)].concat()));
+        assert!(
+            issues.iter().any(|i| i.contains("Merged consecutive")),
+            "fixture must still merge across the seam, got: {issues:?}"
+        );
+
+        let normalizer = assert_matches_full_fix((0..20).map(turn).collect());
+        let (hits, _misses) = normalizer.stats();
+        assert!(hits > 10, "the frozen prefix was never reused: {hits} hits");
+    }
+
+    /// The same seam, one message at a time, so the frozen cut falls between a
+    /// pin and a mergeable neighbour rather than only on turn boundaries.
+    #[test]
+    fn incremental_matches_full_fix_when_a_pin_lands_alone() {
+        let mut steps = Vec::new();
+        for i in 0..25 {
+            steps.push(vec![user(&format!("q{i}"))]);
+            steps.push(vec![user("and another thing")]);
+            steps.push(vec![user(&format!("note {i}")).pinned()]);
+            steps.push(vec![user("after the note")]);
+            steps.push(vec![assistant(&format!("a{i}"))]);
+        }
+        let normalizer = assert_matches_full_fix(steps);
+        let (hits, _misses) = normalizer.stats();
+        assert!(hits > 10, "the frozen prefix was never reused: {hits} hits");
     }
 
     #[test]
@@ -646,6 +712,88 @@ mod tests {
             .clone()
             .with_metadata(visible.metadata.with_agent_invisible());
         assert_ne!(message_fingerprint(&visible), message_fingerprint(&hidden));
+    }
+
+    /// #51: the marker is durable state the normalized transcript carries back to
+    /// the store, so it has to be part of the cache validator. Flipping it is the
+    /// ONLY change a pin or an unpin makes to a message — nothing else about the
+    /// body moves — so a fingerprint blind to it cannot see the edit at all.
+    #[test]
+    fn fingerprint_changes_when_only_the_pin_marker_flips() {
+        let plain = user("standing instruction: always cite sources");
+        let marked = plain.clone().pinned();
+        assert_ne!(
+            message_fingerprint(&plain),
+            message_fingerprint(&marked),
+            "flipping the #51 preservation marker must invalidate the cached prefix"
+        );
+    }
+
+    /// The consequence of that omission, end to end: a pin applied to a message
+    /// already absorbed into the frozen prefix is served from the cache with its
+    /// OLD marker. The normalized transcript is what the overflow path compacts
+    /// and writes back, so the stale state is durable — a pin (or a deliberate
+    /// unpin) is silently reversed.
+    #[test]
+    fn flipping_only_a_pin_marker_invalidates_the_frozen_prefix() {
+        let mut normalizer = ConversationNormalizer::new();
+        let mut messages: Vec<Message> = Vec::new();
+        for i in 0..15 {
+            messages.push(user(&format!("q{i}")));
+            messages.push(assistant(&format!("a{i}")));
+        }
+        normalizer.normalize(Conversation::new_unvalidated(messages.clone()));
+
+        // Deep inside the frozen prefix, and nothing but the marker changes.
+        const TARGET: usize = 4;
+        messages[TARGET] = messages[TARGET].clone().pinned();
+
+        let conversation = Conversation::new_unvalidated(messages.clone());
+        let (expected, _) = fix_conversation(conversation.clone());
+        let (actual, _) = normalizer.normalize(conversation);
+
+        assert!(
+            actual.messages()[TARGET].is_pinned(),
+            "the frozen prefix served a stale pin state: {:#?}",
+            actual.messages()[TARGET]
+        );
+        assert_eq!(
+            without_timestamps(actual.messages()),
+            without_timestamps(expected.messages()),
+            "incremental normalization diverged from the full fix after a pin flip"
+        );
+    }
+
+    /// The same, in reverse: an unpin has to invalidate too, or the marker is
+    /// resurrected on a message the operator explicitly released.
+    #[test]
+    fn unpinning_inside_the_frozen_prefix_invalidates_it_too() {
+        let mut normalizer = ConversationNormalizer::new();
+        let mut messages: Vec<Message> = Vec::new();
+        for i in 0..15 {
+            messages.push(user(&format!("q{i}")).pinned());
+            messages.push(assistant(&format!("a{i}")));
+        }
+        normalizer.normalize(Conversation::new_unvalidated(messages.clone()));
+
+        const TARGET: usize = 4;
+        let released = messages[TARGET].metadata.with_unpinned();
+        messages[TARGET] = messages[TARGET].clone().with_metadata(released);
+
+        let conversation = Conversation::new_unvalidated(messages.clone());
+        let (expected, _) = fix_conversation(conversation.clone());
+        let (actual, _) = normalizer.normalize(conversation);
+
+        assert!(
+            !actual.messages()[TARGET].is_pinned(),
+            "the frozen prefix resurrected a released marker: {:#?}",
+            actual.messages()[TARGET]
+        );
+        assert_eq!(
+            without_timestamps(actual.messages()),
+            without_timestamps(expected.messages()),
+            "incremental normalization diverged from the full fix after an unpin"
+        );
     }
 
     #[test]

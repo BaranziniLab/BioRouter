@@ -2647,6 +2647,9 @@
               }
             }
           },
+          "409": {
+            "description": "A turn is already in flight for this session, or the supplied `conversation_so_far` is missing messages the server holds (nothing was written; re-read the session and retry)"
+          },
           "424": {
             "description": "Agent not initialized"
           },
@@ -3447,6 +3450,8 @@
         "tags": [
           "Session Management"
         ],
+        "summary": "Prepare a session for an edited message.",
+        "description": "`diverge` (the default) copies the history into a NEW session, trimmed at the\nedited message, and returns that session's id. The original is untouched.\n\n`edit` truncates THIS session in place, dropping every message from\n`timestamp` onwards. Because that destroys history a concurrent writer may\nalready have been told was saved, the cut is refused — with nothing deleted —\nwhile a turn is in flight, and it never reaches past the rows the server read\nwhen it took the request. You may additionally send `expectedMessageIds`, the\nids of every message your view of the session holds: the cut is then also\nrefused if the session holds a message your view does not name, and the 409\nbody's `missing_message_ids` says which, so you can re-read and retry.",
         "operationId": "edit_message",
         "parameters": [
           {
@@ -3481,13 +3486,16 @@
             }
           },
           "400": {
-            "description": "Bad request - Invalid message timestamp"
+            "description": "Bad request - invalid session id"
           },
           "401": {
             "description": "Unauthorized - Invalid or missing API key"
           },
           "404": {
             "description": "Session or message not found"
+          },
+          "409": {
+            "description": "A turn is in flight for this session, or a supplied `expectedMessageIds` is missing messages the server holds (nothing was deleted; re-read the session and retry)"
           },
           "500": {
             "description": "Internal server error"
@@ -4849,6 +4857,7 @@
             "items": {
               "$ref": "#/components/schemas/Message"
             },
+            "description": "The client's own copy of the session's history, which REPLACES what the\nserver has stored.\n\nDEPRECATED as an authoritative overwrite (#51 W5). It is now conditional:\nthe copy must already contain every message the server holds, and the\nrequest is refused with 409 if it does not. See\n[`apply_client_writeback`]. The desktop app has never sent this field.",
             "nullable": true
           },
           "reasoning_effort": {
@@ -5497,6 +5506,14 @@
         "properties": {
           "editType": {
             "$ref": "#/components/schemas/EditType"
+          },
+          "expectedMessageIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Your view of this session: the durable ids (`Message.id`) of every\nmessage it holds, in any order.\n\nOPTIONAL, and enforced when you send it. For `edit`, which truncates the\nlive session, supplying it is how the server checks that you are deleting\nthe history you actually saw: a stored message your list does not name\nlanded after you rendered the conversation, and the cut is refused with\n409 `conversation_out_of_date` rather than destroying it. Omit it and the\ncut still runs under the turn lock and is still bounded to the rows the\nserver itself just read — safe, but blind to that wider race. Ignored for\n`diverge`, which writes only to a new session and cannot destroy anything.\n\nAn EMPTY list is not the same as omitting the field: it asserts your view\nholds nothing, and is checked as such (so a non-empty session refuses it).",
+            "nullable": true
           },
           "timestamp": {
             "type": "integer",
@@ -7182,6 +7199,10 @@
           "agentVisible": {
             "type": "boolean",
             "description": "Whether the message should be included in the agent's context window"
+          },
+          "pinned": {
+            "type": "boolean",
+            "description": "#51: carry this message verbatim through every compaction instead of\ndissolving it into a summary. Never dropped by summarization — but still\nsubject to the overall context budget, which trims the oldest pins first\nand reports it. Defaults to false."
           },
           "userVisible": {
             "type": "boolean",

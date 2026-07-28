@@ -603,6 +603,21 @@ export const divergeSession = <ThrowOnError extends boolean = false>(options: Op
     }
 });
 
+/**
+ * Prepare a session for an edited message.
+ *
+ * `diverge` (the default) copies the history into a NEW session, trimmed at the
+ * edited message, and returns that session's id. The original is untouched.
+ *
+ * `edit` truncates THIS session in place, dropping every message from
+ * `timestamp` onwards. Because that destroys history a concurrent writer may
+ * already have been told was saved, the cut is refused — with nothing deleted —
+ * while a turn is in flight, and it never reaches past the rows the server read
+ * when it took the request. You may additionally send `expectedMessageIds`, the
+ * ids of every message your view of the session holds: the cut is then also
+ * refused if the session holds a message your view does not name, and the 409
+ * body's `missing_message_ids` says which, so you can re-read and retry.
+ */
 export const editMessage = <ThrowOnError extends boolean = false>(options: Options<EditMessageData, ThrowOnError>) => (options.client ?? client).post<EditMessageResponses, EditMessageErrors, ThrowOnError>({
     url: '/sessions/{session_id}/edit_message',
     ...options,

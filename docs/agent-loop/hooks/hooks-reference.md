@@ -290,6 +290,20 @@ notices in both the CLI and the desktop app chat.
 - **GUI sessions do not fire `SessionEnd`.** The desktop app has no reliable
   session-close signal, so `SessionEnd` fires only on CLI exit, headless completion,
   and scheduled-run completion.
+- **`PreCompact` can fire without a matching `PostCompact`.** They are not a
+  bracket. `PreCompact` is fired *speculatively* — before a summarization whose
+  outcome is not yet known, which is what makes it "pre" and what gives a hook its
+  chance to capture the transcript before it is replaced. `PostCompact` fires only
+  when a compaction actually landed, so it is skipped when the summarizer errors,
+  and when the write-back is declined because another writer changed the history
+  while the summary was being computed (see
+  [Conversation writeback freshness](../conversation-writeback-freshness.md)).
+  Firing it anyway would be worse than the asymmetry: it would tell every consumer
+  the transcript had been replaced when it had not, so a hook that re-indexes the
+  history, invalidates a cache, or reports "compacted to N tokens" would act on a
+  history that never changed. Read `PreCompact` as "a compaction is about to be
+  **attempted**", and do not pair acquire/release work across the two events
+  without a timeout of your own.
 
 ## Worked examples
 

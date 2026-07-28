@@ -11,6 +11,13 @@ use serde::Serialize;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
 
+pub mod pins;
+
+pub use pins::{
+    pin_is_eligible, select_pins, EvictedPin, PinEvictionReason, PinLimits, PinSelection,
+    DEFAULT_MAX_PINNED_CONTEXT_SHARE, DEFAULT_MAX_PINNED_MESSAGES,
+};
+
 pub const DEFAULT_COMPACTION_THRESHOLD: f64 = 0.8;
 
 /// BR-14: a usable compaction summary must clear this many characters. Below it
@@ -243,6 +250,17 @@ fn recent_window_split(messages: &[Message], keep_last_turns: usize) -> Option<u
 /// case where summarizing the entire history is *still* over-window. Keeps
 /// roughly the newer half of the user-prompt turns; the cut snaps to a clean
 /// user-prompt boundary so tool_request/tool_response pairs are never split.
+///
+/// #51: an eligible preservation marker is spared. This runs BEFORE the
+/// compaction that honours pins, and it works by flipping messages
+/// agent-invisible — so without this clause the bottom rung of the recovery
+/// ladder would quietly make every old pin ineligible on its way past, and the
+/// compaction that follows would never see a pin to honour.
+///
+/// Eligibility, not the budget, is the test here: the budget belongs to the
+/// compaction proper. Sparing a pin the budget later evicts is harmless (the
+/// eviction demotes it back to an ordinary message, which is exactly what this
+/// pass would have done); dropping one the budget would have honoured is not.
 fn drop_oldest_agent_visible_turns(messages: &[Message]) -> Vec<Message> {
     let boundaries: Vec<usize> = messages
         .iter()
@@ -263,7 +281,7 @@ fn drop_oldest_agent_visible_turns(messages: &[Message]) -> Vec<Message> {
         .iter()
         .enumerate()
         .map(|(idx, msg)| {
-            if idx < cut && msg.is_agent_visible() {
+            if idx < cut && msg.is_agent_visible() && !pin_is_eligible(msg) {
                 msg.clone()
                     .with_metadata(msg.metadata.with_agent_invisible())
             } else {
@@ -283,19 +301,58 @@ async fn compact_messages_with_window(
 
     let messages = conversation.messages();
 
+    // #51: decide ONCE, against this exact slice, which preservation markers
+    // this compaction honours — both branches below index into it, and the
+    // eviction (if any) is logged exactly once per compaction rather than once
+    // per branch.
+    let pins = select_pins(
+        messages,
+        PinLimits::from_config(provider.get_model_config().context_limit()),
+    );
+    pins.log();
+
     // BR-10: keep the most recent turns verbatim and summarize only the older
     // prefix, snapping the cut to a clean user-turn boundary.
-    if let Some(split) = recent_window_split(messages, keep_last_turns) {
+    //
+    // #51: the windowed path only applies if the older prefix still has
+    // something to summarize once the honoured pins are taken out of it. A
+    // prefix of nothing but pins would otherwise hand `do_compact` an empty (or
+    // pins-only) payload and buy a billed round-trip for a summary of nothing.
+    let window_split = recent_window_split(messages, keep_last_turns).filter(|&split| {
+        messages[..split]
+            .iter()
+            .enumerate()
+            .any(|(idx, msg)| msg.is_agent_visible() && !pins.is_honoured(idx))
+    });
+
+    if let Some(split) = window_split {
         let (prefix, kept) = messages.split_at(split);
 
-        let (summary_message, summarization_usage) = do_compact(provider, prefix).await?;
+        // The summarizer never sees an honoured pin. Its text survives verbatim
+        // a few messages further down, so summarizing it as well would spend
+        // the window on the same content twice.
+        let to_summarize: Vec<Message> = prefix
+            .iter()
+            .enumerate()
+            .filter(|(idx, _)| !pins.is_honoured(*idx))
+            .map(|(_, msg)| msg.clone())
+            .collect();
 
-        let mut final_messages: Vec<Message> = Vec::with_capacity(messages.len() + 2);
+        let (summary_message, summarization_usage) = do_compact(provider, &to_summarize).await?;
 
-        // Older prefix: keep in the transcript for the user, hide from the agent.
-        for msg in prefix {
-            let updated_metadata = msg.metadata.with_agent_invisible();
-            final_messages.push(msg.clone().with_metadata(updated_metadata));
+        let mut final_messages: Vec<Message> = Vec::with_capacity(messages.len() + 4);
+
+        // Older prefix: keep in the transcript for the user, hide from the
+        // agent — EXCEPT an honoured pin, which stays exactly where it is, with
+        // its visibility and its marker untouched so the next compaction
+        // honours it too.
+        for (idx, msg) in prefix.iter().enumerate() {
+            if pins.is_honoured(idx) {
+                final_messages.push(msg.clone());
+            } else {
+                let updated_metadata = msg.metadata.with_agent_invisible();
+                final_messages.push(msg.clone().with_metadata(updated_metadata));
+            }
         }
 
         // Summary of the older prefix (agent-only) + a continuation note.
@@ -306,6 +363,10 @@ async fn compact_messages_with_window(
         let (merged_continuation, _issues) =
             merge_consecutive_messages(vec![summary_msg, continuation_msg]);
         final_messages.extend(merged_continuation);
+
+        // #51: a preservation marker the budget could not honour is announced
+        // to both audiences, in the transcript, right where it happened.
+        final_messages.extend(pins.eviction_notices());
 
         // Recent turns: kept verbatim (visibility untouched).
         for msg in kept {
@@ -352,12 +413,49 @@ async fn compact_messages_with_window(
         }
     };
 
-    // Find and preserve the most recent user message for non-manual compacts
+    // #51: the whole point of the legacy path is that EVERY message is flipped
+    // agent-invisible, so it is the path a preservation marker most needs to be
+    // honoured on. An honoured pin is excluded from the summarizer input and
+    // keeps its metadata untouched below.
+    let messages_to_compact: Vec<Message> = messages
+        .iter()
+        .enumerate()
+        .filter(|(idx, _)| !pins.is_honoured(*idx))
+        .map(|(_, msg)| msg.clone())
+        .collect();
+
+    // Nothing left to summarize once the pins are set aside: every remaining
+    // message is either an honoured pin or already hidden. Summarizing here
+    // would buy a billed round-trip for a summary of nothing and hand the model
+    // a "context was summarized" note that is false. Return the conversation
+    // untouched instead — the pins are already verbatim, which is the outcome a
+    // compaction would have had to produce anyway.
+    if !messages_to_compact.iter().any(|msg| msg.is_agent_visible()) {
+        warn!(
+            "#51: nothing to summarize — every agent-visible message is either a \
+             preserved message or already hidden; leaving the conversation as it is"
+        );
+        let mut final_messages = messages.clone();
+        final_messages.extend(pins.eviction_notices());
+        return Ok((
+            Conversation::new_unvalidated(final_messages),
+            ProviderUsage::new(
+                provider.get_model_config().model_name.clone(),
+                crate::providers::base::Usage::default(),
+            ),
+        ));
+    }
+
+    // Find and preserve the most recent user message for non-manual compacts.
+    // An honoured pin is skipped here: it already survives verbatim in place, so
+    // re-appending a fresh copy would duplicate it (and the copy would carry no
+    // marker, so the duplicate would then be summarized away next time).
     let (preserved_user_message, is_most_recent) = if !manual_compact {
-        let found_msg = messages.iter().enumerate().rev().find(|(_, msg)| {
+        let found_msg = messages.iter().enumerate().rev().find(|(idx, msg)| {
             msg.is_agent_visible()
                 && matches!(msg.role, rmcp::model::Role::User)
                 && has_text_only(msg)
+                && !pins.is_honoured(*idx)
         });
 
         if let Some((idx, msg)) = found_msg {
@@ -370,26 +468,28 @@ async fn compact_messages_with_window(
         (None, false)
     };
 
-    let messages_to_compact = messages.as_slice();
-
-    let (summary_message, summarization_usage) = do_compact(provider, messages_to_compact).await?;
+    let (summary_message, summarization_usage) = do_compact(provider, &messages_to_compact).await?;
 
     // Create the final message list with updated visibility metadata:
     // 1. Original messages become user_visible but not agent_visible
     // 2. Summary message becomes agent_visible but not user_visible
     // 3. Assistant messages to continue the conversation are also agent_visible but not user_visible
+    // 4. #51: an honoured pin is left exactly as it was — this is the only
+    //    message the legacy path does not hide.
     let mut final_messages = Vec::new();
 
-    for (idx, msg) in messages_to_compact.iter().enumerate() {
-        let updated_metadata = if is_most_recent
-            && idx == messages_to_compact.len() - 1
-            && preserved_user_message.is_some()
-        {
-            // This is the most recent message and we're preserving it by adding a fresh copy
-            MessageMetadata::invisible()
-        } else {
-            msg.metadata.with_agent_invisible()
-        };
+    for (idx, msg) in messages.iter().enumerate() {
+        if pins.is_honoured(idx) {
+            final_messages.push(msg.clone());
+            continue;
+        }
+        let updated_metadata =
+            if is_most_recent && idx == messages.len() - 1 && preserved_user_message.is_some() {
+                // This is the most recent message and we're preserving it by adding a fresh copy
+                MessageMetadata::invisible()
+            } else {
+                msg.metadata.with_agent_invisible()
+            };
         let updated_msg = msg.clone().with_metadata(updated_metadata);
         final_messages.push(updated_msg);
     }
@@ -413,6 +513,10 @@ async fn compact_messages_with_window(
 
     let (merged_continuation, _issues) = merge_consecutive_messages(continuation_messages);
     final_messages.extend(merged_continuation);
+
+    // #51: same announcement as the windowed path, so no compaction path can
+    // drop a preserved message quietly.
+    final_messages.extend(pins.eviction_notices());
 
     if let Some(user_msg) = preserved_user_message {
         if let Some(text) = extract_text(&user_msg) {
@@ -458,6 +562,71 @@ fn bytes_per_token() -> f64 {
     }
 }
 
+/// The byte size of one message's model-visible payload.
+///
+/// Shared by the compaction TRIGGER estimate and the #51 pinned-set BUDGET, so
+/// the two can never disagree about how big a message is — a pinned set that
+/// looked affordable to one and unaffordable to the other would make the
+/// compaction outcome depend on which check ran.
+fn message_payload_bytes(message: &Message) -> usize {
+    let mut bytes = 0;
+    for content in &message.content {
+        match content {
+            MessageContent::Text(text) => bytes += text.text.len(),
+            MessageContent::Thinking(thinking) => bytes += thinking.thinking.len(),
+            MessageContent::RedactedThinking(redacted) => bytes += redacted.data.len(),
+            MessageContent::Image(image) => bytes += image.data.len(),
+            MessageContent::ToolRequest(request) => {
+                bytes += request.id.len();
+                if let Ok(call) = &request.tool_call {
+                    bytes += call.name.len();
+                    bytes += call
+                        .arguments
+                        .as_ref()
+                        .map(|args| serde_json::to_string(args).map(|s| s.len()).unwrap_or(0))
+                        .unwrap_or(0);
+                }
+            }
+            // #51 / W8: identical accounting to `ToolRequest`, because it is
+            // the identical provider block — every formatter emits a
+            // `FrontendToolRequest` as a real tool-use with these arguments as
+            // its input. Omitting it let a pin carrying arbitrarily large
+            // arguments cost ~0 against both the pinned-set budget and the
+            // compaction trigger.
+            MessageContent::FrontendToolRequest(request) => {
+                bytes += request.id.len();
+                if let Ok(call) = &request.tool_call {
+                    bytes += call.name.len();
+                    bytes += call
+                        .arguments
+                        .as_ref()
+                        .map(|args| serde_json::to_string(args).map(|s| s.len()).unwrap_or(0))
+                        .unwrap_or(0);
+                }
+            }
+            MessageContent::ToolResponse(response) => {
+                bytes += response.id.len();
+                if let Ok(result) = &response.tool_result {
+                    for item in result.content.iter() {
+                        if let Some(text) = item.as_text() {
+                            bytes += text.text.len();
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    bytes
+}
+
+/// The byte-based token estimate for a SINGLE message, including its per-message
+/// overhead. What the #51 pinned-set budget is measured in.
+fn estimate_message_tokens(message: &Message) -> usize {
+    ((message_payload_bytes(message) as f64) / bytes_per_token()).ceil() as usize
+        + ESTIMATE_TOKENS_PER_MESSAGE
+}
+
 /// A byte-count-based token estimate for the whole request (system prompt +
 /// agent-visible messages + tool schemas). No tokenizer, no allocation per
 /// message — it walks the text that is already in memory.
@@ -471,36 +640,7 @@ fn estimate_request_tokens(messages: &[Message], system_prompt: &str, tools: &[T
 
     for message in messages.iter().filter(|m| m.is_agent_visible()) {
         overhead += ESTIMATE_TOKENS_PER_MESSAGE;
-        for content in &message.content {
-            match content {
-                MessageContent::Text(text) => bytes += text.text.len(),
-                MessageContent::Thinking(thinking) => bytes += thinking.thinking.len(),
-                MessageContent::RedactedThinking(redacted) => bytes += redacted.data.len(),
-                MessageContent::Image(image) => bytes += image.data.len(),
-                MessageContent::ToolRequest(request) => {
-                    bytes += request.id.len();
-                    if let Ok(call) = &request.tool_call {
-                        bytes += call.name.len();
-                        bytes += call
-                            .arguments
-                            .as_ref()
-                            .map(|args| serde_json::to_string(args).map(|s| s.len()).unwrap_or(0))
-                            .unwrap_or(0);
-                    }
-                }
-                MessageContent::ToolResponse(response) => {
-                    bytes += response.id.len();
-                    if let Ok(result) = &response.tool_result {
-                        for item in result.content.iter() {
-                            if let Some(text) = item.as_text() {
-                                bytes += text.text.len();
-                            }
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
+        bytes += message_payload_bytes(message);
     }
 
     for tool in tools {
@@ -658,19 +798,6 @@ pub fn eager_compaction_enabled() -> bool {
         .unwrap_or(DEFAULT_EAGER_COMPACTION_ENABLED)
 }
 
-/// BR-12: a background compaction may only be swapped in when the conversation it
-/// was computed from has not been mutated since the snapshot — i.e. no turn
-/// appended messages while the summarizer ran. [`replace_conversation`] DELETEs +
-/// reinserts the *entire* message set, so swapping a stale snapshot would
-/// silently drop any messages a concurrent turn added. History is append-only
-/// between turns, so an unchanged message count is a sufficient (and cheap)
-/// freshness check.
-///
-/// [`replace_conversation`]: crate::session::SessionManager::replace_conversation
-pub fn eager_swap_is_safe(snapshot_len: usize, current_len: usize) -> bool {
-    snapshot_len == current_len
-}
-
 /// BR-12: compute and swap in a compaction off the user-visible critical path.
 ///
 /// Spawned as a detached background task at the turn boundary. The expensive
@@ -681,12 +808,22 @@ pub fn eager_swap_is_safe(snapshot_len: usize, current_len: usize) -> bool {
 /// background task) — that is the "keep a synchronous fallback" phasing BR-12
 /// calls for.
 ///
-/// Race-safe against a live turn: the compacted conversation is only persisted
-/// when the stored conversation is unchanged since the snapshot (see
-/// [`eager_swap_is_safe`]); otherwise the result is discarded and the next turn's
-/// synchronous fallback handles it. Callers must additionally serialize eager
-/// compactions per session (only one in flight) so two summarizers don't both
-/// try to swap.
+/// Race-safe against a live turn: the swap goes through
+/// [`SessionManager::replace_conversation_preserving_tail`], so a message a
+/// concurrent turn appended while the summarizer ran is carried over rather than
+/// destroyed, and a snapshot whose basis was truncated or rewritten underneath
+/// us is refused outright — in which case the result is discarded and the next
+/// turn's synchronous fallback handles it. That check runs inside the rewrite's
+/// own transaction, so unlike the message-count compare it replaces it has no
+/// window at all.
+///
+/// This makes the write safe, not the concurrency rare. Callers should still
+/// serialize eager compactions per session (only one in flight) so two
+/// summarizers don't both pay for a round-trip one of them will discard —
+/// and note that `Agent`-scoped serialization cannot cover a second process on
+/// the same `sessions.db`.
+///
+/// [`SessionManager::replace_conversation_preserving_tail`]: crate::session::SessionManager::replace_conversation_preserving_tail
 /// `on_before_compact` runs exactly once, only when compaction is actually about
 /// to happen (the threshold check passed) and just before the summarization call.
 /// The caller uses it to fire the `PreCompact` hook so — unlike firing it around
@@ -698,8 +835,8 @@ pub async fn run_eager_compaction(
     threshold: f64,
     on_before_compact: impl FnOnce(),
 ) -> Result<EagerCompactionOutcome> {
-    let session = session_manager
-        .get_session(&session_config.id, true)
+    let (session, basis) = session_manager
+        .snapshot_for_rewrite(&session_config.id)
         .await?;
     let Some(conversation) = session.conversation.clone() else {
         return Ok(EagerCompactionOutcome::NotNeeded);
@@ -720,30 +857,24 @@ pub async fn run_eager_compaction(
         return Ok(EagerCompactionOutcome::NotNeeded);
     }
 
-    let snapshot_len = conversation.messages().len();
-
     on_before_compact();
     let (compacted, usage) = compact_messages(provider.as_ref(), &conversation, false).await?;
 
-    // Re-load and only swap when no turn mutated the conversation while we
-    // summarized — otherwise the DELETE+reinsert would clobber the new messages.
-    let current_len = session_manager
-        .get_session(&session_config.id, true)
-        .await?
-        .conversation
-        .as_ref()
-        .map_or(0, |c| c.messages().len());
-    if !eager_swap_is_safe(snapshot_len, current_len) {
+    // Swap under the store's own freshness guard: anything a concurrent turn
+    // appended while we summarized is carried over instead of being clobbered,
+    // and a snapshot whose basis moved is refused.
+    let (outcome, _stored) = session_manager
+        .replace_conversation_preserving_tail(&session_config.id, &compacted, basis, &conversation)
+        .await?;
+    if !outcome.stored() {
         debug!(
-            "BR-12: eager compaction aborted for session {} (len {} -> {}); a turn started under it",
-            session_config.id, snapshot_len, current_len
+            "BR-12: eager compaction aborted for session {} ({:?}); the history \
+             was rewritten under it",
+            session_config.id, outcome
         );
         return Ok(EagerCompactionOutcome::Aborted);
     }
 
-    session_manager
-        .replace_conversation(&session_config.id, &compacted)
-        .await?;
     let usage_event_key = uuid::Uuid::new_v4().to_string();
     crate::agents::reply_parts::apply_session_metrics(
         &session_manager,
@@ -1183,7 +1314,7 @@ mod tests {
     use async_trait::async_trait;
     use rmcp::model::{AnnotateAble, CallToolRequestParams, RawContent, Tool};
 
-    struct MockProvider {
+    pub(super) struct MockProvider {
         message: Message,
         config: ModelConfig,
         max_tool_responses: Option<usize>,
@@ -1193,10 +1324,14 @@ mod tests {
         // retry can be exercised.
         first_call_response: Option<Message>,
         call_count: std::sync::atomic::AtomicUsize,
+        /// The summarizer carries the history it is asked to condense in the
+        /// SYSTEM prompt, so recording it is how a test can assert on what did
+        /// (and did not) reach the summarizer.
+        last_system_prompt: std::sync::Mutex<String>,
     }
 
     impl MockProvider {
-        fn new(message: Message, context_limit: usize) -> Self {
+        pub(super) fn new(message: Message, context_limit: usize) -> Self {
             Self {
                 message,
                 config: ModelConfig {
@@ -1214,7 +1349,13 @@ mod tests {
                 max_input_chars: None,
                 first_call_response: None,
                 call_count: std::sync::atomic::AtomicUsize::new(0),
+                last_system_prompt: std::sync::Mutex::new(String::new()),
             }
+        }
+
+        /// The history the most recent summarization call was handed.
+        pub(super) fn last_summarizer_payload(&self) -> String {
+            self.last_system_prompt.lock().unwrap().clone()
         }
 
         fn with_max_tool_responses(mut self, max: usize) -> Self {
@@ -1230,7 +1371,7 @@ mod tests {
         }
 
         /// BR-14: how many completions have been requested so far.
-        fn calls(&self) -> usize {
+        pub(super) fn calls(&self) -> usize {
             self.call_count.load(std::sync::atomic::Ordering::SeqCst)
         }
 
@@ -1264,6 +1405,8 @@ mod tests {
             let call_index = self
                 .call_count
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+
+            *self.last_system_prompt.lock().unwrap() = system.to_string();
 
             // If max_input_chars is set, fail when the payload (carried in the
             // summarizer system prompt) is too large.
@@ -1919,20 +2062,9 @@ mod tests {
 
     // ---- BR-12: eager (background, between-turns) compaction ----
 
-    #[test]
-    fn test_eager_swap_is_safe_only_when_len_unchanged() {
-        // Unchanged length: no turn appended since the snapshot → safe to swap.
-        assert!(eager_swap_is_safe(10, 10));
-        // A message was appended by a racing turn → swapping the stale snapshot
-        // would DELETE+reinsert over it, so it must be refused.
-        assert!(!eager_swap_is_safe(10, 11));
-        // Defensive: any divergence at all is unsafe.
-        assert!(!eager_swap_is_safe(10, 9));
-    }
-
     /// Build a `SessionManager` backed by a throwaway temp dir + a session
     /// preloaded with `messages`, its live gauge set to `total_tokens`.
-    async fn eager_test_session(
+    pub(super) async fn eager_test_session(
         messages: Vec<Message>,
         total_tokens: i32,
     ) -> (
@@ -1964,7 +2096,7 @@ mod tests {
         (temp, manager, session.id)
     }
 
-    fn eager_session_config(id: &str) -> crate::agents::types::SessionConfig {
+    pub(super) fn eager_session_config(id: &str) -> crate::agents::types::SessionConfig {
         crate::agents::types::SessionConfig {
             id: id.to_string(),
             schedule_id: None,
@@ -2029,6 +2161,177 @@ mod tests {
         );
     }
 
+    /// A provider that mutates the session's history from inside its own
+    /// completion call — the deterministic stand-in for a concurrent writer
+    /// landing in the summarizer's window. No sleeps, no barriers.
+    struct MutatingProvider {
+        inner: MockProvider,
+        manager: Arc<crate::session::SessionManager>,
+        session_id: String,
+        mutation: Mutation,
+    }
+
+    enum Mutation {
+        /// Another writer appends a message (BR-71's note, `term log`, a turn).
+        Append(String),
+        /// A checkpoint restore / message edit removes the basis' tail.
+        Truncate(i64),
+    }
+
+    #[async_trait]
+    impl Provider for MutatingProvider {
+        fn metadata() -> ProviderMetadata {
+            ProviderMetadata::new("mock", "", "", "", vec![""], "", vec![])
+        }
+        fn get_name(&self) -> &str {
+            "mock"
+        }
+        async fn complete_with_model(
+            &self,
+            model_config: &ModelConfig,
+            system: &str,
+            messages: &[Message],
+            tools: &[Tool],
+        ) -> Result<(Message, ProviderUsage), ProviderError> {
+            match &self.mutation {
+                Mutation::Append(text) => {
+                    self.manager
+                        .add_message(&self.session_id, &Message::user().with_text(text.clone()))
+                        .await
+                        .unwrap();
+                }
+                Mutation::Truncate(ts) => {
+                    self.manager
+                        .truncate_conversation(&self.session_id, *ts)
+                        .await
+                        .unwrap();
+                }
+            }
+            self.inner
+                .complete_with_model(model_config, system, messages, tools)
+                .await
+        }
+        fn get_model_config(&self) -> ModelConfig {
+            self.inner.get_model_config()
+        }
+    }
+
+    /// A well-formed summary, so `summary_is_usable` accepts it first time.
+    fn mock_summary() -> Message {
+        Message::assistant().with_text(
+            "## User Intent\nplot the data\n## Technical Concepts\nplotting\n\
+             ## Files\nnone\n## Pending Tasks\nnone\n",
+        )
+    }
+
+    fn eager_texts(conversation: &Conversation) -> Vec<String> {
+        conversation
+            .messages()
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .filter_map(|c| match c {
+                MessageContent::Text(t) => Some(t.text.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A message appended while the background summarizer ran must survive AND
+    /// the compaction must still land. The message-count guard this replaces
+    /// discarded the compaction outright, so the session kept re-paying for a
+    /// summarization it threw away.
+    #[tokio::test]
+    async fn run_eager_compaction_preserves_a_concurrent_append() {
+        let mut messages = Vec::new();
+        for i in 0..6 {
+            messages.push(Message::user().with_text(format!("question {i}")));
+            messages.push(Message::assistant().with_text(format!("answer {i}")));
+        }
+        let (_temp, manager, id) = eager_test_session(messages, 90).await;
+
+        let provider: Arc<dyn Provider> = Arc::new(MutatingProvider {
+            inner: MockProvider::new(mock_summary(), 100),
+            manager: Arc::clone(&manager),
+            session_id: id.clone(),
+            mutation: Mutation::Append("NOTE: from a concurrent writer".to_string()),
+        });
+
+        let outcome = run_eager_compaction(
+            provider,
+            Arc::clone(&manager),
+            eager_session_config(&id),
+            0.8,
+            || {},
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            outcome,
+            EagerCompactionOutcome::Swapped,
+            "the compaction must land, not be discarded"
+        );
+        let texts = eager_texts(
+            &manager
+                .get_session(&id, true)
+                .await
+                .unwrap()
+                .conversation
+                .unwrap(),
+        );
+        assert!(
+            texts
+                .iter()
+                .any(|t| t.contains("NOTE: from a concurrent writer")),
+            "the concurrently appended note must survive; stored: {texts:#?}"
+        );
+        assert!(
+            texts.iter().any(|t| t.contains("User Intent")),
+            "the summary must be persisted; stored: {texts:#?}"
+        );
+    }
+
+    /// When the basis itself is truncated underneath the summarizer there is no
+    /// sound prefix to merge onto: abort, write nothing, and let the next turn's
+    /// synchronous fallback re-derive. First integration coverage of `Aborted`.
+    #[tokio::test]
+    async fn run_eager_compaction_aborts_when_the_prefix_moved() {
+        let mut messages = Vec::new();
+        for i in 0..6 {
+            messages.push(Message::user().with_text(format!("question {i}")));
+            messages.push(Message::assistant().with_text(format!("answer {i}")));
+        }
+        let (_temp, manager, id) = eager_test_session(messages, 90).await;
+        let before = manager.conversation_revision(&id).await.unwrap();
+
+        let provider: Arc<dyn Provider> = Arc::new(MutatingProvider {
+            inner: MockProvider::new(mock_summary(), 100),
+            manager: Arc::clone(&manager),
+            session_id: id.clone(),
+            // Messages carry `created = 0` here, so this removes the lot.
+            mutation: Mutation::Truncate(0),
+        });
+
+        let outcome = run_eager_compaction(
+            provider,
+            Arc::clone(&manager),
+            eager_session_config(&id),
+            0.8,
+            || {},
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome, EagerCompactionOutcome::Aborted);
+        let after = manager.conversation_revision(&id).await.unwrap();
+        assert_ne!(before, after, "the truncate itself did happen");
+        assert_eq!(
+            after.message_count(),
+            0,
+            "an aborted swap must not resurrect the truncated messages"
+        );
+    }
+
     /// A session comfortably under budget is left untouched — no summarization
     /// call, no swap.
     #[tokio::test]
@@ -2074,6 +2377,532 @@ mod tests {
         assert!(
             reloaded.messages().iter().all(|m| m.is_agent_visible()),
             "nothing should be hidden when compaction did not run"
+        );
+    }
+}
+
+/// #51 part (b): the preservation marker, honoured.
+///
+/// Part (a) stopped a concurrent append from being destroyed by a compaction's
+/// write-back. That is necessary and not sufficient: the message still falls out
+/// of the verbatim window a few turns later and is dissolved into a summary. The
+/// tests below are the whole retention rule —
+///
+///   never dropped by SUMMARIZATION; still subject to the overall context
+///   BUDGET, and when the budget bites the OLDEST pins go first, loudly.
+///
+/// — asserted once per compaction path, because a marker honoured by three of
+/// five paths is worse than no marker at all.
+#[cfg(test)]
+mod pin_tests {
+    use super::tests::MockProvider;
+    use super::*;
+    use crate::conversation::Conversation;
+    use rmcp::model::AnnotateAble;
+
+    const NOTE: &str = "NOTE: the reviewer wants a log scale";
+
+    fn provider(context_limit: usize) -> MockProvider {
+        MockProvider::new(
+            Message::assistant().with_text("<mock summary>"),
+            context_limit,
+        )
+    }
+
+    fn text_of(m: &Message) -> String {
+        m.content
+            .iter()
+            .filter_map(|c| match c {
+                MessageContent::Text(t) => Some(t.text.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("")
+    }
+
+    /// `turns` plain user/assistant turns, with `note` spliced in as a pinned
+    /// user message right after the FIRST turn — i.e. as far from the verbatim
+    /// window as a message can get.
+    fn conversation_with_an_old_pin(turns: usize) -> Conversation {
+        let mut messages = vec![
+            Message::user().with_text("q1"),
+            Message::assistant().with_text("a1"),
+            Message::user().with_text(NOTE).pinned(),
+        ];
+        for i in 2..=turns {
+            messages.push(Message::user().with_text(format!("q{i}")));
+            messages.push(Message::assistant().with_text(format!("a{i}")));
+        }
+        Conversation::new_unvalidated(messages)
+    }
+
+    fn find<'a>(c: &'a Conversation, text: &str) -> &'a Message {
+        c.messages()
+            .iter()
+            .find(|m| text_of(m) == text)
+            .unwrap_or_else(|| panic!("{text:?} missing from the compacted transcript"))
+    }
+
+    fn agent_texts(c: &Conversation) -> Vec<String> {
+        c.agent_visible_messages().iter().map(text_of).collect()
+    }
+
+    // ── P1: the headline case ───────────────────────────────────────────────
+
+    /// A pinned message eight turns back must still reach the model after a
+    /// normal compaction. Its unpinned neighbours in the same prefix must not:
+    /// that control is what makes the assertion mean "the marker worked" rather
+    /// than "nothing was compacted".
+    #[tokio::test]
+    async fn a_pinned_message_survives_a_normal_compaction() {
+        let conversation = conversation_with_an_old_pin(8);
+        let (compacted, _usage) =
+            compact_messages_with_window(&provider(100_000), &conversation, false, 2)
+                .await
+                .unwrap();
+
+        assert!(
+            find(&compacted, NOTE).is_agent_visible(),
+            "the pinned note must survive summarization; agent-visible was: {:#?}",
+            agent_texts(&compacted)
+        );
+        assert!(
+            find(&compacted, NOTE).is_pinned(),
+            "and it must still be marked, so the NEXT compaction honours it too"
+        );
+
+        // Controls: its unpinned prefix neighbours were summarized away, and the
+        // recent window is untouched.
+        for hidden in ["q1", "a1", "q2", "a2"] {
+            assert!(
+                !find(&compacted, hidden).is_agent_visible(),
+                "{hidden} is not pinned and should have been summarized away"
+            );
+        }
+        for kept in ["q8", "a8"] {
+            assert!(find(&compacted, kept).is_agent_visible());
+        }
+        assert!(find(&compacted, "<mock summary>").is_agent_visible());
+    }
+
+    /// The same guarantee for the hardest position: the pin is the very FIRST
+    /// message of the conversation.
+    #[tokio::test]
+    async fn the_oldest_message_survives_when_it_is_pinned() {
+        let mut messages = vec![Message::user().with_text(NOTE).pinned()];
+        for i in 1..=8 {
+            messages.push(Message::user().with_text(format!("q{i}")));
+            messages.push(Message::assistant().with_text(format!("a{i}")));
+        }
+        let conversation = Conversation::new_unvalidated(messages);
+
+        let (compacted, _usage) =
+            compact_messages_with_window(&provider(100_000), &conversation, false, 2)
+                .await
+                .unwrap();
+
+        assert!(
+            find(&compacted, NOTE).is_agent_visible(),
+            "agent-visible was: {:#?}",
+            agent_texts(&compacted)
+        );
+        assert!(!find(&compacted, "q1").is_agent_visible());
+    }
+
+    /// Compaction is idempotent over a pin: running it repeatedly must not
+    /// erode the note. A pin that survives once and dies on the third pass is
+    /// still a broken promise, just a slower one.
+    #[tokio::test]
+    async fn a_pin_survives_repeated_compactions() {
+        let mut conversation = conversation_with_an_old_pin(8);
+        for pass in 1..=3 {
+            let (next, _usage) =
+                compact_messages_with_window(&provider(100_000), &conversation, false, 2)
+                    .await
+                    .unwrap();
+            assert!(
+                find(&next, NOTE).is_agent_visible(),
+                "pass {pass} dropped the pin; agent-visible was: {:#?}",
+                agent_texts(&next)
+            );
+            conversation = next;
+        }
+    }
+
+    // ── P2: every rung of the recovery ladder ───────────────────────────────
+
+    /// `SummarizeAll` (`keep_last_turns == 0`) takes the legacy path, where
+    /// EVERY message is flipped agent-invisible. The pin must be the exception.
+    #[tokio::test]
+    async fn a_pin_survives_the_summarize_all_rung() {
+        let conversation = conversation_with_an_old_pin(8);
+        let (compacted, _usage) = compact_messages_with_recovery(
+            &provider(100_000),
+            &conversation,
+            OverflowRecovery::SummarizeAll,
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            find(&compacted, NOTE).is_agent_visible(),
+            "agent-visible was: {:#?}",
+            agent_texts(&compacted)
+        );
+        assert!(!find(&compacted, "q8").is_agent_visible(), "control");
+    }
+
+    /// `DropOldestThenSummarize` hard-drops the older half by flipping it
+    /// agent-invisible BEFORE summarizing. That pre-pass is a second, separate
+    /// place a pin can be erased.
+    #[tokio::test]
+    async fn a_pin_survives_the_drop_oldest_rung() {
+        let conversation = conversation_with_an_old_pin(8);
+        let (compacted, _usage) = compact_messages_with_recovery(
+            &provider(100_000),
+            &conversation,
+            OverflowRecovery::DropOldestThenSummarize,
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            find(&compacted, NOTE).is_agent_visible(),
+            "agent-visible was: {:#?}",
+            agent_texts(&compacted)
+        );
+    }
+
+    /// The whole ladder, in order, on one conversation — the shape a genuinely
+    /// wedged session takes. The pin must be there at the bottom rung.
+    #[tokio::test]
+    async fn a_pin_survives_the_whole_recovery_ladder() {
+        let mut conversation = conversation_with_an_old_pin(8);
+        let mut attempt = 1;
+        while let Some(recovery) = overflow_recovery_for_attempt(attempt) {
+            let (next, _usage) =
+                compact_messages_with_recovery(&provider(100_000), &conversation, recovery)
+                    .await
+                    .unwrap_or_else(|e| panic!("rung {recovery:?} failed: {e}"));
+            assert!(
+                find(&next, NOTE).is_agent_visible(),
+                "rung {recovery:?} dropped the pin; agent-visible was: {:#?}",
+                agent_texts(&next)
+            );
+            conversation = next;
+            attempt += 1;
+        }
+        assert_eq!(attempt, 5, "the ladder should have run all four rungs");
+    }
+
+    /// `drop_oldest_agent_visible_turns` in isolation: the pre-pass must spare
+    /// the pin while dropping its unpinned neighbours.
+    #[test]
+    fn drop_oldest_spares_a_pin() {
+        let mut messages: Vec<Message> = Vec::new();
+        for i in 1..=4 {
+            messages.push(Message::user().with_text(format!("q{i}")));
+            messages.push(Message::assistant().with_text(format!("a{i}")));
+        }
+        messages.insert(1, Message::user().with_text(NOTE).pinned());
+
+        let out = drop_oldest_agent_visible_turns(&messages);
+        let pin = out.iter().find(|m| text_of(m) == NOTE).unwrap();
+        assert!(pin.is_agent_visible(), "the drop pre-pass must spare a pin");
+        assert!(
+            !out.iter()
+                .find(|m| text_of(m) == "q1")
+                .unwrap()
+                .is_agent_visible(),
+            "control: its unpinned neighbour is dropped"
+        );
+    }
+
+    // ── P3: eligibility and non-duplication ─────────────────────────────────
+
+    /// A pin exempts a message from summarization; it does not also DUPLICATE it
+    /// into the summarizer's input. Feeding the summarizer text that also
+    /// survives verbatim wastes the window twice over.
+    #[tokio::test]
+    async fn a_pinned_message_is_not_also_fed_to_the_summarizer() {
+        let conversation = conversation_with_an_old_pin(8);
+        let provider = provider(100_000);
+        let _ = compact_messages_with_window(&provider, &conversation, false, 2)
+            .await
+            .unwrap();
+
+        let seen = provider.last_summarizer_payload();
+        assert!(
+            !seen.contains(NOTE),
+            "the pinned text must not be summarized as well as kept; payload: {seen}"
+        );
+        assert!(
+            seen.contains("q1"),
+            "control: the unpinned prefix WAS summarized"
+        );
+    }
+
+    /// A pin on a message carrying tool content is NOT honoured: exempting one
+    /// half of a tool_request/tool_response pair from a summarization that hides
+    /// the other half hands the provider an invalid request. Pins are for
+    /// standalone messages, which is the shape of the first consumer.
+    #[tokio::test]
+    async fn a_pin_on_a_tool_message_is_not_honoured() {
+        let mut messages = vec![
+            Message::user().with_text("q1"),
+            Message::assistant()
+                .with_tool_request(
+                    "tool_0",
+                    Ok(rmcp::model::CallToolRequestParams {
+                        task: None,
+                        name: "read_file".into(),
+                        arguments: None,
+                        meta: None,
+                    }),
+                )
+                .pinned(),
+            Message::user()
+                .with_tool_response(
+                    "tool_0",
+                    Ok(rmcp::model::CallToolResult {
+                        content: vec![rmcp::model::RawContent::text("f").no_annotation()],
+                        structured_content: None,
+                        is_error: Some(false),
+                        meta: None,
+                    }),
+                )
+                .pinned(),
+        ];
+        for i in 2..=8 {
+            messages.push(Message::user().with_text(format!("q{i}")));
+            messages.push(Message::assistant().with_text(format!("a{i}")));
+        }
+        let conversation = Conversation::new_unvalidated(messages);
+
+        let (compacted, _usage) =
+            compact_messages_with_window(&provider(100_000), &conversation, false, 2)
+                .await
+                .unwrap();
+
+        let agent = compacted.agent_visible_messages();
+        assert!(
+            !agent.iter().any(|m| m.content.iter().any(|c| matches!(
+                c,
+                MessageContent::ToolRequest(_) | MessageContent::ToolResponse(_)
+            ))),
+            "an ineligible pin must not keep half a tool pair alive in the \
+             agent's context; agent-visible was: {:#?}",
+            agent_texts(&compacted)
+        );
+        // Ineligible means "treated as an ordinary older message", not
+        // "deleted": both halves are still in the user's transcript.
+        assert_eq!(
+            compacted
+                .messages()
+                .iter()
+                .filter(|m| m.content.iter().any(|c| matches!(
+                    c,
+                    MessageContent::ToolRequest(_) | MessageContent::ToolResponse(_)
+                )))
+                .count(),
+            2,
+            "the pair stays in the transcript, just not in the agent's context"
+        );
+    }
+
+    /// The FIFTH compaction site: the BR-12 background eager swap, driven end
+    /// to end through the real store. The other four are covered by the reply
+    /// loop's integration tests; this one is a detached `tokio::spawn` at the
+    /// turn boundary, so it is exercised here instead.
+    #[tokio::test]
+    async fn eager_background_compaction_keeps_a_pinned_message() {
+        use super::tests::{eager_session_config, eager_test_session};
+
+        let mut messages = vec![Message::user().with_text(NOTE).pinned()];
+        for i in 0..6 {
+            messages.push(Message::user().with_text(format!("question {i}")));
+            messages.push(Message::assistant().with_text(format!("answer {i}")));
+        }
+        // context_limit 100, total_tokens 90 -> over the 0.8 threshold.
+        let (_temp, manager, id) = eager_test_session(messages, 90).await;
+        let provider: std::sync::Arc<dyn Provider> = std::sync::Arc::new(provider(100));
+
+        let outcome = run_eager_compaction(
+            provider,
+            std::sync::Arc::clone(&manager),
+            eager_session_config(&id),
+            0.8,
+            || {},
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome, EagerCompactionOutcome::Swapped);
+
+        let reloaded = manager
+            .get_session(&id, true)
+            .await
+            .unwrap()
+            .conversation
+            .unwrap();
+        let note = reloaded
+            .messages()
+            .iter()
+            .find(|m| text_of(m) == NOTE)
+            .expect("the note is still in the transcript");
+        assert!(
+            note.is_agent_visible(),
+            "the background swap must not summarize the pin away; agent-visible \
+             was: {:#?}",
+            agent_texts(&reloaded)
+        );
+        assert!(
+            note.is_pinned(),
+            "and the marker must survive the store round trip"
+        );
+        assert!(
+            !reloaded
+                .messages()
+                .iter()
+                .find(|m| text_of(m) == "question 0")
+                .unwrap()
+                .is_agent_visible(),
+            "control: an unmarked older message WAS summarized away"
+        );
+    }
+
+    // ── P4: the bound ───────────────────────────────────────────────────────
+
+    /// The pinned set is bounded by construction, or a session accumulating
+    /// pins eventually has a conversation that cannot be compacted at all.
+    ///
+    /// The budget is driven here by the MODEL's context window rather than by an
+    /// env var: the share cap resolves against it, so this exercises the real
+    /// configured path with no process-global env mutation to race other tests.
+    #[tokio::test]
+    async fn over_budget_pins_are_evicted_oldest_first_and_announced() {
+        // context_limit 1000 -> pinned budget = 1000 * 0.25 = 250 tokens; each
+        // ~300-byte note costs ~104. Room for two.
+        let filler = "x".repeat(280);
+        let mut messages = Vec::new();
+        for i in 1..=4 {
+            messages.push(
+                Message::user()
+                    .with_text(format!("pin{i} {filler}"))
+                    .pinned(),
+            );
+            messages.push(Message::assistant().with_text(format!("a{i}")));
+        }
+        for i in 5..=8 {
+            messages.push(Message::user().with_text(format!("q{i}")));
+            messages.push(Message::assistant().with_text(format!("a{i}")));
+        }
+        let conversation = Conversation::new_unvalidated(messages);
+
+        let (compacted, _usage) =
+            compact_messages_with_window(&provider(1_000), &conversation, false, 2)
+                .await
+                .unwrap();
+
+        let pin_visible = |n: usize| {
+            compacted
+                .messages()
+                .iter()
+                .find(|m| text_of(m).starts_with(&format!("pin{n} ")))
+                .unwrap_or_else(|| panic!("pin{n} missing from the transcript"))
+                .is_agent_visible()
+        };
+
+        // Newest two honoured, oldest two demoted — the operator's rule.
+        assert!(pin_visible(3), "the newest pins keep their exemption");
+        assert!(pin_visible(4));
+        assert!(!pin_visible(1), "the OLDEST pin is the first to be dropped");
+        assert!(!pin_visible(2));
+
+        // ...and the eviction is announced to BOTH audiences, in the
+        // transcript, not only in a log line.
+        let agent_notice = compacted
+            .messages()
+            .iter()
+            .find(|m| text_of(m).contains("marked to be preserved verbatim"))
+            .expect("the model must be told a preserved message was condensed");
+        assert!(agent_notice.is_agent_visible() && !agent_notice.is_user_visible());
+        assert!(text_of(agent_notice).contains('2'), "names the count");
+
+        let user_notice = compacted
+            .messages()
+            .iter()
+            .filter_map(|m| m.content.iter().find_map(|c| c.as_system_notification()))
+            .find(|n| n.msg.contains("could not preserve"))
+            .expect("the user who pinned it must be told too");
+        assert!(user_notice.msg.contains('2'));
+    }
+
+    /// The anti-noise twin: a compaction that honours every pin must not emit an
+    /// eviction notice. A notice that appears on the happy path would train
+    /// everyone to ignore it.
+    #[tokio::test]
+    async fn no_eviction_notice_when_every_pin_fits() {
+        let conversation = conversation_with_an_old_pin(8);
+        let (compacted, _usage) =
+            compact_messages_with_window(&provider(100_000), &conversation, false, 2)
+                .await
+                .unwrap();
+
+        assert!(
+            !compacted
+                .messages()
+                .iter()
+                .any(|m| text_of(m).contains("marked to be preserved verbatim")),
+            "no eviction happened, so nothing should be announced"
+        );
+    }
+
+    /// The degenerate shape the bound exists to prevent: a conversation whose
+    /// agent-visible content is ENTIRELY pinned. There is genuinely nothing to
+    /// summarize, so compaction must return the history untouched rather than
+    /// spend a billed round-trip summarizing nothing and tell the model its
+    /// context was condensed when it was not.
+    #[tokio::test]
+    async fn a_wholly_pinned_conversation_is_left_alone_instead_of_summarizing_nothing() {
+        let provider = provider(100_000);
+        let conversation = Conversation::new_unvalidated(vec![
+            Message::user().with_text("note one").pinned(),
+            Message::user().with_text("note two").pinned(),
+        ]);
+
+        let (compacted, _usage) = compact_messages_with_window(&provider, &conversation, false, 0)
+            .await
+            .unwrap();
+
+        assert_eq!(provider.calls(), 0, "no summarizer round-trip was bought");
+        assert_eq!(compacted.messages().len(), 2);
+        assert!(compacted.messages().iter().all(|m| m.is_agent_visible()));
+    }
+
+    /// The control for the whole feature: without the marker, the same message
+    /// in the same place IS summarized away. If this ever passes with the pin
+    /// assertions, the tests are measuring "compaction did nothing".
+    #[tokio::test]
+    async fn an_unpinned_message_in_the_same_place_is_summarized_away() {
+        let mut messages = vec![
+            Message::user().with_text("q1"),
+            Message::assistant().with_text("a1"),
+            Message::user().with_text(NOTE),
+        ];
+        for i in 2..=8 {
+            messages.push(Message::user().with_text(format!("q{i}")));
+            messages.push(Message::assistant().with_text(format!("a{i}")));
+        }
+        let conversation = Conversation::new_unvalidated(messages);
+
+        let (compacted, _usage) =
+            compact_messages_with_window(&provider(100_000), &conversation, false, 2)
+                .await
+                .unwrap();
+
+        assert!(
+            !find(&compacted, NOTE).is_agent_visible(),
+            "an unmarked message must still be summarized away"
         );
     }
 }

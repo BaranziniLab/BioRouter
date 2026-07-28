@@ -183,6 +183,15 @@ export type CancelTurnResponse = {
 export type ChangeKind = 'ingest' | 'link' | 'flag' | 'query' | 'lint' | 'restore' | 'manual';
 
 export type ChatRequest = {
+    /**
+     * The client's own copy of the session's history, which REPLACES what the
+     * server has stored.
+     *
+     * DEPRECATED as an authoritative overwrite (#51 W5). It is now conditional:
+     * the copy must already contain every message the server holds, and the
+     * request is refused with 409 if it does not. See
+     * [`apply_client_writeback`]. The desktop app has never sent this field.
+     */
     conversation_so_far?: Array<Message> | null;
     reasoning_effort?: ReasoningEffort | null;
     session_id: string;
@@ -473,6 +482,23 @@ export type DivergeSessionResponse = {
 
 export type EditMessageRequest = {
     editType?: EditType;
+    /**
+     * Your view of this session: the durable ids (`Message.id`) of every
+     * message it holds, in any order.
+     *
+     * OPTIONAL, and enforced when you send it. For `edit`, which truncates the
+     * live session, supplying it is how the server checks that you are deleting
+     * the history you actually saw: a stored message your list does not name
+     * landed after you rendered the conversation, and the cut is refused with
+     * 409 `conversation_out_of_date` rather than destroying it. Omit it and the
+     * cut still runs under the turn lock and is still bounded to the rows the
+     * server itself just read — safe, but blind to that wider race. Ignored for
+     * `diverge`, which writes only to a new session and cannot destroy anything.
+     *
+     * An EMPTY list is not the same as omitting the field: it asserts your view
+     * holds nothing, and is checked as such (so a non-empty session refuses it).
+     */
+    expectedMessageIds?: Array<string> | null;
     timestamp: number;
 };
 
@@ -1017,6 +1043,13 @@ export type MessageMetadata = {
      * Whether the message should be included in the agent's context window
      */
     agentVisible: boolean;
+    /**
+     * #51: carry this message verbatim through every compaction instead of
+     * dissolving it into a summary. Never dropped by summarization — but still
+     * subject to the overall context budget, which trims the oldest pins first
+     * and reports it. Defaults to false.
+     */
+    pinned?: boolean;
     /**
      * Whether the message should be visible to the user in the UI
      */
@@ -4232,6 +4265,10 @@ export type ReplyData = {
 
 export type ReplyErrors = {
     /**
+     * A turn is already in flight for this session, or the supplied `conversation_so_far` is missing messages the server holds (nothing was written; re-read the session and retry)
+     */
+    409: unknown;
+    /**
      * Agent not initialized
      */
     424: unknown;
@@ -4885,7 +4922,7 @@ export type EditMessageData = {
 
 export type EditMessageErrors = {
     /**
-     * Bad request - Invalid message timestamp
+     * Bad request - invalid session id
      */
     400: unknown;
     /**
@@ -4896,6 +4933,10 @@ export type EditMessageErrors = {
      * Session or message not found
      */
     404: unknown;
+    /**
+     * A turn is in flight for this session, or a supplied `expectedMessageIds` is missing messages the server holds (nothing was deleted; re-read the session and retry)
+     */
+    409: unknown;
     /**
      * Internal server error
      */

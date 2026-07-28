@@ -401,6 +401,58 @@ impl MessageContent {
         })
     }
 
+    /// #51: whether a message carrying this content block may have its
+    /// preservation marker honoured (see [`MessageMetadata::pinned`] and
+    /// `crate::context_mgmt::pins`).
+    ///
+    /// A pin exempts one message from summarization while the messages around
+    /// it are dissolved into a summary, so the only content that can be
+    /// preserved is content that is **self-contained**: it carries its whole
+    /// meaning alone, and no provider needs a partner block elsewhere in the
+    /// transcript to accept it. Everything else would survive as a dangling
+    /// half.
+    ///
+    /// The match is deliberately **exhaustive** rather than a `matches!`
+    /// exclusion list. An exclusion list defaults every new variant to
+    /// *eligible* and says nothing about it — which is precisely how
+    /// [`MessageContent::FrontendToolRequest`] (a real `tool_use` block to every
+    /// provider) slipped past a rule that named only `ToolRequest` and
+    /// `ToolResponse`. Written this way, adding a variant fails to compile until
+    /// somebody rules on it.
+    pub fn is_pin_eligible(&self) -> bool {
+        match self {
+            // Self-contained. Text is the intended payload of a pin; an image
+            // needs no partner block and is already measured by the byte budget.
+            MessageContent::Text(_) | MessageContent::Image(_) => true,
+
+            // Halves of a provider tool pair. Exempting one from a summarization
+            // that hides the other produces a dangling tool call and a rejected
+            // request. `FrontendToolRequest` belongs here because every
+            // formatter emits it as a real tool-use block (`formats/bedrock.rs`,
+            // `formats/anthropic.rs`, `formats/openai.rs`, `formats/databricks.rs`)
+            // — and because the normalizer only strips it from ASSISTANT
+            // messages, a user-role one can arrive through the API unvalidated.
+            MessageContent::ToolRequest(_)
+            | MessageContent::ToolResponse(_)
+            | MessageContent::FrontendToolRequest(_) => false,
+
+            // UI handshakes keyed to a specific pending request. Providers drop
+            // them or emit an empty block, so preserving one spends the pin
+            // budget on nothing and outlives the request it refers to.
+            MessageContent::ToolConfirmationRequest(_) | MessageContent::ActionRequired(_) => false,
+
+            // Bound to the assistant turn that produced them: the signature is
+            // validated against that turn's context, and Bedrock drops them
+            // entirely. Not standalone.
+            MessageContent::Thinking(_) | MessageContent::RedactedThinking(_) => false,
+
+            // User-facing only — the Bedrock formatter hard-errors if one ever
+            // reaches a provider, so nothing may give one a reason to persist as
+            // agent-visible content.
+            MessageContent::SystemNotification(_) => false,
+        }
+    }
+
     pub fn as_system_notification(&self) -> Option<&SystemNotificationContent> {
         if let MessageContent::SystemNotification(ref notification) = self {
             Some(notification)
@@ -540,6 +592,41 @@ pub struct MessageMetadata {
     pub user_visible: bool,
     /// Whether the message should be included in the agent's context window
     pub agent_visible: bool,
+    /// #51: carry this message verbatim through every compaction instead of
+    /// dissolving it into a summary. Never dropped by summarization — but still
+    /// subject to the overall context budget, which trims the oldest pins first
+    /// and reports it. Defaults to false.
+    //
+    // The long form, deliberately NOT a doc comment so it stays out of the
+    // OpenAPI schema and the generated TypeScript:
+    //
+    // Compaction keeps only the last `keep_last_turns` turns verbatim and
+    // summarizes the older prefix, so an ordinary message that falls out of
+    // that window stops reaching the model. A pinned message is exempt from
+    // summarization on every compaction path (`crate::context_mgmt`): the
+    // older prefix around it is summarized and hidden, and it stays where it
+    // is, agent-visible. See `crate::context_mgmt::pins` for the budget
+    // (`BIOROUTER_MAX_PINNED_MESSAGES` / `BIOROUTER_MAX_PINNED_CONTEXT_SHARE`),
+    // the oldest-first eviction order, and how an eviction is reported.
+    //
+    // A pin is only honoured on a message carrying no tool request/response
+    // content: exempting half of a tool pair from a summarization that hides
+    // the other half hands the provider an invalid request. Pins are for
+    // standalone messages — exactly the shape of the first consumer.
+    //
+    // NOTHING SETS THIS YET, deliberately. BR-71's
+    // `workspace_send_prompt { mode: "note" }` (issue #30) is the first
+    // consumer: it appends a note to another session's conversation and must
+    // be able to promise the note reaches the model wherever that conversation
+    // has got to. When it lands it attaches via `Message::pinned`.
+    //
+    // `#[serde(default)]` is load-bearing: `metadata_json` rows written before
+    // this field existed omit it, and the read path decodes with
+    // `from_str(..).ok().unwrap_or_default()` — without the default every
+    // pre-existing message would fail to decode and silently reset to fully
+    // default metadata, losing its `user_visible` / `agent_visible` state.
+    #[serde(default)]
+    pub pinned: bool,
 }
 
 impl Default for MessageMetadata {
@@ -547,6 +634,7 @@ impl Default for MessageMetadata {
         MessageMetadata {
             user_visible: true,
             agent_visible: true,
+            pinned: false,
         }
     }
 }
@@ -557,6 +645,7 @@ impl MessageMetadata {
         MessageMetadata {
             user_visible: false,
             agent_visible: true,
+            pinned: false,
         }
     }
 
@@ -565,6 +654,7 @@ impl MessageMetadata {
         MessageMetadata {
             user_visible: true,
             agent_visible: false,
+            pinned: false,
         }
     }
 
@@ -573,6 +663,7 @@ impl MessageMetadata {
         MessageMetadata {
             user_visible: false,
             agent_visible: false,
+            pinned: false,
         }
     }
 
@@ -604,6 +695,22 @@ impl MessageMetadata {
     pub fn with_user_visible(self) -> Self {
         Self {
             user_visible: true,
+            ..self
+        }
+    }
+
+    /// Return a copy carrying the #51 preservation marker (see [`Self::pinned`]).
+    pub fn with_pinned(self) -> Self {
+        Self {
+            pinned: true,
+            ..self
+        }
+    }
+
+    /// Return a copy with the #51 preservation marker cleared.
+    pub fn with_unpinned(self) -> Self {
+        Self {
+            pinned: false,
             ..self
         }
     }
@@ -914,6 +1021,24 @@ impl Message {
     pub fn is_agent_visible(&self) -> bool {
         self.metadata.agent_visible
     }
+
+    /// #51: mark this message to be carried verbatim through every compaction
+    /// instead of being dissolved into a summary. See
+    /// [`MessageMetadata::pinned`] for the exact guarantee (and its one limit:
+    /// the overall context budget).
+    ///
+    /// This is the attachment point for BR-71's
+    /// `workspace_send_prompt { mode: "note" }` — the first consumer, not yet
+    /// built. Nothing in the shipped tree calls it.
+    pub fn pinned(mut self) -> Self {
+        self.metadata.pinned = true;
+        self
+    }
+
+    /// Whether this message carries the #51 preservation marker.
+    pub fn is_pinned(&self) -> bool {
+        self.metadata.pinned
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
@@ -931,8 +1056,11 @@ pub struct TokenState {
 
 #[cfg(test)]
 mod tests {
-    use crate::conversation::message::{Message, MessageContent, MessageMetadata};
+    use crate::conversation::message::{
+        Message, MessageContent, MessageMetadata, SystemNotificationType,
+    };
     use crate::conversation::*;
+    use rmcp::model::CallToolResult;
     use rmcp::model::{
         AnnotateAble, CallToolRequestParams, PromptMessage, PromptMessageContent,
         PromptMessageRole, RawEmbeddedResource, RawImageContent, ResourceContents,
@@ -1422,6 +1550,90 @@ mod tests {
             .with_agent_visible();
         assert!(metadata.user_visible);
         assert!(metadata.agent_visible);
+    }
+
+    /// #51: the preservation marker defaults off and is orthogonal to the two
+    /// visibility flags — flipping visibility must never clear a pin, because
+    /// compaction's very first act on the older prefix is
+    /// `with_agent_invisible()`.
+    #[test]
+    fn test_pin_marker_is_orthogonal_to_visibility() {
+        assert!(!MessageMetadata::default().pinned);
+        assert!(!MessageMetadata::agent_only().pinned);
+        assert!(!MessageMetadata::user_only().pinned);
+        assert!(!MessageMetadata::invisible().pinned);
+
+        let pinned = MessageMetadata::default().with_pinned();
+        assert!(pinned.pinned);
+        assert!(pinned.with_agent_invisible().pinned);
+        assert!(pinned.with_user_invisible().pinned);
+        assert!(pinned.with_agent_visible().pinned);
+        assert!(pinned.with_user_visible().pinned);
+        assert!(!pinned.with_unpinned().pinned);
+
+        let msg = Message::user().with_text("note").pinned();
+        assert!(msg.is_pinned());
+        assert!(msg.is_agent_visible());
+        assert!(!Message::user().with_text("plain").is_pinned());
+    }
+
+    /// #51 / W8: the content-level half of the pin rule. `FrontendToolRequest`
+    /// is the case this test exists for — it is a real `tool_use` block to every
+    /// provider, so preserving one past a compaction that summarizes its
+    /// response away leaves a dangling tool call, exactly like a bare
+    /// `ToolRequest`. The full per-variant table (and the reasoning) is asserted
+    /// in `context_mgmt::pins`.
+    #[test]
+    fn only_self_contained_content_is_pin_eligible() {
+        let call = Ok(CallToolRequestParams {
+            task: None,
+            name: "read_file".into(),
+            arguments: None,
+            meta: None,
+        });
+
+        assert!(MessageContent::text("note").is_pin_eligible());
+        assert!(MessageContent::image("ZGF0YQ==", "image/png").is_pin_eligible());
+
+        // The three that become provider tool-protocol blocks.
+        assert!(!MessageContent::tool_request("t0", call.clone()).is_pin_eligible());
+        assert!(
+            !MessageContent::tool_response("t0", Ok(CallToolResult::success(vec![])))
+                .is_pin_eligible()
+        );
+        assert!(
+            !MessageContent::frontend_tool_request("f0", call).is_pin_eligible(),
+            "a frontend tool request is a tool_use block, not a standalone note"
+        );
+
+        // Neither UI handshakes nor turn-bound reasoning nor user-only notices.
+        assert!(!MessageContent::thinking("why", "sig").is_pin_eligible());
+        assert!(!MessageContent::redacted_thinking("blob").is_pin_eligible());
+        assert!(!MessageContent::system_notification(
+            SystemNotificationType::InlineMessage,
+            "note"
+        )
+        .is_pin_eligible());
+    }
+
+    /// #51 back-compat: `metadata_json` rows written before the marker existed
+    /// omit the field entirely. Without `#[serde(default)]` those rows would
+    /// fail to decode, and the store's `from_str(..).ok().unwrap_or_default()`
+    /// would silently reset each one to fully-default metadata — resurrecting
+    /// every compacted-away message into the agent's context.
+    #[test]
+    fn test_pin_marker_absent_from_legacy_metadata_json() {
+        let legacy = r#"{"userVisible": true, "agentVisible": false}"#;
+        let metadata: MessageMetadata = serde_json::from_str(legacy).unwrap();
+        assert!(metadata.user_visible);
+        assert!(!metadata.agent_visible, "legacy flags must survive");
+        assert!(!metadata.pinned, "an unmarked legacy row is not pinned");
+
+        // And the field round-trips once it is present.
+        let json = serde_json::to_string(&MessageMetadata::default().with_pinned()).unwrap();
+        assert!(json.contains("\"pinned\":true"), "serialized as: {json}");
+        let back: MessageMetadata = serde_json::from_str(&json).unwrap();
+        assert!(back.pinned);
     }
 
     #[test]

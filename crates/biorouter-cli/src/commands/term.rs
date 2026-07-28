@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Result};
 use biorouter::conversation::message::{Message, MessageContent, MessageMetadata};
+use biorouter::session::session_manager::{ConversationRevision, TruncateOutcome};
 use biorouter::session::{SessionManager, SessionType};
 use chrono;
 use rmcp::model::Role;
@@ -196,6 +197,98 @@ pub async fn handle_term_log(command: String) -> Result<()> {
     Ok(())
 }
 
+/// The shell commands `term log` recorded since the last assistant reply, and
+/// the revision of the stored conversation that reading of them is based on.
+///
+/// `term run` shows those commands to the model as `<shell_history>` and drops
+/// them from the stored conversation, so they arrive once, in context, instead
+/// of twice. Deciding what to drop and dropping it are separate steps because
+/// the two happen at different times against a database other processes write
+/// to: `basis` is what lets the drop be bounded to the rows this view actually
+/// covered.
+struct ShellHistoryPlan {
+    /// The recorded commands, oldest first.
+    commands: Vec<String>,
+    /// `created` of the oldest recorded command — the cut point. `None` when
+    /// there is nothing to fold.
+    cut_from: Option<i64>,
+    /// The revision the whole plan was read from.
+    basis: ConversationRevision,
+}
+
+impl ShellHistoryPlan {
+    /// Prefix `prompt` with the recorded commands, if there are any.
+    fn compose(&self, prompt: String) -> String {
+        if self.commands.is_empty() {
+            return prompt;
+        }
+        format!(
+            "<shell_history>\n{}\n</shell_history>\n\n{}",
+            self.commands.join("\n"),
+            prompt
+        )
+    }
+}
+
+/// Read the trailing run of non-assistant messages — what `term log` recorded
+/// since the last reply — together with the revision that view is based on.
+async fn plan_shell_history(
+    session_manager: &SessionManager,
+    session_id: &str,
+) -> Result<ShellHistoryPlan> {
+    let (session, basis) = session_manager.snapshot_for_rewrite(session_id).await?;
+
+    // Read the revision BEFORE the conversation (`snapshot_for_rewrite`'s
+    // ordering) and then keep only the prefix that revision describes. A
+    // `term log` landing between the two reads is therefore neither folded
+    // into the prompt nor dropped from the store: it stays a plain message the
+    // resumed session shows the model on its own. The other order would leave
+    // it unseen here and below the watermark there — deleted, and never shown.
+    let seen: &[Message] = session
+        .conversation
+        .as_ref()
+        .map(|conv| {
+            let msgs = conv.messages();
+            &msgs[..basis.message_count().min(msgs.len())]
+        })
+        .unwrap_or(&[]);
+
+    let trailing: Vec<&Message> = seen
+        .iter()
+        .rev()
+        .take_while(|m| m.role != Role::Assistant)
+        .collect();
+
+    Ok(ShellHistoryPlan {
+        cut_from: trailing.last().map(|oldest| oldest.created),
+        commands: trailing
+            .iter()
+            .rev() // back to chronological order
+            .map(|m| m.as_concat_text())
+            .collect(),
+        basis,
+    })
+}
+
+/// Drop the messages `plan` folded into the prompt.
+///
+/// Bounded by the plan's own basis: anything appended after that view — a
+/// `term log` from another pane, a GUI turn on the same session — is outside
+/// the tail this command asked to drop and is left alone, even though its
+/// `created` of "now" puts it inside the open-ended timestamp range.
+async fn apply_shell_history_plan(
+    session_manager: &SessionManager,
+    session_id: &str,
+    plan: &ShellHistoryPlan,
+) -> Result<TruncateOutcome> {
+    let Some(cut_from) = plan.cut_from else {
+        return Ok(TruncateOutcome::Truncated { removed: 0 });
+    };
+    session_manager
+        .truncate_conversation_bounded(session_id, cut_from, plan.basis)
+        .await
+}
+
 pub async fn handle_term_run(prompt: Vec<String>) -> Result<()> {
     let prompt = prompt.join(" ");
     let session_id = std::env::var("BIOROUTER_SESSION_ID").map_err(|_| {
@@ -218,39 +311,20 @@ pub async fn handle_term_run(prompt: Vec<String>) -> Result<()> {
         .force_update_working_dir_unguarded(&session_id, working_dir)
         .await?;
 
-    let session = session_manager.get_session(&session_id, true).await?;
-    let user_messages_after_last_assistant: Vec<&Message> =
-        if let Some(conv) = &session.conversation {
-            conv.messages()
-                .iter()
-                .rev()
-                .take_while(|m| m.role != Role::Assistant)
-                .collect()
-        } else {
-            Vec::new()
-        };
-
-    if let Some(oldest_user) = user_messages_after_last_assistant.last() {
-        session_manager
-            .truncate_conversation(&session_id, oldest_user.created)
-            .await?;
+    let plan = plan_shell_history(&session_manager, &session_id).await?;
+    // A refused cut is not a reason to refuse the user's prompt: it means the
+    // session row this plan was read from is gone, so the commands it wanted to
+    // drop went with it. Nothing was deleted, nothing is duplicated, and the
+    // prompt below still carries them. Say so and carry on.
+    match apply_shell_history_plan(&session_manager, &session_id, &plan).await? {
+        TruncateOutcome::Truncated { .. } => {}
+        outcome => tracing::warn!(
+            ?outcome,
+            session_id,
+            "shell history not folded out of the stored conversation"
+        ),
     }
-
-    let prompt_with_context = if user_messages_after_last_assistant.is_empty() {
-        prompt
-    } else {
-        let history = user_messages_after_last_assistant
-            .iter()
-            .rev() // back to chronological order
-            .map(|m| m.as_concat_text())
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        format!(
-            "<shell_history>\n{}\n</shell_history>\n\n{}",
-            history, prompt
-        )
-    };
+    let prompt_with_context = plan.compose(prompt);
 
     let config = SessionBuilderConfig {
         session_id: Some(session_id),
@@ -311,4 +385,180 @@ pub async fn handle_term_info() -> Result<()> {
     println!("{} {}", dots, model_name);
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    async fn term_session(sm: &SessionManager) -> String {
+        sm.create_session(
+            std::env::temp_dir(),
+            "Biorouter Term Session".to_string(),
+            SessionType::Terminal,
+        )
+        .await
+        .unwrap()
+        .id
+    }
+
+    /// A shell command as `term log` writes it.
+    fn logged(created: i64, text: &str) -> Message {
+        Message::new(
+            Role::User,
+            created,
+            vec![MessageContent::text(text.to_string())],
+        )
+        .with_metadata(MessageMetadata::user_only())
+    }
+
+    fn replied(created: i64, text: &str) -> Message {
+        Message::new(
+            Role::Assistant,
+            created,
+            vec![MessageContent::text(text.to_string())],
+        )
+    }
+
+    async fn stored_texts(sm: &SessionManager, id: &str) -> Vec<String> {
+        sm.get_session(id, true)
+            .await
+            .unwrap()
+            .conversation
+            .map(|c| c.messages().iter().map(|m| m.as_concat_text()).collect())
+            .unwrap_or_default()
+    }
+
+    /// #51 NF-C: `term run` folds the commands `term log` recorded since the
+    /// last reply into its prompt and then deletes them. The delete is ranged
+    /// on `created_timestamp >= ?`, so a `term log` from another pane — or a
+    /// GUI turn on the same session — that lands while this process is still
+    /// building its prompt has a `created` of "now" and is inside the range by
+    /// construction. It is destroyed, silently, after its writer was already
+    /// told the append succeeded, and it is not in the prompt either.
+    ///
+    /// Bounding the cut to the revision the plan was read from is the fix. A
+    /// re-read of the revision inside the cut would NOT be: the append is
+    /// already committed by then, so a fresh watermark covers it.
+    #[tokio::test]
+    async fn a_concurrent_term_log_is_not_swept_into_the_cut() {
+        let temp = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp.path().to_path_buf());
+        let id = term_session(&sm).await;
+
+        sm.add_message(&id, &logged(1, "ls -la")).await.unwrap();
+        sm.add_message(&id, &replied(2, "here is the listing"))
+            .await
+            .unwrap();
+        sm.add_message(&id, &logged(3, "cargo build"))
+            .await
+            .unwrap();
+
+        // `term run` reads the history and decides what to fold in.
+        let plan = plan_shell_history(&sm, &id).await.unwrap();
+        assert_eq!(plan.commands, vec!["cargo build".to_string()], "seeded");
+
+        // Another writer appends while this process is still working.
+        sm.add_message(&id, &logged(9, "git push")).await.unwrap();
+
+        apply_shell_history_plan(&sm, &id, &plan).await.unwrap();
+
+        assert_eq!(
+            stored_texts(&sm, &id).await,
+            vec![
+                "ls -la".to_string(),
+                "here is the listing".to_string(),
+                "git push".to_string(),
+            ],
+            "the folded command goes; the append this process never saw stays"
+        );
+    }
+
+    /// The two halves must agree: everything the cut removes has to come back
+    /// as `<shell_history>`, or `term run` has silently eaten the user's own
+    /// commands instead of re-presenting them.
+    #[tokio::test]
+    async fn everything_the_cut_removes_comes_back_in_the_prompt() {
+        let temp = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp.path().to_path_buf());
+        let id = term_session(&sm).await;
+
+        sm.add_message(&id, &logged(1, "cd /tmp")).await.unwrap();
+        sm.add_message(&id, &replied(2, "ok")).await.unwrap();
+        sm.add_message(&id, &logged(3, "make")).await.unwrap();
+        sm.add_message(&id, &logged(4, "make test")).await.unwrap();
+
+        let plan = plan_shell_history(&sm, &id).await.unwrap();
+        apply_shell_history_plan(&sm, &id, &plan).await.unwrap();
+
+        let survivors = stored_texts(&sm, &id).await;
+        assert_eq!(survivors, vec!["cd /tmp".to_string(), "ok".to_string()]);
+
+        let composed = plan.compose("why did that fail?".to_string());
+        assert_eq!(
+            composed, "<shell_history>\nmake\nmake test\n</shell_history>\n\nwhy did that fail?",
+            "the dropped commands, oldest first, ahead of the user's question"
+        );
+    }
+
+    /// Nothing recorded since the last reply: no cut, no wrapper.
+    #[tokio::test]
+    async fn no_recorded_commands_leaves_the_conversation_alone() {
+        let temp = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp.path().to_path_buf());
+        let id = term_session(&sm).await;
+
+        sm.add_message(&id, &logged(1, "ls")).await.unwrap();
+        sm.add_message(&id, &replied(2, "listing")).await.unwrap();
+
+        let plan = plan_shell_history(&sm, &id).await.unwrap();
+        assert!(plan.cut_from.is_none());
+        assert_eq!(
+            apply_shell_history_plan(&sm, &id, &plan).await.unwrap(),
+            TruncateOutcome::Truncated { removed: 0 }
+        );
+
+        assert_eq!(
+            stored_texts(&sm, &id).await,
+            vec!["ls".to_string(), "listing".to_string()]
+        );
+        assert_eq!(plan.compose("hello".to_string()), "hello");
+    }
+
+    /// The session id was recycled underneath us, so the plan's watermark
+    /// describes rowids from a conversation that no longer exists. The cut is
+    /// refused outright rather than applied to whatever now holds the id.
+    #[tokio::test]
+    async fn a_recycled_session_id_refuses_the_cut() {
+        let temp = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp.path().to_path_buf());
+        let id = term_session(&sm).await;
+
+        sm.add_message(&id, &logged(1, "first incarnation"))
+            .await
+            .unwrap();
+        let plan = plan_shell_history(&sm, &id).await.unwrap();
+        assert_eq!(plan.commands, vec!["first incarnation".to_string()]);
+
+        sm.clear_all_sessions().await.unwrap();
+        let recycled = term_session(&sm).await;
+        assert_eq!(
+            recycled, id,
+            "the id allocator restarts once the table is empty"
+        );
+        sm.add_message(&id, &logged(2, "second incarnation"))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            apply_shell_history_plan(&sm, &id, &plan).await.unwrap(),
+            TruncateOutcome::Stale
+        );
+        assert_eq!(
+            stored_texts(&sm, &id).await,
+            vec!["second incarnation".to_string()],
+            "a refused cut must not delete anything"
+        );
+    }
 }
