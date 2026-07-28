@@ -7,6 +7,7 @@ import path from 'node:path';
 import log from './utils/logger';
 import { App } from 'electron';
 import { Buffer } from 'node:buffer';
+import { StringDecoder } from 'node:string_decoder';
 
 import { status } from './api';
 import { Client } from './api/client';
@@ -52,6 +53,170 @@ export const checkServerStatus = async (client: Client, errorLog: string[]): Pro
     await new Promise((resolve) => setTimeout(resolve, interval));
   }
   return false;
+};
+
+export type DaemonLogLevel = 'error' | 'warn' | 'info' | 'debug';
+
+// eslint-disable-next-line no-control-regex
+const ANSI_ESCAPE_PATTERN = /\u001b\[[0-9;]*m/g;
+
+// The daemon writes tracing's pretty format to stderr:
+//   `  2026-07-26T18:40:14.289898Z  WARN some::target: message`
+// possibly with continuation lines (`    at src/foo.rs:12`). Match the level
+// only at the head of the line (after an optional timestamp) so a level word
+// appearing inside a message body cannot re-classify the line.
+const DAEMON_LEVEL_PATTERN =
+  /^\s*(?:\[?\d{4}-\d{2}-\d{2}[T ][0-9:.]+(?:Z|[+-]\d{2}:?\d{2})?\]?\s+)?\[?(TRACE|DEBUG|INFO|WARN|WARNING|ERROR|FATAL)\]?\b/;
+
+// Not everything on the daemon's stderr comes from tracing. Rust's default
+// panic hook writes `thread '<name>' panicked at <loc>:` directly, and
+// `biorouterd`'s `async fn main() -> anyhow::Result<()>` makes the standard
+// `Termination` impl print `Error: <chain>` when startup fails. Neither line
+// carries a level word, so the tracing parser cannot see them — and these are
+// precisely the lines that must not be filed under `info`. Anchored at the
+// head of the (trimmed) line so the same words inside a message body cannot
+// re-classify it.
+const RUST_PANIC_PATTERN = /^thread\s+'[^']*'\s+panicked\s+at\b/;
+const FATAL_PREFIX_PATTERN = /^(?:error|fatal)\s*:/i;
+
+/**
+ * Map a line of `biorouterd` stderr onto the electron-log level that matches
+ * the daemon's own severity. A line whose level cannot be parsed defaults to
+ * `info`: it is a line that could not be parsed, not an error. Logging all
+ * daemon stderr at `error` destroys severity at the process boundary and makes
+ * main.log unfilterable (see issue #49).
+ *
+ * The daemon's console layer is configured with `.pretty().with_ansi(false)`
+ * (crates/biorouter-server/src/logging.rs), so there is no JSON tracing format
+ * to parse here — only the pretty format, plus the two non-tracing shapes
+ * above.
+ */
+export const daemonStderrLogLevel = (line: string): DaemonLogLevel => {
+  const plain = line.replace(ANSI_ESCAPE_PATTERN, '');
+  const match = DAEMON_LEVEL_PATTERN.exec(plain);
+  switch (match?.[1]) {
+    case 'ERROR':
+    case 'FATAL':
+      return 'error';
+    case 'WARN':
+    case 'WARNING':
+      return 'warn';
+    case 'DEBUG':
+    case 'TRACE':
+      return 'debug';
+    case undefined: {
+      const head = plain.trimStart();
+      return RUST_PANIC_PATTERN.test(head) || FATAL_PREFIX_PATTERN.test(head) ? 'error' : 'info';
+    }
+    default:
+      return 'info';
+  }
+};
+
+export interface StderrLineReader {
+  /** Feed one raw chunk from the pipe. Emits every complete line it now has. */
+  push: (chunk: Buffer | string) => void;
+  /** Emit a trailing unterminated line, if any. Safe to call more than once. */
+  flush: () => void;
+}
+
+/**
+ * Longest logical stderr line the reader keeps, in characters.
+ *
+ * Holding a line back until its newline arrives is what lets the classifier and
+ * the startup fatal probe see whole lines — but it also means an unterminated
+ * record is retained in full, and nothing bounds how long the daemon (or a
+ * dependency it links, or a subprocess sharing the pipe) may go without writing
+ * a `\n`. Without a cap that buffer grows with the record, and because nothing
+ * is emitted until the newline, the 500-line ring stays *empty* the whole time:
+ * the symptom is main-process memory climbing with no diagnostic at all.
+ *
+ * 8 KiB is far more than any real tracing line and also bounds the ring itself
+ * (500 lines x 8 KiB ~ 4 MB worst case) and the per-attempt cost of
+ * `checkServerStatus`'s `trim().toLowerCase()` scan over it.
+ */
+export const STDERR_MAX_LINE_CHARS = 8192;
+
+/** Appended to a line cut short at `STDERR_MAX_LINE_CHARS`, so a reader of
+ * main.log can tell a truncated record from a genuinely short one. */
+export const STDERR_TRUNCATION_SUFFIX = ' …[truncated]';
+
+/**
+ * Reassemble `biorouterd`'s stderr pipe into whole lines.
+ *
+ * Node stream chunks are byte-buffer sized, not line framed: one logical line
+ * routinely arrives split across two `data` events, and a multi-byte UTF-8
+ * character can straddle the boundary. Splitting each chunk independently
+ * therefore hands the consumer fragments — `ER` then `ROR …` — which defeats
+ * both the level classifier (both fragments look unparseable, so both land at
+ * `info`) and, more seriously, the startup fatal probe in `checkServerStatus`,
+ * which scans the ring for a *whole* `thread 'main' panicked at` / `error:`
+ * line. A split panic would be invisible to it and startup would hang out the
+ * full status-poll timeout instead of failing fast.
+ *
+ * `StringDecoder` holds back an incomplete multi-byte sequence; `pending` holds
+ * back an incomplete line, capped at `STDERR_MAX_LINE_CHARS`. The cap keeps the
+ * *prefix* because that is the part with meaning: both `daemonStderrLogLevel`
+ * and `checkServerStatus`'s fatal predicate are anchored at the head of the
+ * line. Everything past the cap is discarded until the next newline, at which
+ * point the reader resumes normally. Blank lines are dropped, as before.
+ */
+export const createStderrLineReader = (onLine: (line: string) => void): StderrLineReader => {
+  const decoder = new StringDecoder('utf8');
+  // Head of the logical line being assembled; never longer than the cap (plus
+  // the suffix, once `truncated` is set and further appends are refused).
+  let pending = '';
+  // Set when the current logical line has overflowed: the rest of it is dropped
+  // rather than buffered. Cleared when its newline finally arrives.
+  let truncated = false;
+
+  const emit = (line: string) => {
+    // Windows CRLF: keep the line itself clean rather than trailing a \r.
+    const cleaned = line.endsWith('\r') ? line.slice(0, -1) : line;
+    if (cleaned.trim()) onLine(cleaned);
+  };
+
+  // Append `text[start, end)` to the pending line, keeping only what fits.
+  // Index-based rather than slicing first, so an oversized chunk is never
+  // copied into a same-sized temporary just to be thrown away.
+  const append = (text: string, start: number, end: number) => {
+    if (truncated || end <= start) return;
+    const room = STDERR_MAX_LINE_CHARS - pending.length;
+    if (end - start <= room) {
+      pending += text.slice(start, end);
+      return;
+    }
+    pending += text.slice(start, start + room) + STDERR_TRUNCATION_SUFFIX;
+    truncated = true;
+  };
+
+  const takePending = (): string => {
+    const line = pending;
+    pending = '';
+    truncated = false;
+    return line;
+  };
+
+  return {
+    push(chunk: Buffer | string) {
+      const text = typeof chunk === 'string' ? chunk : decoder.write(chunk);
+      let start = 0;
+      let newline = text.indexOf('\n');
+      while (newline !== -1) {
+        append(text, start, newline);
+        emit(takePending());
+        start = newline + 1;
+        newline = text.indexOf('\n', start);
+      }
+      append(text, start, text.length);
+    },
+    flush() {
+      const tail = decoder.end();
+      append(tail, 0, tail.length);
+      const line = takePending();
+      if (line) emit(line);
+    },
+  };
 };
 
 export interface BiorouterdResult {
@@ -122,6 +287,12 @@ export const startBiorouterd = async (
   // V8 CHECK on the main thread during optimizing compile / GC compaction.
   const STDERR_RING_MAX = 500;
   const stderrLines: string[] = [];
+  const appendStderrLine = (line: string) => {
+    stderrLines.push(line);
+    if (stderrLines.length > STDERR_RING_MAX) {
+      stderrLines.splice(0, stderrLines.length - STDERR_RING_MAX);
+    }
+  };
 
   log.info(`Starting biorouterd from: ${resolvedBiorouterdPath} on port ${port} in dir ${dir}`);
 
@@ -179,21 +350,24 @@ export const startBiorouterd = async (
     log.info(`biorouterd stdout for port ${port} and dir ${dir}: ${data.toString()}`);
   });
 
-  biorouterdProcess.stderr?.on('data', (data: Buffer) => {
-    const lines = data
-      .toString()
-      .split('\n')
-      .filter((l) => l.trim());
-    lines.forEach((line) => {
-      log.error(`biorouterd stderr for port ${port} and dir ${dir}: ${line}`);
-      stderrLines.push(line);
-      if (stderrLines.length > STDERR_RING_MAX) {
-        stderrLines.splice(0, stderrLines.length - STDERR_RING_MAX);
-      }
-    });
+  // Exactly one place turns a stderr line into output: it logs at the daemon's
+  // own severity *and* records it in the ring the startup probe reads, so the
+  // two can never disagree about what a line was. Logging the whole stream at
+  // `error` made main.log a wall of apparent failures with no way to find the
+  // real one.
+  const stderrReader = createStderrLineReader((line) => {
+    log[daemonStderrLogLevel(line)](`biorouterd stderr for port ${port} and dir ${dir}: ${line}`);
+    appendStderrLine(line);
   });
 
+  biorouterdProcess.stderr?.on('data', (data: Buffer) => stderrReader.push(data));
+  // A daemon that dies mid-line leaves its most interesting line unterminated.
+  // Flush on both signals — `end` may never fire if the pipe is destroyed, and
+  // `close` may arrive first. `flush` clears its buffer, so it cannot double-emit.
+  biorouterdProcess.stderr?.on('end', () => stderrReader.flush());
+
   biorouterdProcess.on('close', (code: number | null) => {
+    stderrReader.flush();
     log.info(`biorouterd process exited with code ${code} for port ${port} and dir ${dir}`);
   });
 
@@ -206,8 +380,10 @@ export const startBiorouterd = async (
     log.error(`Failed to start biorouterd on port ${port} and dir ${dir}`, err);
     // "error:" prefix matches checkServerStatus's fatal() predicate so the
     // startup probe short-circuits with a useful error rather than waiting
-    // out the 10s status-poll timeout.
-    stderrLines.push(`error: failed to spawn biorouterd: ${err.message}`);
+    // out the 10s status-poll timeout. Appended through the same bounded
+    // helper as real stderr lines (it is already logged above, so it does not
+    // go through the logging path a second time).
+    appendStderrLine(`error: failed to spawn biorouterd: ${err.message}`);
   });
 
   const try_kill_biorouter = () => {

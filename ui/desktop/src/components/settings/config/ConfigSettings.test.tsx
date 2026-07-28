@@ -1,0 +1,152 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { render, screen, waitFor } from '@testing-library/react';
+import type { ConfigData } from '../../../types/config';
+
+// #50 — Settings → App named a stale provider ("current settings for ollama"
+// while the active provider was versa_azure). ConfigContext's `config` is only
+// refetched when a write goes THROUGH that context; switching model/provider
+// writes via `setConfigProvider` on the API instead, so the cached copy keeps
+// naming whatever was configured when the app started. The live provider is
+// the one ModelAndProviderContext tracks.
+
+const configSnapshot: ConfigData = {
+  BIOROUTER_PROVIDER: 'ollama', // stale: what the app booted with
+  BIOROUTER_MODEL: 'qwen3.6',
+  OLLAMA_HOST: 'localhost',
+};
+
+const modelAndProvider = {
+  currentProvider: null as string | null,
+  refreshCurrentModelAndProvider: vi.fn(async () => {}),
+};
+
+const refreshConfig = vi.fn(async () => {});
+
+/** Set to make the next `refreshConfig()` reject, as a failed config read does. */
+let refreshConfigRejection: Error | null = null;
+
+// Deliberately a plain function rather than the spy itself. A vitest spy
+// attaches its own handler to a promise it returns (that is how it records
+// settled results), which marks the rejection as handled — so a spy here would
+// swallow the very unhandled rejection these tests exist to detect, and they
+// would pass against the broken code. The spy is still called, so the
+// call-count assertions are unaffected.
+//
+// Defined once, at module scope: the real `refreshConfig` is a `useCallback`
+// with no dependencies, so it keeps one identity for the provider's lifetime.
+// Handing back a fresh closure per render would instead re-fire the mount
+// effect on every render, which is a property of the mock and not of the app.
+const refreshConfigStub = () => {
+  void refreshConfig();
+  return refreshConfigRejection ? Promise.reject(refreshConfigRejection) : Promise.resolve();
+};
+
+vi.mock('../../ConfigContext', () => ({
+  useConfig: () => ({
+    config: configSnapshot,
+    upsert: vi.fn(),
+    refreshConfig: refreshConfigStub,
+  }),
+}));
+
+vi.mock('../../ModelAndProviderContext', () => ({
+  useModelAndProvider: () => modelAndProvider,
+}));
+
+import ConfigSettings from './ConfigSettings';
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  modelAndProvider.currentProvider = 'versa_azure';
+  refreshConfigRejection = null;
+});
+
+describe('ConfigSettings provider label (#50)', () => {
+  it('names the live provider, not the one cached in the config context', () => {
+    render(<ConfigSettings />);
+
+    expect(
+      screen.getByText(/Edit your Biorouter configuration settings \(current settings for/)
+    ).toHaveTextContent('(current settings for versa_azure)');
+    expect(screen.queryByText(/current settings for ollama/)).not.toBeInTheDocument();
+  });
+
+  it('updates the label when the active provider changes', () => {
+    const { rerender } = render(<ConfigSettings />);
+
+    modelAndProvider.currentProvider = 'databricks';
+    rerender(<ConfigSettings />);
+
+    expect(screen.getByText(/current settings for/)).toHaveTextContent(
+      '(current settings for databricks)'
+    );
+  });
+
+  it('re-reads the active provider when the section mounts', async () => {
+    render(<ConfigSettings />);
+
+    await waitFor(() =>
+      expect(modelAndProvider.refreshCurrentModelAndProvider).toHaveBeenCalledTimes(1)
+    );
+  });
+
+  // #52 — this page renders BIOROUTER_PROVIDER/BIOROUTER_MODEL as editable
+  // fields straight out of the cached config. A model switch writes them
+  // through the API, so opening Settings after one showed the pre-switch
+  // values in the editor beside a correct live label.
+  it('re-reads the cached config when the section opens', async () => {
+    render(<ConfigSettings />);
+
+    await waitFor(() => expect(refreshConfig).toHaveBeenCalledTimes(1));
+  });
+
+  it('falls back to the config value while the live provider is still loading', () => {
+    modelAndProvider.currentProvider = null;
+    render(<ConfigSettings />);
+
+    expect(screen.getByText(/current settings for/)).toHaveTextContent(
+      '(current settings for ollama)'
+    );
+  });
+
+  // `refreshConfig` used to be incapable of rejecting: it called the non-throwing
+  // `readAllConfig` and swallowed a failed read as an empty config. Making the
+  // read reject (so it can no longer erase the cache) changed that contract, and
+  // this mount effect discards the promise — so a daemon that cannot serve the
+  // config turns opening Settings into an unhandled rejection. The page has
+  // nothing to do about it either way: the cached snapshot it renders is still
+  // there, which is the whole point of the read no longer erasing it.
+  it('does not leave an unhandled rejection when the config re-read fails', async () => {
+    const unhandled: unknown[] = [];
+    const capture = (reason: unknown) => unhandled.push(reason);
+    process.on('unhandledRejection', capture);
+
+    try {
+      refreshConfigRejection = new Error('daemon unreachable');
+
+      render(<ConfigSettings />);
+
+      await waitFor(() => expect(refreshConfig).toHaveBeenCalledTimes(1));
+      // Node decides a rejection is unhandled at the end of a turn, not at the
+      // point of rejection — give it a few.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(unhandled.map(String)).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', capture);
+    }
+  });
+
+  it('still renders the cached config when the re-read fails', async () => {
+    refreshConfigRejection = new Error('daemon unreachable');
+
+    render(<ConfigSettings />);
+
+    await waitFor(() => expect(refreshConfig).toHaveBeenCalledTimes(1));
+    expect(screen.getByText(/current settings for/)).toHaveTextContent(
+      '(current settings for versa_azure)'
+    );
+  });
+});

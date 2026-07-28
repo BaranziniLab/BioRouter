@@ -62,6 +62,8 @@ function Probe() {
     primaryKbId,
     hiddenKbIds,
     visibleBases,
+    loading,
+    basesError,
     defaultPrimaryKb,
     canFollowDefaultPrimary,
     followDefaultPrimary,
@@ -75,6 +77,8 @@ function Probe() {
       <span data-testid="primary">{primaryKbId ?? 'none'}</span>
       <span data-testid="hidden">{hiddenKbIds.join(',') || 'none'}</span>
       <span data-testid="visible">{visibleBases.map((b) => b.id).join(',') || 'none'}</span>
+      <span data-testid="loading">{loading ? 'loading' : 'idle'}</span>
+      <span data-testid="bases-error">{basesError ?? 'none'}</span>
       <span data-testid="default-primary">{defaultPrimaryKb?.id ?? 'none'}</span>
       <span data-testid="can-follow-default">{canFollowDefaultPrimary ? 'yes' : 'no'}</span>
       <button type="button" onClick={() => void refresh()}>
@@ -351,6 +355,36 @@ describe('KnowledgeContext', () => {
     expect(screen.getByTestId('visible').textContent).toBe('alpha');
     expect(screen.getByTestId('hidden').textContent).toBe('beta');
     expect(mocks.setActive).not.toHaveBeenCalled();
+  });
+
+  // …and having kept it, the provider must say that it is stale. `loading` goes
+  // false either way, so without this a consumer reads "the list is settled and
+  // this base is not in it" out of a read that never happened — which is how
+  // IngestPanel came to resolve a model for a base it had never seen.
+  it('reports that the base list could not be read, and stops once one lands', async () => {
+    mocks.listBases.mockRejectedValue(new Error('daemon down'));
+    renderProvider();
+
+    await waitFor(() => expect(screen.getByTestId('loading').textContent).toBe('idle'));
+    expect(screen.getByTestId('bases-error').textContent).toBe('daemon down');
+
+    mocks.listBases.mockResolvedValue({ data: [base('alpha'), base('beta')] });
+    await userEvent.click(screen.getByRole('button', { name: 'refresh' }));
+    await settle(() => {});
+
+    expect(screen.getByTestId('bases-error').textContent).toBe('none');
+    expect(screen.getByTestId('visible').textContent).toBe('alpha');
+  });
+
+  // A rejection carrying no message is still a failed read. Reporting it as an
+  // empty string makes every `if (basesError)` consumer read "all fine".
+  it('reports a failure that arrived without a message', async () => {
+    mocks.listBases.mockRejectedValue(new Error(''));
+    renderProvider();
+
+    await waitFor(() => expect(screen.getByTestId('loading').textContent).toBe('idle'));
+    expect(screen.getByTestId('bases-error').textContent).not.toBe('none');
+    expect(screen.getByTestId('bases-error').textContent).not.toBe('');
   });
 
   // The fourth intent. `clear` writes a *durable* "this chat has no primary",

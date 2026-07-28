@@ -64,9 +64,33 @@ pub fn cleanup_old_logs(component: &str) -> Result<()> {
 mod tests {
     use super::*;
     use std::fs;
+    use tempfile::TempDir;
+
+    /// Pin the state dir to a scratch root for the rest of the enclosing test.
+    ///
+    /// `prepare_log_directory` resolves `BIOROUTER_PATH_ROOT` on every call, and
+    /// that variable is process-global. Other tests in this binary point it at a
+    /// `TempDir` of their own (`skills_extension`, `managed`, `diagnostics`), so
+    /// a logging test running concurrently used to resolve into *their* scratch
+    /// root and fail with `Failed for component: server` the moment that
+    /// `TempDir` was dropped out from under it. Taking the same lock those tests
+    /// take removes the race; pinning our own root also stops these tests
+    /// writing into the developer's real log directory.
+    ///
+    /// This is a macro rather than a function because `env_lock`'s guard borrows
+    /// the root path, so it cannot outlive a helper that owns the `TempDir`.
+    macro_rules! scoped_state_dir {
+        () => {
+            let temp = TempDir::new().unwrap();
+            let root = temp.path().to_string_lossy().into_owned();
+            let _guard = env_lock::lock_env([("BIOROUTER_PATH_ROOT", Some(root.as_str()))]);
+        };
+    }
 
     #[test]
     fn test_get_log_directory_basic_functionality() {
+        scoped_state_dir!();
+
         // Test basic directory creation without date subdirectory
         let result = prepare_log_directory("cli", false);
         assert!(result.is_ok());
@@ -89,6 +113,8 @@ mod tests {
 
     #[test]
     fn test_get_log_directory_with_date_subdir() {
+        scoped_state_dir!();
+
         // Test date-based subdirectory creation
         let result = prepare_log_directory("server", true);
         assert!(result.is_ok());
@@ -118,6 +144,8 @@ mod tests {
 
     #[test]
     fn test_get_log_directory_idempotent() {
+        scoped_state_dir!();
+
         // Test that multiple calls return the same result and don't fail
         let component = "debug";
 
@@ -149,6 +177,8 @@ mod tests {
 
     #[test]
     fn test_get_log_directory_different_components() {
+        scoped_state_dir!();
+
         // Test that different components create different directories
         let components = ["cli", "server", "debug"];
         let mut created_dirs = Vec::new();

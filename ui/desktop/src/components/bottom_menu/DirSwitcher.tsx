@@ -157,27 +157,34 @@ export const DirSwitcher: React.FC<DirSwitcherProps> = ({
     }
   };
 
-  // #44: once the chat has messages the working dir is immutable — render a
-  // read-only label (basename, full path on hover) with no chooser affordance.
-  if (locked) {
-    return (
-      <TooltipProvider>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <span
-              data-testid="dir-switcher-locked"
-              className={`z-[100] h-7 min-w-0 rounded-md px-1 text-text-default/70 text-xs flex items-center select-none [&>svg]:size-4 ${className}`}
-            >
-              <FolderDot className="mr-0.5" size={16} />
-              <div className="max-w-[112px] min-w-0 truncate">{workingDirLabel(workingDir)}</div>
-            </span>
-          </TooltipTrigger>
-          <TooltipContent side="top">{workingDir}</TooltipContent>
-        </Tooltip>
-      </TooltipProvider>
-    );
-  }
+  // #44: once the chat has messages the working dir is immutable — the chip
+  // becomes a read-only label (basename, full path on hover) with no chooser
+  // affordance. Only the TRIGGER differs between the two states.
+  const trigger = locked ? (
+    <span
+      data-testid="dir-switcher-locked"
+      className={`z-[100] h-7 min-w-0 rounded-md px-1 text-text-default/70 text-xs flex items-center select-none [&>svg]:size-4 ${className}`}
+    >
+      <FolderDot className="mr-0.5" size={16} />
+      <div className="max-w-[112px] min-w-0 truncate">{workingDirLabel(workingDir)}</div>
+    </span>
+  ) : (
+    <button
+      className={`z-[100] h-7 min-w-0 rounded-md px-1 ${isDirectoryChooserOpen ? 'opacity-50' : 'hover:cursor-pointer hover:bg-background-medium hover:text-text-default'} text-text-default/70 text-xs flex items-center transition-colors [&>svg]:size-4 ${className}`}
+      onClick={handleDirectoryClick}
+      disabled={isDirectoryChooserOpen}
+    >
+      <FolderDot className="mr-0.5" size={16} />
+      <div className="max-w-[112px] min-w-0 truncate [direction:rtl]">{workingDir}</div>
+    </button>
+  );
 
+  // #50: the Tooltip is CONTROLLED for the component's whole lifetime. Locking
+  // swaps the trigger in place, so React reconciles both states into the same
+  // Tooltip instance — rendering the locked state without `open`/`onOpenChange`
+  // flipped that instance from controlled to uncontrolled mid-life, which Radix
+  // warns about and which later shows up as a stuck-open tooltip. Control is
+  // needed regardless, so the native directory chooser can force it shut.
   return (
     <TooltipProvider>
       <Tooltip
@@ -186,16 +193,7 @@ export const DirSwitcher: React.FC<DirSwitcherProps> = ({
           if (!isDirectoryChooserOpen) setIsTooltipOpen(open);
         }}
       >
-        <TooltipTrigger asChild>
-          <button
-            className={`z-[100] h-7 min-w-0 rounded-md px-1 ${isDirectoryChooserOpen ? 'opacity-50' : 'hover:cursor-pointer hover:bg-background-medium hover:text-text-default'} text-text-default/70 text-xs flex items-center transition-colors [&>svg]:size-4 ${className}`}
-            onClick={handleDirectoryClick}
-            disabled={isDirectoryChooserOpen}
-          >
-            <FolderDot className="mr-0.5" size={16} />
-            <div className="max-w-[112px] min-w-0 truncate [direction:rtl]">{workingDir}</div>
-          </button>
-        </TooltipTrigger>
+        <TooltipTrigger asChild>{trigger}</TooltipTrigger>
         <TooltipContent side="top">{workingDir}</TooltipContent>
       </Tooltip>
     </TooltipProvider>

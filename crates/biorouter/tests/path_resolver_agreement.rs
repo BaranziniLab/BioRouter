@@ -12,20 +12,20 @@ use biorouter::config::paths::Paths;
 use serial_test::serial;
 use std::path::PathBuf;
 
-/// Runs `f` with `BIOROUTER_PATH_ROOT` set, restoring the prior value after.
-/// Serialized because it mutates process-wide env.
+/// Runs `f` with `BIOROUTER_PATH_ROOT` pinned to `root`, restoring the prior
+/// value after.
+///
+/// The `env_lock` guard is what makes this safe, and it does two things a bare
+/// `set_var`/`remove_var` pair cannot. It restores the previous value from
+/// `Drop`, so an assertion failure inside `f` cannot leak this file's scratch
+/// root into the rest of the process; and it holds the same process-wide mutex
+/// every other `BIOROUTER_PATH_ROOT` test in the workspace takes, which
+/// `#[serial]` does not — `#[serial]` only orders tests that are themselves
+/// annotated, and this variable is read by `Paths::*` on every call from
+/// anywhere.
 fn with_path_root<T>(root: Option<&str>, f: impl FnOnce() -> T) -> T {
-    let prev = std::env::var("BIOROUTER_PATH_ROOT").ok();
-    match root {
-        Some(r) => std::env::set_var("BIOROUTER_PATH_ROOT", r),
-        None => std::env::remove_var("BIOROUTER_PATH_ROOT"),
-    }
-    let out = f();
-    match prev {
-        Some(p) => std::env::set_var("BIOROUTER_PATH_ROOT", p),
-        None => std::env::remove_var("BIOROUTER_PATH_ROOT"),
-    }
-    out
+    let _guard = env_lock::lock_env([("BIOROUTER_PATH_ROOT", root)]);
+    f()
 }
 
 #[test]
@@ -65,6 +65,32 @@ fn knowledge_store_honours_the_sandbox_root() {
             "knowledge bases must be read from the sandbox, not the user's global store"
         );
     });
+}
+
+/// `with_path_root` must put the previous value back even when the closure
+/// panics. An assertion failure inside any test above otherwise leaks this
+/// file's scratch root into every other test running in the process — the exact
+/// failure that made a full `cargo test` run red (a test resolved into a
+/// `TempDir` that had already been dropped).
+///
+/// The panic below is caught, so the stderr backtrace it prints is expected.
+#[test]
+#[serial]
+fn with_path_root_restores_the_previous_value_on_panic() {
+    let before = std::env::var("BIOROUTER_PATH_ROOT").ok();
+
+    let outcome = std::panic::catch_unwind(|| {
+        with_path_root(Some("/tmp/br-path-agreement-leak"), || {
+            panic!("simulated assertion failure inside the guarded region");
+        })
+    });
+
+    assert!(outcome.is_err(), "the closure's panic must propagate");
+    assert_eq!(
+        std::env::var("BIOROUTER_PATH_ROOT").ok(),
+        before,
+        "BIOROUTER_PATH_ROOT leaked out of with_path_root when the test body panicked"
+    );
 }
 
 /// The three resolvers must sit under one config root — not, as before, under

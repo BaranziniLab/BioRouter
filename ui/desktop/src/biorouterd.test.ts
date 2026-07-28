@@ -5,6 +5,8 @@ import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   logInfo: vi.fn(),
   logError: vi.fn(),
+  logWarn: vi.fn(),
+  logDebug: vi.fn(),
   spawn: vi.fn(),
 }));
 
@@ -30,10 +32,16 @@ vi.mock('node:fs', async (importOriginal) => {
   return { ...mocked, default: mocked };
 });
 
+// The stderr handler routes each line at the daemon's own severity, so it can
+// call any of these four. A mock missing `warn`/`debug` would not fail today
+// (no test here drives the stderr handler) but would surface as a confusing
+// `log.warn is not a function` the first time one does.
 vi.mock('./utils/logger', () => ({
   default: {
     info: mocks.logInfo,
     error: mocks.logError,
+    warn: mocks.logWarn,
+    debug: mocks.logDebug,
   },
 }));
 
@@ -62,6 +70,8 @@ describe('startBiorouterd logging', () => {
     process.env[inheritedKey] = inheritedValue;
     mocks.logInfo.mockClear();
     mocks.logError.mockClear();
+    mocks.logWarn.mockClear();
+    mocks.logDebug.mockClear();
     mocks.spawn.mockReset();
     mocks.spawn.mockReturnValue({
       stdout: { on: vi.fn() },

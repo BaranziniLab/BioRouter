@@ -1,4 +1,12 @@
-import React, { createContext, useContext, useState, useEffect, useMemo, useCallback } from 'react';
+import React, {
+  createContext,
+  useContext,
+  useState,
+  useEffect,
+  useMemo,
+  useCallback,
+  useRef,
+} from 'react';
 import {
   readAllConfig,
   readConfig,
@@ -39,6 +47,22 @@ interface ConfigContextType {
   extensionsList: FixedExtensionEntry[];
   extensionWarnings: string[];
   upsert: (key: string, value: unknown, is_secret: boolean) => Promise<void>;
+  /**
+   * Re-read the whole config from the daemon.
+   *
+   * `config` is a cache, and `upsert` is not the only way its keys get written:
+   * `setConfigProvider` writes BIOROUTER_PROVIDER/BIOROUTER_MODEL straight to
+   * the API, and the CLI or another window can write any key at any time. Every
+   * such write must be followed by this, or the cache goes on serving the
+   * pre-write snapshot to every consumer — silently, and for as long as it
+   * takes some unrelated `upsert` to refresh it (issue #52).
+   *
+   * Rejects if the re-read fails, leaving the cache exactly as it was — a
+   * stale snapshot is bad, an erased one is worse. Callers that only wanted
+   * the refresh as bookkeeping after a write of their own should catch and log
+   * rather than report their write as failed.
+   */
+  refreshConfig: () => Promise<void>;
   read: (key: string, is_secret: boolean) => Promise<unknown>;
   remove: (key: string, is_secret: boolean) => Promise<void>;
   addExtension: (name: string, config: ExtensionConfig, enabled: boolean) => Promise<void>;
@@ -70,11 +94,73 @@ export const ConfigProvider: React.FC<ConfigProviderProps> = ({ children }) => {
   const [providersList, setProvidersList] = useState<ProviderDetails[]>([]);
   const [extensionsList, setExtensionsList] = useState<FixedExtensionEntry[]>([]);
   const [extensionWarnings, setExtensionWarnings] = useState<string[]>([]);
+  const configReadTicket = useRef(0);
+  const appliedConfigRead = useRef(0);
 
+  /**
+   * Re-read the whole config into the cache. The only place that writes it.
+   *
+   * Two things this must never do, both learned the hard way:
+   *
+   * 1. **Empty the cache because the read failed.** `readAllConfig` is
+   *    non-throwing by default, so an HTTP 500 *resolves* with `data`
+   *    undefined — indistinguishable, to a `response.data?.config || {}`, from
+   *    a config that really is empty. The cache is the only copy the UI has;
+   *    losing it makes a fully configured app look unconfigured. So: ask the
+   *    client to throw, treat a missing body as a failure too, and on any
+   *    failure leave the previous snapshot exactly where it was.
+   * 2. **Let an older read win.** Reads overlap — the mount read, a refresh
+   *    after an API-mediated provider write, an unrelated `upsert` — and they
+   *    can complete in any order. A read issued *before* a write that lands
+   *    *after* the refresh which followed it would republish the pre-write
+   *    snapshot, which is issue #52 all over again as a race. Each read takes
+   *    a ticket on the way out and applies only if nothing newer has already
+   *    been applied.
+   *
+   *    Note the rule is "newer than what was applied", not "the newest issued":
+   *    a *failed* newer read applies nothing, and must not therefore condemn an
+   *    older successful one — that would leave the cache empty on a race whose
+   *    only successful read had the answer in hand.
+   *
+   * Rejects when the config could not be re-read, so callers can decide what
+   * that means to them (see `reloadConfigAfterWrite`).
+   */
   const reloadConfig = useCallback(async () => {
-    const response = await readAllConfig();
-    setConfig(response.data?.config || {});
+    const ticket = ++configReadTicket.current;
+
+    const response = await readAllConfig({ throwOnError: true });
+
+    const nextConfig = response.data?.config;
+    if (!nextConfig) {
+      throw new Error('The config read returned no configuration');
+    }
+
+    if (ticket < appliedConfigRead.current) {
+      // A read issued after this one has already published a newer snapshot.
+      return;
+    }
+
+    appliedConfigRead.current = ticket;
+    setConfig(nextConfig);
   }, []);
+
+  /**
+   * Refresh the cache after a write that already succeeded.
+   *
+   * The write is the caller's outcome; the re-read is bookkeeping. Failing an
+   * upsert because a *cache* could not be re-read reports the wrong thing in
+   * the more alarming direction, and worse, a caller writing several keys in
+   * sequence (`ProviderGuard` writes an API key, then the provider) would stop
+   * partway through and leave a half-configured provider behind. If the daemon
+   * is genuinely unreachable, the write itself has already failed and said so.
+   */
+  const reloadConfigAfterWrite = useCallback(async () => {
+    try {
+      await reloadConfig();
+    } catch (error) {
+      console.error('Failed to refresh the cached config after a write:', error);
+    }
+  }, [reloadConfig]);
 
   const upsert = useCallback(
     async (key: string, value: unknown, isSecret: boolean = false) => {
@@ -86,9 +172,9 @@ export const ConfigProvider: React.FC<ConfigProviderProps> = ({ children }) => {
       await upsertConfig({
         body: query,
       });
-      await reloadConfig();
+      await reloadConfigAfterWrite();
     },
-    [reloadConfig]
+    [reloadConfigAfterWrite]
   );
 
   const read = useCallback(async (key: string, is_secret: boolean = false) => {
@@ -105,9 +191,9 @@ export const ConfigProvider: React.FC<ConfigProviderProps> = ({ children }) => {
       await removeConfig({
         body: query,
       });
-      await reloadConfig();
+      await reloadConfigAfterWrite();
     },
-    [reloadConfig]
+    [reloadConfigAfterWrite]
   );
 
   const refreshExtensions = useCallback(async () => {
@@ -134,21 +220,21 @@ export const ConfigProvider: React.FC<ConfigProviderProps> = ({ children }) => {
       await apiAddExtension({
         body: query,
       });
-      await reloadConfig();
+      await reloadConfigAfterWrite();
       // Refresh extensions list after successful addition
       await refreshExtensions();
     },
-    [reloadConfig, refreshExtensions]
+    [reloadConfigAfterWrite, refreshExtensions]
   );
 
   const removeExtension = useCallback(
     async (name: string) => {
       await apiRemoveExtension({ path: { name: name } });
-      await reloadConfig();
+      await reloadConfigAfterWrite();
       // Refresh extensions list after successful removal
       await refreshExtensions();
     },
-    [reloadConfig, refreshExtensions]
+    [reloadConfigAfterWrite, refreshExtensions]
   );
 
   const getExtensions = useCallback(
@@ -207,9 +293,17 @@ export const ConfigProvider: React.FC<ConfigProviderProps> = ({ children }) => {
   useEffect(() => {
     // Load all configuration data and providers on mount
     (async () => {
-      // Load config
-      const configResponse = await readAllConfig();
-      setConfig(configResponse.data?.config || {});
+      // Load config through the same reader every later refresh uses, so there
+      // is one set of rules about failures and ordering rather than two.
+      try {
+        await reloadConfig();
+      } catch (error) {
+        // The config is one of three independent loads here. Letting its
+        // failure escape took providers and extensions down with it and left
+        // an unhandled rejection behind; the cache simply stays empty until a
+        // later refresh succeeds.
+        console.error('Failed to load config:', error);
+      }
 
       // Load providers
       try {
@@ -281,7 +375,7 @@ export const ConfigProvider: React.FC<ConfigProviderProps> = ({ children }) => {
         console.error('Failed to load extensions:', error);
       }
     })();
-  }, []);
+  }, [reloadConfig]);
 
   const contextValue = useMemo(() => {
     const disableAllExtensions = async () => {
@@ -291,14 +385,14 @@ export const ConfigProvider: React.FC<ConfigProviderProps> = ({ children }) => {
           await addExtension(ext.name, ext, false);
         }
       }
-      await reloadConfig();
+      await reloadConfigAfterWrite();
     };
 
     const enableBotExtensions = async (extensions: ExtensionConfig[]) => {
       for (const ext of extensions) {
         await addExtension(ext.name, ext, true);
       }
-      await reloadConfig();
+      await reloadConfigAfterWrite();
     };
 
     return {
@@ -307,6 +401,7 @@ export const ConfigProvider: React.FC<ConfigProviderProps> = ({ children }) => {
       extensionsList,
       extensionWarnings,
       upsert,
+      refreshConfig: reloadConfig,
       read,
       remove,
       addExtension,
@@ -333,6 +428,7 @@ export const ConfigProvider: React.FC<ConfigProviderProps> = ({ children }) => {
     getExtensions,
     getProviderModels,
     reloadConfig,
+    reloadConfigAfterWrite,
   ]);
 
   return <ConfigContext.Provider value={contextValue}>{children}</ConfigContext.Provider>;

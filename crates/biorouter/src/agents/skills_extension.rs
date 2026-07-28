@@ -1581,9 +1581,19 @@ Working dir biorouter content
         )
         .unwrap();
 
-        std::env::set_var("BIOROUTER_PATH_ROOT", temp_dir.path());
-        let dirs = SkillsClient::get_default_skill_directories();
-        std::env::remove_var("BIOROUTER_PATH_ROOT");
+        // `BIOROUTER_PATH_ROOT` is process-global and is read on every
+        // `Paths::*` call, so a bare set/remove pair leaks this scratch root
+        // into whatever else is running concurrently (it made `logging::tests`
+        // resolve into this `TempDir` and fail once it was dropped). The guard
+        // both serialises against the other tests that pin this variable and
+        // restores the previous value even if the assertions below panic.
+        let dirs = {
+            let _guard = env_lock::lock_env([(
+                "BIOROUTER_PATH_ROOT",
+                Some(temp_dir.path().to_str().unwrap()),
+            )]);
+            SkillsClient::get_default_skill_directories()
+        };
 
         assert!(
             dirs.iter().any(|d| d == &ext_skills),

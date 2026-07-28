@@ -68,6 +68,15 @@ interface KnowledgeContextType {
   /** The session's knowledge bases — the one axis. Searchable, readable, usable. */
   visibleBases: Manifest[];
   loading: boolean;
+  /**
+   * Why `bases` cannot be trusted, when it cannot: the last list read failed and
+   * nothing has replaced it. `loading` goes false either way, so without this a
+   * consumer reads "the list is settled and this base is not in it" out of a
+   * read that never happened — and acts on a base it has never seen. Non-empty
+   * whenever a read failed (a rejection carrying no message is still a
+   * failure), `null` once one lands.
+   */
+  basesError: string | null;
   /** The KB-less write target and the Knowledge view's subject. Always a member of visibleBases, or null. */
   primaryKb: Manifest | null;
   primaryKbId: string | null;
@@ -115,6 +124,7 @@ export function KnowledgeProvider({
   // about which bases exist, so nothing may be pruned against it.
   const [basesLoaded, setBasesLoaded] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [basesError, setBasesError] = useState<string | null>(null);
   const storageKey = useMemo(() => storageKeyForSession(sessionId), [sessionId]);
   const hiddenStorageKey = useMemo(() => hiddenStorageKeyForSession(sessionId), [sessionId]);
   const [primaryKbId, setPrimaryKbIdState] = useState<string | null>(() =>
@@ -345,11 +355,16 @@ export function KnowledgeProvider({
       const res = await listBases({ throwOnError: true });
       setBases(res.data || []);
       setBasesLoaded(true);
+      setBasesError(null);
     } catch (err) {
       // Keep the list we already had. A failed request is not a list of zero
       // bases, and emptying it here is what let the prune below read "every
       // stored id names a base that no longer exists".
       console.error('listBases failed:', err);
+      // …and say that it is stale, in a value that is never falsy on failure:
+      // an error reported as '' reads as "no failure" at every call site.
+      const message = err instanceof Error ? err.message : String(err);
+      setBasesError(message || 'Could not load knowledge bases.');
     } finally {
       setLoading(false);
     }
@@ -466,6 +481,7 @@ export function KnowledgeProvider({
     bases,
     visibleBases,
     loading,
+    basesError,
     primaryKb,
     primaryKbId,
     hiddenKbIds,
