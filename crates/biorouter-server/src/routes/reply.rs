@@ -370,10 +370,9 @@ impl TurnErrorScope {
     /// a newer runner must never panic a consumer.
     ///
     /// Landed with its forward direction (Task 6) so the pair is written and
-    /// reviewed together; the first consumer is Task 7's `map_bus_event`, which
-    /// turns a bus `TurnError.scope` string back into this enum. Drop the
-    /// `allow` there.
-    #[allow(dead_code)]
+    /// reviewed together; its consumer is
+    /// [`crate::routes::session_events::map_bus_event`], which turns a bus
+    /// `TurnError.scope` string back into this enum.
     pub(crate) fn from_wire_value(value: &str) -> Self {
         match value {
             "provider" => TurnErrorScope::Provider,

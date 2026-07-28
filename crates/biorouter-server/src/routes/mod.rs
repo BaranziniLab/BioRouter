@@ -65,6 +65,7 @@ pub mod reply;
 pub mod reset;
 pub mod schedule;
 pub mod session;
+pub mod session_events;
 pub mod setup;
 pub mod status;
 pub mod tunnel;
@@ -98,6 +99,7 @@ pub fn configure(state: Arc<crate::state::AppState>, secret_key: String) -> Rout
         .merge(tunnel::routes(state.clone()))
         .merge(mcp_ui_proxy::routes())
         .merge(mcp_app_proxy::routes(secret_key))
+        .merge(session_events::routes(state.clone()))
         .nest(
             "/knowledge",
             knowledge::router(state.knowledge_service.clone()),

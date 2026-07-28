@@ -3530,6 +3530,43 @@
         ]
       }
     },
+    "/sessions/{session_id}/events": {
+      "get": {
+        "tags": [
+          "super::routes::session_events"
+        ],
+        "operationId": "observe_session_events",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "description": "Session to observe",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Read-only observer stream of the session's live events",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageEvent"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized - invalid secret key"
+          },
+          "404": {
+            "description": "No such session"
+          }
+        }
+      }
+    },
     "/sessions/{session_id}/export": {
       "get": {
         "tags": [

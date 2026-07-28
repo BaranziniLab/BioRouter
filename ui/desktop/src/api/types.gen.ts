@@ -5057,6 +5057,38 @@ export type EditMessageResponses = {
 
 export type EditMessageResponse2 = EditMessageResponses[keyof EditMessageResponses];
 
+export type ObserveSessionEventsData = {
+    body?: never;
+    path: {
+        /**
+         * Session to observe
+         */
+        session_id: string;
+    };
+    query?: never;
+    url: '/sessions/{session_id}/events';
+};
+
+export type ObserveSessionEventsErrors = {
+    /**
+     * Unauthorized - invalid secret key
+     */
+    401: unknown;
+    /**
+     * No such session
+     */
+    404: unknown;
+};
+
+export type ObserveSessionEventsResponses = {
+    /**
+     * Read-only observer stream of the session's live events
+     */
+    200: MessageEvent;
+};
+
+export type ObserveSessionEventsResponse = ObserveSessionEventsResponses[keyof ObserveSessionEventsResponses];
+
 export type ExportSessionData = {
     body?: never;
     path: {

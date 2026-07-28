@@ -382,6 +382,7 @@ derive_utoipa!(Icon as IconSchema);
         super::routes::reply::reply,
         super::routes::reply::interrupt,
         super::routes::reply::cancel_turn,
+        super::routes::session_events::observe_session_events,
         super::routes::session::list_sessions,
         super::routes::session::list_sidebar_sessions,
         super::routes::session::get_session,
