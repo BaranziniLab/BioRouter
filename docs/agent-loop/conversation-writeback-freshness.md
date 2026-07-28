@@ -385,6 +385,26 @@ published row carries `userVisible`; that flag is **accounting, not rendering** 
 `PersistedMessage::user_visible` — `true` merely means "not hidden", and the content has
 usually already arrived inside a `Message` frame).
 
+**Publishing an id is only safe *after* handing over the message that carries it.** The
+frame is something a client unions into `expectedMessageIds`, and the guard checks
+`stored ∖ client` — so over-reporting is harmless and under-reporting is what deletes. A
+client that reads `MessagesPersisted` and then loses the stream (any send failure ends it,
+`routes/reply.rs`) would claim every stored row while holding none of the bodies still to
+come, pass the guard on a short transcript, and have the server truncate rows still on its
+screen. The invariant, stated so it can be checked by reading rather than re-derived per
+site: **no `MessagesPersisted` may precede a `Message` frame carrying one of the ids it
+publishes.** Three batches `reply()` returns *instead of* running the loop had it backwards
+— the inline slash-command answer, the hook-blocked prompt, the undeliverable elicitation
+answer — and now order themselves through one seam, `messages_then_persisted` in `agent.rs`.
+Every other publication site satisfies it already, either by naming rows that are never
+yielded at all (the model-only nudges, the hook context, the pre-stream batch) or by coming
+after the rows it names (the end-of-iteration persist). The SSE adapter flushes buffered
+text before forwarding the frame for the same reason, but it can only flush what it is
+holding: an order emitted backwards upstream travels through it untouched.
+`a_slash_command_hands_over_its_messages_before_it_names_them` is the gate;
+`no_turn_shape_names_a_row_before_it_hands_it_over` is the regression net across the other
+turn shapes.
+
 **It does not follow that the desktop can now claim completeness, and assuming it did was a
 bug.** "Every message I hold names itself" and "I name every row the store holds" are
 different claims, and `named()` made the first true on exactly the turns where the second is
