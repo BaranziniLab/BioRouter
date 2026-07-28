@@ -1182,6 +1182,14 @@ impl KnowledgeService {
         self.get_hidden_path_unlocked(&crate::knowledge::paths::hidden_kbs_path(self.root()))
     }
 
+    /// Overwrite the machine-wide hidden list wholesale.
+    ///
+    /// Reach for [`Self::hide_kb`], [`Self::include_kb`] or
+    /// [`Self::set_visible_kbs`] instead unless you already hold the complete
+    /// list. This setter is atomic in itself, but the shape it invites —
+    /// `get_hidden_persisted()`, edit, `set_hidden_persisted()` — is a
+    /// read-modify-write across two unlocked calls, and two surfaces hiding two
+    /// *different* bases at the same time will lose one of the two edits.
     pub fn set_hidden_persisted(&self, ids: &[String]) -> anyhow::Result<()> {
         let _lock = self.lock_root()?;
         self.set_hidden_path_unlocked(&crate::knowledge::paths::hidden_kbs_path(self.root()), ids)?;
@@ -1205,6 +1213,10 @@ impl KnowledgeService {
         }
     }
 
+    /// Overwrite one session's hidden-list override wholesale. Same caveat as
+    /// [`Self::set_hidden_persisted`]: prefer [`Self::hide_kb`],
+    /// [`Self::include_kb`] or [`Self::set_visible_kbs`], which take the whole
+    /// gesture under one lock and cannot lose a concurrent edit.
     pub fn set_hidden_for_session(&self, session_id: &str, ids: &[String]) -> anyhow::Result<()> {
         let _lock = self.lock_root()?;
         self.set_hidden_path_unlocked(&self.hidden_session_path(session_id), ids)?;
