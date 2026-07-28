@@ -1097,13 +1097,14 @@
    sidebar rail and D-07's nav underline, so the "you are here" colour is
    one vocabulary across every surface. The pill remains the primary
    signal (fill + weight + shadow are unchanged); the strip is drawn as a
-   bottom-anchored BACKGROUND-IMAGE stripe because both pseudo-elements
+   TOP-anchored BACKGROUND-IMAGE stripe because both pseudo-elements
    are taken (::before is the sibling divider, ::after the drop-insertion
    hairline) and an inset box-shadow follows the pill's border-radius —
    the strip read as a curved smile hugging the corners, not a line. The
    gradient stripe is dead straight, inset 11px each side (≥ the 8px
    radius, and matching the tab's content padding) so the rounded corners
-   never clip it. The unfocused-group dim rule resets the `background`
+   never clip it. It sits on the TOP edge, following VS Code: the marker
+   belongs where the tab meets its strip, not where it meets the content. The unfocused-group dim rule resets the `background`
    shorthand, which wipes background-image — so the strip goes out there
    for free: two lit strips would be two answers to "where am I typing?".
    Applies to the small (--sm, terminal dock) strip too: one tab
@@ -1229,13 +1230,15 @@
 .br-tab[data-active='true'] {
   /* Longhand color + image, NOT the `background` shorthand: the stripe is the
      #37 accent strip (see the header note), drawn as a straight 2px gradient
-     line at the bottom edge. The 11px side insets keep it clear of the 8px
-     corner radius and align it with the tab's content padding. */
+     line along the TOP edge — VS Code's convention, where the indicator marks
+     where the tab meets its strip rather than where it meets the content. The
+     11px side insets keep it clear of the 8px corner radius and align it with
+     the tab's content padding. */
   background-color: var(--background-default);
   background-image: linear-gradient(var(--accent-bar), var(--accent-bar));
   background-repeat: no-repeat;
   background-size: calc(100% - 22px) 2px;
-  background-position: 50% 100%;
+  background-position: 50% 0%;
   color: var(--text-default);
   font-weight: 500;
   /* The drop shadow is the original pill lift. */
