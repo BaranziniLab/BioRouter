@@ -15,6 +15,97 @@ const DAY_MS = 86_400_000;
 const LOADING_WEEKS = 22;
 const LOADING_CELLS = LOADING_WEEKS * 7;
 
+/**
+ * Cell sizing. The heatmap must fit whatever box the Home view can spare —
+ * down to the smallest window — so instead of fixed CSS breakpoints the grid
+ * picks the largest cell size whose full footprint (day-label gutter + one
+ * column per week, 7 rows plus the chrome around the grid) fits the measured
+ * box. Gap, gutter and label font sizes step down with the cells so nothing
+ * overlaps at any size.
+ */
+const MAX_CELL = 24;
+const MIN_CELL = 8;
+
+type HeatMetrics = { cell: number; gap: number; labels: number };
+
+function gapFor(cell: number): number {
+  return cell >= 20 ? 6 : cell >= 15 ? 4 : cell >= 11 ? 3 : 2;
+}
+
+function gutterFor(cell: number): number {
+  return cell >= 15 ? 34 : cell >= 11 ? 28 : 24;
+}
+
+/** Fixed vertical chrome around the grid: header + month ruler + legend, with
+ * their margins. The incomplete-token note adds two short lines. Estimates —
+ * a few px of error only moves the fit by at most one cell step. */
+function chromeFor(tokensComplete: boolean): number {
+  return tokensComplete ? 104 : 150;
+}
+
+function fitMetrics(weeks: number, width: number, height: number, chrome: number): HeatMetrics {
+  for (let cell = MAX_CELL; cell > MIN_CELL; cell--) {
+    const gap = gapFor(cell);
+    const gridWidth = gutterFor(cell) + gap + weeks * cell + (weeks - 1) * gap;
+    const gridHeight = 7 * cell + 6 * gap;
+    if (gridWidth <= width && gridHeight <= height - chrome) {
+      return { cell, gap, labels: gutterFor(cell) };
+    }
+  }
+  return { cell: MIN_CELL, gap: gapFor(MIN_CELL), labels: gutterFor(MIN_CELL) };
+}
+
+/** CSS vars driving the grid, derived from the fitted metrics. Fonts shrink
+ * with the cells so a label row can never be taller than its cell row. */
+function heatStyle(m: HeatMetrics): React.CSSProperties {
+  return {
+    '--heat-cell': `${m.cell}px`,
+    '--heat-gap': `${m.gap}px`,
+    '--heat-labels': `${m.labels}px`,
+    '--heat-day-font': `${m.cell >= 12 ? 10 : m.cell >= 9 ? 9 : 8}px`,
+    '--heat-month-font': `${m.cell >= 12 ? 11 : 10}px`,
+  } as React.CSSProperties;
+}
+
+/**
+ * Measure the box the heatmap's parent gives it. Width drives the fit always;
+ * height only when the parent has a definite height (the Home view's flex
+ * column). jsdom and the first pre-layout paint report 0 — treat that as
+ * "unknown, keep the CSS defaults", never as "no room".
+ */
+function useFittedMetrics(
+  rootRef: React.RefObject<HTMLDivElement | null>,
+  weeks: number,
+  tokensComplete: boolean
+): React.CSSProperties | undefined {
+  const [box, setBox] = useState<{ w: number; h: number } | null>(null);
+
+  useLayoutEffect(() => {
+    const host = rootRef.current?.parentElement;
+    if (!host) return;
+    const measure = () => {
+      const w = host.clientWidth;
+      const h = host.clientHeight;
+      if (w <= 0) return;
+      setBox((prev) => (prev && prev.w === w && prev.h === h ? prev : { w, h }));
+    };
+    measure();
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', measure);
+      return () => window.removeEventListener('resize', measure);
+    }
+    const observer = new ResizeObserver(measure);
+    observer.observe(host);
+    return () => observer.disconnect();
+  }, [rootRef]);
+
+  return useMemo(() => {
+    if (!box) return undefined;
+    const height = box.h > 0 ? box.h : Number.POSITIVE_INFINITY;
+    return heatStyle(fitMetrics(weeks, box.w, height, chromeFor(tokensComplete)));
+  }, [box, weeks, tokensComplete]);
+}
+
 /** Local calendar day, `YYYY-MM-DD`, matching the server's `date('now','localtime')`. */
 function isoDay(d: Date): string {
   const y = d.getFullYear();
@@ -194,7 +285,7 @@ export function UsageHeatmapLoading() {
         </div>
 
         <div className="mt-1.5 grid grid-cols-[var(--heat-labels)_1fr] gap-[var(--heat-gap)]">
-          <div className="grid grid-rows-7 gap-[var(--heat-gap)] text-[10px] leading-none text-text-muted/60">
+          <div className="biorouter-heatmap-days grid grid-rows-7 gap-[var(--heat-gap)] leading-none text-text-muted/60">
             {['Sun', '', 'Tue', '', 'Thu', '', 'Sat'].map((label, index) => (
               <span key={index} className="flex h-[var(--heat-cell)] items-center">
                 {label}
@@ -241,6 +332,8 @@ export function UsageHeatmapLoading() {
 export function UsageHeatmap({ window: activity }: { window: ActivityWindow }) {
   const { cells, weeks } = useMemo(() => buildGrid(activity), [activity]);
   const [hovered, setHovered] = useState<{ cell: Cell; rect: Anchor } | null>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const fittedStyle = useFittedMetrics(rootRef, weeks, activity.tokensComplete);
 
   // One label per month, placed on the first column whose Sunday falls in it.
   const months = useMemo(() => {
@@ -266,9 +359,9 @@ export function UsageHeatmap({ window: activity }: { window: ActivityWindow }) {
   const hide = () => setHovered(null);
 
   return (
-    <div className="biorouter-heatmap">
+    <div ref={rootRef} className="biorouter-heatmap" style={fittedStyle}>
       <div
-        className={`${activity.tokensComplete ? 'mb-4' : 'mb-2'} flex items-baseline justify-between gap-4`}
+        className={`${activity.tokensComplete ? 'mb-4' : 'mb-2'} flex flex-wrap items-baseline justify-between gap-x-4 gap-y-0.5`}
       >
         <h2 className="text-lg font-semibold tracking-tight text-text-default">
           {activity.currentStreak === 1 ? '1 day streak' : `${activity.currentStreak} day streak`}
@@ -286,7 +379,7 @@ export function UsageHeatmap({ window: activity }: { window: ActivityWindow }) {
 
       <div className="grid grid-cols-[var(--heat-labels)_1fr] gap-[var(--heat-gap)]">
         <span aria-hidden="true" />
-        <div className="flex gap-[var(--heat-gap)] text-[11px] text-text-muted">
+        <div className="biorouter-heatmap-months flex gap-[var(--heat-gap)] text-text-muted">
           {months.map((m, i) => (
             <span
               key={i}
@@ -299,7 +392,7 @@ export function UsageHeatmap({ window: activity }: { window: ActivityWindow }) {
       </div>
 
       <div className="mt-1.5 grid grid-cols-[var(--heat-labels)_1fr] gap-[var(--heat-gap)]">
-        <div className="grid grid-rows-7 gap-[var(--heat-gap)] text-[10px] leading-none text-text-muted">
+        <div className="biorouter-heatmap-days grid grid-rows-7 gap-[var(--heat-gap)] leading-none text-text-muted">
           {['Sun', '', 'Tue', '', 'Thu', '', 'Sat'].map((d, i) => (
             <span key={i} className="flex h-[var(--heat-cell)] items-center">
               {d}
@@ -346,8 +439,8 @@ export function UsageHeatmap({ window: activity }: { window: ActivityWindow }) {
         </div>
       </div>
 
-      <div className="mt-4 flex items-center justify-between text-[11px] text-text-muted">
-        <div className="flex items-center gap-3">
+      <div className="mt-4 flex flex-wrap items-center justify-between gap-x-4 gap-y-1 text-[11px] text-text-muted">
+        <div className="flex flex-wrap items-center gap-3">
           <div className="flex items-center gap-1">
             <span className="mr-1">Less</span>
             {[0, 1, 2, 3, 4].map((l) => (

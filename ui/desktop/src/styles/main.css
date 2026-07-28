@@ -1546,31 +1546,28 @@
   container-type: size;
 }
 
+/* The heatmap is never folded away (it scales its cells instead — see
+   UsageHeatmap). As the window gets short, only the hero compacts, then
+   yields entirely so the heatmap keeps a legible box. */
 @container biorouter-home-content (max-height: 720px) {
   .biorouter-home-hero {
     padding-top: 56px;
     padding-bottom: 16px;
   }
 
-  .biorouter-home-activity,
-  .biorouter-home-recents {
+  .biorouter-home-activity {
     padding-bottom: 16px;
   }
 }
 
-@container biorouter-home-content (max-height: 650px) {
-  .biorouter-home-activity {
-    display: none;
+@container biorouter-home-content (max-height: 560px) {
+  .biorouter-home-hero {
+    padding-top: 28px;
+    padding-bottom: 12px;
   }
 }
 
-@container biorouter-home-content (max-height: 280px) {
-  .biorouter-home-recents {
-    display: none;
-  }
-}
-
-@container biorouter-home-content (max-height: 100px) {
+@container biorouter-home-content (max-height: 340px) {
   .biorouter-home-hero {
     display: none;
   }
@@ -2276,11 +2273,25 @@ code [class~='token'] {
   }
 }
 
-/* The heatmap must never make the page scroll sideways; shrink the cells. */
+/* The heatmap must never make the page scroll sideways; shrink the cells.
+   The live heatmap fits itself precisely via inline vars (UsageHeatmap's
+   ResizeObserver); this coarse breakpoint covers the loading skeleton and any
+   context that renders before measurement. */
 @media (max-width: 860px) {
   .biorouter-heatmap {
     --heat-cell: 15px;
     --heat-gap: 4px;
     --heat-labels: 28px;
   }
+}
+
+/* Label typography rides the fitted cell size (vars set inline by
+   UsageHeatmap) so a shrunken grid can never have labels taller than its
+   rows; the fallbacks are the historical fixed sizes. */
+.biorouter-heatmap-days {
+  font-size: var(--heat-day-font, 10px);
+}
+
+.biorouter-heatmap-months {
+  font-size: var(--heat-month-font, 11px);
 }

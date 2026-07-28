@@ -5,7 +5,7 @@
  * It serves as the welcome screen where users can start new conversations.
  *
  * Key Responsibilities:
- * - Displays SessionInsights to show session statistics and recent chats
+ * - Displays SessionInsights (greeting + usage heatmap)
  * - Provides a ChatInput for users to start new conversations
  * - Creates a new session and navigates to Pair with the session ID
  * - Shows loading state while session is being created
@@ -72,7 +72,10 @@ export default function Hub({
 
   return (
     <div className="biorouter-home flex h-full min-h-0 flex-col bg-background-canvas">
-      <div className="biorouter-home-content min-h-0 flex-1 overflow-hidden">
+      {/* overflow-y-auto is the last-resort guarantee: if a squeeze (tiny
+          window + tall composer) leaves less than the heatmap's minimum box,
+          the content scrolls instead of clipping or overlapping. */}
+      <div className="biorouter-home-content min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
         <SessionInsights />
       </div>
 

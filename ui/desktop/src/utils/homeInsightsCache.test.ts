@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ActivityWindow, Session } from '../api';
+import type { ActivityWindow } from '../api';
 
 const mocks = vi.hoisted(() => ({
   getSessionActivity: vi.fn(),
@@ -20,16 +20,6 @@ const activity: ActivityWindow = {
   days: [],
 };
 
-const recentSession: Session = {
-  id: 'session-1',
-  name: 'Persisted session',
-  created_at: '2026-07-14T12:00:00Z',
-  updated_at: '2026-07-15T12:00:00Z',
-  extension_data: {},
-  message_count: 2,
-  working_dir: '/Users/test',
-};
-
 beforeEach(() => {
   vi.clearAllMocks();
   vi.resetModules();
@@ -37,16 +27,25 @@ beforeEach(() => {
 });
 
 describe('homeInsightsCache', () => {
-  it('restores activity and recent chats after a module reload', async () => {
+  it('restores activity after a module reload', async () => {
     const cache = await import('./homeInsightsCache');
     cache.cacheHomeActivity(activity);
-    cache.cacheHomeRecentSessions([recentSession]);
 
     vi.resetModules();
     const restoredCache = await import('./homeInsightsCache');
 
     expect(restoredCache.getCachedHomeActivity()).toEqual(activity);
-    expect(restoredCache.getCachedRecentSessions()).toEqual([recentSession]);
+  });
+
+  it('ignores the retired recentSessions key in a persisted v1 blob', async () => {
+    // Blobs written before the Home recent-chats section was removed carry an
+    // extra key; reading them must neither crash nor resurrect it.
+    localStorage.setItem(
+      'biorouter-home-insights-v1',
+      JSON.stringify({ activity, recentSessions: [{ id: 'stale' }] })
+    );
+    const cache = await import('./homeInsightsCache');
+    expect(cache.getCachedHomeActivity()).toEqual(activity);
   });
 
   it('deduplicates overlapping activity prefetch and view requests', async () => {
