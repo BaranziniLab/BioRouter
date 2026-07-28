@@ -153,15 +153,44 @@ impl TurnRequest {
     }
 }
 
-/// Acquire the session's turn lock and spawn the turn. Returns the
-/// server-assigned turn id immediately; the turn runs on a spawned task holding
-/// the lock, and every event it produces is published to the session's
-/// broadcast. The user message is stamped/persisted by the agent's own reply
+/// A turn that has been accepted and is now running on its own task.
+#[derive(Debug)]
+pub struct StartedTurn {
+    /// The server-assigned turn id, also carried by this turn's
+    /// `SessionBusEvent::TurnStarted` so a consumer can correlate lifecycles.
+    pub turn_id: String,
+    /// The session's event stream, subscribed **before** the turn task was
+    /// spawned — so it cannot have missed a frame.
+    ///
+    /// Handing the subscription back rather than letting the caller open its
+    /// own is what makes the lost-event race unrepresentable; see
+    /// [`start_turn`]. A caller that genuinely does not want the events just
+    /// drops it, which reclaims the ring exactly as any other observer's exit
+    /// would.
+    pub events: session_events::Subscription,
+}
+
+/// Acquire the session's turn lock, subscribe, and spawn the turn. Returns
+/// immediately with the turn's id and a subscription carrying every event it
+/// will produce. The user message is stamped/persisted by the agent's own reply
 /// path — this function persists nothing itself.
+///
+/// **The subscription is opened here, not by the caller, and that is
+/// load-bearing.** `session_events::publish` is a pure lookup and a no-op when
+/// the session has no ring; `subscribe` is the only thing that creates one. The
+/// obvious caller shape — take the id back, then subscribe — therefore loses
+/// `TurnStarted`, and on a turn that fails in microseconds loses the terminal
+/// too, after which the caller blocks forever on a `recv()` for events that
+/// were dropped on the floor. The daemon runs a multi-thread runtime, so the
+/// spawned task really can get there first. Returning the subscription removes
+/// the window instead of documenting it.
+///
+/// Callers that spawn [`run_turn`] themselves take the same obligation on:
+/// subscribe before spawning, not after.
 pub async fn start_turn(
     state: Arc<AppState>,
     request: TurnRequest,
-) -> Result<String, TurnStartError> {
+) -> Result<StartedTurn, TurnStartError> {
     let cancel_token = CancellationToken::new();
     let turn_guard = state
         .try_begin_turn_idempotent(
@@ -175,8 +204,11 @@ pub async fn start_turn(
         })?;
     let turn_id = turn_guard.turn_id().to_string();
 
+    // Before the spawn, never after it.
+    let events = session_events::subscribe(&request.session_id);
+
     tokio::spawn(run_turn(state, request, turn_guard, cancel_token));
-    Ok(turn_id)
+    Ok(StartedTurn { turn_id, events })
 }
 
 /// The turn body. Split out of `start_turn` so Task 8 can also call it with a
@@ -711,13 +743,18 @@ mod tests {
         let mut rx = session_events::subscribe(&sid);
         // No provider on the fresh agent → the turn starts, fails fast, and
         // must still bracket itself on the bus.
-        let turn_id = start_turn(
+        //
+        // Reads through this test's OWN subscription rather than the one
+        // `start_turn` returns, deliberately: the property under test is that
+        // every observer of the session sees the bracket, not just the caller
+        // that started the turn.
+        let started = start_turn(
             state.clone(),
             TurnRequest::new(sid.clone(), Message::user().with_text("go")),
         )
         .await
         .unwrap();
-        assert!(turn_id.starts_with("turn-"));
+        assert!(started.turn_id.starts_with("turn-"));
 
         let first = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
             .await
@@ -942,6 +979,59 @@ mod tests {
             provider_kind.as_deref(),
             Some(ProviderErrorKind::RateLimit.wire_code())
         );
+    }
+
+    /// `start_turn` must hand back a subscription it opened itself, not leave
+    /// the caller to race the turn it just spawned.
+    ///
+    /// `session_events::publish` is a pure LOOKUP and a no-op when the session
+    /// has no ring — `subscribe` is the only thing that creates one. So the
+    /// natural `let id = start_turn(..).await?; let rx = subscribe(&sid);`
+    /// misses `TurnStarted`, and on a fast-failing turn (the provider-less path
+    /// takes microseconds) misses the terminal as well; the caller then blocks
+    /// forever on a `recv()` for events that were dropped on the floor. The
+    /// daemon is `#[tokio::main]` multi-thread, so the spawned task genuinely
+    /// can run before the caller's next statement.
+    ///
+    /// The real guard is the signature — a caller cannot express the race any
+    /// more. This test is the end-to-end check that the subscription it returns
+    /// really does carry the whole lifecycle, and it runs on a multi-thread
+    /// runtime because a current-thread one cannot poll the spawned task until
+    /// the test awaits and would hide the problem entirely.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn start_turn_hands_back_a_subscription_that_cannot_have_missed_anything() {
+        let state = crate::state::AppState::new().await.unwrap();
+        let (_workdir, sid) = session(&state, "subscription-not-a-race").await;
+
+        // Deliberately no `subscribe` of our own: the returned subscription is
+        // the only way this test can see the bus.
+        let mut started = start_turn(
+            state.clone(),
+            TurnRequest::new(sid.clone(), Message::user().with_text("go")),
+        )
+        .await
+        .unwrap();
+        assert!(started.turn_id.starts_with("turn-"));
+
+        let first = tokio::time::timeout(std::time::Duration::from_secs(5), started.events.recv())
+            .await
+            .expect("TurnStarted must not have been published before we could listen")
+            .unwrap();
+        assert!(matches!(first, SessionBusEvent::TurnStarted { .. }));
+
+        // And the terminal, which on this provider-less path follows within
+        // microseconds of the start.
+        let terminals: Vec<_> = drain(&mut started.events)
+            .await
+            .into_iter()
+            .filter(|ev| {
+                matches!(
+                    ev,
+                    SessionBusEvent::TurnError { .. } | SessionBusEvent::TurnFinished { .. }
+                )
+            })
+            .collect();
+        assert_eq!(terminals.len(), 1, "exactly one terminal: {terminals:?}");
     }
 
     /// Cancelling a turn must end it even when the agent is not yielding.
