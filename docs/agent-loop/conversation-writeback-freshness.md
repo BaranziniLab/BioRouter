@@ -167,6 +167,14 @@ the freshness guard, and each needs a different answer.
 
 ## What this does not fix
 
+**A guarded write only gets the message stored; it does not keep it reaching the model.**
+Compaction keeps the last `keep_last_turns` turns verbatim and summarizes the rest, so a
+message this guard just saved is dissolved into a summary a few turns later — the same
+broken promise, arriving more slowly. The answer is the per-message preservation marker,
+documented separately in
+[The compaction preservation marker](compaction-preservation-marker.md). The two halves are
+one guarantee and neither is useful alone.
+
 **This makes concurrent writes safe, not rare.** Two turns can still run on one session:
 the apps agent socket never takes the per-session turn guard and two browser tabs of one
 app share a session through the `localStorage` client id; and `AppState::active_turns` is
@@ -219,6 +227,8 @@ reports `database is locked` means its transaction read before it wrote, which i
 
 ## Related documentation
 
+- [The compaction preservation marker](compaction-preservation-marker.md) — the other
+  half of the same guarantee: keeping a stored message out of the summary.
 - [The agent loop](README.md) — the loop that runs the three compaction sites.
 - [Agent lifecycle hooks](hooks/README.md) — the `PreCompact`/`PostCompact` pair discussed above.
 - [Session branching design](designs/session-branching.md) — the other consumer of stable `msg_uid`s across a rewrite.
