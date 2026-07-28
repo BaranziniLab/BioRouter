@@ -437,6 +437,35 @@ mod tests {
         }
     }
 
+    /// The variant every consumer actually spends its time on had no coverage:
+    /// the three lifecycle brackets are a handful of events per turn, while
+    /// `Agent` carries the whole stream.
+    ///
+    /// It is also the one variant whose payload this module does not own —
+    /// `AgentEvent` is `#[derive(Clone, Debug)]` in `agents/agent.rs`, and
+    /// `broadcast` requires `Clone` to fan out. If someone adds a non-`Clone`
+    /// field to any of its eight variants, the bus stops compiling; this test
+    /// makes sure a payload is actually *sent* through the channel so that
+    /// breakage lands here rather than in a server route.
+    #[tokio::test]
+    async fn agent_events_cross_the_bus_unchanged() {
+        let mut rx = subscribe("bus-t5");
+        publish(
+            "bus-t5",
+            SessionBusEvent::Agent(AgentEvent::ModelChange {
+                model: "claude-opus-5".into(),
+                mode: "auto".into(),
+            }),
+        );
+        let SessionBusEvent::Agent(AgentEvent::ModelChange { model, mode }) =
+            rx.recv().await.unwrap()
+        else {
+            panic!("variant");
+        };
+        assert_eq!(model, "claude-opus-5");
+        assert_eq!(mode, "auto");
+    }
+
     /// An observer-only session must reclaim itself, with no turn runner
     /// involved and no explicit call from the observer.
     ///
