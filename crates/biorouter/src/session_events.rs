@@ -98,25 +98,53 @@ pub enum SessionBusEvent {
 static BUS: LazyLock<Mutex<HashMap<String, broadcast::Sender<SessionBusEvent>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-fn sender_for(session_id: &str) -> broadcast::Sender<SessionBusEvent> {
-    let mut map = BUS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    map.entry(session_id.to_string())
-        .or_insert_with(|| broadcast::channel(BUS_CAPACITY).0)
-        .clone()
+/// Lock the registry, recovering from a poisoned mutex.
+///
+/// Poisoning cannot leave the map logically inconsistent — every mutation
+/// below is a single `HashMap` operation — so a panic elsewhere must not turn
+/// the bus into a process-wide outage.
+///
+/// **Nothing hands a `Sender` back out through this guard.** Every operation
+/// runs to completion *while the lock is held*; see [`subscribe`] for why.
+fn bus() -> std::sync::MutexGuard<'static, HashMap<String, broadcast::Sender<SessionBusEvent>>> {
+    BUS.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Subscribe to a session's live events. Safe for any session id, including one
 /// with no turn running — the receiver simply waits.
+///
+/// This is the ONLY function that inserts into `BUS`, and the `.subscribe()`
+/// runs **while the registry lock is held**. Both halves are load-bearing:
+///
+/// * Cloning the sender out and subscribing after the lock was released is a
+///   TOCTOU. A concurrent [`release_if_idle`] would see `receiver_count() == 0`
+///   — the subscribe has not landed yet — drop the entry, and leave this
+///   observer holding the last handle to an orphaned channel. Its very first
+///   `recv()` then returns `Err(RecvError::Closed)`, which a consumer reads as
+///   a clean end of stream: the observer silently stops following a live
+///   session instead of following it. `broadcast::Sender::subscribe` does not
+///   await, so holding the lock across it costs nothing.
+/// * Because the count is therefore incremented under the same lock that
+///   guards removal, an entry's absence provably means the session has no
+///   receiver — a fact the rest of the module relies on.
 pub fn subscribe(session_id: &str) -> broadcast::Receiver<SessionBusEvent> {
-    sender_for(session_id).subscribe()
+    bus()
+        .entry(session_id.to_string())
+        .or_insert_with(|| broadcast::channel(BUS_CAPACITY).0)
+        .subscribe()
 }
 
 /// Publish, best-effort. A send with no receivers is a no-op, never an error —
 /// publishing must cost nothing when nobody is watching.
+///
+/// `send` does not await either, so it too runs under the registry lock rather
+/// than through a sender cloned out of it.
 pub fn publish(session_id: &str, event: SessionBusEvent) {
-    let _ = sender_for(session_id).send(event);
+    let _ = bus()
+        .entry(session_id.to_string())
+        .or_insert_with(|| broadcast::channel(BUS_CAPACITY).0)
+        .send(event);
 }
 
 /// Drop a session's sender — and its 1024-slot ring — once nothing is listening.
@@ -133,9 +161,7 @@ pub fn publish(session_id: &str, event: SessionBusEvent) {
 /// (it holds its own `Arc` to the shared state) — it simply stops seeing events
 /// published through a *new* sender. That is why this only fires at `0`.
 pub fn release_if_idle(session_id: &str) {
-    let mut map = BUS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut map = bus();
     if let Some(sender) = map.get(session_id) {
         if sender.receiver_count() == 0 {
             map.remove(session_id);
@@ -145,7 +171,10 @@ pub fn release_if_idle(session_id: &str) {
 
 /// How many live observers a session currently has (introspection/tests).
 pub fn observer_count(session_id: &str) -> usize {
-    sender_for(session_id).receiver_count()
+    bus()
+        .entry(session_id.to_string())
+        .or_insert_with(|| broadcast::channel(BUS_CAPACITY).0)
+        .receiver_count()
 }
 
 /// Whether a session currently holds a ring (tests only).
@@ -160,9 +189,7 @@ pub fn observer_count(session_id: &str) -> usize {
 /// instead of a proxy for it.
 #[cfg(test)]
 pub(crate) fn is_tracked(session_id: &str) -> bool {
-    BUS.lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .contains_key(session_id)
+    bus().contains_key(session_id)
 }
 
 #[cfg(test)]
@@ -257,6 +284,59 @@ mod tests {
         assert_eq!(scope, "inference");
         assert!(!retryable);
         assert_eq!(provider_kind.as_deref(), Some("anthropic"));
+    }
+
+    /// `subscribe` must hand out a receiver on the channel the registry
+    /// **still** holds, even while another thread is reclaiming idle rings.
+    ///
+    /// If the sender is cloned out from under the lock and `.subscribe()`
+    /// happens after it is released, a concurrent [`release_if_idle`] sees
+    /// `receiver_count() == 0` — the subscribe has not landed yet — and removes
+    /// the entry. The observer then holds the only handle to an orphaned
+    /// channel whose last `Sender` has been dropped, so its very first
+    /// `recv()` returns `Err(RecvError::Closed)`; a consumer reads that as a
+    /// clean end of stream and silently stops following a live session.
+    ///
+    /// The observable invariant is registry-side and race-free to assert: once
+    /// `subscribe` has returned, the session is tracked. Nothing else touches
+    /// these keys, and the only other party is a releaser that must not be able
+    /// to win.
+    #[test]
+    fn subscribing_is_atomic_against_a_concurrent_release() {
+        const RELEASERS: usize = 24;
+        for round in 0..500 {
+            let key = format!("race-{round}");
+            let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let gate = std::sync::Arc::new(std::sync::Barrier::new(RELEASERS + 1));
+            let mut handles = Vec::new();
+            for _ in 0..RELEASERS {
+                let releaser_key = key.clone();
+                let releaser_stop = stop.clone();
+                let releaser_gate = gate.clone();
+                handles.push(std::thread::spawn(move || {
+                    releaser_gate.wait();
+                    while !releaser_stop.load(std::sync::atomic::Ordering::Relaxed) {
+                        release_if_idle(&releaser_key);
+                    }
+                }));
+            }
+            gate.wait();
+
+            let rx = subscribe(&key);
+            let tracked = is_tracked(&key);
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            for h in handles {
+                h.join().unwrap();
+            }
+            drop(rx);
+            release_if_idle(&key);
+
+            assert!(
+                tracked,
+                "round {round}: subscribe handed out a receiver on a channel the \
+                 registry no longer holds — that receiver is orphaned and closed"
+            );
+        }
     }
 
     /// A finished turn with no observers must not leave a 1024-slot ring
