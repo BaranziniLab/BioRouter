@@ -7,6 +7,7 @@ import path from 'node:path';
 import log from './utils/logger';
 import { App } from 'electron';
 import { Buffer } from 'node:buffer';
+import { StringDecoder } from 'node:string_decoder';
 
 import { status } from './api';
 import { Client } from './api/client';
@@ -112,6 +113,57 @@ export const daemonStderrLogLevel = (line: string): DaemonLogLevel => {
   }
 };
 
+export interface StderrLineReader {
+  /** Feed one raw chunk from the pipe. Emits every complete line it now has. */
+  push: (chunk: Buffer | string) => void;
+  /** Emit a trailing unterminated line, if any. Safe to call more than once. */
+  flush: () => void;
+}
+
+/**
+ * Reassemble `biorouterd`'s stderr pipe into whole lines.
+ *
+ * Node stream chunks are byte-buffer sized, not line framed: one logical line
+ * routinely arrives split across two `data` events, and a multi-byte UTF-8
+ * character can straddle the boundary. Splitting each chunk independently
+ * therefore hands the consumer fragments — `ER` then `ROR …` — which defeats
+ * both the level classifier (both fragments look unparseable, so both land at
+ * `info`) and, more seriously, the startup fatal probe in `checkServerStatus`,
+ * which scans the ring for a *whole* `thread 'main' panicked at` / `error:`
+ * line. A split panic would be invisible to it and startup would hang out the
+ * full status-poll timeout instead of failing fast.
+ *
+ * `StringDecoder` holds back an incomplete multi-byte sequence; `remainder`
+ * holds back an incomplete line. Blank lines are dropped, as before.
+ */
+export const createStderrLineReader = (onLine: (line: string) => void): StderrLineReader => {
+  const decoder = new StringDecoder('utf8');
+  let remainder = '';
+
+  const emit = (line: string) => {
+    // Windows CRLF: keep the line itself clean rather than trailing a \r.
+    const cleaned = line.endsWith('\r') ? line.slice(0, -1) : line;
+    if (cleaned.trim()) onLine(cleaned);
+  };
+
+  return {
+    push(chunk: Buffer | string) {
+      remainder += typeof chunk === 'string' ? chunk : decoder.write(chunk);
+      let newline = remainder.indexOf('\n');
+      while (newline !== -1) {
+        emit(remainder.slice(0, newline));
+        remainder = remainder.slice(newline + 1);
+        newline = remainder.indexOf('\n');
+      }
+    },
+    flush() {
+      const tail = remainder + decoder.end();
+      remainder = '';
+      if (tail) emit(tail);
+    },
+  };
+};
+
 export interface BiorouterdResult {
   baseUrl: string;
   workingDir: string;
@@ -180,6 +232,12 @@ export const startBiorouterd = async (
   // V8 CHECK on the main thread during optimizing compile / GC compaction.
   const STDERR_RING_MAX = 500;
   const stderrLines: string[] = [];
+  const appendStderrLine = (line: string) => {
+    stderrLines.push(line);
+    if (stderrLines.length > STDERR_RING_MAX) {
+      stderrLines.splice(0, stderrLines.length - STDERR_RING_MAX);
+    }
+  };
 
   log.info(`Starting biorouterd from: ${resolvedBiorouterdPath} on port ${port} in dir ${dir}`);
 
@@ -237,24 +295,24 @@ export const startBiorouterd = async (
     log.info(`biorouterd stdout for port ${port} and dir ${dir}: ${data.toString()}`);
   });
 
-  biorouterdProcess.stderr?.on('data', (data: Buffer) => {
-    const lines = data
-      .toString()
-      .split('\n')
-      .filter((l) => l.trim());
-    lines.forEach((line) => {
-      // Route each line at the daemon's own severity. Logging the whole stream
-      // at `error` made main.log a wall of apparent failures with no way to
-      // find the real one.
-      log[daemonStderrLogLevel(line)](`biorouterd stderr for port ${port} and dir ${dir}: ${line}`);
-      stderrLines.push(line);
-      if (stderrLines.length > STDERR_RING_MAX) {
-        stderrLines.splice(0, stderrLines.length - STDERR_RING_MAX);
-      }
-    });
+  // Exactly one place turns a stderr line into output: it logs at the daemon's
+  // own severity *and* records it in the ring the startup probe reads, so the
+  // two can never disagree about what a line was. Logging the whole stream at
+  // `error` made main.log a wall of apparent failures with no way to find the
+  // real one.
+  const stderrReader = createStderrLineReader((line) => {
+    log[daemonStderrLogLevel(line)](`biorouterd stderr for port ${port} and dir ${dir}: ${line}`);
+    appendStderrLine(line);
   });
 
+  biorouterdProcess.stderr?.on('data', (data: Buffer) => stderrReader.push(data));
+  // A daemon that dies mid-line leaves its most interesting line unterminated.
+  // Flush on both signals — `end` may never fire if the pipe is destroyed, and
+  // `close` may arrive first. `flush` clears its buffer, so it cannot double-emit.
+  biorouterdProcess.stderr?.on('end', () => stderrReader.flush());
+
   biorouterdProcess.on('close', (code: number | null) => {
+    stderrReader.flush();
     log.info(`biorouterd process exited with code ${code} for port ${port} and dir ${dir}`);
   });
 
@@ -267,8 +325,10 @@ export const startBiorouterd = async (
     log.error(`Failed to start biorouterd on port ${port} and dir ${dir}`, err);
     // "error:" prefix matches checkServerStatus's fatal() predicate so the
     // startup probe short-circuits with a useful error rather than waiting
-    // out the 10s status-poll timeout.
-    stderrLines.push(`error: failed to spawn biorouterd: ${err.message}`);
+    // out the 10s status-poll timeout. Appended through the same bounded
+    // helper as real stderr lines (it is already logged above, so it does not
+    // go through the logging path a second time).
+    appendStderrLine(`error: failed to spawn biorouterd: ${err.message}`);
   });
 
   const try_kill_biorouter = () => {

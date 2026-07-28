@@ -127,33 +127,48 @@ describe('daemonStderrLogLevel', () => {
 });
 
 describe('biorouterd stderr routing', () => {
+  // Capture the handlers `startBiorouterd` registers so a test can drive the
+  // stderr stream chunk by chunk and close the child, exactly as Node would.
+  const stderrHandlers: Record<string, (arg?: unknown) => void> = {};
+  const childHandlers: Record<string, (arg?: unknown) => void> = {};
+
+  const mockChild = () => {
+    for (const k of Object.keys(stderrHandlers)) delete stderrHandlers[k];
+    for (const k of Object.keys(childHandlers)) delete childHandlers[k];
+    mocks.spawn.mockReturnValue({
+      stdout: { on: vi.fn() },
+      stderr: {
+        on: vi.fn((event: string, handler: (arg?: unknown) => void) => {
+          stderrHandlers[event] = handler;
+        }),
+      },
+      on: vi.fn((event: string, handler: (arg?: unknown) => void) => {
+        childHandlers[event] = handler;
+      }),
+      kill: vi.fn(),
+      unref: vi.fn(),
+    });
+  };
+
+  const write = (s: string) => stderrHandlers['data']?.(Buffer.from(s, 'utf8'));
+
   beforeEach(() => {
     mocks.logInfo.mockClear();
     mocks.logError.mockClear();
     mocks.logWarn.mockClear();
     mocks.logDebug.mockClear();
     mocks.spawn.mockReset();
+    mockChild();
   });
 
-  it('logs each daemon stderr line at its own level', async () => {
-    let stderrHandler: ((data: Buffer) => void) | undefined;
-    mocks.spawn.mockReturnValue({
-      stdout: { on: vi.fn() },
-      stderr: {
-        on: vi.fn((event: string, handler: (data: Buffer) => void) => {
-          if (event === 'data') stderrHandler = handler;
-        }),
-      },
-      on: vi.fn(),
-      kill: vi.fn(),
-      unref: vi.fn(),
-    });
+  const joined = (calls: unknown[][]) => calls.map((c) => String(c[0])).join('\n');
 
+  it('logs each daemon stderr line at its own level', async () => {
     const app = { isPackaged: false, on: vi.fn() } as unknown as App;
     const result = await startBiorouterd({ app, serverSecret: 'secret', dir: process.cwd() });
 
-    expect(stderrHandler).toBeDefined();
-    stderrHandler!(
+    expect(stderrHandlers['data']).toBeDefined();
+    stderrHandlers['data']!(
       Buffer.from(
         [
           '  2026-07-26T18:40:14.289898Z  INFO biorouter_server: listening',
@@ -166,7 +181,6 @@ describe('biorouterd stderr routing', () => {
       )
     );
 
-    const joined = (calls: unknown[][]) => calls.map((c) => String(c[0])).join('\n');
     expect(joined(mocks.logError.mock.calls)).toContain('provider call failed');
     expect(mocks.logError.mock.calls).toHaveLength(1);
     expect(joined(mocks.logWarn.mock.calls)).toContain('deprecated key');
@@ -179,5 +193,85 @@ describe('biorouterd stderr routing', () => {
 
     // Every stderr line still reaches the bounded ring the startup probe reads.
     expect(result.errorLog).toHaveLength(5);
+  });
+
+  // Node stream chunks are not line-framed: a single logical line can arrive
+  // in two `data` events. Classifying per chunk turns `ERROR` into the
+  // fragments `ER` and `ROR …`, both unparseable, both logged at info.
+  it('reassembles a line split across two stream chunks', async () => {
+    const app = { isPackaged: false, on: vi.fn() } as unknown as App;
+    const result = await startBiorouterd({ app, serverSecret: 'secret', dir: process.cwd() });
+
+    write('  2026-07-26T18:40:14.289898Z ER');
+    write('ROR biorouter::agents::agent: provider call failed\n');
+
+    expect(mocks.logError.mock.calls).toHaveLength(1);
+    expect(joined(mocks.logError.mock.calls)).toContain('provider call failed');
+    expect(result.errorLog).toEqual([
+      '  2026-07-26T18:40:14.289898Z ERROR biorouter::agents::agent: provider call failed',
+    ]);
+  });
+
+  // The startup probe scans the ring for `thread 'main' panicked at` /
+  // `error:`. If the ring holds chunk fragments instead of whole lines, a
+  // split panic is invisible and startup hangs for the full 10s poll timeout.
+  it('keeps a split panic line intact for the startup fatal probe', async () => {
+    const app = { isPackaged: false, on: vi.fn() } as unknown as App;
+    const result = await startBiorouterd({ app, serverSecret: 'secret', dir: process.cwd() });
+
+    write("thread 'main' pan");
+    write('icked at crates/biorouter-server/src/main.rs:44:9:\n');
+    write('called `Option::unwrap()` on a `None` value\n');
+
+    expect(result.errorLog[0]).toBe(
+      "thread 'main' panicked at crates/biorouter-server/src/main.rs:44:9:"
+    );
+    expect(
+      result.errorLog.some((l) => l.trim().toLowerCase().startsWith("thread 'main' panicked at"))
+    ).toBe(true);
+    expect(joined(mocks.logError.mock.calls)).toContain('panicked at');
+  });
+
+  // A daemon that dies mid-line leaves the last, most interesting line
+  // unterminated. It must still be logged and recorded, not dropped.
+  it('flushes an unterminated final line when the child closes', async () => {
+    const app = { isPackaged: false, on: vi.fn() } as unknown as App;
+    const result = await startBiorouterd({ app, serverSecret: 'secret', dir: process.cwd() });
+
+    write('Error: failed to bind 127.0.0.1:0');
+    expect(result.errorLog).toHaveLength(0);
+
+    childHandlers['close']?.(1);
+
+    expect(result.errorLog).toEqual(['Error: failed to bind 127.0.0.1:0']);
+    expect(joined(mocks.logError.mock.calls)).toContain('failed to bind');
+
+    // Flushing twice (stream `end` then child `close`) must not duplicate it.
+    stderrHandlers['end']?.();
+    expect(result.errorLog).toHaveLength(1);
+  });
+
+  it('does not split a multi-byte character that straddles a chunk boundary', async () => {
+    const app = { isPackaged: false, on: vi.fn() } as unknown as App;
+    const result = await startBiorouterd({ app, serverSecret: 'secret', dir: process.cwd() });
+
+    const full = Buffer.from('  2026-07-26T18:40:14.289898Z  WARN biorouter: café ☕\n', 'utf8');
+    const cut = full.indexOf(Buffer.from('☕', 'utf8')) + 1;
+    stderrHandlers['data']!(full.subarray(0, cut));
+    stderrHandlers['data']!(full.subarray(cut));
+
+    expect(result.errorLog).toEqual(['  2026-07-26T18:40:14.289898Z  WARN biorouter: café ☕']);
+    expect(joined(mocks.logWarn.mock.calls)).toContain('café ☕');
+  });
+
+  it('strips a CRLF carriage return rather than trailing it onto the line', async () => {
+    const app = { isPackaged: false, on: vi.fn() } as unknown as App;
+    const result = await startBiorouterd({ app, serverSecret: 'secret', dir: process.cwd() });
+
+    write('  2026-07-26T18:40:14.289898Z  INFO biorouter_server: listening\r\n');
+
+    expect(result.errorLog).toEqual([
+      '  2026-07-26T18:40:14.289898Z  INFO biorouter_server: listening',
+    ]);
   });
 });
