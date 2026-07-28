@@ -154,6 +154,20 @@ impl CheckpointManager {
 
         let mut truncated_from_ts = None;
         if axis.touches_conversation() {
+            // #51: DELIBERATELY the unbounded cut. `truncate_conversation_bounded`
+            // exists and this is the site with the widest read→write window (a
+            // `pre_restore` snapshot plus, on `Both`, a whole work-tree checkout),
+            // so it looks like the obvious caller — it is not. A bounded cut keeps
+            // whatever landed after the basis, which leaves a transcript that ends
+            // at the anchor and then trails messages about files just rewound out
+            // from under them, and reports `Truncated` either way: an INCOMPLETE
+            // rewind reported as a complete one. The two honest alternatives
+            // (refuse, or rewind and report what was discarded) both change
+            // `RestoreOutcome` and the GUI that renders it, so they are a semantics
+            // decision, not a swap of one call for another. Do not "fix" this
+            // without making that decision — see
+            // docs/agent-loop/conversation-writeback-freshness.md,
+            // "Checkpoint restore — open, and it is a semantics question".
             self.session_manager
                 .truncate_conversation(session_id, target.anchor_ts)
                 .await?;
