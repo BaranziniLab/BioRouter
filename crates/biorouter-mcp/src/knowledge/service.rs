@@ -106,10 +106,62 @@ pub enum PrimaryUpdate<'a> {
     /// Leave the stored pointer alone. A set-only edit must never move it —
     /// this is what stops one surface's write clobbering another's choice.
     Unchanged,
-    /// Forget the pointer. KB-less writes then fail until one is chosen.
+    /// Forget the pointer *at this scope*. KB-less writes then fail until one
+    /// is chosen — including in a session whose machine-wide default still
+    /// names a base. See [`StoredPrimary::NoPrimary`].
     Clear,
+    /// Drop this scope's own pointer so it falls back to the machine-wide one.
+    /// The mirror of [`KnowledgeService::clear_hidden_for_session`], and
+    /// distinct from [`PrimaryUpdate::Clear`]. At machine scope — where there
+    /// is nothing above to inherit — the two coincide.
+    Inherit,
     /// Pin this id. It must be a member of the *resulting* set.
     Set(&'a str),
+}
+
+/// The three states a scope's primary-pointer file can be in.
+///
+/// Two of them collapse into `None` under a naive `Option<String>` read, and
+/// that collapse *was* a bug: a session that says "no primary here" is not a
+/// session that has said nothing. Clearing a session's primary used to delete
+/// its file, which is the encoding of "I have no opinion" — so the very next
+/// read handed the session back the machine-wide default it had just rejected,
+/// silently re-arming KB-less writes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum StoredPrimary {
+    /// No file. This scope has expressed nothing, so a session falls back to
+    /// the machine-wide pointer.
+    Inherit,
+    /// A file holding one bare kb id.
+    Pinned(String),
+    /// A file that exists but is blank: an explicit "this scope has no
+    /// primary", which does **not** inherit. Blank rather than a sentinel word
+    /// so a lagging PATH-installed `biorouter` (see CLAUDE.md, "Runtime
+    /// CLI-vs-app drift") reading `.active-kb` trims it to nothing and agrees.
+    NoPrimary,
+}
+
+impl StoredPrimary {
+    /// The pinned id, if any. Both `Inherit` and `NoPrimary` are "no id here";
+    /// only [`KnowledgeService::primary_for_session`] cares which.
+    fn pinned(&self) -> Option<&str> {
+        match self {
+            StoredPrimary::Pinned(id) => Some(id.as_str()),
+            _ => None,
+        }
+    }
+}
+
+/// "No primary at this scope", spelled the way that scope can actually
+/// represent it. A session needs the blank-file override so it does not
+/// re-inherit; the machine has nothing above it, so removing the file is the
+/// identical state and leaves no debris behind for users who never used the
+/// feature.
+fn no_primary_for(session_id: Option<&str>) -> StoredPrimary {
+    match session_id {
+        Some(_) => StoredPrimary::NoPrimary,
+        None => StoredPrimary::Inherit,
+    }
 }
 
 impl KnowledgeService {
@@ -123,34 +175,59 @@ impl KnowledgeService {
         paths::hidden_kb_sessions_dir(self.root()).join(digest)
     }
 
-    /// Read a single-id primary pointer file. Absent or blank ⇒ `None`.
-    /// The on-disk format is one bare kb id — see [`paths::primary_kb_path`].
-    fn get_primary_path_unlocked(&self, path: &Path) -> anyhow::Result<Option<String>> {
-        if !path.exists() {
-            return Ok(None);
-        }
-        let s = std::fs::read_to_string(path)?;
+    /// Read a primary-pointer file as the tri-state it actually is: absent ⇒
+    /// `Inherit`, blank ⇒ `NoPrimary`, otherwise the bare kb id it holds. The
+    /// on-disk format is one bare kb id — see [`paths::primary_kb_path`].
+    fn read_primary_file_unlocked(&self, path: &Path) -> anyhow::Result<StoredPrimary> {
+        let s = match std::fs::read_to_string(path) {
+            Ok(s) => s,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(StoredPrimary::Inherit);
+            }
+            Err(err) => return Err(err.into()),
+        };
         let trimmed = s.trim();
         if trimmed.is_empty() {
-            Ok(None)
+            Ok(StoredPrimary::NoPrimary)
         } else {
-            Ok(Some(trimmed.to_string()))
+            Ok(StoredPrimary::Pinned(trimmed.to_string()))
         }
     }
 
-    fn set_primary_path_unlocked(&self, path: &Path, kb_id: Option<&str>) -> anyhow::Result<()> {
+    /// The pinned id, or `None` for either of the two "no id" states. Callers
+    /// that must tell `Inherit` from `NoPrimary` read the tri-state directly.
+    fn get_primary_path_unlocked(&self, path: &Path) -> anyhow::Result<Option<String>> {
+        Ok(self
+            .read_primary_file_unlocked(path)?
+            .pinned()
+            .map(ToOwned::to_owned))
+    }
+
+    /// Persist one of the three states. `NoPrimary` writes a *blank file* — it
+    /// is a real, durable override, so it must leave something on disk that a
+    /// later read can tell apart from "never chose".
+    fn write_primary_file_unlocked(
+        &self,
+        path: &Path,
+        value: &StoredPrimary,
+    ) -> anyhow::Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
 
-        match kb_id {
-            Some(id) => {
+        match value {
+            StoredPrimary::Pinned(id) => {
                 crate::knowledge::paths::validate_kb_id(id)?;
                 let tmp = path.with_extension("tmp");
                 std::fs::write(&tmp, id.as_bytes())?;
                 std::fs::rename(tmp, path)?;
             }
-            None => {
+            StoredPrimary::NoPrimary => {
+                let tmp = path.with_extension("tmp");
+                std::fs::write(&tmp, b"")?;
+                std::fs::rename(tmp, path)?;
+            }
+            StoredPrimary::Inherit => {
                 if path.exists() {
                     std::fs::remove_file(path)?;
                 }
@@ -225,6 +302,13 @@ impl KnowledgeService {
         self.set_hidden_path_unlocked(path, &next_hidden)
     }
 
+    /// Follow a rename, or absorb a delete, in every session's primary file.
+    ///
+    /// `next_kb_id = None` means the base is gone. That must leave the session
+    /// with an explicit **no primary** (a blank file), not with no file at all:
+    /// deleting the file is the encoding of "this session never chose", so a
+    /// session that had deliberately pinned the deleted base would come back
+    /// pointed at the machine-wide default it never asked for.
     fn rewrite_session_primary_refs_unlocked(
         &self,
         current_kb_id: &str,
@@ -234,6 +318,11 @@ impl KnowledgeService {
         if !dir.exists() {
             return Ok(());
         }
+
+        let next = match next_kb_id {
+            Some(id) => StoredPrimary::Pinned(id.to_string()),
+            None => StoredPrimary::NoPrimary,
+        };
 
         for entry in std::fs::read_dir(&dir)? {
             let entry = entry?;
@@ -245,9 +334,8 @@ impl KnowledgeService {
                 continue;
             }
 
-            let primary = std::fs::read_to_string(&path)?;
-            if primary.trim() == current_kb_id {
-                self.set_primary_path_unlocked(&path, next_kb_id)?;
+            if self.read_primary_file_unlocked(&path)?.pinned() == Some(current_kb_id) {
+                self.write_primary_file_unlocked(&path, &next)?;
             }
         }
 
@@ -1030,13 +1118,28 @@ impl KnowledgeService {
 
     fn set_primary_persisted_unlocked(&self, id: Option<&str>) -> anyhow::Result<()> {
         let path = crate::knowledge::paths::primary_kb_path(self.root());
-        self.set_primary_path_unlocked(&path, id)
+        let value = match id {
+            Some(id) => StoredPrimary::Pinned(id.to_string()),
+            // Machine scope: nothing above to inherit, so "no file" and "blank
+            // file" are the same state. Prefer no file.
+            None => no_primary_for(None),
+        };
+        self.write_primary_file_unlocked(&path, &value)
     }
 
+    /// This session's *own* pinned id, ignoring the machine-wide default.
+    /// `None` covers both "never chose" and "explicitly has none" — callers
+    /// resolving the effective pointer must use
+    /// [`Self::primary_for_session`], which knows the difference and applies
+    /// the set-membership rule.
     pub fn get_primary_for_session(&self, session_id: &str) -> anyhow::Result<Option<String>> {
         self.get_primary_path_unlocked(&self.primary_session_path(session_id))
     }
 
+    /// Pin (or explicitly un-pin) this session's primary. `kb_id = None` is an
+    /// *override*: the session then has no primary even when the machine-wide
+    /// default names a base. To go back to following that default, use
+    /// [`Self::clear_primary_override_for_session`].
     pub fn set_primary_for_session(
         &self,
         session_id: &str,
@@ -1044,7 +1147,21 @@ impl KnowledgeService {
     ) -> anyhow::Result<()> {
         let _lock = self.lock_root()?;
         let path = self.primary_session_path(session_id);
-        self.set_primary_path_unlocked(&path, kb_id)
+        let value = match kb_id {
+            Some(id) => StoredPrimary::Pinned(id.to_string()),
+            None => no_primary_for(Some(session_id)),
+        };
+        self.write_primary_file_unlocked(&path, &value)
+    }
+
+    /// Drop this session's primary override so it follows the machine-wide
+    /// pointer again. The mirror of [`Self::clear_hidden_for_session`], and
+    /// distinct from `set_primary_for_session(session_id, None)`, which is an
+    /// override that pins nothing.
+    pub fn clear_primary_override_for_session(&self, session_id: &str) -> anyhow::Result<()> {
+        let _lock = self.lock_root()?;
+        let path = self.primary_session_path(session_id);
+        self.write_primary_file_unlocked(&path, &StoredPrimary::Inherit)
     }
 
     pub fn get_hidden_persisted(&self) -> anyhow::Result<Vec<String>> {
@@ -1140,19 +1257,32 @@ impl KnowledgeService {
     /// "no primary" unreachable and let a KB-less *write* silently land in a
     /// base the user never ranked. Promotion happens once, at the moment the
     /// set changes, in [`Self::repair_primary_unlocked`].
+    /// Only an *absent* session file inherits. A session file that exists but
+    /// is blank is an explicit "no primary here" and stops the fallback dead —
+    /// otherwise clearing a session's primary would be a no-op whenever the
+    /// machine had one, and a KB-less write would silently re-arm.
     pub fn primary_for_session(&self, session_id: Option<&str>) -> anyhow::Result<Option<String>> {
-        let stored = match session_id {
-            Some(session_id) => match self.get_primary_for_session(session_id)? {
-                Some(id) => Some(id),
-                None => self.get_primary_persisted()?,
-            },
-            None => self.get_primary_persisted()?,
-        };
-        let Some(stored) = stored else {
+        let stored = self.stored_primary_unlocked(session_id)?;
+        let Some(stored) = stored.pinned() else {
             return Ok(None);
         };
         let ids = self.session_kb_ids(session_id)?;
-        Ok(ids.into_iter().find(|id| id == &stored))
+        Ok(ids.into_iter().find(|id| id == stored))
+    }
+
+    /// The tri-state that governs this scope, after the session → machine
+    /// fallback but before the set-membership filter.
+    fn stored_primary_unlocked(&self, session_id: Option<&str>) -> anyhow::Result<StoredPrimary> {
+        let machine_path = crate::knowledge::paths::primary_kb_path(self.root());
+        match session_id {
+            Some(session_id) => {
+                match self.read_primary_file_unlocked(&self.primary_session_path(session_id))? {
+                    StoredPrimary::Inherit => self.read_primary_file_unlocked(&machine_path),
+                    owned => Ok(owned),
+                }
+            }
+            None => self.read_primary_file_unlocked(&machine_path),
+        }
     }
 
     /// Re-establish "the primary is a member of the set" for one scope after
@@ -1164,7 +1294,7 @@ impl KnowledgeService {
             Some(session_id) => self.primary_session_path(session_id),
             None => crate::knowledge::paths::primary_kb_path(self.root()),
         };
-        let Some(stored) = self.get_primary_path_unlocked(&path)? else {
+        let Some(stored) = self.get_primary_path_unlocked(&path)?.clone() else {
             return Ok(None);
         };
         let ids = self.session_kb_ids(session_id)?;
@@ -1172,7 +1302,11 @@ impl KnowledgeService {
             return Ok(Some(stored));
         }
         let next = ids.into_iter().next();
-        self.set_primary_path_unlocked(&path, next.as_deref())?;
+        let value = match &next {
+            Some(id) => StoredPrimary::Pinned(id.clone()),
+            None => no_primary_for(session_id),
+        };
+        self.write_primary_file_unlocked(&path, &value)?;
         Ok(next)
     }
 
@@ -1220,7 +1354,10 @@ impl KnowledgeService {
                 self.repair_primary_unlocked(session_id)?;
             }
             PrimaryUpdate::Clear => {
-                self.set_primary_path_unlocked(&primary_path, None)?;
+                self.write_primary_file_unlocked(&primary_path, &no_primary_for(session_id))?;
+            }
+            PrimaryUpdate::Inherit => {
+                self.write_primary_file_unlocked(&primary_path, &StoredPrimary::Inherit)?;
             }
             PrimaryUpdate::Set(id) => {
                 let ids = self.session_kb_ids(session_id)?;
@@ -1246,7 +1383,10 @@ impl KnowledgeService {
                         ),
                     }
                 }
-                self.set_primary_path_unlocked(&primary_path, Some(id))?;
+                self.write_primary_file_unlocked(
+                    &primary_path,
+                    &StoredPrimary::Pinned(id.to_string()),
+                )?;
             }
         }
 
@@ -2169,6 +2309,94 @@ mod tests {
 
         let sel = svc.set_selection(Some("session-a"), None, PrimaryUpdate::Clear)?;
         assert_eq!(sel.primary_kb, None);
+        Ok(())
+    }
+
+    /// Three states, not two. "This chat has no primary" and "this chat never
+    /// said" look the same to an `Option<String>` reader, so clearing a
+    /// session's primary used to delete its file — the encoding of "no
+    /// opinion" — and the machine-wide default walked straight back in, silently
+    /// re-arming the KB-less write the user had just disarmed.
+    #[test]
+    fn a_session_can_explicitly_have_no_primary_while_the_machine_has_one() -> anyhow::Result<()> {
+        let tmp = tempfile::TempDir::new()?;
+        let svc = KnowledgeService::new(tmp.path().to_path_buf());
+        svc.create_base("alpha", "Alpha", None)?;
+        svc.create_base("beta", "Beta", None)?;
+        svc.set_primary_persisted(Some("alpha"))?;
+
+        // A chat that never chose one inherits the machine default.
+        assert_eq!(
+            svc.primary_for_session(Some("s1"))?.as_deref(),
+            Some("alpha")
+        );
+
+        // Clearing is an override, not a reset-to-inherit.
+        let sel = svc.set_selection(Some("s1"), None, PrimaryUpdate::Clear)?;
+        assert_eq!(sel.primary_kb, None);
+        assert_eq!(
+            svc.primary_for_session(Some("s1"))?,
+            None,
+            "a cleared session must stay cleared, not re-inherit the machine primary"
+        );
+
+        // The machine pointer is untouched and other chats still follow it.
+        assert_eq!(svc.get_primary_persisted()?.as_deref(), Some("alpha"));
+        assert_eq!(
+            svc.primary_for_session(Some("s2"))?.as_deref(),
+            Some("alpha")
+        );
+
+        // The override is durable: it survives a fresh service over the same
+        // root, i.e. it is genuinely on disk and not an in-memory artefact.
+        let reopened = KnowledgeService::new(tmp.path().to_path_buf());
+        assert_eq!(reopened.primary_for_session(Some("s1"))?, None);
+        assert_eq!(reopened.selection(Some("s1"))?.primary_kb, None);
+        assert_eq!(reopened.get_primary_for_session("s1")?, None);
+
+        // Set-only edits must not resurrect it either.
+        let sel = svc.set_selection(Some("s1"), Some(&[]), PrimaryUpdate::Unchanged)?;
+        assert_eq!(sel.primary_kb, None);
+
+        // Dropping the override is a separate, explicit gesture.
+        let sel = svc.set_selection(Some("s1"), None, PrimaryUpdate::Inherit)?;
+        assert_eq!(sel.primary_kb.as_deref(), Some("alpha"));
+        svc.set_primary_for_session("s1", None)?;
+        assert_eq!(svc.primary_for_session(Some("s1"))?, None);
+        svc.clear_primary_override_for_session("s1")?;
+        assert_eq!(
+            svc.primary_for_session(Some("s1"))?.as_deref(),
+            Some("alpha")
+        );
+        Ok(())
+    }
+
+    /// Deleting the base a chat had pinned must leave that chat with *no*
+    /// primary. The delete rewriter removed the session's file, which is
+    /// "never chose" — so the chat silently adopted the machine-wide default
+    /// it had never selected, and the next KB-less write landed there.
+    #[test]
+    fn deleting_a_pinned_base_does_not_hand_the_session_the_machine_primary() -> anyhow::Result<()>
+    {
+        let tmp = tempfile::TempDir::new()?;
+        let svc = KnowledgeService::new(tmp.path().to_path_buf());
+        svc.create_base("alpha", "Alpha", None)?;
+        svc.create_base("beta", "Beta", None)?;
+        svc.set_primary_persisted(Some("alpha"))?;
+        svc.set_primary_for_session("s1", Some("beta"))?;
+
+        svc.delete_base("beta")?;
+
+        assert_eq!(
+            svc.primary_for_session(Some("s1"))?,
+            None,
+            "the chat pinned the deleted base; it must not inherit 'alpha' now"
+        );
+        assert_eq!(
+            svc.primary_for_session(Some("s2"))?.as_deref(),
+            Some("alpha"),
+            "a chat that never chose one still follows the machine default"
+        );
         Ok(())
     }
 
