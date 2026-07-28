@@ -260,6 +260,41 @@ where
     (!published.is_empty()).then_some(AgentEvent::MessagesPersisted(published))
 }
 
+/// #59 ORDERING: the events for a batch that both yields messages and names
+/// them — content first, accounting second.
+///
+/// `MessagesPersisted` is an accounting frame: a client unions its ids into the
+/// `expectedMessageIds` it hands `POST /sessions/{id}/edit_message`. Publishing
+/// an id before the `Message` frame that carries it means a client that reads
+/// the frame and then loses the stream — any send failure ends it, see
+/// `routes/reply.rs` — claims **every** stored row while holding none of the
+/// bodies that were still to come. The guard checks only `stored ∖ client`, so
+/// that claim passes on a short transcript and the server truncates rows the
+/// user can still see. (Over-reporting is the safe direction; under-reporting
+/// is the one that deletes.)
+///
+/// The SSE adapter flushes buffered content before it forwards this frame for
+/// exactly that reason, but it can only flush what it is *holding*: an order
+/// emitted backwards here travels through it untouched.
+///
+/// The invariant, stated so it can be checked at every publication site: **no
+/// `MessagesPersisted` may precede a `Message` frame carrying one of the ids it
+/// publishes.** The reply loop's own publications satisfy it without needing
+/// this helper — each either names rows that are never yielded at all (the
+/// model-only nudges, the hook context, the post-edit diagnostics) or is emitted
+/// after the rows it names were yielded (the end-of-iteration persist). It is
+/// the three batches that `reply()` returns *instead of* running the loop which
+/// have to order themselves, so they order themselves here, together.
+fn messages_then_persisted(
+    messages: impl IntoIterator<Item = Message>,
+    published: Option<AgentEvent>,
+) -> impl Iterator<Item = AgentEvent> {
+    messages
+        .into_iter()
+        .map(AgentEvent::Message)
+        .chain(published)
+}
+
 /// Injected in place of a selected skill's full body on any turn after the first
 /// it was loaded (BR-8), so a skill-heavy session doesn't re-inline the whole
 /// body every turn.
@@ -3275,10 +3310,7 @@ impl Agent {
                     .user_only();
                 let published = persisted_event(std::slice::from_ref(&user_message));
                 return Ok(Box::pin(stream::iter(
-                    published
-                        .into_iter()
-                        .chain(std::iter::once(AgentEvent::Message(notice)))
-                        .map(Ok),
+                    messages_then_persisted([notice], published).map(Ok),
                 )));
             }
             session_manager
@@ -3347,14 +3379,11 @@ impl Agent {
                         )
                         .user_only();
                     let published = persisted_event(std::slice::from_ref(&stored));
+                    // #59 ORDERING: `user_message` carries `stored`'s id, so
+                    // publishing first would hand the client that id before the
+                    // message it names.
                     return Ok(Box::pin(stream::iter(
-                        published
-                            .into_iter()
-                            .chain([
-                                AgentEvent::Message(user_message),
-                                AgentEvent::Message(notice),
-                            ])
-                            .map(Ok),
+                        messages_then_persisted([user_message, notice], published).map(Ok),
                     )));
                 }
 
@@ -3416,11 +3445,13 @@ impl Agent {
                     || message_text.trim() == "/clear";
 
                 return Ok(Box::pin(async_stream::try_stream! {
-                    if let Some(published) = published {
-                        yield published;
+                    // #59 ORDERING: both messages carry the ids `published`
+                    // names, so they go over the wire first — a client that is
+                    // cut off after the accounting frame must never be left
+                    // claiming rows whose bodies it never received.
+                    for event in messages_then_persisted([user_message, response], published) {
+                        yield event;
                     }
-                    yield AgentEvent::Message(user_message);
-                    yield AgentEvent::Message(response);
 
                     // After commands that modify history, notify UI that history was replaced
                     if modifies_history {
@@ -3469,6 +3500,13 @@ impl Agent {
         // #59: published as the stream's first event, before anything else can
         // be appended to the session, so the client's view of the stored set
         // starts complete.
+        //
+        // Being first is not a breach of the ordering rule stated on
+        // [`messages_then_persisted`]: NONE of these rows is ever yielded as a
+        // `Message`. The user's own prompt is content the client authored and
+        // already holds, and the slash-command resolution and hook context are
+        // model-only. So no id here can arrive ahead of its message — there is
+        // no message frame for it to arrive ahead of.
         let prestream_published = persisted_event(prestream_persisted.iter());
 
         // Snapshot with the revision this view is based on, so every rewrite in
