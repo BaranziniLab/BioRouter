@@ -474,10 +474,17 @@ export type EditMessageRequest = {
      * Your view of this session: the durable ids (`Message.id`) of every
      * message it holds, in any order.
      *
-     * REQUIRED for `edit`, which truncates the live session: it is how the
-     * server checks that you are deleting the history you actually saw. Ignored
-     * for `diverge`, which writes only to a new session and cannot destroy
-     * anything.
+     * OPTIONAL, and enforced when you send it. For `edit`, which truncates the
+     * live session, supplying it is how the server checks that you are deleting
+     * the history you actually saw: a stored message your list does not name
+     * landed after you rendered the conversation, and the cut is refused with
+     * 409 `conversation_out_of_date` rather than destroying it. Omit it and the
+     * cut still runs under the turn lock and is still bounded to the rows the
+     * server itself just read — safe, but blind to that wider race. Ignored for
+     * `diverge`, which writes only to a new session and cannot destroy anything.
+     *
+     * An EMPTY list is not the same as omitting the field: it asserts your view
+     * holds nothing, and is checked as such (so a non-empty session refuses it).
      */
     expectedMessageIds?: Array<string> | null;
     timestamp: number;
@@ -4872,7 +4879,7 @@ export type EditMessageData = {
 
 export type EditMessageErrors = {
     /**
-     * Bad request - invalid session id, or an `edit` with no `expectedMessageIds` to check the truncation against
+     * Bad request - invalid session id
      */
     400: unknown;
     /**
@@ -4884,7 +4891,7 @@ export type EditMessageErrors = {
      */
     404: unknown;
     /**
-     * A turn is in flight for this session, or `expectedMessageIds` is missing messages the server holds (nothing was deleted; re-read the session and retry)
+     * A turn is in flight for this session, or a supplied `expectedMessageIds` is missing messages the server holds (nothing was deleted; re-read the session and retry)
      */
     409: unknown;
     /**

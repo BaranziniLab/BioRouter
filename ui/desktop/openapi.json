@@ -3451,7 +3451,7 @@
           "Session Management"
         ],
         "summary": "Prepare a session for an edited message.",
-        "description": "`diverge` (the default) copies the history into a NEW session, trimmed at the\nedited message, and returns that session's id. The original is untouched.\n\n`edit` truncates THIS session in place, dropping every message from\n`timestamp` onwards. Because that destroys history a concurrent writer may\nalready have been told was saved, it must carry `expectedMessageIds` — the\nids of every message your view of the session holds. The cut is refused, with\nnothing deleted, if a turn is in flight or if the session holds a message\nyour view does not name; the 409 body's `missing_message_ids` says which, so\nyou can re-read the session and retry.",
+        "description": "`diverge` (the default) copies the history into a NEW session, trimmed at the\nedited message, and returns that session's id. The original is untouched.\n\n`edit` truncates THIS session in place, dropping every message from\n`timestamp` onwards. Because that destroys history a concurrent writer may\nalready have been told was saved, the cut is refused — with nothing deleted —\nwhile a turn is in flight, and it never reaches past the rows the server read\nwhen it took the request. You may additionally send `expectedMessageIds`, the\nids of every message your view of the session holds: the cut is then also\nrefused if the session holds a message your view does not name, and the 409\nbody's `missing_message_ids` says which, so you can re-read and retry.",
         "operationId": "edit_message",
         "parameters": [
           {
@@ -3486,7 +3486,7 @@
             }
           },
           "400": {
-            "description": "Bad request - invalid session id, or an `edit` with no `expectedMessageIds` to check the truncation against"
+            "description": "Bad request - invalid session id"
           },
           "401": {
             "description": "Unauthorized - Invalid or missing API key"
@@ -3495,7 +3495,7 @@
             "description": "Session or message not found"
           },
           "409": {
-            "description": "A turn is in flight for this session, or `expectedMessageIds` is missing messages the server holds (nothing was deleted; re-read the session and retry)"
+            "description": "A turn is in flight for this session, or a supplied `expectedMessageIds` is missing messages the server holds (nothing was deleted; re-read the session and retry)"
           },
           "500": {
             "description": "Internal server error"
@@ -5498,7 +5498,7 @@
             "items": {
               "type": "string"
             },
-            "description": "Your view of this session: the durable ids (`Message.id`) of every\nmessage it holds, in any order.\n\nREQUIRED for `edit`, which truncates the live session: it is how the\nserver checks that you are deleting the history you actually saw. Ignored\nfor `diverge`, which writes only to a new session and cannot destroy\nanything.",
+            "description": "Your view of this session: the durable ids (`Message.id`) of every\nmessage it holds, in any order.\n\nOPTIONAL, and enforced when you send it. For `edit`, which truncates the\nlive session, supplying it is how the server checks that you are deleting\nthe history you actually saw: a stored message your list does not name\nlanded after you rendered the conversation, and the cut is refused with\n409 `conversation_out_of_date` rather than destroying it. Omit it and the\ncut still runs under the turn lock and is still bounded to the rows the\nserver itself just read — safe, but blind to that wider race. Ignored for\n`diverge`, which writes only to a new session and cannot destroy anything.\n\nAn EMPTY list is not the same as omitting the field: it asserts your view\nholds nothing, and is checked as such (so a non-empty session refuses it).",
             "nullable": true
           },
           "timestamp": {
