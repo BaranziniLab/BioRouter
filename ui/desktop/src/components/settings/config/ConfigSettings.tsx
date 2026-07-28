@@ -127,9 +127,18 @@ export default function ConfigSettings() {
   // invalidates (#52), so re-read that too — otherwise this page shows the live
   // provider in its heading and the pre-switch BIOROUTER_PROVIDER/BIOROUTER_MODEL
   // in the fields the user is about to edit.
+  //
+  // `refreshConfig` rejects when the read fails — that is what stops a failed
+  // read from erasing the cache — so this must handle it rather than discard
+  // the promise. There is nothing for this page to do about it: the snapshot it
+  // renders is the one already in hand, which the failed read deliberately left
+  // alone. Dropping the rejection on the floor instead would make opening
+  // Settings against an unhealthy daemon an unhandled rejection.
   useEffect(() => {
     refreshCurrentModelAndProvider();
-    void refreshConfig();
+    refreshConfig().catch((error) => {
+      console.error('Failed to re-read the cached config when opening Settings:', error);
+    });
   }, [refreshConfig, refreshCurrentModelAndProvider]);
 
   const configEntries: [string, ConfigValue][] = useMemo(() => {
