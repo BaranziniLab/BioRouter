@@ -386,6 +386,20 @@ impl Harness {
             })
             .collect()
     }
+
+    /// How many stored messages carry `needle`.
+    ///
+    /// A recovered row is re-inserted, so "did it survive" and "was it survived
+    /// exactly once" are different questions: a basis split can equally well
+    /// produce a DUPLICATE (the row is recovered onto the tail of a replacement
+    /// that already contains it) instead of a deletion.
+    async fn stored_occurrences(&self, needle: &str) -> usize {
+        self.stored_texts()
+            .await
+            .iter()
+            .filter(|t| t.contains(needle))
+            .count()
+    }
 }
 
 /// The user-facing system notifications the turn emitted.
@@ -1213,6 +1227,20 @@ async fn a_pinned_message_is_not_also_summarized() {
 /// the reply loop reads its overflow-recovery basis in the stream body, which
 /// does not run until the stream is polled. An append between the two is
 /// invisible to the loop's view and already inside its basis.
+///
+/// **The handshake.** `reply()` is an `async fn` returning a stream, and the
+/// stream body does not run until it is polled. So awaiting `reply()` parks the
+/// writer — the whole turn — at exactly that boundary, the test's `add_message`
+/// runs to COMMIT while it is parked, and only then is the turn allowed to
+/// proceed. No sleep, no barrier, no scheduler overlap to hope for: the ordering
+/// is a data dependency, not a race that usually goes the right way.
+///
+/// **The vacuity guard** is `texts_seen_on_main_call(0)`. The window's whole
+/// premise is that the note landed AFTER the turn's view of the history was
+/// fixed. If a future refactor moved the basis read later, the note would simply
+/// be part of `known`, the store would preserve it for free, and this test would
+/// pass while testing nothing. Asserting the model never saw it pins the
+/// precondition instead of hoping for it.
 #[tokio::test(flavor = "multi_thread")]
 async fn overflow_recovery_preserves_a_note_appended_before_the_basis_was_read() {
     const NOTE: &str = "NOTE: landed between the snapshot and the basis read";
@@ -1230,7 +1258,8 @@ async fn overflow_recovery_preserves_a_note_appended_before_the_basis_was_read()
         .unwrap();
 
     // The window. `reply()` has snapshotted the conversation; nothing of the
-    // loop has run yet.
+    // loop has run yet, and nothing of it CAN run until this await returns and
+    // the stream below is polled.
     h.session_manager
         .add_message(&h.session_id, &Message::user().with_text(NOTE))
         .await
@@ -1251,12 +1280,27 @@ async fn overflow_recovery_preserves_a_note_appended_before_the_basis_was_read()
         2,
         "and the turn must still complete"
     );
+    assert!(
+        !provider
+            .texts_seen_on_main_call(0)
+            .iter()
+            .any(|t| t.contains(NOTE)),
+        "the append must land OUTSIDE the turn's view, or the window under test \
+         was never entered and the store preserves the note for free; saw: {:?}",
+        provider.texts_seen_on_main_call(0)
+    );
 
     let stored = h.stored_texts().await;
     assert!(
         stored.iter().any(|t| t.contains(NOTE)),
         "a message appended before the turn read its freshness basis must \
          survive the overflow-recovery writeback; stored: {stored:#?}"
+    );
+    assert_eq!(
+        h.stored_occurrences(NOTE).await,
+        1,
+        "and exactly once — a split basis can duplicate a row as easily as it \
+         can delete one; stored: {stored:#?}"
     );
 }
 
@@ -1265,6 +1309,18 @@ async fn overflow_recovery_preserves_a_note_appended_before_the_basis_was_read()
 /// turn adopts was already decided, reopens the same split one iteration later.
 /// The turn reports its new token state between the two, which is where this
 /// test appends.
+///
+/// **The handshake.** The stream is polled by this task and by nothing else, so
+/// the turn is parked at the yield for as long as the append takes; it resumes
+/// only when the append has COMMITTED and the loop below asks for the next
+/// event.
+///
+/// **Why this yield and no other.** The window is bounded below by the swap's
+/// commit and above by the basis refresh. In the shape this test exists to pin,
+/// the refresh sat between the `TokenUsage` yield and the `HistoryReplaced`
+/// yield — so `TokenUsage` is the only stream position inside it, and the test
+/// asserts it appended before ever seeing a `HistoryReplaced`. Move the refresh
+/// and that assertion fires rather than the test going quietly vacuous.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_second_overflow_preserves_a_note_appended_right_after_the_first_swap() {
     const NOTE: &str = "NOTE: landed between the swap and the basis refresh";
@@ -1283,8 +1339,12 @@ async fn a_second_overflow_preserves_a_note_appended_right_after_the_first_swap(
     tokio::pin!(stream);
 
     let mut appended = false;
+    let mut history_replaced_before_append = false;
     while let Some(event) = stream.next().await {
         let event = event.unwrap();
+        if !appended && matches!(event, AgentEvent::HistoryReplaced(_)) {
+            history_replaced_before_append = true;
+        }
         // The first recovery swap has committed by the time the turn reports the
         // token state it moved; the basis is refreshed after this yield.
         if !appended && matches!(event, AgentEvent::TokenUsage(_)) {
@@ -1300,6 +1360,11 @@ async fn a_second_overflow_preserves_a_note_appended_right_after_the_first_swap(
         appended,
         "the turn must have reported a token state after the first swap"
     );
+    assert!(
+        !history_replaced_before_append,
+        "the append must land BEFORE the loop adopts the swapped history, or it \
+         is past the window this test exists to cover"
+    );
     assert_eq!(
         provider.summarizer_call_count(),
         2,
@@ -1310,12 +1375,119 @@ async fn a_second_overflow_preserves_a_note_appended_right_after_the_first_swap(
         3,
         "two overflows, then a success"
     );
+    assert!(
+        !provider
+            .texts_seen_on_main_call(1)
+            .iter()
+            .any(|t| t.contains(NOTE)),
+        "the append must land outside the view the SECOND swap writes against, \
+         or the window under test was never entered; saw: {:?}",
+        provider.texts_seen_on_main_call(1)
+    );
 
     let stored = h.stored_texts().await;
     assert!(
         stored.iter().any(|t| t.contains(NOTE)),
         "a message appended after the first swap committed must survive the \
          second one; stored: {stored:#?}"
+    );
+    assert_eq!(
+        h.stored_occurrences(NOTE).await,
+        1,
+        "and exactly once; stored: {stored:#?}"
+    );
+}
+
+/// The same window on the OTHER handoff into the reply loop: the one an
+/// auto-compaction goes through.
+///
+/// `reply()` compacts before the loop starts, and the conversation it hands down
+/// is fixed at that rewrite's commit. Everything the loop then does — reading
+/// its own freshness basis included — happens later. So an append that lands
+/// after the auto-compaction committed but before the loop has a basis is inside
+/// the turn's watermark and outside its view: the exact split, reached without
+/// touching `reply()`'s own snapshot at all.
+///
+/// This matters separately from the turn-start test above because the two enter
+/// the loop by different routes. A fix that paired the basis only on the
+/// no-compaction route would leave this one open, and the largest sessions —
+/// the ones that auto-compact every turn — take precisely this route.
+#[tokio::test(flavor = "multi_thread")]
+async fn overflow_recovery_preserves_a_note_appended_between_the_auto_compaction_and_the_loop() {
+    const NOTE: &str = "NOTE: landed between the auto-compaction and the loop";
+
+    // Small context limit + a live gauge over it => `reply()` auto-compacts
+    // before the loop; `overflow_on(&[0])` then forces a second, in-loop swap.
+    let (h, provider) = harness(|p| p.overflow_on(&[0]).context_limit(100)).await;
+    seed_history(&h, 6).await;
+    h.session_manager
+        .update(&h.session_id)
+        .total_tokens(Some(95))
+        .apply()
+        .await
+        .unwrap();
+
+    let stream = h
+        .agent
+        .reply(
+            Message::user().with_text(USER_PROMPT),
+            turn_config(&h),
+            None,
+        )
+        .await
+        .unwrap();
+    tokio::pin!(stream);
+
+    let mut appended = false;
+    while let Some(event) = stream.next().await {
+        let event = event.unwrap();
+        // The auto-compaction announces its replacement only after the rewrite
+        // committed. The turn is parked here until the append lands.
+        if !appended && matches!(event, AgentEvent::HistoryReplaced(_)) {
+            h.session_manager
+                .add_message(&h.session_id, &Message::user().with_text(NOTE))
+                .await
+                .unwrap();
+            appended = true;
+        }
+    }
+
+    assert!(
+        appended,
+        "the auto-compaction must have replaced the history, or there was no \
+         window to append into"
+    );
+    assert!(
+        provider.summarizer_call_count() >= 2,
+        "an auto-compaction AND an overflow recovery must both have run, saw {}",
+        provider.summarizer_call_count()
+    );
+    assert_eq!(
+        provider.main_call_count(),
+        2,
+        "one overflow, then a success"
+    );
+    assert!(
+        !provider
+            .texts_seen_on_main_call(0)
+            .iter()
+            .any(|t| t.contains(NOTE)),
+        "the append must land outside the view the loop inherited, or the window \
+         under test was never entered; saw: {:?}",
+        provider.texts_seen_on_main_call(0)
+    );
+
+    let stored = h.stored_texts().await;
+    assert!(
+        stored.iter().any(|t| t.contains(NOTE)),
+        "a message appended after the auto-compaction committed, but before the \
+         loop read its basis, must survive the loop's own writeback; \
+         stored: {stored:#?}"
+    );
+    assert_eq!(
+        h.stored_occurrences(NOTE).await,
+        1,
+        "and exactly once; stored: {stored:#?}"
     );
 }
 
