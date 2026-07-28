@@ -290,16 +290,7 @@ pub async fn run_turn(
                          scope: TurnErrorScope,
                          retryable: bool,
                          provider_kind: Option<String>| {
-        session_events::publish(
-            &session_id,
-            SessionBusEvent::TurnError {
-                message,
-                code: code.to_string(),
-                scope: scope.wire_value().to_string(),
-                retryable,
-                provider_kind,
-            },
-        );
+        publish_turn_error(&session_id, message, code, scope, retryable, provider_kind);
     };
 
     let agent = match state.get_agent(session_id.clone()).await {
@@ -375,68 +366,8 @@ pub async fn run_turn(
         }
     };
 
-    let mut terminal_error = false;
-    while let Some(item) = stream.next().await {
-        match item {
-            Ok(event) => {
-                // Bookkeeping that belongs to the TURN, not to any consumer:
-                // telemetry and the accumulated conversation used by the
-                // completion metrics below.
-                match &event {
-                    AgentEvent::Message(message) => {
-                        for content in &message.content {
-                            track_tool_telemetry(content, all_messages.messages());
-                        }
-                        all_messages.push(message.clone());
-                    }
-                    AgentEvent::HistoryReplaced(new_messages) => {
-                        all_messages = new_messages.clone();
-                    }
-                    _ => {}
-                }
-
-                // An abort is CLASSIFIED and republished as this turn's single
-                // terminal event — it is deliberately NOT also forwarded raw.
-                // `map_bus_event` maps both `SessionBusEvent::TurnError` and
-                // `AgentEvent::TurnAborted` to `MessageEvent::Error`, so
-                // publishing both would give every consumer two terminal Error
-                // frames for one abort. The agent has already yielded the
-                // human-readable assistant message in an earlier iteration; this
-                // event is what stops the desktop from rendering a provider 403
-                // as a completed turn — and, with `classify_abort`, what keeps
-                // it recoverable.
-                if let AgentEvent::TurnAborted { code, message } = &event {
-                    tracing::error!(abort = code.wire_code(), "Turn aborted: {message}");
-                    let (scope, retryable, provider_kind) = classify_abort(code);
-                    publish_error(
-                        message.clone(),
-                        code.wire_code(),
-                        scope,
-                        retryable,
-                        provider_kind,
-                    );
-                    terminal_error = true;
-                    break;
-                }
-
-                // Publish the raw AgentEvent. Consumers map it; the runner does
-                // not pre-render any wire frame.
-                session_events::publish(&session_id, SessionBusEvent::Agent(event));
-            }
-            Err(e) => {
-                tracing::error!("turn: stream error: {e}");
-                publish_error(
-                    e.to_string(),
-                    "stream_error",
-                    TurnErrorScope::Inference,
-                    false,
-                    None,
-                );
-                terminal_error = true;
-                break;
-            }
-        }
-    }
+    let terminal_error =
+        drive_stream(&session_id, &mut stream, &cancel_token, &mut all_messages).await;
 
     // Best-effort LLM session rename — always runs, unlike a tail on the lazy
     // reply stream which an early `break` above would skip, leaving the session
@@ -487,6 +418,120 @@ pub async fn run_turn(
             },
         );
     }
+}
+
+/// Publish one `TurnError` frame for `session_id`.
+///
+/// A free function rather than only a closure inside [`run_turn`] because
+/// [`drive_stream`] publishes terminals too, and the two must produce the same
+/// envelope: `scope`, `retryable` and `provider_kind` are exactly the three
+/// fields the desktop's rate-limit / retry / compaction recovery keys off, and
+/// nothing else in the process emits them.
+fn publish_turn_error(
+    session_id: &str,
+    message: String,
+    code: &str,
+    scope: TurnErrorScope,
+    retryable: bool,
+    provider_kind: Option<String>,
+) {
+    session_events::publish(
+        session_id,
+        SessionBusEvent::TurnError {
+            message,
+            code: code.to_string(),
+            scope: scope.wire_value().to_string(),
+            retryable,
+            provider_kind,
+        },
+    );
+}
+
+/// Drain the agent's event stream onto the session bus, returning `true` when
+/// the turn ended on a **published terminal error**.
+///
+/// Split out of [`run_turn`] because [`run_turn`] as a whole is not testable
+/// without a provider: a provider-less agent fails inside `agent.reply` and
+/// never reaches this loop, so the abort classifier's integration with the
+/// stream, the "an abort is republished classified and NOT also raw" rule and
+/// the cancellation escape would every one of them be uncovered. Generic over
+/// the stream so a test can supply the exact events it wants — including a
+/// stream that never yields at all.
+///
+/// Events are published in stream order, never reordered, filtered or
+/// coalesced; see [`run_turn`]'s stated non-goal 2 for why that is load-bearing.
+async fn drive_stream<S>(
+    session_id: &str,
+    stream: &mut S,
+    cancel_token: &CancellationToken,
+    all_messages: &mut Conversation,
+) -> bool
+where
+    S: futures::Stream<Item = anyhow::Result<AgentEvent>> + Unpin,
+{
+    while let Some(item) = stream.next().await {
+        match item {
+            Ok(event) => {
+                // Bookkeeping that belongs to the TURN, not to any consumer:
+                // telemetry and the accumulated conversation used by the
+                // completion metrics.
+                match &event {
+                    AgentEvent::Message(message) => {
+                        for content in &message.content {
+                            track_tool_telemetry(content, all_messages.messages());
+                        }
+                        all_messages.push(message.clone());
+                    }
+                    AgentEvent::HistoryReplaced(new_messages) => {
+                        *all_messages = new_messages.clone();
+                    }
+                    _ => {}
+                }
+
+                // An abort is CLASSIFIED and republished as this turn's single
+                // terminal event — it is deliberately NOT also forwarded raw.
+                // `map_bus_event` maps both `SessionBusEvent::TurnError` and
+                // `AgentEvent::TurnAborted` to `MessageEvent::Error`, so
+                // publishing both would give every consumer two terminal Error
+                // frames for one abort. The agent has already yielded the
+                // human-readable assistant message in an earlier iteration; this
+                // event is what stops the desktop from rendering a provider 403
+                // as a completed turn — and, with `classify_abort`, what keeps
+                // it recoverable.
+                if let AgentEvent::TurnAborted { code, message } = &event {
+                    tracing::error!(abort = code.wire_code(), "Turn aborted: {message}");
+                    let (scope, retryable, provider_kind) = classify_abort(code);
+                    publish_turn_error(
+                        session_id,
+                        message.clone(),
+                        code.wire_code(),
+                        scope,
+                        retryable,
+                        provider_kind,
+                    );
+                    return true;
+                }
+
+                // Publish the raw AgentEvent. Consumers map it; the runner does
+                // not pre-render any wire frame.
+                session_events::publish(session_id, SessionBusEvent::Agent(event));
+            }
+            Err(e) => {
+                tracing::error!("turn: stream error: {e}");
+                publish_turn_error(
+                    session_id,
+                    e.to_string(),
+                    "stream_error",
+                    TurnErrorScope::Inference,
+                    false,
+                    None,
+                );
+                return true;
+            }
+        }
+    }
+    let _ = cancel_token;
+    false
 }
 
 /// The terminal-error classifier, moved out of `/reply`'s event loop so the ONE
@@ -777,6 +822,95 @@ mod tests {
             ids.contains(&probe_id),
             "run_turn destroyed a stored message it was merely seeded around; \
              the seed is not a write-back (ids: {ids:?})"
+        );
+    }
+
+    /// Drain the bus into a vec, stopping once nothing more arrives. A short
+    /// timeout rather than `try_recv`, because a *second* terminal is published
+    /// adjacently but asynchronously — an immediate `try_recv() == Empty` proves
+    /// nothing about it.
+    async fn drain(rx: &mut session_events::Subscription) -> Vec<SessionBusEvent> {
+        let mut seen = Vec::new();
+        while let Ok(Ok(ev)) =
+            tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv()).await
+        {
+            seen.push(ev);
+        }
+        seen
+    }
+
+    /// The abort path end-to-end through the stream loop, which no test could
+    /// reach before `drive_stream` was split out: `run_turn` needs a provider to
+    /// get this far, and a provider-less session exits via
+    /// `inference_start_failed` long before.
+    ///
+    /// Two properties, and the second is the one the implementation comment
+    /// spends a paragraph on: an abort is republished CLASSIFIED, and is **not
+    /// also forwarded raw**. `map_bus_event` renders both
+    /// `SessionBusEvent::TurnError` and `AgentEvent::TurnAborted` as
+    /// `MessageEvent::Error`, so forwarding both gives every consumer two
+    /// terminal error frames for one abort.
+    #[tokio::test]
+    async fn an_abort_is_republished_classified_and_never_also_raw() {
+        use biorouter::agents::TurnAbortCode;
+        use biorouter::providers::errors::ProviderErrorKind;
+
+        let sid = "br71-drive-stream-abort";
+        let mut rx = session_events::subscribe(sid);
+        let mut all = Conversation::new_unvalidated(Vec::new());
+        let mut stream = futures::stream::iter(vec![Ok(AgentEvent::TurnAborted {
+            code: TurnAbortCode::ProviderFailure {
+                kind: ProviderErrorKind::RateLimit,
+            },
+            message: "slow down".to_string(),
+        })]);
+
+        let terminal_error =
+            drive_stream(sid, &mut stream, &CancellationToken::new(), &mut all).await;
+        assert!(terminal_error, "an abort ends the turn on an error");
+
+        let seen = drain(&mut rx).await;
+        assert!(
+            !seen
+                .iter()
+                .any(|ev| matches!(ev, SessionBusEvent::Agent(AgentEvent::TurnAborted { .. }))),
+            "the raw abort must not also reach the bus: {seen:?}"
+        );
+        let terminals: Vec<_> = seen
+            .iter()
+            .filter(|ev| {
+                matches!(
+                    ev,
+                    SessionBusEvent::TurnError { .. } | SessionBusEvent::TurnFinished { .. }
+                )
+            })
+            .collect();
+        assert_eq!(terminals.len(), 1, "exactly one terminal: {seen:?}");
+        let SessionBusEvent::TurnError {
+            message,
+            code,
+            scope,
+            retryable,
+            provider_kind,
+        } = terminals[0]
+        else {
+            panic!("expected a TurnError, got {:?}", terminals[0]);
+        };
+        assert_eq!(message, "slow down");
+        assert_eq!(
+            code,
+            TurnAbortCode::ProviderFailure {
+                kind: ProviderErrorKind::RateLimit
+            }
+            .wire_code()
+        );
+        // The full envelope, not a collapsed one: these three fields are what
+        // the desktop's rate-limit recovery keys off.
+        assert_eq!(scope, "provider");
+        assert!(*retryable);
+        assert_eq!(
+            provider_kind.as_deref(),
+            Some(ProviderErrorKind::RateLimit.wire_code())
         );
     }
 
