@@ -31,11 +31,16 @@
 //! buffer.push(Mutex::new(Slot { … val: None })) }`. With `BUS_CAPACITY = 1024`
 //! and a `SessionBusEvent` slot (its `Agent` variant wraps `Message` /
 //! `Conversation` / `McpNotification`), that is on the order of 10^5 bytes per
-//! session id, allocated the moment a session first publishes or is watched. A
-//! desktop daemon runs for days, and after Task 8 EVERY turn of EVERY session
-//! publishes here, so "insert and never remove" is an unbounded leak measured
-//! in hundreds of MB for a few thousand distinct sessions. Hence
-//! [`release_if_idle`], which the turn runner calls at the end of every turn.
+//! session id. A desktop daemon runs for days, and after Task 8 EVERY turn of
+//! EVERY session publishes here, so "insert and never remove" is an unbounded
+//! leak measured in hundreds of MB for a few thousand distinct sessions. Two
+//! rules keep the registry bounded by the number of *live observers* rather
+//! than by the number of session ids the process has ever seen:
+//!
+//! 1. [`subscribe`] is the only function that creates a ring — [`publish`] and
+//!    [`observer_count`] are pure lookups, because a session with no entry
+//!    provably has no receiver.
+//! 2. [`release_if_idle`] drops the ring when the last observer goes.
 
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
@@ -136,15 +141,25 @@ pub fn subscribe(session_id: &str) -> broadcast::Receiver<SessionBusEvent> {
 }
 
 /// Publish, best-effort. A send with no receivers is a no-op, never an error —
-/// publishing must cost nothing when nobody is watching.
+/// publishing must cost nothing when nobody is watching, **not even an
+/// allocation**.
 ///
-/// `send` does not await either, so it too runs under the registry lock rather
-/// than through a sender cloned out of it.
+/// A pure lookup, never an insert. [`subscribe`] is the only function that
+/// creates a ring, and it increments the receiver count under the same lock
+/// [`release_if_idle`] removes under, so a session with no entry provably has
+/// no receiver: inserting on a miss would build a 1024-slot ring (~10^5 bytes)
+/// that nothing could ever read from, and hold it until a `release_if_idle`
+/// that only the turn runner performs. After Task 8 every turn of every session
+/// publishes here, so that insert is the difference between a registry bounded
+/// by live observers and one that grows with every session id the daemon has
+/// ever seen.
+///
+/// `send` does not await, so it runs under the registry lock rather than
+/// through a sender cloned out of it (see [`subscribe`]).
 pub fn publish(session_id: &str, event: SessionBusEvent) {
-    let _ = bus()
-        .entry(session_id.to_string())
-        .or_insert_with(|| broadcast::channel(BUS_CAPACITY).0)
-        .send(event);
+    if let Some(sender) = bus().get(session_id) {
+        let _ = sender.send(event);
+    }
 }
 
 /// Drop a session's sender — and its 1024-slot ring — once nothing is listening.
@@ -170,11 +185,11 @@ pub fn release_if_idle(session_id: &str) {
 }
 
 /// How many live observers a session currently has (introspection/tests).
+///
+/// Read-only, like every predicate should be: asking about an id the bus has
+/// never seen answers `0` without creating the entry the question was about.
 pub fn observer_count(session_id: &str) -> usize {
-    bus()
-        .entry(session_id.to_string())
-        .or_insert_with(|| broadcast::channel(BUS_CAPACITY).0)
-        .receiver_count()
+    bus().get(session_id).map_or(0, |s| s.receiver_count())
 }
 
 /// Whether a session currently holds a ring (tests only).
@@ -339,6 +354,57 @@ mod tests {
         }
     }
 
+    /// Publishing to a session nobody is watching must not allocate anything.
+    ///
+    /// `broadcast::channel` builds the whole 1024-slot ring at creation
+    /// (~10^5 bytes), so a `publish` that inserts on a miss buys a ring no one
+    /// can ever read from: after the atomicity fix, an absent entry provably
+    /// means the session has no receiver, because only `subscribe` inserts and
+    /// it increments the count under the same lock `release_if_idle` removes
+    /// under. On a daemon where every turn of every session publishes, that
+    /// insert is the difference between a bounded registry and one that grows
+    /// with the number of session ids ever seen.
+    ///
+    /// `observer_count` is worse than `publish` here: it is documented as
+    /// introspection, and a read-only predicate that allocates 10^5 bytes per
+    /// distinct id it is asked about is a footgun pointed at whatever debug
+    /// endpoint eventually calls it.
+    #[tokio::test]
+    async fn publishing_and_counting_never_allocate_a_ring_nobody_can_read() {
+        assert!(
+            !is_tracked("no-alloc-check"),
+            "precondition: nothing else uses this key"
+        );
+
+        publish(
+            "no-alloc-check",
+            SessionBusEvent::TurnStarted {
+                turn_id: "t".into(),
+            },
+        );
+        assert!(
+            !is_tracked("no-alloc-check"),
+            "publishing to an unwatched session must not allocate its ring"
+        );
+
+        assert_eq!(
+            observer_count("no-alloc-check"),
+            0,
+            "an unwatched session has no observers"
+        );
+        assert!(
+            !is_tracked("no-alloc-check"),
+            "observer_count is introspection and must not mutate the registry"
+        );
+
+        // …and it still reports the truth once there IS an observer.
+        let rx = subscribe("no-alloc-check");
+        assert_eq!(observer_count("no-alloc-check"), 1);
+        drop(rx);
+        release_if_idle("no-alloc-check");
+        assert!(!is_tracked("no-alloc-check"));
+    }
+
     /// A finished turn with no observers must not leave a 1024-slot ring
     /// behind. `broadcast::channel` allocates the whole ring at creation, so an
     /// insert-and-never-remove map is a real leak on a daemon that runs for days
@@ -354,16 +420,16 @@ mod tests {
             !is_tracked("leak-check"),
             "precondition: nothing else uses this key"
         );
+
+        // A live observer creates the ring and pins it …
+        let rx = subscribe("leak-check");
+        assert!(is_tracked("leak-check"), "subscribing creates the ring");
         publish(
             "leak-check",
             SessionBusEvent::TurnStarted {
                 turn_id: "t".into(),
             },
         );
-        assert!(is_tracked("leak-check"), "publishing creates the ring");
-
-        // A live observer pins it …
-        let rx = subscribe("leak-check");
         release_if_idle("leak-check");
         assert!(is_tracked("leak-check"), "an observer keeps the ring");
 
