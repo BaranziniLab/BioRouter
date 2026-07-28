@@ -401,6 +401,58 @@ impl MessageContent {
         })
     }
 
+    /// #51: whether a message carrying this content block may have its
+    /// preservation marker honoured (see [`MessageMetadata::pinned`] and
+    /// `crate::context_mgmt::pins`).
+    ///
+    /// A pin exempts one message from summarization while the messages around
+    /// it are dissolved into a summary, so the only content that can be
+    /// preserved is content that is **self-contained**: it carries its whole
+    /// meaning alone, and no provider needs a partner block elsewhere in the
+    /// transcript to accept it. Everything else would survive as a dangling
+    /// half.
+    ///
+    /// The match is deliberately **exhaustive** rather than a `matches!`
+    /// exclusion list. An exclusion list defaults every new variant to
+    /// *eligible* and says nothing about it — which is precisely how
+    /// [`MessageContent::FrontendToolRequest`] (a real `tool_use` block to every
+    /// provider) slipped past a rule that named only `ToolRequest` and
+    /// `ToolResponse`. Written this way, adding a variant fails to compile until
+    /// somebody rules on it.
+    pub fn is_pin_eligible(&self) -> bool {
+        match self {
+            // Self-contained. Text is the intended payload of a pin; an image
+            // needs no partner block and is already measured by the byte budget.
+            MessageContent::Text(_) | MessageContent::Image(_) => true,
+
+            // Halves of a provider tool pair. Exempting one from a summarization
+            // that hides the other produces a dangling tool call and a rejected
+            // request. `FrontendToolRequest` belongs here because every
+            // formatter emits it as a real tool-use block (`formats/bedrock.rs`,
+            // `formats/anthropic.rs`, `formats/openai.rs`, `formats/databricks.rs`)
+            // — and because the normalizer only strips it from ASSISTANT
+            // messages, a user-role one can arrive through the API unvalidated.
+            MessageContent::ToolRequest(_)
+            | MessageContent::ToolResponse(_)
+            | MessageContent::FrontendToolRequest(_) => false,
+
+            // UI handshakes keyed to a specific pending request. Providers drop
+            // them or emit an empty block, so preserving one spends the pin
+            // budget on nothing and outlives the request it refers to.
+            MessageContent::ToolConfirmationRequest(_) | MessageContent::ActionRequired(_) => false,
+
+            // Bound to the assistant turn that produced them: the signature is
+            // validated against that turn's context, and Bedrock drops them
+            // entirely. Not standalone.
+            MessageContent::Thinking(_) | MessageContent::RedactedThinking(_) => false,
+
+            // User-facing only — the Bedrock formatter hard-errors if one ever
+            // reaches a provider, so nothing may give one a reason to persist as
+            // agent-visible content.
+            MessageContent::SystemNotification(_) => false,
+        }
+    }
+
     pub fn as_system_notification(&self) -> Option<&SystemNotificationContent> {
         if let MessageContent::SystemNotification(ref notification) = self {
             Some(notification)
@@ -1004,8 +1056,11 @@ pub struct TokenState {
 
 #[cfg(test)]
 mod tests {
-    use crate::conversation::message::{Message, MessageContent, MessageMetadata};
+    use crate::conversation::message::{
+        Message, MessageContent, MessageMetadata, SystemNotificationType,
+    };
     use crate::conversation::*;
+    use rmcp::model::CallToolResult;
     use rmcp::model::{
         AnnotateAble, CallToolRequestParams, PromptMessage, PromptMessageContent,
         PromptMessageRole, RawEmbeddedResource, RawImageContent, ResourceContents,
@@ -1520,6 +1575,45 @@ mod tests {
         assert!(msg.is_pinned());
         assert!(msg.is_agent_visible());
         assert!(!Message::user().with_text("plain").is_pinned());
+    }
+
+    /// #51 / W8: the content-level half of the pin rule. `FrontendToolRequest`
+    /// is the case this test exists for — it is a real `tool_use` block to every
+    /// provider, so preserving one past a compaction that summarizes its
+    /// response away leaves a dangling tool call, exactly like a bare
+    /// `ToolRequest`. The full per-variant table (and the reasoning) is asserted
+    /// in `context_mgmt::pins`.
+    #[test]
+    fn only_self_contained_content_is_pin_eligible() {
+        let call = Ok(CallToolRequestParams {
+            task: None,
+            name: "read_file".into(),
+            arguments: None,
+            meta: None,
+        });
+
+        assert!(MessageContent::text("note").is_pin_eligible());
+        assert!(MessageContent::image("ZGF0YQ==", "image/png").is_pin_eligible());
+
+        // The three that become provider tool-protocol blocks.
+        assert!(!MessageContent::tool_request("t0", call.clone()).is_pin_eligible());
+        assert!(
+            !MessageContent::tool_response("t0", Ok(CallToolResult::success(vec![])))
+                .is_pin_eligible()
+        );
+        assert!(
+            !MessageContent::frontend_tool_request("f0", call).is_pin_eligible(),
+            "a frontend tool request is a tool_use block, not a standalone note"
+        );
+
+        // Neither UI handshakes nor turn-bound reasoning nor user-only notices.
+        assert!(!MessageContent::thinking("why", "sig").is_pin_eligible());
+        assert!(!MessageContent::redacted_thinking("blob").is_pin_eligible());
+        assert!(!MessageContent::system_notification(
+            SystemNotificationType::InlineMessage,
+            "note"
+        )
+        .is_pin_eligible());
     }
 
     /// #51 back-compat: `metadata_json` rows written before the marker existed

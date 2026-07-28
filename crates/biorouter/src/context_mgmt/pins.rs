@@ -236,11 +236,13 @@ impl PinSelection {
 
 /// Whether a marked message's pin can be honoured at all.
 ///
-/// Tool content is excluded on purpose. A `tool_request` and its
-/// `tool_response` are one unit to every provider; exempting one half from a
-/// summarization that hides the other produces a dangling tool call and a
-/// rejected request. Pinning is for STANDALONE messages — which is exactly the
-/// shape of the first consumer (BR-71's `mode: "note"`).
+/// Pinning is for STANDALONE messages — exactly the shape of the first consumer
+/// (BR-71's `mode: "note"`). The per-variant verdict, and the reasoning behind
+/// each one, lives in [`MessageContent::is_pin_eligible`] as an exhaustive
+/// match, so a new content variant cannot default to "preservable" the way
+/// `FrontendToolRequest` once did. EVERY block of the message must be eligible:
+/// a pin is honoured on the whole message, so one tool-protocol block in it is
+/// enough to make preserving the message unsafe.
 ///
 /// An already agent-invisible message is also not eligible: a pin means "do not
 /// summarize this away", not "resurrect this". Without that clause a pin would
@@ -248,12 +250,7 @@ impl PinSelection {
 pub fn pin_is_eligible(message: &Message) -> bool {
     message.metadata.pinned
         && message.is_agent_visible()
-        && !message.content.iter().any(|content| {
-            matches!(
-                content,
-                MessageContent::ToolRequest(_) | MessageContent::ToolResponse(_)
-            )
-        })
+        && message.content.iter().all(MessageContent::is_pin_eligible)
 }
 
 /// Decide which of `messages`' pins this compaction honours.
@@ -519,6 +516,186 @@ mod tests {
             .iter()
             .any(|c| matches!(c, MessageContent::SystemNotification(_))));
         assert!(!user.is_pinned(), "a notice must not itself be pinned");
+    }
+
+    fn call(
+        name: &str,
+        arguments: Option<rmcp::model::JsonObject>,
+    ) -> crate::mcp_utils::ToolResult<rmcp::model::CallToolRequestParams> {
+        Ok(rmcp::model::CallToolRequestParams {
+            task: None,
+            name: name.to_string().into(),
+            arguments,
+            meta: None,
+        })
+    }
+
+    /// #51 / W8: a `FrontendToolRequest` is a provider tool-protocol block —
+    /// every formatter turns it into a real `tool_use` (bedrock.rs, anthropic.rs,
+    /// openai.rs, databricks.rs). Honouring a pin on one preserves half of a
+    /// tool pair through a compaction that summarizes the other half away, which
+    /// is the exact hazard the tool-content exclusion exists to prevent.
+    ///
+    /// It reaches here on a USER-role message because the normalizer only strips
+    /// `FrontendToolRequest` from ASSISTANT messages (`conversation/mod.rs`), so
+    /// the unvalidated API is a real path to one.
+    #[test]
+    fn a_pinned_frontend_tool_request_is_never_honoured() {
+        let messages = vec![
+            Message::user()
+                .with_frontend_tool_request("frontend_0", call("open_file", None))
+                .pinned(),
+            pinned("a real note"),
+        ];
+
+        let selection = select_pins(&messages, generous());
+        assert!(
+            !selection.is_honoured(0),
+            "a frontend tool request must not be exempt from summarization"
+        );
+        assert!(selection.is_honoured(1));
+        assert!(
+            selection.evicted().is_empty(),
+            "ineligible is not the same as budget-evicted"
+        );
+    }
+
+    /// #51 / W8: the pinned-set BUDGET must see a `FrontendToolRequest`'s
+    /// arguments. They are model-visible (they become the `tool_use` block's
+    /// `input`), so a pin carrying a megabyte of them that costs ~0 tokens is an
+    /// unbounded evasion of both the pin budget and the compaction trigger — the
+    /// same estimate feeds both.
+    #[test]
+    fn the_byte_estimate_counts_frontend_tool_request_arguments() {
+        let mut arguments = rmcp::model::JsonObject::new();
+        arguments.insert("body".to_string(), serde_json::json!("x".repeat(40_000)));
+        let message = Message::user()
+            .with_frontend_tool_request("frontend_0", call("write", Some(arguments)));
+
+        let equivalent_request = Message::assistant().with_tool_request(
+            "frontend_0",
+            call("write", {
+                let mut a = rmcp::model::JsonObject::new();
+                a.insert("body".to_string(), serde_json::json!("x".repeat(40_000)));
+                Some(a)
+            }),
+        );
+
+        assert_eq!(
+            super::super::estimate_message_tokens(&message),
+            super::super::estimate_message_tokens(&equivalent_request),
+            "a frontend tool request costs the same as the tool request it becomes"
+        );
+        assert!(
+            super::super::estimate_message_tokens(&message) > 10_000,
+            "40k bytes of arguments must not estimate as an empty message"
+        );
+    }
+
+    /// #51 / W8: the eligibility rule is a verdict on EVERY [`MessageContent`]
+    /// variant, not on the three that happened to be named when it was written.
+    /// A new variant defaults to *eligible* under a `matches!` exclusion list,
+    /// which is the failure mode that let `FrontendToolRequest` through — so the
+    /// rule is an exhaustive match and this is its table.
+    #[test]
+    fn every_message_content_variant_has_an_explicit_pin_eligibility_verdict() {
+        let mut arguments = rmcp::model::JsonObject::new();
+        arguments.insert("path".to_string(), serde_json::json!("/tmp/x"));
+
+        // (name, message, eligible?)
+        let cases: Vec<(&str, Message, bool)> = vec![
+            // Self-contained: carries its whole meaning alone, and no provider
+            // requires a partner block elsewhere in the transcript.
+            ("Text", Message::user().with_text("note"), true),
+            (
+                "Image",
+                Message::user().with_image("ZGF0YQ==", "image/png"),
+                true,
+            ),
+            // Provider tool-protocol halves: preserving one past a compaction
+            // that hides the other hands the provider a dangling tool call.
+            (
+                "ToolRequest",
+                Message::assistant().with_tool_request("t0", call("read_file", None)),
+                false,
+            ),
+            (
+                "ToolResponse",
+                Message::user()
+                    .with_tool_response("t0", Ok(rmcp::model::CallToolResult::success(vec![]))),
+                false,
+            ),
+            (
+                "FrontendToolRequest",
+                Message::user().with_frontend_tool_request("f0", call("open_file", None)),
+                false,
+            ),
+            // UI handshakes keyed to a pending request. Every formatter drops
+            // them or emits an empty block, so a pin spends budget on nothing
+            // and outlives the request it refers to.
+            (
+                "ToolConfirmationRequest",
+                Message::user().with_content(MessageContent::ToolConfirmationRequest(
+                    crate::conversation::message::ToolConfirmationRequest {
+                        id: "c0".to_string(),
+                        tool_name: "shell".to_string(),
+                        arguments: arguments.clone(),
+                        prompt: None,
+                    },
+                )),
+                false,
+            ),
+            (
+                "ActionRequired",
+                Message::user().with_action_required(
+                    "a0",
+                    "shell".to_string(),
+                    arguments.clone(),
+                    None,
+                ),
+                false,
+            ),
+            // Bound to the assistant turn that produced them: the signature is
+            // validated against that turn, and Bedrock drops them entirely.
+            (
+                "Thinking",
+                Message::assistant().with_thinking("reasoning", "sig"),
+                false,
+            ),
+            (
+                "RedactedThinking",
+                Message::assistant().with_redacted_thinking("blob"),
+                false,
+            ),
+            // User-facing only; the Bedrock formatter hard-errors on one.
+            (
+                "SystemNotification",
+                Message::assistant().with_content(MessageContent::system_notification(
+                    SystemNotificationType::InlineMessage,
+                    "hi",
+                )),
+                false,
+            ),
+        ];
+
+        assert_eq!(
+            cases.len(),
+            10,
+            "every MessageContent variant needs a row; add one when a variant is added"
+        );
+
+        for (name, message, eligible) in cases {
+            let message = message.pinned();
+            assert!(
+                message.is_agent_visible(),
+                "{name}: the fixture must isolate content eligibility from visibility"
+            );
+            assert_eq!(
+                pin_is_eligible(&message),
+                eligible,
+                "{name}: wrong pin-eligibility verdict"
+            );
+        }
     }
 
     /// The share cap resolves against the model's own window, and a nonsense

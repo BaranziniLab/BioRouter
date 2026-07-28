@@ -587,6 +587,23 @@ fn message_payload_bytes(message: &Message) -> usize {
                         .unwrap_or(0);
                 }
             }
+            // #51 / W8: identical accounting to `ToolRequest`, because it is
+            // the identical provider block — every formatter emits a
+            // `FrontendToolRequest` as a real tool-use with these arguments as
+            // its input. Omitting it let a pin carrying arbitrarily large
+            // arguments cost ~0 against both the pinned-set budget and the
+            // compaction trigger.
+            MessageContent::FrontendToolRequest(request) => {
+                bytes += request.id.len();
+                if let Ok(call) = &request.tool_call {
+                    bytes += call.name.len();
+                    bytes += call
+                        .arguments
+                        .as_ref()
+                        .map(|args| serde_json::to_string(args).map(|s| s.len()).unwrap_or(0))
+                        .unwrap_or(0);
+                }
+            }
             MessageContent::ToolResponse(response) => {
                 bytes += response.id.len();
                 if let Ok(result) = &response.tool_result {
