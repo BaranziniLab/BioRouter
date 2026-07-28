@@ -4016,13 +4016,34 @@ impl Agent {
                     // framing that unconditionally would wrap the user's own
                     // words in an untrusted envelope and tell the model to
                     // discount them.
+                    //
+                    // The inner match is EXHAUSTIVE over `ProvenanceKind` on
+                    // purpose, and must stay that way. `ProvenanceKind` is not
+                    // `#[non_exhaustive]`, so a `_` catch-all here would let a
+                    // variant added later fall silently into the *unframed* arm
+                    // — putting cross-session agent text into this session's
+                    // context without the untrusted envelope, which is the exact
+                    // prompt-injection vector `frame_workspace_injection` exists
+                    // to close. Exhaustiveness makes a new variant a compile
+                    // error and forces an explicit framing decision.
                     let mut m = match &queued.provenance {
-                        Some(p) if p.kind == ProvenanceKind::AgentInjection => Message::user()
-                            .with_text(crate::conversation::message::frame_workspace_injection(
-                                p.from_session_name.as_deref(),
-                                &queued.text,
-                            )),
-                        _ => Message::user().with_text(queued.text.clone()),
+                        Some(p) => match p.kind {
+                            ProvenanceKind::AgentInjection => Message::user().with_text(
+                                crate::conversation::message::frame_workspace_injection(
+                                    p.from_session_name.as_deref(),
+                                    &queued.text,
+                                ),
+                            ),
+                            // The human typed this into the subagent's own tab,
+                            // or it is a spawn-context record this session
+                            // authored — neither is another agent's text, so
+                            // neither is framed.
+                            ProvenanceKind::UserDirect | ProvenanceKind::SpawnContext => {
+                                Message::user().with_text(queued.text.clone())
+                            }
+                        },
+                        // Unstamped: the human's own typed soft interrupt.
+                        None => Message::user().with_text(queued.text.clone()),
                     };
                     if let Some(p) = queued.provenance {
                         m = m.with_provenance(p);
