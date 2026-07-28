@@ -406,6 +406,20 @@ fn source_description(input: &SourceInput) -> String {
 // ---------------------------------------------------------------------------
 
 pub async fn classify(input: &SourceInput, completer: Box<dyn Completer>) -> Result<Credibility> {
+    classify_with_dispatch(input, completer, &AgenticToolDispatch::new()).await
+}
+
+/// Same as [`classify`], but with the tool dispatcher supplied by the caller.
+///
+/// Tests pass a dispatcher bound to a local mock: a sub-agent that decides to
+/// call `crossref_search` otherwise reaches the live API, and the loop swallows
+/// dispatch errors, so the network traffic is invisible until it hangs (issue
+/// #55).
+pub(crate) async fn classify_with_dispatch(
+    input: &SourceInput,
+    completer: Box<dyn Completer>,
+    dispatch: &dyn ToolDispatch,
+) -> Result<Credibility> {
     let agent = SubAgent {
         completer,
         tools: agentic_tools(),
@@ -417,10 +431,9 @@ pub async fn classify(input: &SourceInput, completer: Box<dyn Completer>) -> Res
         },
     };
 
-    let dispatch = AgenticToolDispatch::new();
     let user_msg = source_description(input);
 
-    let result = agent.run(&user_msg, &dispatch, None, None).await?;
+    let result = agent.run(&user_msg, dispatch, None, None).await?;
 
     match parse_credibility_json(&result.final_text) {
         Some(c) => Ok(c),
@@ -541,16 +554,36 @@ mod tests {
 
     #[tokio::test]
     async fn respects_step_budget() {
+        use wiremock::{matchers::method, Mock, MockServer, ResponseTemplate};
+
         // Supply 20 tool-call replies; budget is MAX_STEPS=5, so it stops early.
+        //
+        // Those replies are real `crossref_search` calls, and the sub-agent loop
+        // swallows dispatch errors — so with the production dispatcher this test
+        // silently made live requests to api.crossref.org and still passed
+        // (issue #55). Bind it to a local mock instead.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "message": { "items": [] }
+            })))
+            .mount(&server)
+            .await;
+        let dispatch = AgenticToolDispatch::with_bases(&server.uri(), &server.uri());
+
         let replies: Vec<LlmReply> = (0..20)
             .map(|_| tool_call_reply("crossref_search"))
             .collect();
         let completer = MockCompleter::new(replies);
         let input = SourceInput::Url("https://example.com/paper".into());
-        let c = classify(&input, Box::new(completer)).await.unwrap();
+        let c = classify_with_dispatch(&input, Box::new(completer), &dispatch)
+            .await
+            .unwrap();
         // Step budget kicks in → fallback Web tier.
         assert_eq!(c.tier, CredibilityTier::Web);
         assert_eq!(c.classifier_version, 2);
+        // And every search went to the mock, not to the live API.
+        assert!(!server.received_requests().await.unwrap().is_empty());
     }
 
     // ── Test 4: parse_credibility_json edge cases ─────────────────────────────

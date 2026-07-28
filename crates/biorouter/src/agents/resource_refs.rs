@@ -41,42 +41,10 @@ pub(crate) fn extract_resource_refs(text: &str) -> ResourceRefs {
     refs
 }
 
-pub(crate) fn canonical_builtin_extension_name(name: &str) -> Option<String> {
-    let normalized = normalize_reference_name(name);
-    let aliases = [
-        ("agentdrafter", "agent_drafter"),
-        ("agent-drafter", "agent_drafter"),
-        ("agent_drafter", "agent_drafter"),
-        ("extensionmanager", "Extension Manager"),
-        ("extension-manager", "Extension Manager"),
-        ("extension_manager", "Extension Manager"),
-        ("autovisualizer", "autovisualiser"),
-        ("auto-visualizer", "autovisualiser"),
-        ("auto_visualizer", "autovisualiser"),
-        ("autovisualiser", "autovisualiser"),
-        ("auto-visualiser", "autovisualiser"),
-        ("auto_visualiser", "autovisualiser"),
-    ];
-
-    if let Some((_, canonical)) = aliases
-        .iter()
-        .find(|(alias, _)| normalize_reference_name(alias) == normalized)
-    {
-        return Some((*canonical).to_string());
-    }
-
-    biorouter_mcp::BUILTIN_EXTENSIONS
-        .keys()
-        .find(|key| normalize_reference_name(key) == normalized)
-        .map(|key| (*key).to_string())
-}
-
-fn normalize_reference_name(name: &str) -> String {
-    name.chars()
-        .filter(|c| c.is_ascii_alphanumeric())
-        .flat_map(char::to_lowercase)
-        .collect()
-}
+// A `/ext:` reference is resolved to a concrete extension by
+// `extension_manager::resolve_bundled_extension`, which keys off the extension
+// id *and* the registry that owns it. This module only extracts the raw
+// reference text from the message.
 
 fn extract_tag_refs(text: &str, tag_type: &str, attr: &str, out: &mut Vec<String>) {
     let needle = format!("<biorouter-ref type=\"{tag_type}\" {attr}=\"");
@@ -279,15 +247,8 @@ mod tests {
         assert_eq!(refs.knowledge_bases[1].id, "project-notes");
     }
 
-    #[test]
-    fn recognizes_builtin_extension_aliases() {
-        assert_eq!(
-            canonical_builtin_extension_name("agentdrafter"),
-            Some("agent_drafter".to_string())
-        );
-        assert_eq!(
-            canonical_builtin_extension_name("autovisualizer"),
-            Some("autovisualiser".to_string())
-        );
-    }
+    // Alias coverage (`agentdrafter` -> `agent_drafter`, `autovisualizer` ->
+    // `autovisualiser`) moved to
+    // `extension_manager::tests::resolves_bundled_extension_spelling_aliases`,
+    // which owns reference resolution now.
 }

@@ -307,6 +307,140 @@ pub(crate) fn augmented_path() -> OsString {
     augment_path_with(env::var_os("PATH").as_deref(), &standard_user_tool_dirs())
 }
 
+// ---------------------------------------------------------------------------
+// Daemon-private environment (issue #57)
+// ---------------------------------------------------------------------------
+
+/// BioRouter's own environment namespaces. Everything outside them belongs to
+/// the user or the OS and is passed through to children untouched.
+const BIOROUTER_ENV_PREFIXES: &[&str] = &["BIOROUTER_", "GOOSE_"];
+
+/// The daemon's private server configuration. `Settings` is the flat struct
+/// behind the `__` form, so *every* variable that configures `biorouterd`
+/// itself — today `BIOROUTER_SERVER__SECRET_KEY`, tomorrow whatever a future
+/// auth or signing key is called — lands in this namespace by construction.
+/// Nothing in it may reach a child: the allow set is empty, deliberately.
+const DAEMON_PRIVATE_PREFIXES: &[&str] = &["BIOROUTER_SERVER__", "GOOSE_SERVER__"];
+
+/// Credential-shaped name fragments, applied **only inside**
+/// [`BIOROUTER_ENV_PREFIXES`]. A second, overlapping net for BioRouter
+/// credentials that do not live under `BIOROUTER_SERVER__`: today
+/// `BIOROUTER_ACP_WS_TOKEN` and `BIOROUTER_EDITOR_API_KEY`.
+///
+/// Bare `KEY` is intentionally absent: `BIOROUTER_CLIENT_KEY_PATH` names a file,
+/// not a secret, and a child that does mTLS still needs it.
+const BIOROUTER_SECRET_MARKERS: &[&str] = &[
+    "SECRET",
+    "TOKEN",
+    "PASSWORD",
+    "PASSWD",
+    "PASSPHRASE",
+    "PASSCODE",
+    "CREDENTIAL",
+    "API_KEY",
+    "APIKEY",
+    "PRIVATE_KEY",
+    "SIGNING_KEY",
+    "AUTH",
+];
+
+/// Whether `key` names a BioRouter-private variable that must never reach a
+/// process spawned on the agent's behalf.
+///
+/// **Why this shape.** The desktop app puts `BIOROUTER_SERVER__SECRET_KEY` into
+/// `biorouterd`'s environment; `developer`'s shell runs in-process inside the
+/// daemon and stdio extensions are its children, so both inherited it. Holding
+/// that key makes the caller a fully authenticated client of the daemon's own
+/// REST API — `GET /sessions/{id}/export` for *any* session, `POST
+/// /sessions/import` — which is a cross-session read of everything and defeats
+/// every control that lives in the agent loop (issue #57).
+///
+/// The fix has to hold up against the *next* secret, so the namespace we own is
+/// **deny-by-default** — an allow-list with an empty allow set. A new
+/// `BIOROUTER_SERVER__…` credential is denied the day it is added, with no edit
+/// here; a deny-list of literal names is the shape that silently stops working.
+///
+/// A *global* allow-list was rejected on evidence, not taste. BioRouter alone
+/// defines ~220 environment knobs, of which four are credentials, so a global
+/// allow-list would need ~216 entries just to stand still — and outside our
+/// namespace it would have to enumerate the user's whole world (`PATH`, `HOME`,
+/// locale, proxies, `SSH_AUTH_SOCK`, conda/venv/nvm/rbenv roots, `JAVA_HOME`,
+/// `DISPLAY`, …). Issue #24 was exactly that regression in miniature: a
+/// truncated `PATH` made every Homebrew binary invisible. A global *deny*-list
+/// on secret-shaped names is no better: it would strip `GH_TOKEN`,
+/// `AWS_SECRET_ACCESS_KEY` and `HF_TOKEN` and break `gh`, `aws` and
+/// `huggingface-cli` in the shell tool, and an extension's declared
+/// `SPOKEAGENT_PASSCODE` / `CLINICAL_RECORDS_*` on the way in.
+///
+/// So: deny-all inside `BIOROUTER_SERVER__`, plus a credential-name net over
+/// the rest of BioRouter's namespace, and pass-through for everything else.
+/// The user's environment is not ours to censor — an agent with shell access
+/// can already read `~/.aws/credentials` — whereas the daemon's own key is a
+/// privilege it holds and the agent does not.
+///
+/// `BIOROUTER_PORT` stays: a port is not a credential (any local process can
+/// list listeners), and `biorouter`/`biorouterd` children read it.
+pub fn is_daemon_private_env_key(key: &str) -> bool {
+    let key = key.to_ascii_uppercase();
+    if DAEMON_PRIVATE_PREFIXES.iter().any(|p| key.starts_with(p)) {
+        return true;
+    }
+    BIOROUTER_ENV_PREFIXES.iter().any(|p| key.starts_with(p))
+        && BIOROUTER_SECRET_MARKERS.iter().any(|m| key.contains(m))
+}
+
+/// Remove every [`is_daemon_private_env_key`] variable from `command`'s
+/// environment — both the ones it would inherit from this process and any that
+/// were set on the command explicitly.
+///
+/// Call this **last**, after every other `env`/`envs` call: `env_remove` and
+/// `env` write to the same map, so the last write wins. Removing afterwards is
+/// what stops an extension's declared `envs` (which a `.brxt` bundle can carry)
+/// from re-admitting the daemon's key.
+pub fn strip_daemon_private_env(command: &mut tokio::process::Command) {
+    let explicit = command
+        .as_std()
+        .get_envs()
+        .filter(|(_, v)| v.is_some())
+        .map(|(k, _)| k.to_os_string())
+        .collect::<Vec<_>>();
+
+    for key in doomed_env_keys(explicit) {
+        command.env_remove(key);
+    }
+}
+
+/// [`strip_daemon_private_env`] for a synchronous [`std::process::Command`].
+///
+/// Some spawn sites are not async — `computer_controller`'s per-platform
+/// system automation (`osascript` / `powershell` / `python3`) runs a script the
+/// model wrote and builds a `std::process::Command`. It needs the same policy,
+/// and must not grow a second copy of it: both variants share
+/// [`is_daemon_private_env_key`] and [`doomed_env_keys`], so the policy cannot
+/// drift between the async and sync paths.
+pub fn strip_daemon_private_env_std(command: &mut std::process::Command) {
+    let explicit = command
+        .get_envs()
+        .filter(|(_, v)| v.is_some())
+        .map(|(k, _)| k.to_os_string())
+        .collect::<Vec<_>>();
+
+    for key in doomed_env_keys(explicit) {
+        command.env_remove(key);
+    }
+}
+
+/// Every key a child must not receive: the daemon-private names this process
+/// would pass down by inheritance, plus any that were set on the command
+/// explicitly. Shared by both `strip_daemon_private_env*` variants.
+fn doomed_env_keys(explicit: Vec<OsString>) -> Vec<OsString> {
+    env::vars_os()
+        .map(|(k, _)| k)
+        .chain(explicit)
+        .filter(|k| k.to_str().is_some_and(is_daemon_private_env_key))
+        .collect()
+}
+
 /// Configure a shell command with process group support for proper child process tracking.
 ///
 /// On Unix systems, creates a new process group so child processes can be killed together.
@@ -316,6 +450,10 @@ pub(crate) fn augmented_path() -> OsString {
 /// (Homebrew, MacPorts, `~/.local/bin`, `/usr/local/bin`) when missing — see
 /// [`augmented_path`]. This covers both the foreground shell tool and
 /// background jobs (`background.rs` also builds through here).
+///
+/// The child does **not** inherit BioRouter's daemon-private variables — see
+/// [`strip_daemon_private_env`] and issue #57. The rest of the environment,
+/// including the user's own credentials, is passed through unchanged.
 ///
 /// Returns `Err(message)` only when `BIOROUTER_SHELL_SANDBOX=strict` and the
 /// host cannot provide a full sandbox — the caller surfaces that as a tool error
@@ -356,6 +494,9 @@ pub fn configure_shell_command(
         .args(&sandbox_prefix)
         .args(&shell_config.args)
         .arg(command);
+
+    // Last, so nothing set above can re-admit a daemon credential (issue #57).
+    strip_daemon_private_env(&mut command_builder);
 
     // On Unix systems, create a new process group so we can kill child processes
     #[cfg(unix)]
@@ -525,6 +666,275 @@ mod tests {
         if cfg!(target_os = "macos") {
             assert!(strs.contains(&"/opt/homebrew/bin".to_string()));
             assert!(strs.contains(&"/opt/local/bin".to_string()));
+        }
+    }
+
+    // ---- issue #57: the daemon's auth secret must not reach a tool child ------
+
+    /// The policy, over one environment: exactly the daemon's own key goes.
+    /// The listing mirrors what `biorouterd.ts` actually hands the daemon, plus
+    /// the user variables and the extension credential that must survive.
+    #[test]
+    fn policy_strips_the_daemon_secret_and_nothing_else() {
+        let daemon_env = [
+            // from ui/desktop/src/biorouterd.ts
+            "HOME",
+            "USERPROFILE",
+            "APPDATA",
+            "LOCALAPPDATA",
+            "PATH",
+            "BIOROUTER_PORT",
+            "BIOROUTER_SERVER__SECRET_KEY",
+            "BIOROUTER_DISABLE_KEYRING",
+            "BIOROUTER_AUTOVIS_CDN",
+            // ordinary user/OS environment
+            "LANG",
+            "LC_ALL",
+            "TMPDIR",
+            "SHELL",
+            "SSH_AUTH_SOCK",
+            "HTTPS_PROXY",
+            "no_proxy",
+            "CONDA_PREFIX",
+            "VIRTUAL_ENV",
+            "JAVA_HOME",
+            // the user's own credentials: not ours to censor — an agent with a
+            // shell can read ~/.aws/credentials anyway, and stripping these
+            // breaks `aws`, `gh` and `huggingface-cli`
+            "AWS_SECRET_ACCESS_KEY",
+            "GH_TOKEN",
+            "HF_TOKEN",
+            // credentials extensions declare via env_keys
+            "SPOKEAGENT_PASSCODE",
+            "CLINICAL_RECORDS_TOKEN",
+        ];
+        let stripped: Vec<&str> = daemon_env
+            .iter()
+            .copied()
+            .filter(|k| is_daemon_private_env_key(k))
+            .collect();
+        assert_eq!(stripped, vec!["BIOROUTER_SERVER__SECRET_KEY"]);
+    }
+
+    /// The property the allow-list shape buys: a credential added to the
+    /// daemon's own namespace later is denied without editing this file. Only
+    /// the second group needs the credential-name net.
+    #[test]
+    fn policy_denies_future_daemon_credentials() {
+        for key in [
+            "BIOROUTER_SERVER__SESSION_SIGNING_KEY",
+            "BIOROUTER_SERVER__ADMIN_PASSWORD",
+            // named nothing like a secret, and still denied — this is the case
+            // a deny-list of literal names would miss
+            "BIOROUTER_SERVER__PAIRING",
+            "GOOSE_SERVER__SECRET_KEY",
+        ] {
+            assert!(
+                is_daemon_private_env_key(key),
+                "{key} is daemon-private configuration and must not reach a child"
+            );
+        }
+        // BioRouter credentials that live outside BIOROUTER_SERVER__.
+        for key in [
+            "BIOROUTER_ACP_WS_TOKEN",
+            "BIOROUTER_WS_TOKEN",
+            "BIOROUTER_EDITOR_API_KEY",
+        ] {
+            assert!(is_daemon_private_env_key(key), "{key} carries a credential");
+        }
+    }
+
+    /// Non-credential BioRouter knobs a child legitimately reads keep flowing —
+    /// including `BIOROUTER_CLIENT_KEY_PATH`, which names a file rather than
+    /// holding a secret.
+    #[test]
+    fn policy_keeps_non_credential_biorouter_knobs() {
+        for key in [
+            "BIOROUTER_PORT",
+            "BIOROUTER_WORKING_DIR",
+            "BIOROUTER_DISABLE_KEYRING",
+            "BIOROUTER_TERMINAL",
+            "BIOROUTER_CLIENT_KEY_PATH",
+            "BIOROUTER_SHELL_SANDBOX",
+        ] {
+            assert!(
+                !is_daemon_private_env_key(key),
+                "{key} is not a credential and a child may need it"
+            );
+        }
+    }
+
+    /// Windows environment names are case-insensitive, so the policy is too.
+    #[test]
+    fn policy_is_case_insensitive() {
+        assert!(is_daemon_private_env_key("biorouter_server__secret_key"));
+        assert!(is_daemon_private_env_key("Biorouter_Acp_Ws_Token"));
+    }
+
+    /// `strip_daemon_private_env` runs last precisely so an explicitly set
+    /// value — an extension's declared `envs`, which a `.brxt` bundle can
+    /// carry — cannot re-admit the daemon's key.
+    #[test]
+    fn explicitly_set_daemon_secret_is_removed_again() {
+        let mut cmd = tokio::process::Command::new("printenv");
+        cmd.env("BIOROUTER_SERVER__SECRET_KEY", "declared-by-an-extension");
+        cmd.env("SPOKEAGENT_PASSCODE", "keep-me");
+        strip_daemon_private_env(&mut cmd);
+
+        let envs: Vec<(String, Option<String>)> = cmd
+            .as_std()
+            .get_envs()
+            .map(|(k, v)| {
+                (
+                    k.to_string_lossy().into_owned(),
+                    v.map(|v| v.to_string_lossy().into_owned()),
+                )
+            })
+            .collect();
+        assert!(
+            envs.contains(&("BIOROUTER_SERVER__SECRET_KEY".to_string(), None)),
+            "expected an explicit removal, got {envs:?}"
+        );
+        assert!(envs.contains(&(
+            "SPOKEAGENT_PASSCODE".to_string(),
+            Some("keep-me".to_string())
+        )));
+    }
+
+    /// Child half of [`daemon_secret_never_reaches_a_shell_child`].
+    ///
+    /// The leak is in the *inherited* environment, so exercising it means
+    /// controlling this process's environment — and `set_var` is unsound in a
+    /// threaded test binary (this workspace has a known env-var test race). So
+    /// the parent re-invokes this very test binary with the canary exported,
+    /// and this half spawns a real shell child through the real
+    /// `configure_shell_command` and prints the environment that child actually
+    /// received. `#[ignore]` keeps it out of a normal run.
+    #[cfg(unix)]
+    #[tokio::test]
+    #[ignore]
+    async fn leak_probe_prints_shell_child_env() {
+        let cfg = ShellConfig::default();
+        let mut cmd = configure_shell_command(&cfg, "printenv", None).expect("infallible when off");
+        let out = cmd.output().await.expect("shell child must spawn");
+        println!("BEGIN_CHILD_ENV");
+        println!("{}", probe_report(&String::from_utf8_lossy(&out.stdout)));
+        println!("END_CHILD_ENV");
+    }
+
+    /// What a probe reports back: BioRouter's own namespace, the variables the
+    /// parent injected, and — under *any* name — anything whose value carries
+    /// the canary, so a copy of the secret under a different key is still
+    /// caught. Everything else is dropped: printing the whole environment of
+    /// whoever runs the suite would be its own small leak.
+    #[cfg(unix)]
+    fn probe_report(raw: &str) -> String {
+        let canary = env::var("BR_TEST_CANARY").unwrap_or_default();
+        raw.lines()
+            .filter(|line| {
+                let key = line.split('=').next().unwrap_or("");
+                // The channel that carries the canary *to* the probe is itself
+                // inherited; it is not the leak under test.
+                if key == "BR_TEST_CANARY" {
+                    return false;
+                }
+                key.starts_with("BIOROUTER_")
+                    || key.starts_with("GOOSE_")
+                    || matches!(
+                        key,
+                        "PATH" | "HOME" | "BR_TEST_USER_VAR" | "SPOKEAGENT_PASSCODE"
+                    )
+                    || (!canary.is_empty() && line.contains(&canary))
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// The name libtest knows the probe by (`module_path!()` minus the crate).
+    #[cfg(unix)]
+    fn probe_test_name(probe: &str) -> String {
+        let m = module_path!();
+        let without_crate = m.split_once("::").map(|(_, rest)| rest).unwrap_or(m);
+        format!("{without_crate}::{probe}")
+    }
+
+    /// Run the ignored probe in a fresh copy of this test binary whose
+    /// environment is the daemon's: the auth secret, the port, an
+    /// extension-declared credential and an ordinary user variable.
+    #[cfg(unix)]
+    fn run_leak_probe(probe: &str, canary: &str) -> String {
+        let exe = std::env::current_exe().expect("test binary path");
+        let out = std::process::Command::new(exe)
+            .args([
+                "--exact",
+                &probe_test_name(probe),
+                "--ignored",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env("BIOROUTER_SERVER__SECRET_KEY", canary)
+            .env("BR_TEST_CANARY", canary)
+            .env("BIOROUTER_PORT", "54321")
+            .env("SPOKEAGENT_PASSCODE", "extension-credential-ok")
+            .env("BR_TEST_USER_VAR", "user-env-ok")
+            .output()
+            .expect("re-invoking the test binary must work");
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        let body = stdout
+            .split_once("BEGIN_CHILD_ENV\n")
+            .and_then(|(_, rest)| rest.split_once("END_CHILD_ENV"))
+            .map(|(body, _)| body.to_string());
+        body.unwrap_or_else(|| {
+            panic!(
+                "probe produced no child environment.\nstdout:\n{stdout}\nstderr:\n{}",
+                String::from_utf8_lossy(&out.stderr)
+            )
+        })
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn daemon_secret_never_reaches_a_shell_child() {
+        if env::var("BIOROUTER_SHELL_SANDBOX").is_ok() {
+            return; // don't fight an externally-set gate in this process
+        }
+        const CANARY: &str = "canary-daemon-secret-9f3a";
+        let child_env = run_leak_probe("leak_probe_prints_shell_child_env", CANARY);
+
+        assert!(
+            !child_env.contains(CANARY),
+            "issue #57: the daemon's auth secret reached the shell child, so any \
+             session can call biorouterd as an authenticated client.\nchild env:\n{child_env}"
+        );
+        assert!(
+            !child_env.contains("BIOROUTER_SERVER__SECRET_KEY"),
+            "the key name itself must be gone, not just the value:\n{child_env}"
+        );
+    }
+
+    /// The other direction: stripping the daemon's credential must not take the
+    /// user's environment (or a legitimately exported extension credential)
+    /// with it. A truncated child environment is its own regression (issue #24
+    /// was exactly that, for `PATH`).
+    #[cfg(unix)]
+    #[test]
+    fn shell_child_still_receives_the_user_environment() {
+        if env::var("BIOROUTER_SHELL_SANDBOX").is_ok() {
+            return;
+        }
+        let child_env = run_leak_probe("leak_probe_prints_shell_child_env", "canary-unused");
+        for expected in [
+            "PATH=",
+            "HOME=",
+            "BIOROUTER_PORT=54321",
+            "SPOKEAGENT_PASSCODE=extension-credential-ok",
+            "BR_TEST_USER_VAR=user-env-ok",
+        ] {
+            assert!(
+                child_env.lines().any(|l| l.starts_with(expected)),
+                "shell child lost {expected:?} — removing too much is its own \
+                 regression.\nchild env:\n{child_env}"
+            );
         }
     }
 

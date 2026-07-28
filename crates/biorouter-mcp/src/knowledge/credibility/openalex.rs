@@ -5,14 +5,16 @@ use crate::knowledge::{
 use anyhow::Result;
 use serde::Deserialize;
 
-const API_BASE: &str = "https://api.openalex.org";
+pub const API_BASE: &str = "https://api.openalex.org";
 
-pub async fn classify(doi: &str) -> Result<Option<Credibility>> {
+/// Classify a DOI against an OpenAlex API base. See
+/// [`super::crossref::classify_at`] for why the base is always explicit.
+pub async fn classify_at(base: &str, doi: &str) -> Result<Option<Credibility>> {
     let client = reqwest::Client::builder()
         .user_agent("Biorouter-Knowledge/1.0 (mailto:knowledge@biorouter.local)")
         .timeout(std::time::Duration::from_secs(10))
         .build()?;
-    classify_with(&client, API_BASE, doi).await
+    classify_with(&client, base, doi).await
 }
 
 pub async fn classify_with(

@@ -10,7 +10,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tracing::debug;
 
-use crate::subprocess::configure_command_no_window;
+use crate::subprocess::prepare_agent_child_command;
 
 pub struct CommandHookResult {
     pub exit_code: Option<i32>,
@@ -55,7 +55,6 @@ pub async fn run_command_hook(
     );
 
     let mut cmd = shell_command(command);
-    configure_command_no_window(&mut cmd);
     cmd.current_dir(cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -64,6 +63,10 @@ pub async fn run_command_hook(
     for (key, value) in envs {
         cmd.env(key, value);
     }
+    // Last, after the caller's `envs`, so a hook's own declared environment
+    // cannot re-admit a daemon credential (issue #57). A hook is a shell
+    // command that runs on agent activity.
+    prepare_agent_child_command(&mut cmd);
 
     let run = async {
         let mut child = cmd.spawn()?;
@@ -212,6 +215,42 @@ mod tests {
         let output: serde_json::Value = serde_json::from_str(result.stdout.trim()).unwrap();
         assert_eq!(output["decision"], "block");
         assert_eq!(output["reason"], "keep going");
+    }
+
+    /// Issue #57: a hook is a shell command that runs on agent activity, so it
+    /// must not receive the daemon's auth secret — even when the hook's own
+    /// declared `envs` try to set it, since the strip runs after them.
+    #[cfg(not(target_os = "windows"))]
+    #[tokio::test]
+    async fn hook_does_not_receive_the_daemon_secret() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = run_command_hook(
+            "echo \"secret=[${BIOROUTER_SERVER__SECRET_KEY:-}] port=[${BIOROUTER_PORT:-unset}] \
+             declared=[${BIOROUTER_HOOK_EVENT:-}]\"",
+            "{}",
+            dir.path(),
+            &[
+                // a hook trying to smuggle the daemon key back in
+                (
+                    "BIOROUTER_SERVER__SECRET_KEY".to_string(),
+                    "declared-by-a-hook".to_string(),
+                ),
+                ("BIOROUTER_HOOK_EVENT".to_string(), "PreToolUse".to_string()),
+            ],
+            Duration::from_secs(10),
+        )
+        .await
+        .unwrap();
+        assert!(
+            result.stdout.contains("secret=[]"),
+            "the daemon's auth secret must not reach a hook, got: {}",
+            result.stdout
+        );
+        assert!(
+            result.stdout.contains("declared=[PreToolUse]"),
+            "a hook's ordinary declared environment must still arrive, got: {}",
+            result.stdout
+        );
     }
 
     #[tokio::test]

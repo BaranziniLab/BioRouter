@@ -16,7 +16,7 @@ use crate::config::search_path::SearchPaths;
 use crate::config::{Config, BioRouterMode};
 use crate::conversation::message::{Message, MessageContent};
 use crate::model::ModelConfig;
-use crate::subprocess::configure_command_no_window;
+use crate::subprocess::prepare_agent_child_command;
 use rmcp::model::Tool;
 
 // "sonnet" is a claude CLI alias that resolves to the current Sonnet; the
@@ -272,7 +272,6 @@ impl ClaudeCodeProvider {
         }
 
         let mut cmd = Command::new(&self.command);
-        configure_command_no_window(&mut cmd);
         cmd.arg("-p")
             .arg(messages_json.to_string())
             .arg("--system-prompt")
@@ -287,6 +286,10 @@ impl ClaudeCodeProvider {
 
         // Add permission mode based on BIOROUTER_MODE setting
         Self::apply_permission_flags(&mut cmd)?;
+
+        // Last, after every arg/env: the child is a coding agent with shell
+        // access, so it must not inherit the daemon's credentials (issue #57).
+        prepare_agent_child_command(&mut cmd);
 
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 

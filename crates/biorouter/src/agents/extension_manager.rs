@@ -168,6 +168,116 @@ pub fn normalize(input: &str) -> String {
     result.to_lowercase()
 }
 
+/// Which registry owns a bundled extension, and therefore which spawn path a
+/// `/ext:` selection has to be dispatched to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BundledExtensionKind {
+    /// A bundled MCP server in `biorouter_mcp::BUILTIN_EXTENSIONS`.
+    Builtin,
+    /// An in-process platform extension in `PLATFORM_EXTENSIONS`.
+    Platform,
+}
+
+/// A bundled extension a `/ext:<name>` marker resolved to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BundledExtensionTarget {
+    kind: BundledExtensionKind,
+    /// The name the owning registry is keyed by — what the spawn path in
+    /// `add_extension` looks up. For a platform extension this may be a display
+    /// string (`"Extension Manager"`), which is exactly why it must never be
+    /// handed to the *builtin* lookup.
+    name: String,
+}
+
+impl BundledExtensionTarget {
+    pub fn kind(&self) -> BundledExtensionKind {
+        self.kind
+    }
+
+    /// The key this extension is stored under once enabled — also the `__`
+    /// prefix its tools carry, so it is what the model should be told to use.
+    pub fn key(&self) -> String {
+        normalize(&crate::config::extensions::name_to_key(&self.name))
+    }
+
+    /// The config that enables this target, dispatched to the right variant.
+    pub fn into_config(self, description: String) -> ExtensionConfig {
+        match self.kind {
+            BundledExtensionKind::Builtin => ExtensionConfig::Builtin {
+                name: self.name,
+                description,
+                display_name: None,
+                timeout: Some(300),
+                bundled: Some(true),
+                available_tools: Vec::new(),
+            },
+            BundledExtensionKind::Platform => ExtensionConfig::Platform {
+                name: self.name,
+                description,
+                bundled: Some(true),
+                available_tools: Vec::new(),
+            },
+        }
+    }
+}
+
+/// Reduce an extension reference to its comparable id: letters and digits only,
+/// lowercased. Collapses the spellings a user or a registry may use for the same
+/// extension — `agent_drafter` / `agent-drafter` / `agentdrafter`, and
+/// `Extension Manager` / `extensionmanager`.
+fn extension_reference_key(name: &str) -> String {
+    name.chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+/// Resolve a `/ext:<name>` target to the bundled extension it names, **by id and
+/// owning registry** rather than by display name.
+///
+/// Two of the five platform extensions are registered under a display string
+/// (`"Extension Manager"`, `"Chat Recall"`). The `/ext:` resolver used to hand
+/// that string to the *builtin* lookup, which failed with
+/// `Unknown builtin extension: Extension Manager` — making a perfectly valid
+/// request indistinguishable from a policy refusal (issue #48). Platform targets
+/// now resolve to `ExtensionConfig::Platform` and take the platform spawn path.
+///
+/// Returns `None` for anything that is not bundled; a user-configured
+/// stdio/http/inline_python/frontend extension is never auto-enabled from a chat
+/// marker, so an operator-disabled entry stays disabled.
+pub fn resolve_bundled_extension(requested: &str) -> Option<BundledExtensionTarget> {
+    let key = extension_reference_key(requested);
+    // The bundled figure server is spelled the British way; accept the American
+    // spelling of it too.
+    let key = if key == "autovisualizer" {
+        "autovisualiser".to_string()
+    } else {
+        key
+    };
+
+    // Platform first: its registry is the smaller, hand-written one and shares
+    // no ids with the builtin registry.
+    if let Some(def) = PLATFORM_EXTENSIONS.iter().find(|(registry_key, def)| {
+        extension_reference_key(registry_key) == key || extension_reference_key(def.name) == key
+    }) {
+        return Some(BundledExtensionTarget {
+            kind: BundledExtensionKind::Platform,
+            name: def.1.name.to_string(),
+        });
+    }
+
+    if let Some(def) = biorouter_mcp::BUILTIN_EXTENSIONS.iter().find(|(k, def)| {
+        extension_reference_key(k) == key || extension_reference_key(def.name) == key
+    }) {
+        return Some(BundledExtensionTarget {
+            kind: BundledExtensionKind::Builtin,
+            name: def.1.name.to_string(),
+        });
+    }
+
+    None
+}
+
 /// Generates extension name from server info; adds random suffix on collision.
 fn generate_extension_name(
     server_info: Option<&ServerInfo>,
@@ -232,17 +342,16 @@ pub fn get_parameter_names(tool: &Tool) -> Vec<String> {
     names
 }
 
-async fn child_process_client(
-    mut command: Command,
-    timeout: &Option<u64>,
-    provider: SharedProvider,
-    working_dir: Option<&PathBuf>,
-    routed_only: bool,
-) -> ExtensionResult<McpClient> {
-    #[cfg(unix)]
-    command.process_group(0);
-    configure_command_no_window(&mut command);
-
+/// The environment every stdio-extension child is spawned with.
+///
+/// Runs after the caller has applied the extension's own declared `envs` /
+/// `env_keys`, and is the last thing to touch the child's environment before
+/// [`TokioChildProcess`] spawns it — which is what lets it strip BioRouter's
+/// daemon-private variables from a child no matter who put them there.
+///
+/// The working directory is resolved here too (explicit argument first, then
+/// `BIOROUTER_WORKING_DIR`).
+fn prepare_child_environment(command: &mut Command, working_dir: Option<&PathBuf>) {
     if let Ok(path) = SearchPaths::builder().path() {
         command.env("PATH", path);
     }
@@ -269,6 +378,26 @@ async fn child_process_client(
     } else {
         tracing::info!("No working directory specified, using default");
     }
+
+    // Last, so neither the block above nor the extension's own declared `envs`
+    // can leave a daemon credential in the child (issue #57). An extension that
+    // needs its own secrets still gets them: they are not in BioRouter's
+    // namespace, so the policy never looks at them.
+    biorouter_mcp::developer::shell::strip_daemon_private_env(command);
+}
+
+async fn child_process_client(
+    mut command: Command,
+    timeout: &Option<u64>,
+    provider: SharedProvider,
+    working_dir: Option<&PathBuf>,
+    routed_only: bool,
+) -> ExtensionResult<McpClient> {
+    #[cfg(unix)]
+    command.process_group(0);
+    configure_command_no_window(&mut command);
+
+    prepare_child_environment(&mut command, working_dir);
 
     let (transport, mut stderr) = TokioChildProcess::builder(command)
         .stderr(Stdio::piped())
@@ -2715,5 +2844,298 @@ mod tests {
         let persisted = std::collections::HashSet::new();
         assert!(config_disabled_extension_lines(&entries, &persisted).is_empty());
         assert!(config_disabled_extension_lines(&[], &persisted).is_empty());
+    }
+
+    // ---- issue #48: `/ext:` resolution by id + owning registry ----
+
+    /// `/ext:extensionmanager` used to build an `ExtensionConfig::Builtin` named
+    /// `"Extension Manager"` — the entry's *display* string — and the builtin
+    /// lookup rejected it with `Unknown builtin extension: Extension Manager`,
+    /// which the turn reported as if the extension had been refused.
+    #[tokio::test]
+    async fn ext_marker_enables_a_platform_extension() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let em = Arc::new(ExtensionManager::new_without_provider(
+            temp_dir.path().to_path_buf(),
+        ));
+
+        let target = resolve_bundled_extension("extensionmanager")
+            .expect("`extensionmanager` is a bundled extension");
+        assert_eq!(target.kind(), BundledExtensionKind::Platform);
+        assert_eq!(target.key(), "extensionmanager");
+
+        let config = target.into_config("Selected via explicit resource marker".to_string());
+        assert!(
+            matches!(config, ExtensionConfig::Platform { .. }),
+            "a platform target must take the platform spawn path, not the builtin one: {config:?}"
+        );
+
+        em.add_extension(config)
+            .await
+            .expect("/ext:extensionmanager must enable the Extension Manager");
+        assert!(em.is_extension_enabled("extensionmanager").await);
+    }
+
+    /// The `builtin` case that already worked must keep working, end to end.
+    #[tokio::test]
+    async fn ext_marker_enables_a_builtin_extension() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let em = Arc::new(ExtensionManager::new_without_provider(
+            temp_dir.path().to_path_buf(),
+        ));
+
+        let target =
+            resolve_bundled_extension("developer").expect("`developer` is a bundled extension");
+        assert_eq!(target.kind(), BundledExtensionKind::Builtin);
+        assert_eq!(target.key(), "developer");
+
+        let config = target.into_config("Selected via explicit resource marker".to_string());
+        assert!(matches!(config, ExtensionConfig::Builtin { .. }));
+
+        em.add_extension(config)
+            .await
+            .expect("/ext:developer must enable the developer extension");
+        assert!(em.is_extension_enabled("developer").await);
+    }
+
+    /// Every bundled extension must resolve to the registry that actually owns
+    /// it, whether it is keyed by a lowercase id or by a display string.
+    #[test]
+    fn resolves_every_bundled_extension_to_its_owning_registry() {
+        for (registry_key, def) in PLATFORM_EXTENSIONS.iter() {
+            for reference in [*registry_key, def.name] {
+                let target = resolve_bundled_extension(reference)
+                    .unwrap_or_else(|| panic!("platform extension `{reference}` must resolve"));
+                assert_eq!(
+                    target.kind(),
+                    BundledExtensionKind::Platform,
+                    "`{reference}` must resolve to the platform registry"
+                );
+                assert!(
+                    matches!(
+                        target.clone().into_config(String::new()),
+                        ExtensionConfig::Platform { .. }
+                    ),
+                    "`{reference}` must produce a Platform config"
+                );
+                // The name handed to the config is the one the spawn path looks
+                // up, so it has to be present in PLATFORM_EXTENSIONS.
+                let config = target.into_config(String::new());
+                let ExtensionConfig::Platform { name, .. } = &config else {
+                    unreachable!()
+                };
+                assert!(
+                    PLATFORM_EXTENSIONS.contains_key(normalize(name).as_str()),
+                    "`{name}` must be spawnable by the platform path"
+                );
+            }
+        }
+
+        for (registry_key, def) in biorouter_mcp::BUILTIN_EXTENSIONS.iter() {
+            for reference in [*registry_key, def.name] {
+                let target = resolve_bundled_extension(reference)
+                    .unwrap_or_else(|| panic!("builtin extension `{reference}` must resolve"));
+                assert_eq!(
+                    target.kind(),
+                    BundledExtensionKind::Builtin,
+                    "`{reference}` must resolve to the builtin registry"
+                );
+                let config = target.into_config(String::new());
+                let ExtensionConfig::Builtin { name, .. } = &config else {
+                    panic!("`{reference}` must produce a Builtin config")
+                };
+                assert!(
+                    biorouter_mcp::BUILTIN_EXTENSIONS.contains_key(name.as_str()),
+                    "`{name}` must be spawnable by the builtin path"
+                );
+            }
+        }
+    }
+
+    /// Moved here from `resource_refs`, which used to own this table.
+    #[test]
+    fn resolves_bundled_extension_spelling_aliases() {
+        for reference in ["agentdrafter", "agent-drafter", "agent_drafter"] {
+            let target = resolve_bundled_extension(reference).expect(reference);
+            assert_eq!(target.kind(), BundledExtensionKind::Builtin);
+            assert_eq!(target.key(), "agent_drafter");
+        }
+        for reference in [
+            "autovisualizer",
+            "auto-visualizer",
+            "auto_visualiser",
+            "autovisualiser",
+        ] {
+            let target = resolve_bundled_extension(reference).expect(reference);
+            assert_eq!(target.kind(), BundledExtensionKind::Builtin);
+            assert_eq!(target.key(), "autovisualiser");
+        }
+        for reference in [
+            "extensionmanager",
+            "extension-manager",
+            "extension_manager",
+            "Extension Manager",
+        ] {
+            let target = resolve_bundled_extension(reference).expect(reference);
+            assert_eq!(target.kind(), BundledExtensionKind::Platform);
+            assert_eq!(target.key(), "extensionmanager");
+        }
+        for reference in ["chatrecall", "chat-recall", "Chat Recall"] {
+            let target = resolve_bundled_extension(reference).expect(reference);
+            assert_eq!(target.kind(), BundledExtensionKind::Platform);
+            assert_eq!(target.key(), "chatrecall");
+        }
+    }
+
+    /// A non-bundled reference resolves to nothing, so a `/ext:` marker can
+    /// never auto-enable a user-configured (stdio / streamable_http /
+    /// inline_python / frontend / sse) extension the operator turned off.
+    #[test]
+    fn does_not_resolve_non_bundled_extensions() {
+        for reference in ["", "pubmed", "spokeagent", "some-stdio-server"] {
+            assert!(
+                resolve_bundled_extension(reference).is_none(),
+                "`{reference}` must not resolve to a bundled extension"
+            );
+        }
+    }
+
+    // ---- issue #57: the daemon's auth secret must not reach an extension ------
+
+    /// Child half of the stdio-extension leak probe.
+    ///
+    /// The leak is in the *inherited* environment, so exercising it means
+    /// controlling this process's environment — and `set_var` is unsound in a
+    /// threaded test binary. So the parent re-invokes this test binary with the
+    /// canary exported, and this half spawns a real child through the real
+    /// [`prepare_child_environment`] — exactly what every stdio / inline-python
+    /// extension is spawned with — and prints the environment it received.
+    #[cfg(unix)]
+    #[tokio::test]
+    #[ignore]
+    async fn leak_probe_prints_extension_child_env() {
+        // What `merge_environments` hands the spawn path for an extension that
+        // declares its own credentials.
+        let declared = HashMap::from([
+            (
+                "CLINICAL_RECORDS_TOKEN".to_string(),
+                "declared-credential-ok".to_string(),
+            ),
+            (
+                "EXTENSION_MODE".to_string(),
+                "declared-plain-ok".to_string(),
+            ),
+        ]);
+        let mut command = Command::new("printenv");
+        command.envs(declared);
+        prepare_child_environment(&mut command, None);
+        let out = command.output().await.expect("extension child must spawn");
+        println!("BEGIN_CHILD_ENV");
+        println!("{}", probe_report(&String::from_utf8_lossy(&out.stdout)));
+        println!("END_CHILD_ENV");
+    }
+
+    /// What the probe reports back: BioRouter's own namespace, the variables the
+    /// parent injected, and — under *any* name — anything whose value carries
+    /// the canary, so a copy of the secret under a different key is still
+    /// caught. Everything else is dropped: printing the whole environment of
+    /// whoever runs the suite would be its own small leak.
+    #[cfg(unix)]
+    fn probe_report(raw: &str) -> String {
+        let canary = std::env::var("BR_TEST_CANARY").unwrap_or_default();
+        raw.lines()
+            .filter(|line| {
+                let key = line.split('=').next().unwrap_or("");
+                // The channel that carries the canary *to* the probe is itself
+                // inherited; it is not the leak under test.
+                if key == "BR_TEST_CANARY" {
+                    return false;
+                }
+                key.starts_with("BIOROUTER_")
+                    || key.starts_with("GOOSE_")
+                    || matches!(
+                        key,
+                        "PATH"
+                            | "HOME"
+                            | "BR_TEST_USER_VAR"
+                            | "CLINICAL_RECORDS_TOKEN"
+                            | "EXTENSION_MODE"
+                    )
+                    || (!canary.is_empty() && line.contains(&canary))
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[cfg(unix)]
+    fn run_extension_leak_probe(canary: &str) -> String {
+        let m = module_path!();
+        let without_crate = m.split_once("::").map(|(_, rest)| rest).unwrap_or(m);
+        let exe = std::env::current_exe().expect("test binary path");
+        let out = std::process::Command::new(exe)
+            .args([
+                "--exact",
+                &format!("{without_crate}::leak_probe_prints_extension_child_env"),
+                "--ignored",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env("BIOROUTER_SERVER__SECRET_KEY", canary)
+            .env("BR_TEST_CANARY", canary)
+            .env("BIOROUTER_PORT", "54321")
+            .env("BR_TEST_USER_VAR", "user-env-ok")
+            .output()
+            .expect("re-invoking the test binary must work");
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        stdout
+            .split_once("BEGIN_CHILD_ENV\n")
+            .and_then(|(_, rest)| rest.split_once("END_CHILD_ENV"))
+            .map(|(body, _)| body.to_string())
+            .unwrap_or_else(|| {
+                panic!(
+                    "probe produced no child environment.\nstdout:\n{stdout}\nstderr:\n{}",
+                    String::from_utf8_lossy(&out.stderr)
+                )
+            })
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn daemon_secret_never_reaches_an_extension_child() {
+        const CANARY: &str = "canary-daemon-secret-4b71";
+        let child_env = run_extension_leak_probe(CANARY);
+        assert!(
+            !child_env.contains(CANARY),
+            "issue #57: the daemon's auth secret reached a stdio extension, which \
+             can then call biorouterd as an authenticated client.\nchild env:\n{child_env}"
+        );
+        assert!(
+            !child_env.contains("BIOROUTER_SERVER__SECRET_KEY"),
+            "the key name itself must be gone, not just the value:\n{child_env}"
+        );
+    }
+
+    /// The other direction: an extension's own declared credentials, and the
+    /// user's environment, must still arrive. Note `CLINICAL_RECORDS_TOKEN` is
+    /// secret-shaped by name — the policy deliberately does not touch names
+    /// outside BioRouter's own namespace.
+    #[cfg(unix)]
+    #[test]
+    fn extension_child_still_receives_declared_and_user_environment() {
+        let child_env = run_extension_leak_probe("canary-unused");
+        for expected in [
+            "PATH=",
+            "HOME=",
+            "BIOROUTER_PORT=54321",
+            "BR_TEST_USER_VAR=user-env-ok",
+            "CLINICAL_RECORDS_TOKEN=declared-credential-ok",
+            "EXTENSION_MODE=declared-plain-ok",
+        ] {
+            assert!(
+                child_env.lines().any(|l| l.starts_with(expected)),
+                "extension child lost {expected:?} — removing too much is its own \
+                 regression.\nchild env:\n{child_env}"
+            );
+        }
     }
 }

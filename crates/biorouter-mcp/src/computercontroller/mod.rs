@@ -28,6 +28,48 @@ use platform::{create_system_automation, SystemAutomation};
 
 const MAX_INLINE_WEB_CONTENT_BYTES: usize = 128 * 1024;
 
+/// Build the child process that runs an `automation_script` body.
+///
+/// `automation_script` executes a script the model wrote, so the child is as
+/// agent-controlled as the `developer` shell tool and must not inherit the
+/// daemon's own credentials — see
+/// [`crate::developer::shell::strip_daemon_private_env`] and issue #57.
+/// `computer_controller` is a shipped built-in and does **not** go through
+/// `configure_shell_command`, so without the call below the daemon's auth
+/// secret reached the script and the fix for #57 was reopened in full: a script
+/// could read `BIOROUTER_SERVER__SECRET_KEY` out of its environment and then
+/// call `biorouterd` as a fully authenticated client (`GET /sessions` for every
+/// session, `POST /sessions/import`).
+///
+/// The strip is applied **last**, after every other `env` call, so nothing set
+/// here can re-admit a daemon credential.
+fn automation_script_command(
+    language: &ScriptLanguage,
+    shell: &str,
+    shell_arg: &str,
+    command: &str,
+) -> Command {
+    let mut cmd = match language {
+        // For PowerShell, we need to use -File instead of -Command
+        ScriptLanguage::Powershell => {
+            let mut cmd = Command::new("powershell");
+            cmd.arg("-NoProfile")
+                .arg("-NonInteractive")
+                .arg("-File")
+                .arg(command);
+            cmd
+        }
+        _ => {
+            let mut cmd = Command::new(shell);
+            cmd.arg(shell_arg).arg(command);
+            cmd
+        }
+    };
+    cmd.env("BIOROUTER_TERMINAL", "1");
+    crate::developer::shell::strip_daemon_private_env(&mut cmd);
+    cmd
+}
+
 /// `web_scrape` HTTP hardening (issue #25): a browser-compatible UA (the old
 /// bare `biorouter/1.0` was bot-flagged into 403s), a request timeout (a hung
 /// server used to hang the tool indefinitely), and one retry on transient
@@ -881,39 +923,16 @@ impl ComputerControllerServer {
         };
 
         // Run the script
-        let output = match language {
-            ScriptLanguage::Powershell => {
-                // For PowerShell, we need to use -File instead of -Command
-                Command::new("powershell")
-                    .arg("-NoProfile")
-                    .arg("-NonInteractive")
-                    .arg("-File")
-                    .arg(&command)
-                    .env("BIOROUTER_TERMINAL", "1")
-                    .output()
-                    .await
-                    .map_err(|e| {
-                        ErrorData::new(
-                            ErrorCode::INTERNAL_ERROR,
-                            format!("Failed to run script: {}", e),
-                            None,
-                        )
-                    })?
-            }
-            _ => Command::new(shell)
-                .arg(shell_arg)
-                .arg(&command)
-                .env("BIOROUTER_TERMINAL", "1")
-                .output()
-                .await
-                .map_err(|e| {
-                    ErrorData::new(
-                        ErrorCode::INTERNAL_ERROR,
-                        format!("Failed to run script: {}", e),
-                        None,
-                    )
-                })?,
-        };
+        let output = automation_script_command(&language, shell, shell_arg, &command)
+            .output()
+            .await
+            .map_err(|e| {
+                ErrorData::new(
+                    ErrorCode::INTERNAL_ERROR,
+                    format!("Failed to run script: {}", e),
+                    None,
+                )
+            })?;
 
         let output_str = String::from_utf8_lossy(&output.stdout).into_owned();
         let error_str = String::from_utf8_lossy(&output.stderr).into_owned();
@@ -1613,6 +1632,238 @@ mod web_and_script_tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// Child half of the two `automation_script` leak tests below.
+    ///
+    /// The leak is in the *inherited* environment, so exercising it means
+    /// controlling this process's environment — and `set_var` is unsound in a
+    /// threaded test binary. So the parent re-invokes this very test binary
+    /// with the canary exported and this half spawns a real child through the
+    /// real `automation_script_command`, printing the environment that child
+    /// actually received. Same shape as the `developer::shell` probe that
+    /// guards the shell tool. `#[ignore]` keeps it out of a normal run.
+    #[cfg(unix)]
+    #[tokio::test]
+    #[ignore]
+    async fn leak_probe_prints_automation_script_child_env() {
+        let mut cmd = automation_script_command(&ScriptLanguage::Shell, "bash", "-c", "printenv");
+        let out = cmd.output().await.expect("automation child must spawn");
+        let raw = String::from_utf8_lossy(&out.stdout);
+        let canary = std::env::var("BR_TEST_CANARY").unwrap_or_default();
+        // Report BioRouter's namespace, the injected variables, and any line
+        // carrying the canary under *any* key — so a copy of the secret under a
+        // different name is still caught. Everything else is dropped: printing
+        // the whole environment of whoever runs the suite would be its own leak.
+        let report = raw
+            .lines()
+            .filter(|line| {
+                let key = line.split('=').next().unwrap_or("");
+                if key == "BR_TEST_CANARY" {
+                    return false; // the channel carrying the canary is not the leak
+                }
+                key.starts_with("BIOROUTER_")
+                    || key.starts_with("GOOSE_")
+                    || matches!(
+                        key,
+                        "PATH" | "HOME" | "BR_TEST_USER_VAR" | "SPOKEAGENT_PASSCODE"
+                    )
+                    || (!canary.is_empty() && line.contains(&canary))
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        println!("BEGIN_CHILD_ENV");
+        println!("{report}");
+        println!("END_CHILD_ENV");
+    }
+
+    #[cfg(unix)]
+    fn run_automation_leak_probe(canary: &str) -> String {
+        run_leak_probe_named("leak_probe_prints_automation_script_child_env", canary)
+    }
+
+    /// Run the named ignored probe in a fresh copy of this test binary whose
+    /// environment is the daemon's: the auth secret, the port, an
+    /// extension-declared credential and an ordinary user variable.
+    #[cfg(unix)]
+    fn run_leak_probe_named(probe_fn: &str, canary: &str) -> String {
+        let m = module_path!();
+        let without_crate = m.split_once("::").map(|(_, rest)| rest).unwrap_or(m);
+        let probe = format!("{without_crate}::{probe_fn}");
+        let exe = std::env::current_exe().expect("test binary path");
+        let out = std::process::Command::new(exe)
+            .args([
+                "--exact",
+                &probe,
+                "--ignored",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env("BIOROUTER_SERVER__SECRET_KEY", canary)
+            .env("BR_TEST_CANARY", canary)
+            .env("BIOROUTER_PORT", "54321")
+            .env("SPOKEAGENT_PASSCODE", "extension-credential-ok")
+            .env("BR_TEST_USER_VAR", "user-env-ok")
+            .output()
+            .expect("re-invoking the test binary must work");
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        stdout
+            .split_once("BEGIN_CHILD_ENV\n")
+            .and_then(|(_, rest)| rest.split_once("END_CHILD_ENV"))
+            .map(|(body, _)| body.to_string())
+            .unwrap_or_else(|| {
+                panic!(
+                    "probe produced no child environment.\nstdout:\n{stdout}\nstderr:\n{}",
+                    String::from_utf8_lossy(&out.stderr)
+                )
+            })
+    }
+
+    /// Issue #57. `automation_script` runs a script the model wrote, so its
+    /// child is exactly as agent-controlled as the `developer` shell tool — but
+    /// it has its own spawn path and never touches `configure_shell_command`.
+    /// Until this was fixed, a script could read the daemon's auth secret out
+    /// of its own environment and call `biorouterd` as a fully authenticated
+    /// client (verified end to end against a live daemon: `GET /sessions`
+    /// returned every session on the machine).
+    #[cfg(unix)]
+    #[test]
+    fn daemon_secret_never_reaches_an_automation_script_child() {
+        const CANARY: &str = "canary-daemon-secret-cc-57";
+        let child_env = run_automation_leak_probe(CANARY);
+        assert!(
+            !child_env.contains(CANARY),
+            "issue #57: the daemon's auth secret reached a computer_controller \
+             automation_script, so any session can call biorouterd as an authenticated \
+             client.\nchild env:\n{child_env}"
+        );
+        assert!(
+            !child_env.contains("BIOROUTER_SERVER__SECRET_KEY"),
+            "the key name itself must be gone, not just the value:\n{child_env}"
+        );
+    }
+
+    /// Child half of [`daemon_secret_never_reaches_a_computer_control_child`].
+    ///
+    /// `computer_control` runs a model-authored *system* script through the
+    /// per-platform automation backend — `osascript` on macOS, `powershell` on
+    /// Windows, a generated `python3` script on Linux. AppleScript's
+    /// `do shell script` and Python's `subprocess.run(shell=True)` are both
+    /// full shells, so this is a second agent-controlled child in the same
+    /// built-in extension, on a different spawn path from `automation_script`.
+    /// Unlike `printenv` in a shell, `osascript` returns `do shell script`
+    /// output as a single unsplittable blob, so this probe reports **only
+    /// booleans** — never environment text. Printing the raw result would dump
+    /// the environment of whoever runs the suite (real API keys included) into
+    /// the test log, which is its own leak.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    #[ignore]
+    async fn leak_probe_prints_computer_control_child_env() {
+        let automation = create_system_automation();
+        // Filter inside the child too, so the secret never even crosses back.
+        let out = automation
+            .execute_system_script(
+                "do shell script \"printenv | cut -d= -f1 | sort | tr '\\\\n' ' '\"",
+            )
+            .unwrap_or_default();
+        let keys: Vec<&str> = out.split_whitespace().collect();
+        let canary = std::env::var("BR_TEST_CANARY").unwrap_or_default();
+        // `BR_TEST_CANARY` is the channel that carries the canary *to* the
+        // probe; it is inherited by design and is not the leak under test, so
+        // it is excluded before counting — otherwise every run reports a leak.
+        let saw_canary_value = automation
+            .execute_system_script(&format!(
+                "do shell script \"printenv | grep -v '^BR_TEST_CANARY=' | grep -c -- {} || true\"",
+                shell_quote(&canary)
+            ))
+            .unwrap_or_default()
+            .trim()
+            .parse::<u32>()
+            .unwrap_or(0)
+            > 0;
+        println!("BEGIN_CHILD_ENV");
+        println!("CANARY_VALUE_PRESENT={saw_canary_value}");
+        for key in [
+            "BIOROUTER_SERVER__SECRET_KEY",
+            "BIOROUTER_ACP_WS_TOKEN",
+            "PATH",
+            "HOME",
+            "BIOROUTER_PORT",
+            "SPOKEAGENT_PASSCODE",
+            "BR_TEST_USER_VAR",
+        ] {
+            println!("HAS_{key}={}", keys.contains(&key));
+        }
+        println!("END_CHILD_ENV");
+    }
+
+    /// Single-quote a value for embedding in the `do shell script` string.
+    #[cfg(target_os = "macos")]
+    fn shell_quote(value: &str) -> String {
+        format!("'{}'", value.replace('\'', r"'\''"))
+    }
+
+    /// Issue #57, `computer_control`. Verified end to end against a live daemon
+    /// before the fix: an AppleScript `do shell script "printenv"` returned
+    /// `BIOROUTER_SERVER__SECRET_KEY`.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn daemon_secret_never_reaches_a_computer_control_child() {
+        const CANARY: &str = "canary-daemon-secret-ctl-57";
+        let report = run_leak_probe_named("leak_probe_prints_computer_control_child_env", CANARY);
+        let says = |line: &str| report.lines().any(|l| l.trim() == line);
+
+        assert!(
+            says("CANARY_VALUE_PRESENT=false"),
+            "issue #57: the daemon's auth secret reached a computer_control system script, \
+             so any session can call biorouterd as an authenticated client.\nprobe:\n{report}"
+        );
+        assert!(
+            says("HAS_BIOROUTER_SERVER__SECRET_KEY=false"),
+            "the key name itself must be gone, not just the value:\n{report}"
+        );
+        assert!(
+            says("HAS_BIOROUTER_ACP_WS_TOKEN=false"),
+            "the ACP token is a BioRouter credential too:\n{report}"
+        );
+        // The other direction: the user's environment must survive.
+        for kept in [
+            "HAS_PATH=true",
+            "HAS_HOME=true",
+            "HAS_BIOROUTER_PORT=true",
+            "HAS_SPOKEAGENT_PASSCODE=true",
+            "HAS_BR_TEST_USER_VAR=true",
+        ] {
+            assert!(
+                says(kept),
+                "{kept} — stripping the daemon credential must not censor the user's \
+                 environment:\n{report}"
+            );
+        }
+    }
+
+    /// The other direction: stripping the daemon's credential must not take the
+    /// user's environment (or a legitimately exported extension credential)
+    /// with it. A truncated child environment is its own regression — issue #24
+    /// was exactly that, for `PATH`.
+    #[cfg(unix)]
+    #[test]
+    fn automation_script_child_still_receives_the_user_environment() {
+        let child_env = run_automation_leak_probe("canary-unused");
+        for expected in [
+            "PATH=",
+            "HOME=",
+            "BIOROUTER_PORT=54321",
+            "BIOROUTER_TERMINAL=1",
+            "SPOKEAGENT_PASSCODE=extension-credential-ok",
+            "BR_TEST_USER_VAR=user-env-ok",
+        ] {
+            assert!(
+                child_env.lines().any(|l| l.starts_with(expected)),
+                "{expected} must survive the strip, got:\n{child_env}"
+            );
+        }
     }
 
     #[test]

@@ -15,7 +15,7 @@ use crate::config::base::CursorAgentCommand;
 use crate::config::search_path::SearchPaths;
 use crate::conversation::message::{Message, MessageContent};
 use crate::model::ModelConfig;
-use crate::subprocess::configure_command_no_window;
+use crate::subprocess::prepare_agent_child_command;
 use rmcp::model::Tool;
 
 pub const CURSOR_AGENT_DEFAULT_MODEL: &str = "auto";
@@ -46,9 +46,10 @@ impl CursorAgentProvider {
 
     /// Get authentication status from cursor-agent
     async fn get_authentication_status(&self) -> bool {
-        Command::new(&self.command)
-            .arg("status")
-            .output()
+        let mut cmd = Command::new(&self.command);
+        cmd.arg("status");
+        prepare_agent_child_command(&mut cmd);
+        cmd.output()
             .await
             .ok()
             .map(|output| String::from_utf8_lossy(&output.stdout).contains("✓ Logged in as"))
@@ -196,7 +197,6 @@ impl CursorAgentProvider {
         }
 
         let mut cmd = Command::new(&self.command);
-        configure_command_no_window(&mut cmd);
 
         if let Ok(path) = SearchPaths::builder().with_npm().path() {
             cmd.env("PATH", path);
@@ -212,6 +212,10 @@ impl CursorAgentProvider {
             .arg("--output-format")
             .arg("json")
             .arg("--force");
+
+        // Last, after every arg/env: the child is a coding agent with shell
+        // access, so it must not inherit the daemon's credentials (issue #57).
+        prepare_agent_child_command(&mut cmd);
 
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 

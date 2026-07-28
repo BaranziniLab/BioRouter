@@ -30,7 +30,7 @@ Where a workflow is stored determines which projects and sessions can use it.
 - You're working with a team and want to share the workflow
 - The workflow depends on project-specific files or configurations
 
-> **Note.** These two locations are where workflows are *saved*. They are not the whole set of places Biorouter *looks*: [the workflows index](README.md#workflow-locations) lists the current directory, `BIOROUTER_WORKFLOW_PATH`, and a configured GitHub repository. The full search order used by `biorouter workflow list` is under [Workflow discovery process](#workflow-discovery-process) below.
+> **Note.** These two locations are where workflows are *saved*. They are not the whole set of places Biorouter *looks*: [the workflows index](README.md#workflow-locations) also lists `BIOROUTER_WORKFLOW_PATH` and a configured GitHub repository. The full search order used by `biorouter workflow list` is under [Workflow discovery process](#workflow-discovery-process) below.
 
 ## Storing workflows
 
@@ -111,13 +111,20 @@ biorouter workflow list --format json
 
 #### Workflow discovery process
 
-Biorouter searches for workflows in the following locations (in order):
+Biorouter lists workflows from the following locations:
 
-1. **Current directory**: `.` (looks for `*.yaml` and `*.json` files)
-2. **Custom paths**: Directories specified in the [`BIOROUTER_WORKFLOW_PATH`](../configuration/environment-variables.md#workflow-configuration) environment variable
-3. **Global workflow library**: `~/.config/biorouter/workflows/` (or equivalent on your OS)
-4. **Local project workflows**: `./.biorouter/workflows/`
-5. **GitHub repository**: If the [`BIOROUTER_WORKFLOW_GITHUB_REPO`](../configuration/environment-variables.md#workflow-configuration) environment variable is configured
+1. **Custom paths**: Directories specified in the [`BIOROUTER_WORKFLOW_PATH`](../configuration/environment-variables.md#workflow-configuration) environment variable
+2. **Global workflow library**: `~/.config/biorouter/workflows/` (or equivalent on your OS)
+3. **Local project workflows**: `./.biorouter/workflows/`
+4. **GitHub repository**: If the [`BIOROUTER_WORKFLOW_GITHUB_REPO`](../configuration/environment-variables.md#workflow-configuration) environment variable is configured
+
+Each of these is a directory that exists to hold workflows, so listing reads every `*.yaml` and `*.json` in it.
+
+> **Note.** The working directory *root* is not one of them. It used to be, which meant `biorouter workflow list` opened and parsed every top-level `.yaml`/`.json` in whatever directory the session pointed at — package manifests, lockfiles, other tools' configuration. Set [`BIOROUTER_WORKFLOW_SCAN_WORKING_DIR=1`](../configuration/environment-variables.md#workflow-configuration) to list workflows kept loose in a project root, or move them into `.biorouter/workflows/`.
+
+#### Running a workflow kept in the working directory
+
+Discovery and lookup are separate. Naming a workflow — `biorouter run --recipe my-workflow`, or a `path:` in `sub_workflows` — searches the working directory too, in every case, because it opens exactly the file you named (`./my-workflow.yaml`, then `./my-workflow.json`) rather than enumerating the directory. A workflow the CLI's `/workflow` command saved to `./workflow.yaml` therefore still runs by name; it just does not appear in `biorouter workflow list` unless you opt in above.
 
 #### Example output
 
@@ -125,7 +132,7 @@ Biorouter searches for workflows in the following locations (in order):
 ```text
 $ biorouter workflow list
 Available workflows:
-biorouter-self-test - A comprehensive meta-testing workflow - local: ./biorouter-self-test.yaml
+biorouter-self-test - A comprehensive meta-testing workflow - local: ./.biorouter/workflows/biorouter-self-test.yaml
 hello-world - A sample workflow demonstrating basic usage - local: ~/.config/biorouter/workflows/hello-world.yaml
 literature-scan - Summarize new PubMed papers on a topic - local: ~/.config/biorouter/workflows/literature-scan.yaml
 ```
@@ -134,9 +141,9 @@ literature-scan - Summarize new PubMed papers on a topic - local: ~/.config/bior
 ```text
 $ biorouter workflow list --verbose
 Available workflows:
-  biorouter-self-test - A comprehensive meta-testing workflow - local: ./biorouter-self-test.yaml
+  biorouter-self-test - A comprehensive meta-testing workflow - local: ./.biorouter/workflows/biorouter-self-test.yaml
     Title: biorouter Self-Testing Integration Suite
-    Path: ./biorouter-self-test.yaml
+    Path: ./.biorouter/workflows/biorouter-self-test.yaml
   hello-world - A sample workflow demonstrating basic usage - local: ~/.config/biorouter/workflows/hello-world.yaml
     Title: Hello World Workflow
     Path: /Users/username/.config/biorouter/workflows/hello-world.yaml
@@ -148,7 +155,7 @@ Available workflows:
   {
     "name": "biorouter-self-test",
     "source": "Local",
-    "path": "./biorouter-self-test.yaml",
+    "path": "./.biorouter/workflows/biorouter-self-test.yaml",
     "title": "biorouter Self-Testing Integration Suite",
     "description": "A comprehensive meta-testing workflow"
   },

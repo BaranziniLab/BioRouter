@@ -17,7 +17,9 @@ use crate::action_required_manager::ActionRequiredManager;
 use crate::agents::budget::{BudgetAction, BudgetTracker, ReplyBudget};
 use crate::agents::effort::ReasoningEffort;
 use crate::agents::extension::{ExtensionConfig, ExtensionResult, ToolInfo};
-use crate::agents::extension_manager::{get_parameter_names, normalize, ExtensionManager};
+use crate::agents::extension_manager::{
+    get_parameter_names, normalize, resolve_bundled_extension, ExtensionManager,
+};
 use crate::agents::extension_manager_extension::MANAGE_EXTENSIONS_TOOL_NAME_COMPLETE;
 use crate::agents::final_output_tool::{FINAL_OUTPUT_CONTINUATION_MESSAGE, FINAL_OUTPUT_TOOL_NAME};
 use crate::agents::platform_tools::{
@@ -25,9 +27,7 @@ use crate::agents::platform_tools::{
     PLATFORM_READ_SESSION_BLOB_TOOL_NAME,
 };
 use crate::agents::prompt_manager::PromptManager;
-use crate::agents::resource_refs::{
-    canonical_builtin_extension_name, extract_resource_refs, ResourceRefs,
-};
+use crate::agents::resource_refs::{extract_resource_refs, ResourceRefs};
 use crate::agents::retry::{RetryManager, RetryResult};
 use crate::agents::stall::{StallAction, StallCheckConfig, StallWatch};
 use crate::agents::subagent_handle;
@@ -1340,29 +1340,28 @@ impl Agent {
                 continue;
             }
 
-            let canonical = canonical_builtin_extension_name(requested)
-                .unwrap_or_else(|| requested.to_string());
-            let normalized = normalize(&canonical);
+            // Resolve by extension id and owning registry, never by display
+            // name: two platform extensions are registered under a display
+            // string ("Extension Manager", "Chat Recall"), and feeding that into
+            // the *builtin* lookup made a valid `/ext:` request fail exactly
+            // like a policy refusal (issue #48).
+            let target = resolve_bundled_extension(requested);
+            // The key the extension is stored under is also its tool prefix, so
+            // it is what the model is told to use below.
+            let canonical = target
+                .as_ref()
+                .map(|target| target.key())
+                .unwrap_or_else(|| normalize(requested));
 
             if !self
                 .extension_manager
-                .is_extension_enabled(&normalized)
+                .is_extension_enabled(&canonical)
                 .await
             {
-                let is_builtin = biorouter_mcp::BUILTIN_EXTENSIONS.contains_key(canonical.as_str())
-                    || crate::agents::extension::PLATFORM_EXTENSIONS
-                        .contains_key(normalized.as_str());
-                if is_builtin {
-                    let config = ExtensionConfig::Builtin {
-                        name: canonical.clone(),
-                        description: format!(
-                            "Selected via explicit resource marker /ext:{canonical}"
-                        ),
-                        display_name: None,
-                        timeout: Some(300),
-                        bundled: Some(true),
-                        available_tools: Vec::new(),
-                    };
+                if let Some(target) = target {
+                    let config = target.into_config(format!(
+                        "Selected via explicit resource marker /ext:{canonical}"
+                    ));
                     match self.add_extension(config).await {
                         Ok(()) => {
                             if let Err(error) = self.persist_extension_state(session_id).await {

@@ -6,13 +6,16 @@ pub struct WindowsAutomation;
 
 impl SystemAutomation for WindowsAutomation {
     fn execute_system_script(&self, script: &str) -> std::io::Result<String> {
-        let output = Command::new("powershell")
-            .arg("-NoProfile")
+        // `script` is written by the model, so this child is agent-controlled
+        // and must not inherit the daemon's own credentials (issue #57).
+        let mut cmd = Command::new("powershell");
+        cmd.arg("-NoProfile")
             .arg("-NonInteractive")
             .arg("-Command")
             .arg(script)
-            .env("BIOROUTER_TERMINAL", "1")
-            .output()?;
+            .env("BIOROUTER_TERMINAL", "1");
+        crate::developer::shell::strip_daemon_private_env_std(&mut cmd);
+        let output = cmd.output()?;
         let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
 
         // Honest reporting: surface non-zero exit codes and stderr instead of

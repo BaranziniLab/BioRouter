@@ -83,6 +83,19 @@ fn global_memory_dir() -> PathBuf {
     crate::paths::in_config_dir("memory")
 }
 
+/// Heads the *index* of global memory categories in the system prompt.
+///
+/// Bodies deliberately do not appear — see [`MemoryServer::compose_instructions`].
+const GLOBAL_INDEX_HEADER: &str = "\n\nGlobal Memories — categories only, contents NOT loaded:\n\
+     These were saved by other sessions and are shared by every project on this machine, so their\n\
+     contents are deliberately kept out of this prompt. If one of the categories below looks\n\
+     relevant to what the user is asking, read it with\n\
+     `retrieve_memories(category=\"<category>\", is_global=true)` — a tool call the user can see.\n\
+     Never guess at, or claim to know, the contents of a category you have not retrieved.\n";
+
+/// Heads the inlined local memories.
+const LOCAL_SECTION_HEADER: &str = "\n\nLocal Memories (this project's .biorouter/memory):\n";
+
 impl Default for MemoryServer {
     fn default() -> Self {
         Self::new()
@@ -121,8 +134,8 @@ impl MemoryServer {
                 - Suggest a relevant category like "personal" for user data or "development" for project preferences.
                 - Inquire about any specific tags they want to apply for easier lookup.
                 - Confirm the desired storage location:
-                  - Local storage (.biorouter/memory) for project-specific details.
-                  - Global storage (~/.config/biorouter/memory) for user-wide data.
+                  - Local storage (.biorouter/memory) for project-specific details. This is the default; prefer it.
+                  - Global storage (~/.config/biorouter/memory) for user-wide data. A global memory is readable by every Biorouter session on this machine, in every project — only choose it when the user has asked for something that should follow them across projects, and say so when you store it.
                 - Use the remember_memory tool to store the information.
                   - `remember_memory(category, data, tags, is_global)`
              Keywords that trigger memory tools:
@@ -193,6 +206,8 @@ impl MemoryServer {
              - Always confirm with the user before saving information.
              - Propose suitable categories and tag suggestions.
              - Discuss storage scope thoroughly to align with user needs.
+             - Never save globally something the user has not asked to be remembered across projects. When in doubt, save locally — a local memory can be re-saved globally later, but a global one has already crossed into every other session.
+             - Global memory contents are not loaded into your context automatically; only the category names are. Retrieve a category before relying on what is in it.
              - Acknowledge the user about what is stored and where, for transparency and ease of future retrieval.
             "#};
 
@@ -212,38 +227,92 @@ impl MemoryServer {
             local_memory_dir,
         };
 
-        let retrieved_global_memories = memory_router.retrieve_all(true);
-        let retrieved_local_memories = memory_router.retrieve_all(false);
+        let updated_instructions = memory_router.compose_instructions(&instructions);
+        memory_router.set_instructions(updated_instructions);
 
-        let mut updated_instructions = instructions;
+        memory_router
+    }
+
+    /// Assemble what this extension contributes to the agent's system prompt:
+    /// the protocol above, plus whatever the two memory stores hold.
+    ///
+    /// **Local** memories are inlined. They live in
+    /// `<working dir>/.biorouter/memory`, so they only ever reach a session the
+    /// user opened *that* directory in — the same act that put them there.
+    ///
+    /// **Global** memories are only *indexed*: category names, never bodies and
+    /// never tags. The global store is machine-wide, so inlining it meant a
+    /// memory one session wrote with `is_global=true` was read by every later
+    /// session — any project, any working directory, any model — with no tool
+    /// call in the receiving session, nothing in its transcript, and nothing
+    /// shown to the user (issue #58). `is_global` is an argument the *model*
+    /// supplies, so nothing but the model's judgement stood between a summary
+    /// of sensitive work and every future conversation.
+    ///
+    /// The index keeps the feature discoverable while making the read an
+    /// explicit `retrieve_memories(…, is_global=true)` call in the receiving
+    /// session — visible in the transcript, gateable by the permission
+    /// inspectors, and cancellable by the user. That is the bar the issue sets
+    /// when it calls `chatrecall` the weaker channel "because it at least
+    /// requires the receiving session to ask". It is also retroactive: memories
+    /// already on disk stop being injected the moment this ships, which a
+    /// write-side gate could not achieve.
+    ///
+    /// What this deliberately does **not** do, and so remains for #56:
+    /// 1. The *write* is still ungated. An in-process MCP server has no channel
+    ///    to the user, so it cannot ask before a memory is marked global; all it
+    ///    can do is name the scope in the tool result (see `remember_memory`) so
+    ///    the transcript shows it. A real confirmation needs the permission
+    ///    path in `biorouter::permission`, not this crate.
+    /// 2. The line is drawn by *store* — global vs local — not by the
+    ///    sensitivity of the session that wrote the entry. A sensitive note
+    ///    saved locally still lands in the prompt of every session opened in
+    ///    that directory. Only classification can draw the finer line.
+    /// 3. A category *name* is model-chosen text and still crosses sessions.
+    ///    It is a short label rather than a body, and it is what lets the model
+    ///    fetch one category instead of `category="*"`, so it is kept — but it
+    ///    is not zero.
+    /// 4. Nothing surfaces the global store in the UI, so a user still cannot
+    ///    see or prune what accumulated there without asking the agent.
+    fn compose_instructions(&self, base: &str) -> String {
+        let retrieved_global_memories = self.retrieve_all(true);
+        let retrieved_local_memories = self.retrieve_all(false);
+
+        let mut updated_instructions = base.to_string();
 
         let memories_follow_up_instructions = formatdoc! {r#"
             **Here are the user's currently saved memories:**
-            Please keep this information in mind when answering future questions.
+            Local memories — this project only — are listed below in full. Global memories are listed by category name only; their contents are NOT in this prompt and have to be fetched with retrieve_memories.
+            Please keep what is listed in mind when answering future questions.
             Do not bring up memories unless relevant.
-            Note: if the user has not saved any memories, this section will be empty.
+            Note: if the user has not saved any memories, these sections will be empty.
             Note: if the user removes a memory that was previously loaded into the system, please remove it from the system instructions.
             "#};
 
         updated_instructions.push_str("\n\n");
         updated_instructions.push_str(&memories_follow_up_instructions);
 
+        // Global: the index, and only the index.
         if let Ok(global_memories) = retrieved_global_memories {
-            if !global_memories.is_empty() {
-                updated_instructions.push_str("\n\nGlobal Memories:\n");
-                for (category, memories) in global_memories {
-                    updated_instructions.push_str(&format!("\nCategory: {}\n", category));
-                    for memory in memories {
-                        updated_instructions.push_str(&format!("- {}\n", memory));
-                    }
+            let mut categories: Vec<&str> = global_memories.keys().map(String::as_str).collect();
+            // The extension instructions are part of the system prompt; a
+            // `HashMap`-ordered listing reshuffles between launches and defeats
+            // prompt caching for nothing.
+            categories.sort_unstable();
+            if !categories.is_empty() {
+                updated_instructions.push_str(GLOBAL_INDEX_HEADER);
+                for category in categories {
+                    updated_instructions.push_str(&format!("- {}\n", category));
                 }
             }
         }
 
         if let Ok(local_memories) = retrieved_local_memories {
-            if !local_memories.is_empty() {
-                updated_instructions.push_str("\n\nLocal Memories:\n");
-                for (category, memories) in local_memories {
+            let mut by_category: Vec<(&String, &Vec<String>)> = local_memories.iter().collect();
+            by_category.sort_unstable_by_key(|(category, _)| *category);
+            if !by_category.is_empty() {
+                updated_instructions.push_str(LOCAL_SECTION_HEADER);
+                for (category, memories) in by_category {
                     updated_instructions.push_str(&format!("\nCategory: {}\n", category));
                     for memory in memories {
                         updated_instructions.push_str(&format!("- {}\n", memory));
@@ -252,9 +321,7 @@ impl MemoryServer {
             }
         }
 
-        memory_router.set_instructions(updated_instructions);
-
-        memory_router
+        updated_instructions
     }
 
     // Add a setter method for instructions
@@ -415,7 +482,11 @@ impl MemoryServer {
     /// Stores a memory with optional tags in a specified category
     #[tool(
         name = "remember_memory",
-        description = "Stores a memory with optional tags in a specified category"
+        description = "Stores a memory with optional tags in a specified category. is_global=false \
+                       keeps it in this project's .biorouter/memory; is_global=true writes to the \
+                       machine-wide store that every Biorouter session, in every project, can read. \
+                       Store locally unless the user has asked for something that should follow \
+                       them across projects, and tell them which one you used."
     )]
     pub async fn remember_memory(
         &self,
@@ -441,10 +512,29 @@ impl MemoryServer {
         )
         .map_err(|e| ErrorData::new(ErrorCode::INTERNAL_ERROR, e.to_string(), None))?;
 
-        Ok(CallToolResult::success(vec![Content::text(format!(
-            "Stored memory in category: {}",
-            params.category
-        ))]))
+        // The scope is an argument the *model* supplies, and an MCP server has
+        // no channel back to the user to ask. What it does have is this result,
+        // which the transcript shows — so a machine-wide write has to name
+        // itself rather than read as "Stored memory in category: x", which was
+        // indistinguishable from a project-local note.
+        let message = if params.is_global {
+            format!(
+                "Stored memory globally in category: {category}. Global memories live in the \
+                 machine-wide store and are readable by every Biorouter session, in any project — \
+                 not just this one. To undo: remove_specific_memory(category=\"{category}\", \
+                 memory_content=…, is_global=true).",
+                category = params.category
+            )
+        } else {
+            format!(
+                "Stored memory locally in category: {category}. Local memories stay in this \
+                 project's .biorouter/memory and are read only by sessions working in this \
+                 directory.",
+                category = params.category
+            )
+        };
+
+        Ok(CallToolResult::success(vec![Content::text(message)]))
     }
 
     /// Retrieves all memories from a specified category
@@ -547,6 +637,205 @@ impl ServerHandler for MemoryServer {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    /// A server over throwaway stores, so a test never touches the real ones.
+    fn server_at(base: &std::path::Path) -> MemoryServer {
+        MemoryServer {
+            tool_router: ToolRouter::new(),
+            instructions: String::new(),
+            global_memory_dir: base.join("global"),
+            local_memory_dir: base.join("local"),
+        }
+    }
+
+    fn result_text(result: &CallToolResult) -> String {
+        result
+            .content
+            .iter()
+            .find_map(|c| c.as_text())
+            .expect("tool result carries text")
+            .text
+            .clone()
+    }
+
+    /// #58. A memory one session wrote with `is_global=true` was appended
+    /// verbatim to the extension instructions — i.e. the system prompt — of
+    /// *every* later session. The global store is machine-wide, so this crossed
+    /// project, working-directory and model boundaries with no tool call in the
+    /// receiving session, nothing in its transcript, and nothing shown to the
+    /// user. `is_global` is an argument the *model* supplies, so a model
+    /// summarising sensitive work could open that channel on its own.
+    ///
+    /// The bodies must stay out of the prompt. What crosses is an index of
+    /// category names, plus the `retrieve_memories` tool that already exists —
+    /// so a session that wants a global memory has to *ask*, on the
+    /// tool-dispatch path where the user, the transcript and the permission
+    /// inspectors can all see it. That is the bar the issue itself sets when it
+    /// calls `chatrecall` the weaker channel "because it at least requires the
+    /// receiving session to ask".
+    #[test]
+    fn global_memory_bodies_stay_out_of_the_system_prompt() {
+        let temp = tempdir().unwrap();
+        let server = server_at(temp.path());
+
+        server
+            .remember(
+                "context",
+                "clinical",
+                "cohort 4217 had 12 responders and 3 withdrawals",
+                &[],
+                true,
+            )
+            .unwrap();
+        server
+            .remember(
+                "context",
+                "development",
+                "this project formats with black",
+                &[],
+                false,
+            )
+            .unwrap();
+
+        let instructions = server.compose_instructions("BASE PROTOCOL");
+
+        assert!(
+            !instructions.contains("cohort 4217 had 12 responders"),
+            "a global memory's body reached the system prompt of a session that \
+             never asked for it:\n{instructions}"
+        );
+        assert!(
+            instructions.contains("clinical"),
+            "the global *index* has to survive, or the model can never discover \
+             that a global memory exists:\n{instructions}"
+        );
+        assert!(
+            instructions.contains("is_global=true"),
+            "the prompt has to say how to fetch a global memory the model finds \
+             relevant, or the index is a dead end:\n{instructions}"
+        );
+        assert!(
+            instructions.contains("this project formats with black"),
+            "local memories live under the working directory the user opened, \
+             so they cross no boundary and stay inlined:\n{instructions}"
+        );
+    }
+
+    /// The index carries names, never bodies — including the tag line, which is
+    /// author-supplied text just like the body.
+    #[test]
+    fn the_global_index_lists_categories_not_contents() {
+        let temp = tempdir().unwrap();
+        let server = server_at(temp.path());
+
+        server
+            .remember(
+                "context",
+                "personal",
+                "patient MRN 0092134 is enrolled",
+                &["mrn", "enrollment"],
+                true,
+            )
+            .unwrap();
+
+        let instructions = server.compose_instructions("BASE PROTOCOL");
+
+        assert!(
+            !instructions.contains("0092134"),
+            "global body leaked into the prompt:\n{instructions}"
+        );
+        assert!(
+            !instructions.contains("enrollment"),
+            "global tags are author-supplied text and leak the same way a body \
+             does:\n{instructions}"
+        );
+        assert!(
+            instructions.contains("personal"),
+            "the category name is the whole index:\n{instructions}"
+        );
+    }
+
+    /// The extension instructions are part of the system prompt, so a
+    /// `HashMap`-ordered listing reshuffles between launches and defeats prompt
+    /// caching for nothing. Both sections are ordered.
+    #[test]
+    fn the_memory_sections_are_ordered() {
+        let temp = tempdir().unwrap();
+        let server = server_at(temp.path());
+
+        for category in ["zeta", "alpha", "mu"] {
+            server
+                .remember("context", category, "note", &[], true)
+                .unwrap();
+        }
+
+        let instructions = server.compose_instructions("BASE PROTOCOL");
+        let index_of = |c: &str| {
+            instructions
+                .find(c)
+                .unwrap_or_else(|| panic!("{c} missing from:\n{instructions}"))
+        };
+
+        assert!(
+            index_of("alpha") < index_of("mu") && index_of("mu") < index_of("zeta"),
+            "the global index is unordered, so the system prompt changes shape \
+             between launches:\n{instructions}"
+        );
+    }
+
+    /// The scope is an argument the *model* chooses. The write cannot be gated
+    /// from inside an MCP server — there is no channel from here to the user —
+    /// but the tool result is shown in the transcript, so at minimum it has to
+    /// say which store it wrote to. "Stored memory in category: x" made a
+    /// machine-wide write indistinguishable from a project-local note.
+    #[tokio::test]
+    async fn remembering_says_which_store_it_wrote_to() {
+        let temp = tempdir().unwrap();
+        let server = server_at(temp.path());
+
+        let global = server
+            .remember_memory(Parameters(RememberMemoryParams {
+                category: "personal".into(),
+                data: "prefers metric units".into(),
+                tags: vec![],
+                is_global: true,
+            }))
+            .await
+            .unwrap();
+        let global = result_text(&global);
+        assert!(
+            global.to_lowercase().contains("global"),
+            "a machine-wide write has to name its scope where the user can see \
+             it, got: {global}"
+        );
+        assert!(
+            global.to_lowercase().contains("every")
+                || global.to_lowercase().contains("all sessions")
+                || global.to_lowercase().contains("other sessions"),
+            "the result has to say the memory is readable outside this session, \
+             got: {global}"
+        );
+
+        let local = server
+            .remember_memory(Parameters(RememberMemoryParams {
+                category: "development".into(),
+                data: "formats with black".into(),
+                tags: vec![],
+                is_global: false,
+            }))
+            .await
+            .unwrap();
+        let local = result_text(&local);
+        assert!(
+            local.to_lowercase().contains("local") || local.to_lowercase().contains("this project"),
+            "a project-local write has to be distinguishable from a global one, \
+             got: {local}"
+        );
+        assert!(
+            !local.to_lowercase().contains("every session"),
+            "a local write must not claim cross-session reach, got: {local}"
+        );
+    }
 
     /// The global memory store is user data the agent reads *and writes*, so a
     /// sandboxed run — a test drive, a worktree, a per-app jail — must not

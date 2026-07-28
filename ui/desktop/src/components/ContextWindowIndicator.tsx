@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ChevronsDownUp } from './icons/app-icons';
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/Tooltip';
-import { readConfig, upsertConfig } from '../api';
+import { useConfig } from './ConfigContext';
 
 interface ContextWindowGaugeProps {
   totalTokens: number | undefined;
@@ -35,6 +35,12 @@ export const ContextWindowGauge: React.FC<ContextWindowGaugeProps> = ({
 }) => {
   const current = totalTokens ?? 0;
   const total = tokenLimit || 0;
+  // The threshold is read and written through ConfigContext, never straight to
+  // the API: the context's cached config is the copy the rest of the app reads,
+  // and only a write that goes through it re-reads that cache afterwards. A
+  // direct `upsertConfig` here would leave every other consumer of this
+  // (non-secret, therefore cached) key on the pre-write value (#52).
+  const { read: readConfigValue, upsert: upsertConfigValue } = useConfig();
   const [thresholdPct, setThresholdPct] = useState<number>(AUTO_COMPACT_DEFAULT_PCT);
   // Controlled tooltip so Radix's default focus-trigger doesn't pop the
   // hint open when the popover auto-focuses the slider on mount.
@@ -43,12 +49,19 @@ export const ContextWindowGauge: React.FC<ContextWindowGaugeProps> = ({
   const draggingRef = useRef(false);
   const pendingPctRef = useRef<number | null>(null);
 
+  // The unmount flush below runs after the component has stopped rendering, so
+  // it cannot close over `upsertConfigValue` directly without pinning whichever
+  // one it saw first. A ref keeps it on the current one.
+  const upsertRef = useRef(upsertConfigValue);
+  useEffect(() => {
+    upsertRef.current = upsertConfigValue;
+  }, [upsertConfigValue]);
+
   useEffect(() => {
     let cancelled = false;
-    readConfig({ body: { key: AUTO_COMPACT_THRESHOLD_KEY, is_secret: false } })
-      .then((res) => {
+    readConfigValue(AUTO_COMPACT_THRESHOLD_KEY, false)
+      .then((v) => {
         if (cancelled) return;
-        const v = res.data as unknown;
         if (typeof v === 'number' && v > 0 && v < 1) {
           setThresholdPct(clampThresholdPct(v * 100));
         }
@@ -59,7 +72,7 @@ export const ContextWindowGauge: React.FC<ContextWindowGaugeProps> = ({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [readConfigValue]);
 
   // Flush any in-flight pending change if the gauge unmounts mid-drag
   // (e.g. popover closes when the user releases the mouse outside of it).
@@ -68,31 +81,22 @@ export const ContextWindowGauge: React.FC<ContextWindowGaugeProps> = ({
       if (pendingPctRef.current !== null) {
         const v = pendingPctRef.current;
         pendingPctRef.current = null;
-        upsertConfig({
-          body: {
-            key: AUTO_COMPACT_THRESHOLD_KEY,
-            value: v / 100,
-            is_secret: false,
-          },
-        }).catch((err) => {
+        upsertRef.current(AUTO_COMPACT_THRESHOLD_KEY, v / 100, false).catch((err) => {
           console.warn('Failed to save auto-compact threshold on unmount:', err);
         });
       }
     };
   }, []);
 
-  const persistThreshold = (pctValue: number) => {
-    pendingPctRef.current = null;
-    upsertConfig({
-      body: {
-        key: AUTO_COMPACT_THRESHOLD_KEY,
-        value: pctValue / 100,
-        is_secret: false,
-      },
-    }).catch((err) => {
-      console.warn('Failed to save auto-compact threshold:', err);
-    });
-  };
+  const persistThreshold = useCallback(
+    (pctValue: number) => {
+      pendingPctRef.current = null;
+      upsertConfigValue(AUTO_COMPACT_THRESHOLD_KEY, pctValue / 100, false).catch((err) => {
+        console.warn('Failed to save auto-compact threshold:', err);
+      });
+    },
+    [upsertConfigValue]
+  );
 
   // Live updates during drag don't hit the API — we only persist on release
   // so a single drag costs one POST, not dozens.
@@ -132,7 +136,7 @@ export const ContextWindowGauge: React.FC<ContextWindowGaugeProps> = ({
     if (pendingPctRef.current !== null) {
       persistThreshold(pendingPctRef.current);
     }
-  }, [handleDragMove]);
+  }, [handleDragMove, persistThreshold]);
 
   const handleDragStart = useCallback(
     (e: React.MouseEvent) => {

@@ -38,9 +38,11 @@ my-workflow.json     ← supported
 
 Biorouter discovers workflows from:
 
-1. The current working directory
+1. The global library `~/.config/biorouter/workflows/` and the project library `./.biorouter/workflows/`
 2. Paths listed in the `BIOROUTER_WORKFLOW_PATH` environment variable
 3. A configured GitHub repository (`BIOROUTER_WORKFLOW_GITHUB_REPO`) — requires the `gh` CLI to be installed and authenticated
+
+The working directory *root* is not listed unless you opt in with `BIOROUTER_WORKFLOW_SCAN_WORKING_DIR=1`. Running a workflow by name still finds it there — see [Workflow discovery process](workflow-storage-and-discovery.md#workflow-discovery-process).
 
 > **Note.** [Workflow storage and discovery](workflow-storage-and-discovery.md) documents a longer search order that also includes the global library `~/.config/biorouter/workflows/` and project-local `./.biorouter/workflows/`. Read both before relying on discovery order.
 

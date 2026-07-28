@@ -32,6 +32,35 @@ pub async fn classify_with_text(
     extracted_text: Option<&str>,
     completer: Option<Box<dyn Completer>>,
 ) -> Result<Credibility> {
+    classify_with_text_at(input, extracted_text, completer, &ResolverBases::default()).await
+}
+
+/// Base URLs of the deterministic DOI resolvers.
+///
+/// Production resolves against the real Crossref / OpenAlex APIs. Tests point
+/// these at a local mock: a unit test that reaches the network fails whenever
+/// the network does, which reddens the workspace gate for reasons unrelated to
+/// the change under test (issue #55).
+pub struct ResolverBases<'a> {
+    pub crossref: &'a str,
+    pub openalex: &'a str,
+}
+
+impl Default for ResolverBases<'static> {
+    fn default() -> Self {
+        Self {
+            crossref: crossref::API_BASE,
+            openalex: openalex::API_BASE,
+        }
+    }
+}
+
+async fn classify_with_text_at(
+    input: &SourceInput,
+    extracted_text: Option<&str>,
+    completer: Option<Box<dyn Completer>>,
+    bases: &ResolverBases<'_>,
+) -> Result<Credibility> {
     // 1. Extract identifiers from the richest text we have: the filename / URL
     //    plus the full converted body.
     let mut probe = probe_text(input);
@@ -43,10 +72,10 @@ pub async fn classify_with_text(
 
     // 2. Deterministic DOI lookup via Crossref then OpenAlex.
     if let Some(doi) = &ids.doi {
-        if let Some(c) = crossref::classify(doi).await? {
+        if let Some(c) = crossref::classify_at(bases.crossref, doi).await? {
             return Ok(c);
         }
-        if let Some(c) = openalex::classify(doi).await? {
+        if let Some(c) = openalex::classify_at(bases.openalex, doi).await? {
             return Ok(c);
         }
     }
@@ -202,12 +231,36 @@ fn probe_text(input: &SourceInput) -> String {
 mod tests {
     use super::*;
     use crate::knowledge::types::CredibilityTier;
+    use wiremock::{
+        matchers::{method, path_regex},
+        Mock, MockServer, ResponseTemplate,
+    };
+
+    /// Resolver bases nothing can be resolved against: port 1 on loopback is
+    /// closed, so a DOI lookup fails fast and loudly. The tests that assert a
+    /// *non*-resolver code path use it, so that a fixture which one day grows a
+    /// DOI surfaces as a test failure rather than as a silent live API call.
+    const NO_RESOLVER: ResolverBases<'static> = ResolverBases {
+        crossref: "http://127.0.0.1:1",
+        openalex: "http://127.0.0.1:1",
+    };
+
+    #[test]
+    fn default_resolver_bases_are_the_live_apis() {
+        // Pins the production wiring that the mock-based tests deliberately
+        // replace, without making a request.
+        let bases = ResolverBases::default();
+        assert_eq!(bases.crossref, "https://api.crossref.org");
+        assert_eq!(bases.openalex, "https://api.openalex.org");
+    }
 
     #[tokio::test]
     async fn falls_back_to_host_pattern_when_no_doi() {
-        let c = classify(
+        let c = classify_with_text_at(
             &SourceInput::Url("https://arxiv.org/abs/2403.12345".into()),
             None,
+            None,
+            &NO_RESOLVER,
         )
         .await
         .unwrap();
@@ -228,16 +281,48 @@ mod tests {
         assert_eq!(c.tier, CredibilityTier::Personal);
     }
 
+    /// Start Crossref + OpenAlex mocks that both answer 404 for any DOI, so a
+    /// classification falls through to the deterministic text heuristics
+    /// without ever leaving the machine. Each mock asserts it was hit exactly
+    /// `hits` times, which is what proves the resolver used the mock rather
+    /// than the live API.
+    async fn unresolvable_doi_mocks(hits: u64) -> (MockServer, MockServer) {
+        let crossref = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path_regex(r"^/works/.*"))
+            .respond_with(ResponseTemplate::new(404))
+            .expect(hits)
+            .mount(&crossref)
+            .await;
+        let openalex = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path_regex(r"^/works/doi:.*"))
+            .respond_with(ResponseTemplate::new(404))
+            .expect(hits)
+            .mount(&openalex)
+            .await;
+        (crossref, openalex)
+    }
+
     #[tokio::test]
     async fn pdf_file_with_journal_markers_in_body_is_peer_reviewed() {
         // A paper uploaded as an opaque UUID filename: the raw bytes carry no
         // identifier, but the converted body clearly names a DOI and journal
         // markers. Classifying on the extracted text must recover peer-reviewed.
+        //
+        // The body's DOI is deliberately resolved against local mocks. Pointing
+        // it at the live api.crossref.org made this unit test fail whenever the
+        // network hiccuped, reddening the whole workspace gate (issue #55).
+        let (crossref, openalex) = unresolvable_doi_mocks(1).await;
+        let bases = ResolverBases {
+            crossref: &crossref.uri(),
+            openalex: &openalex.uri(),
+        };
         let body =
             "Abstract\n\nReceived: 1 Jan 2023  Accepted: 1 Mar 2023  Published: 1 Apr 2023\n\
                     Corresponding author: a@b.org\n\
                     https://doi.org/10.7554/eLife.12345\n© 2023 The Authors.";
-        let c = classify_with_text(
+        let c = classify_with_text_at(
             &SourceInput::File {
                 bytes: b"%PDF-1.7 binary noise".to_vec(),
                 filename: "a64e171e-f161-4615-9299-839c8a066049.pdf".into(),
@@ -245,6 +330,7 @@ mod tests {
             },
             Some(body),
             None,
+            &bases,
         )
         .await
         .unwrap();
@@ -257,8 +343,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn resolvable_doi_is_classified_from_the_crossref_record() {
+        // The other half of the seam: when the resolver *does* answer, its
+        // verdict wins over the text heuristics — and it is still the injected
+        // base that gets called.
+        let crossref = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path_regex(r"^/works/.*"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "message": { "type": "posted-content", "publisher": "Cold Spring Harbor Laboratory" }
+            })))
+            .expect(1)
+            .mount(&crossref)
+            .await;
+        let openalex = MockServer::start().await;
+        let bases = ResolverBases {
+            crossref: &crossref.uri(),
+            openalex: &openalex.uri(),
+        };
+        let c = classify_with_text_at(
+            &SourceInput::File {
+                bytes: b"%PDF-1.7 binary noise".to_vec(),
+                filename: "paper.pdf".into(),
+                mime: Some("application/pdf".into()),
+            },
+            Some("Abstract\nhttps://doi.org/10.1101/2024.01.01\n© 2024 The Authors."),
+            None,
+            &bases,
+        )
+        .await
+        .unwrap();
+        assert_eq!(c.tier, CredibilityTier::Preprint);
+        // OpenAlex is only consulted when Crossref comes back empty.
+        assert!(openalex.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
     async fn plain_pdf_without_markers_stays_web() {
-        let c = classify_with_text(
+        let c = classify_with_text_at(
             &SourceInput::File {
                 bytes: b"%PDF-1.7".to_vec(),
                 filename: "flyer.pdf".into(),
@@ -266,6 +388,7 @@ mod tests {
             },
             Some("Buy one get one free at the fair this weekend!"),
             None,
+            &NO_RESOLVER,
         )
         .await
         .unwrap();
@@ -276,9 +399,11 @@ mod tests {
     async fn url_with_no_doi_falls_back_to_web() {
         // A plain https URL with no DOI and no special host pattern is classified
         // as Web by the host_patterns module (generic https catch-all, confidence 0.6).
-        let c = classify(
+        let c = classify_with_text_at(
             &SourceInput::Url("https://totally-unknown-site.example.com/post/1".into()),
             None,
+            None,
+            &NO_RESOLVER,
         )
         .await
         .unwrap();

@@ -3,7 +3,6 @@ import { Edit, Save } from '../icons/app-icons';
 import { cn } from '../../utils';
 import { Alert, AlertType } from './types';
 import { NotificationSurface, type NotificationStatus } from './NotificationSurface';
-import { upsertConfig } from '../../api';
 import { useConfig } from '../ConfigContext';
 import { toastError } from '../../toasts';
 
@@ -12,6 +11,8 @@ interface AlertBoxProps {
   className?: string;
   compactButtonEnabled?: boolean;
 }
+
+const AUTO_COMPACT_THRESHOLD_KEY = 'BIOROUTER_AUTO_COMPACT_THRESHOLD';
 
 const ALERT_STATUS: Record<AlertType, NotificationStatus> = {
   [AlertType.Error]: 'error',
@@ -40,7 +41,10 @@ const formatTokenCount = (count: number): string => {
 };
 
 export const AlertBox = ({ alert, className }: AlertBoxProps) => {
-  const { read } = useConfig();
+  // Read *and* write through the context. Writing straight to `upsertConfig`
+  // leaves the context's cached config serving the pre-write value to every
+  // other consumer of this key, with no signal that it has gone stale (#52).
+  const { read, upsert } = useConfig();
   const [isEditingThreshold, setIsEditingThreshold] = useState(false);
   const [loadedThreshold, setLoadedThreshold] = useState<number>(0.8);
   const [thresholdValue, setThresholdValue] = useState(80);
@@ -49,7 +53,7 @@ export const AlertBox = ({ alert, className }: AlertBoxProps) => {
   useEffect(() => {
     const loadThreshold = async () => {
       try {
-        const threshold = await read('BIOROUTER_AUTO_COMPACT_THRESHOLD', false);
+        const threshold = await read(AUTO_COMPACT_THRESHOLD_KEY, false);
         if (threshold !== undefined && threshold !== null && typeof threshold === 'number') {
           setLoadedThreshold(threshold);
           setThresholdValue(Math.max(1, Math.round(threshold * 100)));
@@ -76,13 +80,7 @@ export const AlertBox = ({ alert, className }: AlertBoxProps) => {
     try {
       const newThreshold = validThreshold / 100; // Convert percentage to decimal
 
-      await upsertConfig({
-        body: {
-          key: 'BIOROUTER_AUTO_COMPACT_THRESHOLD',
-          value: newThreshold,
-          is_secret: false,
-        },
-      });
+      await upsert(AUTO_COMPACT_THRESHOLD_KEY, newThreshold, false);
 
       setIsEditingThreshold(false);
       setLoadedThreshold(newThreshold);

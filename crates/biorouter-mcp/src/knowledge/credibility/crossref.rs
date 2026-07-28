@@ -5,14 +5,20 @@ use crate::knowledge::{
 use anyhow::Result;
 use serde::Deserialize;
 
-const API_BASE: &str = "https://api.crossref.org";
+pub const API_BASE: &str = "https://api.crossref.org";
 
-pub async fn classify(doi: &str) -> Result<Option<Credibility>> {
+/// Classify a DOI against a Crossref API base.
+///
+/// The base is always passed in — there is deliberately no argument-less
+/// wrapper that hardcodes [`API_BASE`], because that is the seam that lets the
+/// higher-level `classify_with_text` entry point be exercised without touching
+/// the network (see `credibility::mod`'s tests, issue #55).
+pub async fn classify_at(base: &str, doi: &str) -> Result<Option<Credibility>> {
     let client = reqwest::Client::builder()
         .user_agent("Biorouter-Knowledge/1.0 (mailto:knowledge@biorouter.local)")
         .timeout(std::time::Duration::from_secs(10))
         .build()?;
-    classify_with(&client, API_BASE, doi).await
+    classify_with(&client, base, doi).await
 }
 
 pub async fn classify_with(

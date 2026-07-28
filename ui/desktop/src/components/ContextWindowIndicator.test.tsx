@@ -3,14 +3,16 @@ import userEvent from '@testing-library/user-event';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ContextWindowGauge, ContextWindowIndicator } from './ContextWindowIndicator';
 
+// The gauge reads and writes the auto-compact threshold through ConfigContext
+// (never straight to the API — see ContextWindowIndicator.configCache.test.tsx,
+// which drives the real provider and asserts the cache stays consistent).
 const mocks = vi.hoisted(() => ({
-  readConfig: vi.fn(),
-  upsertConfig: vi.fn(),
+  read: vi.fn(),
+  upsert: vi.fn(),
 }));
 
-vi.mock('../api', () => ({
-  readConfig: mocks.readConfig,
-  upsertConfig: mocks.upsertConfig,
+vi.mock('./ConfigContext', () => ({
+  useConfig: () => ({ read: mocks.read, upsert: mocks.upsert }),
 }));
 
 beforeAll(() => {
@@ -31,8 +33,8 @@ afterAll(() => {
 describe('ContextWindowGauge compaction control', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.readConfig.mockResolvedValue({ data: null });
-    mocks.upsertConfig.mockResolvedValue({ data: null });
+    mocks.read.mockResolvedValue(null);
+    mocks.upsert.mockResolvedValue(undefined);
   });
 
   it('uses an inward compression icon and a Biorouter tooltip when disabled', async () => {

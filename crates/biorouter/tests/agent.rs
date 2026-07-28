@@ -3,11 +3,67 @@ use std::sync::Arc;
 use anyhow::Result;
 use biorouter::agents::{Agent, AgentEvent};
 use biorouter::config::extensions::{set_extension, ExtensionEntry};
+use biorouter::config::Config;
 use futures::StreamExt;
+
+/// Sandbox the whole test binary's config root before any test runs (issue #54).
+///
+/// `extension_manager_tests` calls `set_extension`, which writes through
+/// `Config::global()`. Unsandboxed that is the developer's real
+/// `~/.config/biorouter/config.yaml`: a routine `cargo test --workspace`
+/// rewrote it and pushed one entry off the end of the 5-deep backup chain, and
+/// it would have flipped the `todo` extension to `enabled: false` for anyone
+/// who had it switched on.
+///
+/// This has to be a `ctor` rather than a scoped guard inside the offending
+/// test. `Config::global()` is a `OnceCell` that resolves its path exactly
+/// once per process, so whichever test touches it first decides where *every
+/// later* write in the binary lands. A guard installed inside one test module
+/// therefore fixes nothing whenever another test in the binary got there first,
+/// and the tests here run in parallel — so which one wins is a coin flip.
+/// Running before `main` is the only placement that cannot lose that race.
+///
+/// Nothing needs restoring on panic the way a scoped guard would: the variable
+/// belongs to this test process for its whole life, and tests that install
+/// their own `BIOROUTER_PATH_ROOT` through `env_lock` restore it back to this
+/// sandbox rather than to "unset". An outer `BIOROUTER_PATH_ROOT` set by the
+/// caller is deliberately left alone, so an external harness can still choose
+/// the sandbox.
+#[ctor::ctor]
+fn sandbox_config_root_for_this_test_binary() {
+    if std::env::var_os("BIOROUTER_PATH_ROOT").is_some() {
+        return;
+    }
+    let root = tempfile::TempDir::new().expect("scratch config root");
+    std::env::set_var("BIOROUTER_PATH_ROOT", root.path());
+    // Held for the life of the process; a static is never dropped, which is
+    // exactly the lifetime the sandbox needs.
+    static ROOT: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+    let _ = ROOT.set(root);
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The guard for issue #54: nothing in this binary may resolve to the
+    /// developer's live configuration.
+    ///
+    /// Asserting on `Config::global()` rather than on the environment is what
+    /// makes this meaningful — it is the resolved path that a write actually
+    /// follows, and it is frozen at first use.
+    #[test]
+    fn the_global_config_is_sandboxed_for_this_binary() {
+        let root = std::env::var("BIOROUTER_PATH_ROOT")
+            .expect("BIOROUTER_PATH_ROOT must be sandboxed before any test in this binary runs");
+        let path = Config::global().path();
+        assert!(
+            path.starts_with(&root),
+            "Config::global() resolved to {path}, outside the sandbox at {root}. \
+             Something reached Config::global() before the sandbox was installed, \
+             so config writes from this binary land in the developer's real config."
+        );
+    }
 
     #[cfg(test)]
     mod schedule_tool_tests {

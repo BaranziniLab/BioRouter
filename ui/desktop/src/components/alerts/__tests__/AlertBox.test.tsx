@@ -4,10 +4,14 @@ import userEvent from '@testing-library/user-event';
 import { AlertBox } from '../AlertBox';
 import { Alert, AlertType } from '../types';
 
-// Mock the ConfigContext
+// Mock the ConfigContext. The threshold editor both reads and writes through
+// it — writing straight to the API would leave the context's cached config
+// stale (#52); AlertBox.configCache.test.tsx pins that against the real
+// provider.
 vi.mock('../../ConfigContext', () => ({
   useConfig: () => ({
     read: vi.fn().mockResolvedValue(0.8),
+    upsert: vi.fn().mockResolvedValue(undefined),
   }),
 }));
 
