@@ -171,6 +171,15 @@ export type CancelTurnResponse = {
 export type ChangeKind = 'ingest' | 'link' | 'flag' | 'query' | 'lint' | 'restore' | 'manual';
 
 export type ChatRequest = {
+    /**
+     * The client's own copy of the session's history, which REPLACES what the
+     * server has stored.
+     *
+     * DEPRECATED as an authoritative overwrite (#51 W5). It is now conditional:
+     * the copy must already contain every message the server holds, and the
+     * request is refused with 409 if it does not. See
+     * [`apply_client_writeback`]. The desktop app has never sent this field.
+     */
     conversation_so_far?: Array<Message> | null;
     reasoning_effort?: ReasoningEffort | null;
     session_id: string;
@@ -4195,6 +4204,10 @@ export type ReplyData = {
 };
 
 export type ReplyErrors = {
+    /**
+     * A turn is already in flight for this session, or the supplied `conversation_so_far` is missing messages the server holds (nothing was written; re-read the session and retry)
+     */
+    409: unknown;
     /**
      * Agent not initialized
      */

@@ -2647,6 +2647,9 @@
               }
             }
           },
+          "409": {
+            "description": "A turn is already in flight for this session, or the supplied `conversation_so_far` is missing messages the server holds (nothing was written; re-read the session and retry)"
+          },
           "424": {
             "description": "Agent not initialized"
           },
@@ -4835,6 +4838,7 @@
             "items": {
               "$ref": "#/components/schemas/Message"
             },
+            "description": "The client's own copy of the session's history, which REPLACES what the\nserver has stored.\n\nDEPRECATED as an authoritative overwrite (#51 W5). It is now conditional:\nthe copy must already contain every message the server holds, and the\nrequest is refused with 409 if it does not. See\n[`apply_client_writeback`]. The desktop app has never sent this field.",
             "nullable": true
           },
           "reasoning_effort": {
