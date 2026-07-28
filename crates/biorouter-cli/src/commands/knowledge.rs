@@ -117,8 +117,14 @@ pub async fn handle_list(format: &str) -> Result<()> {
 /// it is marked, which `cli.rs` has promised since the focus/discovery split.
 fn render_list(svc: &KnowledgeService, format: &str) -> Result<String> {
     let bases = svc.list_bases()?;
-    let hidden = svc.get_hidden_persisted().unwrap_or_default();
-    let primary = svc.primary_for_session(None)?;
+    // One locked snapshot rather than a hidden read and a primary read that can
+    // disagree — and, crucially, no `unwrap_or_default()`: swallowing a failed
+    // read of `.hidden-kbs` rendered every base as visible to the agent while
+    // the agent's own resolver errored on the same file. This listing is the
+    // answer to "what can the agent see?", so it must refuse rather than guess.
+    let selection = svc.selection(None)?;
+    let hidden = selection.hidden_kbs;
+    let primary = selection.primary_kb;
 
     if format == "json" {
         return Ok(serde_json::json!({
@@ -852,6 +858,34 @@ mod tests {
                 "round {round}: every base was hidden, so the set must be empty"
             );
         }
+        Ok(())
+    }
+
+    /// `list` is the surface that answers "what can the agent see?", so it must
+    /// not answer from a file it failed to read. It took the hidden list with
+    /// `unwrap_or_default()`, which turns an unreadable or corrupt
+    /// `.hidden-kbs` into "nothing is hidden" — every base rendered as
+    /// available to the agent, while the agent's own resolver errors on the
+    /// same file. (With a primary pinned the error surfaced by accident
+    /// through `primary_for_session`; with none pinned, which is now the
+    /// default state after a create, nothing caught it.)
+    #[test]
+    fn list_refuses_to_report_a_hidden_list_it_could_not_read() -> anyhow::Result<()> {
+        let (tmp, svc) = svc();
+        std::fs::write(
+            biorouter::knowledge::paths::hidden_kbs_path(tmp.path()),
+            b"{ not json }",
+        )?;
+
+        assert!(
+            svc.session_kb_ids(None).is_err(),
+            "precondition: the agent's own resolver rejects this file"
+        );
+        assert!(
+            render_list(&svc, "text").is_err(),
+            "so the listing must not claim every base is visible"
+        );
+        assert!(render_list(&svc, "json").is_err());
         Ok(())
     }
 
