@@ -19,11 +19,17 @@ of driving and debugging the real desktop app live in
 shipped or were overtaken by later work are filed under
 [`docs/history/`](../history/README.md), not here.
 
-There are no Markdown files directly in this folder. All specifications sit in the four
+There are no Markdown files directly in this folder. All specifications sit in the five
 topic subfolders below, alongside two top-level rendered pages.
 
 ## Subfolders
 
+- **[`astryx-adoption/`](astryx-adoption/README.md)** — the proposed comprehensive interface
+  revision. Holds the [Astryx UI adoption design](astryx-adoption/astryx-ui-adoption-design.md),
+  which rebuilds the app on the *construction* of Meta's Astryx design system — one control
+  ladder, one easing, one state model, one radius ladder — while keeping Biorouter's palette,
+  theming pipeline, calm register and squared corners. **Proposed**: it carries ten decisions
+  (`A-01`…`A-10`) awaiting sign-off, and no code has moved.
 - **[`branding/`](branding/README.md)** — the BioRouter identity. Holds the
   [logo and wordmark specification](branding/logo-and-wordmark-spec.md), which fixes the
   geometry, colour tokens and lockups of the two-colour `BioRouter` wordmark and the `BR`
