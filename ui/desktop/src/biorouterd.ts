@@ -67,15 +67,32 @@ const ANSI_ESCAPE_PATTERN = /\u001b\[[0-9;]*m/g;
 const DAEMON_LEVEL_PATTERN =
   /^\s*(?:\[?\d{4}-\d{2}-\d{2}[T ][0-9:.]+(?:Z|[+-]\d{2}:?\d{2})?\]?\s+)?\[?(TRACE|DEBUG|INFO|WARN|WARNING|ERROR|FATAL)\]?\b/;
 
+// Not everything on the daemon's stderr comes from tracing. Rust's default
+// panic hook writes `thread '<name>' panicked at <loc>:` directly, and
+// `biorouterd`'s `async fn main() -> anyhow::Result<()>` makes the standard
+// `Termination` impl print `Error: <chain>` when startup fails. Neither line
+// carries a level word, so the tracing parser cannot see them — and these are
+// precisely the lines that must not be filed under `info`. Anchored at the
+// head of the (trimmed) line so the same words inside a message body cannot
+// re-classify it.
+const RUST_PANIC_PATTERN = /^thread\s+'[^']*'\s+panicked\s+at\b/;
+const FATAL_PREFIX_PATTERN = /^(?:error|fatal)\s*:/i;
+
 /**
  * Map a line of `biorouterd` stderr onto the electron-log level that matches
  * the daemon's own severity. A line whose level cannot be parsed defaults to
  * `info`: it is a line that could not be parsed, not an error. Logging all
  * daemon stderr at `error` destroys severity at the process boundary and makes
  * main.log unfilterable (see issue #49).
+ *
+ * The daemon's console layer is configured with `.pretty().with_ansi(false)`
+ * (crates/biorouter-server/src/logging.rs), so there is no JSON tracing format
+ * to parse here — only the pretty format, plus the two non-tracing shapes
+ * above.
  */
 export const daemonStderrLogLevel = (line: string): DaemonLogLevel => {
-  const match = DAEMON_LEVEL_PATTERN.exec(line.replace(ANSI_ESCAPE_PATTERN, ''));
+  const plain = line.replace(ANSI_ESCAPE_PATTERN, '');
+  const match = DAEMON_LEVEL_PATTERN.exec(plain);
   switch (match?.[1]) {
     case 'ERROR':
     case 'FATAL':
@@ -86,6 +103,10 @@ export const daemonStderrLogLevel = (line: string): DaemonLogLevel => {
     case 'DEBUG':
     case 'TRACE':
       return 'debug';
+    case undefined: {
+      const head = plain.trimStart();
+      return RUST_PANIC_PATTERN.test(head) || FATAL_PREFIX_PATTERN.test(head) ? 'error' : 'info';
+    }
     default:
       return 'info';
   }

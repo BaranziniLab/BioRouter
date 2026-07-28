@@ -90,6 +90,40 @@ describe('daemonStderrLogLevel', () => {
       )
     ).toBe('info');
   });
+
+  // The Rust panic hook and anyhow's `Termination` impl write straight to
+  // stderr, bypassing tracing entirely, so these lines carry no level word.
+  // They are exactly the lines that must not be swallowed at `info`.
+  it('classifies a raw Rust panic as error', () => {
+    expect(
+      daemonStderrLogLevel("thread 'main' panicked at crates/biorouter-server/src/main.rs:44:9:")
+    ).toBe('error');
+    // A panic on a tokio worker is just as much a failure as one on main.
+    expect(
+      daemonStderrLogLevel(
+        "thread 'tokio-runtime-worker' panicked at crates/biorouter/src/x.rs:1:1:"
+      )
+    ).toBe('error');
+    expect(daemonStderrLogLevel("  thread 'main' panicked at src/main.rs:1:1:")).toBe('error');
+  });
+
+  it('classifies anyhow/fatal startup output as error', () => {
+    // `async fn main() -> anyhow::Result<()>` prints `Error: <chain>` on Err.
+    expect(daemonStderrLogLevel('Error: failed to bind 127.0.0.1:0')).toBe('error');
+    expect(daemonStderrLogLevel('error: failed to spawn biorouterd: ENOENT')).toBe('error');
+    expect(daemonStderrLogLevel('Fatal: unrecoverable')).toBe('error');
+  });
+
+  it('leaves panic follow-up and mid-message mentions at their own level', () => {
+    expect(daemonStderrLogLevel('note: run with `RUST_BACKTRACE=1` to display a backtrace')).toBe(
+      'info'
+    );
+    expect(
+      daemonStderrLogLevel(
+        "  2026-07-26T18:40:14.289898Z  INFO biorouter::agents: thread 'main' panicked at was in the tool output"
+      )
+    ).toBe('info');
+  });
 });
 
 describe('biorouterd stderr routing', () => {
