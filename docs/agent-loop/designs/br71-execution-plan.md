@@ -1269,8 +1269,20 @@ git commit -m "feat(session): add sessions.parent_session_id (migration 17, BR-7
   **:1033**)
 - Modify: `crates/biorouter/src/conversation/normalize.rs` — `message_fingerprint`
   (**:278**, doc **:261-277**). See Step 3(d); this is not optional.
-- Modify: the five production `Copy` sites, enumerated in Step 4 (they are known up
-  front, not "whatever the compiler flags")
+- Modify: `crates/biorouter-server/src/openapi.rs` — **added while implementing,
+  and it is not optional either.** `MessageMetadata` is a registered utoipa
+  component, and this repo pins **utoipa 4.x, which does NOT auto-collect nested
+  schemas**. A new `ToSchema` type reachable only through another type's field
+  must therefore be listed explicitly in `components(schemas(...))` (and imported
+  alongside `MessageMetadata`). Omit it and the generated spec carries a dangling
+  `$ref: "#/components/schemas/MessageProvenance"`, and `just generate-openapi`
+  **aborts** in `@hey-api/openapi-ts` with `MissingPointerError` — the generator
+  crashes rather than producing a stale client, so this is *not* drift that a
+  later task's regen absorbs. Task 7's gate cannot pass without it.
+- Modify: the `Copy` sites, enumerated in Step 4 — **three** in production (all in
+  `context_mgmt/mod.rs`) plus **four** in tests, seven in all. Corrected while
+  implementing: this used to say "the five production `Copy` sites", and Step 4's
+  grep recipe misses one of the seven outright. See the correction note there.
 
 ⚠ **`MessageMetadata` gained a third field, `pinned`, after this task was written —
 and it was landed FOR BR-71.** `pinned` is `#[serde(default)] pub pinned: bool`
@@ -1577,21 +1589,40 @@ with its test:
     }
 ```
 
-- [ ] **Step 4: Fix the `Copy` fallout — six known sites**
+- [ ] **Step 4: Fix the `Copy` fallout — seven known sites**
 
-The fallout is **enumerable up front**, not "whatever the compiler flags". Every
-implicit copy of a `MessageMetadata` out of a borrow has the same shape,
+The fallout is **mostly enumerable up front**, not "whatever the compiler flags".
+Most implicit copies of a `MessageMetadata` out of a borrow have the same shape,
 `<borrowed>.metadata.with_*()`, and `grep -rn --include='*.rs' "\.metadata\.with_"
-crates/` returns exactly six (verified at `275d735d`):
+crates/` returns exactly six (verified at `275d735d`). **It misses a seventh** —
+see the row below the rule.
 
 | Site | Context |
 |---|---|
-| `crates/biorouter/src/context_mgmt/mod.rs:286` | `.with_metadata(msg.metadata.with_agent_invisible())` |
-| `crates/biorouter/src/context_mgmt/mod.rs:353` | inside the **windowed-compaction hot loop** (`for (idx, msg) in prefix.iter().enumerate()`, :351) |
-| `crates/biorouter/src/context_mgmt/mod.rs:491` | `msg.metadata.with_agent_invisible()` |
-| `crates/biorouter/src/conversation/normalize.rs:625` | `let metadata = message.metadata.with_agent_invisible();` |
-| `crates/biorouter/src/conversation/normalize.rs:713` | `.with_metadata(visible.metadata.with_agent_invisible())` |
-| `crates/biorouter/src/conversation/normalize.rs:780` | test (`mod tests` begins at :384) |
+| `crates/biorouter/src/context_mgmt/mod.rs:286` | **production** — `.with_metadata(msg.metadata.with_agent_invisible())` |
+| `crates/biorouter/src/context_mgmt/mod.rs:353` | **production** — inside the **windowed-compaction hot loop** (`for (idx, msg) in prefix.iter().enumerate()`, :351) |
+| `crates/biorouter/src/context_mgmt/mod.rs:491` | **production** — `msg.metadata.with_agent_invisible()` |
+| `crates/biorouter/src/conversation/normalize.rs:625` | test (`mod tests` begins at **:394**) |
+| `crates/biorouter/src/conversation/normalize.rs:713` | test |
+| `crates/biorouter/src/conversation/normalize.rs:780` | test |
+| — | |
+| `crates/biorouter/src/conversation/message.rs`, `test_pin_marker_is_orthogonal_to_visibility` | test — **the grep cannot see this one** |
+
+⚠ **Corrections, made while implementing Task 2 (2026-07-28).** Three claims in
+the original table were wrong, and each would have misled the next reader:
+
+- **Seven sites, not six.** `test_pin_marker_is_orthogonal_to_visibility` in
+  `message.rs` chains the builders off a **local `MessageMetadata` binding**
+  (`let pinned = MessageMetadata::default().with_pinned(); pinned.with_agent_invisible()`),
+  not off `<something>.metadata`, so the `\.metadata\.with_` grep structurally
+  cannot match it. The compiler finds it; the recipe does not. Treat the grep as
+  a head start, not a completeness proof — run `cargo check --workspace
+  --all-targets` and believe it over the table.
+- **Three production sites, not five.** `mod tests` in `normalize.rs` begins at
+  **:394** (the Files list said :384), so *all three* normalize.rs rows are
+  inside the test module. The Files list's "the five production `Copy` sites" is
+  really three, all in `context_mgmt/mod.rs`.
+- The performance note below therefore applies to the only hot production site.
 
 Fix each with `.clone()` — `msg.metadata.clone().with_agent_invisible()`. Do not
 restructure any call site.
