@@ -2874,16 +2874,40 @@ fn render_list(svc: &KnowledgeService, format: &str) -> Result<String> {
 
 (The `section` helper is now only used by other commands; leave it.)
 
-In `handle_create` (`:252-257`), reword and route through the same validated path:
+In `handle_create` (`:252-257`), **delete** the auto-promote.
+
+> **Superseded during review.** This step originally read "make it the primary
+> when there was no prior choice, so the next `--kb`-less ingest/query just
+> works", and prescribed the snippet below:
+>
+> ```rust
+>     if svc.primary_for_session(None)?.is_none() {
+>         svc.set_selection(None, None, PrimaryUpdate::Set(&manifest.id))?;
+>         println!("  {} set as the primary knowledge base", style("·").dim());
+>     }
+> ```
+>
+> That is exactly the invention the merged model forbids. The primary is where
+> a `--kb`-less write *commits*, so a pointer the user never chose sends an
+> ingest into a base by accident — as a git commit in that base's history that
+> is easy to miss. "Exactly one candidate" is still a candidate, not a choice.
+
+Create the base and only create the base. When there is still no primary
+afterwards, name the remedy instead of guessing at it:
 
 ```rust
-    // Make it the primary when there was no prior choice, so the next
-    // --kb-less ingest/query "just works".
     if svc.primary_for_session(None)?.is_none() {
-        svc.set_selection(None, None, PrimaryUpdate::Set(&manifest.id))?;
-        println!("  {} set as the primary knowledge base", style("·").dim());
+        out.push_str(&format!(
+            "  {}\n",
+            style("no primary knowledge base yet — set one with \
+                   `biorouter knowledge active --set <id>`")
+                .dim()
+        ));
     }
 ```
+
+With no primary, a KB-less command fails and lists the candidates
+(`resolve_kb`), which is the behaviour the model asks for.
 
 In `crates/biorouter-cli/src/cli.rs`, fix the stale doc comment (`:901`) and reword `Active` (`:913-924`):
 
