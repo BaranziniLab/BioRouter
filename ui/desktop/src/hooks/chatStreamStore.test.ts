@@ -911,6 +911,67 @@ describe('ChatStreamRegistry', () => {
     expect('expectedMessageIds' in body).toBe(false);
   });
 
+  // #67: `retryTurn` re-sends the message ALREADY at the tail of the transcript,
+  // so it submits with `updateMessageList: false` — the one submit path that
+  // never reaches `updateMessages`, which is where the completeness claim is
+  // dropped. Resume asserts the claim; a retry that dies before a single frame
+  // arrives therefore used to leave it standing, while the server may already
+  // have persisted rows (the user turn itself, a BR-47 diagnostic, a hook
+  // context row) that this client was never shown. The next "Edit in Place"
+  // then sends a complete-looking but SHORT view.
+  //
+  // Bounded: a false negative on guard 2 only — the turn lock and the bounded
+  // truncate still hold — so this is defence in depth, not a data-loss path.
+  // Launching a turn at all is what invalidates the claim, regardless of what
+  // (if anything) comes back.
+  it('drops its completeness claim when a retried turn dies without delivering a frame', async () => {
+    const registry = new ChatStreamRegistry();
+    const sessionId = 'edit-in-place-after-dead-retry';
+    const conversation: Message[] = [
+      {
+        id: 'u1',
+        role: 'user',
+        created: 10,
+        content: [{ type: 'text', text: 'original prompt' }],
+        metadata: { userVisible: true, agentVisible: true },
+      },
+    ];
+    // Resume reads `get_session(id, true)`, so the claim is legitimately true here.
+    vi.mocked(resumeAgent).mockResolvedValue({
+      data: { session: { ...session(sessionId), conversation } },
+    } as never);
+    vi.mocked(editMessage).mockResolvedValue({ data: { sessionId } } as never);
+    vi.mocked(getSession).mockResolvedValue({ data: { conversation } } as never);
+    // The retry reaches the server — the turn is live, rows may be written —
+    // and then the transport dies before yielding anything at all.
+    vi.mocked(reply).mockImplementation(
+      async () =>
+        ({
+          stream: (async function* () {
+            throw new TypeError('network error');
+            // eslint-disable-next-line no-unreachable
+            yield undefined as never;
+          })(),
+        }) as never
+    );
+
+    const controller = registry.getController(sessionId);
+    await controller.loadSession();
+    await controller.retryTurn();
+    await flush();
+
+    // The retry really did launch a turn and really did fail.
+    expect(reply).toHaveBeenCalledTimes(1);
+    expect(controller.getSnapshot().turnError).toMatchObject({ retryable: true });
+    // The transcript is untouched, so every message it holds still names itself.
+    expect(controller.getSnapshot().messages.every((m) => typeof m.id === 'string')).toBe(true);
+
+    await controller.onMessageUpdate('u1', 'updated prompt', 'edit');
+
+    const body = vi.mocked(editMessage).mock.calls[0][0].body as Record<string, unknown>;
+    expect('expectedMessageIds' in body).toBe(false);
+  });
+
   it('reports a rejected soft interrupt so the caller can fall back', async () => {
     const registry = new ChatStreamRegistry();
     const controlled = createControlledStream();
