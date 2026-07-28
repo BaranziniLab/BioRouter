@@ -10,6 +10,8 @@ Biorouter's interface is coherent in intent and inconsistent in fact. Three para
 
 This document proposes what to take, what to keep, and what to refuse. It is organised as: the contract that constrains everything (§1), foundations (§2), elements (§3), compositions (§4), motion (§5), what already agrees (§6), the deletion list (§7), execution (§8), and the decisions you need to settle (§9).
 
+> **Rendered companion:** [`astryx-design-showcase.html`](astryx-design-showcase.html) — open it in a browser. Every control specified below is live there, built from the proposed tokens, with switches for theme family and a Today/Proposed flip that turns the whole page into the diff. It is the faster way to review this proposal; this document is the argument behind it.
+
 ---
 
 ## 1. The contract

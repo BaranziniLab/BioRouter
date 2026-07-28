@@ -9,6 +9,7 @@ Biorouter's design language is documented in [`design.md`](../../../design.md) b
 ## Contents
 
 - **[Astryx UI adoption — comprehensive interface revision](astryx-ui-adoption-design.md)** — the design of record. Fixes the contract that constrains the work (palette, theming, calm, squared corners, chat density), then specifies foundations, elements, compositions and motion; lists what already agrees and what gets deleted; and ends with a ten-phase execution plan and ten decisions (`A-01`…`A-10`) for sign-off.
+- **[Astryx design showcase](astryx-design-showcase.html)** — the rendered companion, and the faster way to review the proposal. **Must be opened in a browser**: every control is live and built from the proposed tokens, so the page is a specimen of the system it argues for. Three switches drive it — *Family* (Parchment / Alma Mater / Roche Limit, on the real shipped values) proves the construction survives every palette; *System* flips the whole page between today's geometry and the proposal, so the diff is the page itself; light and dark follow the viewer. Also hosted at <https://claude.ai/code/artifact/c24a639a-9e18-40b5-9cbb-62381acf4bd3>.
 
 ## Related documentation
 
