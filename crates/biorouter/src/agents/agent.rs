@@ -1896,14 +1896,40 @@ impl Agent {
                 .await?;
         usages.push(usage);
 
-        let (outcome, stored) = session_manager
+        let first_attempt = session_manager
             .replace_conversation_preserving_tail(
                 session_id,
                 &compacted,
                 basis.revision,
                 &basis.known_with(conversation),
             )
-            .await?;
+            .await;
+        // The summarization above is BILLED — the provider charged for it the
+        // moment it answered — so nothing from here on may leave through `?`.
+        // The caller bills only the `Ok` branch and breaks on `Err`, so an
+        // `await?` here loses the spend from both the budget and the session
+        // gauge, leaves the `PreCompact` it fired without its `PostCompact`, and
+        // ends a turn that still had a usable compaction in memory — at the last
+        // rung before "context limit still exceeded". Degrade to "could not
+        // persist", exactly as the retry path already does.
+        //
+        // It does NOT fall through to the retry: a store error is not a moved
+        // basis, so there is nothing to recompute against and re-spending a
+        // second summarization would buy nothing.
+        let (outcome, stored) = match first_attempt {
+            Ok(result) => result,
+            Err(e) => {
+                warn!(
+                    "Could not persist the overflow-recovery compaction for session \
+                     {session_id} ({e}); continuing in memory with the stored history intact"
+                );
+                return Ok(OverflowCompactionSwap {
+                    stored: None,
+                    compacted,
+                    usages,
+                });
+            }
+        };
         if outcome.stored() {
             return Ok(OverflowCompactionSwap {
                 stored: Some(self.reseed_basis(session_id, basis, stored).await),
@@ -1916,15 +1942,9 @@ impl Agent {
             "Overflow-recovery compaction for session {session_id} was declined ({outcome:?}); \
              recomputing against the current history and retrying once"
         );
-        // `usages` holds a summarization the provider already CHARGED for, and
-        // `compacted` is a perfectly usable in-memory result. A `?` past this
-        // point drops both: the caller's `Err` arm only logs and breaks, so the
-        // spend vanishes from the budget and the session gauge (contradicting
-        // `OverflowCompactionSwap::usages`' own contract — "all of it is spend
-        // whether or not the result was kept"), the turn ends where it could
-        // have continued, and the `PreCompact` the caller fired never gets its
-        // `PostCompact`. Degrade to "could not persist" instead, which is
-        // exactly what a declined swap already returns.
+        // Same rule as above — `compacted` is a perfectly usable in-memory
+        // result and `usages` is already-charged spend, so every failure below
+        // degrades to "could not persist" rather than propagating.
         //
         // The retry re-seeds `basis` before recomputing: the decline means the
         // stored history moved, so the pair the retry writes against has to be

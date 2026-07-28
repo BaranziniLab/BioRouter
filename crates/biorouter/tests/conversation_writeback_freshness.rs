@@ -10,6 +10,7 @@
 //! no keychain). The provider appends a foreign message from inside its own
 //! completion call, which makes the race deterministic — no sleeps, no barriers.
 
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -22,7 +23,7 @@ use biorouter::conversation::message::{Message, MessageContent};
 use biorouter::model::ModelConfig;
 use biorouter::providers::base::{Provider, ProviderMetadata, ProviderUsage, Usage};
 use biorouter::providers::errors::ProviderError;
-use biorouter::session::session_manager::SessionType;
+use biorouter::session::session_manager::{SessionType, DB_NAME, SESSIONS_FOLDER};
 use biorouter::session::SessionManager;
 use futures::StreamExt;
 use rmcp::model::Tool;
@@ -294,12 +295,16 @@ struct Harness {
     agent: Arc<Agent>,
     session_id: String,
     session_manager: Arc<SessionManager>,
+    /// Where the session store's sqlite file lives, so a test can reach the
+    /// database directly (see `fail_to_store_the_summary`).
+    data_dir: PathBuf,
     _work_dir: TempDir,
 }
 
 async fn harness(build: impl FnOnce(RaceProvider) -> RaceProvider) -> (Harness, Arc<RaceProvider>) {
     let work_dir = TempDir::new().unwrap();
     let data_dir = TempDir::new().unwrap();
+    let data_path = data_dir.path().to_path_buf();
     let session_manager = Arc::new(SessionManager::new(data_dir.path().to_path_buf()));
 
     let provider = Arc::new(build(RaceProvider::new(session_manager.clone())));
@@ -335,6 +340,7 @@ async fn harness(build: impl FnOnce(RaceProvider) -> RaceProvider) -> (Harness, 
             agent: Arc::new(agent),
             session_id: session.id,
             session_manager,
+            data_dir: data_path,
             _work_dir: work_dir,
         },
         provider,
@@ -1310,6 +1316,98 @@ async fn a_second_overflow_preserves_a_note_appended_right_after_the_first_swap(
         stored.iter().any(|t| t.contains(NOTE)),
         "a message appended after the first swap committed must survive the \
          second one; stored: {stored:#?}"
+    );
+}
+
+// ── W2: the FIRST persistence attempt is billed spend too ────────────────────
+
+/// Reject exactly the compaction summary's own INSERT, in the store itself.
+/// Every other write on the turn still succeeds, so this is a real database
+/// error on the swap — not a declined swap, and not a broken session.
+async fn fail_to_store_the_summary(h: &Harness) {
+    let db = h.data_dir.join(SESSIONS_FOLDER).join(DB_NAME);
+    let pool =
+        sqlx::SqlitePool::connect_with(sqlx::sqlite::SqliteConnectOptions::new().filename(&db))
+            .await
+            .unwrap();
+    sqlx::query(
+        "CREATE TRIGGER reject_the_summary BEFORE INSERT ON messages \
+         WHEN NEW.content_json LIKE '%User Intent%' \
+         BEGIN SELECT RAISE(ABORT, 'injected store failure'); END",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    pool.close().await;
+}
+
+/// A database error on the FIRST persistence attempt must not throw away the
+/// summarization the provider has already charged for, and must not end the
+/// turn.
+///
+/// This is the same defect class as `a_failed_retry_still_bills_...` one rung
+/// earlier on the ladder: the caller bills only the `Ok` branch and `break`s on
+/// `Err`, so an `await?` here loses the spend from both the budget and the
+/// session gauge, leaves the `PreCompact` it fired without a `PostCompact`, and
+/// ends a turn that had a perfectly usable compaction in memory — at the last
+/// rung before "context limit still exceeded".
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_first_persist_still_bills_the_summarization_and_finishes_the_turn() {
+    let (h, provider) = harness(|p| p.overflow_on(&[0])).await;
+
+    h.session_manager
+        .add_message(&h.session_id, &Message::user().with_text("earlier turn"))
+        .await
+        .unwrap();
+    let before = h.stored_texts().await;
+    fail_to_store_the_summary(&h).await;
+
+    let events = h.run_turn(USER_PROMPT).await.unwrap();
+
+    assert_eq!(
+        provider.summarizer_call_count(),
+        1,
+        "a store error is not a moved basis: there is nothing to recompute \
+         against, so it must not re-spend a summarization"
+    );
+    assert_eq!(
+        provider.main_call_count(),
+        2,
+        "a failed persist must not end the turn — the compaction is still \
+         usable in memory"
+    );
+
+    // The billed spend: the summarization (15) plus the main call that finished
+    // the turn (15). The overflowing call charged nothing.
+    let session = h
+        .session_manager
+        .get_session(&h.session_id, false)
+        .await
+        .unwrap();
+    assert_eq!(
+        session.accumulated_total_tokens,
+        Some(30),
+        "the summarization was charged by the provider and must still be \
+         reported even though the store refused it"
+    );
+
+    // Nothing landed, so the stored history must be intact and no
+    // HistoryReplaced may claim otherwise.
+    let after = h.stored_texts().await;
+    for text in &before {
+        assert!(
+            after.contains(text),
+            "a failed persist must leave the stored history intact; \
+             {text:?} vanished. before: {before:#?} after: {after:#?}"
+        );
+    }
+    assert!(
+        !after.iter().any(|t| t.contains("User Intent")),
+        "nothing was persisted, so no summary may appear on disk; after: {after:#?}"
+    );
+    assert!(
+        history_replaced_texts(&events).is_none(),
+        "HistoryReplaced must not claim a replacement that never happened"
     );
 }
 
