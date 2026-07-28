@@ -46,7 +46,7 @@ use crate::context_mgmt::{
     overflow_recovery_for_attempt, DEFAULT_COMPACTION_THRESHOLD,
 };
 use crate::conversation::message::{
-    new_message_id, ActionRequiredData, Message, MessageContent, ProviderMetadata,
+    new_message_id, ActionRequiredData, Message, MessageContent, ProvenanceKind, ProviderMetadata,
     SystemNotificationType, TokenState, ToolRequest,
 };
 use crate::conversation::tool_result_serde::call_tool_result;
@@ -510,6 +510,13 @@ pub enum ConfirmationOutcome {
     Unknown,
 }
 
+/// One queued mid-turn injection: the text plus who injected it (BR-71).
+#[derive(Debug, Clone)]
+pub struct QueuedInterrupt {
+    pub text: String,
+    pub provenance: Option<crate::conversation::message::MessageProvenance>,
+}
+
 /// The main biorouter Agent
 pub struct Agent {
     pub(super) provider: SharedProvider,
@@ -560,7 +567,7 @@ pub struct Agent {
     /// injected at the next safe loop boundary in `reply_internal` instead of
     /// cancelling the turn (no lost work, no full context re-send). A plain
     /// `std::Mutex` so callers can push without awaiting the agent's async locks.
-    pub(super) soft_interrupts: Arc<std::sync::Mutex<Vec<String>>>,
+    pub(super) soft_interrupts: Arc<std::sync::Mutex<Vec<QueuedInterrupt>>>,
     /// BR-43 shadow-git checkpoints: captures the work-tree at turn boundaries so
     /// `/rewind` can restore files/conversation. `None` when disabled (the
     /// default) or on the subagent/test paths. Gated by `BIOROUTER_CHECKPOINTS`.
@@ -905,13 +912,23 @@ impl Agent {
     /// loop boundary (soft interrupt). Cheap + lock-light: callable from a server
     /// route or the CLI while a turn is streaming, without cancelling it.
     pub fn queue_soft_interrupt(&self, text: String) {
+        self.queue_soft_interrupt_with_provenance(text, None);
+    }
+
+    /// BR-71: queue a mid-turn injection stamped with its origin. Used by
+    /// `workspace_send_prompt mode:"steer"` and the subagent-tab steer path.
+    pub fn queue_soft_interrupt_with_provenance(
+        &self,
+        text: String,
+        provenance: Option<crate::conversation::message::MessageProvenance>,
+    ) {
         if let Ok(mut q) = self.soft_interrupts.lock() {
-            q.push(text);
+            q.push(QueuedInterrupt { text, provenance });
         }
     }
 
     /// Drain queued soft-interrupt messages (FIFO). Returns empty when none.
-    pub(super) fn drain_soft_interrupts(&self) -> Vec<String> {
+    pub(super) fn drain_soft_interrupts(&self) -> Vec<QueuedInterrupt> {
         self.soft_interrupts
             .lock()
             .map(|mut q| std::mem::take(&mut *q))
@@ -3992,8 +4009,24 @@ impl Agent {
                 // safe boundary (after the previous turn's tools completed, before
                 // the next provider call) so the model incorporates them without a
                 // cancel-and-resend round trip that discards in-flight work.
-                for text in self.drain_soft_interrupts() {
-                    let mut m = Message::user().with_text(text);
+                for queued in self.drain_soft_interrupts() {
+                    // Frame ONLY agent-originated steers. This drain loop is
+                    // SHARED with the human's own typed soft interrupt, which
+                    // `queue_soft_interrupt` enqueues with `provenance: None` —
+                    // framing that unconditionally would wrap the user's own
+                    // words in an untrusted envelope and tell the model to
+                    // discount them.
+                    let mut m = match &queued.provenance {
+                        Some(p) if p.kind == ProvenanceKind::AgentInjection => Message::user()
+                            .with_text(crate::conversation::message::frame_workspace_injection(
+                                p.from_session_name.as_deref(),
+                                &queued.text,
+                            )),
+                        _ => Message::user().with_text(queued.text.clone()),
+                    };
+                    if let Some(p) = queued.provenance {
+                        m = m.with_provenance(p);
+                    }
                     // #41: adopt the minted uid — the retained/yielded copy
                     // must carry the same id as the stored row, or its next
                     // persist duplicates it instead of replaying.
@@ -6491,6 +6524,60 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    /// BR-71: the soft-interrupt queue carries each injection's origin from the
+    /// producer (a workspace steer, the subagent tab) through to the turn loop
+    /// that drains it. Exercises the REAL queue on a real `Agent` — the same
+    /// `drain_soft_interrupts` the reply loop consumes — not a stand-in `Mutex`.
+    #[tokio::test]
+    async fn soft_interrupt_queue_round_trips_provenance_through_the_real_agent() {
+        use crate::conversation::message::{MessageProvenance, ProvenanceKind};
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let sm = std::sync::Arc::new(crate::session::SessionManager::new(
+            temp.path().to_path_buf(),
+        ));
+        let agent = Agent::with_config(AgentConfig::new(
+            sm,
+            crate::config::permission::PermissionManager::instance(),
+            None,
+            crate::config::BioRouterMode::Auto,
+        ));
+
+        // Legacy entry point still works and stamps nothing.
+        agent.queue_soft_interrupt("plain".into());
+        // Stamped entry point (BR-71): used by workspace steer + the subagent tab.
+        agent.queue_soft_interrupt_with_provenance(
+            "steer".into(),
+            Some(MessageProvenance {
+                kind: ProvenanceKind::AgentInjection,
+                from_session_id: Some("s1".into()),
+                from_session_name: None,
+            }),
+        );
+        assert!(agent.has_soft_interrupts());
+
+        // drain_soft_interrupts is exactly what the turn loop consumes.
+        let drained = agent.drain_soft_interrupts();
+        assert_eq!(drained.len(), 2);
+        assert_eq!(drained[0].text, "plain");
+        assert!(drained[0].provenance.is_none());
+        assert_eq!(drained[1].text, "steer");
+        assert!(matches!(
+            drained[1].provenance.as_ref().unwrap().kind,
+            ProvenanceKind::AgentInjection
+        ));
+        assert_eq!(
+            drained[1]
+                .provenance
+                .as_ref()
+                .unwrap()
+                .from_session_id
+                .as_deref(),
+            Some("s1")
+        );
+        assert!(!agent.has_soft_interrupts(), "drain empties the queue");
     }
 }
 
