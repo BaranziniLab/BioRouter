@@ -1097,6 +1097,31 @@ impl ConversationRevision {
     }
 }
 
+/// Outcome of [`SessionManager::replace_conversation_preserving_tail`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReplaceOutcome {
+    /// Nothing landed since the basis; the replacement was stored verbatim.
+    Replaced,
+    /// Messages the caller had never seen landed since the basis. They were
+    /// carried over onto the tail of the replacement instead of being deleted.
+    ReplacedPreservingTail { preserved: usize },
+    /// The basis itself was truncated or wholesale-rewritten underneath us, so
+    /// there is no sound prefix to merge onto. NOTHING was written.
+    Stale,
+    /// No session with that id. NOTHING was written.
+    SessionNotFound,
+}
+
+impl ReplaceOutcome {
+    /// Did the rewrite actually land? `false` means the store is untouched.
+    pub fn stored(&self) -> bool {
+        matches!(
+            self,
+            ReplaceOutcome::Replaced | ReplaceOutcome::ReplacedPreservingTail { .. }
+        )
+    }
+}
+
 /// Outcome of [`SessionManager::try_update_working_dir_if_empty`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkingDirUpdate {
@@ -1280,13 +1305,50 @@ impl SessionManager {
     /// the other order would leave such a message absent from the caller's view
     /// *and* at `id <= max_rowid`, i.e. invisible to tail recovery — a silent
     /// loss. The ordering is load-bearing.
-    pub async fn snapshot_for_rewrite(
-        &self,
-        id: &str,
-    ) -> Result<(Session, ConversationRevision)> {
+    pub async fn snapshot_for_rewrite(&self, id: &str) -> Result<(Session, ConversationRevision)> {
         let revision = self.storage.conversation_revision(id).await?;
         let session = self.storage.get_session(id, true).await?;
         Ok((session, revision))
+    }
+
+    /// Whole-history rewrite that is safe against a concurrent append.
+    ///
+    /// `known` is the conversation `replacement` was derived from; `basis` is
+    /// the revision at the moment that view began (both come from
+    /// [`Self::snapshot_for_rewrite`]). Messages stored since `basis` whose ids
+    /// are not in `known` are FOREIGN — another writer appended them while this
+    /// caller was computing its rewrite — and are carried over onto the end of
+    /// `replacement` instead of being destroyed.
+    ///
+    /// The check runs inside the rewrite's own transaction, under the write
+    /// lock its first statement takes, so there is no window between the check
+    /// and the DELETE at any timescale.
+    ///
+    /// Returns what was ACTUALLY stored, so the caller can keep its in-memory
+    /// conversation, the database and any `HistoryReplaced` event in agreement.
+    /// On [`ReplaceOutcome::Stale`] / [`ReplaceOutcome::SessionNotFound`]
+    /// nothing was written and the returned conversation is `replacement`
+    /// unchanged.
+    ///
+    /// Only a genuine basis mismatch is reported as `Stale`. A `SQLITE_BUSY`, an
+    /// I/O error or a full disk propagates as `Err` — reporting a busy database
+    /// as "stale" would look like data loss, and reporting it as "written"
+    /// would be data loss.
+    ///
+    /// This makes concurrent writes SAFE, not RARE. Two turns on one session
+    /// (two app sockets, or the CLI and the daemon on the same `sessions.db`)
+    /// still both run; one of them now finds out it lost instead of silently
+    /// deleting the other's messages.
+    pub async fn replace_conversation_preserving_tail(
+        &self,
+        id: &str,
+        replacement: &Conversation,
+        basis: ConversationRevision,
+        known: &Conversation,
+    ) -> Result<(ReplaceOutcome, Conversation)> {
+        self.storage
+            .replace_conversation_preserving_tail(id, replacement, basis, known)
+            .await
     }
 
     /// Fetch one externalized tool-result payload by its blob handle (BR-7).
@@ -1627,6 +1689,19 @@ pub struct SessionStorage {
     pool: Pool<Sqlite>,
     initialized: tokio::sync::OnceCell<()>,
     session_dir: PathBuf,
+}
+
+/// How `replace_conversation_inner` treats concurrent writers.
+enum RewriteGuard<'a> {
+    /// Overwrite whatever is there. Only for a caller that owns the whole
+    /// history: `/clear`, and writes into a session it just created.
+    Unconditional,
+    /// Refuse if the basis moved out from under us, and carry over anything
+    /// appended since it that the caller never saw.
+    PreserveTail {
+        basis: ConversationRevision,
+        known: &'a Conversation,
+    },
 }
 
 fn role_to_string(role: &Role) -> &'static str {
@@ -2154,7 +2229,13 @@ impl SessionStorage {
         tx.commit().await?;
 
         if let Some(conversation) = &session.conversation {
-            Self::replace_conversation_inner(pool, &session.id, conversation).await?;
+            Self::replace_conversation_inner(
+                pool,
+                &session.id,
+                conversation,
+                RewriteGuard::Unconditional,
+            )
+            .await?;
         }
         Ok(())
     }
@@ -3381,7 +3462,8 @@ impl SessionStorage {
         pool: &Pool<Sqlite>,
         session_id: &str,
         conversation: &Conversation,
-    ) -> Result<()> {
+        guard: RewriteGuard<'_>,
+    ) -> Result<(ReplaceOutcome, Vec<Message>)> {
         let mut tx = pool.begin().await?;
 
         // LOAD-BEARING FIRST STATEMENT, AND IT MUST BE A WRITE. DO NOT REORDER.
@@ -3401,10 +3483,59 @@ impl SessionStorage {
         // `sessions.updated_at`, so a compaction or an edit was invisible to the
         // `ORDER BY updated_at DESC` session list even though it changed the
         // session's content. `insert_message` has always bumped it.
-        sqlx::query("UPDATE sessions SET updated_at = datetime('now') WHERE id = ?")
+        let touched = sqlx::query("UPDATE sessions SET updated_at = datetime('now') WHERE id = ?")
             .bind(session_id)
             .execute(&mut *tx)
             .await?;
+
+        // The freshness guard, evaluated UNDER the write lock the statement
+        // above just took — so nothing can interleave between the check and the
+        // DELETE. `Unconditional` skips it entirely and keeps this function's
+        // original semantics byte for byte.
+        let mut outcome = ReplaceOutcome::Replaced;
+        let mut recovered: Vec<Message> = Vec::new();
+        if let RewriteGuard::PreserveTail { basis, known } = guard {
+            if touched.rows_affected() == 0 {
+                // Decided before any destructive work has happened.
+                tx.rollback().await?;
+                return Ok((ReplaceOutcome::SessionNotFound, Vec::new()));
+            }
+
+            // Prefix integrity: every message the basis covered must still be
+            // there, unmoved. A concurrent truncate lowers this; a concurrent
+            // wholesale rewrite renumbers every row and drives it to 0. Either
+            // way there is no sound prefix to merge onto, so refuse.
+            let prefix = sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM messages WHERE session_id = ? AND id <= ?",
+            )
+            .bind(session_id)
+            .bind(basis.max_rowid)
+            .fetch_one(&mut *tx)
+            .await?;
+            if prefix != basis.count {
+                tx.rollback().await?;
+                return Ok((ReplaceOutcome::Stale, Vec::new()));
+            }
+
+            recovered = Self::scan_foreign_tail(&mut tx, session_id, basis, known).await?;
+            if !recovered.is_empty() {
+                outcome = ReplaceOutcome::ReplacedPreservingTail {
+                    preserved: recovered.len(),
+                };
+            }
+        }
+
+        // ONE merged list, built BEFORE the insert loop. Appending the recovered
+        // messages in a second pass instead would run the blob accounting below
+        // without their handles, so `sweep_orphan_blobs` would delete the
+        // payload of a recovered tool response and leave a dangling stub —
+        // silent, and only visible on the next read.
+        let mut merged: Vec<Message> = conversation
+            .messages()
+            .iter()
+            .cloned()
+            .chain(recovered)
+            .collect();
 
         sqlx::query("DELETE FROM messages WHERE session_id = ?")
             .bind(session_id)
@@ -3428,7 +3559,7 @@ impl SessionStorage {
         // belonged to a message this rewrite dropped and is swept at the end.
         let mut live_blob_uids: Vec<String> = Vec::new();
 
-        for message in conversation.messages() {
+        for message in merged.iter_mut() {
             let metadata_json = serde_json::to_string(&message.metadata)?;
             // PRESERVE each kept message's stable id across the rewrite (this is
             // the exact op — DELETE + re-INSERT — that used to renumber ids).
@@ -3460,7 +3591,7 @@ impl SessionStorage {
             .bind(content_json)
             .bind(message.created)
             .bind(metadata_json)
-            .bind(msg_uid)
+            .bind(msg_uid.clone())
             .execute(&mut *tx)
             .await?;
 
@@ -3474,6 +3605,11 @@ impl SessionStorage {
                 fts_available,
             )
             .await?;
+
+            // Stamp the effective uid so the conversation handed back to the
+            // caller carries the same ids as the rows (#41's contract, applied
+            // to the rewrite path).
+            message.id = Some(msg_uid);
         }
 
         // A conversation written here can carry stubs minted under *another*
@@ -3484,7 +3620,77 @@ impl SessionStorage {
         Self::sweep_orphan_blobs(&mut tx, session_id, &live_blob_uids).await?;
 
         tx.commit().await?;
-        Ok(())
+        Ok((outcome, merged))
+    }
+
+    /// The messages stored since `basis` that the caller's view never contained
+    /// — i.e. what another writer appended while the caller was computing its
+    /// rewrite. Read inside the rewrite's own transaction, under the write lock.
+    ///
+    /// Decoding mirrors `get_conversation_inner` exactly, INCLUDING the legacy
+    /// `msg_{session}_{idx}` fallback for a row an in-flight upgrade has not
+    /// backfilled — an id that decoded differently here would never match
+    /// `known` and would look foreign forever. The absolute index is
+    /// `basis.count + relative`, which is exact because the prefix check the
+    /// caller just ran proved there are exactly `basis.count` rows at or below
+    /// the watermark, and both reads order by `id`.
+    ///
+    /// Blobs are deliberately NOT hydrated. A recovered row's `content_json`
+    /// may carry a BR-7 stub; re-inserting the stub verbatim means
+    /// `externalize` mints nothing, the existing handle joins `live_blob_uids`,
+    /// and the sweep spares it. Hydrating and re-externalizing would mint a
+    /// duplicate blob row for the same payload.
+    async fn scan_foreign_tail(
+        tx: &mut sqlx::Transaction<'_, Sqlite>,
+        session_id: &str,
+        basis: ConversationRevision,
+        known: &Conversation,
+    ) -> Result<Vec<Message>> {
+        let rows = sqlx::query_as::<_, (String, String, i64, Option<String>, Option<String>)>(
+            "SELECT role, content_json, created_timestamp, metadata_json, msg_uid \
+             FROM messages WHERE session_id = ? AND id > ? ORDER BY id",
+        )
+        .bind(session_id)
+        .bind(basis.max_rowid)
+        .fetch_all(&mut **tx)
+        .await?;
+
+        if rows.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let known_uids: std::collections::HashSet<&str> = known
+            .messages()
+            .iter()
+            .filter_map(|m| m.id.as_deref())
+            .collect();
+
+        let mut foreign = Vec::new();
+        for (relative, (role_str, content_json, created_timestamp, metadata_json, msg_uid)) in
+            rows.into_iter().enumerate()
+        {
+            let role = match role_str.as_str() {
+                "user" => Role::User,
+                "assistant" => Role::Assistant,
+                // Same as the read path: a row with an unrecognized role is not
+                // representable and is dropped by any rewrite.
+                _ => continue,
+            };
+            let id = msg_uid.unwrap_or_else(|| {
+                format!("msg_{}_{}", session_id, basis.count as usize + relative)
+            });
+            if known_uids.contains(id.as_str()) {
+                continue;
+            }
+            let content: Vec<MessageContent> = serde_json::from_str(&content_json)?;
+            let metadata = metadata_json
+                .and_then(|json| serde_json::from_str(&json).ok())
+                .unwrap_or_default();
+            let mut message = Message::new(role, created_timestamp, content);
+            message.metadata = metadata;
+            foreign.push(message.with_id(id));
+        }
+        Ok(foreign)
     }
 
     /// Write the payloads lifted out of one message, in the caller's transaction.
@@ -3570,7 +3776,38 @@ impl SessionStorage {
         conversation: &Conversation,
     ) -> Result<()> {
         let pool = self.pool().await?;
-        Self::replace_conversation_inner(pool, session_id, conversation).await
+        Self::replace_conversation_inner(
+            pool,
+            session_id,
+            conversation,
+            RewriteGuard::Unconditional,
+        )
+        .await
+        .map(|_| ())
+    }
+
+    /// Whole-history rewrite that carries over anything appended since `basis`.
+    /// See [`SessionManager::replace_conversation_preserving_tail`].
+    pub async fn replace_conversation_preserving_tail(
+        &self,
+        session_id: &str,
+        replacement: &Conversation,
+        basis: ConversationRevision,
+        known: &Conversation,
+    ) -> Result<(ReplaceOutcome, Conversation)> {
+        let pool = self.pool().await?;
+        let (outcome, stored) = Self::replace_conversation_inner(
+            pool,
+            session_id,
+            replacement,
+            RewriteGuard::PreserveTail { basis, known },
+        )
+        .await?;
+        if outcome.stored() {
+            Ok((outcome, Conversation::new_unvalidated(stored)))
+        } else {
+            Ok((outcome, replacement.clone()))
+        }
     }
 
     /// [`ConversationRevision`] of one session, read from the pool.
@@ -4770,6 +5007,59 @@ mod blob_tests {
             .unwrap();
         assert_eq!(conv.messages().len(), 1);
         assert_eq!(response_text(&conv, 0), kept);
+    }
+
+    /// A message RECOVERED by the freshness guard carries its externalized
+    /// payload with it. The recovered rows must join the merged list BEFORE the
+    /// blob accounting runs — build the list afterwards and `sweep_orphan_blobs`
+    /// deletes the payload out from under a message that survives, leaving a
+    /// dangling stub. Silent, and only visible on the next read.
+    #[tokio::test]
+    async fn preserving_tail_keeps_blobs_of_recovered_messages() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let id = session(&sm).await;
+
+        sm.add_message(&id, &Message::user().with_text("prompt"))
+            .await
+            .unwrap();
+        let (snap, basis) = sm.snapshot_for_rewrite(&id).await.unwrap();
+        let known = snap.conversation.unwrap();
+
+        // A concurrent writer appends an OVERSIZED tool result, which is
+        // externalized into `message_blobs`.
+        let payload = huge("recovered");
+        sm.add_message(&id, &tool_response_message("call_1", payload.clone()))
+            .await
+            .unwrap();
+        assert_eq!(blob_count(&sm, &id).await, 1);
+
+        // ...and the caller compacts what it saw away.
+        let replacement = Conversation::new_unvalidated(vec![Message::user().with_text("summary")]);
+        let (outcome, _) = sm
+            .replace_conversation_preserving_tail(&id, &replacement, basis, &known)
+            .await
+            .unwrap();
+        assert_eq!(
+            outcome,
+            ReplaceOutcome::ReplacedPreservingTail { preserved: 1 }
+        );
+
+        // Exactly one blob row: spared, not swept, and not duplicated by a
+        // hydrate-then-re-externalize round trip.
+        assert_eq!(blob_count(&sm, &id).await, 1);
+        let conv = sm
+            .get_session(&id, true)
+            .await
+            .unwrap()
+            .conversation
+            .unwrap();
+        assert_eq!(conv.messages().len(), 2);
+        assert_eq!(
+            response_text(&conv, 1),
+            payload,
+            "the recovered message must still hydrate to its full payload"
+        );
     }
 
     /// A rewrite of a *lazily* loaded conversation carries stubs, not payloads.
@@ -8176,6 +8466,549 @@ mod tests {
         );
     }
 
+    // ── replace_conversation_preserving_tail ─────────────────────────────────
+
+    /// Snapshot a session the way every rewrite caller must.
+    async fn snapshot(sm: &SessionManager, id: &str) -> (Conversation, ConversationRevision) {
+        let (session, revision) = sm.snapshot_for_rewrite(id).await.unwrap();
+        (session.conversation.unwrap(), revision)
+    }
+
+    async fn stored_texts(sm: &SessionManager, id: &str) -> Vec<String> {
+        sm.get_session(id, true)
+            .await
+            .unwrap()
+            .conversation
+            .unwrap()
+            .messages()
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .filter_map(|c| match c {
+                MessageContent::Text(t) => Some(t.text.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The no-concurrency path must be exactly the old behaviour.
+    #[tokio::test]
+    async fn preserving_tail_writes_verbatim_when_nothing_moved() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let id = revision_session(&sm).await;
+        sm.add_message(&id, &umsg(1, "one")).await.unwrap();
+        sm.add_message(&id, &amsg(2, "two")).await.unwrap();
+
+        let (known, basis) = snapshot(&sm, &id).await;
+        let replacement = Conversation::new_unvalidated(vec![known.messages()[1].clone()]);
+
+        let (outcome, stored) = sm
+            .replace_conversation_preserving_tail(&id, &replacement, basis, &known)
+            .await
+            .unwrap();
+
+        assert_eq!(outcome, ReplaceOutcome::Replaced);
+        assert_eq!(stored.messages().len(), 1);
+        assert_eq!(stored_texts(&sm, &id).await, vec!["two".to_string()]);
+    }
+
+    /// THE headline case: a message appended while the caller was computing its
+    /// rewrite must survive. This is BR-71's `mode: "note"`, and the shipped
+    /// `biorouter term log` cross-process append.
+    #[tokio::test]
+    async fn preserving_tail_carries_over_a_concurrent_append() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let id = revision_session(&sm).await;
+        sm.add_message(&id, &umsg(1, "one")).await.unwrap();
+        sm.add_message(&id, &amsg(2, "two")).await.unwrap();
+
+        let (known, basis) = snapshot(&sm, &id).await;
+
+        // ...another writer appends while the "summarizer" runs.
+        let note_uid = sm
+            .add_message(&id, &umsg(3, "NOTE from elsewhere"))
+            .await
+            .unwrap();
+
+        // ...and the caller writes back a compaction of what it saw.
+        let replacement = Conversation::new_unvalidated(vec![umsg(9, "summary")]);
+        let (outcome, stored) = sm
+            .replace_conversation_preserving_tail(&id, &replacement, basis, &known)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            outcome,
+            ReplaceOutcome::ReplacedPreservingTail { preserved: 1 }
+        );
+
+        let texts = stored_texts(&sm, &id).await;
+        assert_eq!(
+            texts,
+            vec!["summary".to_string(), "NOTE from elsewhere".to_string()],
+            "the note must survive, after the compacted head"
+        );
+        // The returned conversation agrees with the store...
+        assert_eq!(
+            stored
+                .messages()
+                .iter()
+                .filter_map(|m| m.id.clone())
+                .collect::<Vec<_>>()
+                .last()
+                .cloned(),
+            Some(note_uid.clone())
+        );
+        // ...and the note kept its stable id across the rewrite.
+        let reloaded = sm
+            .get_session(&id, true)
+            .await
+            .unwrap()
+            .conversation
+            .unwrap();
+        assert_eq!(
+            reloaded.messages()[1].id.as_deref(),
+            Some(note_uid.as_str())
+        );
+    }
+
+    /// The discriminator against a watermark-only implementation: the writer's
+    /// OWN messages, appended after it captured its basis and then deliberately
+    /// compacted away, must stay gone.
+    #[tokio::test]
+    async fn preserving_tail_does_not_resurrect_the_writers_own_compacted_messages() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let id = revision_session(&sm).await;
+        sm.add_message(&id, &umsg(1, "one")).await.unwrap();
+
+        let (_, basis) = snapshot(&sm, &id).await;
+        // The caller appends its own messages past the watermark...
+        sm.add_message(&id, &amsg(2, "mine-a")).await.unwrap();
+        sm.add_message(&id, &amsg(3, "mine-b")).await.unwrap();
+        // ...so its view (taken now) contains them.
+        let known = sm
+            .get_session(&id, true)
+            .await
+            .unwrap()
+            .conversation
+            .unwrap();
+
+        let replacement = Conversation::new_unvalidated(vec![umsg(9, "summary")]);
+        let (outcome, _) = sm
+            .replace_conversation_preserving_tail(&id, &replacement, basis, &known)
+            .await
+            .unwrap();
+
+        assert_eq!(outcome, ReplaceOutcome::Replaced);
+        assert_eq!(stored_texts(&sm, &id).await, vec!["summary".to_string()]);
+    }
+
+    /// The mirror discriminator, against a uid-set-only implementation: a
+    /// message the snapshot saw and the compaction dropped must stay dropped.
+    #[tokio::test]
+    async fn preserving_tail_does_not_resurrect_messages_the_snapshot_already_dropped() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let id = revision_session(&sm).await;
+        sm.add_message(&id, &umsg(1, "drop me")).await.unwrap();
+        sm.add_message(&id, &amsg(2, "keep me")).await.unwrap();
+
+        let (known, basis) = snapshot(&sm, &id).await;
+        let replacement = Conversation::new_unvalidated(vec![known.messages()[1].clone()]);
+
+        let (outcome, _) = sm
+            .replace_conversation_preserving_tail(&id, &replacement, basis, &known)
+            .await
+            .unwrap();
+
+        assert_eq!(outcome, ReplaceOutcome::Replaced);
+        assert_eq!(stored_texts(&sm, &id).await, vec!["keep me".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn preserving_tail_reports_stale_after_a_concurrent_truncate() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let id = revision_session(&sm).await;
+        sm.add_message(&id, &umsg(1, "one")).await.unwrap();
+        sm.add_message(&id, &amsg(2, "two")).await.unwrap();
+
+        let (known, basis) = snapshot(&sm, &id).await;
+        // A checkpoint restore / message edit removes the tail underneath us.
+        sm.truncate_conversation(&id, 2).await.unwrap();
+        let before = sm.conversation_revision(&id).await.unwrap();
+
+        let replacement = Conversation::new_unvalidated(vec![umsg(9, "summary")]);
+        let (outcome, returned) = sm
+            .replace_conversation_preserving_tail(&id, &replacement, basis, &known)
+            .await
+            .unwrap();
+
+        assert_eq!(outcome, ReplaceOutcome::Stale);
+        assert_eq!(
+            sm.conversation_revision(&id).await.unwrap(),
+            before,
+            "a stale rewrite must not write anything at all"
+        );
+        assert_eq!(stored_texts(&sm, &id).await, vec!["one".to_string()]);
+        assert_eq!(returned.messages().len(), 1, "the replacement, unchanged");
+    }
+
+    #[tokio::test]
+    async fn preserving_tail_reports_stale_after_a_concurrent_wholesale_rewrite() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let id = revision_session(&sm).await;
+        sm.add_message(&id, &umsg(1, "one")).await.unwrap();
+
+        let (known, basis) = snapshot(&sm, &id).await;
+        // Another rewrite lands first: every row is renumbered above the
+        // watermark, so the prefix count goes to 0.
+        sm.replace_conversation(&id, &Conversation::new_unvalidated(vec![umsg(5, "theirs")]))
+            .await
+            .unwrap();
+
+        let replacement = Conversation::new_unvalidated(vec![umsg(9, "summary")]);
+        let (outcome, _) = sm
+            .replace_conversation_preserving_tail(&id, &replacement, basis, &known)
+            .await
+            .unwrap();
+
+        assert_eq!(outcome, ReplaceOutcome::Stale);
+        assert_eq!(stored_texts(&sm, &id).await, vec!["theirs".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn preserving_tail_reports_session_not_found() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        // Force the pool + schema to exist.
+        let _ = revision_session(&sm).await;
+
+        let empty = Conversation::default();
+        let (outcome, _) = sm
+            .replace_conversation_preserving_tail(
+                "no-such-session",
+                &Conversation::new_unvalidated(vec![umsg(1, "x")]),
+                ConversationRevision::from_parts(0, 0),
+                &empty,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(outcome, ReplaceOutcome::SessionNotFound);
+        assert_eq!(
+            sm.conversation_revision("no-such-session")
+                .await
+                .unwrap()
+                .message_count(),
+            0,
+            "nothing may be written for a session that does not exist"
+        );
+    }
+
+    #[tokio::test]
+    async fn preserving_tail_orders_recovered_messages_last_by_rowid() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let id = revision_session(&sm).await;
+        sm.add_message(&id, &umsg(1, "one")).await.unwrap();
+
+        let (known, basis) = snapshot(&sm, &id).await;
+        // Deliberately out-of-order `created` values: insertion order, not the
+        // timestamp, is what the read path (`ORDER BY id`) reproduces.
+        sm.add_message(&id, &umsg(50, "note-a")).await.unwrap();
+        sm.add_message(&id, &umsg(40, "note-b")).await.unwrap();
+
+        let replacement = Conversation::new_unvalidated(vec![umsg(9, "summary")]);
+        let (outcome, _) = sm
+            .replace_conversation_preserving_tail(&id, &replacement, basis, &known)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            outcome,
+            ReplaceOutcome::ReplacedPreservingTail { preserved: 2 }
+        );
+        assert_eq!(
+            stored_texts(&sm, &id).await,
+            vec![
+                "summary".to_string(),
+                "note-a".to_string(),
+                "note-b".to_string()
+            ]
+        );
+    }
+
+    /// A row a schema upgrade has not backfilled has a NULL `msg_uid`, and the
+    /// read path synthesizes `msg_{session}_{idx}` for it. The recovery scan
+    /// must synthesize the SAME id, or such a row would look foreign forever
+    /// and be duplicated on every rewrite.
+    #[tokio::test]
+    async fn preserving_tail_recovers_a_legacy_null_msg_uid_row() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let id = revision_session(&sm).await;
+        sm.add_message(&id, &umsg(1, "one")).await.unwrap();
+
+        let (known, basis) = snapshot(&sm, &id).await;
+
+        let pool = sm.storage().pool().await.unwrap();
+        sqlx::query(
+            "INSERT INTO messages (session_id, role, content_json, created_timestamp, metadata_json, msg_uid) \
+             VALUES (?, 'user', ?, 7, NULL, NULL)",
+        )
+        .bind(&id)
+        .bind(serde_json::to_string(&vec![MessageContent::text("legacy note")]).unwrap())
+        .execute(pool)
+        .await
+        .unwrap();
+
+        // The read path's synthesized id for that row (index 1 of the session).
+        let read_id = sm
+            .get_session(&id, true)
+            .await
+            .unwrap()
+            .conversation
+            .unwrap()
+            .messages()[1]
+            .id
+            .clone()
+            .unwrap();
+        assert_eq!(read_id, format!("msg_{id}_1"));
+
+        let replacement = Conversation::new_unvalidated(vec![umsg(9, "summary")]);
+        let (outcome, stored) = sm
+            .replace_conversation_preserving_tail(&id, &replacement, basis, &known)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            outcome,
+            ReplaceOutcome::ReplacedPreservingTail { preserved: 1 }
+        );
+        assert_eq!(
+            stored.messages()[1].id.as_deref(),
+            Some(read_id.as_str()),
+            "the recovery scan must reproduce the read path's synthesized id"
+        );
+        assert_eq!(
+            stored_texts(&sm, &id).await,
+            vec!["summary".to_string(), "legacy note".to_string()]
+        );
+    }
+
+    /// A recovered message must be findable by chat recall — the FTS mirror is
+    /// rebuilt from the merged list, not from the caller's replacement.
+    #[tokio::test]
+    async fn preserving_tail_indexes_recovered_messages_for_chat_recall() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let id = revision_session(&sm).await;
+        sm.add_message(&id, &umsg(1, "photosynthesis"))
+            .await
+            .unwrap();
+
+        let (known, basis) = snapshot(&sm, &id).await;
+        sm.add_message(&id, &umsg(2, "chemiosmosis in mitochondria"))
+            .await
+            .unwrap();
+
+        let replacement = Conversation::new_unvalidated(vec![umsg(9, "a compaction summary")]);
+        sm.replace_conversation_preserving_tail(&id, &replacement, basis, &known)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            sm.search_chat_history("chemiosmosis", None, None, None, None)
+                .await
+                .unwrap()
+                .results
+                .len(),
+            1,
+            "a recovered message must be indexed for recall"
+        );
+        assert!(
+            sm.search_chat_history("photosynthesis", None, None, None, None)
+                .await
+                .unwrap()
+                .results
+                .is_empty(),
+            "a compacted-away message must drop out of the index"
+        );
+    }
+
+    /// Real overlap against a real pool and a real WAL file: 200 appends racing
+    /// 60 snapshot -> "summarize" -> write-back cycles.
+    ///
+    /// Assertion 2 is what makes this irreplaceable. If the write-first
+    /// `UPDATE sessions` at the top of the rewrite transaction is ever
+    /// "simplified away" as a gratuitous write, the deferred transaction reads
+    /// before it writes and the DELETE fails SQLITE_BUSY_SNAPSHOT *instantly*,
+    /// bypassing the busy timeout. That surfaces here as an error, not as data
+    /// loss, so a test that only checked the final message set would pass while
+    /// the fix was broken.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_appends_survive_racing_rewrites() {
+        let temp = TempDir::new().unwrap();
+        let sm = Arc::new(SessionManager::new(temp.path().to_path_buf()));
+        let session = sm
+            .create_session(PathBuf::from("/tmp"), "race".into(), SessionType::User)
+            .await
+            .unwrap();
+        sm.add_message(&session.id, &umsg(1, "seed")).await.unwrap();
+
+        let appender = {
+            let sm = Arc::clone(&sm);
+            let id = session.id.clone();
+            tokio::spawn(async move {
+                let mut uids = Vec::new();
+                for i in 0..200 {
+                    let m = umsg(100 + i, &format!("note-{i}"));
+                    uids.push(sm.add_message(&id, &m).await.unwrap());
+                    tokio::task::yield_now().await;
+                }
+                uids
+            })
+        };
+        let rewriter = {
+            let sm = Arc::clone(&sm);
+            let id = session.id.clone();
+            tokio::spawn(async move {
+                let mut outcomes = Vec::new();
+                let mut errors = Vec::new();
+                for i in 0..60 {
+                    let (session, basis) = sm.snapshot_for_rewrite(&id).await.unwrap();
+                    let known = session.conversation.unwrap();
+                    // Stand-in for the summarization round-trip.
+                    tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+                    let mut msgs = known.messages().clone();
+                    msgs.push(amsg(1_000 + i, &format!("summary-{i}")));
+                    match sm
+                        .replace_conversation_preserving_tail(
+                            &id,
+                            &Conversation::new_unvalidated(msgs),
+                            basis,
+                            &known,
+                        )
+                        .await
+                    {
+                        Ok((outcome, _)) => outcomes.push(outcome),
+                        Err(e) => errors.push(e.to_string()),
+                    }
+                }
+                (outcomes, errors)
+            })
+        };
+        let (uids, rewrites) = tokio::join!(appender, rewriter);
+        let uids = uids.unwrap();
+        let (outcomes, errors) = rewrites.unwrap();
+
+        // 2. The write-first lock ordering held.
+        assert!(
+            errors.is_empty(),
+            "no rewrite may fail (a `database is locked` here means the \
+             transaction read before it wrote): {errors:?}"
+        );
+        // 4. Every rewrite reported a real, non-silent outcome.
+        assert_eq!(outcomes.len(), 60);
+
+        let stored = sm
+            .get_session(&session.id, true)
+            .await
+            .unwrap()
+            .conversation
+            .unwrap();
+        let stored_ids: Vec<String> = stored
+            .messages()
+            .iter()
+            .filter_map(|m| m.id.clone())
+            .collect();
+
+        // 1. Nothing appended was destroyed...
+        let lost: Vec<&String> = uids.iter().filter(|u| !stored_ids.contains(u)).collect();
+        assert!(
+            lost.is_empty(),
+            "{} of {} appended messages were destroyed by racing rewrites",
+            lost.len(),
+            uids.len()
+        );
+        // 3. ...and nothing was duplicated (UNIQUE(session_id, msg_uid) held).
+        let mut unique = stored_ids.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), stored_ids.len(), "duplicate msg_uid stored");
+    }
+
+    /// Two racing preserving-tail rewrites must not collide on
+    /// UNIQUE(session_id, msg_uid): the rewrite path has no duplicate-uid
+    /// recovery of its own, unlike `add_message`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_rewrites_do_not_produce_duplicate_msg_uids() {
+        let temp = TempDir::new().unwrap();
+        let sm = Arc::new(SessionManager::new(temp.path().to_path_buf()));
+        let session = sm
+            .create_session(PathBuf::from("/tmp"), "race2".into(), SessionType::User)
+            .await
+            .unwrap();
+        for i in 0..5 {
+            sm.add_message(&session.id, &umsg(i, &format!("m{i}")))
+                .await
+                .unwrap();
+        }
+
+        let spawn_rewriter = |tag: &'static str| {
+            let sm = Arc::clone(&sm);
+            let id = session.id.clone();
+            tokio::spawn(async move {
+                let mut errors = Vec::new();
+                for i in 0..40 {
+                    let (session, basis) = sm.snapshot_for_rewrite(&id).await.unwrap();
+                    let known = session.conversation.unwrap();
+                    tokio::task::yield_now().await;
+                    let mut msgs = known.messages().clone();
+                    msgs.push(amsg(2_000 + i, &format!("{tag}-{i}")));
+                    if let Err(e) = sm
+                        .replace_conversation_preserving_tail(
+                            &id,
+                            &Conversation::new_unvalidated(msgs),
+                            basis,
+                            &known,
+                        )
+                        .await
+                    {
+                        errors.push(e.to_string());
+                    }
+                }
+                errors
+            })
+        };
+        let (a, b) = tokio::join!(spawn_rewriter("a"), spawn_rewriter("b"));
+        let mut errors = a.unwrap();
+        errors.extend(b.unwrap());
+        assert!(
+            errors.is_empty(),
+            "racing rewrites must not error: {errors:?}"
+        );
+
+        let stored_ids: Vec<String> = sm
+            .get_session(&session.id, true)
+            .await
+            .unwrap()
+            .conversation
+            .unwrap()
+            .messages()
+            .iter()
+            .filter_map(|m| m.id.clone())
+            .collect();
+        let mut unique = stored_ids.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), stored_ids.len(), "duplicate msg_uid stored");
+    }
+
     /// #41 resilience: inserting a message whose caller-supplied id already
     /// exists in the session with DIFFERENT content must NOT abort — the store
     /// re-mints the uid, keeps both rows, and RETURNS the effective uid so the
@@ -9063,5 +9896,4 @@ mod activity_tests {
         assert!(!w.days[0].tokens_complete);
         assert!(w.days[1].tokens_complete);
     }
-
 }
