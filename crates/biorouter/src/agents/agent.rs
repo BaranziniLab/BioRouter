@@ -917,22 +917,35 @@ impl Agent {
 
     /// BR-71: queue a mid-turn injection stamped with its origin. Used by
     /// `workspace_send_prompt mode:"steer"` and the subagent-tab steer path.
+    ///
+    /// Recovers past a poisoned lock rather than dropping the injection. This
+    /// method returns `()`, so a dropped injection is unobservable to its
+    /// caller — tolerable when the only producer was `POST /interrupt` (the
+    /// human sees the missing message and retypes it), not tolerable once a
+    /// *calling agent* is told its cross-session steer was delivered. The
+    /// guarded value is a `Vec` only ever pushed to or `mem::take`n, so no
+    /// invariant can be mid-update when a panic poisons it.
     pub fn queue_soft_interrupt_with_provenance(
         &self,
         text: String,
         provenance: Option<crate::conversation::message::MessageProvenance>,
     ) {
-        if let Ok(mut q) = self.soft_interrupts.lock() {
-            q.push(QueuedInterrupt { text, provenance });
-        }
+        let mut q = self
+            .soft_interrupts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        q.push(QueuedInterrupt { text, provenance });
     }
 
     /// Drain queued soft-interrupt messages (FIFO). Returns empty when none.
+    /// Recovers past a poisoned lock — see
+    /// [`Agent::queue_soft_interrupt_with_provenance`].
     pub(super) fn drain_soft_interrupts(&self) -> Vec<QueuedInterrupt> {
-        self.soft_interrupts
+        let mut q = self
+            .soft_interrupts
             .lock()
-            .map(|mut q| std::mem::take(&mut *q))
-            .unwrap_or_default()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        std::mem::take(&mut *q)
     }
 
     /// Whether any soft interrupt is still waiting to be injected. Checked at the
@@ -940,10 +953,11 @@ impl Agent {
     /// streaming keeps the loop alive for one more step (BR-61) instead of being
     /// stranded on the queue until some later turn.
     pub fn has_soft_interrupts(&self) -> bool {
-        self.soft_interrupts
+        let q = self
+            .soft_interrupts
             .lock()
-            .map(|q| !q.is_empty())
-            .unwrap_or(false)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        !q.is_empty()
     }
 
     /// The hooks manager driving user-configured lifecycle hooks.
@@ -6598,6 +6612,54 @@ mod tests {
                 .as_deref(),
             Some("s1")
         );
+        assert!(!agent.has_soft_interrupts(), "drain empties the queue");
+    }
+
+    /// BR-71: a poisoned soft-interrupt mutex must not silently swallow an
+    /// injection.
+    ///
+    /// `queue_soft_interrupt_with_provenance` returns `()`, so a caller can
+    /// never learn its text was dropped. That was survivable while the only
+    /// producer was `POST /interrupt` — a lost keystroke the human is watching
+    /// for and can retype. Once a *calling agent* gets a success back from
+    /// `workspace_send_prompt mode:"steer"`, a dropped injection is an
+    /// acknowledged-but-undelivered cross-session message with no observer at
+    /// all. The queue holds a `Vec` and is only ever pushed to or taken from,
+    /// so recovering the guard past a poison loses nothing.
+    #[tokio::test]
+    async fn a_poisoned_soft_interrupt_queue_still_accepts_and_drains() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let sm = std::sync::Arc::new(crate::session::SessionManager::new(
+            temp.path().to_path_buf(),
+        ));
+        let agent = Agent::with_config(AgentConfig::new(
+            sm,
+            crate::config::permission::PermissionManager::instance(),
+            None,
+            crate::config::BioRouterMode::Auto,
+        ));
+
+        // Poison the queue's mutex the only way it can be poisoned: panic while
+        // its guard is held.
+        let queue = agent.soft_interrupts.clone();
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = queue.lock().unwrap();
+            panic!("deliberately poisoning the soft-interrupt queue");
+        }));
+        assert!(
+            agent.soft_interrupts.lock().is_err(),
+            "precondition: the queue's mutex must actually be poisoned"
+        );
+
+        agent.queue_soft_interrupt("after the poison".into());
+        assert!(
+            agent.has_soft_interrupts(),
+            "a poisoned lock must not swallow a queued injection"
+        );
+
+        let drained = agent.drain_soft_interrupts();
+        assert_eq!(drained.len(), 1, "the injection must still be drainable");
+        assert_eq!(drained[0].text, "after the poison");
         assert!(!agent.has_soft_interrupts(), "drain empties the queue");
     }
 }
