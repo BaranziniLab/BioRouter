@@ -54,6 +54,43 @@ export const checkServerStatus = async (client: Client, errorLog: string[]): Pro
   return false;
 };
 
+export type DaemonLogLevel = 'error' | 'warn' | 'info' | 'debug';
+
+// eslint-disable-next-line no-control-regex
+const ANSI_ESCAPE_PATTERN = /\u001b\[[0-9;]*m/g;
+
+// The daemon writes tracing's pretty format to stderr:
+//   `  2026-07-26T18:40:14.289898Z  WARN some::target: message`
+// possibly with continuation lines (`    at src/foo.rs:12`). Match the level
+// only at the head of the line (after an optional timestamp) so a level word
+// appearing inside a message body cannot re-classify the line.
+const DAEMON_LEVEL_PATTERN =
+  /^\s*(?:\[?\d{4}-\d{2}-\d{2}[T ][0-9:.]+(?:Z|[+-]\d{2}:?\d{2})?\]?\s+)?\[?(TRACE|DEBUG|INFO|WARN|WARNING|ERROR|FATAL)\]?\b/;
+
+/**
+ * Map a line of `biorouterd` stderr onto the electron-log level that matches
+ * the daemon's own severity. A line whose level cannot be parsed defaults to
+ * `info`: it is a line that could not be parsed, not an error. Logging all
+ * daemon stderr at `error` destroys severity at the process boundary and makes
+ * main.log unfilterable (see issue #49).
+ */
+export const daemonStderrLogLevel = (line: string): DaemonLogLevel => {
+  const match = DAEMON_LEVEL_PATTERN.exec(line.replace(ANSI_ESCAPE_PATTERN, ''));
+  switch (match?.[1]) {
+    case 'ERROR':
+    case 'FATAL':
+      return 'error';
+    case 'WARN':
+    case 'WARNING':
+      return 'warn';
+    case 'DEBUG':
+    case 'TRACE':
+      return 'debug';
+    default:
+      return 'info';
+  }
+};
+
 export interface BiorouterdResult {
   baseUrl: string;
   workingDir: string;
@@ -185,7 +222,10 @@ export const startBiorouterd = async (
       .split('\n')
       .filter((l) => l.trim());
     lines.forEach((line) => {
-      log.error(`biorouterd stderr for port ${port} and dir ${dir}: ${line}`);
+      // Route each line at the daemon's own severity. Logging the whole stream
+      // at `error` made main.log a wall of apparent failures with no way to
+      // find the real one.
+      log[daemonStderrLogLevel(line)](`biorouterd stderr for port ${port} and dir ${dir}: ${line}`);
       stderrLines.push(line);
       if (stderrLines.length > STDERR_RING_MAX) {
         stderrLines.splice(0, stderrLines.length - STDERR_RING_MAX);
