@@ -540,6 +540,39 @@ pub struct MessageMetadata {
     pub user_visible: bool,
     /// Whether the message should be included in the agent's context window
     pub agent_visible: bool,
+    /// #51: the PRESERVATION MARKER — "carry this message verbatim through every
+    /// compaction; never dissolve it into a summary".
+    ///
+    /// Compaction keeps only the last `keep_last_turns` turns verbatim and
+    /// summarizes the older prefix, so an ordinary message that falls out of that
+    /// window stops reaching the model. A pinned message is exempt from
+    /// summarization on every compaction path (see
+    /// [`crate::context_mgmt`]): the older prefix around it is summarized and
+    /// hidden, and it stays where it is, agent-visible.
+    ///
+    /// It is NOT exempt from the overall context budget. A pinned set that
+    /// cannot fit is trimmed OLDEST-FIRST and the eviction is reported — see
+    /// `BIOROUTER_MAX_PINNED_MESSAGES` / `BIOROUTER_MAX_PINNED_CONTEXT_SHARE`.
+    /// So the guarantee is "never dropped by summarization", not "never dropped".
+    ///
+    /// A pin is only honoured on a message that carries no tool request/response
+    /// content: relocating or exempting half of a tool pair would hand the
+    /// provider an invalid request. Pins are for standalone messages — which is
+    /// exactly the shape of the first consumer.
+    ///
+    /// **Nothing sets this yet, deliberately.** BR-71's
+    /// `workspace_send_prompt { mode: "note" }` (issue #30) is the first
+    /// consumer: it appends a note to another session's conversation and must be
+    /// able to promise the note reaches the model wherever the conversation has
+    /// got to. When that lands it attaches here, via [`Message::pinned`].
+    ///
+    /// `#[serde(default)]` is load-bearing: `metadata_json` rows written before
+    /// this field existed omit it, and the read path decodes with
+    /// `from_str(..).ok().unwrap_or_default()` — without the default, every
+    /// pre-existing message would fail to decode and silently reset to fully
+    /// default metadata, losing its `user_visible` / `agent_visible` state.
+    #[serde(default)]
+    pub pinned: bool,
 }
 
 impl Default for MessageMetadata {
@@ -547,6 +580,7 @@ impl Default for MessageMetadata {
         MessageMetadata {
             user_visible: true,
             agent_visible: true,
+            pinned: false,
         }
     }
 }
@@ -557,6 +591,7 @@ impl MessageMetadata {
         MessageMetadata {
             user_visible: false,
             agent_visible: true,
+            pinned: false,
         }
     }
 
@@ -565,6 +600,7 @@ impl MessageMetadata {
         MessageMetadata {
             user_visible: true,
             agent_visible: false,
+            pinned: false,
         }
     }
 
@@ -573,6 +609,7 @@ impl MessageMetadata {
         MessageMetadata {
             user_visible: false,
             agent_visible: false,
+            pinned: false,
         }
     }
 
@@ -604,6 +641,22 @@ impl MessageMetadata {
     pub fn with_user_visible(self) -> Self {
         Self {
             user_visible: true,
+            ..self
+        }
+    }
+
+    /// Return a copy carrying the #51 preservation marker (see [`Self::pinned`]).
+    pub fn with_pinned(self) -> Self {
+        Self {
+            pinned: true,
+            ..self
+        }
+    }
+
+    /// Return a copy with the #51 preservation marker cleared.
+    pub fn with_unpinned(self) -> Self {
+        Self {
+            pinned: false,
             ..self
         }
     }
@@ -913,6 +966,24 @@ impl Message {
     /// Check if the message is visible to the agent
     pub fn is_agent_visible(&self) -> bool {
         self.metadata.agent_visible
+    }
+
+    /// #51: mark this message to be carried verbatim through every compaction
+    /// instead of being dissolved into a summary. See
+    /// [`MessageMetadata::pinned`] for the exact guarantee (and its one limit:
+    /// the overall context budget).
+    ///
+    /// This is the attachment point for BR-71's
+    /// `workspace_send_prompt { mode: "note" }` — the first consumer, not yet
+    /// built. Nothing in the shipped tree calls it.
+    pub fn pinned(mut self) -> Self {
+        self.metadata.pinned = true;
+        self
+    }
+
+    /// Whether this message carries the #51 preservation marker.
+    pub fn is_pinned(&self) -> bool {
+        self.metadata.pinned
     }
 }
 
@@ -1422,6 +1493,51 @@ mod tests {
             .with_agent_visible();
         assert!(metadata.user_visible);
         assert!(metadata.agent_visible);
+    }
+
+    /// #51: the preservation marker defaults off and is orthogonal to the two
+    /// visibility flags — flipping visibility must never clear a pin, because
+    /// compaction's very first act on the older prefix is
+    /// `with_agent_invisible()`.
+    #[test]
+    fn test_pin_marker_is_orthogonal_to_visibility() {
+        assert!(!MessageMetadata::default().pinned);
+        assert!(!MessageMetadata::agent_only().pinned);
+        assert!(!MessageMetadata::user_only().pinned);
+        assert!(!MessageMetadata::invisible().pinned);
+
+        let pinned = MessageMetadata::default().with_pinned();
+        assert!(pinned.pinned);
+        assert!(pinned.with_agent_invisible().pinned);
+        assert!(pinned.with_user_invisible().pinned);
+        assert!(pinned.with_agent_visible().pinned);
+        assert!(pinned.with_user_visible().pinned);
+        assert!(!pinned.with_unpinned().pinned);
+
+        let msg = Message::user().with_text("note").pinned();
+        assert!(msg.is_pinned());
+        assert!(msg.is_agent_visible());
+        assert!(!Message::user().with_text("plain").is_pinned());
+    }
+
+    /// #51 back-compat: `metadata_json` rows written before the marker existed
+    /// omit the field entirely. Without `#[serde(default)]` those rows would
+    /// fail to decode, and the store's `from_str(..).ok().unwrap_or_default()`
+    /// would silently reset each one to fully-default metadata — resurrecting
+    /// every compacted-away message into the agent's context.
+    #[test]
+    fn test_pin_marker_absent_from_legacy_metadata_json() {
+        let legacy = r#"{"userVisible": true, "agentVisible": false}"#;
+        let metadata: MessageMetadata = serde_json::from_str(legacy).unwrap();
+        assert!(metadata.user_visible);
+        assert!(!metadata.agent_visible, "legacy flags must survive");
+        assert!(!metadata.pinned, "an unmarked legacy row is not pinned");
+
+        // And the field round-trips once it is present.
+        let json = serde_json::to_string(&MessageMetadata::default().with_pinned()).unwrap();
+        assert!(json.contains("\"pinned\":true"), "serialized as: {json}");
+        let back: MessageMetadata = serde_json::from_str(&json).unwrap();
+        assert!(back.pinned);
     }
 
     #[test]
