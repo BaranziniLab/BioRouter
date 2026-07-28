@@ -2047,7 +2047,7 @@ mod tests {
 
     /// Build a `SessionManager` backed by a throwaway temp dir + a session
     /// preloaded with `messages`, its live gauge set to `total_tokens`.
-    async fn eager_test_session(
+    pub(super) async fn eager_test_session(
         messages: Vec<Message>,
         total_tokens: i32,
     ) -> (
@@ -2079,7 +2079,7 @@ mod tests {
         (temp, manager, session.id)
     }
 
-    fn eager_session_config(id: &str) -> crate::agents::types::SessionConfig {
+    pub(super) fn eager_session_config(id: &str) -> crate::agents::types::SessionConfig {
         crate::agents::types::SessionConfig {
             id: id.to_string(),
             schedule_id: None,
@@ -2690,6 +2690,66 @@ mod pin_tests {
                 .count(),
             2,
             "the pair stays in the transcript, just not in the agent's context"
+        );
+    }
+
+    /// The FIFTH compaction site: the BR-12 background eager swap, driven end
+    /// to end through the real store. The other four are covered by the reply
+    /// loop's integration tests; this one is a detached `tokio::spawn` at the
+    /// turn boundary, so it is exercised here instead.
+    #[tokio::test]
+    async fn eager_background_compaction_keeps_a_pinned_message() {
+        use super::tests::{eager_session_config, eager_test_session};
+
+        let mut messages = vec![Message::user().with_text(NOTE).pinned()];
+        for i in 0..6 {
+            messages.push(Message::user().with_text(format!("question {i}")));
+            messages.push(Message::assistant().with_text(format!("answer {i}")));
+        }
+        // context_limit 100, total_tokens 90 -> over the 0.8 threshold.
+        let (_temp, manager, id) = eager_test_session(messages, 90).await;
+        let provider: std::sync::Arc<dyn Provider> = std::sync::Arc::new(provider(100));
+
+        let outcome = run_eager_compaction(
+            provider,
+            std::sync::Arc::clone(&manager),
+            eager_session_config(&id),
+            0.8,
+            || {},
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome, EagerCompactionOutcome::Swapped);
+
+        let reloaded = manager
+            .get_session(&id, true)
+            .await
+            .unwrap()
+            .conversation
+            .unwrap();
+        let note = reloaded
+            .messages()
+            .iter()
+            .find(|m| text_of(m) == NOTE)
+            .expect("the note is still in the transcript");
+        assert!(
+            note.is_agent_visible(),
+            "the background swap must not summarize the pin away; agent-visible \
+             was: {:#?}",
+            agent_texts(&reloaded)
+        );
+        assert!(
+            note.is_pinned(),
+            "and the marker must survive the store round trip"
+        );
+        assert!(
+            !reloaded
+                .messages()
+                .iter()
+                .find(|m| text_of(m) == "question 0")
+                .unwrap()
+                .is_agent_visible(),
+            "control: an unmarked older message WAS summarized away"
         );
     }
 
