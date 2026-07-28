@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   updateAgentProvider: vi.fn(),
   read: vi.fn(),
   getProviders: vi.fn(),
+  refreshConfig: vi.fn(),
   toastError: vi.fn(),
   toastSuccess: vi.fn(),
 }));
@@ -33,6 +34,7 @@ vi.mock('./ConfigContext', () => ({
   useConfig: () => ({
     read: mocks.read,
     getProviders: mocks.getProviders,
+    refreshConfig: mocks.refreshConfig,
   }),
 }));
 
@@ -144,6 +146,7 @@ describe('ModelAndProviderProvider Llama Server warm-up', () => {
     });
     mocks.setConfigProvider.mockResolvedValue(undefined);
     mocks.updateAgentProvider.mockResolvedValue(undefined);
+    mocks.refreshConfig.mockResolvedValue(undefined);
   });
 
   it('keeps the previous model when the warm-up prompt is declined', async () => {
@@ -216,6 +219,31 @@ describe('ModelAndProviderProvider Llama Server warm-up', () => {
       );
     });
     expect(mocks.setConfigProvider).not.toHaveBeenCalled();
+  });
+
+  // #52 — the switch writes BIOROUTER_PROVIDER/BIOROUTER_MODEL through the API,
+  // never through ConfigContext's `upsert`, so nothing invalidated that cache.
+  it('refreshes the cached config after writing the new provider', async () => {
+    renderHarness();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Switch to local' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Warm up model' }));
+
+    await waitFor(() => expect(mocks.setConfigProvider).toHaveBeenCalled());
+    await waitFor(() => expect(mocks.refreshConfig).toHaveBeenCalled());
+  });
+
+  it('still reports the switch as successful when the cache refresh fails', async () => {
+    mocks.refreshConfig.mockRejectedValue(new Error('daemon unreachable'));
+    renderHarness();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Switch to local' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Warm up model' }));
+
+    await waitFor(() => expect(mocks.toastSuccess).toHaveBeenCalled());
+    expect(mocks.toastError).not.toHaveBeenCalledWith(
+      expect.objectContaining({ title: expect.stringContaining('llamacpp') })
+    );
   });
 });
 

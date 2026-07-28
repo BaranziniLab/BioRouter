@@ -19,7 +19,7 @@ import {
 } from '../../ui/dialog';
 
 export default function ConfigSettings() {
-  const { config, upsert } = useConfig();
+  const { config, upsert, refreshConfig } = useConfig();
   const { currentProvider: liveProvider, refreshCurrentModelAndProvider } = useModelAndProvider();
   const typedConfig = config as ConfigData;
   const [configValues, setConfigValues] = useState<ConfigData>({});
@@ -122,9 +122,15 @@ export default function ConfigSettings() {
 
   // Opening Settings re-reads the provider from the backing config, so the
   // label is also correct after a change made outside this renderer session.
+  //
+  // The editable rows below come from the cached config, which no model switch
+  // invalidates (#52), so re-read that too — otherwise this page shows the live
+  // provider in its heading and the pre-switch BIOROUTER_PROVIDER/BIOROUTER_MODEL
+  // in the fields the user is about to edit.
   useEffect(() => {
     refreshCurrentModelAndProvider();
-  }, [refreshCurrentModelAndProvider]);
+    void refreshConfig();
+  }, [refreshConfig, refreshCurrentModelAndProvider]);
 
   const configEntries: [string, ConfigValue][] = useMemo(() => {
     const currentProviderPrefixes = providerPrefixes[currentProvider] || [];

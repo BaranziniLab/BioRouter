@@ -39,6 +39,17 @@ interface ConfigContextType {
   extensionsList: FixedExtensionEntry[];
   extensionWarnings: string[];
   upsert: (key: string, value: unknown, is_secret: boolean) => Promise<void>;
+  /**
+   * Re-read the whole config from the daemon.
+   *
+   * `config` is a cache, and `upsert` is not the only way its keys get written:
+   * `setConfigProvider` writes BIOROUTER_PROVIDER/BIOROUTER_MODEL straight to
+   * the API, and the CLI or another window can write any key at any time. Every
+   * such write must be followed by this, or the cache goes on serving the
+   * pre-write snapshot to every consumer — silently, and for as long as it
+   * takes some unrelated `upsert` to refresh it (issue #52).
+   */
+  refreshConfig: () => Promise<void>;
   read: (key: string, is_secret: boolean) => Promise<unknown>;
   remove: (key: string, is_secret: boolean) => Promise<void>;
   addExtension: (name: string, config: ExtensionConfig, enabled: boolean) => Promise<void>;
@@ -307,6 +318,7 @@ export const ConfigProvider: React.FC<ConfigProviderProps> = ({ children }) => {
       extensionsList,
       extensionWarnings,
       upsert,
+      refreshConfig: reloadConfig,
       read,
       remove,
       addExtension,

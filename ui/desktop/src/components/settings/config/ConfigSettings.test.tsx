@@ -20,8 +20,10 @@ const modelAndProvider = {
   refreshCurrentModelAndProvider: vi.fn(async () => {}),
 };
 
+const refreshConfig = vi.fn(async () => {});
+
 vi.mock('../../ConfigContext', () => ({
-  useConfig: () => ({ config: configSnapshot, upsert: vi.fn() }),
+  useConfig: () => ({ config: configSnapshot, upsert: vi.fn(), refreshConfig }),
 }));
 
 vi.mock('../../ModelAndProviderContext', () => ({
@@ -62,6 +64,16 @@ describe('ConfigSettings provider label (#50)', () => {
     await waitFor(() =>
       expect(modelAndProvider.refreshCurrentModelAndProvider).toHaveBeenCalledTimes(1)
     );
+  });
+
+  // #52 — this page renders BIOROUTER_PROVIDER/BIOROUTER_MODEL as editable
+  // fields straight out of the cached config. A model switch writes them
+  // through the API, so opening Settings after one showed the pre-switch
+  // values in the editor beside a correct live label.
+  it('re-reads the cached config when the section opens', async () => {
+    render(<ConfigSettings />);
+
+    await waitFor(() => expect(refreshConfig).toHaveBeenCalledTimes(1));
   });
 
   it('falls back to the config value while the live provider is still loading', () => {
