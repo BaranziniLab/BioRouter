@@ -187,39 +187,47 @@ fn render_list(svc: &KnowledgeService, format: &str) -> Result<String> {
 
 pub async fn handle_hide(id: String) -> Result<()> {
     let svc = service()?;
+    println!("{}", hide_command(&svc, &id)?);
+    Ok(())
+}
+
+pub async fn handle_unhide(id: String) -> Result<()> {
+    let svc = service()?;
+    println!("{}", unhide_command(&svc, &id)?);
+    Ok(())
+}
+
+/// Naming a base that does not exist is a typo, not a no-op: report it before
+/// claiming success. The locked operation below re-checks under the lock and
+/// remains the authority — this pre-check exists only to say `knowledge list`.
+fn require_base(svc: &KnowledgeService, id: &str) -> Result<()> {
     if !svc.list_bases()?.iter().any(|b| b.id == id) {
         bail!(
             "No knowledge base with id '{}'. Run `biorouter knowledge list` to see them.",
             id
         );
     }
-    let mut hidden = svc.get_hidden_persisted().unwrap_or_default();
-    if !hidden.contains(&id) {
-        hidden.push(id.clone());
-        svc.set_hidden_persisted(&hidden)?;
-    }
-    println!(
-        "  {} {} is now hidden from the agent",
-        style("✓").green(),
-        style(&id).fg(ACCENT).bold()
-    );
     Ok(())
 }
 
-pub async fn handle_unhide(id: String) -> Result<()> {
-    let svc = service()?;
-    let mut hidden = svc.get_hidden_persisted().unwrap_or_default();
-    let before = hidden.len();
-    hidden.retain(|h| h != &id);
-    if hidden.len() != before {
-        svc.set_hidden_persisted(&hidden)?;
-    }
-    println!(
+fn hide_command(svc: &KnowledgeService, id: &str) -> Result<String> {
+    require_base(svc, id)?;
+    svc.hide_kb(None, id, PrimaryUpdate::Unchanged)?;
+    Ok(format!(
+        "  {} {} is now hidden from the agent",
+        style("✓").green(),
+        style(id).fg(ACCENT).bold()
+    ))
+}
+
+fn unhide_command(svc: &KnowledgeService, id: &str) -> Result<String> {
+    require_base(svc, id)?;
+    svc.include_kb(None, id, PrimaryUpdate::Unchanged)?;
+    Ok(format!(
         "  {} {} is now visible to the agent",
         style("✓").green(),
-        style(&id).fg(ACCENT).bold()
-    );
-    Ok(())
+        style(id).fg(ACCENT).bold()
+    ))
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -664,7 +672,7 @@ pub async fn handle_query(
 
 #[cfg(test)]
 mod tests {
-    use super::{active_command, create_command, render_list};
+    use super::{active_command, create_command, hide_command, render_list, unhide_command};
     use biorouter::knowledge::service::{KnowledgeService, PrimaryUpdate};
 
     fn svc() -> (tempfile::TempDir, KnowledgeService) {
@@ -790,6 +798,86 @@ mod tests {
         assert!(
             !out.contains("knowledge active --set"),
             "no nudge once a primary exists, got: {out}"
+        );
+        Ok(())
+    }
+
+    /// `hide` / `unhide` used to read the hidden list, edit it in memory and
+    /// write the whole thing back. Nothing serialises those two unlocked calls,
+    /// so two overlapping invocations — separate processes, or the desktop app
+    /// writing the same file while a shell command runs — each write a list
+    /// computed before the other's edit and one hide silently vanishes. The
+    /// user sees "✓ gamma is now hidden" and gamma is still visible.
+    #[test]
+    fn concurrent_hides_from_separate_invocations_all_survive() -> anyhow::Result<()> {
+        let tmp = tempfile::TempDir::new()?;
+        let root = tmp.path().to_path_buf();
+        let svc = KnowledgeService::new(root.clone());
+        let ids = ["alpha", "beta", "gamma", "delta"];
+        for id in ids {
+            svc.create_base(id, id, None)?;
+        }
+
+        for round in 0..8 {
+            svc.clear_hidden_persisted()?;
+            let gate = std::sync::Arc::new(std::sync::Barrier::new(ids.len()));
+            let handles: Vec<_> = ids
+                .iter()
+                .map(|id| {
+                    // A fresh service per thread: each stands in for its own
+                    // `biorouter knowledge hide <id>` process.
+                    let svc = KnowledgeService::new(root.clone());
+                    let id = id.to_string();
+                    let gate = gate.clone();
+                    std::thread::spawn(move || -> anyhow::Result<()> {
+                        gate.wait();
+                        hide_command(&svc, &id)?;
+                        Ok(())
+                    })
+                })
+                .collect();
+            for handle in handles {
+                handle.join().expect("hide thread panicked")?;
+            }
+
+            let mut hidden = svc.get_hidden_persisted()?;
+            hidden.sort();
+            assert_eq!(
+                hidden.len(),
+                ids.len(),
+                "round {round}: a concurrent hide was lost, got {hidden:?}"
+            );
+            assert!(
+                svc.session_kb_ids(None)?.is_empty(),
+                "round {round}: every base was hidden, so the set must be empty"
+            );
+        }
+        Ok(())
+    }
+
+    /// Unhiding a base nobody has heard of used to print "✓ … is now visible"
+    /// and change nothing, so a typo read as success.
+    #[test]
+    fn hide_and_unhide_reject_a_base_that_does_not_exist() -> anyhow::Result<()> {
+        let (_tmp, svc) = svc();
+
+        for err in [
+            hide_command(&svc, "ghost").unwrap_err().to_string(),
+            unhide_command(&svc, "ghost").unwrap_err().to_string(),
+        ] {
+            assert!(
+                err.contains("ghost") && err.contains("knowledge list"),
+                "got: {err}"
+            );
+        }
+
+        // The real round trip still works.
+        hide_command(&svc, "alpha")?;
+        assert_eq!(svc.session_kb_ids(None)?, vec!["beta".to_string()]);
+        unhide_command(&svc, "alpha")?;
+        assert_eq!(
+            svc.session_kb_ids(None)?,
+            vec!["alpha".to_string(), "beta".to_string()]
         );
         Ok(())
     }
