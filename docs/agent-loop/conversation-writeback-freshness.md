@@ -7,10 +7,11 @@
 > **Status:** Current. The rewrite paths — the four compaction sites and the client
 > write-back on `POST /reply` — are closed. Of the three *deletion* paths, two are now
 > bounded and one is deliberately left alone; and the second of those two closes its
-> widest race only as far as its client can name what it holds, which today's desktop
-> client can do only for a session it has re-read
-> ([#59](https://github.com/BaranziniLab/biorouter/issues/59)) — so that half of it is
-> an optional check, not a precondition. The scoreboard is
+> widest race only as far as its client can name what it holds. The server half of
+> ([#59](https://github.com/BaranziniLab/biorouter/issues/59)) has landed — every persist
+> site publishes what it stored — but the desktop does not consume that frame yet, so it
+> claims completeness only for a session it has just re-read and that half stays an
+> optional check, not a precondition. The scoreboard is
 > [What is closed and what is not](#what-is-closed-and-what-is-not) — read it before
 > concluding anything about "the truncation race".
 > **Audience:** developers touching the session store, the compaction paths, or any code
@@ -216,7 +217,7 @@ clear.
 | The compaction rewrites (`run_eager_compaction`, `reply()`'s auto-compaction, the `ContextLengthExceeded` arm, `/compact`) | **Closed**, and structurally so — `replace_conversation_preserving_tail` is the only rewrite they can reach, and its check runs inside the rewrite's own transaction. |
 | `truncate_conversation` from `biorouter term run` | **Closed** — bounded by the caller's own basis (below). |
 | `truncate_conversation` from checkpoint restore | **Open, deliberately.** The mechanism exists and is not wired up, because bounding it makes a rewind incomplete. Needs an operator decision (below). |
-| `truncate_conversation` from `POST /sessions/{id}/edit_message` | **Closed, with its widest race optional.** The cut is under the turn lock and bounded to the rows the handler itself read, neither of which needs anything from the client. The decision is made in the browser, though, so the race between rendering the transcript and clicking edit can only be closed by the client's own view of the conversation — sent as `expectedMessageIds` it is enforced strictly (409, nothing deleted); omitted, the cut proceeds under the other two and logs a `warn`. No client can supply that view yet, because the reply stream never publishes the ids messages are persisted under ([#59](https://github.com/BaranziniLab/biorouter/issues/59), below). |
+| `truncate_conversation` from `POST /sessions/{id}/edit_message` | **Closed, with its widest race optional.** The cut is under the turn lock and bounded to the rows the handler itself read, neither of which needs anything from the client. The decision is made in the browser, though, so the race between rendering the transcript and clicking edit can only be closed by the client's own view of the conversation — sent as `expectedMessageIds` it is enforced strictly (409, nothing deleted); omitted, the cut proceeds under the other two and logs a `warn`. The stream now publishes the ids a turn persisted ([#59](https://github.com/BaranziniLab/biorouter/issues/59)), so a client *can* be complete; the desktop does not consume that frame yet and therefore claims completeness only for a session it has just re-read (below). |
 | `conversation_so_far` on `POST /reply` | **Closed by refusal**, not by merging — a client copy that does not name every stored message gets a 409 and nothing is written (below). |
 
 ### Why truncation needed its own mechanism
@@ -352,43 +353,63 @@ The sibling `EditType::Diverge` arm — the default, and what the desktop app mo
 needs none of this: it truncates a session it just created, which is the owned-history
 exception, so it works with no client view and with a turn in flight.
 
-#### No client can satisfy the client-view check yet
+#### The stream publishes the ids now; the desktop does not read them yet
 
-Tracked as [#59](https://github.com/BaranziniLab/biorouter/issues/59). The check is right and
-the desktop cannot pass it. **A client that watches a whole turn go by does not learn the ids
-that turn's messages were persisted under**, so any list it sends is missing them and the
-endpoint would refuse a session nobody else has touched.
+Tracked as [#59](https://github.com/BaranziniLab/biorouter/issues/59). The check was right
+and no client could pass it: **a client that watched a whole turn go by did not learn the
+ids that turn's messages were persisted under**, so any list it sent was missing them and
+the endpoint refused a session nobody else had touched.
 `a_client_that_watched_the_turn_knows_every_stored_message_id` (in
-`crates/biorouter/tests/conversation_writeback_freshness.rs`, landed `#[ignore]`d because it
-reproduces an open defect rather than guarding a fixed one) drives the real reply loop and
-finds the client can name **zero** of the two ids a minimal turn stores.
+`crates/biorouter/tests/conversation_writeback_freshness.rs`) drives the real reply loop and
+found the client could name **zero** of the two ids a minimal turn stores.
 
 `Message::user()` / `Message::assistant()` mint no id; the loop yields a message *before* it
-persists it; `add_message` then mints a UUIDv7 that is never published back to the stream.
+persists it; `add_message` then minted a UUIDv7 that was never published back to the stream.
 Three independent sources of the same gap:
 
 - the ordinary assistant reply — `response_to_message` returns a bare `Message::assistant()`,
-  so the client is streamed `id: null` and the store holds a uid it was never told;
+  so the client was streamed `id: null` and the store held a uid it was never told;
 - the tool-call split (`agent.rs`, `next_assistant_id`) — one streamed response becomes up
   to three stored rows, and every row after the first takes a freshly minted uuid;
 - the BR-47 post-edit diagnostics and the loop-guard nudges, which are
   `with_visibility(false, true)` and are therefore persisted without ever being yielded.
 
-Until it is fixed, the desktop client sends `expectedMessageIds` **only when every message
-it holds names itself with an id** — true of a session it just loaded, false from the first
-streamed assistant reply onwards. Sending a list it knows to be incomplete would be asking
-for a 409 it has already proved it will get; omitting it takes the honest fallback instead.
-So the strong check still runs in the case it was built for (a transcript loaded in one
-window while another window or the CLI appends to it), and "Edit in Place" is not dead in a
-live chat.
+**The server half is fixed, in the two forms the stream allows.** A reply is *named before it
+is yielded* (`named()`), the inverse of the rule `add_message_adopting_uid` already encodes
+at the six sites that persist before yielding — so the copy the client sees carries the id
+the row it becomes is stored under. And because the other two sources cannot be expressed as
+a yielded copy at all — there is no yielded copy of a row the user is deliberately not shown,
+and one streamed message cannot carry three ids — every persist site additionally publishes
+what it stored, as `AgentEvent::MessagesPersisted` / the `MessagesPersisted` wire frame. Each
+published row carries `userVisible`; that flag is **accounting, not rendering** (see
+`PersistedMessage::user_visible` — `true` merely means "not hidden", and the content has
+usually already arrived inside a `Message` frame).
 
-**The fix is on the server side of the stream:** a message must be yielded under the id it
-was persisted under, which is the rule `add_message_adopting_uid` already encodes at the six
-sites that persist before yielding. When that lands, the desktop's condition becomes
-vacuously true and every edit takes the checked path with no further change. Re-reading the
-session from the client instead is **theatre for exactly the reason given above** — the
-re-read happens after the concurrent append has committed, so it would hand back the very
-row the guard exists to protect, and the check would pass every time.
+**It does not follow that the desktop can now claim completeness, and assuming it did was a
+bug.** "Every message I hold names itself" and "I name every row the store holds" are
+different claims, and `named()` made the first true on exactly the turns where the second is
+false — so a gate that checked only the first started sending a *short* list and 409'd every
+in-place edit in a live chat, which is the failure this whole section exists to avoid.
+`a_reply_split_into_several_stored_rows_publishes_every_one_of_their_ids` asserts the
+inequality that makes it short: a tool-bearing turn stores more rows than it streams
+messages.
+
+So the desktop tracks completeness rather than inferring it (`viewNamesEveryStoredRow` in
+`ui/desktop/src/hooks/chatStreamStore.tsx`): it claims the whole store **only immediately
+after reading the conversation back from the server** — `/agent/resume` and
+`GET /sessions/{id}` both call `get_session(id, true)`, the same read `edit_in_place` makes,
+hidden rows included — and any streamed frame, cached transcript or wholesale
+`UpdateConversation` clears the claim. The strong check therefore still runs in the case it
+was built for (a transcript loaded in one window while another window or the CLI appends to
+it), and "Edit in Place" is not dead in a live chat.
+
+**Making the field mandatory is the remaining client work:** consume `MessagesPersisted` and
+union its ids into the view, so a watched turn keeps the claim instead of dropping it. Note
+that a *stale* id in the client's list is harmless — the check is `stored ∖ client` — so the
+union may over-report safely; only under-reporting produces the false 409. Re-reading the
+session at edit time instead of tracking it is **theatre for exactly the reason given
+above** — the re-read happens after the concurrent append has committed, so it would hand
+back the very row the guard exists to protect, and the check would pass every time.
 
 ### `conversation_so_far` on `POST /reply` — closed by refusal
 
