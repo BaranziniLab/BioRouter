@@ -23,11 +23,14 @@
 //!    its stub verbatim, so its payload must neither be swept nor duplicated.
 //! 7. **Reads are never torn.** A concurrent reader never observes a partial
 //!    rewrite.
+//! 8. **A basis never outlives the history it describes.** A session id freed
+//!    by a wipe is handed straight back out, so "same id, same rowids" is not
+//!    proof of the same conversation.
 //!
 //! Tests 1-6 drive the store directly, so the only thing under test is the
-//! write path. Test 7 closes the loop through the REAL reply loop with a mock
-//! provider: a live turn auto-compacts while four other writers append. No
-//! network in either case.
+//! write path. Tests 7 and 9 close the loop through the REAL reply loop with a
+//! mock provider: a live turn auto-compacts, or recovers from two overflows,
+//! while other writers append. No network in either case.
 //!
 //! The control (`the_unguarded_rewrite_still_destroys_concurrent_appends`) is
 //! what makes the rest trustworthy — it asserts the workload is genuinely
@@ -1075,9 +1078,20 @@ const GOOD_SUMMARY: &str = "## User Intent\nThe user asked for a plot.\n\
 struct SlowSummarizer {
     summarizing: Arc<AtomicBool>,
     summarizer_calls: AtomicUsize,
+    /// Completions that are the reply loop's own, not the summarizer's.
+    main_calls: AtomicUsize,
+    /// Zero-based main-call indices that answer `ContextLengthExceeded`, which
+    /// drives the loop's own overflow-recovery compaction rather than the
+    /// auto-compaction in `reply()`.
+    overflow_on: Vec<usize>,
     window: Duration,
     context_limit: usize,
     session_id: OnceLock<String>,
+    /// Every system prompt a summarization round-trip was handed. Compaction
+    /// carries the history it is condensing in there, so this is the only way a
+    /// test outside the loop can tell "a compaction deliberately summarized this
+    /// message away" from "something destroyed it".
+    payloads: Mutex<Vec<String>>,
 }
 
 impl SlowSummarizer {
@@ -1104,11 +1118,21 @@ impl Provider for SlowSummarizer {
             Usage::new(Some(10), Some(5), Some(15)),
         );
         if Self::is_summarizer_call(messages) {
+            self.payloads
+                .lock()
+                .unwrap()
+                .push(_system_prompt.to_string());
             self.summarizer_calls.fetch_add(1, Ordering::SeqCst);
             self.summarizing.store(true, Ordering::SeqCst);
             tokio::time::sleep(self.window).await;
             self.summarizing.store(false, Ordering::SeqCst);
             return Ok((Message::assistant().with_text(GOOD_SUMMARY), usage));
+        }
+        let n = self.main_calls.fetch_add(1, Ordering::SeqCst);
+        if self.overflow_on.contains(&n) {
+            return Err(ProviderError::ContextLengthExceeded(
+                "mock overflow".to_string(),
+            ));
         }
         Ok((Message::assistant().with_text("All done."), usage))
     }
@@ -1159,9 +1183,12 @@ async fn a_live_turn_compacting_cannot_lose_concurrent_appends() {
     let provider = Arc::new(SlowSummarizer {
         summarizing: Arc::clone(&summarizing),
         summarizer_calls: AtomicUsize::new(0),
+        main_calls: AtomicUsize::new(0),
+        overflow_on: Vec::new(),
         window: Duration::from_millis(400),
         context_limit: 100,
         session_id: OnceLock::new(),
+        payloads: Mutex::new(Vec::new()),
     });
 
     let agent = Arc::new(Agent::with_config(AgentConfig::new(
@@ -1295,6 +1322,342 @@ async fn a_live_turn_compacting_cannot_lose_concurrent_appends() {
          all {} survived",
         appended.len(),
         appended.len()
+    );
+
+    drop(work_dir);
+    drop(data_dir);
+}
+
+// ── 8. ABA: a session id freed by a wipe is handed straight back out ──────────
+
+/// `create_session` allocates `YYYYMMDD_N` from `MAX(...) + 1` over the
+/// `sessions` table, so emptying that table restarts the counter and the next
+/// session is handed the id the old one had. A rewrite that took its basis
+/// before the wipe is then pointed at a *different conversation under the same
+/// name* — and the guard it relies on compares counts and rowids, which say
+/// nothing about identity.
+///
+/// This is reachable from the app: Settings -> Reset -> History wipes every
+/// session while a turn (or a background eager compaction) is mid-flight. The
+/// rewrite must be refused; accepting it deletes messages the user wrote after
+/// the reset and replaces them with a summary of a conversation that no longer
+/// exists.
+///
+/// Measured scope, so nobody over-reads it: this is the end-to-end shape over a
+/// real on-disk store, and it discriminates the half of the fix that stopped the
+/// wipe rewinding `sqlite_sequence` — with that restored it accepts the stale
+/// rewrite (`Replaced`, not `Stale`). With the rowids left climbing it passes
+/// even if the per-row incarnation token is neutered, because the prefix check
+/// alone then refuses. The token's independent proof is
+/// `session_manager::tests::a_guarded_rewrite_is_refused_even_when_the_rowids_are_replayed_exactly`,
+/// which replays the old rowids one for one so only row identity can separate
+/// the incarnations.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_rewrite_basis_cannot_cross_a_wipe_that_recycled_the_session_id() {
+    let temp = TempDir::new().unwrap();
+    let sm = Arc::new(SessionManager::new(temp.path().to_path_buf()));
+
+    let first = sm
+        .create_session(
+            PathBuf::from("/tmp/stress"),
+            "aba-first-incarnation".into(),
+            SessionType::User,
+        )
+        .await
+        .unwrap()
+        .id;
+    sm.add_message(&first, &user("old-1", "a message from the old session"))
+        .await
+        .unwrap();
+
+    // A compaction (or any rewrite) takes its basis and goes off to summarize.
+    let (session, basis) = sm.snapshot_for_rewrite(&first).await.unwrap();
+    let known = session.conversation.unwrap();
+
+    // ...and while it is away, the user resets their history and starts again.
+    sm.clear_all_sessions().await.unwrap();
+    let second = sm
+        .create_session(
+            PathBuf::from("/tmp/stress"),
+            "aba-second-incarnation".into(),
+            SessionType::User,
+        )
+        .await
+        .unwrap()
+        .id;
+    assert_eq!(
+        second, first,
+        "the wipe must hand the freed id back out, or this test proves nothing"
+    );
+    sm.add_message(&second, &user("new-1", "the new session's first message"))
+        .await
+        .unwrap();
+
+    // The detached rewrite finally writes back, naming the id it started with.
+    let mut replacement = known.messages().clone();
+    replacement.push(assistant(
+        "aba-sum",
+        "summary of a conversation that no longer exists",
+    ));
+    let (outcome, _) = sm
+        .replace_conversation_preserving_tail(
+            &second,
+            &Conversation::new_unvalidated(replacement),
+            basis,
+            &known,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        outcome,
+        ReplaceOutcome::Stale,
+        "a basis from a previous incarnation of a recycled id must never be \
+         accepted — same id and same rowids are not the same conversation"
+    );
+
+    let final_conversation = stored(&sm, &second).await;
+    let ids: HashSet<String> = ids_of(&final_conversation).into_iter().collect();
+    assert!(
+        ids.contains("new-1"),
+        "the message the user wrote after the reset must survive; got {:?}",
+        ids_of(&final_conversation)
+    );
+    assert!(
+        !ids.contains("aba-sum"),
+        "a refused rewrite must write nothing at all"
+    );
+    assert!(
+        !ids.contains("old-1"),
+        "and it must not resurrect the wiped session's messages into the new one"
+    );
+}
+
+// ── 9. window-agnostic: a real turn, two overflow recoveries, one hammering ──
+//      appender
+
+/// The net that does not need to know where the windows are.
+///
+/// `conversation_writeback_freshness.rs` aims a single append at one named
+/// instant, which is the only way to make a specific defect fail on demand — but
+/// it can only cover instants somebody already thought of. Every window in this
+/// area so far was one nobody had: the split between `reply()`'s snapshot and
+/// the loop's basis read, and the split between a landed swap and its basis
+/// refresh. Both sat outside every provider call, so the entire pre-existing
+/// suite was structurally unable to reach them.
+///
+/// So: run three real turns back to back, each rewriting the history at least
+/// twice (two overflow recoveries, plus `reply()`'s auto-compaction whenever the
+/// gauge is over), with an outside writer appending as fast as the store will
+/// take it from before the first turn starts until after the last one ends. That
+/// covers every instant of every turn, including the ones this file has not
+/// thought of yet.
+///
+/// **"Every acknowledged append survives" is the WRONG invariant here**, and the
+/// first draft of this test asserted it and failed on correct code: with three
+/// compactions in one turn, an append that lands before a later compaction's
+/// snapshot is inside that compaction's `known` and gets summarized away, which
+/// is the feature working. Measured on the first run: 23 of 73 appends missing,
+/// all 23 handed to a summarizer, none destroyed.
+///
+/// The precise invariant — the same one
+/// `compaction_shaped_rewrites_only_drop_what_they_meant_to` uses — is that a
+/// message may only be missing if some compaction was actually SHOWN it.
+/// Compaction carries the history it is condensing in the summarizer's system
+/// prompt, so recording those prompts tells us exactly which messages a
+/// compaction was entitled to drop. Everything else is owed.
+///
+/// Residual, stated rather than hidden: a message that was shown to a
+/// summarization whose swap was then DECLINED, and destroyed by a later one,
+/// would be excused. Every swap lands in this test, and the aimed tests in
+/// `conversation_writeback_freshness.rs` cover the declined path directly.
+///
+/// It is a net, not a proof: a run in which no append happens to land inside a
+/// window passes vacuously. That is why the aimed tests exist as well — and why
+/// this one asserts a floor on how many appends were genuinely owed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_live_turn_recovering_from_two_overflows_cannot_lose_concurrent_appends() {
+    /// How many turns to run back to back. Each opens its own set of windows.
+    const TURNS: usize = 3;
+
+    let work_dir = TempDir::new().unwrap();
+    let data_dir = TempDir::new().unwrap();
+    let sm = Arc::new(SessionManager::new(data_dir.path().to_path_buf()));
+
+    let summarizing = Arc::new(AtomicBool::new(false));
+    let provider = Arc::new(SlowSummarizer {
+        summarizing: Arc::clone(&summarizing),
+        summarizer_calls: AtomicUsize::new(0),
+        main_calls: AtomicUsize::new(0),
+        // Two overflows per turn, over TURNS turns: each turn's model calls are
+        // `3t`, `3t+1` (both overflow, each driving a recovery compaction and a
+        // write-back) and `3t+2` (succeeds and ends the turn). Windows this
+        // narrow are hit probabilistically, so the test opens several.
+        overflow_on: (0..TURNS).flat_map(|t| [3 * t, 3 * t + 1]).collect(),
+        window: Duration::from_millis(30),
+        context_limit: 100,
+        session_id: OnceLock::new(),
+        payloads: Mutex::new(Vec::new()),
+    });
+
+    let agent = Arc::new(Agent::with_config(AgentConfig::new(
+        Arc::clone(&sm),
+        PermissionManager::instance(),
+        None,
+        BioRouterMode::Auto,
+    )));
+    let session = sm
+        .create_session(
+            work_dir.path().to_path_buf(),
+            "stress-two-overflows".into(),
+            SessionType::Hidden,
+        )
+        .await
+        .unwrap();
+    provider.session_id.set(session.id.clone()).unwrap();
+    agent
+        .update_provider(Arc::clone(&provider) as Arc<dyn Provider>, &session.id)
+        .await
+        .unwrap();
+
+    for i in 0..8 {
+        sm.add_message(&session.id, &user(&format!("q{i}"), &format!("q{i}")))
+            .await
+            .unwrap();
+        sm.add_message(&session.id, &assistant(&format!("a{i}"), &format!("a{i}")))
+            .await
+            .unwrap();
+    }
+    sm.update(&session.id)
+        .total_tokens(Some(95))
+        .apply()
+        .await
+        .unwrap();
+
+    // The outside writer: BR-71's note tool, `biorouter term log` from a shell
+    // hook, a second socket. It starts before the turn and runs until it ends,
+    // so no instant of the turn is uncovered.
+    let turn_done = Arc::new(AtomicBool::new(false));
+    let appender = {
+        let sm = Arc::clone(&sm);
+        let id = session.id.clone();
+        let turn_done = Arc::clone(&turn_done);
+        let summarizing = Arc::clone(&summarizing);
+        tokio::spawn(async move {
+            let mut written = Vec::new();
+            let mut i = 0usize;
+            while !turn_done.load(Ordering::SeqCst) {
+                let uid = format!("hammer-{i}");
+                // FIXED WIDTH: the marker is matched against the summarizer's
+                // payload below, and `NOTE-7 ` would also match inside
+                // `NOTE-70 `, silently excusing a destroyed message.
+                let text = format!("NOTE-{i:04} from another writer");
+                let before = summarizing.load(Ordering::SeqCst);
+                match sm.add_message(&id, &user(&uid, &text)).await {
+                    // Acknowledged. Owed unless a compaction is shown it.
+                    // `raced` records that it landed while a summarization was
+                    // in flight, i.e. strictly inside a snapshot -> write-back
+                    // window: the file's standing measure of "this workload
+                    // really did race" (see test 7).
+                    Ok(_) => {
+                        let raced = before || summarizing.load(Ordering::SeqCst);
+                        written.push((uid, text, raced));
+                    }
+                    Err(e) if is_busy(&e.to_string()) => {}
+                    Err(e) => panic!("append {uid} failed for a non-lock reason: {e}"),
+                }
+                i += 1;
+                tokio::task::yield_now().await;
+            }
+            written
+        })
+    };
+
+    for turn in 0..TURNS {
+        let session_config = SessionConfig {
+            id: session.id.clone(),
+            schedule_id: None,
+            max_turns: Some(6),
+            max_tool_calls: None,
+            retry_config: None,
+            budget: None,
+            reasoning_effort: None,
+        };
+        let stream = agent
+            .reply(
+                Message::user().with_text(format!("Plot the data, take {turn}")),
+                session_config,
+                None,
+            )
+            .await
+            .unwrap();
+        tokio::pin!(stream);
+        while let Some(event) = stream.next().await {
+            event.unwrap();
+        }
+    }
+    turn_done.store(true, Ordering::SeqCst);
+    let appended = appender.await.unwrap();
+
+    assert_eq!(
+        provider.main_calls.load(Ordering::SeqCst),
+        3 * TURNS,
+        "each turn must be two overflows then a success"
+    );
+    assert!(
+        provider.summarizer_calls.load(Ordering::SeqCst) >= 2 * TURNS,
+        "every overflow must have run its own recovery compaction, saw {}",
+        provider.summarizer_calls.load(Ordering::SeqCst)
+    );
+
+    // Non-vacuity, measured the way the rest of this file measures it: how many
+    // acknowledged appends landed strictly inside a snapshot -> write-back
+    // window. This is stable (a 30 ms summarization against sub-millisecond
+    // appends) where a floor on `owed` below is not: with several compactions in
+    // a row, most appends are legitimately summarized by a LATER one, so `owed`
+    // varies with the schedule and a floor on it would flake.
+    let raced = appended.iter().filter(|(_, _, raced)| *raced).count();
+    assert!(
+        raced >= 8,
+        "only {raced} of {} appends landed while a summarization was in flight; \
+         the writer never really raced the rewrites",
+        appended.len()
+    );
+
+    // Everything a compaction actually SAW is fair game; everything else is owed.
+    let shown_to_a_summarizer = provider.payloads.lock().unwrap().join("\n");
+    let (summarizable, owed): (Vec<_>, Vec<_>) = appended
+        .iter()
+        .partition(|(_, text, _)| shown_to_a_summarizer.contains(text.as_str()));
+    assert!(
+        !owed.is_empty(),
+        "every single append was handed to some compaction, so the invariant \
+         below has nothing to assert"
+    );
+
+    let final_conversation = stored(&sm, &session.id).await;
+    assert_no_duplicates(&final_conversation, "two-overflow turn");
+    let final_ids: HashSet<String> = ids_of(&final_conversation).into_iter().collect();
+    let lost: Vec<&String> = owed
+        .iter()
+        .map(|(uid, _, _)| uid)
+        .filter(|uid| !final_ids.contains(*uid))
+        .collect();
+    assert!(
+        lost.is_empty(),
+        "{} of {} acknowledged appends were destroyed somewhere across three \
+         history-rewriting turns, and NO compaction was ever shown them \
+         (first few: {:?})",
+        lost.len(),
+        owed.len(),
+        lost.iter().take(8).collect::<Vec<_>>()
+    );
+    eprintln!(
+        "two-overflow turns: {} appends acknowledged, {raced} of them inside a \
+         summarization window; {} owed and all survived, {} legitimately \
+         summarized",
+        appended.len(),
+        owed.len(),
+        summarizable.len()
     );
 
     drop(work_dir);
