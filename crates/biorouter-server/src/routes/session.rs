@@ -89,6 +89,10 @@ pub struct EditMessageRequest {
     timestamp: i64,
     #[serde(default = "default_edit_type")]
     edit_type: EditType,
+    /// The client's view of this session: the durable ids (`Message.id`) of
+    /// every message it holds.
+    #[serde(default)]
+    expected_message_ids: Option<Vec<String>>,
 }
 
 fn default_edit_type() -> EditType {
@@ -1159,5 +1163,332 @@ mod diverge_tests {
 
         manager.delete_session(&new_id).await.unwrap();
         manager.delete_session(&original.id).await.unwrap();
+    }
+}
+
+/// #51 NF-D: `edit_message` with `EditType::Edit` deletes an arbitrary tail of a
+/// LIVE session. These pin the preconditions that make that safe — the same
+/// discipline `/reply` applies to `conversation_so_far`.
+///
+/// NOTE: `AppState::new()` opens the REAL user session database, so each test
+/// creates its own session and deletes it again, exactly like `diverge_tests`.
+#[cfg(test)]
+mod edit_message_tests {
+    use super::*;
+    use axum::body::{to_bytes, Body};
+    use axum::http::Request;
+    use biorouter::conversation::message::Message;
+    use biorouter::session::SessionType;
+    use serial_test::serial;
+    use std::path::PathBuf;
+    use tokio_util::sync::CancellationToken;
+    use tower::ServiceExt;
+
+    async fn post_edit(
+        state: Arc<AppState>,
+        session_id: &str,
+        body: serde_json::Value,
+    ) -> (axum::http::StatusCode, serde_json::Value) {
+        let app = routes(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri(format!("/sessions/{session_id}/edit_message"))
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+        let res = app.oneshot(req).await.unwrap();
+        let status = res.status();
+        let bytes = to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+        (status, json)
+    }
+
+    fn user_at(ts: i64, text: &str) -> Message {
+        let mut message = Message::user().with_text(text);
+        message.created = ts;
+        message
+    }
+
+    fn assistant_at(ts: i64, text: &str) -> Message {
+        let mut message = Message::assistant().with_text(text);
+        message.created = ts;
+        message
+    }
+
+    /// A session holding `u1@1000, a1@1010, u2@1020`, returning its id plus the
+    /// three server-assigned message uids in stored order.
+    async fn seeded_session(state: &Arc<AppState>, dir: &str) -> (String, Vec<String>) {
+        let manager = state.session_manager();
+        let session = manager
+            .create_session(
+                PathBuf::from(dir),
+                "placeholder".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        let mut ids = Vec::new();
+        for message in [
+            user_at(1_000, "first question"),
+            assistant_at(1_010, "first answer"),
+            user_at(1_020, "a message the client never saw"),
+        ] {
+            ids.push(manager.add_message(&session.id, &message).await.unwrap());
+        }
+        (session.id, ids)
+    }
+
+    async fn message_count(state: &Arc<AppState>, session_id: &str) -> usize {
+        state
+            .session_manager()
+            .get_session(session_id, true)
+            .await
+            .unwrap()
+            .conversation
+            .map(|conversation| conversation.messages().len())
+            .unwrap_or(0)
+    }
+
+    /// THE NF-D CASE. The client asks to cut from `1010`, naming only the two
+    /// messages it has seen. A third message landed since — an append that was
+    /// already acknowledged to whoever wrote it — and the open-above cut would
+    /// take it too. The request must be refused with 409 and NOTHING deleted,
+    /// exactly as a stale `conversation_so_far` is.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn edit_refuses_a_client_view_missing_a_stored_message() {
+        let state = AppState::new().await.unwrap();
+        let (session_id, ids) = seeded_session(&state, "/tmp/edit_route_stale").await;
+
+        let (status, body) = post_edit(
+            state.clone(),
+            &session_id,
+            serde_json::json!({
+                "timestamp": 1_010,
+                "editType": "edit",
+                // Only the first two — the client never saw `ids[2]`.
+                "expectedMessageIds": [ids[0], ids[1]],
+            }),
+        )
+        .await;
+
+        assert_eq!(
+            status,
+            axum::http::StatusCode::CONFLICT,
+            "a stale client view must be refused; got {body}"
+        );
+        assert_eq!(body["code"], "conversation_out_of_date");
+        assert_eq!(
+            body["missing_message_ids"],
+            serde_json::json!([ids[2]]),
+            "the 409 must name what the cut would have destroyed"
+        );
+        assert_eq!(body["stored_message_count"], serde_json::json!(3));
+
+        assert_eq!(
+            message_count(&state, &session_id).await,
+            3,
+            "a refused edit must write nothing"
+        );
+
+        state
+            .session_manager()
+            .delete_session(&session_id)
+            .await
+            .unwrap();
+    }
+
+    /// The other half of the guard: a client that HAS seen everything still gets
+    /// its edit. Without this, "return 409" degenerates into "reject everyone".
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn edit_accepts_a_client_view_that_has_seen_every_stored_message() {
+        let state = AppState::new().await.unwrap();
+        let (session_id, ids) = seeded_session(&state, "/tmp/edit_route_fresh").await;
+
+        let (status, body) = post_edit(
+            state.clone(),
+            &session_id,
+            serde_json::json!({
+                "timestamp": 1_010,
+                "editType": "edit",
+                "expectedMessageIds": ids,
+            }),
+        )
+        .await;
+
+        assert_eq!(status, axum::http::StatusCode::OK, "got {body}");
+        assert_eq!(body["sessionId"], serde_json::json!(session_id));
+        assert_eq!(
+            message_count(&state, &session_id).await,
+            1,
+            "the tail from 1010 onwards is cut"
+        );
+        // The edit takes the BR-33 turn lock; leaking it would soft-lock the
+        // session — every later `/reply` would 409 forever.
+        assert!(
+            !state.is_turn_active(&session_id),
+            "the edit must release the turn lock it took"
+        );
+
+        state
+            .session_manager()
+            .delete_session(&session_id)
+            .await
+            .unwrap();
+    }
+
+    /// An `Edit` that supplies no view at all cannot be checked, so the
+    /// destructive path refuses it rather than falling back to the open-above
+    /// cut it was hardened against.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn edit_without_an_expected_view_is_refused() {
+        let state = AppState::new().await.unwrap();
+        let (session_id, _) = seeded_session(&state, "/tmp/edit_route_unchecked").await;
+
+        let (status, body) = post_edit(
+            state.clone(),
+            &session_id,
+            serde_json::json!({ "timestamp": 1_010, "editType": "edit" }),
+        )
+        .await;
+
+        assert_eq!(
+            status,
+            axum::http::StatusCode::BAD_REQUEST,
+            "an unverifiable truncation must not proceed; got {body}"
+        );
+        assert_eq!(body["code"], "expected_message_ids_required");
+        assert_eq!(
+            message_count(&state, &session_id).await,
+            3,
+            "a refused edit must write nothing"
+        );
+
+        state
+            .session_manager()
+            .delete_session(&session_id)
+            .await
+            .unwrap();
+    }
+
+    /// Truncating the tail of a session an agent is actively generating into
+    /// deletes rows out from under the running turn. `/reply` already refuses a
+    /// second writer with 409; the destructive edit takes the SAME lock.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn edit_refuses_while_a_turn_is_in_flight() {
+        let state = AppState::new().await.unwrap();
+        let (session_id, ids) = seeded_session(&state, "/tmp/edit_route_live_turn").await;
+
+        let guard = state
+            .try_begin_turn_idempotent(&session_id, CancellationToken::new(), None)
+            .expect("no turn should be running for a session we just created");
+
+        let (status, body) = post_edit(
+            state.clone(),
+            &session_id,
+            serde_json::json!({
+                "timestamp": 1_010,
+                "editType": "edit",
+                "expectedMessageIds": ids,
+            }),
+        )
+        .await;
+
+        assert_eq!(
+            status,
+            axum::http::StatusCode::CONFLICT,
+            "a live turn must block the cut; got {body}"
+        );
+        assert_eq!(body["code"], "turn_in_flight");
+        assert!(
+            body["running_turn_id"].is_string(),
+            "name the turn that holds the session: {body}"
+        );
+        assert_eq!(
+            message_count(&state, &session_id).await,
+            3,
+            "a refused edit must write nothing"
+        );
+
+        drop(guard);
+
+        // Releasing the turn releases the edit: the 409 is about the live turn,
+        // not a permanent refusal.
+        let (status, body) = post_edit(
+            state.clone(),
+            &session_id,
+            serde_json::json!({
+                "timestamp": 1_010,
+                "editType": "edit",
+                "expectedMessageIds": ids,
+            }),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK, "got {body}");
+        assert_eq!(message_count(&state, &session_id).await, 1);
+
+        state
+            .session_manager()
+            .delete_session(&session_id)
+            .await
+            .unwrap();
+    }
+
+    /// The hardening is scoped to the DESTRUCTIVE path. `Diverge` copies into a
+    /// brand-new session and never writes to the live one, so it keeps working
+    /// with no client view and with a turn in flight — which is what keeps the
+    /// default, and the button the desktop app actually uses most, unbroken.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn diverge_is_not_subject_to_the_edit_preconditions() {
+        let state = AppState::new().await.unwrap();
+        let (session_id, _) = seeded_session(&state, "/tmp/edit_route_diverge").await;
+
+        let _guard = state
+            .try_begin_turn_idempotent(&session_id, CancellationToken::new(), None)
+            .expect("no turn should be running for a session we just created");
+
+        let (status, body) = post_edit(
+            state.clone(),
+            &session_id,
+            serde_json::json!({ "timestamp": 1_010, "editType": "diverge" }),
+        )
+        .await;
+
+        assert_eq!(status, axum::http::StatusCode::OK, "got {body}");
+        let branch_id = body["sessionId"].as_str().unwrap().to_string();
+        assert_ne!(branch_id, session_id);
+        assert_eq!(
+            message_count(&state, &session_id).await,
+            3,
+            "diverge leaves the original untouched"
+        );
+
+        let manager = state.session_manager();
+        manager.delete_session(&branch_id).await.unwrap();
+        manager.delete_session(&session_id).await.unwrap();
+    }
+
+    /// The new field is optional on the wire (so `Diverge` bodies stay valid)
+    /// and camelCase, matching every other request type in this module.
+    #[test]
+    fn expected_message_ids_deserializes_from_camel_case() {
+        let request: EditMessageRequest = serde_json::from_value(serde_json::json!({
+            "timestamp": 1,
+            "editType": "edit",
+            "expectedMessageIds": ["a", "b"],
+        }))
+        .unwrap();
+        assert_eq!(
+            request.expected_message_ids.as_deref(),
+            Some(["a".to_string(), "b".to_string()].as_slice())
+        );
+
+        let absent: EditMessageRequest =
+            serde_json::from_value(serde_json::json!({ "timestamp": 1 })).unwrap();
+        assert!(absent.expected_message_ids.is_none());
     }
 }
