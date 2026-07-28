@@ -156,6 +156,12 @@ The chat chip (`BottomMenuKnowledgeSelection.tsx`) is **untouched**: it already 
 
 **Alternative rejected.** A separate "primary" radio column next to the membership switch. Rejected: it makes "off but primary" clickable, i.e. it makes the invariant violable in the UI and then requires an error state to explain it.
 
+**Amendment (the way back to the default).** The row stays two-state, but the *palette* grows a third gesture that is not on a row: a notice above the list offering **"Follow the default (<name>)"**, which sends `inherit_primary` (D10). It exists for the same reason the wire field does — `clear_primary` and `delete_base` both write a durable "this chat has no primary", so without it a chat whose pinned base was deleted could never follow the machine-wide default again from the GUI, only from `curl` or `biorouter knowledge active --session <id> --inherit`. It is one statement about the whole chat rather than a per-row control, so the D12 row is untouched and "off but primary" stays unclickable.
+
+It is shown **only when following the default would visibly change something**: the default names one of *this chat's* bases and is not what the chat already shows. A chat already on the default has nothing to inherit, and a default this chat has left out of its set would resolve to no primary at all (the pointer is filtered through the set), so the click would appear to do nothing — the membership switch is the gesture for that, and turning it on is what makes the offer appear. Whether a chat overrides at all is **not** derivable from its own selection — a chat that pinned alpha and a chat that inherits an alpha default answer identically — so `KnowledgeContext` reads `GET /active` with no `session_id` for the machine-wide default, lazily, since only this surface needs it.
+
+The gesture carries **no optimistic pointer** and **omits `hidden_kbs`**. The daemon resolves which base the chat lands on, so guessing would guess at the rule the gesture defers to; and a chat may be inheriting the machine-wide hidden list, so echoing the resolved list back would install a set override from a gesture that means "stop overriding here".
+
 ### Policies this plan deliberately does **not** change
 
 - **KB-less `kb_search` keeps meaning "every base in this session."** Under the merged model that sentence is both today's behaviour and the literal ask. No `scope` parameter, no narrowing, no regression.
