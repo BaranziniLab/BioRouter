@@ -4,9 +4,34 @@
 > (recommended) or executing-plans skill to implement this plan task-by-task. Steps use
 > checkbox (`- [ ]`) syntax for tracking.
 >
-> **Status: APPROVED — all 28 operator decisions are settled (2026-07-27) and recorded
-> in [Decisions of record](#decisions-of-record-operator-approved-2026-07-27). Blocked
-> only on its one prerequisite: GitHub issue #45 (multi-KB) ships FIRST (decision 27).**
+> **Status: APPROVED and UNBLOCKED — all 28 operator decisions are settled (2026-07-27)
+> and recorded in
+> [Decisions of record](#decisions-of-record-operator-approved-2026-07-27). Both
+> prerequisites have shipped: issue #45 (multi-KB) merged in `84d27fd4`, and the
+> conversation-write-back-freshness work merged as `a869a650` (#51). Task 1 can start.**
+>
+> **Amended 2026-07-28 against `main` at `275d735d` — 181 commits after the tree these
+> tasks were written and thrice reviewed against** (`git log --oneline 67822ea3..275d735d
+> | wc -l` → 181; 175 non-merge, 11 merges, 146 files, +42,112/−4,173). **Eight of the 45
+> tasks were CONFLICTED**, not merely drifted — 6, 7, 8, 9, 14, 15, 24, 34 — each resting
+> on a premise the tree had made false. Four blockers were repaired: Task 7's
+> `map_bus_event` gains the `AgentEvent::MessagesPersisted` arm (#59) and 7 → 8 becomes a
+> binding ordering; Tasks 6/8 no longer move the client write-back into the detached
+> runner (#51 W5 stays in `/reply`, where it owns a status code); Task 9's knowledge-base
+> pair is rewritten against what #45 actually shipped (`KbSelection` / `PrimaryUpdate` /
+> `set_visible_kbs`) and the dead single-KB fallback is deleted; and Task 14's obsolete
+> mid-turn refusal is retired in favour of the `MessageMetadata.pinned` mechanism that
+> was landed for it by name. A second phase re-anchored the twenty-one drifted tasks and
+> the reconciliations table; a third fixed the plan defects that predate the drift
+> (chief among them `is_spawn_tool_call`, a symbol three review passes built on that has
+> never existed). Full account: [Fourth pass](#fourth-pass--the-drift-amendment-2026-07-28-181-commits).
+>
+> ⚠ **The amendment is partial by design.** Line numbers on surfaces it did not touch —
+> notably the tasks marked CLEAN in Phases 2-4 — are still those of the pre-amendment
+> tree. `agent.rs` anchors are stale by roughly **+490** and `reply.rs` by **+180**, so a
+> near miss will look like a hit. **Anchor on the SYMBOL, never the line number**, per
+> the ground rules. And **nothing in this plan has been compiled** — that was true at
+> every review pass and the amendment did not change it.
 >
 > **Location note:** the writing-plans skill's default path is
 > `docs/superpowers/plans/YYYY-MM-DD-<feature>.md`; this plan deliberately lives beside
@@ -55,84 +80,169 @@ schemars), TypeScript/React 19 (Vite, Vitest), the repo's `just` task runner.
 
 ---
 
-## Prerequisites — two, both ship BEFORE this plan
+## Prerequisites — two, BOTH NOW SHIPPED
 
-There are now **two** prerequisites. The second was added on 2026-07-27 when the operator
-ruled on new question 9.
+There are **two** prerequisites. Both merged to `main` before Task 1 starts, and this
+section is now a record of what landed rather than a list of what is awaited.
 
 ### 2. Conversation write-back freshness — required by Task 14's `mode: "note"`
 
-`SessionManager::replace_conversation` DELETEs and re-INSERTs a session's entire message
-set, so a caller that computed its conversation from a snapshot destroys anything appended
-in between. BR-12's freshness discipline (`eager_swap_is_safe`,
-`crates/biorouter/src/context_mgmt/mod.rs:661-671`) guards the background compaction path
-but was never extended to the two in-turn sites
-(`crates/biorouter/src/agents/agent.rs:3061` and `:4388`).
+**Status: SHIPPED (both halves), merged as `a869a650` (#51).** What follows is the
+record; the *blocker* text it replaces is preserved in outline so a reader of an earlier
+revision is not misled.
 
-`workspace_send_prompt { mode: "note" }` appends to another session's history. Against a
-mid-turn target, that append is destroyed by the running turn's compaction — **after the
-tool has already returned success**. The operator rejected both in-plan workarounds and
-chose the root-cause fix, which is a `biorouter`-crate change outside this plan's blast
-radius, tracked on `fix/conversation-writeback-freshness`.
+The concern was: `SessionManager::replace_conversation` DELETEs and re-INSERTs a
+session's entire message set, so a caller that computed its conversation from a snapshot
+destroys anything appended in between. `workspace_send_prompt { mode: "note" }` appends
+to another session's history, so against a mid-turn target that append was destroyed by
+the running turn's compaction — **after the tool had already returned success**. And
+even when the write survived, compaction summarized the note away, because nothing
+preserved an individual message across the `keep_last_turns` boundary. The operator
+rejected both in-plan workarounds and chose the root-cause fix.
 
-**Task 14 must not ship a `note` implementation that can silently lose the message.**
-Until the prerequisite lands, reconciliation #16's "refuse when the target is mid-turn" is
-the interim behaviour, not the answer.
+**Half (a) — the append survives a concurrent write-back. DONE.**
+
+- `eager_swap_is_safe`, the message-count compare the plan cited four times as the
+  BR-12 guard, was **DELETED** by `505fe77c fix(context-mgmt): move the eager-compaction
+  freshness guard into the store`. It no longer exists in `crates/`. Do not go looking
+  for it; `context_mgmt/mod.rs:661-671` is now unrelated doc text on
+  `check_if_compaction_needed`.
+- The two "unguarded in-turn sites" are both guarded. The in-turn auto-compaction the
+  plan cited as `agent.rs:3061` is now `agent.rs:3606-3613` and reads
+  `replace_conversation_preserving_tail(&session_config.id, &compacted_conversation,
+  rewrite_basis.revision, rewrite_basis.known())`, with an immediate `reseed_basis`
+  at `:3621` and a non-fatal `!outcome.stored()` branch at `:3634` (landed by
+  `2aa5a288`). The overflow-recovery site the plan cited as `agent.rs:4388` is now
+  `agent.rs:5034` delegating to `swap_overflow_compaction` (write at `:2086`) and
+  `retry_overflow_compaction` (write at `:2188`), both guarded (`557cf2f7`, hardened by
+  `0bb4fa5f`, `b047c527`, `9be3e427`, `b54b74f3`).
+- The pairing that makes this sound is `RewriteBasis` (`agent.rs:332-357`): a private
+  struct with private fields and no field-wise constructor, obtainable only through
+  `SessionManager::snapshot_for_rewrite`, so a revision and a conversation cannot be
+  re-split and "re-seed the basis" cannot compile into "re-seed the revision".
+- Net effect for `note`: a message appended mid-turn lands **above** the rewrite's
+  watermark and is not named by the turn's `known` conversation, so
+  `replace_conversation_preserving_tail` classifies it as foreign and **carries it
+  over** (`session_manager.rs:1347-1374`). It is preserved, not deleted.
+
+**Half (b) — the note survives compaction. DONE, and it is an obligation, not a gift.**
+
+`MessageMetadata.pinned` exists (`message.rs:628-629`) and is honoured at all five
+compaction sites (`a40226d3`, `b3fc6166`), with a budget, oldest-first eviction and
+eviction reporting in `context_mgmt::pins`. It was landed **for BR-71 specifically** and
+is reserved for it by name — the comment at `message.rs:617-621` reads *"NOTHING SETS
+THIS YET, deliberately. BR-71's `workspace_send_prompt { mode: "note" }` (issue #30) is
+the first consumer… When it lands it attaches via `Message::pinned`"*, and
+`Message::pinned` (`message.rs:1025-1036`) repeats it.
+
+**So Task 14 must CALL `.pinned()`.** Half (a) guarantees the note is not *deleted*;
+without the pin it is still *summarized away* by the next compaction, which is the same
+broken promise arriving more slowly — exactly the outcome the operator rejected two
+workarounds to avoid. See Task 14 Step 3 and its two tests.
+
+**Consequences for the plan text, all applied 2026-07-28:** the header no longer says
+"blocked"; reconciliation #16's mid-turn refusal is **retired** (it argued from a hazard
+that no longer exists, and refusing would make the tool's own recommended safe headless
+fallback unavailable in exactly the case a parent most wants it); and the four
+`eager_swap_is_safe` citations are corrected in place.
 
 ### 1. Issue #45 (multi-KB)
 
+**Status: SHIPPED.** Merged to `main` in `84d27fd4` on 2026-07-27; verification recorded
+in `docs/knowledge-base/multi-kb-verification.md`. **Read the "NOT in the shape this plan
+originally assumed" block below before touching Tasks 9, 12, 15, 24 or 32** — the API is
+real and good, and it is not the API this plan predicted.
+
 **Binding (decision 6 + decision 27).** Multi-active knowledge bases per session are a
 **separate issue with its own plan**, [GitHub issue
-#45](https://github.com/BaranziniLab/biorouter/issues/45), and it is implemented and
-merged **before** Task 1 of this plan starts. BR-71 does not implement KB plurality; it
+#45](https://github.com/BaranziniLab/biorouter/issues/45), implemented and merged
+**before** Task 1 of this plan starts. BR-71 does not implement KB plurality; it
 *consumes* it.
 
-Why it is a real prerequisite rather than a nicety: `workspace_set_tools` is specified
+Why it was a real prerequisite rather than a nicety: `workspace_set_tools` is specified
 (§4.1) to assign knowledge bases to a session — at session start **and** hot-swap
 mid-session — and the design's schema is already an array
-(`set_knowledge_bases: ["kb-a", "kb-b"]`). Today's reality is single-active, verified in
-the tree: `KnowledgeService::set_active_for_session(session_id, Option<&str>)`
-(`crates/biorouter-mcp/src/knowledge/service.rs:1020`) persists one id per session;
-`get_active_for_session` returns `Option<String>` (`:1006`); `kb_id_or_active` (5 call
-sites) errors without one; `kb_search`/`kb_search_raw_sources` search exactly one base;
-HTTP `/knowledge/active` carries `active_kb: Option<String>`; the CLI is
-`knowledge active --set <id>`; the GUI chip is single-select. Shipping BR-71 against that
-would force the tool to accept the design's array and then reject any list longer than
-one — a tool that lies about its own schema.
+(`set_knowledge_bases: ["kb-a", "kb-b"]`). At the time this plan was written the tree
+was single-active: `KnowledgeService::set_active_for_session(session_id, Option<&str>)`
+persisted one id per session, `get_active_for_session` returned `Option<String>`,
+`kb_id_or_active` errored without one, `kb_search` searched exactly one base, HTTP
+`/knowledge/active` carried `active_kb: Option<String>`, the CLI was
+`knowledge active --set <id>`, and the GUI chip was single-select. Shipping BR-71
+against that would have forced the tool to accept the design's array and then reject any
+list longer than one — a tool that lies about its own schema.
 
-**What this plan assumes #45 leaves behind** (the exact surface Tasks 9, 12, 15, 24 and
-32 are written against):
+**SHIPPED — and NOT in the shape this plan originally assumed.** #45 merged in
+`84d27fd4` on 2026-07-27. An earlier revision of this section predicted a plural mirror
+of the old names:
 
 ```rust
-// crates/biorouter-mcp/src/knowledge/service.rs — post-#45
+// PREDICTED, and WRONG. None of these symbols exists anywhere in the repo.
 pub fn get_active_for_session(&self, session_id: &str) -> anyhow::Result<Vec<String>>;
 pub fn set_active_for_session(&self, session_id: &str, kb_ids: &[String]) -> anyhow::Result<()>;
 ```
 
-and, in `WorkspaceServices` (Task 9), the plural mirror
-`set_knowledge_bases(&self, session_id: &str, kbs: &[String]) -> Result<(), String>` /
-`active_knowledge_bases(&self, session_id: &str) -> Vec<String>`.
+`3355164a refactor(knowledge): rename the active-KB pointer to primary` renamed the
+whole surface. `get_active_for_session`, `set_active_for_session`, `kb_id_or_active`,
+`primary_kb()` and `kb_ids()` **do not exist**. What actually shipped, in
+`crates/biorouter-mcp/src/knowledge/service.rs`:
 
-> **FALLBACK — read this only if #45 slips.** If BR-71 must start before #45 lands, the
-> whole KB dependency collapses to **four** edits, all confined to Tasks 9, 15 and 24 —
-> nothing else in this plan touches knowledge bases:
-> 1. `WorkspaceServices` keeps the singular pair
->    `set_knowledge_base(&self, session_id: &str, kb: Option<&str>) -> Result<(), String>`
->    and `active_knowledge_base(&self, session_id: &str) -> Option<String>`, implemented
->    directly over today's `set_active_for_session(session_id, Option<&str>)` /
->    `get_active_for_session`.
-> 2. `workspace_set_tools` keeps `set_knowledge_bases: Option<Vec<String>>` in its schema
->    (design conformance) but returns `INVALID_PARAMS` — *"a session has exactly one
->    active knowledge base; pass one knowledge base (or an empty list to clear).
->    Multiple active KBs are tracked in issue #45."* — for any list of length > 1, and
->    forwards `kbs.first()` otherwise.
-> 3. `workspace_open.new.knowledge_bases` applies the same ≤1 rule.
-> 4. Task 12's `workspace_list` row emits `"knowledge_bases": [<0-or-1 ids>]` (always an
->    array on the wire, so the model's parsing does not change when #45 lands).
->
-> The fallback is a **strictly smaller** diff than the plural path — no task is added or
-> removed, and the later upgrade is a signature change in one trait plus one handler.
-> Mark it in the PR body so the follow-up is not lost.
+```rust
+/// :90-101 — one coherent selection for a scope. `primary_kb` is always a member
+/// of `kb_ids`, or `None`; the struct is read under the root lock so that claim
+/// cannot be falsified by a concurrent writer.
+pub struct KbSelection {
+    pub kb_ids: Vec<String>,        // the scope's bases, sorted
+    pub hidden_kbs: Vec<String>,    // the hidden ids that produced kb_ids
+    pub primary_kb: Option<String>, // write target
+}
+
+/// :103-120 — what a caller wants to happen to the primary pointer. FOUR-valued:
+/// `Inherit` (drop this scope's pointer, fall back to the machine one) is NOT
+/// the same as `Clear` (explicitly "no primary here", which stops the fallback).
+pub enum PrimaryUpdate<'a> { Unchanged, Clear, Inherit, Set(&'a str) }
+
+pub fn selection(&self, session_id: Option<&str>) -> anyhow::Result<KbSelection>;            // :1461
+pub fn set_selection(&self, session_id: Option<&str>, hidden: Option<&[String]>,
+                     primary: PrimaryUpdate<'_>) -> anyhow::Result<KbSelection>;             // :1496
+pub fn set_visible_kbs(&self, session_id: Option<&str>, visible: &[String],
+                       primary: PrimaryUpdate<'_>) -> anyhow::Result<KbSelection>;           // :1575
+pub fn session_kb_ids(&self, session_id: Option<&str>) -> anyhow::Result<Vec<String>>;       // :1262
+pub fn primary_for_session(&self, session_id: Option<&str>) -> anyhow::Result<Option<String>>; // :1290
+```
+
+**Three structural differences Tasks 9, 12, 15, 24 and 32 must honour**, because the
+plan's original signatures cannot express them:
+
+1. **The model is subtractive, not assignive.** A scope *hides* bases from the installed
+   set; `set_selection` takes `hidden: Option<&[String]>`. The "assign this list"
+   primitive BR-71 wants is `set_visible_kbs`, which exists — a different function with
+   a different third argument.
+2. **The primary pointer is mandatory and four-valued.** Every mutator takes a
+   `PrimaryUpdate<'_>`, and the service enforces membership in the *resulting* set
+   (`a9f6101d feat(knowledge): enforce that the primary KB is a member of the session's
+   set`), so an arbitrary choice is not free. `workspace_set_tools` and `workspace_open`
+   must therefore **decide** one, which means both tools need a field for it and the plan
+   needs a stated default. Both are added below.
+3. **`session_id` is `Option<&str>`**, where `None` means machine scope. A bare `&str`
+   signature silently erases the difference between "this session's set" and "the machine
+   default", so `WorkspaceServices` — which is always session-scoped — passes
+   `Some(session_id)` at every call, explicitly.
+
+**The primary-choice default, decided here so no task invents its own:** *keep the
+current primary if it is still a member of the new set; otherwise pin the first id of
+the new set; if the new set is empty, `Clear`.* That is `PrimaryUpdate::Unchanged` /
+`PrimaryUpdate::Set(first)` / `PrimaryUpdate::Clear` respectively, and it is what
+`KbPrimaryChoice::Auto` in Task 9 means. A caller that wants something else says so
+explicitly with `primary_knowledge_base`.
+
+> **The single-KB FALLBACK block that used to live here has been DELETED**
+> (2026-07-28). It described a world in which a session has exactly one active knowledge
+> base and `set_active_for_session(session_id, Option<&str>)` is the primitive. #45 did
+> not merely make that plural — it replaced it with a hidden-set model plus a validated
+> primary pointer, so **both** branches of the old either/or are now wrong. Leaving it
+> in place as an "escape hatch" would hand an implementer a fully-specified,
+> confidently-written, uncompilable design. There is nothing to fall back to; the
+> prerequisite is satisfied.
 
 ---
 
@@ -186,12 +296,27 @@ code does what its author believed.
 - **The `/reply` refactor (Task 8) is the highest-risk change in this plan.** It carries
   its own rollback note and an enlarged test matrix; do not batch it with unrelated work
   in one commit.
-- Line numbers cited below were re-verified against the tree at commit `058d9cf4`
-  and again after the adversarial-critic fix pass at `a01be9b7` (2026-07-27, the
-  v1.88.6 version bump; `git diff --stat 058d9cf4..a01be9b7` touches only `Cargo.toml`,
-  `Cargo.lock`, `ui/desktop/package*.json` and `ui/desktop/openapi.json`, so every Rust
-  and TypeScript anchor is unmoved). If a file drifts further, the named symbol is the
-  anchor, not the number.
+- ⚠ **Anchors: read this before you chase a line number.** They were originally verified
+  at `058d9cf4`, then at `a01be9b7` (the v1.88.6 bump — only version files moved), then
+  at `67822ea3`. **`main` is now `275d735d`, 181 commits later**, and the churn landed on
+  exactly the files this plan modifies most: `agent.rs` **13** commits (6,001 → 6,817
+  lines), `session_manager.rs` **11**, `context_mgmt/` **6**, `routes/reply.rs` **4**
+  (1,429 → 1,832), `extension_manager.rs` **4**.
+
+  The 2026-07-28 amendment re-anchored every surface it touched — the eight CONFLICTED
+  tasks (6, 7, 8, 9, 14, 15, 24, 34), the twenty-one drifted ones, the reconciliations
+  table and the decisions of record — and each repaired citation names the pre-drift
+  number it replaced. **It did not re-anchor the tasks marked CLEAN** (16, 17, 20, 22,
+  23, 25, 26, 28-31, 38-42), which still carry `67822ea3` numbers.
+
+  So: **the named SYMBOL is the anchor, never the line number.** Knowing the size of the
+  drift is what keeps a *near* miss from reading as a hit — `agent.rs` anchors are off by
+  roughly **+490** and `reply.rs` by **+180**, and the expensive failures in this
+  document's history have all been near misses, not wild ones (`extension_manager.rs:999`
+  is `get_extension_configs`, one method past the `is_extension_enabled` at `:987` that
+  Task 18 meant; `CHAT_MODE_TOOL_SKIPPED_RESPONSE` moved *files*, to
+  `agents/tool_execution.rs:43`). If a symbol is not where the plan says, **grep for the
+  symbol and fix the plan's number in your PR** — do not assume the code changed shape.
 - **Task 19 is two commits, `19` and `19b`.** The advertisement move and the
   `subagent_status` deletion are independently revertible (the deletion is the breaking
   half). Downstream task numbers are unchanged — the split is `19` → `19` + `19b`, not a
@@ -219,7 +344,7 @@ summarized again in [Decisions of record](#decisions-of-record-operator-approved
 | Design § | Content | Realized by |
 |---|---|---|
 | §2 Design principles | Headless-first, reuse `UiBridge` pattern, no rebuilds, provenance everywhere | Cross-cutting; enforced per task |
-| §3.1 Backend control plane reuse | `start_agent`, `/reply` turn lock, `/interrupt`, `/agent/cancel`, `/agent/stop`, `get_session`, add/remove extension, `set_active_for_session`, `active_work`, `AgentManager` | Tasks 12–17 wrap these exact paths; no second storage/turn path is built |
+| §3.1 Backend control plane reuse | `start_agent`, `/reply` turn lock, `/interrupt`, `/agent/cancel`, `/agent/stop`, `get_session`, add/remove extension, `set_visible_kbs`/`selection` (post-#45; `set_active_for_session` no longer exists), `active_work`, `AgentManager` | Tasks 12–17 wrap these exact paths; no second storage/turn path is built |
 | §3.2 chatrecall ruling | Workspace implements no search; instructions route content questions to `chatrecall`; enabling workspace *suggests* chatrecall | Task 12 (instructions block), Task 42 (tuning), **Task 30 (the real Settings suggestion — decision 14, no longer descoped)** |
 | §3.3 Pattern donor | `UiBridge` anatomy (`control.rs:557-663`, `apps.rs:483-496`) copied at workspace scope | Tasks 22–23 |
 | §3.4 Frontend seams | `openTab` dedupe, registry singletons, `create-chat-window` IPC | Tasks 25–26 |
@@ -238,15 +363,17 @@ summarized again in [Decisions of record](#decisions-of-record-operator-approved
 1. ⚠ **Crate boundary: the event bus carries `AgentEvent`, not `MessageEvent`, and lives
    in the `biorouter` crate.** The design says the broadcast is "registered alongside the
    agent in `AgentManager`" and reuses the `MessageEvent` wire enum. `MessageEvent` is
-   defined in `biorouter-server` (`routes/reply.rs:142`), but subagent turns publish from
+   defined in `biorouter-server` (`routes/reply.rs:278`; the plan's old `:142` now lands
+   on `writeback_conflict_response`, #51 W5's 409 helper), but subagent turns publish from
    inside `biorouter` (`subagent_handler.rs`), which cannot depend on the server crate.
    Resolution: a global `SessionEventBus` module in `biorouter`
    (`crates/biorouter/src/session_events.rs`) carrying `SessionBusEvent`
    (`TurnStarted` / `Agent(AgentEvent)` / `TurnError` / `TurnFinished`); the server's
    observer route AND `/reply` map bus events → `MessageEvent` through **one** shared
    function, so the **wire format** is exactly the design's and the generated TS client
-   parses it unchanged. `AgentEvent` is `Clone` (`agent.rs:364`), so broadcast works
-   without new derives.
+   parses it unchanged. `AgentEvent` is `Clone` (`agent.rs:605`), so broadcast works
+   without new derives, and it now carries **eight** variants (`MessagesPersisted` at
+   `:672`) — see reconciliation #22.
 2. ⚠ **Glass-box children run under the server turn lock and inside the `AgentManager`
    registry — the control-plane half of design §4.2/§4.5-step-2.** The design says
    "run the child through the detached turn runner." Literally routing
@@ -257,8 +384,12 @@ summarized again in [Decisions of record](#decisions-of-record-operator-approved
    `subagent_handler.rs`/`subagent_tool.rs` inside the `biorouter` crate. What the
    design *needs* from "through the detached runner" is three properties, and Task 33
    wires each one explicitly rather than substituting a bus tee for all of them:
-   - **The live child agent is addressable.** `POST /interrupt` resolves agents via
-     `AgentManager::get_or_create_agent` (`reply.rs:920` → `state.rs:290`); today the
+   - **The live child agent is addressable.** `POST /interrupt` (`reply.rs:1090`)
+     resolves agents via `state.get_agent_for_route(req.session_id)` (**`reply.rs:1100`**,
+     re-anchored 2026-07-28 — the plan's old `:920` now lands inside the SSE event
+     loop's error branch) → `AppState::get_agent_for_route` (**`state.rs:290`**) →
+     `AppState::get_agent` → `AgentManager::get_or_create_agent` (**`state.rs:287`**);
+     today the
      child is a standalone `Arc::new(Agent::with_config(..))` (`subagent_handler.rs:149`)
      that the manager never sees, so a steer mints a *different* agent and the queued
      text is drained by nobody. Fix: a new `AgentManager::register_agent` puts the
@@ -288,8 +419,8 @@ summarized again in [Decisions of record](#decisions-of-record-operator-approved
    implementation, and the Task 39 harness asserts the chain end-to-end.
 3. ⚠ **The workspace extension reaches server state through a `WorkspaceServices`
    trait.** Platform extensions are constructed from `PlatformExtensionContext`
-   (`extension.rs:109-113`: only `extension_manager` + `session_manager`), inside
-   `ExtensionManager::new` (`extension_manager.rs:484`) — the server never touches that
+   (`extension.rs:109-113`, **exact**: only `extension_manager` + `session_manager`),
+   inside `ExtensionManager::new` — the server never touches that
    construction. But the tools need the server's turn lock (`AppState.active_turns`,
    `state.rs:93`), the turn runner, and the bridge. Resolution: a
    `WorkspaceServices` trait defined in `biorouter`
@@ -302,26 +433,45 @@ summarized again in [Decisions of record](#decisions-of-record-operator-approved
    the session level via `SessionManager`/`AgentManager`, which the extension reaches
    directly.
 4. **`MessageMetadata` loses `Copy`** (decision 8, accepted). It is
-   `#[derive(... Clone, Copy ...)]` (`message.rs:535`); adding
+   `#[derive(... Clone, Copy ...)]` (`message.rs:587`); adding
    `provenance: Option<MessageProvenance>` (String-bearing) removes `Copy`. Fallout is
    mechanical (`.clone()` at former copy sites); Task 2 owns it.
-5. **`PLATFORM_EXTENSIONS` count test.** `extension.rs:677` asserts `len() == 5`; adding
+5. **`PLATFORM_EXTENSIONS` count test.** `extension.rs:677` asserts `len() == 5`
+   (**exact**; the test is `platform_extension_defaults_match_capabilities`, :675-683); adding
    `workspace` makes it 6. Task 12 updates the test and asserts
    `!PLATFORM_EXTENSIONS["workspace"].default_enabled` — off by default in the config
    registry, and *injected per session* only where subagents are enabled (Task 18).
-6. **KB plurality is a prerequisite, not a compromise** (decisions 6 + 27). See
-   [Prerequisites](#prerequisites--two-both-ship-before-this-plan). The plural
-   `Vec<String>` surface is what Tasks 9/12/15/24/32 are written against; the single-KB
-   fallback is spelled out there if #45 slips.
+6. ⚠ **KB plurality shipped — as a hidden-set model with a mandatory primary pointer,
+   not as a plural rename** (decisions 6 + 27; amended 2026-07-28). See
+   [Prerequisites](#prerequisites--two-both-now-shipped). `#45` merged in
+   `84d27fd4`, and `3355164a` then renamed the whole surface:
+   `get_active_for_session`, `set_active_for_session` and `kb_id_or_active` **do not
+   exist**. Tasks 9/12/15/24/32 are written against `KbSelection` /
+   `PrimaryUpdate<'a>` / `set_visible_kbs` / `selection` / `session_kb_ids`
+   (`biorouter-mcp/src/knowledge/service.rs`). Two consequences the original plan had no
+   field for: every mutator must **decide** a write target (the service validates
+   membership in the resulting set, `a9f6101d`), so `workspace_set_tools` and
+   `workspace_open` each gain a `primary_knowledge_base`; and `workspace_list` reports
+   `primary_kb` beside `knowledge_bases`, because a model that can set a target and not
+   read it back will thrash. `WorkspaceServices` exposes the narrowed pair
+   `knowledge_selection` / `set_knowledge_bases(…, KbPrimaryChoice)` — see Task 9 for why
+   it is a narrowing rather than a re-export. **The single-KB fallback block is deleted**:
+   #45 did not choose one of the plan's two branches, it invalidated both.
 7. **The #44 working-dir lock is MERGED (HEAD `058d9cf4`) — resolved, no seam left.**
    What landed: `SessionUpdateBuilder` has **no** `working_dir` setter (commit
-   `3805b808`; the comment at `session_manager.rs:891-894` names the two sanctioned
+   `3805b808`; the comment at `session_manager.rs:890-894` names the two sanctioned
    writers), changes go through `SessionManager::try_update_working_dir_if_empty`
-   (`session_manager.rs:1156`, one atomic conditional UPDATE) or the terminal-only
+   (`session_manager.rs:1246-1255`, one atomic conditional UPDATE) or the terminal-only
    `force_update_working_dir_unguarded`; the HTTP route additionally claims the
-   per-session turn guard (`routes/agent.rs:1009`). Consequences for this plan:
+   per-session turn guard (`update_working_dir` at **`routes/agent.rs:1027`**, its
+   `try_begin_turn_idempotent` at **`:1042`**; the plan's old `:1009` predates the
+   drift and now lands in a neighbouring handler's error branch).
+   Consequences for this plan:
    - `create_session(working_dir, …)` still sets the dir **at creation** —
-     `start_agent` (`routes/agent.rs:283`) does exactly this at HEAD, so
+     `start_agent` (**`routes/agent.rs:256`**, its
+     `create_session(PathBuf::from(&working_dir), name, SessionType::User)` at
+     **`:307`**; the plan's old `:283` is now a bare `}` inside the same body) does
+     exactly this at HEAD, so
      `ServerWorkspaceServices::start_session` (Task 9) mirroring the current
      `start_agent` body is #44-correct with no lock acquisition: a fresh session has
      no messages, and the lock only guards *changes* to an existing session.
@@ -385,7 +535,10 @@ summarized again in [Decisions of record](#decisions-of-record-operator-approved
      plain strings (no `biorouter` → `biorouter-server` dependency). Carrying the
      *variant* is not enough: the `match &code { TurnAbortCode::ProviderFailure { kind }
      => (Provider, kind.is_transient(), Some(kind.wire_code())), … }` block that lives at
-     `reply.rs:696-721` today **moves into `run_turn`** and feeds that event, so
+     **`reply.rs:883-901`** today (re-anchored 2026-07-28; `let (scope, retryable,
+     provider_kind) = match &code {` at `:883`, the `};` that closes it at `:901`, inside
+     the `Ok(Some(Ok(AgentEvent::TurnAborted { code, message })))` arm that begins at
+     `:876`) **moves into `run_turn`** and feeds that event, so
      `scope:"provider"`, `retryable:true` and `provider_kind` are still emitted by the
      only code path that produces them. Without the move no production path could ever
      emit them again and the desktop's rate-limit/retry/compaction recovery would
@@ -426,14 +579,19 @@ summarized again in [Decisions of record](#decisions-of-record-operator-approved
     exists at which delegation is unavailable), keeping its name and its existing
     `SubagentParams` surface — `instructions`, `subworkflow`, `parameters`,
     `extensions`, `settings`, `summary`, `background` — plus the new `visible` and
-    `placement`; then (**Task 19**) the push at `agent.rs:2658` is deleted,
+    `placement`; then (**Task 19**) the push at **`agent.rs:3152`** is deleted,
     `Agent::dispatch_tool_call` intercepts the prefixed `workspace__subagent` **and** the
-    bare `subagent` (mirroring `extension_manager.rs:1294-1304`'s prefix-stripping
-    tolerance) and re-checks both `subagents_enabled` (the mode/model gate) **and** the
-    session's `available_tools` grant — the latter because intercepting before
-    `ExtensionManager::dispatch_tool_call` skips the check at `:1333` that would
-    otherwise apply it; and `reply_parts.rs:133-140`'s code-execution retain filter is
+    bare `subagent` (mirroring **`extension_manager.rs:1444-1457`**'s prefix-stripping
+    tolerance — the `if !tool_name_str.contains("__")` block that re-prefixes the three
+    known `code_execution` tools) and re-checks both `subagents_enabled` (the mode/model
+    gate) **and** the session's `available_tools` grant — the latter because intercepting
+    before `ExtensionManager::dispatch_tool_call` skips the check at **`:1483-1484`**
+    (`if !extension.config.is_tool_available(&tool_name)`) that would otherwise apply it;
+    and **`reply_parts.rs:127-141`**'s code-execution retain filter (the
+    `SUBAGENT_TOOL_NAME` clause is `:135`) is
     widened to keep the prefixed spawn tool **and the whole `workspace__` surface**.
+    *(All four anchors in this paragraph re-verified at `275d735d`, 2026-07-28; the old
+    `:2658` / `:1294-1304` / `:1333` / `:133-140` were pre-drift numbers.)*
     **`subagent_status` is deleted outright (decision 23) in Task 19b** — see
     reconciliation #12.
 12. ⚠ **`subagent_status` is removed; its three jobs move to workspace tools**
@@ -476,12 +634,17 @@ summarized again in [Decisions of record](#decisions-of-record-operator-approved
     reports "already idle" from an unknown. See Task 17 Step 3.
 
     **Task 19b** deletes `create_subagent_status_tool`, `handle_subagent_status_tool`,
-    `SubagentStatusParams`, the `agent.rs:2258` dispatch arm, the `agent.rs:2664`
-    offering, the `reply_parts.rs:136` retain entry, the `agents/mod.rs:56` doc comment,
+    `SubagentStatusParams`, the **`agent.rs:2744-2752`** dispatch arm (`} else if
+    tool_call.name == SUBAGENT_STATUS_TOOL_NAME {`), the **`agent.rs:3155-3159`**
+    offering (push at `:3158`), the **`reply_parts.rs:136-139`** retain entry and its
+    BR-40 comment, the `agents/mod.rs:56` doc comment,
     and their tests; Task 43 carries the migration note into
     `docs/agent-loop/subagents.md`, `docs/agent-loop/tool-routing.md:33`, and the design
-    doc's §4.5 step 5. The repo-wide sweep command, with its verified expected output, is
-    in Task 19b Step 1.
+    doc's §4.5 step 5. ⚠ There is a **fourth** live doc site,
+    `docs/security/privacy-tiers.md:1677`, added by `9eb6de4b` after this entry was
+    written; Task 19b owns it. The repo-wide sweep command, with its verified expected
+    output (**31 code hits in 5 files** at `275d735d`), is in Task 19b Step 1.
+    *(Anchors re-verified 2026-07-28; the old `:2258` / `:2664` / `:136` were pre-drift.)*
 13. ⚠ **The workspace extension is auto-injected wherever subagents are enabled**
     (decision 21), which is a deliberate softening of §5's "off by default". Rationale:
     with the merge, `default_enabled: false` would silently delete delegation for every
@@ -495,14 +658,16 @@ summarized again in [Decisions of record](#decisions-of-record-operator-approved
 
     ⚠ **"Do not persist the injection" needs an explicit exclusion — skipping
     `persist_extension_state` at the injection site is not enough.**
-    `Agent::persist_extension_state` (`agent.rs:2441-2461`) snapshots **every currently
+    `Agent::persist_extension_state` (**`agent.rs:2936-2955`**) snapshots **every currently
     loaded** extension, not the one being changed:
-    `let extension_configs = self.extension_manager.get_extension_configs().await;` →
+    `let extension_configs = self.extension_manager.get_extension_configs().await;`
+    (**`:2937`**) →
     `EnabledExtensionsState::new(extension_configs)` → `session.extension_data`. So once
     `ensure_spawn_extension` has loaded `workspace {available_tools:["subagent"]}`, the
     **next** persist by any other caller writes the auto-injection into the session row:
     `workspace_set_tools` calls it (Task 15), and so does every GUI extension toggle
-    (`routes/agent.rs:735`, `:757`). Settings and `GET /sessions/{id}/extensions` would
+    (**`routes/agent.rs:759`** in `agent_add_extension`, **`:788`** in
+    `agent_remove_extension`). Settings and `GET /sessions/{id}/extensions` would
     then show Workspace Control enabled on that session, the injection would survive a
     later mode change to Chat as a dead entry, and the property Task 18 claims would be
     false in the most ordinary GUI flow. Resolution: the agent tracks which extensions it
@@ -515,24 +680,32 @@ summarized again in [Decisions of record](#decisions-of-record-operator-approved
 
     ⚠ **There are TWO persist methods, and filtering only one leaves a mode-gate
     bypass.** Beside `persist_extension_state` sits `save_extension_state`
-    (`agent.rs:2419-2439`) with a structurally identical body, called from the agent's
-    own reply loop at `agent.rs:4233-4237` whenever the model successfully enables an
+    (**`agent.rs:2913-2933`**, snapshot read at **`:2914`**) with a structurally identical
+    body, called from the agent's
+    own reply loop at **`agent.rs:4880-4886`** (the call itself is **`:4883`**) whenever
+    the model successfully enables an
     extension mid-turn via `manage_extensions`. That is the hottest of the three paths
     and applies to exactly the population that gets the auto-injection (Auto-mode
     sessions with ≥1 extension). The consequence is worse than a cosmetic Settings row:
     a persisted `workspace {available_tools:["subagent"]}` entry reloads in a session
     whose mode no longer enables subagents, and dispatch gates the spawn tool **only**
-    on `session.session_type == SessionType::SubAgent` (`agent.rs:2138`), never on
+    on `session.session_type == SessionType::SubAgent` (**`agent.rs:2632`**), never on
     `subagents_enabled` — so the dead grant is a live, dispatchable spawn tool in a mode
     whose gate says delegation is off. Hence the single shared filter, and the Phase-1
     gate check `grep -c "persistable_extension_configs()"` → 3.
+
+    *(All five `agent.rs` anchors in this entry re-verified at `275d735d`, 2026-07-28.
+    The pre-drift numbers were `:2441-2461`, `:2419-2439`, `:4233-4237` and `:2138`; the
+    file grew from 6,001 to 6,817 lines, so each is short by roughly +490.)*
 14. **Session-scoped skills are a new mechanism, not a reuse** (decision c). The skills
     extension reads a **machine-wide** `~/.config/biorouter/skills-config.json`
-    (`skills_extension.rs:262-271`), shared with `biorouter skill enable/disable`
-    (`biorouter-cli/src/commands/skill.rs:295`) and the GUI. `workspace_set_tools` must
+    (`skills_extension.rs:262-285`, **exact** — `get_disabled_skills` opens at `:262` with
+    `Paths::config_dir().join("skills-config.json")` at `:263`), shared with `biorouter skill enable/disable`
+    (`biorouter-cli/src/commands/skill.rs:295`, **exact**) and the GUI. `workspace_set_tools` must
     never write that file. Task 11 adds a session-scoped override layer — persisted in
     `session.extension_data` under `("workspace_skills", "v1")`, the exact
     `set_extension_state` precedent `goal.rs:312` and `guardrails/run_state.rs:146` use
+    (both **exact**; the method itself is `session/extension_data.rs:34`)
     — plus a process-wide session-keyed cache the `SkillsClient` consults. Stated
     residual, tested: `list_tools`/`get_info` are not session-aware in
     `McpClientTrait`, so a session override affects the *catalog/search/load* handlers
@@ -540,8 +713,8 @@ summarized again in [Decisions of record](#decisions-of-record-operator-approved
 
     ⚠ **The override composes with the machine filter; it does NOT replace it.** The
     machine-wide `disabled` array holds skill names **and bundle names** — that is why
-    `is_skill_enabled` tests both (`skills_extension.rs:445-456`) and why the repo's
-    `test_bundle_disabled_by_bundle_name` (`:1651`) puts a bundle id in it. Composing by
+    `is_skill_enabled` tests both (`skills_extension.rs:445-455`) and why the repo's
+    `test_bundle_disabled_by_bundle_name` (`:1661`) puts a bundle id in it. Composing by
     rebuilding a name set from `self.skills.keys()` silently drops every bundle entry,
     so any session override at all (even an unrelated `add_skills`) re-enables every
     skill in a machine-disabled bundle for that session — with `skills-config.json`
@@ -556,33 +729,69 @@ summarized again in [Decisions of record](#decisions-of-record-operator-approved
     indistinguishable **user** instruction, carrying the human's authority in an
     Auto-mode target. The repo has settled precedent applied three times —
     `hooks::outcome::frame_hook_context`, `hints::load_hints::frame_project_hints`, and
-    `routes/apps.rs:1879`'s app-data envelope — and BR-71 is the first cross-*session*
+    `routes/apps.rs`'s `app_data_envelope` (**`:1919`**, doc **`:1914-1918`**) — and
+    BR-71 is the first cross-*session*
     text flow. Applied at `workspace_send_prompt`'s `note` and `turn` sites and, in the
     shared soft-interrupt drain, **only** to entries carrying
     `ProvenanceKind::AgentInjection`: the human's own typed steer queues with
     `provenance: None` and must stay unframed.
-16. ⚠ **`workspace_send_prompt mode:"note"` refuses a target with a turn in flight.**
-    An in-turn compaction calls `session_manager.replace_conversation` with no freshness
-    check (`agent.rs:3061`, `:4388`), and that call "DELETEs and re-INSERTs every
-    message" (`session_manager.rs:2609-2611`) from the turn's own in-memory copy. The
-    codebase already documents this hazard for the *background* compaction path and
-    guards it there (`context_mgmt/mod.rs:661-671`, `eager_swap_is_safe`); the in-turn
-    sites have no guard because before BR-71 nothing could append to a session's store
-    from outside its own turn. `note` is the first such writer, and it is the mode the
-    tool recommends as the safe headless fallback — so it must not report success into a
-    window where the note is silently deleted. Task 14 refuses and names `steer` /
-    `workspace_watch` as the alternatives.
+16. ⚠ **RETIRED 2026-07-28 — `workspace_send_prompt mode:"note"` does NOT refuse a
+    target with a turn in flight; it PINS the note instead.**
+
+    *What this entry used to say:* an in-turn compaction called
+    `session_manager.replace_conversation` with no freshness check (`agent.rs:3061`,
+    `:4388`), that call DELETEs and re-INSERTs every message from the turn's own
+    in-memory copy, and the in-turn sites had no guard "because before BR-71 nothing
+    could append to a session's store from outside its own turn". `note` was the first
+    such writer, so it refused mid-turn targets.
+
+    *Why it is obsolete:* every premise is now false. `eager_swap_is_safe` was deleted
+    (`505fe77c`), and **both** in-turn sites went through the store's guard —
+    `agent.rs:3606-3613` (`2aa5a288`) and `agent.rs:5034` → `:2086`/`:2188`
+    (`557cf2f7`). A note appended mid-turn now lands above the rewrite's watermark and
+    is not named by the turn's `known` conversation, so
+    `replace_conversation_preserving_tail` classifies it as **foreign and carries it
+    over** (`session_manager.rs:1347-1374`). There is no window in which it is silently
+    deleted.
+
+    *Why retiring it is not merely permissible but required:* refusing would make the
+    tool's own recommended safe headless fallback unavailable in exactly the case a
+    parent most wants it — leaving context for a child that is busy. The refusal would
+    be a gratuitous restriction defended by a hazard that no longer exists, and the
+    error message would name a cause the reader cannot find in the code.
+
+    *What replaces it:* Task 14's `note` calls `Message::pinned` (`message.rs:1033`).
+    That closes the second half of the same hazard, which the store cannot close for
+    it: a surviving note is still *summarized away* by the next compaction unless it
+    carries the #51 preservation marker. See Prerequisite 2, half (b).
 17. ⚠ **`workspace_watch` and `workspace_send_prompt` are exempt from the global
     tool-dispatch semaphore**, joining the spawn tool. `TOOL_SEMAPHORE`
     (`tool_dispatch_limits.rs:87-88`) is one process-wide 8-permit semaphore whose guard
-    is held for a tool's whole execution, and `agent.rs:2312-2317` already states the
-    hazard for wrappers that park on work performed elsewhere. Both new tools park for
+    is held for a tool's whole execution, and **`agent.rs:2805-2810`** already states the
+    hazard for wrappers that park on work performed elsewhere ("*The subagent tool is
+    deliberately excluded: it recursively runs its own agent loop whose leaf tools contend
+    for this same global semaphore, so a subagent wrapper holding a permit while its inner
+    tools wait for one would deadlock*"). The plan's old `:2312-2317` is pre-drift and is
+    the number the corrected paragraph below already uses. Both new tools park for
     up to 600 s: eight concurrent `workspace_watch` calls would stall every other tool
     call in the daemon — including the user's foreground conversation — and
     `workspace_send_prompt mode:"turn" wait:"final_message"` is a true deadlock, holding
     a permit while waiting for the *target* session's turn, whose own tool calls contend
-    for the same permits. Task 19 Step 5 adds `is_parking_workspace_tool` beside
-    `is_spawn_tool_call`.
+    for the same permits.
+
+    ⚠ **Corrected 2026-07-28: `is_spawn_tool_call` does not exist.** This entry used to
+    read "Task 19 Step 5 adds `is_parking_workspace_tool` beside `is_spawn_tool_call`",
+    which implies there is something to put it beside. There is not — `grep -rn
+    "is_spawn_tool_call" crates/` returns nothing, and never did. (Run against the repo
+    root the same grep returns 29 hits, but every one of them is this plan file citing
+    the name; `crates/` is the check that means anything.) The
+    exemption is expressed today as an inline predicate,
+    `let bound_dispatch = tool_call.name != SUBAGENT_TOOL_NAME;` (`agent.rs:2812`,
+    reasoning at `:2805-2810`, acquire at `:2827-2837`). So **Task 19 Step 5 extracts
+    that inline predicate into `is_spawn_tool_call` and *then* adds
+    `is_parking_workspace_tool` beside it** — two edits, in that order.
+    `TOOL_SEMAPHORE` is `tool_dispatch_limits.rs:87` (8 permits) with `acquire` at
+    `:120`; both **exact**.
 18. ⚠ **The session bus reclaims idle rings.** `broadcast::channel` allocates its entire
     ring at creation, before any receiver exists, so a `BUS_CAPACITY = 1024` entry is
     ~10^5 bytes the moment a session first publishes — and after Task 8 every turn of
@@ -598,24 +807,101 @@ summarized again in [Decisions of record](#decisions-of-record-operator-approved
     `workspace_open { new: { extensions: ["developer"], prompt: "…" } }` mints a live
     process-spawning agent with no prompt in Auto mode. The hook now also: classifies
     add-risk **structurally over all seven `ExtensionConfig` variants**
-    (`InlinePython` execs `uvx`, `extension_manager.rs:660-689`; `Sse`/`StreamableHttp`
+    (`InlinePython` execs `uvx`, `extension_manager.rs:802-833`; `Sse`/`StreamableHttp`
     carry credentials to a remote endpoint) instead of matching one variant;
     **normalizes both sides** of every name comparison, because
     `ExtensionManager::remove_extension` normalizes before removing
-    (`extension_manager.rs:834-839`) so `remove_extensions: ["Workspace"]` really does
+    (`extension_manager.rs:976-981`) so `remove_extensions: ["Workspace"]` really does
     strip the audit trail while a raw-string check sees nothing; and confirms a
     **provider switch** (the target's whole history goes to the new endpoint) and a
     **skill grant** (instructions injected into the target's prompt), both added to this
     tool by decisions b and c after §5 was written.
 20. ⚠ **`workspace_set_tools { add_extensions }` honours issue #42's operator-disabled
     gate.** `get_extension_by_name` deliberately discards the `enabled` flag
-    (`config/extensions.rs:101-103`); the gate lives one layer up in
+    (`config/extensions.rs:138-140`); the gate lives one layer up in
     `manage_extensions`' enable path (`check_enable_allowed`,
-    `extension_manager_extension.rs:97-124`) and `Agent::add_extension` does not
+    `extension_manager_extension.rs:97-125`) and `Agent::add_extension` does not
     re-check it. Resolving with the flag-less helper would make BR-71 a second, ungated
     way to enable an extension an operator wrote `enabled: false` for — the pinned
     tool-environment case (benchmarking, safety) that comment names. Task 15 resolves
-    through `get_extension_entry_by_name` and refuses with the same guidance text.
+    through `get_extension_entry_by_name` (`config/extensions.rs:179-181`) and refuses
+    with the same guidance text.
+21. ⚠ **The `/reply` client write-back STAYS in `/reply`; the turn runner performs no
+    whole-history rewrite** (added 2026-07-28). Tasks 6 and 8 were written against a
+    `reply.rs` in which `conversation_so_far` was wrapped in
+    `Conversation::new_unvalidated` and handed to `SessionManager::replace_conversation`
+    — an unconditional, authoritative overwrite driven by an HTTP client's copy of
+    arbitrary staleness. `306552fd` (#51 W5) replaced that with `apply_client_writeback`
+    (`reply.rs:177-231`): a **pre-spawn precondition** that reads a paired snapshot,
+    refuses with 409 `conversation_out_of_date` if the client's copy would delete a
+    stored row, and otherwise writes through `replace_conversation_preserving_tail`.
+
+    Moving it into a detached runner is not a relocation, it is a regression:
+    - `replace_conversation` is now documented as **the NAMED EXCEPTION**
+      (`session_manager.rs:1312-1324`), correct only for a caller that owns the whole
+      history; its five production callers are `/clear` and the import/copy/diverge
+      paths. A live session written from a detached task is precisely the case its doc
+      forbids.
+    - A `tokio::spawn`'d runner has no status code, so the refusal has nowhere to go —
+      the tool would have to either write anyway or fail the turn.
+    - The old grep gate (`grep -c replace_conversation turn.rs # Expected: 1`) would
+      have **certified** the regression as correct.
+
+    Resolution: `TurnExtras.conversation_so_far` becomes `Option<Conversation>` meaning
+    *the already-stored seed*; `run_turn` carries a stated non-goal that it performs no
+    whole-history rewrite (the only rewrite in a turn is the agent's own guarded
+    compaction, paired through the private `RewriteBasis`); Task 8's replacement range
+    starts at `reply.rs:681`, below the write-back; and both grep gates are re-anchored
+    and demoted to necessary-not-sufficient beside two real property tests. Every other
+    `start_turn` caller passes `None` — none of them has a client prefix.
+22. ⚠ **`map_bus_event` must carry `AgentEvent::MessagesPersisted`, and the match must
+    stay exhaustive** (added 2026-07-28). `AgentEvent` gained an eighth variant
+    (`agent.rs:672`) when #59 landed, so Task 7's seven-arm match is an `E0004`. The
+    repair an implementer reaches for under compile pressure — `_ => None` — compiles,
+    passes every other test in this plan, and after Task 8 means **no `/reply` client
+    ever receives a `MessagesPersisted` frame again**: `expectedMessageIds` becomes
+    unsatisfiable and `POST /sessions/{id}/edit_message` answers 409 on sessions nobody
+    touched, undoing `0312dff4` + `936f5a33`.
+
+    Nothing in the original test matrix could see it. The desktop store deliberately
+    does not consume the frame yet (`chatStreamStore.tsx:313`, `:1335`; pinned by
+    `chatStreamStore.test.ts:807`, `:888`), and `reply.rs`'s own
+    `persisted_message_ids_reach_the_wire_with_their_visibility` (`:1212`) tests the
+    enum, not the handler. So: an explicit arm, a stated no-wildcard rule (the precedent
+    is `MessageContent::is_pin_eligible`, `message.rs:422-454`), a mapper test that the
+    frame is not `None`, a `/reply` test that it reaches the wire, and **7 → 8 promoted
+    to a binding ordering**. Two ordering obligations ride along: `run_turn` must publish
+    in stream order (reconciliation #21's second non-goal), and `/reply`'s
+    `!matches!(… TokenUsage)` flush guard is load-bearing, not an optimisation.
+23. ⚠ **The subagent bus tee is TOTAL; the parent's `conversation` accumulation is not —
+    and `subagent_handler.rs` has its own `AgentEvent` match that #22 does not reach**
+    (added 2026-07-28, the second half of Task 34's conflict).
+
+    Reconciliation #22 repairs `routes::session_events::map_bus_event`. Task 34 rewrites a
+    **different** exhaustive, wildcard-free match on the same enum, in a **different**
+    crate: `run_complete_subagent_task`'s stream loop, `subagent_handler.rs:244-274`.
+    Fixing one does not fix the other, and Task 34's Step 3 as originally written would
+    have *deleted* an arm that already exists — the current code ignores **five** variants,
+    not four, because `936f5a33`/#59 added `| Ok(AgentEvent::MessagesPersisted(_))` at
+    `subagent_handler.rs:250-253` with a comment explaining why the parent ignores it.
+
+    Both halves of the resolution are load-bearing and they pull in opposite directions:
+
+    - **The tee publishes every variant, before the per-variant match, and never
+      reorders.** An observer tab watching a glass-box child is exactly the "client that
+      watched a whole turn go by" #59 exists for, so it needs `MessagesPersisted`; and the
+      ordering invariant (`agent.rs:280-283`) is a property of the *producer's* stream that
+      survives only if every relay preserves order. Publishing once, at the top of the
+      loop, makes both free.
+    - **The accumulation keeps its ignore-arms verbatim, `MessagesPersisted` included.**
+      The parent is building a `Vec<Message>` for a `SubagentResult`, not a client view,
+      and has no `expectedMessageIds` to satisfy. Carrying that arm and its #59 comment
+      across the re-indent is an explicit instruction in Task 34 Step 3, and dropping it is
+      an `E0004`, not a silent behaviour change — which is why the no-wildcard rule of #22
+      applies here too.
+
+    Task 33's lease is what makes the tee's `TurnStarted`/`TurnFinished` brackets carry a
+    real `turn_id`; headless they carry a synthetic one. See Task 34.
 
 ---
 
@@ -719,16 +1005,53 @@ Task 19 before Task 19b.
 
 **Files:**
 - Modify: `crates/biorouter/src/session/session_manager.rs`
-  (anchors at `30d49d9a`: `CURRENT_SCHEMA_VERSION` at :29, `Session` struct at
-  :118-163, `SessionUpdateBuilder` fields at :208-233 (`diverged_from` at :231),
-  builder methods `diverged_from`/`branch_point_msg_uid` at :982-993, fresh-DB
-  `CREATE TABLE sessions` at :1865 (`diverged_from TEXT,` at :1886), row mapping
-  `diverged_from` read at :1766, INSERT at :2061-2084, `apply_migration` at :2257,
-  `apply_update` SET pattern at :2879/:2955)
+  (anchors **re-verified at `275d735d`, 2026-07-28**: `CURRENT_SCHEMA_VERSION` at
+  :29 (**still `16`**, so migration 17 is still the next free number), `Session`
+  struct at :118-162 (`diverged_from` :154, `branch_point_msg_uid` :161),
+  `SessionUpdateBuilder` fields at :208-233 (`diverged_from` at :231), builder
+  methods `diverged_from`/`branch_point_msg_uid` at :982-993, fresh-DB
+  `CREATE TABLE sessions` at **:2072** (`diverged_from TEXT,` at **:2093**), row
+  mapping `diverged_from` read at **:1973**, INSERT at **:2264-2292**,
+  `run_migrations` at **:2325-2350**, `apply_migration` at **:2487** (highest arm
+  `16 =>` at **:2727**), `apply_update` SET pattern at **:3131**/**:3207**,
+  storage `get_session` at **:2983** (its SELECT column list at **:2991**),
+  storage `list_sessions_by_types` at **:4053** (its SELECT column list at
+  **:4065**))
+- Modify: `crates/biorouter/src/agents/knowledge_tool.rs` (test fixture
+  `test_session` at :292-317, `diverged_from: None` at **:315**)
+- Modify: `crates/biorouter/src/knowledge/conversation_ingest.rs` (test fixture
+  `base_session` at :230-255, `diverged_from: None` at **:253**)
+
+⚠ **Those last two files are not optional, and the survey that re-anchored this task
+missed them.** `Session` is constructed *literally* — every field named — in two
+`#[cfg(test)]` fixtures outside `session_manager.rs`. Adding a field makes both an
+`E0063: missing field parent_session_id in initializer of Session`, so `cargo test -p
+biorouter` will not build at all until they are updated. `#[serde(default)]` does not
+help: it governs deserialization, not struct-literal construction. The authoritative
+list is `grep -rn --include='*.rs' "diverged_from: None" crates/`, which returns
+exactly five sites — three in `session_manager.rs` (:859, :1804, :9109) and these two.
 - **#44 note (reconciliation #7):** the builder deliberately has NO `working_dir`
-  setter (comment at :891-894). `parent_session_id` mirrors
+  setter (comment at :891-894 — **exact**, re-verified). `parent_session_id` mirrors
   `diverged_from`/`branch_point_msg_uid` — plain lineage columns — NOT the guarded
   working-dir path; nothing here touches `try_update_working_dir_if_empty`.
+
+⚠ **A third session column landed after this task was written, and it does NOT use a
+migration number.** `302c1c9d` added `sessions.incarnation` (the #51 W3 basis token)
+through the idempotent reconcile helper `ensure_session_incarnation_schema`
+(`:2782-2789`, called at **:2357** from `reconcile_loop_schema` (**:2354**), which
+`run_migrations` in turn calls at **:2349**, *after* the numbered arms).
+Two consequences for this task, both textual rather than semantic:
+
+- Every one of the three edit sites below now has `incarnation` sitting next to
+  `diverged_from`: the fresh-DB `CREATE TABLE` (`incarnation INTEGER NOT NULL DEFAULT 0`
+  at :2096, and note it is the **last** column, with no trailing comma), the row-mapping
+  SELECT list (:2269), and the `INSERT INTO sessions (…)` (:2264-2270). Read each block
+  before editing it; the shapes below already account for them.
+- **Still use migration 17.** The precedent `incarnation` sets is for a column that is
+  only ever *reconciled* — written by the store itself, never projected into a
+  user-facing query. `parent_session_id` is queried (Task 4's `include_subagents`
+  filter, Task 38's grouping), so it gets a numbered, ordered migration like every
+  other lineage column.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -793,10 +1116,13 @@ pub const CURRENT_SCHEMA_VERSION: i32 = 17;
     pub parent_session_id: Option<String>,
 ```
 
-(c) Fresh-DB `CREATE TABLE sessions` (the creation block at :1865): add
-`parent_session_id TEXT,` on the line after `diverged_from TEXT,` (:1886).
+(c) Fresh-DB `CREATE TABLE sessions` (the creation block at **:2072**): add
+`parent_session_id TEXT,` on the line after `diverged_from TEXT,` (**:2093**).
+Do **not** append it at the end — `incarnation INTEGER NOT NULL DEFAULT 0` (:2096)
+is the last column and carries no trailing comma.
 
-(d) New migration arm in `apply_migration` (:2257; after the `16 =>` arm):
+(d) New migration arm in `apply_migration` (**:2487**; after the `16 =>` arm, which
+ends at **:2731** — the `_ =>` catch-all follows at :2732):
 
 ```rust
             17 => {
@@ -810,22 +1136,32 @@ pub const CURRENT_SCHEMA_VERSION: i32 = 17;
             }
 ```
 
-(e) Row mapping (:1766 vicinity — every place a `Session` is built from a row and
-`diverged_from` is read):
+(e) Row mapping (**:1973** — the `FromRow` impl's `diverged_from` read):
 
 ```rust
             parent_session_id: row.try_get("parent_session_id").ok().flatten(),
 ```
 
-and at every literal `diverged_from: None,` construction site (:859, :1597), add
-`parent_session_id: None,`.
+and at every literal `diverged_from: None,` construction site — **:859** and
+**:1804** in production, plus the test fixture at **:9109** — add
+`parent_session_id: None,`. (`grep -n "diverged_from: None," …` is the authoritative
+list; it returns exactly those three.)
 
-(f) INSERT statement (:2061): append `, parent_session_id` to the column list, a `, ?`
-to the VALUES list, and after `.bind(&session.diverged_from)` (:2084):
+(f) INSERT statement (**:2264-2292**): insert `parent_session_id` into the column
+list **immediately after `diverged_from`** (i.e. *before* `incarnation`, :2269),
+insert one `?` into the VALUES list **immediately before `random()`** (:2270), and
+add the bind immediately after `.bind(&session.diverged_from)` (**:2292**):
 
 ```rust
         .bind(&session.parent_session_id)
 ```
+
+⚠ `incarnation` is filled by `random()`, **not** by a placeholder, so the VALUES list
+has 20 `?` for 21 columns. Inserting the new column and its `?` at the same relative
+position — right after `diverged_from` / right before `random()` — is what keeps
+column order, placeholder order and bind order in lockstep. Appending at the end of
+both lists also happens to align, but only by coincidence, and a reader checking the
+statement by eye will not be able to tell.
 
 (g) `SessionUpdateBuilder`: field (at :231, beside `diverged_from: Option<Option<String>>`):
 
@@ -846,17 +1182,19 @@ constructor, add the builder method (after `branch_point_msg_uid` at :990-993):
 ```
 
 and mirror `diverged_from` in the storage `apply_update`'s dynamic SET construction
-(the `add_update!(builder.diverged_from, "diverged_from")` push at :2879 and the
-matching bind at :2955 — duplicate both for `parent_session_id`).
+(the `add_update!(builder.diverged_from, "diverged_from")` push at **:3131** and the
+matching bind at **:3207** — duplicate both for `parent_session_id`).
 
 (h) **The two explicit SELECT column lists that build a `Session`.** This is the
 step that is easiest to skip and impossible to catch by compiling: the row mapper
 in (e) is deliberately tolerant (`row.try_get(...).ok().flatten()`, with the comment
-at `session_manager.rs:1767-1769` "SELECTs that omit the column … yield None rather
-than erroring"), so a missed SELECT **compiles and silently reads `None`**. Step 4's
-round-trip assertion is the only thing that catches it.
+at `session_manager.rs:1974-1976` "Tolerant read: SELECTs that omit the column (e.g.
+the session list) yield None rather than erroring"), so a missed SELECT **compiles
+and silently reads `None`**. Step 4's round-trip assertion is the only thing that
+catches it.
 
-- `get_session` (`:2739`) — change the last projected line from
+- storage `get_session` (**:2983**, SELECT list ending at **:2991**) — change the
+  last projected line from
 
   ```sql
                  provider_name, model_config_json, diverged_from, branch_point_msg_uid
@@ -868,7 +1206,7 @@ round-trip assertion is the only thing that catches it.
                  provider_name, model_config_json, diverged_from, branch_point_msg_uid, parent_session_id
   ```
 
-- `list_sessions_by_types` (`:3500`) — change
+- storage `list_sessions_by_types` (**:4053**, SELECT list at **:4065**) — change
 
   ```sql
                      s.provider_name, s.model_config_json, s.diverged_from,
@@ -887,14 +1225,32 @@ with no error anywhere.
 
 - [ ] **Step 4: Run the test and the full session suite**
 
-Run: `cargo test -p biorouter --lib session::session_manager`
-Expected: PASS, including the pre-existing migration tests (`…schema_version…` tests
-assert `CURRENT_SCHEMA_VERSION`, which they read symbolically — they pass unmodified).
+```bash
+cargo test -p biorouter --lib session::session_manager
+cargo test -p biorouter --lib agents::knowledge_tool knowledge::conversation_ingest
+```
+
+Expected: **PASS**, including the pre-existing migration tests. Two of them name a
+version in their title and neither needs editing:
+
+- `fresh_database_contains_full_v16_schema` (**:5844**) reads
+  `CURRENT_SCHEMA_VERSION` **symbolically** (`assert_eq!` at :5849-5852), so bumping to
+  17 leaves it green. Its *name* becomes stale — leave it; renaming a test in this
+  commit would hide the migration diff in review noise. Task 21's gate re-runs it.
+- `migrates_v15_db_to_v16_message_blobs` (**:5615**) builds a hand-rolled v15 fixture
+  (`CREATE TABLE sessions` at :5642, which has no `parent_session_id`) and runs the
+  migration ladder. It stays green precisely *because* migration 17 is a plain
+  `ALTER TABLE … ADD COLUMN`: the ladder now runs 16 then 17 over the fixture.
+
+If `cargo test -p biorouter` fails to **build**, the cause is almost certainly one of
+the two out-of-file `Session` literals in the Files list, not this file.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/biorouter/src/session/session_manager.rs
+git add crates/biorouter/src/session/session_manager.rs \
+        crates/biorouter/src/agents/knowledge_tool.rs \
+        crates/biorouter/src/knowledge/conversation_ingest.rs
 git commit -m "feat(session): add sessions.parent_session_id (migration 17, BR-71)"
 ```
 
@@ -904,9 +1260,38 @@ git commit -m "feat(session): add sessions.parent_session_id (migration 17, BR-7
 
 **Files:**
 - Modify: `crates/biorouter/src/conversation/message.rs`
-  (anchors: `MessageMetadata` at :535-552, constructors at :554-577, `Message` at
-  :623-630, `with_metadata` near :888)
-- Modify: any file the compiler flags after `Copy` is removed (mechanical `.clone()`)
+  (anchors **re-verified at `275d735d`, 2026-07-28**: `MessageMetadata` at
+  **:587-630** (derive line **:587**, `pub pinned: bool` **:629**), `impl Default for
+  MessageMetadata` at **:632-640**, `impl MessageMetadata` at **:642-717**
+  (`agent_only` :644, `user_only` :653, `invisible` :662, six `with_*` at
+  :671-716), `Message` at **:727-737** (`pub metadata: MessageMetadata` at :736),
+  `impl Message` at **:739**, `with_metadata` at **:996**, `Message::pinned` at
+  **:1033**)
+- Modify: `crates/biorouter/src/conversation/normalize.rs` — `message_fingerprint`
+  (**:278**, doc **:261-277**). See Step 3(d); this is not optional.
+- Modify: the five production `Copy` sites, enumerated in Step 4 (they are known up
+  front, not "whatever the compiler flags")
+
+⚠ **`MessageMetadata` gained a third field, `pinned`, after this task was written —
+and it was landed FOR BR-71.** `pinned` is `#[serde(default)] pub pinned: bool`
+(**:629**), added by #51 (`dc2caa9e` + `a4d6b871`) and honoured at all five compaction
+sites (`a40226d3`, `b3fc6166`). Three consequences, all of them favourable:
+
+- **The derive string Step 3 edits is byte-identical to what is in the tree.**
+  `message.rs:587` reads exactly
+  `#[derive(ToSchema, Clone, Copy, PartialEq, Serialize, Deserialize, Debug)]`, so the
+  `Copy`-drop edit below still applies verbatim.
+- **`provenance` and `pinned` are orthogonal and must both be set.** `pinned` answers
+  *"survive compaction?"*; `provenance` answers *"who wrote this?"*. Nothing about
+  either constrains the other. `Default`/`agent_only`/`user_only`/`invisible` (:632-640,
+  :644, :653, :662) already write `pinned: false` explicitly, so each of those four
+  bodies gains **one** line (`provenance: None`), beside a line that is already there.
+- **The six `with_*` builders use `..self` struct-update** (`message.rs:671-716`), so
+  none of them needs an edit when a field is added. That is why the list of bodies to
+  touch is exactly four.
+
+Task 14 is where `pinned` is actually *called* (`Message::pinned`, :1033) — see
+Prerequisite 2 half (b) and reconciliation #16. This task only has to not fight it.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -933,24 +1318,87 @@ fn provenance_round_trips_and_legacy_metadata_still_parses() {
     // Default serialization must NOT emit the key (wire compat with old clients).
     let plain = serde_json::to_value(MessageMetadata::default()).unwrap();
     assert!(plain.get("provenance").is_none());
+
+    // The #51 pin marker is orthogonal and untouched by any of the above:
+    // `pinned` is `false` on a stamped message and stays independently settable.
+    assert!(!stamped.pinned);
+    assert!(stamped.with_pinned().pinned);
 }
 ```
 
+**And, in `normalize.rs`'s test module** (beside
+`fingerprint_changes_when_only_the_pin_marker_flips`, **:722**, which is the model for
+this one), the cache-validator test that Step 3(d) exists to satisfy:
+
+```rust
+    /// The incremental normalizer reuses a frozen prefix whenever every
+    /// fingerprint in it matches, and the normalized transcript is what the
+    /// overflow path writes back to storage. So a metadata field the fingerprint
+    /// cannot see is a field an in-place edit can silently revert — which is
+    /// exactly the bug `32f2e1bc` fixed for `pinned`, one field over.
+    #[test]
+    fn fingerprint_changes_when_only_the_provenance_stamp_changes() {
+        use crate::conversation::message::{MessageProvenance, ProvenanceKind};
+
+        let stamp = |kind| MessageProvenance {
+            kind,
+            from_session_id: Some("s-parent".into()),
+            from_session_name: None,
+        };
+
+        // `user(..)` is this module's existing helper (`:389`).
+        let plain = user("same body");
+        let injected = plain
+            .clone()
+            .with_provenance(stamp(ProvenanceKind::AgentInjection));
+        let direct = plain
+            .clone()
+            .with_provenance(stamp(ProvenanceKind::UserDirect));
+
+        // Stamped vs unstamped.
+        assert_ne!(
+            message_fingerprint(&plain),
+            message_fingerprint(&injected),
+            "stamping provenance must invalidate the cached prefix"
+        );
+        // And the KIND must be visible on its own — two stamps that differ only
+        // in kind are exactly what a `provenance.is_some()` shortcut would miss.
+        assert_ne!(
+            message_fingerprint(&injected),
+            message_fingerprint(&direct),
+            "a provenance kind change must invalidate the cached prefix"
+        );
+    }
+```
+
+(`normalize.rs:47` imports only `{Message, MessageContent}` from `super::message`, so
+the two new types need the explicit `use` inside the test — `use super::*` will not
+bring them in.)
+
 - [ ] **Step 2: Run to verify failure**
 
-Run: `cargo test -p biorouter --lib conversation::message`
-Expected: COMPILE ERROR — `MessageProvenance` not found.
+```bash
+cargo test -p biorouter --lib conversation::message
+cargo test -p biorouter --lib conversation::normalize
+```
+
+Expected: **COMPILE ERROR** (not FAIL) in both — `MessageProvenance` /
+`ProvenanceKind` / `with_provenance` do not exist yet, so neither test module builds.
 
 - [ ] **Step 3: Implement**
 
-Above `MessageMetadata` add:
+**(a)** Above `MessageMetadata` (i.e. before **:587**) add:
 
 ```rust
 /// Where a message came from, when it did not originate with this session's own
 /// user↔agent pair. Cross-session control without provenance is
 /// indistinguishable from prompt injection (BR-71 §2.4) — stamped in storage,
 /// not just in the UI, and never suppressible.
-#[derive(ToSchema, Clone, PartialEq, Serialize, Deserialize, Debug)]
+///
+/// `Hash` is derived deliberately: this value is part of
+/// [`crate::conversation::normalize`]'s per-message cache validator. See
+/// `message_fingerprint` (`normalize.rs:278`) and Step 3(d).
+#[derive(ToSchema, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct MessageProvenance {
     pub kind: ProvenanceKind,
@@ -960,7 +1408,7 @@ pub struct MessageProvenance {
     pub from_session_name: Option<String>,
 }
 
-#[derive(ToSchema, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Debug)]
+#[derive(ToSchema, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum ProvenanceKind {
     /// Injected by another session's agent (`workspace_send_prompt`).
@@ -972,21 +1420,32 @@ pub enum ProvenanceKind {
 }
 ```
 
-Change `MessageMetadata`'s derive from
+Both `PartialEq` and `Hash` are **derived** (never hand-written), so clippy's
+`derived_hash_with_manual_eq` cannot fire. `Eq` is added on `MessageProvenance` because
+all three of its fields are `Eq` and a `Hash` type that is only `PartialEq` reads as an
+oversight.
+
+**(b)** Change `MessageMetadata`'s derive (**:587**) from
 `#[derive(ToSchema, Clone, Copy, PartialEq, Serialize, Deserialize, Debug)]` to
 `#[derive(ToSchema, Clone, PartialEq, Serialize, Deserialize, Debug)]` (drop `Copy`)
-and add the field:
+and add the field **after `pinned`** (:629):
 
 ```rust
     /// BR-71: origin stamp for cross-session injections. `None` for ordinary
     /// same-session messages, and omitted from JSON so legacy rows/clients are
     /// untouched.
+    ///
+    /// Orthogonal to `pinned` above: that answers "survive compaction?", this
+    /// answers "who wrote this?". A `workspace_send_prompt { mode: "note" }`
+    /// message carries both.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provenance: Option<MessageProvenance>,
 ```
 
-Set `provenance: None` in `Default` and in `agent_only`/`user_only`/`invisible`, and
-add:
+**(c)** Set `provenance: None` in exactly four bodies — `Default` (**:632-640**),
+`agent_only` (**:644**), `user_only` (**:653**) and `invisible` (**:662**) — on the
+line after each one's existing `pinned: false,`. The six `with_*` builders
+(**:671-716**) use `..self` and need no edit. Then add:
 
 ```rust
 impl MessageMetadata {
@@ -1005,7 +1464,47 @@ impl Message {
 }
 ```
 
-(Place the two methods inside the existing `impl` blocks rather than new ones.)
+(Place the two methods inside the existing `impl` blocks — `impl MessageMetadata` at
+**:642-717** and `impl Message` at **:739** — rather than new ones.)
+
+**(d) Add `provenance` to `message_fingerprint` (`normalize.rs:278`).** One line, after
+the `pinned` line at **:285**:
+
+```rust
+    message.metadata.provenance.hash(&mut hasher);
+```
+
+and extend that function's doc paragraph about `pinned` (**:270-277**) to name
+`provenance` as the second durable metadata field it validates.
+
+**Why — the plan was silent on this and should not have been.** The fingerprint's own
+doc states the contract: *"it must change whenever anything the normalization pipeline
+reads about the message changes"*, and gives two reasons `pinned` qualifies. Only one
+of them applies to `provenance`, and it is the sharp one:
+
+- *Not applicable:* `pinned` steers a merge (`is_pin_boundary`), so a cached prefix
+  would be wrong on its own terms. Nothing in the pipeline branches on `provenance`,
+  and nothing in this plan makes it.
+- **Applicable, and decisive:** `pinned` is *durable state the output carries* — the
+  normalized transcript is what the overflow path compacts and **writes back to
+  storage**, so serving a stale marker from the frozen prefix silently reverses it.
+  `provenance` is durable state of exactly the same kind, on exactly the same struct,
+  travelling exactly the same path. A frozen prefix blind to it can write a stale stamp
+  back over a fresh one.
+
+The honest caveat, stated so a reviewer does not have to guess: **no task in this plan
+flips `provenance` on an already-stored message** — every site (Tasks 3, 14, 32, 35)
+stamps at construction — so the specific bug `32f2e1bc` fixed is not reachable through
+provenance *today*. It is included anyway because the asymmetry is stark. Including it
+costs one line, two derives, and a cache miss on a path that does not exist. Omitting
+it costs a silent metadata-reversion bug the first time anything edits a stamp in place
+(a redaction, a re-stamp on divergence, Task 28's transcript work) — with no test
+failing, because the only test that could see it is the one being written here.
+`pinned` itself was fingerprinted *before* it had a consumer, for this reason.
+
+Do **not** implement this as `provenance.is_some().hash(..)`. That is blind to a kind
+change, which is the one edit an in-place re-stamp would actually make; the Step 1 test
+asserts against it directly.
 
 **And the untrusted-data framer, in the same file.** The provenance stamp above lives
 in `MessageMetadata`, which never reaches the provider — the per-provider format
@@ -1014,10 +1513,22 @@ text one agent injects into another session arrives as an indistinguishable user
 instruction, carrying the human's authority in an Auto-mode target. The codebase has
 settled precedent for exactly this hazard, applied three times already —
 `hooks::outcome::frame_hook_context` (`hooks/outcome.rs:53-65`, `<hook-context
-untrusted="true">`), `hints::load_hints::frame_project_hints` (`:140-165`,
-`<project-context untrusted="true">`), and `routes/apps.rs:1879`'s app-data envelope.
+untrusted="true">`), `hints::load_hints::frame_project_hints`
+(`hints/load_hints.rs:140-165`, `<project-context untrusted="true">`), and
+`routes/apps.rs`'s `app_data_envelope` (**`:1919`**, doc **`:1914-1918`**,
+`[{label}]\n<app-data>\n{json}\n</app-data>`).
 BR-71 introduces the first cross-*session* text flow and is the only one that would
 omit it:
+
+⚠ **Citation corrected 2026-07-28.** Both places this plan names the third precedent
+used to say `routes/apps.rs:1879`. That was right at the anchor commit — at `67822ea3`
+the doc comment opened at `:1879` and the fn was `:1884` — and is wrong now: `apps.rs`
+grew and `:1879` today lands inside `consult_deadline`'s doc, a function about worker
+timeouts with nothing to do with framing. The anchor is the **symbol**,
+`app_data_envelope`; the numbers above were re-read at `275d735d`. This one slipped
+both the drift survey and the drift-reconciliation pass because it sits in prose about
+a *design precedent* rather than in a task's Files list, which is the same blind spot
+that left fourteen stale anchors in the reconciliations table.
 
 ```rust
 /// Wrap text one session's agent injected into ANOTHER session in an explicit
@@ -1066,19 +1577,78 @@ with its test:
     }
 ```
 
-- [ ] **Step 4: Fix the `Copy` fallout, workspace-wide**
+- [ ] **Step 4: Fix the `Copy` fallout — six known sites**
 
-Run: `cargo check --workspace 2>&1 | head -50`
-Every error is a former implicit copy of `MessageMetadata`; fix each with `.clone()`
-(or a borrow where the value is only read). Do not restructure any call site.
+The fallout is **enumerable up front**, not "whatever the compiler flags". Every
+implicit copy of a `MessageMetadata` out of a borrow has the same shape,
+`<borrowed>.metadata.with_*()`, and `grep -rn --include='*.rs' "\.metadata\.with_"
+crates/` returns exactly six (verified at `275d735d`):
+
+| Site | Context |
+|---|---|
+| `crates/biorouter/src/context_mgmt/mod.rs:286` | `.with_metadata(msg.metadata.with_agent_invisible())` |
+| `crates/biorouter/src/context_mgmt/mod.rs:353` | inside the **windowed-compaction hot loop** (`for (idx, msg) in prefix.iter().enumerate()`, :351) |
+| `crates/biorouter/src/context_mgmt/mod.rs:491` | `msg.metadata.with_agent_invisible()` |
+| `crates/biorouter/src/conversation/normalize.rs:625` | `let metadata = message.metadata.with_agent_invisible();` |
+| `crates/biorouter/src/conversation/normalize.rs:713` | `.with_metadata(visible.metadata.with_agent_invisible())` |
+| `crates/biorouter/src/conversation/normalize.rs:780` | test (`mod tests` begins at :384) |
+
+Fix each with `.clone()` — `msg.metadata.clone().with_agent_invisible()`. Do not
+restructure any call site.
+
+Note on `:353`: that one is per-message inside a compaction loop, so the `.clone()`
+becomes one `Option<String>` pair clone per message. Acceptable — the loop already
+does `msg.clone()` on the next line — but know that it is there rather than discover
+it in a profile.
+
+Then confirm nothing else moved:
+
+```bash
+cargo check --workspace 2>&1 | grep -c "E0507\|cannot move out"
+# Expected: 0
+```
+
+If it is not 0, the extra sites are genuine and mechanical; fix them the same way and
+**add them to the table above** so the next reader is not told a false count.
 
 - [ ] **Step 5: Run the tests**
 
-Run: `cargo test -p biorouter --lib conversation::message`
-Expected: PASS.
-Run: `cargo test --workspace --no-fail-fast 2>&1 | tail -5`
+```bash
+cargo test -p biorouter --lib conversation::message
+cargo test -p biorouter --lib conversation::normalize
+cargo test -p biorouter --lib context_mgmt
+```
+
+Expected: **PASS**, including the tests this task must not break:
+
+- the three pre-existing fingerprint tests
+  (`fingerprint_changes_when_a_tool_result_is_rewritten` :698,
+  `fingerprint_changes_with_visibility` :709,
+  `fingerprint_changes_when_only_the_pin_marker_flips` :722) — Step 3(d) adds to the
+  hash, it never removes; and
+- the **26-test #51 pin suite** — `context_mgmt/mod.rs`'s `mod pin_tests` (**:2397**,
+  **14** tests, running to EOF at :2908) plus `context_mgmt/pins.rs`'s `mod tests`
+  (**:318**, **12** tests) — which reads `metadata.pinned` on values this task just made
+  non-`Copy`. A `.clone()` applied to the wrong side of one of those reads is the most
+  likely way to break them; and
+- the **two eager-compaction freshness tests** `run_eager_compaction_preserves_a_concurrent_append`
+  (**:2244**) and `run_eager_compaction_aborts_when_the_prefix_moved` (**:2298**) —
+  note they live in `mod tests` (**:1305**), *not* in `pin_tests`. They are #51's
+  replacement for the deleted `eager_swap_is_safe` and Task 14's Prerequisite 2 rests
+  on them.
+
+(Counted at `275d735d`:
+`awk 'NR>=2397' crates/biorouter/src/context_mgmt/mod.rs | grep -cE '^\s+#\[(tokio::)?test\]'`
+→ 14, and the same over `awk 'NR>=318' …/pins.rs` → 12. Earlier drafts of this plan
+and its drift survey said "15"; that number was never right.)
+
+```bash
+cargo test --workspace --no-fail-fast 2>&1 | tail -5
+```
+
 Expected: no new failures versus a pre-task baseline (record the baseline first if this
-machine has pre-existing failures — see memory note in `llamacpp-sidecar-feature`).
+machine has pre-existing failures — see memory note in `llamacpp-sidecar-feature`;
+`SessionListView.test.tsx` is a known clean-tree failure).
 
 - [ ] **Step 6: Commit**
 
@@ -1093,9 +1663,20 @@ git commit -m "feat(conversation): structural message provenance (BR-71); Messag
 
 **Files:**
 - Modify: `crates/biorouter/src/agents/agent.rs`
-  (anchors: `soft_interrupts` field :322, init :604, `queue_soft_interrupt` :641-645,
-  `drain_soft_interrupts` :648, `has_soft_interrupts` :659, drain loop :3368-3378,
-  `exit_chat` check :4640)
+  (anchors **re-verified at `275d735d`, 2026-07-28** — `agent.rs` grew from 6,001 to
+  6,817 lines since this task was written, so every number below moved by roughly
+  +240 to +710; the **symbols** are all intact and unchanged in shape):
+  `soft_interrupts` field **:563**, init **:870**, `queue_soft_interrupt`
+  **:907-912**, `drain_soft_interrupts` **:914** (still `pub(super)`, still returns
+  `Vec<String>`), `has_soft_interrupts` **:925**, **drain loop :3995-4005** (its
+  explanatory comment at :3991-3994), `exit_chat` check **:5347**
+- Do **not** modify, but know they exist — the three callers outside `agent.rs` that
+  pin `queue_soft_interrupt`'s source compatibility:
+  `crates/biorouter-server/src/routes/reply.rs:1101` (the `POST /interrupt` handler —
+  the **only production caller**), `crates/biorouter/tests/soft_interrupt_agent_loop.rs:93`,
+  `crates/biorouter/tests/subagent_delegation.rs:275`. Keeping the one-argument
+  `queue_soft_interrupt` as a thin wrapper (Step 3) is what stops this task from
+  spilling into the server crate.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1132,7 +1713,7 @@ async fn soft_interrupt_queue_round_trips_provenance_through_the_real_agent() {
     );
     assert!(agent.has_soft_interrupts());
 
-    // drain_soft_interrupts is exactly what the turn loop at :3368 consumes.
+    // drain_soft_interrupts is exactly what the turn loop at :3995 consumes.
     let drained = agent.drain_soft_interrupts();
     assert_eq!(drained.len(), 2);
     assert_eq!(drained[0].text, "plain");
@@ -1151,12 +1732,14 @@ async fn soft_interrupt_queue_round_trips_provenance_through_the_real_agent() {
 ```
 
 (`AgentConfig::new(session_manager, permission_manager, scheduler, mode)` — the exact
-4-arg constructor `execution/manager.rs:124-129` uses; `PermissionManager::instance()`
-and `BioRouterMode::Auto` verified there. If `drain_soft_interrupts` is `pub(super)`,
-the test lives inside `agent.rs`'s own module and reaches it — that is why it goes in
+4-arg constructor `execution/manager.rs:124-129` uses; that citation is **still exact**
+at `275d735d` (`let config = AgentConfig::new(` :124, args :125-128, `);` :129).
+`PermissionManager::instance()` (:123) and `BioRouterMode::Auto` (:122) verified there;
+`None` for the scheduler is valid. If `drain_soft_interrupts` is `pub(super)`, the test
+lives inside `agent.rs`'s own module and reaches it — that is why it goes in
 `agent.rs`'s test module, not a sibling file.)
 
-The drain **loop** rewrite (Step 3's :3368 hunk — persist with adopted uid + stamped
+The drain **loop** rewrite (Step 3's :3995 hunk — persist with adopted uid + stamped
 provenance + yield) cannot be unit-tested without a full provider-driven turn; its
 behavioral coverage is the live steer assertion in the Phase-3 harness (Task 39,
 assertion 3: an injected `/interrupt` text appears in the child's observer stream as
@@ -1171,7 +1754,7 @@ Expected: COMPILE ERROR — no method `queue_soft_interrupt_with_provenance`, an
 
 - [ ] **Step 3: Implement**
 
-In `agent.rs` (near the field at :322):
+In `agent.rs` (near the field at **:563**):
 
 ```rust
 /// One queued mid-turn injection: the text plus who injected it (BR-71).
@@ -1203,8 +1786,8 @@ keep `queue_soft_interrupt` source-compatible, and add the stamped variant:
     }
 ```
 
-`drain_soft_interrupts` now returns `Vec<QueuedInterrupt>`; the drain loop at :3368
-becomes:
+`drain_soft_interrupts` now returns `Vec<QueuedInterrupt>`; the drain loop at
+**:3995-4005** becomes:
 
 ```rust
                 for queued in self.drain_soft_interrupts() {
@@ -1236,12 +1819,70 @@ becomes:
                 }
 ```
 
-`has_soft_interrupts` and the :4640 site are unchanged in behavior.
+`has_soft_interrupts` and the **:5347** (`exit_chat`) site are unchanged in behavior.
+
+⚠ **Do NOT add a `persisted_event(...)` publication to this loop** (added 2026-07-28).
+Since this task was written, `#59` landed and both of this loop's nearest neighbours in
+the same reply loop — the stall nudge (**:4034**) and the give-up wrapup (**:4076**) —
+now publish one:
+
+```rust
+                        if let Some(published) = persisted_event(std::slice::from_ref(&nudge)) {
+                            yield published;
+                        }
+```
+
+The symmetry is deliberate and this loop is deliberately *not* symmetric with it. Those
+two rows are `.with_visibility(false, true)` — persisted but never streamed as a
+`Message`, so `MessagesPersisted` is the only way a client can account for them. The
+soft-interrupt row **is** streamed, one line later, and
+`add_message_adopting_uid` mutates `m` in place so the yielded `AgentEvent::Message(m)`
+already carries the stored id. Adding a batch here would be harmless only if it were
+ordered *after* the `Message` — the invariant at `agent.rs:280-283` says **no
+`MessagesPersisted` may precede a `Message` frame carrying one of the ids it
+publishes** — and it would be redundant either way. The rewrite above keeps
+`conversation.push` → `yield AgentEvent::Message` last, which is the order that is
+already correct.
+
+Three integration tests enforce this at the turn level and Step 4 runs them.
 
 - [ ] **Step 4: Run tests**
 
-Run: `cargo test -p biorouter --lib agents::agent`
-Expected: PASS (new test plus all existing agent tests).
+```bash
+cargo test -p biorouter --lib agents::agent
+cargo test -p biorouter --test soft_interrupt_agent_loop
+cargo test -p biorouter --test conversation_writeback_freshness
+```
+
+Expected: **PASS**.
+
+`--test soft_interrupt_agent_loop` is the behavioural net this task has been missing.
+It is a **real provider-driven turn** — `SteeringProvider` (**`:32`**, its
+`impl Provider` at **`:65`**) calls
+`agent.queue_soft_interrupt(...)` from inside a completion (`:93`), so the drain loop
+this step rewrites actually runs — and it has two tests:
+`steer_landing_at_turn_exit_is_injected_in_the_same_turn` (**:206**) and
+`no_steer_means_no_extra_provider_call` (**:243**). The first asserts the injected text
+reaches the transcript in the *same* turn; that is the closest thing to a unit test the
+loop rewrite can have, and it is far cheaper than waiting for the Phase-3 harness.
+`user_texts` (**:193**) reads message bodies, so **it is also the test that catches an
+over-eager framer**: if Step 3's `match` framed the unstamped human steer, this test's
+expected text would no longer match. That is exactly the regression reconciliation #15
+exists to prevent, and nothing else in Phase 1 can see it.
+
+In the third target, the three ordering tests that sweep the very loop this task
+rewrites:
+
+- `a_slash_command_hands_over_its_messages_before_it_names_them`
+  (`crates/biorouter/tests/conversation_writeback_freshness.rs:2349`)
+- `an_undeliverable_elicitation_answer_is_ordered_the_same_way` (**:2388**)
+- `no_turn_shape_names_a_row_before_it_hands_it_over` (**:2420**) — this one sweeps
+  plain / tools / recovered-error turn shapes, i.e. the shapes containing this loop.
+
+Plus `a_client_that_watched_the_turn_knows_every_stored_message_id` (**:1986**), #59's
+completeness contract: a soft-interrupt row that is persisted but neither streamed nor
+named would fail it. If any of those four goes red, the drain loop's publication order
+is wrong — do not "fix" it by adding a `persisted_event` before the `Message`.
 
 - [ ] **Step 5: Commit**
 
@@ -1256,14 +1897,26 @@ git commit -m "feat(agent): soft-interrupt queue carries provenance (BR-71)"
 
 **Files:**
 - Modify: `crates/biorouter/src/session/session_manager.rs`
-  (anchors at `30d49d9a`: `list_session_summaries` public method :1242-1248 and
-  storage impl :3525-3548, `SessionSummary` :165, `list_sessions_by_types` storage
-  impl near :3500)
+  (anchors **re-verified at `275d735d`, 2026-07-28**: `list_session_summaries` public
+  wrapper **:1403-1409** and storage impl **:4090-4113**, `SessionSummary`
+  **:164-172**, `list_sessions_by_types` storage impl **:4053** (its SELECT list at
+  **:4065**), `list_sessions()` wrapper **:1399-1401** and storage impl **:4085-4088**)
 - Modify: `crates/biorouter-server/src/routes/session.rs`. Two routes at HEAD, and
-  BOTH gain the flag: `GET /sessions` (handler `list_sessions` at :166 — returns full
-  `Session` rows via `list_sessions()`; History's `SessionListView` calls this) and
-  `GET /sessions/sidebar` (handler `list_sidebar_sessions` at :195 — calls
-  `list_session_summaries(limit+1, offset)` at :202).
+  BOTH gain the flag: `GET /sessions` (handler `list_sessions` at **:240** — returns
+  full `Session` rows via `list_sessions()`; History's `SessionListView` calls this)
+  and `GET /sessions/sidebar` (handler `list_sidebar_sessions` at **:269** — calls
+  `list_session_summaries(limit+1, offset)` at **:276**).
+
+⚠ **Two pre-existing citation defects in this task, corrected here** (both were already
+wrong at `67822ea3` — they are plan defects, not drift):
+
+- The signature is **`(&self, limit: u32, offset: u32)`** and always has been. The
+  earlier "at `30d49d9a`" framing read as a verified observation of a four-argument
+  form; there has never been one. The `(…, false, false)` calls below describe the
+  **post-edit** target, which is correct — only the framing was misleading.
+- The sidebar handler was once cited as `crates/biorouter/src/routes/session.rs`.
+  That crate has no `routes/` module at all; it is **`crates/biorouter-server/`**, as
+  the Files list above now says.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1289,7 +1942,7 @@ async fn list_session_summaries_hides_subagents_unless_asked() {
         .await
         .unwrap();
 
-    // `list_session_summaries` INNER JOINs `messages` (session_manager.rs:3534)
+    // `list_session_summaries` INNER JOINs `messages` (session_manager.rs:4101)
     // and `create_session` writes NO message, so a freshly created session is
     // invisible to this query until it has one. The pre-existing paging test
     // uses `seed_session_with_messages` for exactly this reason. Without these
@@ -1351,8 +2004,9 @@ pub struct SessionSummary {
 ```
 
 `list_session_summaries(&self, limit: u32, offset: u32, include_subagents: bool,
-include_empty: bool)` passes both flags through to the storage impl at :3525, which
-selects the two new columns and switches the filter and the join:
+include_empty: bool)` (wrapper **:1403-1409**) passes both flags through to the storage
+impl at **:4090-4113**, which selects the two new columns and switches the filter and
+the join:
 
 ```rust
         let type_filter = if include_subagents {
@@ -1361,7 +2015,7 @@ selects the two new columns and switches the filter and the join:
             "('user', 'scheduled')"
         };
         // The sidebar deliberately hides message-less sessions (an INNER JOIN on
-        // `messages`, :3534) so "Untitled chat" placeholders never appear in
+        // `messages`, :4100) so "Untitled chat" placeholders never appear in
         // History. `workspace_list` (Task 12) needs the opposite: a session
         // `workspace_open` just created has no message yet and must still be
         // listable. `COUNT(m.id)` ignores NULLs, so the LEFT JOIN still yields 0.
@@ -1373,10 +2027,11 @@ selects the two new columns and switches the filter and the join:
 ```
 
 (splice `type_filter` into the existing `WHERE s.session_type IN ('user', 'scheduled')`
-at :3537 and `join` in place of the literal `INNER JOIN messages m ON s.id = m.session_id`
-at :3534 with one `format!`, exactly as the parametrized `list_sessions_by_types` variant
-at :3504 already does). Add `s.parent_session_id, s.session_type` to the SELECT list
-at :3529-3534.
+at **:4101** and `join` in place of the literal
+`INNER JOIN messages m ON s.id = m.session_id` at **:4100** with one `format!`, exactly
+as the parametrized `list_sessions_by_types` variant at **:4059-4061** already does —
+it builds `placeholders` and `format!`s them into the query. Add
+`s.parent_session_id, s.session_type` to the SELECT list at **:4094-4099**.)
 
 **`include_empty` is deliberately NOT a behaviour change for History.** The sidebar
 handler passes `false` and keeps today's exact query; only `workspace_list` passes
@@ -1394,8 +2049,8 @@ pub struct ListSessionsQuery {
 }
 ```
 
-- `GET /sessions` (`list_sessions` at :166): add `Query(query): Query<ListSessionsQuery>`
-  and switch the body from `list_sessions()` to
+- `GET /sessions` (`list_sessions` at **:240**): add
+  `Query(query): Query<ListSessionsQuery>` and switch the body from `list_sessions()` to
 
   ```rust
       let types: &[SessionType] = if query.include_subagents {
@@ -1410,36 +2065,54 @@ pub struct ListSessionsQuery {
           .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
   ```
 
-  (`list_sessions()` is exactly `list_sessions_by_types(&[User, Scheduled])` —
-  session_manager.rs:3520-3523 — so the default path is behavior-identical. `Session`
-  already serializes `session_type`, and Task 1 added `parent_session_id`, so History
-  needs no new response **type**. It does need Task 1 step (h): `list_sessions_by_types`'
-  SELECT (`:3500`) must project `s.parent_session_id`, or every row this route returns
-  carries `parent_session_id: null` and Task 38's grouping is dead on arrival. The
-  row mapper's tolerant `.ok().flatten()` means that failure is silent — verify it
+  (`list_sessions()` is exactly `list_sessions_by_types(&[User, Scheduled])` — the
+  storage impl at **session_manager.rs:4085-4088** is literally that one call — so the
+  default path is behavior-identical. `Session` already serializes `session_type`, and
+  Task 1 added `parent_session_id`, so History needs no new response **type**. It does
+  need Task 1 step (h): `list_sessions_by_types`' SELECT (**:4065**) must project
+  `s.parent_session_id`, or every row this route returns carries
+  `parent_session_id: null` and Task 38's grouping is dead on arrival. The row mapper's
+  tolerant `.ok().flatten()` (**:1973-1976**) means that failure is silent — verify it
   here with `grep -n "s.parent_session_id" crates/biorouter/src/session/session_manager.rs`
   before moving on. Add the `include_subagents` param to the utoipa `params(...)` block.)
-- `GET /sessions/sidebar` (`list_sidebar_sessions` at :195): add the same
-  `include_subagents` field to the existing `SidebarSessionsQuery` (:35) and forward
-  it to `list_session_summaries(limit+1, offset, query.include_subagents, false)` at
-  :202 — `include_empty: false` keeps today's exact sidebar query.
+- `GET /sessions/sidebar` (`list_sidebar_sessions` at **:269**): add the same
+  `include_subagents` field to the existing `SidebarSessionsQuery` (**:39-45**) and
+  forward it to `list_session_summaries(limit+1, offset, query.include_subagents,
+  false)` at **:276** — `include_empty: false` keeps today's exact sidebar query.
+  Note that struct's fields are **private** (`limit`, `offset`, no `pub`) and it derives
+  `ToSchema`, not `IntoParams`; match the existing style rather than the
+  `ListSessionsQuery` sketch above, which is a new type and can be `pub`.
 
 Update every other `list_session_summaries` caller to pass the two new arguments:
 
 ```bash
-grep -rn "list_session_summaries(" crates/
-# At 30d49d9a: the wrapper (:1242-1247) and storage impl (:3525) in
-# session_manager.rs, the sidebar handler (routes/session.rs:202) -> (…, false, false),
-# and ONE test caller, `session_summaries_are_lightweight_and_paginated`
-# (session_manager.rs:5596-5597) -> `(2, 0, false, false)` / `(2, 2, false, false)`.
-# Do NOT `grep -v test` here: that test caller is a compile error if it is missed.
-# Task 12's `workspace_list` becomes the only `include_empty: true` caller.
+grep -rn --include='*.rs' "list_session_summaries(" crates/
 ```
+
+Expected — **six** hits at `275d735d`, and every one of them must be reached:
+
+| Hit | What to do |
+|---|---|
+| `session_manager.rs:1403` | the wrapper — new signature |
+| `session_manager.rs:1408` | its body's forward to storage |
+| `session_manager.rs:4090` | the storage impl — new signature + query |
+| `routes/session.rs:276` | the sidebar handler → `(…, query.include_subagents, false)` |
+| `session_manager.rs:6461` | test `session_summaries_are_lightweight_and_paginated` → `(2, 0, false, false)` |
+| `session_manager.rs:6462` | same test → `(2, 2, false, false)` |
+
+**Do NOT `grep -v test` here** — the last two are compile errors if missed, and they
+are the only callers that would not otherwise announce themselves. Task 12's
+`workspace_list` becomes the only `include_empty: true` caller in the whole tree.
 
 - [ ] **Step 4: Run tests**
 
-Run: `cargo test -p biorouter --lib session::session_manager && cargo check -p biorouter-server`
-Expected: PASS / clean check.
+```bash
+cargo test -p biorouter --lib session::session_manager
+cargo check -p biorouter-server
+```
+
+Expected: PASS / clean check. `session_summaries_are_lightweight_and_paginated` is the
+one that proves the sidebar's default behaviour did not move.
 
 - [ ] **Step 5: Commit**
 
@@ -1456,6 +2129,28 @@ git commit -m "feat(session): opt-in include_subagents on session listing (BR-71
 - Create: `crates/biorouter/src/session_events.rs`
 - Modify: `crates/biorouter/src/lib.rs` (add `pub mod session_events;` beside the other
   top-level modules)
+
+**Anchors re-verified at `275d735d`, 2026-07-28.** This is a new file, so it has few,
+and all three claims it rests on still hold:
+
+- `AgentEvent` is `#[derive(Clone, Debug)]` — now at **`agent.rs:605`** (the plan
+  elsewhere cites `:364`), so the broadcast needs **no new derives**.
+- `TurnErrorScope` has exactly **four** variants — now at
+  **`reply.rs:346-353`** (plan cites `:186-194` / `:187-194`), `#[serde(rename_all =
+  "snake_case")]`, `Provider`/`Session`/`Inference`/`Internal`. The count the
+  `TurnError` doc below asserts is unchanged.
+- `TokenState` is at `crates/biorouter/src/conversation/message.rs:1046`, so the
+  `use crate::conversation::message::TokenState;` below is right and there is still no
+  `providers::base::TokenState` to confuse it with.
+
+⚠ **`SessionBusEvent::Agent(AgentEvent)` now transports EIGHT variants, not seven**
+(added 2026-07-28). `#59` added `MessagesPersisted(Vec<PersistedMessage>)` at
+**`agent.rs:672`**. Nothing in *this* task changes — `Agent(AgentEvent)` is opaque — but
+Task 7's `map_bus_event` matches on it **exhaustively and with no wildcard**, so the
+variant list is a contract this module hands downstream. The module doc in Step 3
+therefore enumerates all eight by name (see reconciliation #22); that list is the thing
+a reader consults when the mapper stops compiling, and it is why the mapper is allowed
+to have no `_` arm.
 
 **Why the shape below and not the design's literal one** (reconciliation #1 and #9): the
 bus is the ONE publisher every turn writes to, and `/reply` is now a consumer (Task 8),
@@ -1562,6 +2257,16 @@ Expected: COMPILE ERROR — items not defined.
 //! (`routes::session_events::map_bus_event`), so every consumer sees
 //! byte-identical frames.
 //!
+//! **The `Agent` variant's payload is a closed set of EIGHT, and downstream
+//! depends on that.** `AgentEvent` (`crate::agents::AgentEvent`,
+//! `agents/agent.rs:605-673`) is `Message`, `McpNotification`, `ModelChange`,
+//! `HistoryReplaced`, `ToolCallPending`, `TokenUsage`, `TurnAborted` and —
+//! since #59 — `MessagesPersisted(Vec<PersistedMessage>)` (`:672`). The
+//! server's `map_bus_event` matches all eight with **no wildcard arm**, so
+//! adding a ninth is a deliberate, compiler-enforced conversation about how it
+//! reaches the wire, rather than a variant that silently vanishes at the
+//! adapter. Do not "simplify" that match, and do not add a `_` here either.
+//!
 //! **Senders are reclaimed, not retained for the life of the process.** A
 //! `tokio::sync::broadcast::Sender` is NOT cheap to hold: `broadcast::channel`
 //! allocates the entire ring up front, before any receiver exists —
@@ -1617,7 +2322,7 @@ pub enum SessionBusEvent {
         code: String,
         /// `"provider" | "session" | "inference" | "internal"` — the wire values
         /// of `biorouter_server::routes::reply::TurnErrorScope`, which has
-        /// exactly those FOUR variants (`reply.rs:187-194`). `provider` is the
+        /// exactly those FOUR variants (`reply.rs:346-353`). `provider` is the
         /// one that matters most: it is what the desktop keys its rate-limit /
         /// retry / compaction recovery off, together with `retryable` and
         /// `provider_kind`.
@@ -1732,8 +2437,9 @@ Add the leak regression to Step 1's tests:
 ```
 
 (`TokenState`'s path is `crate::conversation::message::TokenState` — verified: that is
-its only definition (`message.rs:921`), there is no `providers::base` re-export, and it
-is the path `routes/reply.rs:10` imports as
+its only definition (**`message.rs:1046`** at `275d735d`; the plan's old `:921` predates
+`MessageMetadata`'s growth), there is no `providers::base` re-export, and it
+is the path **`routes/reply.rs:12`** imports as
 `biorouter::conversation::message::{Message, MessageContent, TokenState}`.)
 
 - [ ] **Step 4: Run tests**
@@ -1772,12 +2478,23 @@ untouched, so the hot-path cutover in Task 8 is a single revertible commit.
   registers there too", and a detached turn is exactly such work; `/reply` turns keep
   their existing non-registration behaviour, see Step 3's `register_active_work` flag)
 - Modify: `crates/biorouter-server/src/routes/reply.rs` — **visibility + two new
-  accessors only**: make `get_token_state` (:224), `track_tool_telemetry` (:56),
+  accessors only**: make `get_token_state` (:384), `track_tool_telemetry` (:32),
   `SseResponse`, `MessageEvent`, `TurnErrorScope` `pub(crate)`, and add
-  `TurnErrorScope::wire_value()` / `from_wire_value()` beside the enum (:187-194).
+  `TurnErrorScope::wire_value()` / `from_wire_value()` beside the enum (:346-353).
   **Delete nothing** in this task — in particular the handler's own completion-metrics
-  block (:783-838) and its `AgentEvent` loop stay exactly as they are until Task 8, so
-  reverting Task 8 alone restores a working handler (reconciliation #9's rollback note).
+  block (:972-1019, the two `session_completions` counters at :975 and :1002) and its
+  `AgentEvent` loop stay exactly as they are until Task 8, so reverting Task 8 alone
+  restores a working handler (reconciliation #9's rollback note).
+  **Do not touch `apply_client_writeback` (:177-231) or its call site (:665) in this
+  task or in Task 8** — see `TurnExtras.conversation_so_far` and reconciliation #21.
+
+⚠ **Anchor warning for this task and Tasks 7, 8, 14, 18, 19, 21, 34-36.** Every
+`crates/biorouter/src/agents/agent.rs:NNNN` in this plan was taken when the file was
+6,001 lines; it is now 6,817, and the anchors are stale by roughly **+475 to +500**.
+`reply.rs` grew by ~190 lines at the top (the #51 W5 write-back and the #59 doc blocks),
+so its anchors are stale by roughly **+160 to +190**. Treat every number as a hint and
+re-locate by the named symbol, which is what the ground rules already say — this note
+exists so a *near* miss is not mistaken for a hit.
 
 - [ ] **Step 1: Write the failing tests** (in `turn.rs`'s test module)
 
@@ -1794,12 +2511,12 @@ mod tests {
     ///
     /// 1. `AppState::new()` opens the **REAL user session database** (it goes
     ///    through `AgentManager::instance()` → `SessionManager::instance()`;
-    ///    `routes/session.rs:876` carries the same warning). These tests create
-    ///    rows in the developer's own history. Keep session names unique and
-    ///    never assert on total row counts.
+    ///    `routes/session.rs:1122` and `:1414` carry the same warning). These
+    ///    tests create rows in the developer's own history. Keep session names
+    ///    unique and never assert on total row counts.
     /// 2. The `TempDir` is the session's **working dir**, not a database.
     ///    `create_session`'s first parameter is `working_dir`
-    ///    (`session_manager.rs:1101-1106`). An earlier draft did
+    ///    (`session_manager.rs:1191-1196`). An earlier draft did
     ///    `std::mem::forget(temp)` with the comment "keep the DB alive" — a false
     ///    invariant that would send the next reader looking for a database that
     ///    is not there. The guard is still returned, because deleting the
@@ -1926,6 +2643,65 @@ mod tests {
         }
     }
 
+    /// ⚠ Reconciliation #21: `run_turn` performs NO whole-history rewrite.
+    ///
+    /// The property, not a grep: seed a session with a stored message, then run
+    /// a turn whose `conversation_so_far` **omits** it. The stored row must
+    /// still be there afterwards. Under the pre-amendment plan — which had
+    /// `run_turn` call `SessionManager::replace_conversation` on the client's
+    /// copy — that row is DELETEd and re-INSERTed away, silently, from a
+    /// detached task with no status code to refuse with. That is the #51 W5 bug
+    /// `306552fd` shipped a fix for, and `grep -c replace_conversation turn.rs`
+    /// cannot tell the two implementations apart.
+    ///
+    /// This test does not need a provider: the turn fails fast without one, and
+    /// the destruction (if any) happens before `agent.reply` is ever reached.
+    #[tokio::test]
+    async fn a_seed_conversation_is_never_written_back_over_the_store() {
+        use biorouter::conversation::Conversation;
+
+        let state = crate::state::AppState::new().await.unwrap();
+        let (_workdir, sid) = session(&state, "seed-is-not-a-write").await;
+
+        // One durable row the client's copy will not name.
+        let mut stored = Message::user().with_text("br71-seed-probe");
+        state
+            .session_manager()
+            .add_message_adopting_uid(&sid, &mut stored)
+            .await
+            .unwrap();
+        let probe_id = stored.id.clone().expect("the store stamps an id");
+
+        // A seed that pretends the session is empty.
+        let request = TurnRequest {
+            session_id: sid.clone(),
+            user_message: Message::user().with_text("go"),
+            extras: TurnExtras {
+                conversation_so_far: Some(Conversation::new_unvalidated(Vec::new())),
+                ..TurnExtras::default()
+            },
+        };
+        let cancel = CancellationToken::new();
+        let guard = state
+            .try_begin_turn_idempotent(&sid, cancel.clone(), None)
+            .expect("session is idle");
+        run_turn(state.clone(), request, guard, cancel).await;
+
+        let reread = state.session_manager().get_session(&sid, true).await.unwrap();
+        let ids: Vec<String> = reread
+            .conversation
+            .unwrap_or_default()
+            .messages()
+            .iter()
+            .filter_map(|m| m.id.clone())
+            .collect();
+        assert!(
+            ids.contains(&probe_id),
+            "run_turn destroyed a stored message it was merely seeded around; \
+             the seed is not a write-back (ids: {ids:?})"
+        );
+    }
+
     /// Reconciliation #9: the terminal-error CLASSIFIER moved out of `/reply`
     /// with its fidelity intact. This is the test that stops the refactor from
     /// silently collapsing every abort to `(Inference, false, None)` — which
@@ -1974,12 +2750,13 @@ mod tests {
 ```
 
 (`TurnAbortCode` is re-exported at `biorouter::agents::TurnAbortCode`
-(`agents/mod.rs:86`) — the same import `reply.rs:9` already uses; `ProviderErrorKind`
-lives at `biorouter::providers::errors::ProviderErrorKind` (`errors.rs:44`) and carries
-both `is_transient()` and `wire_code()`. `TurnErrorScope` needs
+(**`agents/mod.rs:88`**) — the same import `reply.rs:9-11` already uses, now a
+brace-list also carrying `PersistedMessage`; `ProviderErrorKind` lives at
+`biorouter::providers::errors::ProviderErrorKind` (`errors.rs:44`, **exact**) and
+carries both `is_transient()` and `wire_code()`. `TurnErrorScope` needs
 `#[derive(PartialEq, Eq)]` added for these `assert_eq!`s — it derives only
-`Debug, Serialize` today (`reply.rs:186-194`); add the two, they are free on a
-fieldless enum.)
+`Debug, Serialize, utoipa::ToSchema` today (**`reply.rs:346-353`**, declaration at
+`:347`); add the two, they are free on a fieldless enum.)
 
 - [ ] **Step 2: Run to verify failure**
 
@@ -2050,18 +2827,39 @@ pub struct TurnExtras {
     /// BR-62 turn idempotency key (the client's `turn_id`). `None` for injected
     /// turns: two keyless turns are two turns, which is correct there.
     pub idempotency_key: Option<String>,
-    /// Client-supplied conversation prefix (`/reply`'s `conversation_so_far`).
+    /// The conversation this turn should START from — **already stored**.
     ///
-    /// `Option<Vec<Message>>`, because that is the type of the field it carries
-    /// (`ChatRequest.conversation_so_far`, `reply.rs:78-80`) — not
-    /// `Option<Conversation>`. And it is not just an accumulator seed: HEAD
-    /// wraps it in `Conversation::new_unvalidated` and calls
-    /// `SessionManager::replace_conversation` (`reply.rs:571-589`), a real
-    /// storage write. That write MOVES into `run_turn` below rather than
-    /// disappearing. It is dormant today — no desktop caller sends the field —
-    /// which is exactly why it needs to be named here instead of quietly
-    /// dropped.
-    pub conversation_so_far: Option<Vec<Message>>,
+    /// `Option<Conversation>`, NOT `Option<Vec<Message>>`. It is a *seed*, not a
+    /// write to perform, and the type says so: it is the `Ok` value of
+    /// `apply_client_writeback` (`reply.rs:177-231`), i.e. what the store holds
+    /// after `/reply` has already validated and applied the client's copy.
+    /// `None` means "read the session" — every caller except `/reply` passes
+    /// `None`, because none of them has a client prefix.
+    ///
+    /// ⚠ **The whole-history rewrite does NOT move into `run_turn`.** An earlier
+    /// revision of this plan said it did, quoting a `replace_conversation` call
+    /// at `reply.rs:571-591`. That call no longer exists: `306552fd fix(server):
+    /// refuse a stale conversation_so_far instead of storing it` (#51 W5)
+    /// replaced it with `apply_client_writeback`, a **pre-spawn precondition
+    /// with an HTTP status code** — it reads a paired snapshot
+    /// (`snapshot_for_rewrite`, `reply.rs:186`), computes
+    /// `unacknowledged_stored_ids` (`:126-135`), returns 409
+    /// `conversation_out_of_date` if the client's copy would delete a stored row
+    /// (`:198-204`), and otherwise writes through
+    /// `replace_conversation_preserving_tail` (`:213-215`), never through
+    /// `replace_conversation`.
+    ///
+    /// A detached runner structurally cannot express that: it has no status code
+    /// to refuse with, and `SessionManager::replace_conversation` is now
+    /// documented as **the NAMED EXCEPTION** (`session_manager.rs:1312-1324`),
+    /// correct only for a caller that owns the whole history — `/clear` and the
+    /// import/copy/diverge paths, its five production callers
+    /// (`execute_commands.rs:221`, `biorouter-cli/src/session/mod.rs:895`,
+    /// `session_manager.rs:4703`, `:4736`, `:4838`). Calling it here, on a LIVE
+    /// session, from a detached task, reintroduces exactly the tail-destroying
+    /// bug #51 shipped a fix for. So the write stays in `/reply` (Task 8), above
+    /// the range Task 8 replaces, and hands its result here as a seed.
+    pub conversation_so_far: Option<Conversation>,
     /// `Option<ReasoningEffort>`, NOT `Option<String>`. It is copied verbatim
     /// from `ChatRequest.reasoning_effort` (`reply.rs:88`) into
     /// `SessionConfig.reasoning_effort` (`agents/types.rs:147`), and both are
@@ -2137,6 +2935,33 @@ pub async fn start_turn(
 /// The turn body. Split out of `start_turn` so Task 8 can also call it with a
 /// guard it acquired itself (`/reply` needs the guard's conflict detail before
 /// it decides whether to open an SSE response at all).
+///
+/// # Stated non-goals — both are load-bearing, and both are one-line mistakes
+///
+/// 1. **This function performs NO whole-history rewrite.** It never calls
+///    `SessionManager::replace_conversation` (the NAMED EXCEPTION,
+///    `session_manager.rs:1312-1324`) and never calls
+///    `replace_conversation_preserving_tail` either. The only rewrite that
+///    happens during a turn is the agent's own guarded compaction, inside
+///    `Agent::reply` (`agent.rs:3606-3613`, `:2086`, `:2188`), which pairs its
+///    revision and its view through `RewriteBasis` (`agent.rs:332-357`) — a
+///    private struct with private fields and no field-wise constructor,
+///    precisely so a conversation cannot be carried across an async boundary,
+///    detached from its revision, and then used as an authoritative rewrite.
+///    `extras.conversation_so_far` is a *seed* and must stay one; making it a
+///    write here is that forbidden split, one layer up.
+/// 2. **Events are published to the bus in stream order, never reordered,
+///    filtered or coalesced.** #59's ordering invariant — *no
+///    `MessagesPersisted` may precede a `Message` frame carrying one of the ids
+///    it publishes* (`agent.rs:280-283`; `docs/agent-loop/conversation-writeback-freshness.md:394-396`)
+///    — is a producer-side property that the agent already satisfies
+///    (`messages_then_persisted`, `agent.rs:288-296`). Re-ordering here would
+///    make it false **at the bus**, where no consumer-side flush can repair it,
+///    and the failure is silent: a client that reads an id and then loses the
+///    stream claims every stored row while holding none of the bodies, and the
+///    `expectedMessageIds` guard truncates rows the user can still see.
+///    Coalescing is a per-client concern and lives in `/reply`'s subscription
+///    (Task 8), not here.
 pub async fn run_turn(
     state: Arc<AppState>,
     request: TurnRequest,
@@ -2261,26 +3086,18 @@ pub async fn run_turn(
         reasoning_effort: extras.reasoning_effort,
     };
 
-    // Verbatim from `reply.rs:571-591`, including the storage write and the
-    // trailing push. Dropping either is a silent behaviour change:
-    // `replace_conversation` is the only honouring of a client-supplied prefix,
-    // and without the push `emit_completion_metrics`' fallback `message_count`
-    // is off by one and `track_tool_telemetry`'s lookup base differs by a
-    // message.
-    let mut all_messages = match extras.conversation_so_far {
-        Some(history) => {
-            let conv = Conversation::new_unvalidated(history);
-            if let Err(e) = state
-                .session_manager()
-                .replace_conversation(&session_id, &conv)
-                .await
-            {
-                tracing::warn!("Failed to replace session conversation for {session_id}: {e}");
-            }
-            conv
-        }
-        None => session.conversation.clone().unwrap_or_default(),
-    };
+    // Seed the accumulator. NO STORAGE WRITE HAPPENS HERE — see the stated
+    // non-goal below, and `TurnExtras.conversation_so_far`'s doc.
+    //
+    // `Some(_)` is the conversation `/reply` already validated and stored via
+    // `apply_client_writeback` before spawning this task; `None` is every other
+    // caller, which starts from the session's own history. The trailing push is
+    // load-bearing and must not be dropped: without it
+    // `emit_completion_metrics`' fallback `message_count` is off by one and
+    // `track_tool_telemetry`'s lookup base differs by a message.
+    let mut all_messages = extras
+        .conversation_so_far
+        .unwrap_or_else(|| session.conversation.clone().unwrap_or_default());
     all_messages.push(user_message.clone());
 
     let mut stream = match agent
@@ -2410,7 +3227,7 @@ pub async fn run_turn(
 }
 
 /// The terminal-error classifier, moved out of `/reply`'s event loop
-/// (`reply.rs:703-721`) so the ONE runner still produces the full envelope.
+/// (`reply.rs:883-901` at `275d735d`) so the ONE runner still produces the full envelope.
 /// Pure, so it is unit-testable without a provider (see this module's tests).
 pub(crate) fn classify_abort(
     code: &biorouter::agents::TurnAbortCode,
@@ -2431,7 +3248,7 @@ pub(crate) fn classify_abort(
 }
 
 /// The session-completion telemetry, byte-for-byte the block at
-/// `reply.rs:783-838` with one substitution: the three literal
+/// `reply.rs:972-1019` at `275d735d` with one substitution: the three literal
 /// `session_type = "app"` fields become `session_type = session_type_label`, so
 /// an injected turn is not counted as an app session.
 async fn emit_completion_metrics(
@@ -2493,7 +3310,7 @@ async fn emit_completion_metrics(
 ```
 
 [DERIVED COPY, NOT A MOVE — deliberate] `emit_completion_metrics` above is written
-into `turn.rs` in **this** task while `reply.rs:783-838` keeps its own copy. The two
+into `turn.rs` in **this** task while `reply.rs:972-1019` keeps its own copy. The two
 coexist for exactly two commits: Task 8 is the commit that deletes `reply.rs`'s block,
 and that is what makes Task 8's `git revert` restore a handler with every function it
 calls (reconciliation #9's rollback note). Verify in Task 8 with
@@ -2501,7 +3318,7 @@ calls (reconciliation #9's rollback note). Verify in Task 8 with
 
 Add `TurnErrorScope::wire_value()` and its inverse beside the enum in `reply.rs`. Both
 are needed here (the runner serializes) and in Task 7 (the observer deserializes), and
-both must cover **all four** variants — `reply.rs:187-194` is
+both must cover **all four** variants — `reply.rs:346-353` is
 `Provider | Session | Inference | Internal`, and a three-arm match neither compiles nor
 carries provider errors:
 
@@ -2532,8 +3349,10 @@ impl TurnErrorScope {
 }
 ```
 
-and add `PartialEq, Eq` to the enum's derives (`reply.rs:186`) — free on a fieldless
-enum, and required by Task 6's classifier test and Task 7's round-trip test.
+and add `PartialEq, Eq` to the enum's derives (`reply.rs:347`, the
+`#[derive(Debug, Serialize, utoipa::ToSchema)]` above `pub enum TurnErrorScope`) — free
+on a fieldless enum, and required by Task 6's classifier test and Task 7's round-trip
+test.
 
 `ActiveWorkKind::DetachedTurn` is a **4**-line addition in
 `crates/biorouter-mcp/src/active_work.rs`, not three — the enum has TWO exhaustive
@@ -2593,8 +3412,26 @@ does need adding is `async-trait`, in Task 9; see there.)
 - [ ] **Step 5: Run tests**
 
 Run: `cargo test -p biorouter-server --lib workspace::turn state::tests::turn_guard_exposes_its_turn_id`
-Expected: `test result: ok. 5 passed` (three lifecycle tests, the abort classifier, and
-the `TurnGuard::turn_id` accessor).
+Expected: `test result: ok. 6 passed` (three lifecycle tests, the seed-is-not-a-write
+test, the abort classifier, and the `TurnGuard::turn_id` accessor).
+
+Then the two **integration** targets that hold the #51 and #59 invariants this task can
+break. Neither is a `--lib` test, so neither is reached by the command above, and until
+this amendment neither was run by any Phase-1 step:
+
+```bash
+cargo test -p biorouter --test conversation_writeback_freshness
+cargo test -p biorouter --test conversation_writeback_stress
+```
+
+Expected: all green, and specifically
+`a_slash_command_hands_over_its_messages_before_it_names_them` (`:2349`),
+`no_turn_shape_names_a_row_before_it_hands_it_over` (`:2420`),
+`an_undeliverable_elicitation_answer_is_ordered_the_same_way` (`:2388`) and
+`a_client_that_watched_the_turn_knows_every_stored_message_id` (`:1986`). They are the
+only nets for the #59 ordering invariant and its completeness contract; a runner that
+reorders, filters or coalesces bus publications breaks them and nothing in
+`--lib routes::reply` notices.
 
 - [ ] **Step 6: Commit**
 
@@ -2657,6 +3494,44 @@ mod tests {
         assert!(serde_json::to_string(&fin).unwrap().contains("\"type\":\"Finish\""));
     }
 
+    /// Reconciliation #22 / #59: `MessagesPersisted` reaches the wire through
+    /// the mapper, and it maps to a frame — NOT to `None`.
+    ///
+    /// This is the one arm whose *plausible wrong answer compiles*. Dropping it
+    /// (or reaching for a `_ => None` wildcard to silence `E0004`) is invisible
+    /// to every other test in this plan: the desktop store deliberately does not
+    /// consume the frame yet (`chatStreamStore.tsx:313`, `:1335`, pinned by
+    /// `chatStreamStore.test.ts:807`/`:888`), and `reply.rs`'s own
+    /// `persisted_message_ids_reach_the_wire_with_their_visibility` (`:1212`)
+    /// tests the *enum's serialization*, not the handler — so it stays green
+    /// while no handler emits the frame at all. After Task 8 that silence means
+    /// no `/reply` client ever learns a stored id again, `expectedMessageIds`
+    /// becomes unsatisfiable, and `POST /sessions/{id}/edit_message` answers 409
+    /// on sessions nobody touched: exactly the regression `0312dff4` +
+    /// `936f5a33` were written to close.
+    #[test]
+    fn a_persisted_batch_maps_to_a_wire_frame_and_never_to_none() {
+        use biorouter::agents::PersistedMessage;
+        let mut token_state = Default::default();
+
+        let mapped = map_bus_event(
+            SessionBusEvent::Agent(AgentEvent::MessagesPersisted(vec![
+                PersistedMessage { id: "m-1".into(), user_visible: true },
+                PersistedMessage { id: "m-2".into(), user_visible: false },
+            ])),
+            &mut token_state,
+        )
+        .expect("MessagesPersisted maps to a frame, not to None");
+
+        let json = serde_json::to_value(&mapped).unwrap();
+        assert_eq!(json["type"], "MessagesPersisted");
+        assert_eq!(json["messages"][0]["id"], "m-1");
+        // `userVisible` is camelCase on the wire and BOTH values survive: a
+        // client must be able to NAME a hidden row without drawing it.
+        assert_eq!(json["messages"][0]["userVisible"], true);
+        assert_eq!(json["messages"][1]["userVisible"], false);
+    }
+
     /// Reconciliation #9: every `TurnErrorScope` variant survives the string
     /// round trip through the bus, and an unknown one degrades instead of
     /// panicking. All FOUR variants — `Provider` is the one the desktop's
@@ -2703,6 +3578,14 @@ Expected: COMPILE ERROR — module/function not found.
 //! callers: this route and `/reply` itself. That is what makes "an observer
 //! sees exactly what the client sees" structural rather than a property two
 //! hand-written loops have to keep agreeing on.
+//!
+//! **The inner `match ev` is EXHAUSTIVE and must stay that way — never add a
+//! `_ => None` arm.** `AgentEvent` has eight variants today
+//! (`agent.rs:605-673`); an exhaustive match is what makes the NINTH fail the
+//! build instead of silently vanishing from every wire. The repo makes the same
+//! choice, for the same reason, at `MessageContent::is_pin_eligible`
+//! (`message.rs:422-454`). If a future variant genuinely has no wire form, give
+//! it a named arm returning `None` with the reason written next to it.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -2778,6 +3661,28 @@ pub(crate) fn map_bus_event(
                 name: p.name,
                 partial_args: p.partial_args,
             }),
+            // Reconciliation #22 / #59: the accounting frame naming the ids the
+            // turn's rows were actually stored under.
+            //
+            // A pass-through — `MessageEvent` already has
+            // the identically-shaped variant (`reply.rs:341-343`) carrying the
+            // same `Vec<PersistedMessage>` — but it is NOT optional, and it is
+            // NOT `None`. Without it a client that watches a whole turn ends it
+            // knowing none of the ids the store holds, so `expectedMessageIds`
+            // on `POST /sessions/{id}/edit_message` is unsatisfiable and the
+            // in-place edit it guards answers 409 on an untouched session.
+            //
+            // ORDERING (agent.rs:280-283, and `messages_then_persisted` at
+            // `agent.rs:288`): no `MessagesPersisted` may precede a `Message`
+            // frame carrying one of the ids it publishes. This mapper preserves
+            // whatever order it is fed — it is the CONSUMERS that must flush
+            // before forwarding this frame (Task 7's route sends immediately, so
+            // it has nothing buffered; Task 8's `/reply` loop holds a
+            // `DeltaCoalescer` and flushes first — see its `!matches!(…
+            // TokenUsage)` guard, which is load-bearing for exactly this).
+            AgentEvent::MessagesPersisted(messages) => {
+                Some(MessageEvent::MessagesPersisted { messages })
+            }
             // FALLBACK ONLY. The turn runner never publishes a raw
             // `TurnAborted` — it classifies it and publishes `TurnError`
             // instead, precisely so no consumer renders two terminal Error
@@ -2906,21 +3811,32 @@ pub fn routes(state: Arc<AppState>) -> Router {
 }
 ```
 
-Notes for the implementer, all verified against the tree:
+Notes for the implementer, all verified against the tree at `275d735d`:
 
+- **`AgentEvent` has EIGHT variants, not seven** (`agent.rs:605-673`):
+  `Message`, `McpNotification`, `ModelChange`, `HistoryReplaced`, `ToolCallPending`,
+  `TokenUsage`, `TurnAborted`, and `MessagesPersisted(Vec<PersistedMessage>)` at
+  **`agent.rs:672`** (added by #59 after this plan was first written). All eight have
+  arms above. A seven-arm match is `E0004`, and the repair reflex — `_ => None` —
+  compiles and is silently wrong; see the arm's comment and
+  `a_persisted_batch_maps_to_a_wire_frame_and_never_to_none` above.
+- `MessageEvent::MessagesPersisted { messages: Vec<PersistedMessage> }` already exists
+  at `reply.rs:341-343`, so the mapping is a total move with no conversion.
+  `PersistedMessage` is re-exported as `biorouter::agents::PersistedMessage`
+  (`agents/mod.rs:76`) and both its fields are public (`agent.rs:208-236`), so the test
+  can build one directly.
 - `SseResponse::from_rx(mpsc::Receiver<String>)` is the public raw-receiver constructor
-  (`reply.rs:106-113`). `SseResponse::new` takes a `ReceiverStream` and is private,
+  (`reply.rs:245`). `SseResponse::new` takes a `ReceiverStream` and is private,
   which is fine — Task 8 is in-module and keeps using it.
 - `TokenState`'s path is `biorouter::conversation::message::TokenState`
-  (`message.rs:921`; imported that way at `reply.rs:10`). There is no
-  `providers::base::TokenState`.
+  (imported that way at `reply.rs:10`). There is no `providers::base::TokenState`.
 - Axum path syntax: match the existing routes (`/sessions/{session_id}` style is used
   in utoipa annotations; the axum `.route()` string must match the other routes in
   `session.rs` — copy their brace/colon convention exactly).
 - `AgentEvent::TurnAborted`'s `code.wire_code()` — same accessor the pre-refactor reply
-  loop calls at `reply.rs:702`.
+  loop calls at `reply.rs:882`.
 - `TurnErrorScope::wire_value()` / `from_wire_value()` were both added in Task 6, over
-  **all four** variants (`Provider | Session | Inference | Internal`, `reply.rs:187-194`).
+  **all four** variants (`Provider | Session | Inference | Internal`, `reply.rs:346-353`).
   The round-trip test above covers every one plus the unknown-string degradation; a
   three-variant version does not compile and silently mismaps provider errors.
 
@@ -2931,7 +3847,8 @@ In `routes/mod.rs` add `.merge(session_events::routes(state.clone()))` and
 
 In the same file's test module. **Same caveat as Task 6's helper, and it applies to
 every `AppState::new()` test in this plan (Tasks 7, 8, 9, 10):** `AppState::new()`
-opens the REAL user session database (`routes/session.rs:876` says so in the tree), so
+opens the REAL user session database (`routes/session.rs:1122` and `:1414` say so in the
+tree), so
 these tests write rows into the developer's own history — keep names unique, never
 assert on row counts. The `TempDir` here is the session's working dir, nothing more.
 
@@ -2980,7 +3897,7 @@ assert on row counts. The `TempDir` here is the session's working dir, nothing m
     /// Read chunks until both expected markers have arrived, then stop.
     ///
     /// `axum::body::to_bytes` — which every other body-reading test in this
-    /// crate uses (`routes/session.rs:795`, `routes/reply.rs:1314`) — CANNOT be
+    /// crate uses (`routes/session.rs:1062`, `routes/reply.rs:1415`) — CANNOT be
     /// used here: this body is an observer stream that never ends, so
     /// `to_bytes` would hang until the test's 5 s timeout every time.
     ///
@@ -3028,8 +3945,9 @@ assert on row counts. The `TempDir` here is the session's working dir, nothing m
 - [ ] **Step 5: Run tests**
 
 Run: `cargo test -p biorouter-server --lib routes::session_events`
-Expected: `test result: ok. 4 passed` (the mapping test, the scope round-trip, the
-snapshot-then-live route test, and the 404 test).
+Expected: `test result: ok. 5 passed` (the mapping test, the `MessagesPersisted`
+never-`None` test, the scope round-trip, the snapshot-then-live route test, and the
+404 test).
 
 - [ ] **Step 6: Regenerate OpenAPI**
 
@@ -3057,20 +3975,45 @@ belongs to *this HTTP request* and becomes a bus subscriber like any observer, w
 what makes "the request that starts a turn is the only party that can see it" — the
 asymmetry design §4.2 names — structurally impossible to reintroduce.
 
+**Depends on Task 7 — binding, not conventional.** The SSE loop below calls
+`crate::routes::session_events::map_bus_event` and `bus_lag_resync_frame`, both created
+in Task 7. See the fifth non-negotiable ordering in
+[Execution options](#execution-options).
+
 **What moves out of `reply.rs`** (into Task 6's runner — every item is *deleted here* in
 this commit, having been *written there* in Task 6): `get_agent`, the session read,
-`SessionConfig` construction, the `conversation_so_far` → `replace_conversation`
-storage write, the `all_messages.push(user_message)` seed, `agent.reply(...)`, the
-`AgentEvent` consumption, tool telemetry, `all_messages` accumulation, the
-`TurnAbortCode` → `(scope, retryable, provider_kind)` classification, the session
-rename, the session-completion metrics block (`:783-838`), and the authoritative
-end-of-turn token read.
+`SessionConfig` construction, the `all_messages.push(user_message)` seed,
+`agent.reply(...)`, the `AgentEvent` consumption, tool telemetry, `all_messages`
+accumulation, the `TurnAbortCode` → `(scope, retryable, provider_kind)` classification,
+the session rename, the session-completion metrics block (`:972-1019`), and the
+authoritative end-of-turn token read.
 
 **What stays in `reply.rs`**: the turn lock acquisition *with the client's
-idempotency key* and its 409 conflict body; the `mpsc` SSE channel and `SseResponse`;
-the `DeltaCoalescer` (`BIOROUTER_SSE_COALESCE_MS`, BR-53a — a per-client batching
-concern, not a turn concern); the 500 ms `Ping` heartbeat; the `workflow_name` /
-`session_starts` telemetry at request entry; and the JoinError supervisor envelope.
+idempotency key* and its 409 conflict body; **`apply_client_writeback` and its own
+409** (see below); the `mpsc` SSE channel and `SseResponse`; the `DeltaCoalescer`
+(`BIOROUTER_SSE_COALESCE_MS`, BR-53a — a per-client batching concern, not a turn
+concern); the 500 ms `Ping` heartbeat; the `workflow_name` / `session_starts` telemetry
+at request entry; and the JoinError supervisor envelope.
+
+⚠ **The client write-back does NOT move (reconciliation #21).** An earlier revision of
+this task listed *"the `conversation_so_far` → `replace_conversation` storage write"*
+among the things that move into the runner. That write no longer exists. `306552fd`
+(#51 W5) replaced it with `apply_client_writeback` (`reply.rs:177-231`, called at
+`:665`), a **pre-spawn precondition with an HTTP status code** — the comment at
+`:659-662` says the placement is deliberate: *"it can now be REFUSED — once the SSE
+response has been returned there is no status code left to say so with."* Moving it into
+a detached `tokio::spawn` would (a) destroy concurrent appends, because
+`replace_conversation` is the NAMED EXCEPTION and the detached form cannot use
+`replace_conversation_preserving_tail`'s basis, (b) leave the refusal with nowhere to
+go, and (c) orphan `WritebackConflict` (`:110-117`), `unacknowledged_stored_ids`
+(`:126-135`), `writeback_conflict_response` (`:141-155`), the 409 in the utoipa block
+(`:571-574`), and **`mod writeback_tests` (`:1243`ff — six tests)**.
+
+The write-back sits at `reply.rs:659-680`, which is **above** the range this task
+replaces (`:681` onward). So the amendment is small and entirely mechanical: leave it
+alone, and pass its `Ok(Conversation)` into `TurnExtras.conversation_so_far` as an
+already-stored seed. Those six `writeback_tests` failing is the loudest possible signal
+that this paragraph was skipped.
 
 **Rollback note (put this in the PR body).** `git revert <this commit>` restores the
 pre-refactor handler byte-for-byte and leaves Tasks 5-7 intact: the bus, the runner and
@@ -3082,6 +4025,11 @@ its own abort classifier right up until this commit deletes them, so the reverte
 handler has every function it calls and needs no shim. Nothing downstream of this task
 depends on `/reply` being a subscriber except the "one loop" invariant itself.
 
+The rollback is *stronger* under the 2026-07-28 amendment than it was before it: the
+#51 W5 write-back never leaves the file, so the revert has nothing to restore there —
+it is not relying on "the deletion and the restoration are in the same commit" for the
+handler's most safety-critical block. Say which in the PR body.
+
 **The revert window closes at Task 35.** That task adds the `user_direct` stamp to
 `workspace::turn::run_turn` — the code this commit moved there — so from Task 35 onward
 a bare `git revert <this commit>` conflicts, and reverting it *cleanly* would silently
@@ -3089,19 +4037,118 @@ drop the stamp and leave `human_intervened` permanently false. Within Phase 1 th
 rollback is exactly as described; after Phase 3 begins, revert Task 35 first.
 
 **Files:**
-- Modify: `crates/biorouter-server/src/routes/reply.rs` (handler at :415; task at :507;
-  event loop :625-745; `Finish` emission :848; supervisor :863)
+- Modify: `crates/biorouter-server/src/routes/reply.rs` (handler `pub async fn reply` at
+  :579; the client write-back at :659-680, **untouched**; `let (tx, rx) =
+  mpsc::channel(100);` at :681; the spawned turn task at :692-1041; its event loop
+  :796-947; the `Finish` emission :1026-1040; the supervisor :1043-1059; the handler's
+  last line `SseResponse::new(stream).into_response()` at :1060)
 - Modify: `crates/biorouter-server/src/workspace/turn.rs` (no new code — `run_turn` is
   called with the guard `/reply` acquired)
+
+Other `reply.rs` anchors this task touches, re-verified at `275d735d`:
+`DeltaCoalescer::new` :468 · `drain()` :536 · `flush_coalesced` :543 ·
+`code.wire_code()` :882 · the abort classifier being moved :883-901 ·
+the completion-metrics block :972-1019 · the existing coalescer tests
+(`mod coalesce_tests`) :1429ff. `state.rs:65-79` (`TurnGuard::drop` does **not** trip
+the cancellation token — load-bearing for the supervisor below) is still exact:
+`state.rs` has zero commits since the plan's anchor.
 
 - [ ] **Step 1: Write the failing tests** (in `reply.rs`'s test module — it exists,
 `error_events_preserve_machine_readable_metadata` is at the bottom)
 
-Eight tests, each pinning one property the refactor must not lose. The four marked
+Nine tests, each pinning one property the refactor must not lose. The four marked
 **[F]** were added after the adversarial review found the original four could all pass
-while the hot path was broken.
+while the hot path was broken; the ninth (**[#59]**) was added by the 2026-07-28 drift
+reconciliation, because nothing in the original matrix could see a `/reply` that had
+stopped emitting `MessagesPersisted`.
 
 ```rust
+    /// **[#59]** The accounting frame still reaches the WIRE, through the real
+    /// handler, after the refactor.
+    ///
+    /// This is the only test in this plan that can catch the failure mode the
+    /// 7 → 8 ordering exists to prevent: `map_bus_event` repaired with
+    /// `_ => None`, or a bus loop that filters the frame out. Everything else
+    /// stays green — `reply.rs`'s own
+    /// `persisted_message_ids_reach_the_wire_with_their_visibility` (`:1212`)
+    /// tests the enum, not the handler, and the desktop store deliberately does
+    /// not consume the frame yet. The consequence of missing it is a 409 on
+    /// `POST /sessions/{id}/edit_message` for every session, in the shipped app.
+    ///
+    /// It publishes onto the bus directly rather than driving a real turn: a
+    /// provider-less turn persists nothing, so the frame has to be injected to
+    /// be observed. That is exactly the right scope here — the property under
+    /// test is `bus → wire`, which is `/reply`'s half; the agent's half
+    /// (`persist → bus`) is held by
+    /// `conversation_writeback_freshness::a_client_that_watched_the_turn_knows_every_stored_message_id`.
+    #[tokio::test]
+    async fn a_persisted_batch_on_the_bus_reaches_the_reply_client() {
+        use biorouter::agents::{AgentEvent, PersistedMessage};
+        use biorouter::session_events::{self, SessionBusEvent};
+        use tower::ServiceExt;
+
+        let state = AppState::new().await.unwrap();
+        let temp = tempfile::TempDir::new().unwrap();
+        let session = state
+            .session_manager()
+            .create_session(
+                temp.path().to_path_buf(),
+                "reply-persisted-frame".to_string(),
+                biorouter::session::session_manager::SessionType::User,
+            )
+            .await
+            .unwrap();
+
+        // A PUMP, not a single publish, and that is not belt-and-braces.
+        // `broadcast::Receiver` only sees sends made after it was created, and
+        // the handler subscribes inside itself — so a one-shot publish before
+        // the request is guaranteed to be missed, and one after it races the
+        // provider-less turn's fast Error (which breaks the SSE loop and closes
+        // the body). Publishing continuously for the request's whole life makes
+        // the test deterministic in the only direction that matters: at least
+        // one publish lands strictly between "subscribed" and "terminal".
+        let sid = session.id.clone();
+        let pump = tokio::spawn(async move {
+            for _ in 0..400 {
+                session_events::publish(
+                    &sid,
+                    SessionBusEvent::Agent(AgentEvent::MessagesPersisted(vec![
+                        PersistedMessage { id: "probe-1".into(), user_visible: true },
+                    ])),
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        });
+
+        let body = serde_json::json!({
+            "user_message": serde_json::to_value(
+                biorouter::conversation::message::Message::user().with_text("hi")
+            ).unwrap(),
+            "session_id": session.id,
+        });
+        let response = routes(state.clone())
+            .oneshot(
+                axum::http::Request::post("/reply")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        pump.abort();
+
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(
+            text.contains("\"type\":\"MessagesPersisted\""),
+            "the #59 accounting frame never reached the wire. If `map_bus_event` \
+             was repaired with `_ => None`, this is that. Body: {text}"
+        );
+        assert!(text.contains("probe-1"), "…and it carries the ids: {text}");
+    }
+
     /// The wire contract: a turn's frames reach the /reply client exactly as
     /// before, and a concurrent observer sees the same ones.
     #[tokio::test]
@@ -3346,10 +4393,12 @@ while the hot path was broken.
     /// **Driving this through a real turn cannot test it, which is why this test
     /// does not.** A provider-less turn produces exactly ONE frame: `Agent::reply`
     /// reaches `check_if_compaction_needed(self.provider().await?…)`
-    /// (`agent.rs:3007`) and `provider()` is `Err("Provider not set")`
-    /// (`:2017-2022`), so the runner publishes one `TurnError` and returns. And
-    /// `BIOROUTER_SSE_COALESCE_MS` is unset in tests, so
-    /// `DeltaCoalescer::enabled()` is false (`reply.rs:271-277`, `:316-318`) and
+    /// (`agent.rs:3545-3546`) and `provider()` is `Err(anyhow!("Provider not set"))`
+    /// (`agent.rs:2511-2516`, the `None =>` arm at `:2514`), so the runner publishes
+    /// one `TurnError` and returns. And
+    /// `BIOROUTER_SSE_COALESCE_MS` is unset in tests, so `sse_coalesce_window()`
+    /// returns `Duration::ZERO` (`reply.rs:431-437`) and
+    /// `DeltaCoalescer::enabled()` is false (`reply.rs:476-478`) and
     /// the flush placement is never executed. An end-to-end version of this test
     /// compares two one-element vectors derived from the same bus event and
     /// certifies nothing.
@@ -3501,12 +4550,13 @@ while the hot path was broken.
     }
 ```
 
-(Verified APIs: `DeltaCoalescer::new(Duration)` — a plain `Duration`, zero meaning
-disabled (`reply.rs:307-315`); the buffer is taken with `drain() -> Option<Message>`
-(`:376`), which `flush_coalesced` (`:383`) wraps; coalescing keys on `Message.id`, so
-the deltas need `.with_id("a")` exactly as the file's existing coalescer tests do
-(`:1030-1075`). `TokenState` is `biorouter::conversation::message::TokenState`, already
-imported at `reply.rs:10`.)
+(Verified APIs at `275d735d`: `DeltaCoalescer::new(Duration)` — a plain `Duration`, zero
+meaning disabled (`reply.rs:461-468`); the buffer is taken with
+`drain() -> Option<Message>` (`:536`), which `flush_coalesced` (`:543`) wraps;
+coalescing keys on `Message.id`, so the deltas need `.with_id("a")` exactly as the
+file's existing `mod coalesce_tests` do (`:1429`ff). `TokenState` is
+`biorouter::conversation::message::TokenState`, already imported at `reply.rs:12` — note
+`:10` in an earlier revision; the `biorouter::agents::{…}` import now spans `:9-11`.)
 
 - [ ] **Step 2: Run to verify failure**
 
@@ -3514,14 +4564,32 @@ Run: `cargo test -p biorouter-server --lib routes::reply`
 Expected: COMPILE ERROR — `on_bus_lag_action` / `BusLagAction` / `supervise_turn` not
 found; the observer test fails because `/reply` does not publish `TurnStarted` yet.
 
+`a_persisted_batch_on_the_bus_reaches_the_reply_client` fails here for a different and
+more informative reason than the others: it *compiles*, and it fails on the assertion.
+The pre-refactor handler consumes the agent's stream directly (its own
+`AgentEvent::MessagesPersisted` arm is at `reply.rs:842-850`) and is not a bus consumer
+at all, so a frame published onto the bus reaches nothing. After Step 3 it must pass —
+and if it fails *then*, the cause is `map_bus_event` having lost its
+`MessagesPersisted` arm (or gained a `_ => None`), which is the one refactor mistake
+this plan's other eight tests all stay green through.
+
 - [ ] **Step 3: Rewrite the handler**
 
-Replace the body of `reply` from the `let (tx, rx) = mpsc::channel(100);` line (:495)
-through the end of the function with the block below. **Note what the replaced range
-contains:** `:502-505` declare `task_cancel`, `task_tx`, `supervisor_tx` and
-`supervisor_cancel`. The first two die with the turn task; the last two are still used
-by the supervisor and are therefore **re-declared here**. Omitting them is a compile
-error the moment the supervisor is reached.
+Replace the body of `reply` from the `let (tx, rx) = mpsc::channel(100);` line
+(**:681**, not the `:495` an earlier revision cited) through the end of the function with
+the block below.
+
+⚠ **The range starts at :681 precisely so it begins BELOW the client write-back.**
+`reply.rs:659-680` — the `#51 W5` comment, `request.conversation_so_far.take()`, the
+`apply_client_writeback` call, and the `return writeback_conflict_response(&conflict);`
+— stays exactly where it is and is **not** part of the replaced text. Its result is the
+`client_conversation: Option<Conversation>` binding the new `TurnExtras` reads. Starting
+the replacement any higher deletes the #51 W5 refusal.
+
+**Note what the replaced range does contain:** `:684-690` declare `task_cancel`,
+`task_tx`, `supervisor_tx` and `supervisor_cancel`. The first two die with the turn
+task; the last two are still used by the supervisor and are therefore **re-declared
+here**. Omitting them is a compile error the moment the supervisor is reached.
 
 ```rust
     let (tx, rx) = mpsc::channel(100);
@@ -3531,7 +4599,7 @@ error the moment the supervisor is reached.
     // into the gap between "turn started" and "we are listening".
     let mut bus = biorouter::session_events::subscribe(&session_id);
 
-    // Re-declared from the deleted :502-505 block: the supervisor outlives both
+    // Re-declared from the deleted :684-690 block: the supervisor outlives both
     // the turn task and the SSE task, so it needs its own sender and token
     // clones. (`task_cancel` / `task_tx` are gone with the turn task.)
     let supervisor_tx = tx.clone();
@@ -3544,9 +4612,13 @@ error the moment the supervisor is reached.
             // The lock is already held under this key; the runner receives the
             // guard rather than re-acquiring, so the key is informational here.
             idempotency_key: request.turn_id.clone(),
-            // `Option<Vec<Message>>` on both sides — the runner performs the
-            // `replace_conversation` write this handler used to do.
-            conversation_so_far: request.conversation_so_far,
+            // #51 W5: the ALREADY-STORED conversation, produced by
+            // `apply_client_writeback` at :665 — above this replaced range, and
+            // deliberately so: it is a precondition that can answer 409, which a
+            // detached task cannot. `None` when the client sent no copy. The
+            // runner treats this as a seed and performs no storage write of its
+            // own (see `TurnExtras.conversation_so_far`).
+            conversation_so_far: client_conversation,
             reasoning_effort: request.reasoning_effort,
             // An interactive turn is already visible as a turn; only injected
             // turns register in active_work.
@@ -3623,6 +4695,24 @@ error the moment the supervisor is reached.
                             // Anything that is not pure token bookkeeping ends a
                             // coalescing run, so cards appear after the prose
                             // that precedes them.
+                            //
+                            // ⚠ DO NOT narrow this to "flush only on terminal
+                            // frames". It is what carries #59's ordering
+                            // invariant across the coalescer: *no
+                            // `MessagesPersisted` may precede a `Message` frame
+                            // carrying one of the ids it publishes*
+                            // (`agent.rs:280-283`). The coalescer can be holding
+                            // the very delta whose stored row the next
+                            // `MessagesPersisted` names, and the pre-refactor
+                            // handler said exactly this at `reply.rs:843-847`.
+                            // Emitted backwards, a client that reads the id and
+                            // then loses the stream claims every stored row while
+                            // holding none of the bodies, passes the
+                            // `expectedMessageIds` guard on a short transcript,
+                            // and has the server truncate rows still on its
+                            // screen. This guard is the reason it cannot happen,
+                            // and every test in this task stays green if it is
+                            // removed.
                             flush_coalesced(&mut coalescer, &sse_tx, &sse_cancel, &token_state).await;
                         }
                         if let Some(frame) = crate::routes::session_events::map_bus_event(
@@ -3640,6 +4730,25 @@ error the moment the supervisor is reached.
                         // blocks on this consumer, so a stalled renderer can fall
                         // behind. Resync from storage rather than silently
                         // dropping frames.
+                        //
+                        // #59 INTERACTION, stated because it is a real behaviour
+                        // difference a user can hit. On `Lagged` this consumer can
+                        // skip a `Message` frame and still receive the later
+                        // `MessagesPersisted` naming its id — the exact
+                        // "claims every stored row while holding none of the
+                        // bodies" failure `agent.rs:266-279` describes. The resync
+                        // below is what makes that safe, and it is safe for a
+                        // specific reason: `bus_lag_resync_frame` reads
+                        // `get_session(id, true)`, which INCLUDES hidden rows, so
+                        // the client's view is restored complete rather than
+                        // partial. The secondary effect is that the desktop's
+                        // `viewNamesEveryStoredRow` gate clears on any wholesale
+                        // `UpdateConversation` (`936f5a33`), so a client that lags
+                        // once omits `expectedMessageIds` on its next in-place
+                        // edit until it re-reads the session. Omission is the safe
+                        // direction (the guard checks `stored ∖ client`), but it
+                        // is a capability difference between the lag and non-lag
+                        // paths and must not be discovered by a user.
                         tracing::warn!(
                             counter.biorouter.reply_bus_lagged = 1,
                             skipped,
@@ -3749,16 +4858,21 @@ async fn supervise_turn(
 ```
 
 Delete from `reply.rs`, in the same commit: the old spawned turn task's body
-(`get_agent` → the session read → the `conversation_so_far` / `replace_conversation`
-write → `all_messages.push(user_message)` → `agent.reply` → the per-variant `AgentEvent`
-match → the `TurnAbortCode` classification → the rename spawn → the completion-metrics
-block `:783-838` → the final `MessageEvent::Finish`), the now-unused
-`track_tool_telemetry` call sites (the fn itself became `pub(crate)` in Task 6 and is
-called by the runner), and the `session_start` timer (the runner owns turn duration).
+(`get_agent` → the session read → `all_messages.push(user_message)` → `agent.reply` →
+the per-variant `AgentEvent` match → the `TurnAbortCode` classification → the rename
+spawn → the completion-metrics block `:972-1019` → the final `MessageEvent::Finish`),
+the now-unused `track_tool_telemetry` call sites (the fn itself became `pub(crate)` in
+Task 6 and is called by the runner), and the `session_start` timer (the runner owns turn
+duration).
 
-**Verification of the move (run before committing).** Each grep names one thing that
-must have MOVED rather than vanished; the first four are the ones a hurried refactor
-actually loses:
+**Do NOT delete:** `apply_client_writeback` and its call site, `WritebackConflict`,
+`unacknowledged_stored_ids`, `writeback_conflict_response`, the 409 line in the utoipa
+block, or `mod writeback_tests`. They are all above the replaced range.
+
+**Verification of the move (run before committing).** Each check names one thing that
+must have MOVED rather than vanished, or one thing that must NOT have moved. The greps
+that could be satisfied by a *wrong* implementation have been replaced by tests that
+cannot be:
 
 ```bash
 git diff --stat crates/biorouter-server/src/routes/reply.rs
@@ -3767,9 +4881,27 @@ git diff --stat crates/biorouter-server/src/routes/reply.rs
 grep -c "agent.reply(" crates/biorouter-server/src/routes/reply.rs
 # Expected: 0 — the handler no longer drives a turn.
 
-grep -c "replace_conversation" crates/biorouter-server/src/routes/reply.rs
-grep -c "replace_conversation" crates/biorouter-server/src/workspace/turn.rs
-# Expected: 0 and 1 — the client-prefix storage write MOVED, it did not vanish.
+# #51 W5 STAYED. The refusal is a pre-spawn precondition with a status code and
+# cannot be expressed from a detached task.
+grep -c "apply_client_writeback" crates/biorouter-server/src/routes/reply.rs
+# Expected: 8, unchanged from before this task — the `ChatRequest` doc link
+# (:88), the definition (:177), the handler's call (:665), and five calls in
+# `mod writeback_tests` (:1296, :1327, :1365, :1382, :1394). Any drop means the
+# write-back was deleted.
+grep -c "writeback_conflict_response" crates/biorouter-server/src/routes/reply.rs
+# Expected: 3, unchanged — the definition (:141), the handler's 409 return
+# (:674), and the test at :1412.
+
+# …and NOTHING rewrites a whole history from the runner. Note the anchored
+# pattern: an unanchored `replace_conversation` also matches
+# `replace_conversation_preserving_tail`, which is why the previous revision's
+# `# Expected: 0 and 1` was unachievable in reply.rs and wrong in turn.rs.
+grep -cE "\breplace_conversation\(" crates/biorouter-server/src/routes/reply.rs
+grep -cE "\breplace_conversation(_preserving_tail)?\(" crates/biorouter-server/src/workspace/turn.rs
+# Expected: 0 and 0. `turn.rs` performs no whole-history rewrite at all — the
+# only rewrite in a turn is the agent's own guarded compaction, inside
+# `Agent::reply`. A `1` in the second line is the #51 regression this plan was
+# amended to prevent; see reconciliation #21.
 
 grep -c "all_messages.push" crates/biorouter-server/src/workspace/turn.rs
 # Expected: 2 — the user-message seed and the per-Message accumulation. A `1`
@@ -3785,10 +4917,24 @@ grep -c "session_completions" crates/biorouter-server/src/routes/reply.rs
 # Expected: 0 — Task 6's copy is now the only one (reconciliation #9).
 
 grep -rn "AgentEvent::" crates/biorouter-server/src/routes/reply.rs
-# Expected: only the two `AgentEvent::Message` / `AgentEvent::TokenUsage`
-# matches inside the SSE subscription above. Any other variant still being
-# matched here means turn logic was left behind.
+# Expected: exactly THREE hits, down from NINE before this task —
+#   :380  a doc link in `get_token_state`'s comment ([`AgentEvent::TokenUsage`]);
+#         that function stays, so the link stays. NOT a match arm.
+#   two   the `AgentEvent::Message` and `AgentEvent::TokenUsage` arms inside the
+#         SSE subscription above.
+# The other six (HistoryReplaced, MessagesPersisted, ModelChange,
+# McpNotification, ToolCallPending, TurnAborted) move to `map_bus_event` in
+# Task 7. Any of them still matched HERE means turn logic was left behind.
+# (Note: the `use biorouter::agents::{AgentEvent, …}` import at :9-11 does NOT
+# match this pattern — it has no `::` after the type name.)
 ```
+
+**The two greps above are necessary and not sufficient.** Both `replace_conversation`
+checks pass on an implementation that never writes at all *and* on one that writes the
+wrong thing somewhere the pattern misses. The properties themselves are pinned by
+Task 6's `a_seed_conversation_is_never_written_back_over_the_store` and by
+`mod writeback_tests` — run both, and treat a failure there as authoritative over a
+green grep.
 
 - [ ] **Step 4: Run the enlarged test matrix** (this task's gate — all four suites, not
 just the new file)
@@ -3798,9 +4944,21 @@ cargo test -p biorouter-server --lib routes::reply
 cargo test -p biorouter-server --lib routes::session_events workspace::
 cargo test -p biorouter-server --lib          # every server unit test
 cargo test -p biorouter --lib agents::agent   # the agent side of the turn contract
+
+# The two INTEGRATION targets. Neither is a `--lib` test, so none of the four
+# commands above reaches them, and they are the only nets for the two invariants
+# this task is most likely to break: #51's write-back freshness and #59's
+# ordering + completeness.
+cargo test -p biorouter --test conversation_writeback_freshness
+cargo test -p biorouter --test conversation_writeback_stress
 ```
 
-Expected: all green. Frame ORDER is no longer a "pay attention to" — it is asserted by
+Expected: all green — and specifically, inside `routes::reply`, all six tests of
+`mod writeback_tests` (`reply.rs:1243`ff). Those six going red means the amendment in
+"What stays in `reply.rs`" above was ignored and #51 W5 was deleted; treat that as a
+BLOCKED, not as a test to update.
+
+Frame ORDER is no longer a "pay attention to" — it is asserted by
 `coalesced_deltas_flush_before_the_terminal_frame` above, which drives real deltas
 through the real `DeltaCoalescer` with a non-zero window. The bus preserves order per
 session (a single `broadcast::Sender`), so if that test fails the cause is the
@@ -3888,9 +5046,17 @@ must never call `install` — see `set_for_tests` in Step 3 for why.
             _working_dir: std::path::PathBuf,
             _extensions: Option<Vec<String>>,
             _knowledge_bases: Vec<String>,
+            _primary: KbPrimaryChoice,
         ) -> Result<String, String> { Ok("s-new".into()) }
-        fn set_knowledge_bases(&self, _session_id: &str, _kbs: &[String]) -> Result<(), String> { Ok(()) }
-        fn active_knowledge_bases(&self, _session_id: &str) -> Vec<String> { Vec::new() }
+        fn set_knowledge_bases(
+            &self,
+            _session_id: &str,
+            _kbs: &[String],
+            _primary: KbPrimaryChoice,
+        ) -> Result<KbSelectionView, String> { Ok(KbSelectionView::default()) }
+        fn knowledge_selection(&self, _session_id: &str) -> KbSelectionView {
+            KbSelectionView::default()
+        }
         async fn gui_command(
             &self,
             _frame: serde_json::Value,
@@ -3916,6 +5082,14 @@ must never call `install` — see `set_for_tests` in Step 3 for why.
             .begin_turn("s-any", tokio_util::sync::CancellationToken::new())
             .expect("fake lease");
         assert_eq!(lease.turn_id(), "turn-fake");
+
+        // The post-#45 KB pair: a SELECTION, not a bare list, and a mutator that
+        // must be told what to do with the write target. A stand-in that answers
+        // both is what Tasks 16 and 17 reuse.
+        assert_eq!(got.knowledge_selection("s-any"), KbSelectionView::default());
+        assert!(got
+            .set_knowledge_bases("s-any", &["kb-a".to_string()], KbPrimaryChoice::Auto)
+            .is_ok());
 
         // `Some(None)` is "there is no daemon" — the state a two-valued
         // override could not express once the real slot had been written.
@@ -3958,6 +5132,54 @@ pub trait WorkspaceTurnLease: Send {
     fn turn_id(&self) -> &str;
 }
 
+/// A session's knowledge-base set and its write target, as BR-71 needs them.
+///
+/// ⚠ **A deliberately narrower view of `KbSelection`** (`biorouter-mcp`'s
+/// `knowledge::service::KbSelection`, `service.rs:90-101`), not a re-export of
+/// it, and the reason is recorded here so the next reader does not "simplify"
+/// it back:
+///
+/// * `KbSelection` also carries `hidden_kbs`, the subtractive representation
+///   that *produced* `kb_ids`. BR-71 never needs it, and a `workspace_list` row
+///   that serialized it would publish an implementation detail into a model-
+///   facing payload where a model would then try to reason about it.
+/// * `PrimaryUpdate<'a>` is borrowed. A trait whose implementors are behind an
+///   `Arc<dyn …>` and whose callers are MCP tools holding owned `String`s is the
+///   wrong place for a lifetime parameter.
+/// * `biorouter` CAN see those types (`biorouter::knowledge::*` re-exports
+///   `biorouter_mcp::knowledge`, `crates/biorouter/src/knowledge/mod.rs:3`), so
+///   this is a choice, not a constraint. The conversion happens exactly once, in
+///   `ServerWorkspaceServices` (Task 9 Step 4), which is also the only place the
+///   subtractive model is visible.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct KbSelectionView {
+    /// The session's knowledge bases, sorted. Empty headless.
+    pub kb_ids: Vec<String>,
+    /// The write target for KB-less mutating calls. Always a member of `kb_ids`,
+    /// or `None`.
+    pub primary_kb: Option<String>,
+}
+
+/// What a `set_knowledge_bases` call wants to happen to the write target.
+///
+/// The service enforces that a primary is a member of the RESULTING set
+/// (`a9f6101d`), so "assign this list" is not a complete instruction — every
+/// mutator must answer this question. Mirrors `PrimaryUpdate`
+/// (`service.rs:103-120`) minus the borrow, plus `Auto`, which is BR-71's
+/// stated default so no tool has to invent one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KbPrimaryChoice {
+    /// Keep the current primary if it is still a member of the new set;
+    /// otherwise pin the new set's first id; on an empty new set, clear it.
+    /// The default for `workspace_set_tools` and `workspace_open`.
+    Auto,
+    /// Pin this id. Refused by the service if it is not a member of the result.
+    Set(String),
+    /// Explicitly "no primary for this session". KB-less writes then fail here
+    /// even when the machine default names one — this is NOT `Inherit`.
+    Clear,
+}
+
 #[async_trait::async_trait]
 pub trait WorkspaceServices: Send + Sync {
     /// True when at least one GUI window has a live workspace channel.
@@ -3984,19 +5206,40 @@ pub trait WorkspaceServices: Send + Sync {
         -> Result<String, String>;
     /// Create a session the way `POST /agent/start` does (extension names are
     /// resolved against the config registry). Returns the new session id.
+    ///
+    /// `primary` is not optional for the same reason it is not optional on
+    /// `set_knowledge_bases`: a non-empty `knowledge_bases` with no write target
+    /// is a session whose KB-less writes fail, which is not a state any caller
+    /// means to create. `KbPrimaryChoice::Auto` is the answer for every caller
+    /// that has not been told otherwise.
     async fn start_session(
         &self,
         working_dir: std::path::PathBuf,
         extensions: Option<Vec<String>>,
         knowledge_bases: Vec<String>,
+        primary: KbPrimaryChoice,
     ) -> Result<String, String>;
-    /// Replace the set of knowledge bases active for a session. An empty slice
-    /// clears them. Plural per issue #45 — see the plan's Prerequisites section
-    /// (and its fallback, if #45 slipped).
-    fn set_knowledge_bases(&self, session_id: &str, kbs: &[String]) -> Result<(), String>;
-    /// The session's active knowledge base ids (`workspace_list` §4.1,
-    /// spawn-context grants §4.4). Empty headless or when none are set.
-    fn active_knowledge_bases(&self, session_id: &str) -> Vec<String>;
+    /// Replace the session's **visible** knowledge-base set, and say what should
+    /// happen to its write target. An empty slice clears the set (and, with
+    /// `KbPrimaryChoice::Auto`, clears the primary — an empty set has no legal
+    /// member to point at).
+    ///
+    /// Returns the resulting selection, because the service may have moved the
+    /// primary as part of the same operation and a caller that has to re-read to
+    /// find out will race.
+    fn set_knowledge_bases(
+        &self,
+        session_id: &str,
+        kbs: &[String],
+        primary: KbPrimaryChoice,
+    ) -> Result<KbSelectionView, String>;
+    /// The session's knowledge bases AND its write target (`workspace_list` §4.1,
+    /// spawn-context grants §4.4). Both, in one call, because they are one
+    /// claim: `primary_kb` is always a member of `kb_ids` or `None`, and
+    /// composing them from two unlocked reads is how that claim gets falsified
+    /// (the reason `KnowledgeService::selection` takes the root lock —
+    /// `service.rs:1453-1464`). Empty/`None` headless or when none are set.
+    fn knowledge_selection(&self, session_id: &str) -> KbSelectionView;
     /// Push a workspace frame to the GUI (§4.3). `wait_result` parks for the
     /// renderer's `workspace_result`. Errors when no GUI is attached.
     async fn gui_command(
@@ -4099,7 +5342,17 @@ use biorouter::session::EnabledExtensionsState;
 // `WorkspaceTurnLease` is in this list because `begin_turn` names it in its
 // return type AND constructs `ServerTurnLease` below — importing only
 // `WorkspaceServices` is an E0412 the moment `begin_turn` is written.
-use biorouter::workspace_services::{WorkspaceServices, WorkspaceTurnLease};
+//
+// `KbPrimaryChoice` and `KbSelectionView` are here for exactly the same reason,
+// and omitting them was an E0412 this plan previously shipped while flagging the
+// class two lines above. Both are defined in `workspace_services.rs` by Step 2
+// (see the trait's `set_knowledge_bases` / `knowledge_selection` signatures), and
+// both are named by this impl: `KbPrimaryChoice` in `start_session` and
+// `set_knowledge_bases`, `KbSelectionView` in `set_knowledge_bases`'s return type,
+// its constructed value, and `knowledge_selection`.
+use biorouter::workspace_services::{
+    KbPrimaryChoice, KbSelectionView, WorkspaceServices, WorkspaceTurnLease,
+};
 
 use crate::state::AppState;
 
@@ -4170,7 +5423,7 @@ impl WorkspaceServices for ServerWorkspaceServices {
         // production setter, so `Agent::provider()` returns
         // `Err("Provider not set")` and the injected turn dies on its first
         // step. This mirrors what `/agent/resume` and `restart_agent_internal`
-        // (`routes/agent.rs:836-841`) do, and it is what makes
+        // (`routes/agent.rs:844`) do, and it is what makes
         // `workspace_send_prompt mode:"turn"` work on exactly the sessions the
         // tool exists to reach. Without it the turn would also run with none of
         // the tools `workspace_list` reports the target as having.
@@ -4206,8 +5459,9 @@ impl WorkspaceServices for ServerWorkspaceServices {
         working_dir: PathBuf,
         extensions: Option<Vec<String>>,
         knowledge_bases: Vec<String>,
+        primary: KbPrimaryChoice,
     ) -> Result<String, String> {
-        // The minimal core of POST /agent/start (routes/agent.rs:232-380):
+        // The minimal core of POST /agent/start (`start_agent`, routes/agent.rs:256):
         // create → apply extension set → persist → eager-load in background.
         let configs = match extensions {
             None => get_enabled_extensions(),
@@ -4242,7 +5496,11 @@ impl WorkspaceServices for ServerWorkspaceServices {
             .map_err(|e| format!("failed to save extension state: {e}"))?;
 
         if !knowledge_bases.is_empty() {
-            self.set_knowledge_bases(&session.id, &knowledge_bases)?;
+            // A fresh session has no primary of its own, so `Auto` here always
+            // resolves to "pin the first id" — which is what makes the new
+            // session's KB-less writes work at all. Passing an explicit
+            // `Set(id)` from `workspace_open` is honoured unchanged.
+            self.set_knowledge_bases(&session.id, &knowledge_bases, primary)?;
         }
 
         // Eager extension load, exactly as start_agent does.
@@ -4266,21 +5524,79 @@ impl WorkspaceServices for ServerWorkspaceServices {
         Ok(session.id)
     }
 
-    fn set_knowledge_bases(&self, session_id: &str, kbs: &[String]) -> Result<(), String> {
-        // Post-#45 plural signature (knowledge/service.rs:1020). See the plan's
-        // Prerequisites section for the single-KB fallback if #45 slipped.
-        self.state
+    fn set_knowledge_bases(
+        &self,
+        session_id: &str,
+        kbs: &[String],
+        primary: KbPrimaryChoice,
+    ) -> Result<KbSelectionView, String> {
+        // Same path `state.rs:5` already uses for `KnowledgeService` —
+        // `biorouter-server` depends on `biorouter-mcp` directly. (The
+        // `biorouter::knowledge::service::PrimaryUpdate` re-export resolves too;
+        // pick one and be consistent with the file's existing import.)
+        use biorouter_mcp::knowledge::service::PrimaryUpdate;
+
+        // THE ONE SEAM where the subtractive model and the borrowed
+        // `PrimaryUpdate` are visible. `set_visible_kbs` (service.rs:1575) takes
+        // the ids that should be VISIBLE and inverts them into the stored hidden
+        // list itself, under the root lock — which is exactly why we call it
+        // rather than reading the hidden list, editing it and writing it back:
+        // that read-modify-write across two unlocked calls is the race
+        // `service.rs:1506-1513` documents, where two surfaces each write a list
+        // computed before the other's edit and one silently disappears.
+        //
+        // Resolve `Auto` HERE, not in the tools, so every surface gets the same
+        // answer. `Unchanged` is safe for the keep-it case because the service
+        // re-validates membership against the resulting set and repairs the
+        // pointer itself (`repair_primary_unlocked`) when the old target has just
+        // been hidden.
+        let current = self
+            .state
             .knowledge_service
-            .set_active_for_session(session_id, kbs)
-            .map_err(|e| e.to_string())
+            .primary_for_session(Some(session_id))
+            .unwrap_or_default();
+        let auto_pick: Option<String> = match &current {
+            Some(id) if kbs.iter().any(|k| k == id) => None, // keep it
+            _ => kbs.first().cloned(),
+        };
+        let update = match &primary {
+            KbPrimaryChoice::Set(id) => PrimaryUpdate::Set(id.as_str()),
+            KbPrimaryChoice::Clear => PrimaryUpdate::Clear,
+            KbPrimaryChoice::Auto => match auto_pick.as_deref() {
+                Some(id) => PrimaryUpdate::Set(id),
+                // Either the current primary is still a member (keep it), or the
+                // new set is empty and there is nothing legal to point at.
+                None if current.is_some() && !kbs.is_empty() => PrimaryUpdate::Unchanged,
+                None => PrimaryUpdate::Clear,
+            },
+        };
+
+        let selection = self
+            .state
+            .knowledge_service
+            .set_visible_kbs(Some(session_id), kbs, update)
+            .map_err(|e| e.to_string())?;
+        Ok(KbSelectionView {
+            kb_ids: selection.kb_ids,
+            primary_kb: selection.primary_kb,
+        })
     }
 
-    fn active_knowledge_bases(&self, session_id: &str) -> Vec<String> {
-        // KnowledgeService::get_active_for_session (knowledge/service.rs:1006);
-        // best-effort — a read error reports "no active KBs", never fails a list.
+    fn knowledge_selection(&self, session_id: &str) -> KbSelectionView {
+        // `KnowledgeService::selection` (service.rs:1461) takes the root lock and
+        // returns set + pointer TOGETHER. Do not rebuild this from
+        // `session_kb_ids` + `primary_for_session`: composing two unlocked reads
+        // is what made the "primary is a member of the set" claim false whenever
+        // a writer landed between them (service.rs:1453-1460).
+        //
+        // Best-effort — a read error reports "no KBs", never fails a list.
         self.state
             .knowledge_service
-            .get_active_for_session(session_id)
+            .selection(Some(session_id))
+            .map(|s| KbSelectionView {
+                kb_ids: s.kb_ids,
+                primary_kb: s.primary_kb,
+            })
             .unwrap_or_default()
     }
 
@@ -4340,7 +5656,8 @@ via `crate::state::TurnGuard`). `begin_turn` depends on Task 6's
 
 **#44 conformance (reconciliation #7):** `start_session` above sets the working dir
 **at creation** via `create_session(working_dir, …)` — exactly what `start_agent`
-does at HEAD (`routes/agent.rs:283`); the working-dir *lock* guards only later
+does at HEAD (**`routes/agent.rs:256`**, the `create_session` call at **`:307`**; the
+plan's old `:283` was pre-drift); the working-dir *lock* guards only later
 changes to a non-empty chat and is not involved here. No lock acquisition, no
 seam.
 
@@ -4477,27 +5794,32 @@ security-relevant extensions or adding process-spawning ones on **any** target s
 a confirmation **regardless of mode**."* Annotation-based grading cannot express
 "regardless of mode" — in Auto mode the permission inspector returns `Allow` for
 everything. The precedent the operator named is `SensitiveOpsInspector`
-(`crates/biorouter/src/security/sensitive_ops.rs:479`), and this task is its sibling
-with one deliberate difference: `SensitiveOpsInspector` is **inert outside Auto**
-(`:500-503`) because every other mode already gates file writes; this one is inert
-**nowhere**, because no mode gates a *cross-session capability change* today.
+(`crates/biorouter/src/security/sensitive_ops.rs:479` — **exact**), and this task is its
+sibling with one deliberate difference: `SensitiveOpsInspector` is **inert outside Auto**
+(**`:500-502`**, `if biorouter_mode != BioRouterMode::Auto { return Ok(vec![]); }`)
+because every other mode already gates file writes; this one is inert **nowhere**,
+because no mode gates a *cross-session capability change* today.
 
 **Why an inspector and not a check inside the tool handler:** the precedence is already
 built and proven. `apply_inspection_results_to_permissions`
-(`tool_inspection.rs:262-273`) removes a request from `approved` and pushes it to
-`needs_approval` on **any** inspector's `RequireApproval`, and `InspectionAction::Allow`
-explicitly "doesn't override other inspectors' decisions" (`:275-278`). So a
-`RequireApproval` here beats Auto mode's blanket allow *and* a per-tool always-allow
-grant, with no new machinery. A check inside `handle_set_tools` could only refuse, not
-ask.
+(**`crates/biorouter/src/tool_inspection.rs:205`** — note the path: the module is
+`crates/biorouter/src/tool_inspection.rs`, a **top-level** module, not
+`agents/tool_inspection.rs`) removes a request from `approved` and pushes it to
+`needs_approval` on **any** inspector's `RequireApproval` (**:273**), and
+`InspectionAction::Allow` explicitly *"allows it, but don't override other inspectors'
+decisions"* (**:277-280**). So a `RequireApproval` here beats Auto mode's blanket allow
+*and* a per-tool always-allow grant, with no new machinery. A check inside
+`handle_set_tools` could only refuse, not ask.
 
 **Files:**
 - Create: `crates/biorouter/src/agents/workspace_inspector.rs`
 - Modify: `crates/biorouter/src/agents/mod.rs` (`pub mod workspace_inspector;`)
 - Modify: `crates/biorouter/src/agents/agent.rs`
-  (`create_tool_inspection_manager` at :713-777 — register it right after
-  `SensitiveOpsInspector` at :740-742, i.e. before the permission inspector, matching
-  the "security first" ordering the comments there describe)
+  (**anchors re-verified at `275d735d`**: `create_tool_inspection_manager` at
+  **:980-1044** — register it right after the `SensitiveOpsInspector` push at
+  **:1006-1008**, i.e. before the `PermissionInspector` push at **:1014**, matching
+  the "security first" ordering the comments there describe. All four pushes and their
+  explanatory comments are intact and in the same order as when this task was written.)
 
 - [ ] **Step 1: Write the failing tests** (in the new file's test module)
 
@@ -4641,8 +5963,8 @@ Expected: COMPILE ERROR — module not found.
 //!
 //! Precedence is free: `apply_inspection_results_to_permissions` promotes any
 //! `RequireApproval` over another inspector's `Allow`
-//! (`tool_inspection.rs:262-278`), so this beats Auto mode's blanket allow and
-//! a per-tool always-allow grant alike.
+//! (`crate::tool_inspection`, `:205` / `:273` / `:277-280`), so this beats Auto
+//! mode's blanket allow and a per-tool always-allow grant alike.
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -4664,13 +5986,15 @@ const PROCESS_SPAWNING_EXTENSIONS: &[&str] = &["developer", "computercontroller"
 /// How dangerous an extension is *by its config shape*, independent of its name.
 ///
 /// Exhaustive on purpose: `ExtensionConfig` has SEVEN variants
-/// (`agents/extension.rs:236-352`) and a `matches!(…, Stdio { .. })` covers one
-/// of them. `InlinePython` is documented as "Inline Python code that will be
-/// executed using uvx" (`:341`) and `extension_manager.rs:660-689` proves it —
-/// it writes the code to a tempdir and builds `Command::new("uvx")` — so it is
+/// (`agents/extension.rs:236-358` — `sse` :238, `stdio` :251, `builtin` :272,
+/// `platform` :288, `streamable_http` :301, `frontend` :324, `inline_python`
+/// :341) and a `matches!(…, Stdio { .. })` covers one of them. `InlinePython`
+/// is documented as "Inline Python code that will be executed using uvx"
+/// (`:340`) and `extension_manager.rs:802-833` proves it — it writes the code
+/// to a tempdir and builds `Command::new("uvx")` (`:814`) — so it is
 /// process-spawning by exactly the same reasoning that makes `Stdio` structural.
 /// `Sse` and `StreamableHttp` carry `uri` + `envs` + `env_keys` + `headers`
-/// (`:302-323`): adding one points another conversation's traffic at an
+/// (`:301-323`): adding one points another conversation's traffic at an
 /// arbitrary remote MCP endpoint, with credentials.
 ///
 /// A `match` rather than a `matches!` so that an eighth variant is a compile
@@ -4699,21 +6023,40 @@ fn add_shape_risk(name: &str) -> AddShapeRisk {
 ///
 /// `Agent::remove_extension` forwards to `ExtensionManager::remove_extension`,
 /// whose first line is `let sanitized_name = normalize(name);`
-/// (`extension_manager.rs:834-839`) — lower-cased, whitespace-stripped,
-/// non-`[A-Za-z0-9_-]` mapped to `_`. So `"Workspace"`, `"WORKSPACE"` and
-/// `"work space"` all really do remove the `workspace` extension, while a
-/// raw-string `contains("workspace")` check here would see none of them and
-/// return `None` — no confirmation, in any mode, for the removal of the audit
-/// trail. (The ADD path fails closed instead: `find_entry_by_name` is an exact
-/// match on `config.name()` (`config/extensions.rs:146-153`), so a mis-cased
-/// add is rejected as an unknown extension.)
+/// (`extension_manager.rs:976-981`, `normalize` itself at `:159`) — lower-cased,
+/// whitespace-stripped, non-`[A-Za-z0-9_-]` mapped to `_`. So `"Workspace"`,
+/// `"WORKSPACE"` and `"work space"` all really do remove the `workspace`
+/// extension, while a raw-string `contains("workspace")` check here would see
+/// none of them and return `None` — no confirmation, in any mode, for the
+/// removal of the audit trail. (The ADD path fails closed instead:
+/// `find_entry_by_name` is an exact match on `config.name()`
+/// (`config/extensions.rs:183-190`), so a mis-cased add is rejected as an
+/// unknown extension.)
 fn norm(name: &str) -> String {
     crate::agents::extension_manager::normalize(name)
 }
 
+/// ⚠ **Keep this as plain `normalize`. Do NOT "modernize" it to PR #48's
+/// `BundledExtensionTarget::key()`** (ruled 2026-07-28). #48 landed a richer
+/// name resolver — `resolve_bundled_extension` (`extension_manager.rs:257`) →
+/// `BundledExtensionTarget` (`:183`) with `key()` (`:199`) — and deleted
+/// `canonical_builtin_extension_name`. It is the right tool for *resolving a
+/// `/ext:` marker to a registry entry*, and `key()` is
+/// `normalize(name_to_key(name))`, i.e. a strictly different function. This
+/// helper's entire job is to compare names **the way the executor does**, and
+/// the executor is `ExtensionManager::remove_extension`, whose first line is
+/// still literally `let sanitized_name = normalize(name);` (`:977`). Swapping in
+/// `key()` would re-open reconciliation #19's hole from the other side: a name
+/// this check normalizes differently from the code that acts on it is a name
+/// that can be removed without confirming. If `remove_extension` ever changes
+/// resolver, change this in the same commit — and only then.
+
 /// Extensions whose REMOVAL narrows what a human or a later check can *see*,
 /// rather than what the agent can do. That is the asymmetry §5 is about: an
 /// agent quietly removing the machinery that would reveal its next action.
+/// Both keys below are real `PLATFORM_EXTENSIONS` registry keys
+/// (`agents/extension.rs:43-106`: `todo`, `chatrecall`, `extensionmanager`,
+/// `skills`, `code_execution`), plus `workspace` once Task 12 adds it.
 const SECURITY_RELEVANT_EXTENSIONS: &[&str] = &[
     // Every cross-session action the workspace surface performs is recorded as
     // a tool call in the acting session and toasted on the target tab. Removing
@@ -4726,8 +6069,10 @@ const SECURITY_RELEVANT_EXTENSIONS: &[&str] = &[
 ];
 
 /// Both name forms reach dispatch: extension-advertised tools are prefixed
-/// `{extension}__{tool}` (`extension_manager.rs:971`), and the code already
-/// tolerates models that strip the prefix (`:1294-1304`).
+/// `{extension}__{tool}` (`extension_manager.rs:1121`, inside the
+/// `is_tool_available` advertisement filter at `:1119`), and the code already
+/// tolerates models that strip the prefix (`dispatch_tool_call` `:1438`, the
+/// prefix-repair block `:1444-1457`).
 pub(crate) fn is_set_tools_call(tool_name: &str) -> bool {
     tool_name == "workspace_set_tools" || tool_name == "workspace__workspace_set_tools"
 }
@@ -4957,9 +6302,10 @@ impl ToolInspector for WorkspaceMutationInspector {
 }
 ```
 
-Register it in `agent.rs`'s `create_tool_inspection_manager`, immediately after the
-`SensitiveOpsInspector` registration at :740-742 (same rationale — security inspectors
-before the permission inspector):
+Register it in `agent.rs`'s `create_tool_inspection_manager` (**:980**), immediately
+after the `SensitiveOpsInspector` registration at **:1006-1008** and before the
+`PermissionInspector` at **:1014** (same rationale — security inspectors before the
+permission inspector):
 
 ```rust
         // BR-71 §5: cross-session capability changes always confirm, in every
@@ -4976,7 +6322,7 @@ Add the four cases the widened policy is for, to the same test module:
     #[test]
     fn a_mis_cased_removal_still_confirms() {
         // `Agent::remove_extension` normalizes before removing
-        // (extension_manager.rs:834-839), so "Workspace" really does strip the
+        // (extension_manager.rs:976-981), so "Workspace" really does strip the
         // audit-trail extension. A raw-string check would see no match and
         // return None — no confirmation, in any mode.
         for spelling in ["Workspace", "WORKSPACE", "work space"] {
@@ -5061,13 +6407,22 @@ other per-session extension state already lives.
 - Create: `crates/biorouter/src/agents/session_skills.rs`
 - Modify: `crates/biorouter/src/agents/mod.rs` (`pub mod session_skills;`)
 - Modify: `crates/biorouter/src/agents/skills_extension.rs`
-  (`get_disabled_skills` :262, `is_skill_enabled` :445, `enabled_skill_entries` :457,
-  `list_tools` :745, `call_tool` :770 — bind the session id from `McpMeta`)
+  (**anchors re-verified at `275d735d`, 2026-07-28** — this file barely moved:
+  `get_disabled_skills` **:262** (exact; body runs to :285), `is_skill_enabled`
+  **:445-455** (exact head; the body is one line shorter than the plan's `:445-456`
+  and is unchanged in shape), `enabled_skill_entries` **:457** (exact),
+  `list_tools` **:745** (exact), `call_tool` **:770** (exact) — bind the session id
+  from `McpMeta`. `pub struct Skill` **:115**, `SkillsClient::new(_context)` **:143**.)
 
-**Storage precedent, verified:** `ExtensionData::set_extension_state(name, version,
-value)` / `get_extension_state` (`session/extension_data.rs:28-40`) is the sanctioned
-per-session key-value store; `agents/goal.rs:312` and `guardrails/run_state.rs:146` are
-the two existing users. This task adds a third under `("workspace_skills", "v1")`.
+**Storage precedent, verified at `275d735d`:** `ExtensionData::set_extension_state(name,
+version, value)` (**`session/extension_data.rs:34-37`**) / `get_extension_state`
+(**`:28-31`**) is the sanctioned per-session key-value store. ⚠ Note the receiver: both
+are inherent methods on **`ExtensionData`**, not on `SessionManager` or `Session` — so a
+writer goes `session.extension_data.set_extension_state(…)` and then persists the
+session. The two existing users show both spellings: `agents/goal.rs:312`
+(`session.extension_data.set_extension_state(`) and `guardrails/run_state.rs:146`
+(`data.set_extension_state(RUN_STATE_KEY, RUN_STATE_VER, v)`, on an already-borrowed
+`data`). This task adds a third under `("workspace_skills", "v1")`.
 
 **Stated residual (reconciliation #14).** `McpClientTrait::list_tools` and `get_info`
 take no session id, so the *instruction line's* skill count and the "are any skills
@@ -5373,14 +6728,14 @@ exactly what `ChatRecallClient` retains a context for.
 silently re-enables every machine-disabled skill **bundle** for the session. The
 machine-wide disabled array is not a set of skill names: it holds skill names *and*
 bundle names, which is why `is_skill_enabled` tests both
-(`skills_extension.rs:445-456`):
+(`skills_extension.rs:445-455`):
 
 ```rust
     !disabled.contains(name)
         && !skill.bundle_name.as_deref().is_some_and(|bundle| disabled.contains(bundle))
 ```
 
-and why the repo's own `test_bundle_disabled_by_bundle_name` (`:1649-1683`) puts a
+and why the repo's own `test_bundle_disabled_by_bundle_name` (`:1661-1695`) puts a
 bundle id in that array. A set rebuilt from `self.skills.keys()` contains only skill
 names, so `disabled.contains(bundle)` can never match again. Concretely: a user
 disables the `biorouter-office` bundle machine-wide, an agent calls
@@ -5540,8 +6895,8 @@ Add one test in `skills_extension.rs`'s test module:
     /// override must not change what the machine-wide preference MEANS.
     ///
     /// The machine-wide disabled array holds skill names AND bundle names
-    /// (`is_skill_enabled` tests both, `skills_extension.rs:445-456`; the
-    /// existing `test_bundle_disabled_by_bundle_name` at :1651 puts a bundle id
+    /// (`is_skill_enabled` tests both, `skills_extension.rs:445-455`; the
+    /// existing `test_bundle_disabled_by_bundle_name` at :1661 puts a bundle id
     /// in it). Any implementation that composes the override by rebuilding a
     /// name set from `self.skills.keys()` drops every bundle entry, so an
     /// unrelated `add_skills` silently re-enables a whole disabled bundle for
@@ -5606,16 +6961,31 @@ Add one test in `skills_extension.rs`'s test module:
 ```
 
 (`Skill`'s six public fields are `metadata`/`body`/`directory`/`supporting_files`/
-`bundle_name`/`source_root` (`skills_extension.rs:114-125`) and `SkillMetadata` is
-`{name, description}` (`:106-109`); `enabled_skill_entries` returns
-`Vec<(&String, &Skill)>` (`:457`); `fs`, `TempDir` and `HashMap` are already imported by
-the file's test module / prelude. `Paths` is the same import `get_disabled_skills` uses
-at `:263`.)
+`bundle_name`/`source_root` (**`skills_extension.rs:115-125`**, declaration at :115,
+`}` at :125) and `SkillMetadata` is `{name, description}` (**:105-109**);
+`enabled_skill_entries` returns `Vec<(&String, &Skill)>` (**:457**); `fs`, `TempDir` and
+`HashMap` are already imported by the file's test module / prelude. `Paths` is the same
+import `get_disabled_skills` uses at **:263**
+(`Paths::config_dir().join("skills-config.json")`). All six anchors **exact** at
+`275d735d`.)
 
 - [ ] **Step 5: Run tests**
 
-Run: `cargo test -p biorouter --lib agents::session_skills agents::skills_extension`
-Expected: PASS.
+```bash
+cargo test -p biorouter --lib agents::session_skills agents::skills_extension
+```
+
+Expected: **PASS**. The one test in that second target this task must not break is
+`test_bundle_disabled_by_bundle_name` (**:1661-1695**) — reconciliation #14's whole
+argument is that a naive composition leaves it green while breaking the property it
+stands for, which is why `a_session_grant_does_not_resurrect_a_machine_disabled_bundle`
+is written above rather than relying on it.
+
+Note the machine-wide file is **never written** by this task; if it were, the CLI
+writers would be the ones to break (`biorouter-cli/src/commands/skill.rs`:
+`skills_config_path` **:295**, `write_skills_config` **:353**, `lock_skills_config`
+**:372**, `mutate_skills_config` **:394** — all still present and all still holding the
+advisory lock this task deliberately does not contend for).
 
 - [ ] **Step 6: Commit**
 
@@ -5633,12 +7003,26 @@ git commit -m "feat(skills): session-scoped skill overrides, separate from the m
 - Create: `crates/biorouter/src/agents/workspace_extension.rs`
 - Modify: `crates/biorouter/src/agents/mod.rs` (add `pub mod workspace_extension;`
   beside `pub mod chatrecall_extension;` — grep for it)
-- Modify: `crates/biorouter/src/agents/extension.rs` (PLATFORM_EXTENSIONS entry at
-  :43-107; count test at :672-679)
+- Modify: `crates/biorouter/src/agents/extension.rs` (PLATFORM_EXTENSIONS at
+  **:43-106**, the map built :44-105; count test
+  `platform_extension_defaults_match_capabilities` at **:675-683**, its
+  `assert_eq!(PLATFORM_EXTENSIONS.len(), 5)` at **:677**)
+
+✓ **`crates/biorouter/src/agents/extension.rs` is byte-identical to the commit this
+plan was written against** (checked 2026-07-28). Every anchor in it — `PLATFORM_EXTENSIONS`
+:43, `PlatformExtensionContext` :109-113, `ExtensionConfig`'s seven variants :236-358,
+`is_tool_available` :563-580, the `len() == 5` assertion :677 — is exact, here and in
+Tasks 10, 18 and 19. It is the one file in this plan's blast radius that needs no
+re-verification.
+
+The five existing registry keys are `todo`, `chatrecall`, `extensionmanager`, `skills`,
+`code_execution`; `workspace` is the sixth. `PLATFORM_EXTENSIONS.len() == 5` is
+**the one test BR-71 is entitled to change** — see reconciliation #5. Every other test
+this plan touches must be preserved.
 
 - [ ] **Step 1: Write the failing tests**
 
-In `extension.rs`'s existing test module (:672):
+In `extension.rs`'s existing test module (`#[cfg(test)] mod tests` at **:670-671**):
 
 ```rust
     #[test]
@@ -5648,7 +7032,10 @@ In `extension.rs`'s existing test module (:672):
     }
 ```
 
-and update the existing assertion `assert_eq!(PLATFORM_EXTENSIONS.len(), 5);` → `6`.
+and update the existing assertion `assert_eq!(PLATFORM_EXTENSIONS.len(), 5);` (**:677**,
+inside `platform_extension_defaults_match_capabilities`) → `6`. Leave that test's five
+per-key `default_enabled` assertions (:678-682) alone — the new one above adds the sixth
+rather than editing them, so a reviewer sees an addition, not a rewrite.
 
 In the new `workspace_extension.rs` test module:
 
@@ -5737,9 +7124,12 @@ mod tests {
         let text = result.content[0].as_text().unwrap().text.clone();
         assert!(text.contains(&parent.id));
         assert!(text.contains("\"gui_attached\": false"));
-        // §4.1: per-session enabled extensions + active KBs are part of the row.
+        // §4.1: per-session enabled extensions + KBs are part of the row.
         assert!(text.contains("\"extensions\""));
         assert!(text.contains("\"knowledge_bases\""));
+        // Post-#45: the write target is reported alongside the set. Without it a
+        // model can set a primary and never read it back.
+        assert!(text.contains("\"primary_kb\""));
         // Decision 17: paging metadata is always present.
         assert!(text.contains("\"has_more\""));
         assert!(text.contains("\"total_matching\""));
@@ -6164,8 +7554,12 @@ impl WorkspaceClient {
                 // §4.1 required row fields: enabled extension names + active
                 // KBs. Read per INCLUDED row only (the summary row has no
                 // extension_data), exactly the GET /sessions/{id}/extensions
-                // fallback logic (routes/session.rs:757-760). Best-effort: a
-                // read failure yields an empty list, never fails the listing.
+                // fallback logic — `get_session_extensions`,
+                // routes/session.rs:989-1008, whose two lines are
+                // `EnabledExtensionsState::from_extension_data(&session.extension_data)`
+                // (:1003) `.unwrap_or_else(biorouter::config::get_enabled_extensions)`
+                // (:1005). Best-effort: a read failure yields an empty list,
+                // never fails the listing.
                 let extensions: Vec<String> = match self
                     .context
                     .session_manager
@@ -6185,9 +7579,13 @@ impl WorkspaceClient {
                         }),
                     Err(_) => Vec::new(),
                 };
-                let knowledge_bases = services
+                // Post-#45: ONE call returning set + write target together
+                // (Task 9). `primary_kb` is on the row because a model that can
+                // SET a write target and cannot READ it back will thrash — it
+                // has no way to tell "already correct" from "not applied".
+                let kbs = services
                     .as_ref()
-                    .map(|svc| svc.active_knowledge_bases(&s.id))
+                    .map(|svc| svc.knowledge_selection(&s.id))
                     .unwrap_or_default();
                 rows.push(json!({
                     "session_id": s.id,
@@ -6197,7 +7595,13 @@ impl WorkspaceClient {
                     "running": running,
                     "parent_session_id": s.parent_session_id,
                     "extensions": extensions,
-                    "knowledge_bases": knowledge_bases,
+                    "knowledge_bases": kbs.kb_ids,
+                    // `null` means "no write target chosen", which is a real and
+                    // distinct state from "no knowledge bases" — a session can
+                    // have several bases and no primary, and a KB-less write then
+                    // fails. Do not collapse it to the first id here; the service
+                    // owns promotion (`repair_primary_unlocked`).
+                    "primary_kb": kbs.primary_kb,
                     "gui": gui_placement,
                 }));
             }
@@ -6298,7 +7702,7 @@ impl McpClientTrait for WorkspaceClient {
 }
 ```
 
-Then in `extension.rs`, add the registry entry (after the `chatrecall` insert at :57):
+Then in `extension.rs`, add the registry entry (after the `chatrecall` insert, which spans :58-69):
 
 ```rust
         map.insert(
@@ -6370,8 +7774,15 @@ git commit -m "feat(workspace): workspace platform extension skeleton + workspac
         // Seed: a user message, a tool request, and a spawn-context record.
         let mut m1 = Message::user().with_text("please compute");
         sm.add_message_adopting_uid(&open.id, &mut m1).await.unwrap();
-        // CallToolRequestParams derives NO Default (rmcp 0.14 model.rs:1887-1902)
-        // — spell all four fields.
+        // CallToolRequestParams derives NO Default — spell all four fields.
+        // The citation is the DEPENDENCY's file, not this repo's:
+        // ~/.cargo/registry/.../rmcp-0.14.0/src/model.rs:1887-1902 (derive
+        // :1887, `pub struct CallToolRequestParams` :1890, fields
+        // meta/name/arguments/task :1892-1901, `}` :1902). Re-verified
+        // 2026-07-28 against the pinned `rmcp = "0.14.0"` (Cargo.toml:18):
+        // the derive list is `Debug, Serialize, Deserialize, Clone, PartialEq`
+        // — still no `Default`. Do NOT resolve this against
+        // `crates/biorouter/src/model.rs`, which is 908 lines and unrelated.
         let mut m2 = Message::assistant().with_tool_request(
             "call-1",
             Ok(rmcp::model::CallToolRequestParams {
@@ -6442,8 +7853,10 @@ here:
 ```
 
 (If `Message::assistant().with_tool_request(...)` has a different constructor shape,
-use the real one — `message.rs:716` `with_tool_request_with_metadata` exists; grep
-`pub fn with_tool_request` for the exact signature and adjust the seed only.)
+use the real one — `with_tool_request` is at **`message.rs:815`** and
+`with_tool_request_with_metadata` at **`:823`**; grep `pub fn with_tool_request` for the
+exact signature and adjust the seed only. The plan's old `:716` anchor now lands inside
+`with_unpinned`.)
 
 - [ ] **Step 2: Run to verify failure**
 
@@ -6538,8 +7951,9 @@ impl WorkspaceClient {
 
         // Oversized-result handling (§4.1 "session-blob mechanism, never silent
         // truncation"): this tool RESULT is persisted into the CALLER's session,
-        // where BR-7's externalization (message_blobs::externalize, threshold 64
-        // KB, session_manager.rs:3223) already stores payloads above the blob
+        // where BR-7's externalization (message_blobs::externalize, called at
+        // session_manager.rs:3475 and :3687; the 64 KB threshold is
+        // `DEFAULT_BLOB_THRESHOLD_BYTES`, message_blobs.rs:52) stores payloads above the blob
         // threshold as session blobs readable via platform__read_session_blob —
         // so a raised max_chars round-trips intact instead of bloating context.
         // The tool-level cap is model-facing pagination; when it clips, the
@@ -6698,6 +8112,16 @@ git commit -m "feat(workspace): workspace_read_conversation projections (BR-71)"
 - Modify: `crates/biorouter/src/execution/manager.rs` — add `peek_agent`, the
   non-constructive agent lookup decision 4's mode check needs (Step 3). Task 33 extends
   it to consult the pinned sidecar it introduces.
+- Modify: `crates/biorouter/src/context_mgmt/mod.rs` — **test module only** (`mod
+  pin_tests`, `:2396`ff). One end-to-end test that the framed note survives a real
+  compaction and its unpinned twin does not. It belongs beside the other fifteen pin
+  tests, which already own the helpers (`provider`, `find`, `text_of`) and are the only
+  place `compact_messages_with_window` is reachable — it is private to the module.
+
+**Read Prerequisite 2 before writing Step 3.** Both halves shipped. The mid-turn refusal
+reconciliation #16 used to require is **retired**, and in its place `note` carries an
+obligation: it must persist the message **pinned**, because the store now guarantees the
+note is not deleted but nothing stops the next compaction summarizing it away.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -6747,6 +8171,35 @@ git commit -m "feat(workspace): workspace_read_conversation projections (BR-71)"
         assert!(body.contains("untrusted=\"true\""), "got: {body}");
         assert!(body.contains("caller-name"), "the frame names the source");
         assert!(body.contains("context for later"), "the payload survives");
+
+        // …and it is PINNED, and the pin is actually honourable.
+        //
+        // Two assertions, not one, because `is_pinned()` alone is a marker that
+        // every compaction site is free to ignore. `pin_is_eligible` is the
+        // predicate they all consult (`context_mgmt::pins:250-254`): the message
+        // must carry the marker, be agent-visible, AND have every content block
+        // pin-eligible. `frame_workspace_injection` wraps the text, and a note
+        // built agent-invisible or carrying a tool block would keep `is_pinned()`
+        // true while being silently unpreservable.
+        assert!(injected.is_pinned(), "a note must survive compaction (#51 pin)");
+        assert!(
+            crate::context_mgmt::pins::pin_is_eligible(injected),
+            "the pin must be HONOURABLE, not merely present"
+        );
+
+        // The control that makes the two assertions above mean "the pin worked"
+        // rather than "this is true of any message": the same message without
+        // `.pinned()` is not eligible for preservation at all.
+        let unpinned = {
+            let mut m = injected.clone();
+            m.metadata.pinned = false;
+            m
+        };
+        assert!(
+            !crate::context_mgmt::pins::pin_is_eligible(&unpinned),
+            "without the marker there is nothing to honour — so the assertion \
+             above is testing the pin"
+        );
     }
 
     /// Decision c / the shared drain loop: the HUMAN's own soft interrupt must
@@ -6788,10 +8241,72 @@ git commit -m "feat(workspace): workspace_read_conversation projections (BR-71)"
     }
 ```
 
+And, in `crates/biorouter/src/context_mgmt/mod.rs`'s `mod pin_tests` (`:2396`ff) — the
+end-to-end half. The tool-side test above proves the note is *marked* and that the mark
+is *honourable*; this one proves the mark is *honoured*, on the real compaction path,
+with the unpinned twin as the control that makes the result mean something:
+
+```rust
+    /// BR-71: a `workspace_send_prompt { mode: "note" }` body, eight turns back,
+    /// still reaches the model — and its unpinned twin does not.
+    ///
+    /// The framed shape matters and is not incidental. `frame_workspace_injection`
+    /// (Task 2) wraps the payload in an untrusted-data envelope, so this also
+    /// pins that the envelope does not make the message pin-ineligible.
+    #[tokio::test]
+    async fn a_workspace_note_survives_compaction_and_its_unpinned_twin_does_not() {
+        use crate::conversation::message::frame_workspace_injection;
+
+        let note_body = frame_workspace_injection(Some("planner"), "use the log scale");
+        let twin_body = frame_workspace_injection(Some("planner"), "and cite the source");
+
+        // Both sit in the same old prefix, far outside the verbatim window.
+        // Identical in every way except the marker.
+        let mut messages = vec![
+            Message::user().with_text("q1"),
+            Message::assistant().with_text("a1"),
+            Message::user().with_text(note_body.clone()).pinned(),
+            Message::user().with_text(twin_body.clone()),
+        ];
+        for i in 2..=8 {
+            messages.push(Message::user().with_text(format!("q{i}")));
+            messages.push(Message::assistant().with_text(format!("a{i}")));
+        }
+        let conversation = Conversation::new_unvalidated(messages);
+
+        let (compacted, _usage) =
+            compact_messages_with_window(&provider(100_000), &conversation, false, 2)
+                .await
+                .unwrap();
+
+        assert!(
+            find(&compacted, &note_body).is_agent_visible(),
+            "the pinned note must still reach the model; agent-visible was: {:#?}",
+            agent_texts(&compacted)
+        );
+        assert!(
+            find(&compacted, &note_body).is_pinned(),
+            "and it must stay marked, so the NEXT compaction honours it too"
+        );
+        // THE CONTROL. Without this the test above passes on a conversation
+        // nothing compacted, and Task 14 could drop `.pinned()` with a green
+        // suite — which is the exact defect this pair exists to catch.
+        assert!(
+            !find(&compacted, &twin_body).is_agent_visible(),
+            "an UNPINNED note is summarized away — that is why `note` pins"
+        );
+    }
+```
+
 - [ ] **Step 2: Run to verify failure**
 
 Run: `cargo test -p biorouter --lib agents::workspace_extension::tests::send_prompt_note_appends_with_provenance_without_running_a_turn`
 Expected: FAIL — "not implemented until Task 14".
+
+Run: `cargo test -p biorouter --lib context_mgmt::pin_tests::a_workspace_note_survives_compaction_and_its_unpinned_twin_does_not`
+Expected: **COMPILE ERROR**, not FAIL — `frame_workspace_injection` does not exist until
+Task 2. (Task 2 precedes this task, so in a linear run it compiles and passes; the
+distinction matters only if the tasks are attempted out of order.)
 
 - [ ] **Step 3: Implement**
 
@@ -6893,31 +8408,26 @@ impl WorkspaceClient {
 
         match args.mode.as_str() {
             "note" => {
-                // A note appended to a session that is MID-TURN is destroyed the
-                // moment that turn compacts. `Agent::reply` holds its own
-                // in-memory `Conversation` and, on crossing the compaction
-                // threshold, calls
-                // `session_manager.replace_conversation(&session_config.id, …)`
-                // (`agent.rs:3061`, again at `:4388`) with no freshness check —
-                // and `replace_conversation_inner` "DELETEs and re-INSERTs every
-                // message" (`session_manager.rs:2609-2611`). The codebase already
-                // documents this hazard for the BACKGROUND compaction path and
-                // guards it there (`context_mgmt/mod.rs:661-671`,
-                // `eager_swap_is_safe`); the in-turn call sites have no guard
-                // because before BR-71 nothing could append to a session's store
-                // from outside its own turn. This tool is the first such writer,
-                // so it must not report success into that window.
-                if let Some(services) = &services {
-                    if services.is_turn_active(&args.session_id) {
-                        return Err(format!(
-                            "session {} has a turn in flight; a note appended now can be \
-                             discarded when that turn compacts. Use mode:\"steer\" to reach \
-                             it during this turn, or retry when it is idle \
-                             (workspace_watch).",
-                            args.session_id
-                        ));
-                    }
-                }
+                // NO mid-turn refusal. Reconciliation #16 used to put one here,
+                // on the premise that the in-turn compaction sites rewrote the
+                // whole history with no freshness check. #51 closed that: both
+                // sites now go through
+                // `SessionManager::replace_conversation_preserving_tail`
+                // (`agent.rs:3606-3613`, and `:2086`/`:2188` on the overflow
+                // ladder), which classifies a message appended above the
+                // rewrite's watermark and absent from the turn's `known`
+                // conversation as FOREIGN and carries it over rather than
+                // deleting it (`session_manager.rs:1347-1374`). Refusing now
+                // would deny the tool's own recommended headless fallback in the
+                // exact case a parent most wants it.
+                //
+                // What the store CANNOT do for us is the second half. A note that
+                // survives the write-back is still summarized away by the next
+                // compaction once it falls out of the `keep_last_turns` window —
+                // so it is PINNED below. `MessageMetadata.pinned` (#51) exists
+                // for this call and says so by name (`message.rs:617-621`,
+                // `Message::pinned` at `:1033`); this is its first consumer.
+                //
                 // Append without a turn: user_visible + agent_visible (picked up
                 // as context on the target's next turn, §4.1), provenance-stamped
                 // AND wrapped in an untrusted-data envelope — see
@@ -6928,14 +8438,25 @@ impl WorkspaceClient {
                 );
                 let mut message = crate::conversation::message::Message::user()
                     .with_text(body)
-                    .with_provenance(provenance);
+                    .with_provenance(provenance)
+                    // ⚠ Do not drop this. Without it the tool reports success and
+                    // the note evaporates a few turns later — the same broken
+                    // promise, arriving more slowly, which is the outcome the
+                    // operator rejected two workarounds to avoid (question 9).
+                    // The pin is honoured only on a message with no tool
+                    // request/response content and only while it is agent-visible
+                    // (`context_mgmt::pins::pin_is_eligible`); a framed text note
+                    // satisfies both, and the test below proves it rather than
+                    // assuming it.
+                    .pinned();
                 self.context
                     .session_manager
                     .add_message_adopting_uid(&args.session_id, &mut message)
                     .await
                     .map_err(|e| format!("failed to append note: {e}"))?;
                 Ok(vec![Content::text(format!(
-                    "Note appended to session {} (no turn started).",
+                    "Note appended to session {} (no turn started; preserved across \
+                     compaction).",
                     args.session_id
                 ))])
             }
@@ -7154,9 +8675,11 @@ fn mode_requires_approval(mode: crate::config::BioRouterMode) -> bool {
         // `Ok(vec![])` before inspecting anything in Chat mode
         // (`permission/permission_inspector.rs:449-452`), the agent loop skips
         // every remaining tool call and splices
-        // `CHAT_MODE_TOOL_SKIPPED_RESPONSE` (`agents/agent.rs:3706-3716`), and
+        // `CHAT_MODE_TOOL_SKIPPED_RESPONSE` (`agents/agent.rs:4355-4371`, the
+        // `if biorouter_mode == BioRouterMode::Chat {` block; the constant itself
+        // is `agents/tool_execution.rs:43`), and
         // the tool list is stripped from the prompt entirely
-        // (`prompt_manager.rs:280`). There is no confirmation that could park
+        // (`agents/prompt_manager.rs:280`). There is no confirmation that could park
         // unseen, so decision 4's refusal — whose message claims one would —
         // must not fire here. Decision 4's trigger is "manual mode"; Chat is
         // not one. Classifying it as an approval mode would refuse every
@@ -7173,7 +8696,7 @@ impl WorkspaceClient {
     ///
     /// The mode that decides whether the *target's* turn raises confirmations is
     /// the target agent's own `AgentConfig.biorouter_mode`, fixed when that
-    /// agent was created (`execution/manager.rs:119-121` reads the global config
+    /// agent was created (`execution/manager.rs:120-122` reads the global config
     /// **once**, at creation). Reading `Config::global().get_biorouter_mode()`
     /// here instead judges the target by whatever the machine's mode happens to
     /// be *now*, and is wrong in both directions.
@@ -7189,8 +8712,11 @@ impl WorkspaceClient {
     /// has no production setter, so `Agent::provider()` returns
     /// `Err("Provider not set")`). The turn runner would then pick that agent up.
     ///
-    /// `Agent.config` is `pub` (`agent.rs:275`) and `AgentConfig.biorouter_mode`
-    /// is `pub` (`:241`), so this is a field read, not a new accessor.
+    /// `Agent.config` is `pub` (`agent.rs:516`, inside `pub struct Agent` at `:514`)
+    /// and `AgentConfig.biorouter_mode` is `pub` (`agent.rs:482`, inside
+    /// `pub struct AgentConfig` at `:478`), so this is a field read, not a new
+    /// accessor. (Both re-anchored at `275d735d`; the old `:275` / `:241` predate
+    /// agent.rs's +816-line growth.)
     async fn target_mode_requires_approval(&self, target_session_id: &str) -> bool {
         let Ok(manager) = crate::execution::manager::AgentManager::instance().await else {
             return true;
@@ -7278,14 +8804,45 @@ and route `"workspace_send_prompt" => self.handle_send_prompt(caller, arguments)
 
 - [ ] **Step 4: Run tests**
 
-Run: `BIOROUTER_PATH_ROOT=$(mktemp -d) cargo test -p biorouter --lib agents::workspace_extension`
-Expected: PASS.
+```bash
+BIOROUTER_PATH_ROOT=$(mktemp -d) cargo test -p biorouter --lib agents::workspace_extension
+cargo test -p biorouter --lib context_mgmt
+```
+
+⚠ The second command is deliberately the **whole** `context_mgmt` module, not
+`context_mgmt::pin_tests`. A `pin_tests` filter is a substring match on the test path,
+so it reaches the 14 tests of `context_mgmt::pin_tests` and *nothing else* — not
+`context_mgmt::pins::tests` (12) and, more importantly, not
+`run_eager_compaction_preserves_a_concurrent_append` / `run_eager_compaction_aborts_when_the_prefix_moved`
+in `context_mgmt::tests` (`mod.rs:2244` / `:2298`), which this task's `.pinned()` change
+is capable of breaking. `--lib context_mgmt` runs all 47 today, 48 after this task.
+
+Expected: PASS. That command runs the whole `pin_tests` module, not just the new
+test — **fifteen** tests after this task, **fourteen** before it. (Counted at
+`275d735d`:
+`awk 'NR>=2397' crates/biorouter/src/context_mgmt/mod.rs | grep -cE '^\s+#\[(tokio::)?test\]'`
+→ 14. An earlier revision of this task said fifteen-before/sixteen-after; that was
+carried over from a survey figure that conflated `pin_tests` with the 12 further tests
+in `context_mgmt/pins.rs`.) All of them must stay green: `note` is the first consumer of
+a mechanism the rest of that suite defines, and a change that makes the note survive by
+weakening `pin_is_eligible` or the eviction budget would show up there and nowhere else.
+
+Add the pins-module half too — it is where `pin_is_eligible` itself is pinned, and
+Task 14's `frame_workspace_injection` wrapper is precisely the kind of content change
+that can make a message ineligible:
+
+```bash
+cargo test -p biorouter --lib context_mgmt::pins
+```
+
+Expected: PASS, **12** tests, unchanged by this task.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add crates/biorouter/src/agents/workspace_extension.rs \
-        crates/biorouter/src/execution/manager.rs
+        crates/biorouter/src/execution/manager.rs \
+        crates/biorouter/src/context_mgmt/mod.rs
 git commit -m "feat(workspace): workspace_send_prompt turn/steer/note with provenance and wait (BR-71)"
 ```
 
@@ -7302,13 +8859,41 @@ four dimensions:
 
 | Field | Mechanism | Takes effect |
 |---|---|---|
-| `add_extensions` / `remove_extensions` | `agent.add_extension` / `remove_extension` + `persist_extension_state` — the exact `/agent/add_extension` handler path (`routes/agent.rs:720-743`) | Immediately (live agent) |
+| `add_extensions` / `remove_extensions` | `agent.add_extension` / `remove_extension` + `persist_extension_state` — the exact `/agent/add_extension` handler path (`routes/agent.rs:744-767`) | Immediately (live agent) |
 | `add_skills` / `remove_skills` | `session_skills::apply` (Task 11) — session-scoped, never the machine-wide file | Immediately for load/search; instruction line next turn |
-| `model` / `provider` | `providers::create(name, ModelConfig)` + `agent.update_provider` — the `/agent/update_provider` handler path (`routes/agent.rs:662-707`) | **Next turn** (the running turn keeps its provider) |
-| `set_knowledge_bases` | `WorkspaceServices::set_knowledge_bases` → `KnowledgeService::set_active_for_session` (plural, post-#45) | Immediately |
+| `model` / `provider` | `providers::create(name, ModelConfig)` + `agent.update_provider` — the `/agent/update_provider` handler path (`routes/agent.rs:686-730`) | **Next turn** (the running turn keeps its provider) |
+| `set_knowledge_bases` (+ `primary_knowledge_base`) | `WorkspaceServices::set_knowledge_bases(sid, &kbs, choice)` → `KnowledgeService::set_visible_kbs(Some(sid), &kbs, PrimaryUpdate)` (post-#45; `set_active_for_session` no longer exists — see [Prerequisites](#prerequisites--two-both-now-shipped)) | Immediately |
 
 **Files:**
 - Modify: `crates/biorouter/src/agents/workspace_extension.rs`
+
+**Anchors re-verified at `275d735d`, 2026-07-28.** Only the KB dimension conflicted
+(above, and reconciliation #6); the other three are pure line drift and every symbol is
+intact:
+
+| Symbol | Was | Now |
+|---|---|---|
+| `agent_add_extension` handler | `routes/agent.rs:720-743` | **`:744-767`** (`add_extension` :750, `persist_extension_state` :759) |
+| `update_agent_provider` handler | `routes/agent.rs:662-707` | **`:686-730`** (`ModelConfig::new` :703, `create(&payload.provider, …)` :713, `agent.update_provider` :720) |
+| `Agent::update_provider` | `agent.rs:4936-4956` | **`:5655-5675`** (`.provider_name()` :5670, `.model_config()` :5671) |
+| `get_extension_by_name` discards `enabled` | `config/extensions.rs:101-103` | **`:138-140`** |
+| `get_extension_entry_by_name` | — | **`:179-181`** (the resolver reconciliation #20 requires) |
+| `check_enable_allowed` | `extension_manager_extension.rs:97-124` | **`:97-125`** |
+| `ProviderMetadata.known_models` / `.allows_unlisted_models` | `providers/base.rs:156` / `:163` | **exact, both** |
+| `providers()` factory | `providers/factory.rs:109` | **exact**, re-exported at **`providers/mod.rs:47-49`** |
+
+⚠ **Reconciliation #20 is still exactly right and still needed.** `get_extension_by_name`
+(**`config/extensions.rs:138-140`**) is verbatim
+`get_extension_entry_by_name(name).map(|entry| entry.config)` — it still discards
+`entry.enabled`, and `check_enable_allowed` (**`extension_manager_extension.rs:97-125`**)
+is still the only thing that reads it. Resolve through the **entry**, as Step 3 does.
+
+⚠ **`with_unlisted_models` is on `ProviderMetadata`, not on a registry.** Earlier
+revisions cited `provider_registry.rs:119`; the real builder is
+`ProviderMetadata::with_unlisted_models()` at **`providers/base.rs:234-238`**, called by
+ten providers (azure, bedrock, versa_bedrock, gcpvertexai, google, openrouter, codex,
+githubcopilot, xiaomi_mimo, zai). The claim the comment makes — that a custom provider
+waves the model check through — is unchanged; only the address was wrong.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -7413,7 +8998,8 @@ four dimensions:
         // Decision b, honestly implemented: a provider that DECLARES it accepts
         // unlisted models must accept them here too. ollama, llamacpp,
         // gcpvertexai and every custom/declarative provider set this flag
-        // (`with_unlisted_models()`, provider_registry.rs:119), and the GUI's own
+        // (`ProviderMetadata::with_unlisted_models()`, providers/base.rs:235-238,
+        // called by 10 providers incl. azure/bedrock/openrouter), and the GUI's own
         // model picker honours it. Refusing `ollama` + `qwen3.6:latest` — a
         // locally pulled model that is by definition not in any published
         // catalog — would make the tool stricter than the UI it mirrors.
@@ -7471,10 +9057,19 @@ struct WorkspaceSetToolsParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     model: Option<String>,
     /// The knowledge bases active for the session, replacing the current set.
-    /// An empty list clears them. (Plural per issue #45 — see the plan's
-    /// Prerequisites section for the single-KB fallback.)
+    /// An empty list clears them. (Plural per issue #45.)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     set_knowledge_bases: Option<Vec<String>>,
+    /// Which of `set_knowledge_bases` becomes the session's **write target** —
+    /// where a `kb_write`/`kb_ingest` with no explicit `kb_id` lands.
+    ///
+    /// Omit it and the sensible thing happens: the current target is kept if it
+    /// is still in the new set, otherwise the first base in the new list is
+    /// pinned, and an empty list clears the target. Pass `""` to clear it
+    /// explicitly. Only meaningful together with `set_knowledge_bases`, and it
+    /// must name one of them — the service refuses a target outside the set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    primary_knowledge_base: Option<String>,
 }
 
 /// Is this model acceptable for this provider?
@@ -7509,10 +9104,10 @@ impl WorkspaceClient {
         //
         // Resolve through `get_extension_entry_by_name`, NOT
         // `get_extension_by_name`. The latter is `…entry_by_name(name).map(|e|
-        // e.config)` (`config/extensions.rs:101-103`) — it DISCARDS the
+        // e.config)` (`config/extensions.rs:138-140`) — it DISCARDS the
         // operator's `enabled` flag. Issue #42's gate lives one layer up, in
         // `manage_extensions`' enable path (`check_enable_allowed`,
-        // `extension_manager_extension.rs:97-124`), and `Agent::add_extension`
+        // `extension_manager_extension.rs:97-125`), and `Agent::add_extension`
         // does not re-check it. So resolving with the flag-less helper would
         // make `workspace_set_tools` a SECOND, ungated way to enable an
         // extension an operator deliberately wrote `enabled: false` for —
@@ -7565,7 +9160,7 @@ impl WorkspaceClient {
             }
             (Some(provider_name), model) => {
                 // The provider registry is the same one /agent/update_provider
-                // resolves through (routes/agent.rs:688). NOTE the real
+                // resolves through (routes/agent.rs:713). NOTE the real
                 // signature: `pub async fn providers() -> Vec<(ProviderMetadata,
                 // ProviderType)>` (`providers/factory.rs:109`, re-exported at
                 // `providers/mod.rs:47`). It must be AWAITED, and its items are
@@ -7616,7 +9211,7 @@ impl WorkspaceClient {
         };
 
         // ---- Apply. --------------------------------------------------------
-        // The exact /agent/add_extension handler path (routes/agent.rs:720-743):
+        // The exact /agent/add_extension handler path (routes/agent.rs:744-767):
         // add on the live agent, persist only after a successful load.
         let agent_manager = crate::execution::manager::AgentManager::instance()
             .await
@@ -7668,7 +9263,7 @@ impl WorkspaceClient {
         }
 
         // Model/provider — mirrors /agent/update_provider, which also persists
-        // provider_name + model_config onto the session row (agent.rs:4936-4956).
+        // provider_name + model_config onto the session row (agent.rs:5655-5675).
         if let Some((provider_name, model_name, provider)) = new_provider {
             agent
                 .update_provider(provider, &args.session_id)
@@ -7677,15 +9272,33 @@ impl WorkspaceClient {
             applied.push(format!("model={provider_name}/{model_name}"));
         }
 
-        // Knowledge bases (plural — issue #45).
+        // Knowledge bases (plural — issue #45), with their write target.
         if let Some(kbs) = args.set_knowledge_bases {
+            use crate::workspace_services::KbPrimaryChoice;
             let services = workspace_services::get()
                 .ok_or("knowledge-base scoping requires the BioRouter daemon")?;
-            services.set_knowledge_bases(&args.session_id, &kbs)?;
-            applied.push(if kbs.is_empty() {
+            // Three-valued, because the underlying model is: absent → Auto
+            // (keep-if-member, else first, else clear); `""` → an explicit
+            // "no write target here"; a name → pin it. Membership is validated
+            // by the service against the RESULTING set, so a name outside `kbs`
+            // comes back as a clear error rather than a half-applied write.
+            let primary = match args.primary_knowledge_base.as_deref() {
+                None => KbPrimaryChoice::Auto,
+                Some("") => KbPrimaryChoice::Clear,
+                Some(id) => KbPrimaryChoice::Set(id.to_string()),
+            };
+            let selection = services.set_knowledge_bases(&args.session_id, &kbs, primary)?;
+            applied.push(if selection.kb_ids.is_empty() {
                 "kb=<cleared>".to_string()
             } else {
-                format!("kb={}", kbs.join("+"))
+                // Report the RESULT, not the request: the service may have moved
+                // the write target itself, and a tool result that echoes the
+                // request teaches the model a state the store does not hold.
+                format!(
+                    "kb={} (primary={})",
+                    selection.kb_ids.join("+"),
+                    selection.primary_kb.as_deref().unwrap_or("<none>")
+                )
             });
         }
 
@@ -7741,9 +9354,9 @@ guessed):
 - `ProviderMetadata.known_models` is `Vec<ModelInfo>` with a `name` field
   (`providers/base.rs:156`), and `ProviderMetadata.allows_unlisted_models` is a
   `pub bool` on the same struct (`:163`).
-- `ModelConfig::new(&str)` is what `routes/agent.rs:679` calls, and
+- `ModelConfig::new(&str)` is what `routes/agent.rs:703` calls, and
   `crate::providers::create(&str, ModelConfig)` is the same factory at
-  `routes/agent.rs:688`.
+  `routes/agent.rs:713`.
 - `agent.persist_extension_state(&session_id)` below snapshots **every loaded**
   extension. That is why Task 18 must land its auto-injection exclusion first
   (reconciliation #13): without it, this call is one of the two places that would
@@ -7983,7 +9596,8 @@ is one park behaviour in the extension, not two:
 | Aspect | Rule | Why |
 |---|---|---|
 | Bound | `timeout_s` default 120, clamped to 600 | Same clamp as `send_prompt` (`:timeout_s.unwrap_or(120).min(600)`); a tool call must not outlive a turn |
-| Timeout is not an error | Returns a normal result saying which sessions are still running | Same as `subagent_status`'s documented "a timeout is not an error — the subagent keeps running" (`subagent_tool.rs:196`) |
+| Timeout is not an error | Returns a normal result saying which sessions are still running | Same as `subagent_status`'s documented "a timeout is not an error — the subagent keeps running" (`subagent_tool.rs:191`, the `timeout_s` schema description — the plan's old `:196` is
+five lines further down, on `cancel`) |
 | Subscribe-before-check | Subscribes to every id, THEN checks whether each is already idle | Closes the race where a session finishes between the caller's `workspace_list` and its `workspace_watch` |
 | Already-finished sessions | Return immediately, listed as `completed` with reason `"already idle"` | A watch that blocks on a finished session for 120 s is a deadlock the model cannot diagnose |
 | **Unknown liveness** | **Park.** Never report `"already idle"` from an *unknown* | See below — this is the headless correctness rule |
@@ -8625,11 +10239,11 @@ sets. Only the spawn tool rides along on the auto-inject. The filter that expres
 already exists and is enforced in **both** places it must be:
 
 - advertisement — `get_prefixed_tools` only emits a tool when
-  `config.is_tool_available(&tool.name)` (`extension_manager.rs:971`), and an empty
+  `config.is_tool_available(&tool.name)` (`extension_manager.rs:1119`), and an empty
   `available_tools` means "all" (`extension.rs:563-580`, and the test at
-  `extension_manager.rs:2346` says so in as many words);
+  `extension_manager.rs:2496` says so in as many words);
 - dispatch — `dispatch_tool_call` re-checks the same predicate and returns
-  `RESOURCE_NOT_FOUND` otherwise (`extension_manager.rs:1332-1344`), so a model that
+  `RESOURCE_NOT_FOUND` otherwise (`extension_manager.rs:1483-1495`), so a model that
   remembers a tool name from another session cannot reach a handler this session was
   never granted.
 
@@ -8643,13 +10257,34 @@ because both are the same extension key with the same client.
 
 **Files:**
 
-- Modify: `crates/biorouter/src/agents/agent.rs` — `list_tools` (:2618; `get_prefixed_tools`
-  at :2619-2623, `subagents_enabled` at :2625, the spawn-tool push block at :2653-2666):
-  hoist the injection **above** `get_prefixed_tools`; `persist_extension_state` (:2441)
-  gains the auto-injection filter; `add_extension` clears the mark; the `Agent` struct
-  (:273) gains one field
+- Modify: `crates/biorouter/src/agents/agent.rs` — `list_tools` (**:3113-3164**;
+  `get_prefixed_tools` call at **:3116**, `subagents_enabled` call at **:3120**-ish
+  inside the same fn, the spawn-tool push block at **:3149-3160** with
+  `create_subagent_tool` pushed at **:3152** and `create_subagent_status_tool` at
+  **:3158**): hoist the injection **above** `get_prefixed_tools`;
+  `persist_extension_state` (**:2936-2955**) gains the auto-injection filter;
+  `add_extension` (**:3030**) clears the mark; the `Agent` struct (**:514-603**) gains
+  one field, initialized in the single `Agent { … }` literal whose `soft_interrupts`
+  line is at **:870**
 - Modify: `crates/biorouter/src/agents/workspace_extension.rs` — advertise
   `create_subagent_tool(&[])` from `get_tools()`, plus one sentence in `INSTRUCTIONS`
+
+⚠ **This task has the largest block of line drift in the plan — 22 anchors, all in
+`agent.rs`, which grew from 6,001 lines to 6,817.** Every number above and below has been
+re-verified at `275d735d` (2026-07-28) and every **symbol** is intact and unchanged in
+shape. If a number still misses, the symbol is the anchor; expect a residual offset of
+roughly **+240 to +710** on any `agent.rs:NNNN` this plan cites that has *not* been
+re-verified, and never trust a near miss.
+
+Two structural facts that also survived and that this task depends on:
+
+- The spawn-tool push at **:3149-3160** is still the **only** place
+  `create_subagent_tool` is pushed anywhere in the tree, so the delegation hole
+  reconciliation #13 and the 18 → 19 ordering are about is real and unchanged.
+- The spawn *gate* at **:2632** still keys only on
+  `session.session_type == SessionType::SubAgent`, never on `subagents_enabled` — which
+  is exactly what makes the two-persist-path filter below load-bearing rather than
+  cosmetic.
 
 **Why the advertisement lands HERE and not in Task 19.** Task 18 exists to close the
 delegation hole *before* Task 19 opens it, and the ordering is called non-negotiable for
@@ -8664,10 +10299,12 @@ is deliberate, lives for exactly one commit, and is strictly safer than a commit
 neither.
 
 **Where the injection goes, and why not `get_extensions_map`.** The obvious mirror is
-`config/extensions.rs::get_extensions_map` (:59-73), which injects absent platform
-extensions with their defaults. That is the wrong seam here for one verified reason:
+`config/extensions.rs::get_extensions_map` (**:30**, whose
+`inject_platform_extensions(&mut extensions_map)` call is at **:57** and whose helper
+is **:61-106**), which injects absent platform extensions with their defaults. That is
+the wrong seam here for one verified reason:
 `subagents_enabled` is a **per-agent, per-session, async** predicate
-(`agent.rs:2582-2617` — it reads the agent's mode, its provider's model name, the
+(`agent.rs:3076-3111` — it reads the agent's mode, its provider's model name, the
 session's type, and whether any extension is loaded at all), while `get_extensions_map`
 is a synchronous read of the global config with no session in scope. Injecting there
 would enable the workspace extension for every session in the config file, which is
@@ -8705,7 +10342,7 @@ In `agent.rs`'s test module, beside the existing subagent-guard tests:
     }
 
     /// The dispatch half of the same guarantee: `available_tools` is enforced
-    /// on the call path too (extension_manager.rs:1332), so a remembered tool
+    /// on the call path too (extension_manager.rs:1483), so a remembered tool
     /// name cannot reach the handler.
     #[tokio::test]
     async fn an_auto_injected_session_cannot_dispatch_a_cross_session_tool() {
@@ -8773,7 +10410,7 @@ In `agent.rs`'s test module, beside the existing subagent-guard tests:
 
         // BOTH persist paths must filter, so assert on the SHARED helper first —
         // that is the one thing covering `save_extension_state` too. That method
-        // is the reply loop's own path (`agent.rs:4234`, fired whenever the model
+        // is the reply loop's own path (`agent.rs:4883`, fired whenever the model
         // enables an extension mid-turn through `manage_extensions`); it snapshots
         // the same set and, without the shared helper, is unfiltered.
         let persistable: Vec<String> = agent
@@ -8852,7 +10489,9 @@ In `agent.rs`'s test module, beside the existing subagent-guard tests:
 
 Both helpers build an `Agent` over a `TempDir`-backed `SessionManager` with exactly one
 loaded extension (`subagents_enabled` returns false when the extension list is empty —
-`agent.rs:2613-2617`) and the requested mode:
+its final expression is the `!self.extension_manager.list_extensions().await
+.map(|ext| ext.is_empty()).unwrap_or(true)` at `agent.rs:3105-3110`) and the requested
+mode:
 
 ```rust
     async fn agent_for_tests(mode: crate::config::BioRouterMode) -> (Agent, String) {
@@ -8899,8 +10538,8 @@ loaded extension (`subagents_enabled` returns false when the extension list is e
 
 (`BioRouterMode`'s exact variant names: `grep -n "pub enum BioRouterMode" -A 10
 crates/biorouter/src/config/mod.rs` — the non-Auto variant is what
-`subagents_enabled`'s `!= BioRouterMode::Auto` gate at :2596 rejects. `subagents_enabled`
-also refuses when the provider's model starts with `gemini` (:2600-2607); a
+`subagents_enabled`'s `!= BioRouterMode::Auto` gate at :3082-3084 rejects. `subagents_enabled`
+also refuses when the provider's model starts with `gemini` (:3085-3092); a
 provider-less test agent's `provider()` returns `Err`, and the `.unwrap_or(false)`
 there keeps the gate open — the `assert!(agent.subagents_enabled(...))` precondition is
 what proves it.)
@@ -8914,10 +10553,10 @@ unprefixed `subagent`).
 - [ ] **Step 3: Implement the per-session injection**
 
 **The injection must run BEFORE `get_prefixed_tools`.** `Agent::list_tools` reads the
-extension manager exactly once, at its first statement (`agent.rs:2619-2623`), and every
+extension manager exactly once, at its first statement (`agent.rs:3116`), and every
 later `prefixed_tools.push(...)` appends *hand-built* tools. `ensure_spawn_extension`
 only **loads** an extension — it does not re-run `get_prefixed_tools` — so calling it at
-`:2653`, where the old push was, produces a tool list with no spawn tool at all on that
+`:3152`, where the old push was, produces a tool list with no spawn tool at all on that
 turn. Because the extension is then already loaded, the *next* turn would have it, which
 makes the bug present itself as "the first turn of every session cannot delegate" — and
 for a one-shot `biorouter run`, every turn is the first turn.
@@ -8949,7 +10588,7 @@ So `list_tools` opens with the gate and the injection, and the tool list is buil
 
 (the `let subagents_enabled = …` binding at :2625 moves up with it — it is used by
 nothing between the two positions — and the `if subagents_enabled { … }` push block at
-:2653-2666 stays as it is until Task 19 deletes it. Sub-workflow descriptions are
+:3149-3160 stays as it is until Task 19 deletes it. Sub-workflow descriptions are
 handled in Task 19 Step 4.)
 
 and add the method beside it:
@@ -8969,7 +10608,7 @@ and add the method beside it:
             description: "Delegate work to subagents".to_string(),
             bundled: Some(true),
             // The spawn-only surface. Enforced on BOTH the advertisement path
-            // (extension_manager.rs:971) and the dispatch path (:1332).
+            // (extension_manager.rs:1119) and the dispatch path (:1483).
             available_tools: vec![
                 crate::agents::subagent_tool::SUBAGENT_TOOL_NAME.to_string(),
             ],
@@ -8996,8 +10635,10 @@ and add the method beside it:
 ```
 
 `Agent::add_extension` is the same method `/agent/add_extension` calls
-(`routes/agent.rs:720`); `is_extension_enabled` is `extension_manager.rs:845`. Because
-`list_tools` runs on every turn (`reply_parts.rs:120` region), the check is re-evaluated
+(`routes/agent.rs:744`); `is_extension_enabled` is **`extension_manager.rs:987`** (the
+plan's old `:999` is `get_extension_configs`, one method further down — a near miss, and
+the two do very different things). Because
+`list_tools` runs on every turn (`reply_parts.rs:119` region), the check is re-evaluated
 each turn — correct: a session whose mode changes mid-run to one where
 `subagents_enabled` is false simply stops advertising the tool, and one that gains its
 first extension gains it.
@@ -9008,7 +10649,7 @@ enough to achieve that.** The auto-injection is a *derived* consequence of
 `extension_data` would make it survive a mode change to Chat as a dead entry, and would
 show up in Settings as if the user had enabled Workspace Control.
 
-But `persist_extension_state` (`agent.rs:2442-2461`) does not snapshot *the extension
+But `persist_extension_state` (`agent.rs:2936-2955`) does not snapshot *the extension
 being changed* — it snapshots **every extension currently loaded**:
 
 ```rust
@@ -9020,9 +10661,9 @@ so once `ensure_spawn_extension` has run, the very next persist by **any** calle
 the injection into the session row.
 
 **And there are TWO such methods, not one.** `save_extension_state`
-(`agent.rs:2419-2439`) has a structurally identical body — same
+(`agent.rs:2913-2933`) has a structurally identical body — same
 `get_extension_configs()` snapshot, same `extension_data` write — and its caller is
-inside the agent's own reply loop (`agent.rs:4233-4237`):
+inside the agent's own reply loop (`agent.rs:4880-4886`):
 
 ```rust
 if all_install_successful && !enable_extension_request_ids.is_empty() {
@@ -9038,7 +10679,7 @@ closes two doors of three.
 The consequence is not cosmetic. A persisted `workspace {available_tools:["subagent"]}`
 entry reloads in a session whose mode no longer enables subagents, and dispatch gates
 the spawn tool **only** on `session.session_type == SessionType::SubAgent`
-(`agent.rs:2138`), never on `subagents_enabled` — so the dead grant is a *live*,
+(`agent.rs:2632`), never on `subagents_enabled` — so the dead grant is a *live*,
 dispatchable spawn tool in a mode whose gate says delegation is off.
 
 So extract ONE filter and call it from both:
@@ -9056,7 +10697,7 @@ pub struct Agent {
 ```
 
 (initialized `auto_injected_extensions: Mutex::new(HashSet::new())` beside the other
-`Mutex` fields in the single `Agent { … }` literal, `agent.rs:579` inside
+`Mutex` fields in the single `Agent { … }` literal, `agent.rs:870` inside
 `with_config`), plus the shared helper and four call-site changes:
 
 ```rust
@@ -9079,24 +10720,25 @@ pub struct Agent {
             .collect()
     }
 
-    // 1. agent.rs:2419 — the reply loop's path:
+    // 1. agent.rs:2913 — the reply loop's path:
     pub async fn save_extension_state(&self, session: &SessionConfig) -> Result<()> {
         let extensions_state =
             EnabledExtensionsState::new(self.persistable_extension_configs().await);
-        // … the rest is unchanged (:2424-2439).
+        // … the rest is unchanged (:2918-2933).
 
-    // 2. agent.rs:2442 — the route/tool path:
+    // 2. agent.rs:2936 — the route/tool path:
     pub async fn persist_extension_state(&self, session_id: &str) -> Result<()> {
         let extensions_state =
             EnabledExtensionsState::new(self.persistable_extension_configs().await);
-        // … the rest is unchanged (:2445-2461).
+        // … the rest is unchanged (:2940-2955).
 ```
 
-3. In `add_extension` (`agent.rs:2536`), right after a successful load. Note the
+3. In `add_extension` (`agent.rs:3030`), right after a successful load. Note the
    binding: this function's parameter is `extension: ExtensionConfig` — there is **no**
    `name` in scope (that is `remove_extension`, the adjacent function), so
    `name.as_str()` is E0425. `extension` is still live after the `match` because the
-   non-Frontend arm passes `extension.clone()` to the extension manager (`:2565`):
+   non-Frontend arm passes `extension.clone()` to the extension manager (that arm is
+   `:3057-3061`, with `extension.clone()` on `:3059`):
 
 ```rust
         // An EXPLICIT add is a user decision, even for a name we auto-injected
@@ -9138,7 +10780,7 @@ In `workspace_extension.rs`'s `get_tools()`, append:
 
 `get_tools()` is an associated fn with no session in scope, so it always advertises the
 tool; the *per-session* gate is `available_tools`, enforced on both the advertisement
-path (`extension_manager.rs:971`) and the dispatch path (`:1332`) — which is exactly the
+path (`extension_manager.rs:1119`) and the dispatch path (`:1483`) — which is exactly the
 two-tier table above. A session that never auto-injected and never enabled `workspace`
 simply does not have this client loaded.
 
@@ -9162,7 +10804,7 @@ for Task 24's `workspace_open` line.
 
 Run: `cargo test -p biorouter --lib agents::agent agents::workspace_extension agents::extension_manager`
 Expected: PASS (5 new agent tests, including the persistence exclusion; the
-`available_tools` tests at `extension_manager.rs:2313-2380` still green — this task
+`available_tools` tests at `extension_manager.rs:2456-2545` still green — this task
 relies on them, it does not change them).
 
 - [ ] **Step 7: Commit**
@@ -9200,7 +10842,7 @@ auto-injection every existing config loses delegation the moment this lands.
 **What the tool surface becomes (decision 22 — the name does not change):**
 
 ```
-model calls:   workspace__subagent        (prefixed by extension_manager.rs:971)
+model calls:   workspace__subagent        (prefixed by extension_manager.rs:1121)
                subagent                   (tolerated bare form, prefix-stripping models)
 params:        instructions, subworkflow, parameters, extensions, settings,
                summary, background        ← EVERY existing field, unchanged
@@ -9212,17 +10854,20 @@ operator merged instead of adding `workspace_spawn_subagent` beside it.
 
 **Files:**
 
-- Modify: `crates/biorouter/src/agents/subagent_tool.rs` (:27 `SUBAGENT_TOOL_NAME` +
-  the new prefixed constant, :113-174 `create_subagent_tool` schema, `SubagentParams`
-  :86-100 gains two fields, the background-result text at :633 extracted and rewritten)
-- Modify: `crates/biorouter/src/agents/agent.rs` (:2216 dispatch arm, :2318
-  `bound_dispatch`, :2138 recursion guard, :2653-2663 the `create_subagent_tool` push
-  **delete** — Task 18 advertised it from the extension; sub-workflow description
-  rewrite)
+- Modify: `crates/biorouter/src/agents/subagent_tool.rs` (**anchors re-verified at
+  `275d735d`**: **:27** `SUBAGENT_TOOL_NAME` + the new prefixed constant,
+  **:113-172** `create_subagent_tool` schema, `SubagentParams` **:85-100** gains two
+  fields (today: `instructions`, `subworkflow`, `parameters`, `extensions`, `settings`,
+  `summary`, `background`), the background-result text at **:633** extracted and
+  rewritten)
+- Modify: `crates/biorouter/src/agents/agent.rs` (**:2710** dispatch arm
+  (`if tool_call.name == SUBAGENT_TOOL_NAME`), **:2812** `bound_dispatch`, **:2632**
+  recursion guard, **:3149-3160** the `create_subagent_tool` push **delete** — Task 18
+  advertised it from the extension; sub-workflow description rewrite)
 - Modify: `crates/biorouter/src/agents/extension_manager.rs` (one small public helper
   for the per-session availability re-check — see Step 5)
-- Modify: `crates/biorouter/src/agents/reply_parts.rs` (:133-140 the code-execution
-  retain filter)
+- Modify: `crates/biorouter/src/agents/reply_parts.rs` (**:127-141** the code-execution
+  retain filter; the `SUBAGENT_TOOL_NAME` clause is **:135**)
 - Modify: `crates/biorouter/tests/subagent_tool_tests.rs` (5 `create_subagent_tool` /
   `SUBAGENT_TOOL_NAME` sites)
 
@@ -9230,16 +10875,23 @@ operator merged instead of adding `workspace_spawn_subagent` beside it.
 
 ```bash
 grep -rn "create_subagent_tool\|SUBAGENT_TOOL_NAME" crates/ | grep -v "^crates/biorouter/src/agents/subagent_tool.rs"
-# Verified at a01be9b7 — 13 sites in 3 files:
-#   crates/biorouter/src/agents/agent.rs            6
-#   crates/biorouter/src/agents/reply_parts.rs      2
-#   crates/biorouter/tests/subagent_tool_tests.rs   5
+# RE-VERIFIED at 275d735d (2026-07-28) — still exactly 13 sites in 3 files:
+#   crates/biorouter/src/agents/agent.rs            6   (:36, :37, :2632, :2710, :2812, :3152)
+#   crates/biorouter/src/agents/reply_parts.rs      2   (:20, :135)
+#   crates/biorouter/tests/subagent_tool_tests.rs   5   (:1, :48, :57, :86, :88)
 ```
 
 (The earlier draft of this plan claimed `agent.rs (4)` and `subagent_tool_tests.rs (4)`.
 Both were undercounts; the numbers above were produced by running the command. A sweep
 whose expected output is wrong is worse than no sweep — the engineer stops when the
 counts match.)
+
+⚠ **Run the command as written, both halves.** The 2026-07-28 drift survey reported
+this count as wrong (claiming 10 sites, with `reply_parts.rs` at 0 and `subagent_tool.rs`
+included) — it had dropped the `SUBAGENT_TOOL_NAME` alternation and the `grep -v`
+exclusion. Re-running the *exact* pipeline above reproduces 13/6/2/5 line-for-line. If
+your run disagrees, check your command before you check the tree: `reply_parts.rs`
+matches on the **constant**, not on `create_subagent_tool`, which it has never used.
 
 - [ ] **Step 2: Write the failing tests**
 
@@ -9369,7 +11021,8 @@ In `agent.rs`'s test module:
 `test_create_tool_with_subworkflows`, which asserts the same two substrings against
 `create_subagent_tool` directly — this is that assertion, moved onto the real advertised
 tool. `Agent::add_sub_workflows(Vec<SubWorkflow>)` is the registration method
-(`agent.rs:2103`); the map itself is `Mutex<HashMap<String, SubWorkflow>>` at `:278`.
+(`agent.rs:2597`, `add_sub_workflows`); the map itself is
+`Mutex<HashMap<String, SubWorkflow>>` at `:519`.
 `SubWorkflow` is `crate::workflow::SubWorkflow` (`workflow/mod.rs:120`), with exactly the
 five fields used above.)
 
@@ -9394,7 +11047,7 @@ In `subagent_tool.rs`:
 pub const SUBAGENT_TOOL_NAME: &str = "subagent";
 /// The name dispatch actually sees once the workspace extension advertises the
 /// tool: extension-advertised tools are prefixed `{extension}__{tool}`
-/// (`extension_manager.rs:971`).
+/// (`extension_manager.rs:1119`).
 pub const SUBAGENT_TOOL_PREFIXED: &str = "workspace__subagent";
 ```
 
@@ -9427,16 +11080,16 @@ properties beside `summary`:
 ```
 
 (d) **Delete** the standalone advertisement in `agent.rs` — the
-`prefixed_tools.push(create_subagent_tool(&sub_workflows_vec));` at `:2658` and the
-`sub_workflows` read that feeds it (`:2656-2657`). Task 18 hoisted the injection above
+`prefixed_tools.push(create_subagent_tool(&sub_workflows_vec));` at `:3152` and the
+`sub_workflows` read that feeds it (`:3150-3151`). Task 18 hoisted the injection above
 `get_prefixed_tools` and added the extension-side advertisement, so this push is now the
 duplicate. Leave the surrounding `if subagents_enabled { … }` block in place if the
-`create_subagent_status_tool` push at `:2660-2664` is still inside it; Task 19b removes
+`create_subagent_status_tool` push at `:3155-3159` is still inside it; Task 19b removes
 the block entirely.
 
 **And drop `create_subagent_tool` from the import at `agent.rs:36`.** After this
 deletion `grep -n create_subagent_tool crates/biorouter/src/agents/agent.rs` must
-return nothing: `:2658` was its only use in the file, Step 4(f)'s replacement calls
+return nothing: `:3152` was its only use in the file, Step 4(f)'s replacement calls
 `crate::agents::subagent_tool::build_tool_description` fully qualified, and
 `./scripts/clippy-lint.sh` runs `-D warnings`, where an unused import is fatal. The
 Task 21 gate asserts `expect: 0` for exactly this grep. `SUBAGENT_TOOL_NAME` STAYS on
@@ -9521,12 +11174,28 @@ runs before it). `build_tool_description` is currently private — make it
 
 - [ ] **Step 5: Rewire dispatch**
 
+⚠ **`is_spawn_tool_call` does not exist yet — this step CREATES it** (clarified
+2026-07-28; verified: `grep -rn "is_spawn_tool_call" crates/` returns nothing. The
+repo-root form of that grep returns 29 hits, all of them this plan file citing the
+name, so `crates/` is the scope that answers the question). Reconciliation #17 says this step "adds `is_parking_workspace_tool` beside
+`is_spawn_tool_call`", which reads as though the latter were already there. It is not.
+What exists today is the inline predicate the helper below replaces:
+
+```rust
+// agent.rs:2812, inside dispatch_tool_call's returned future setup:
+let bound_dispatch = tool_call.name != SUBAGENT_TOOL_NAME;
+```
+
+with its reasoning at **:2805-2810** and the acquire at **:2827-2837**. So this step is
+*extract the inline predicate into a named helper, then add the parking-tool sibling* —
+in that order, and both in `agent.rs`.
+
 In `agent.rs`, add beside the guards:
 
 ```rust
 /// BR-71 decision 22: the merged spawn tool reaches dispatch under the
 /// workspace prefix, and bare for models that strip prefixes (the same
-/// tolerance `extension_manager.rs:1294-1304` already applies to
+/// tolerance `extension_manager.rs:1444-1457` already applies to
 /// code_execution tools).
 pub(crate) fn is_spawn_tool_call(tool_name: &str) -> bool {
     tool_name == crate::agents::subagent_tool::SUBAGENT_TOOL_PREFIXED
@@ -9534,13 +11203,13 @@ pub(crate) fn is_spawn_tool_call(tool_name: &str) -> bool {
 }
 ```
 
-Change the dispatch arm at :2216 from `if tool_call.name == SUBAGENT_TOOL_NAME` to
+Change the dispatch arm at **:2710** from `if tool_call.name == SUBAGENT_TOOL_NAME` to
 `if is_spawn_tool_call(tool_call.name.as_ref())`, and insert the gating re-check as its
 first statement — the workspace surface must not bypass the mode/model gating the
 advertisement applies:
 
 ```rust
-            // Same gate `subagents_enabled` applies when advertising (:2588).
+            // Same gate `subagents_enabled` applies when advertising (:3076).
             // The extension advertises the tool; this is what stops a model
             // that remembers the name from spawning in a session where
             // delegation is off.
@@ -9556,7 +11225,7 @@ advertisement applies:
             }
             // …and the PER-SESSION grant, which the mode gate above does not
             // cover. Intercepting before `ExtensionManager::dispatch_tool_call`
-            // means the `available_tools` check at `extension_manager.rs:1333`
+            // means the `available_tools` check at `extension_manager.rs:1484`
             // never runs for this name, so a session whose `workspace` entry was
             // deliberately restricted — say `available_tools:
             // ["workspace_list"]` — could still spawn through the BARE
@@ -9579,7 +11248,7 @@ advertisement applies:
             }
 ```
 
-with the helper in `extension_manager.rs`, beside the existing check at `:1333`:
+with the helper in `extension_manager.rs`, beside the existing check at `:1484`:
 
 ```rust
     /// Is `tool` granted for `extension` in this session's configuration?
@@ -9628,7 +11297,7 @@ and the matching test in `agent.rs`:
 The rest of the arm (`let provider = …` through `handle_subagent_tool(…)`, :2217-2249)
 is **byte-identical** to today's body.
 
-Update `bound_dispatch` at :2318 from `tool_call.name != SUBAGENT_TOOL_NAME` to
+Update `bound_dispatch` at **:2812** from `tool_call.name != SUBAGENT_TOOL_NAME` to
 
 ```rust
         // The exclusions from the process-global 8-permit tool semaphore
@@ -9638,7 +11307,7 @@ Update `bound_dispatch` at :2318 from `tool_call.name != SUBAGENT_TOOL_NAME` to
         // The spawn tool, under BOTH name forms: it recursively runs its own
         // agent loop whose leaf tools contend for this same semaphore, so a
         // wrapper holding a permit while its inner tools wait for one would
-        // deadlock — the reason stated in the comment at :2312-2317.
+        // deadlock — the reason stated in the comment at :2805-2810.
         //
         // BR-71 adds two more wrappers with exactly that shape. Both PARK on
         // work performed elsewhere, for up to 600 s:
@@ -9706,7 +11375,7 @@ deadlock:
     }
 ```
 
-Update the recursion guard at :2138 the same way:
+Update the recursion guard at **:2632** the same way:
 
 ```rust
         if session.session_type == SessionType::SubAgent && is_spawn_tool_call(tool_call.name.as_ref()) {
@@ -9719,7 +11388,7 @@ subagents", and the broader guard is the backstop.)
 
 - [ ] **Step 6: Fix the code-execution retain filter — for the WHOLE workspace surface**
 
-`reply_parts.rs:127-142` keeps only `code_execution__*` tools plus the bare `subagent` /
+`reply_parts.rs:127-141` keeps only `code_execution__*` tools plus the bare `subagent` /
 `subagent_status` when the code-execution extension is on. Two things are wrong with it
 after the merge, and the second is worse than the first:
 
@@ -9750,7 +11419,7 @@ pub(crate) fn survives_code_execution_filter(tool_name: &str, code_exec_prefix: 
         || tool_name == SUBAGENT_TOOL_NAME
         || tool_name == SUBAGENT_TOOL_PREFIXED
         // KEEP until Task 19b deletes the tool itself. `subagent_status` is
-        // still advertised at this commit (`agent.rs:2664`, gated on
+        // still advertised at this commit (`agent.rs:3158`, gated on
         // `BIOROUTER_SUBAGENT_BACKGROUND`), and BR-40's reason for the clause
         // still holds: a model that can spawn a background child but cannot poll
         // it strands every handle. Dropping it here also orphans the import at
@@ -9830,25 +11499,35 @@ human; the mapping table is reconciliation #12.
 
 **Files:**
 
-- Modify: `crates/biorouter/src/agents/subagent_tool.rs` (:28 `SUBAGENT_STATUS_TOOL_NAME`,
-  :176-206 `create_subagent_status_tool`, :208-216 `SubagentStatusParams`, :228-244
-  `handle_subagent_status_tool`, :246+ the private `subagent_status`, the prose at :162
-  and :346 and :582, and the two tests at :907 and :949 — **all deleted**)
-- Modify: `crates/biorouter/src/agents/agent.rs` (:36 import, :2250-2258 dispatch arm,
-  :2660-2664 the offering — all deleted)
-- Modify: `crates/biorouter/src/agents/reply_parts.rs` (:20 import, :136 the retain
-  clause)
-- Modify: `crates/biorouter/src/agents/subagent_handle.rs` (5 doc-comment mentions)
-- Modify: `crates/biorouter/src/agents/mod.rs` (:56 — the doc comment above
+**Anchors re-verified at `275d735d`, 2026-07-28.**
+
+- Modify: `crates/biorouter/src/agents/subagent_tool.rs` (**:28**
+  `SUBAGENT_STATUS_TOOL_NAME`, **:176-208** `create_subagent_status_tool`, **:211-216**
+  `SubagentStatusParams`, **:228-244** `handle_subagent_status_tool`, **:246+** the
+  private `subagent_status`, the prose at **:162**, **:346** and **:582**, and the two
+  tests at **:907** and **:949** — **all deleted**)
+- Modify: `crates/biorouter/src/agents/agent.rs` (**:36** import, **:2744-2752**
+  dispatch arm (`} else if tool_call.name == SUBAGENT_STATUS_TOOL_NAME {`), **:3155-3159**
+  the offering (`if subagent_handle::background_enabled() { … create_subagent_status_tool() }`)
+  — all deleted)
+- Modify: `crates/biorouter/src/agents/reply_parts.rs` (**:20** import, **:136-139** the
+  retain clause and its BR-40 comment)
+- Modify: `crates/biorouter/src/agents/subagent_handle.rs` (5 doc-comment mentions:
+  **:10**, **:18**, **:29**, **:45**, **:68**)
+- Modify: `crates/biorouter/src/agents/mod.rs` (**:56** — the doc comment above
   `pub mod subagent_handle`)
-- Modify: `docs/agent-loop/tool-routing.md` (:33)
+- Modify: `docs/agent-loop/tool-routing.md` (**:33**)
+- Modify: **`docs/security/privacy-tiers.md` (:1677)** — ⚠ a **fourth** live doc site,
+  added after this task was written by `9eb6de4b docs(security): propose the
+  privacy-tier capability system`. It is the one sweep expectation in this task that
+  drifted. See Step 1.
 
 - [ ] **Step 1: Sweep, with the real expected output**
 
 ```bash
 grep -rn "subagent_status\|SUBAGENT_STATUS\|create_subagent_status_tool\|handle_subagent_status_tool\|SubagentStatusParams" \
   crates/ ui/desktop/src scripts/ .claude/ 2>/dev/null
-# Verified at a01be9b7 — 31 sites in 5 files:
+# RE-VERIFIED at 275d735d (2026-07-28) — still exactly 31 sites in 5 files:
 #   crates/biorouter/src/agents/subagent_tool.rs     17
 #   crates/biorouter/src/agents/agent.rs              5
 #   crates/biorouter/src/agents/subagent_handle.rs    5
@@ -9857,15 +11536,32 @@ grep -rn "subagent_status\|SUBAGENT_STATUS\|create_subagent_status_tool\|handle_
 # Nothing under ui/desktop/src, scripts/ or .claude/.
 
 grep -rn "subagent_status" docs/ | grep -v "^docs/history/" | grep -v br71-execution-plan
-# Verified: 3 live docs — agent-workspace-control.md:421 and :545, tool-routing.md:33.
+# AMENDED 2026-07-28 — FOUR live docs, not three:
+#   docs/agent-loop/designs/agent-workspace-control.md:421   (Task 43 closes the design doc)
+#   docs/agent-loop/designs/agent-workspace-control.md:545   (Task 43)
+#   docs/agent-loop/tool-routing.md:33                       (this task)
+#   docs/security/privacy-tiers.md:1677                      (this task)  <-- NEW
 # The `grep -v br71-execution-plan` is not optional: THIS PLAN lives under docs/ and
-# contributes ~60 hits, which drown the three lines the sweep exists to find.
-# docs/history/** is an immutable record; do NOT edit it.
+# contributes ~60 hits, which drown the four lines the sweep exists to find.
+# docs/history/** is an immutable record; do NOT edit it (it holds 3 further hits).
 ```
 
-(The earlier draft claimed "14 code sites: subagent_tool.rs (8), agent.rs (4),
+(The earliest draft claimed "14 code sites: subagent_tool.rs (8), agent.rs (4),
 reply_parts.rs (2)" and omitted `subagent_handle.rs` and `agents/mod.rs` entirely. The
 counts above came from running the commands.)
+
+⚠ **On the two counts, and on trusting a re-count more than the command.** A
+2026-07-28 drift survey reported both this task's and Task 19's sweep counts as wrong.
+Re-running the exact pipelines above at `275d735d` reproduces **31/17/5/5/3/1** and
+Task 19's **13/6/2/5**, line for line. The survey had recounted with narrower patterns.
+Only the **docs** half really drifted, and it drifted in the direction the plan warns
+about: a *new* site appeared. So run the commands verbatim, and treat a disagreement as
+a difference in command before a difference in tree.
+
+`docs/security/privacy-tiers.md:1677` mentions `subagent_status` in passing, inside a
+parenthetical about session scoping. It needs a one-clause rewrite naming the
+replacement (`workspace_read_conversation` / `workspace_watch`), not a deletion — the
+surrounding argument about session-scoped capability still stands.
 
 - [ ] **Step 2: Write the failing tests**
 
@@ -9874,9 +11570,10 @@ counts above came from running the commands.)
 "`list_tools` does not mention it" — is two tautologies: the workspace extension never
 advertised `subagent_status` at all (`get_tools()` returns only `workspace_*` plus the
 spawn tool), and the `Agent` offers it **only** when
-`subagent_handle::background_enabled()` is true (`agent.rs:2663-2664`), which reads
+`subagent_handle::background_enabled()` is true (`agent.rs:3156-3159`), which reads
 `BIOROUTER_SUBAGENT_BACKGROUND` and **defaults to false**
-(`subagent_handle.rs:47-51`). Both would pass on an unmodified tree, so Step 3's
+(`subagent_handle.rs:47-51`, `.unwrap_or(false)` at :50). Both would pass on an
+unmodified tree, so Step 3's
 "Expected: FAIL" could never happen and a botched deletion would still show green.
 
 ```rust
@@ -9923,16 +11620,16 @@ passes, the gate did not open** — check that `lock_env` is in the test and tha
 - [ ] **Step 4: Delete the tool**
 
 In `subagent_tool.rs`: delete `SUBAGENT_STATUS_TOOL_NAME` (:28),
-`create_subagent_status_tool` (:176-206), `SubagentStatusParams` (:208-216),
+`create_subagent_status_tool` (:176-208), `SubagentStatusParams` (:211-216),
 `handle_subagent_status_tool` (:228-244), the private `subagent_status` (:246+), and
 `wait_duration` / `list_handles` **if** nothing else calls them (`cargo check` names
 them). Delete the two tests at :907 and :949. Rewrite the three prose mentions at :162,
 :346 and :582 to name the workspace replacement from reconciliation #12's table.
 
 In `agent.rs`: delete the `else if tool_call.name == SUBAGENT_STATUS_TOOL_NAME` arm
-(:2250-2258), the `create_subagent_status_tool` import (:36), and the offering block at
-:2660-2664 — which, with Task 19's deletion of the spawn push, empties the
-`if subagents_enabled { … }` block at `:2653`; delete the block too (`subagents_enabled`
+(:2744-2752), the `create_subagent_status_tool` import (:36), and the offering block at
+:3155-3159 — which, with Task 19's deletion of the spawn push, empties the
+`if subagents_enabled { … }` block at `:3149-3160`; delete the block too (`subagents_enabled`
 is still used by Task 18's injection at the top of `list_tools` and by the
 sub-workflow-description rewrite, so the binding stays).
 
@@ -9958,6 +11655,12 @@ import is E0425, the import without the clause is an unused import, and
   "`subagent`/`subagent_status` (which paradoxically require at least one extension to
   …)". Rewrite it for the merged surface; Task 42 owns the full routing table, this is
   just the removal.
+- **`docs/security/privacy-tiers.md:1677`** (added 2026-07-28) — the parenthetical
+  *"(… `subagent_status` is session-scoped)"* inside a `Status: Proposed` design's
+  discussion of scoping. Replace the tool name with its replacement
+  (`workspace_read_conversation` / `workspace_watch`, both session-scoped in the same
+  way) and leave the surrounding argument alone. Do **not** delete the sentence: the
+  point it makes about session scoping is still true and is not BR-71's to retract.
 
 - [ ] **Step 6: Run the full agent + integration suites**
 
@@ -9986,7 +11689,9 @@ that made the old, excluded form print output forever.)
 - [ ] **Step 8: Commit**
 
 ```bash
-git add crates/biorouter/src/agents docs/agent-loop/tool-routing.md
+git add crates/biorouter/src/agents \
+        docs/agent-loop/tool-routing.md \
+        docs/security/privacy-tiers.md
 git commit -m "feat(subagent)!: remove subagent_status; its jobs move to workspace_list/read/watch/close (BR-71)"
 ```
 
@@ -10428,10 +12133,69 @@ git commit -m "feat(cli): biorouter sessions watch/send over the session event s
 
 ### Task 21: Phase 1 gate
 
+**This gate inherits every anchor and every count corrected in Tasks 1-20.** All of them
+were re-verified at `275d735d` on 2026-07-28; the expectations below are the corrected
+ones.
+
 - [ ] **Step 1: Full backend test pass**
 
-Run: `cargo test --workspace --no-fail-fast 2>&1 | tail -10`
-Expected: no failures beyond this machine's recorded pre-existing baseline.
+```bash
+cargo test --workspace --no-fail-fast 2>&1 | tail -10
+```
+
+Expected: no failures beyond this machine's recorded pre-existing baseline
+(`SessionListView.test.tsx` is a known clean-tree frontend failure).
+
+⚠ **Then run, by name, the two integration targets no other step in Phase 1 touches.**
+This was the single largest hole in the phase's coverage: Tasks 8 and 21 ran
+`cargo test -p biorouter-server --lib routes::reply` and
+`cargo test -p biorouter --lib agents::agent` (Task 6 ran neither — its gates are
+`--lib workspace::turn` plus the two writeback integration targets, and its own Step 5
+says in as many words that nothing in `--lib routes::reply` notices a runner that
+reorders bus publications), while the nets for the two invariants
+Phase 1 is most likely to break live in **integration** targets, which `--lib` never
+reaches:
+
+```bash
+cargo test -p biorouter --test conversation_writeback_freshness
+cargo test -p biorouter --test conversation_writeback_stress
+cargo test -p biorouter --test soft_interrupt_agent_loop
+cargo test -p biorouter --test subagent_delegation
+cargo test -p biorouter-server --lib routes::reply::tests::writeback_tests
+```
+
+⚠ **The `::tests::` segment in that last filter is load-bearing — do not "simplify" it
+away.** `mod writeback_tests` is nested *inside* `#[cfg(test)] mod tests` (`reply.rs:1183`
+declares the outer module, `:1243` the inner one), so the full test path is
+`routes::reply::tests::writeback_tests::…`. libtest filters are plain substring matches
+against that path, so the shorter `routes::reply::writeback_tests` matches **nothing**,
+prints `running 0 tests … 181 filtered out`, and **exits 0** — a green gate that ran
+nothing, guarding the exact regression blocker B2 exists to prevent. Verified by running
+both forms at `275d735d`. Whenever a gate names a test module, confirm the count is
+non-zero rather than trusting the exit code.
+
+Expected: **all green.** What each protects, and which task would have broken it:
+
+| Target | Pins | Broken by |
+|---|---|---|
+| `conversation_writeback_freshness` — the **five** #59 completeness tests: `a_client_that_watched_the_turn_knows_every_stored_message_id` (:1986), `a_reply_split_into_several_stored_rows_publishes_every_one_of_their_ids` (:2037), `a_row_the_user_is_never_shown_is_published_as_not_user_visible` (:2082), `nothing_is_published_that_the_store_does_not_hold` (:2159), `a_published_user_visible_row_is_not_an_instruction_to_draw` (:2213) | #59's completeness contract — every stored row is named, only stored rows are named, and a named row is not a draw instruction | Task 8 is the path that delivers all five; a lost `MessagesPersisted` arm in Task 7 makes the first unsatisfiable and the rest vacuous |
+| …and the **three** #59 ordering tests: `a_slash_command_hands_over_its_messages_before_it_names_them` (:2349), `an_undeliverable_elicitation_answer_is_ordered_the_same_way` (:2388), `no_turn_shape_names_a_row_before_it_hands_it_over` (:2420) | the #59 ordering invariant across every turn shape | Task 3 rewrites a publication site inside the shapes these sweep; Task 34 adds a *relay* to the same producer stream, and these are what prove it did not reorder |
+| `conversation_writeback_stress` | #51's concurrent-append guarantees under load | Tasks 6/8 — the detached runner is a new concurrent writer |
+| `routes::reply::tests::writeback_tests` (reply.rs:1243-1426, **6** tests) | #51 W5's 409 refusal on `conversation_so_far` | Task 8 **as originally written** deleted the code they cover; reconciliation #21 is why they now survive. These six going red is the loudest possible signal that #21 was ignored. |
+| `soft_interrupt_agent_loop` (2 tests) | that a mid-turn steer is injected in the same turn, unframed for a human | Task 3's drain-loop rewrite |
+| `subagent_delegation` | end-to-end delegation, incl. a `queue_soft_interrupt` steer (:275) | Tasks 3, 18, 19, 19b |
+
+Plus the pin and eager-compaction suites, which Task 2 (`Copy` removal) and Task 14
+(`.pinned()`) both touch:
+
+```bash
+cargo test -p biorouter --lib context_mgmt
+```
+
+Expected: green, including `mod pin_tests` (**15** after Task 14, 14 before),
+`pins.rs`'s `mod tests` (**12**, unchanged), and the two eager-compaction freshness
+tests `run_eager_compaction_preserves_a_concurrent_append` (:2244) and
+`run_eager_compaction_aborts_when_the_prefix_moved` (:2298).
 
 - [ ] **Step 2: Lints and formatting**
 
@@ -10449,12 +12213,19 @@ Each of these fails loudly if one of the phase's binding decisions regressed:
 
 ```bash
 # Decision 20/22/23: exactly one spawn advertisement, and no subagent_status.
+# Pre-task baseline at 275d735d: 31 hits in 5 files (Task 19b Step 1).
 grep -rn "create_subagent_status_tool\|SUBAGENT_STATUS_TOOL_NAME" crates/ ; echo "expect: no output"
 # 0 requires Task 19 Step 4(d) to have dropped `create_subagent_tool` from the
 # `use crate::agents::subagent_tool::{…}` list at agent.rs:36 as well as the
-# push at :2658. `-D warnings` would have failed on the orphaned import at
+# push at :3152. `-D warnings` would have failed on the orphaned import at
 # Step 2 above, so a `1` here means Step 2 was skipped.
+# Pre-task baseline: 2 (:36 import, :3152 push).
 grep -c "create_subagent_tool" crates/biorouter/src/agents/agent.rs ; echo "expect: 0"
+
+# The docs half of decision 23 — FOUR live sites, not three (a fourth,
+# docs/security/privacy-tiers.md:1677, landed in 9eb6de4b after this plan was
+# written). docs/history/** is an immutable record and keeps its 3 hits.
+grep -rn "subagent_status" docs/ | grep -v "^docs/history/" | grep -v br71-execution-plan ; echo "expect: no output"
 
 # Decision 11: one turn loop. /reply must not drive a turn any more.
 grep -c "agent.reply(" crates/biorouter-server/src/routes/reply.rs ; echo "expect: 0"
@@ -10476,10 +12247,22 @@ grep -rn "skills-config.json" crates/biorouter/src/agents/workspace_extension.rs
 grep -n "auto_injected_extensions" crates/biorouter/src/agents/agent.rs ; echo "expect: 6 hits"
 
 # …and BOTH persist paths go through the shared filter — `save_extension_state`
-# (the reply loop's own path, agent.rs:4234) as well as
-# `persist_extension_state`. A `1` here means one of them still calls
+# (`agent.rs:2913`, called from the reply loop at `:4883`) as well as
+# `persist_extension_state` (`agent.rs:2936`, called from
+# `routes/agent.rs:759` and `:788`). A `1` here means one of them still calls
 # `get_extension_configs()` directly and writes the injection to the row.
 grep -c "persistable_extension_configs()" crates/biorouter/src/agents/agent.rs ; echo "expect: 3 (1 definition + 2 callers)"
+
+# The negative half of the same property: after Task 18 neither PERSIST path may
+# reach the unfiltered snapshot directly. Baseline at 275d735d is 3 —
+#   :2914  save_extension_state      <- must become persistable_extension_configs()
+#   :2937  persist_extension_state   <- must become persistable_extension_configs()
+#   :3179  Agent::get_extension_configs' own one-line pass-through  <- KEEPS IT
+# so the post-task expectation is 1, not 0. Do NOT "fix" a 1 by deleting :3179:
+# it is the public accessor GET /sessions/{id}/extensions and the Settings UI
+# read through, and it is *correct* for it to see everything the agent loaded.
+# The property is about what gets WRITTEN to the session row, not what can be read.
+grep -c "self.extension_manager.get_extension_configs()" crates/biorouter/src/agents/agent.rs ; echo "expect: 1 (only the :3179 accessor)"
 
 # Task 19 Step 6: the code-execution filter keeps the whole workspace surface.
 # Without this line, enabling Workspace Control does nothing in a default
@@ -10524,13 +12307,17 @@ curl -s -X POST http://127.0.0.1:3000/agent/call_tool \
 # Expected: is_error: false; content[0].text is a JSON payload with
 # "gui_attached": false, paging metadata ("offset"/"limit"/"has_more"), and a
 # "sessions" array containing $SID with its "extensions" list (including
-# "workspace") and "knowledge_bases": [].
+# "workspace"), "knowledge_bases": [] AND "primary_kb": null.
+# `primary_kb` must be PRESENT-and-null, not absent: post-#45 "no write target"
+# is a real state distinct from "no knowledge bases", and a row that omits the
+# key leaves a model unable to tell the two apart (reconciliation #6).
 
 # 4. The merged spawn tool is advertised under its prefixed name (decision 22),
 #    and subagent_status is not advertised at all (decision 23).
 #    NOTE the verb: /agent/tools is a GET with query params
-#    (`routes/agent.rs:1242`: `.route("/agent/tools", get(get_tools))`, handler
-#    at :549 taking `Query<GetToolsQuery>`). A POST returns 405.
+#    (`routes/agent.rs:1266`: `.route("/agent/tools", get(get_tools))` inside
+#    `pub fn routes` at :1260; handler `get_tools` at :573 taking
+#    `Query<GetToolsQuery>`, utoipa path at :560). A POST returns 405.
 curl -s -H 'X-Secret-Key: test' "http://127.0.0.1:3000/agent/tools?session_id=$SID" | python3 -c '
 import json,sys
 names = [t["name"] for t in json.load(sys.stdin)]
@@ -11235,6 +13022,17 @@ struct WorkspaceOpenNew {
     /// Knowledge bases to activate for the new conversation (issue #45).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     knowledge_bases: Vec<String>,
+    /// Which of `knowledge_bases` is the new conversation's **write target** —
+    /// where a `kb_write`/`kb_ingest` with no explicit `kb_id` lands. Omit it and
+    /// the first base in the list is used, which is what you want unless you
+    /// have a reason. Must name one of `knowledge_bases`.
+    ///
+    /// Post-#45 the primary is a real, validated pointer, not a derived
+    /// convenience: a session with bases and no target has KB-less writes that
+    /// fail. `workspace_open` therefore always chooses one rather than leaving
+    /// the new session in that state by omission.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    primary_knowledge_base: Option<String>,
     /// Optional first user message, run as a detached turn.
     #[serde(skip_serializing_if = "Option::is_none")]
     prompt: Option<String>,
@@ -11309,8 +13107,20 @@ impl WorkspaceClient {
                 let differs = caller_dir
                     .as_ref()
                     .is_some_and(|caller| caller != &working_dir);
+                // Post-#45: the write target is chosen explicitly. `Auto` on a
+                // brand-new session resolves to "pin the first id", because a
+                // fresh session has no primary of its own to keep (Task 9).
+                let kb_primary = match new.primary_knowledge_base.as_deref() {
+                    None => crate::workspace_services::KbPrimaryChoice::Auto,
+                    Some(id) => crate::workspace_services::KbPrimaryChoice::Set(id.to_string()),
+                };
                 let session_id = services
-                    .start_session(working_dir.clone(), new.extensions, new.knowledge_bases)
+                    .start_session(
+                        working_dir.clone(),
+                        new.extensions,
+                        new.knowledge_bases,
+                        kb_primary,
+                    )
                     .await?;
                 if differs {
                     let _ = services
@@ -11467,11 +13277,24 @@ still inside the ≤2,500 budget the unit test enforces.
 ```
 
 **#44 — resolved (reconciliation #7):** the working-dir lock is merged. `start_session`
-sets the dir at creation exactly as today's `start_agent` does (`routes/agent.rs:283`);
-the lock guards only post-creation changes to non-empty chats, which no path in this
-task performs. The product question it left behind is **settled by decision 5** and
-implemented above: default to the caller's dir, allow a different one, surface the
-difference.
+sets the dir at creation exactly as today's `start_agent` does (**`routes/agent.rs:256`**,
+`create_session(working_dir, …)` at **:261**); the lock guards only post-creation changes
+to non-empty chats, which no path in this task performs. The product question it left
+behind is **settled by decision 5** and implemented above: default to the caller's dir,
+allow a different one, surface the difference.
+
+Re-verified at `275d735d` (2026-07-28) — reconciliation #7's whole analysis still holds
+literally, nothing about #44 moved:
+
+- `SessionUpdateBuilder` still has **no** `working_dir` setter, and the comment naming
+  the two sanctioned writers is at **`session_manager.rs:890-894`** (exact).
+- `try_update_working_dir_if_empty` is **`session_manager.rs:1246-1255`**; the HTTP
+  route additionally claims the per-session turn guard
+  (`update_working_dir` handler **`routes/agent.rs:1027`**, `try_begin_turn_idempotent`
+  at **:1042**, and the route-level contract test module at **:1280**).
+- `force_update_working_dir_unguarded` is **`session_manager.rs:1264-1272`**, still with
+  exactly **one** production caller, `biorouter-cli/src/commands/term.rs:311` (plus one
+  test at `session_manager.rs:5774`).
 
 Add the test for it:
 
@@ -12288,10 +14111,41 @@ git commit -m "feat(ui): workspace channel client + command planner + ChatGroups
 
 **Files:**
 - Modify: `ui/desktop/src/hooks/chatStreamStore.tsx`
-  (anchors: `ChatStreamController` :282, `streamFromResponse(stream, initialMessages, streamId)`
-  :870, the generated-client `reply({...})` call whose `{ stream }` feeds it at
-  :992-1007, `getController` :1334)
+  (**anchors re-verified at `275d735d`, 2026-07-28** — this file changed twice since
+  the plan was written, `0312dff4` then `936f5a33` (+76 lines):
+  `ChatStreamController` **:282**, `streamFromResponse(stream, initialMessages,
+  streamId)` **:909**, the generated-client `reply({…})` call whose `{ stream }` feeds
+  it at **:1031-1046**, `getController` **:1410**)
 - Create: `ui/desktop/src/hooks/chatStreamStore.observe.test.tsx`
+
+⚠ **State the permanent observer-tab consequence for `expectedMessageIds`, in the code
+and in the tab's docs** (added 2026-07-28). `936f5a33` added a completeness flag,
+`viewNamesEveryStoredRow` (**:318**), that is set to `true` in exactly two places — both
+immediately after reading a conversation back from the server (**:757**, **:1388**) —
+and cleared by any streamed event, the transcript LRU, and a wholesale
+`UpdateConversation` (**:483**, **:518**, **:700**). `edit_message` only sends
+`expectedMessageIds` when the flag is true *and* every held message has an id
+(**:1339-1341**).
+
+An observer-fed tab is **always** in the cleared state: it is a pure event consumer that
+never performs the read that sets the flag. So an observer tab **permanently omits** the
+`expectedMessageIds` guard on in-place edits, while an ordinary tab sends it after each
+read.
+
+That is **safe** — the guard is omitted, never falsified, and the server-side cut still
+runs under the turn lock and is still bounded to the rows the handler itself read
+(the comment at `:1333-1336` says so) — but it is a real, permanent capability
+difference a user can hit, and it must be *stated* rather than discovered. Two things
+follow, and neither is optional:
+
+1. Put the sentence in `chatStreamStore.tsx` beside the observer mode, naming
+   `viewNamesEveryStoredRow` so the next reader lands on the flag.
+2. Do **not** "fix" it by having the observer mode set the flag. It would be a lie: an
+   observer tab genuinely does not know it holds every stored row (#59's
+   `MessagesPersisted` frame is the thing that would let it, and this store deliberately
+   does not consume it yet — `:313`, `:1335`, pinned by
+   `chatStreamStore.test.ts:807` and `:888`). Consuming that frame is the documented
+   FOLLOW-UP at **`:313-317`** and is out of scope here.
 
 **Transport decision (verified, not assumed):** the store's `/reply` path does NOT
 hand-roll SSE — it calls the generated client (`reply` from `../api`, emitted as
@@ -12300,7 +14154,10 @@ hand-roll SSE — it calls the generated client (`reply` from `../api`, emitted 
 `.sse.*` form for any route whose OpenAPI 200 response carries
 `content: { "text/event-stream": … }` — which Task 7's utoipa annotation
 (`content_type = "text/event-stream"`, `body = MessageEvent`) produces, exactly like
-`/reply`'s (`reply.rs:410` → `openapi.json` `/reply` 200 content). So after Task 7's
+`/reply`'s — the utoipa `content_type = "text/event-stream"` is at **`reply.rs:570`**,
+inside the `#[utoipa::path]` block whose handler `reply` follows at **:579**, and the
+runtime header is set at **`reply.rs:268`** → `openapi.json` `/reply` 200 content. So
+after Task 7's
 regen, `observeSessionEvents` is a generated `client.sse.get` function returning
 `{ stream }` — **no raw fetch, no `window.electron`, no second SSE parser**.
 Verify after regenerating: `grep -n "observeSessionEvents" ui/desktop/src/api/sdk.gen.ts`
@@ -13064,10 +14921,13 @@ const mocks = vi.hoisted(() => ({
   error: vi.fn(),
 }));
 
-// `useConfig` THROWS outside a ConfigProvider (`ConfigContext.tsx:341-347`) and the
-// context object itself is module-private (`:66`), so it cannot be wrapped — the
-// component must be given a mocked hook. Same shape as the sibling
-// `capabilities/CapabilitiesSection.test.tsx`.
+// `useConfig` THROWS outside a ConfigProvider (`ConfigContext.tsx:437-443`, the
+// `throw new Error('useConfig must be used within a ConfigProvider')` at `:440`) and
+// the context object itself is module-private (`const ConfigContext =
+// createContext<ConfigContextType | undefined>(undefined);` at `:90`, no `export`),
+// so it cannot be wrapped — the component must be given a mocked hook. Same shape as
+// the sibling `capabilities/CapabilitiesSection.test.tsx`.
+// (Anchors re-read at `275d735d`; the plan's old `:341-347` / `:66` were pre-drift.)
 vi.mock('../../ConfigContext', () => ({
   useConfig: () => ({
     extensionsList: mocks.extensionsList,
@@ -13353,6 +15213,23 @@ pub(crate) async fn persist_spawn_context(
     let mut record = Message::user().with_text(body);
     record.metadata.user_visible = true;
     record.metadata.agent_visible = false;
+    // DELIBERATELY NOT `.pinned()`, and this is the product decision the
+    // 2026-07-28 amendment owes the reader (Task 14 pins its `note`; this record
+    // does not, and the difference is not an oversight):
+    //
+    // `pin_is_eligible` (`context_mgmt::pins:250-254`) requires the message to
+    // be AGENT-VISIBLE, and this one is `agent_visible: false` by design — it is
+    // a transcript header for the human and the tab, not context for the child's
+    // model, which already received all of it as its rendered system prompt. A
+    // pin here would be inert: silently unhonoured, and misleading to the next
+    // reader who assumes it does something.
+    //
+    // The child's own copy of this content therefore cannot be lost to
+    // compaction, because it is not in the child's context to begin with; and the
+    // stored ROW cannot be lost to a rewrite, because #51 made every whole-history
+    // rewrite carry foreign appends over. If this record is ever made
+    // agent-visible, revisit — at that point it becomes exactly the "one message
+    // a child must never lose" case and should be pinned.
     record.metadata.provenance = Some(MessageProvenance {
         kind: ProvenanceKind::SpawnContext,
         from_session_id: Some(parent_session_id.to_string()),
@@ -13386,12 +15263,13 @@ E0382 ×2 more, all in one insertion; each is named at the line that causes it:
             .collect();
 
         // 2. Before the `SubagentPromptContext { … task_instructions:
-        //    system_instructions … }` literal (:203), which moves the String:
+        //    system_instructions … }` literal (:198-208, `task_instructions:
+        //    system_instructions` at :203), which moves the String:
         let task_instructions_for_record = system_instructions.clone();
 
         // 3. Immediately before `agent.override_system_prompt(subagent_prompt)`
-        //    (:212). That method takes `template: String` BY VALUE
-        //    (`agent.rs:4988`), so the binding is gone after the call:
+        //    (:213). That method takes `template: String` BY VALUE
+        //    (`agent.rs:5707`), so the binding is gone after the call:
         let rendered_prompt = subagent_prompt.clone();
 
         // 4. Before `config` is moved into `Agent::with_config(config)` (:149):
@@ -13402,12 +15280,18 @@ E0382 ×2 more, all in one insertion; each is named at the line that causes it:
         // --- The call itself, immediately after override_system_prompt. ---
 
         // Grants for the record: extensions from the task config; skills from
-        // the workflow (`workflow.skills`, workflow/mod.rs:60-61); the child's
+        // the workflow (`workflow.skills`, `Option<Vec<String>>`, workflow/mod.rs:60);
+        // the child's
         // active KBs via the daemon services when installed (usually empty — a
         // subagent inherits no KB today; recorded truthfully either way).
         let skill_names: Vec<String> = workflow.skills.clone().unwrap_or_default();
+        // Post-#45: `knowledge_selection` returns set + write target together
+        // (Task 9). The record names only the set — the primary is per-session
+        // mutable state, not a grant, and recording a value that can change five
+        // minutes later as part of an immutable spawn record is how a "source of
+        // truth" starts lying.
         let knowledge_bases = crate::workspace_services::get()
-            .map(|s| s.active_knowledge_bases(&session_id))
+            .map(|s| s.knowledge_selection(&session_id).kb_ids)
             .unwrap_or_default();
         if let Err(e) = persist_spawn_context(
             &session_manager,
@@ -13436,10 +15320,19 @@ at most a few KB, once per subagent run.
 **Verification guard (the overwrite risk):** the test's final assertion — the record is
 still the FIRST message after the run — is added in Task 34's integration test, because
 the child agent persists its own conversation as it runs; if the child's persistence
-path REPLACES rather than appends (check `replace_conversation` usage in the agent's
-persist path), the spawn record would be lost, and the fix is to seed the child's
-in-memory `Conversation` with the record (agent_visible false keeps it out of the model
-context). Do not skip this check.
+path REPLACES rather than appends, the spawn record would be lost, and the fix is to
+seed the child's in-memory `Conversation` with the record (agent_visible false keeps it
+out of the model context). Do not skip this check.
+
+*Re-verified 2026-07-28 and the risk is now much smaller, but not zero.* The agent's
+ordinary persist path appends (`add_message_adopting_uid`, ~20 call sites in `agent.rs`),
+and its two rewrite paths both go through `replace_conversation_preserving_tail`
+(`agent.rs:3606-3613` in-turn compaction; `:2086`/`:2188` on the overflow ladder), which
+carries a foreign row over rather than deleting it (#51). So a compaction during the
+child's run no longer destroys the record — but it can still **summarize it out of the
+agent's view**, which is irrelevant here only because the record is deliberately
+`agent_visible: false` (see the pin note in `persist_spawn_context` above). Assert the
+row, not its visibility.
 
 - [ ] **Step 4: Run tests**
 
@@ -13593,7 +15486,8 @@ In `subagent_handler.rs`'s test module (from Task 32):
             crate::config::BioRouterMode::Auto,
         );
         // TestProvider replaying an empty cassette: fails on first use — the
-        // run errors fast, which is all this needs (manager.rs:349-360 pattern).
+        // run errors fast, which is all this needs — the pattern
+        // `test_set_default_provider` uses at manager.rs:348-360.
         let cassette = temp.path().join("empty.json");
         std::fs::write(&cassette, "{}").unwrap();
         let provider = std::sync::Arc::new(
@@ -13689,7 +15583,7 @@ In `execution/manager.rs`, beside `get_or_create_agent`:
     /// LRU. `register_agent` does not put anything there either, so there is
     /// nothing of ours to remove — and an entry that IS there was put there by
     /// an ordinary `get_or_create_agent`, which is how a consulted Agent Drafter
-    /// worker gets its agent (`apps.rs:1628`). Popping it would evict a cached
+    /// worker gets its agent (`routes/apps.rs:1663`). Popping it would evict a cached
     /// worker this run never created, on every consult.
     pub async fn deregister_agent_if_same(&self, session_id: &str, agent: &Arc<Agent>) {
         let mut pinned = self.pinned.write().await;
@@ -13856,7 +15750,7 @@ Add the eviction test that would have caught the un-pinned bug:
     }
 
     /// `deregister` must not evict an LRU entry it never created — the entry a
-    /// consulted worker got from an ordinary `get_agent` (`apps.rs:1628`).
+    /// consulted worker got from an ordinary `get_agent` (`routes/apps.rs:1663`).
     #[tokio::test]
     async fn deregistering_does_not_evict_a_cache_entry_it_did_not_create() {
         let temp_dir = TempDir::new().unwrap();
@@ -13910,7 +15804,8 @@ In `run_complete_subagent_task` (:40), replace the token plumbing at the top:
 
 then change the active-work guard's cancel closure to ALWAYS route to `run_token`
 (today it is `None` when no parent token was supplied — the run becomes
-addressable either way). The existing block is `subagent_handler.rs:54-68`; it is
+addressable either way). The existing block is `subagent_handler.rs:50-69`
+(`let _active_work = {` at :54, `ActiveWorkGuard::register` at :62-68); it is
 reproduced here in full **with the four unchanged arguments spelled out**, because
 they are easy to get wrong from memory:
 
@@ -14041,7 +15936,43 @@ git commit -m "feat(subagent): register child agents + hold the server turn leas
 ### Task 34: Subagent turns publish to the bus
 
 **Files:**
-- Modify: `crates/biorouter/src/agents/subagent_handler.rs` (stream loop :244-270)
+- Modify: `crates/biorouter/src/agents/subagent_handler.rs` (**anchors re-verified at
+  `275d735d`, 2026-07-28**: `run_complete_subagent_task`'s stream loop **:244-274**,
+  the `agent.reply(...)` construction it follows at **:237-245**, the standalone
+  `Arc::new(Agent::with_config(config))` at **:149**; the file is 309 lines)
+
+⚠ **This task's Step-3 match is an `E0004` of its own, and Task 7's fix does NOT cover
+it** (added 2026-07-28). `AgentEvent` gained an eighth variant when #59 landed
+(`MessagesPersisted(Vec<PersistedMessage>)`, `agent.rs:672`). Reconciliation #22 and the
+7 → 8 ordering repair `routes::session_events::map_bus_event` — a **different** match, in
+a **different** crate. `subagent_handler.rs` has its own exhaustive, wildcard-free match
+on `AgentEvent`, and Step 3 below rewrites it. Both need the arm; fixing one does not fix
+the other.
+
+Worse, the current code **already has** the arm — Step 3's block as originally written
+would have *deleted* it. `subagent_handler.rs:247-254` reads:
+
+```rust
+                Ok(AgentEvent::McpNotification(_))
+                | Ok(AgentEvent::ModelChange { .. })
+                | Ok(AgentEvent::ToolCallPending(_))
+                // #59: the subagent's own rows are already carried by the
+                // `Message` events above (which now name themselves); the
+                // parent has no `expectedMessageIds` to satisfy.
+                | Ok(AgentEvent::MessagesPersisted(_))
+                | Ok(AgentEvent::TokenUsage(_)) => {}
+```
+
+**Five** ignored variants, not four, and a #59 comment explaining the fifth. Step 3's
+claim that "the per-variant bodies are today's bodies" is only true once the arm and its
+comment are carried across. They are, below.
+
+The distinction Step 3 must preserve is exactly the one that comment names: **the bus tee
+is total, the parent's `conversation` accumulation is not.** The tee publishes every
+event including `MessagesPersisted` — an observer tab watching a glass-box child is
+precisely the "client that watched a whole turn go by" #59 exists for, and it needs those
+ids. The accumulation still ignores it, because the parent is building a `Vec<Message>`
+for a `SubagentResult`, not a client view, and has no `expectedMessageIds` to satisfy.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -14066,15 +15997,17 @@ git commit -m "feat(subagent): register child agents + hold the server turn leas
             None,
             crate::config::BioRouterMode::Auto,
         );
-        // Workflow has NO Default (workflow/mod.rs:31: title + description are
-        // required) — build it via serde, version defaults.
+        // Workflow has NO Default (workflow/mod.rs:31-40: `title` :37 and
+        // `description` :39 are required, `version` has a serde default) — build it
+        // via serde.
         let workflow: Workflow = serde_json::from_value(serde_json::json!({
             "title": "t", "description": "d",
             "instructions": "do the thing", "prompt": "go"
         }))
         .unwrap();
         // The verified cheap provider: TestProvider replaying an empty cassette
-        // fails on first use (the exact pattern of execution/manager.rs:349-360).
+        // fails on first use — the exact pattern `test_set_default_provider`
+        // uses at execution/manager.rs:348-360 (write "{}" :358, construct :359).
         let cassette = temp.path().join("empty.json");
         std::fs::write(&cassette, "{}").unwrap();
         let provider = std::sync::Arc::new(
@@ -14121,20 +16054,28 @@ git commit -m "feat(subagent): register child agents + hold the server turn leas
     }
 ```
 
-(Every symbol verified: `TestProvider::new_replaying` at
-`providers/testprovider.rs:52`; `TaskConfig`'s five fields at
-`subagent_task_config.rs:16-22`; `AgentConfig::new`'s 4 args at `agent.rs:245-249`;
-the run's *failure* is fine — only the bus bracket and the surviving spawn record
-are asserted.)
+(Every symbol **re-verified at `275d735d`**: `TestProvider::new_replaying` at
+`providers/testprovider.rs:52` (**exact**); `TaskConfig`'s five fields —
+`provider`/`parent_session_id`/`parent_working_dir`/`extensions`/`max_turns` — at
+`subagent_task_config.rs:16-22` (**exact**); `AgentConfig::new`'s 4 args at
+**`agent.rs:485-486`** (`impl AgentConfig` :485, `pub fn new(` :486) — the plan's old
+`:245-249` was already stale and now lands in `OverflowCompactionSwap`; the 4-arg call
+shape is the one `execution/manager.rs:124-129` uses. The run's *failure* is fine —
+only the bus bracket and the surviving spawn record are asserted.)
 
 - [ ] **Step 2: Run to verify failure**
 
-Run: `cargo test -p biorouter --lib agents::subagent_handler::tests::subagent_run_publishes_lifecycle_to_the_bus`
-Expected: FAIL — no events on the bus.
+```bash
+cargo test -p biorouter --lib agents::subagent_handler::tests::subagent_run_publishes_lifecycle_to_the_bus
+```
+
+Expected: **FAIL** (not a compile error) — `run_complete_subagent_task` compiles today
+and simply publishes nothing, so the test builds and both `assert!`s are false. If it
+does not build, the cause is Task 5's `session_events` module, not this task.
 
 - [ ] **Step 3: Implement**
 
-In `get_agent_messages`, around the stream loop (:244):
+In `run_complete_subagent_task`, around the stream loop (**:244-274**):
 
 ```rust
         // Turn id: the server lease's id when Task 33 acquired one (so observers
@@ -14149,20 +16090,44 @@ In `get_agent_messages`, around the stream loop (:244):
         );
         let mut aborted: Option<TurnAbort> = None;
         // [MECHANICAL MOVE — the `agent.reply(...)` stream construction at
-        //  :237-243 stays byte-identical here; only the loop below changes.]
+        //  :237-245 stays byte-identical here; only the loop below changes.]
         while let Some(message_result) = stream.next().await {
             match message_result {
                 Ok(event) => {
                     // BR-71: glass-box — every child event is observable.
+                    //
+                    // TOTAL AND IN STREAM ORDER. This tee publishes EVERY
+                    // variant, before the `match` below decides what the parent
+                    // does with it, and it never reorders, filters or coalesces.
+                    // Both halves are load-bearing:
+                    //   * total, because an observer tab is a full client and
+                    //     must receive `MessagesPersisted` (#59) even though the
+                    //     parent's accumulation ignores it;
+                    //   * in order, because the #59 invariant (`agent.rs:280-283`)
+                    //     — no `MessagesPersisted` may precede a `Message` frame
+                    //     carrying one of the ids it publishes — is a property of
+                    //     the PRODUCER's stream, and it survives only if every
+                    //     relay preserves order. Publishing here, once, before
+                    //     any per-variant handling, is what makes that free.
                     crate::session_events::publish(
                         &session_id,
                         crate::session_events::SessionBusEvent::Agent(event.clone()),
                     );
+                    // EIGHT arms, no wildcard. `AgentEvent` has eight variants
+                    // (`agent.rs:605-673`); a `_ => {}` here would silently
+                    // swallow the ninth instead of failing the build.
                     match event {
                         AgentEvent::Message(msg) => conversation.push(msg),
                         AgentEvent::McpNotification(_)
                         | AgentEvent::ModelChange { .. }
                         | AgentEvent::ToolCallPending(_)
+                        // #59: the subagent's own rows are already carried by
+                        // the `Message` events above (which now name
+                        // themselves); the parent has no `expectedMessageIds`
+                        // to satisfy. The TEE above still publishes this — an
+                        // observer tab DOES need it. Carried verbatim from
+                        // `subagent_handler.rs:250-253`; do not drop it.
+                        | AgentEvent::MessagesPersisted(_)
                         | AgentEvent::TokenUsage(_) => {}
                         AgentEvent::HistoryReplaced(updated_conversation) => {
                             conversation = updated_conversation;
@@ -14205,18 +16170,35 @@ the two `publish` insertions, the `TurnStarted`/`TurnFinished` brackets, the
 reason should be reported when the run token was tripped:
 `if run_token_cancelled { "cancelled" } else if aborted.is_some() { "error" } else { "stop" }`
 where `let run_token_probe = cancellation_token.clone();` is taken BEFORE the token
-moves into `agent.reply(...)` at :239 and `run_token_cancelled =
+moves into `agent.reply(...)` at :241 and `run_token_cancelled =
 run_token_probe.is_some_and(|t| t.is_cancelled())` — the run token already IS this
 function's `cancellation_token` parameter, since Task 33 passes `Some(run_token)`.
-The old comment at :277-278 "a
+The old comment near :280 "a
 subagent's stream is not user-visible" is now half-true: update it to say the stream
 is observable via the session bus but still not part of the parent's `/reply`
 stream.)
 
 - [ ] **Step 4: Run tests**
 
-Run: `cargo test -p biorouter --lib agents::subagent_handler`
-Expected: PASS.
+```bash
+cargo test -p biorouter --lib agents::subagent_handler
+cargo test -p biorouter --test subagent_delegation
+cargo test -p biorouter --test subagent_cancellation
+cargo test -p biorouter --test conversation_writeback_freshness
+```
+
+Expected: **PASS**.
+
+The two `--test subagent_*` targets are the behavioural nets for the "nothing but the
+tee changed" claim: they drive real delegation and real cancellation through this exact
+loop, so a per-variant body that shifted while being re-indented shows up there and
+nowhere in `--lib`. `conversation_writeback_freshness` is the ordering net — this task
+adds a **relay** to the #59 producer stream, and `no_turn_shape_names_a_row_before_it_hands_it_over`
+(**:2420**) is what proves the relay did not reorder.
+
+If the build fails with **`E0004: non-exhaustive patterns: AgentEvent::MessagesPersisted(_) not covered`**,
+the arm and its #59 comment were dropped during the re-indent. Restore them from the
+block above — do **not** add a `_ => {}`.
 
 - [ ] **Step 5: Commit**
 
@@ -14360,7 +16342,7 @@ pub(crate) fn stamp_user_direct_if_subagent(
 ```
 
 **Call site 1 — `workspace::turn::run_turn`, NOT `reply`'s task.** At HEAD the `/reply`
-handler does read the session at `reply.rs:535` and call `agent.reply` at `:593`, and
+handler does read the session at **`reply.rs:720`** and call `.reply(` at **`:765`**, and
 an earlier revision of this task anchored on exactly that. **Task 8 deleted both** —
 its "what moves out of `reply.rs`" list names "the session read" and "`agent.reply(...)`",
 and its own verification gate asserts
@@ -14392,7 +16374,8 @@ grep -c "stamp_user_direct_if_subagent" crates/biorouter-server/src/workspace/tu
 so: `git revert <Task 8's commit>` restores the pre-refactor handler only until a later
 task edits the same region. Task 35 is that task.
 
-Call site 2 — `interrupt` (`reply.rs:910`, untouched by Task 8) reads no session today;
+Call site 2 — `interrupt` (**`reply.rs:1090`**, untouched by Task 8; it queues at
+**`:1101`** with `agent.queue_soft_interrupt(req.text)`) reads no session today;
 add a `get_session(&req.session_id, false)` and queue with provenance:
 
 ```rust
@@ -14520,7 +16503,7 @@ In `subagent_tool.rs`:
     /// The cap must hold under FAN-OUT, which is the only situation it exists
     /// for. `resolve_visibility(…, visible_children_of(parent))` followed by a
     /// separate `claim` is check-then-act: subagent dispatch is deliberately
-    /// excluded from the tool-dispatch semaphore (`agent.rs:2318`) and
+    /// excluded from the tool-dispatch semaphore (`agent.rs:2812`) and
     /// concurrent tool calls in one assistant message are driven by
     /// `select_all`, so N simultaneous spawns all observe 0 and all claim. A
     /// sequential test cannot catch that; this one can.
@@ -14729,7 +16712,7 @@ impl ChildVisibility {
 /// `resolve_visibility(…, visible_children_of(parent))` then
 /// `VisibleChildGuard::claim(parent)` — a check-then-act with no atomicity, in
 /// the one code path that is *specifically* concurrent. Subagent dispatch is
-/// excluded from the tool-dispatch semaphore on purpose (`agent.rs:2318`) and
+/// excluded from the tool-dispatch semaphore on purpose (`agent.rs:2812`) and
 /// concurrent tool calls in one assistant message are driven by `select_all`, so
 /// a fan-out of ten spawns can have all ten read `0` and all ten claim. The cap
 /// now lives inside `VisibleChildGuard::try_claim`, under one lock: you either
@@ -14933,9 +16916,16 @@ In `agent.rs`, beside the recursion guard at :2137-2147:
 /// parent, and (since the spawn tool is now a workspace tool) no nesting.
 ///
 /// Name forms: extension-advertised tools reach dispatch PREFIXED
-/// (`workspace__workspace_list`, `extension_manager.rs:971`), and the bare forms
-/// cover prefix-stripping models (`:1294-1304` precedent). The spawn tool is
-/// covered separately because it is named `subagent`, not `workspace_*`.
+/// (`workspace__workspace_list`; the `format!("{}__{}", name, tool.name)` that
+/// makes the name is `extension_manager.rs:1121`, behind the
+/// `config.is_tool_available` filter at `:1119`), and the bare forms cover
+/// prefix-stripping models (`extension_manager.rs:1444-1457` precedent — the
+/// `if !tool_name_str.contains("__")` block that re-prefixes the three known
+/// `code_execution` tools). The spawn tool is covered separately because it is
+/// named `subagent`, not `workspace_*`.
+/// (Re-anchored 2026-07-28: the old `:1294-1304` is pre-drift and now lands on
+/// `read_resource`/`get_ui_resources` — reconciliation #11 already carries the
+/// corrected number, and this comment disagreed with it.)
 ///
 /// The names are ENUMERATED rather than prefix-matched. A bare
 /// `tool_name.starts_with("workspace_")` also matches any third-party extension
@@ -15031,7 +17021,8 @@ guard:
 /// BR-71 §5 belt-and-braces beside the dispatch guard: the workspace extension
 /// is never loaded into a child. NOTE the interaction with Task 18: a child has
 /// `SessionType::SubAgent`, so `subagents_enabled` is already false for it
-/// (`agent.rs:2608-2612`) and the auto-injection never fires either — this strip
+/// (the `SessionType::SubAgent` early return, `agent.rs:3094-3104`) and the
+/// auto-injection never fires either — this strip
 /// covers the case where the PARENT's inherited extension list carries an
 /// explicitly user-enabled `workspace` entry.
 fn strip_workspace_extension(
@@ -15070,7 +17061,9 @@ git commit -m "feat(subagent): visible-by-default children with a 4-tab fan-out 
   hook — session/lineage/grants/spawn-context/Stop, Step 5)
 - Create: `ui/desktop/src/components/subagent/useSubagentSession.test.tsx`
 - Modify: `ui/desktop/src/components/BaseChat.tsx` — ChatGroupsShell mounts BaseChat
-  per tab (`Pair.tsx:7-8`), so the header mounts there when the hook reports
+  per tab (`components/Pair.tsx:6-8` — that file is now only the route-state
+  contract; the component retired when /pair became tabbed), so the header mounts
+  there when the hook reports
   `isSubagent`
 - Modify: `ui/desktop/src/components/chatGroups/ChatTabStrip.tsx` (render the
   `subagent` badge from Task 26's annotation state)
@@ -15294,7 +17287,9 @@ describe('useSubagentSession', () => {
 /**
  * BR-71 §4.5: everything the subagent tab header needs, from the generated
  * client. `getSession`/`getSessionExtensions`/`cancelTurn` are the same
- * generated functions the store already imports (`chatStreamStore.tsx:3-17`).
+ * generated functions the store already imports — the `from '../api'` brace
+ * list at `chatStreamStore.tsx:3-17`, re-verified at 275d735d: `936f5a33`
+ * touched that file heavily but left this import block's shape alone.
  */
 import { useCallback, useEffect, useState } from 'react';
 import { cancelTurn, getSession, getSessionExtensions } from '../../api';
@@ -15353,7 +17348,7 @@ export function useSubagentSession(sessionId: string): SubagentSessionInfo {
 }
 ```
 
-Mount in `BaseChat.tsx` (ChatGroupsShell mounts BaseChat per tab — `Pair.tsx:7-8`
+Mount in `BaseChat.tsx` (ChatGroupsShell mounts BaseChat per tab — `components/Pair.tsx:6-8`
 records this; BaseChat knows its session id):
 
 ```tsx
@@ -16356,7 +18351,7 @@ async fn run_bounded_turn(
 /// **Consult is the case that forced `register_agent` to be refcounted.** A
 /// glass-box subagent's agent is built by the run and belongs to it; a consulted
 /// worker's agent is an ordinary `AgentManager` cache entry obtained through
-/// `state.get_agent` (`apps.rs:1628`) and, for a durable worker, is the SAME
+/// `state.get_agent` (`routes/apps.rs:1663`) and, for a durable worker, is the SAME
 /// `Arc` across consults. Two things follow, and Task 33's API handles both:
 ///
 /// - `deregister_agent_if_same` must not pop the LRU entry, because this run did
@@ -16484,7 +18479,23 @@ git commit -m "docs(br71): tuned workspace instructions + tool-routing table"
 - Create: `docs/extensions/built-in/workspace.md` (check the directory's existing
   built-in extension docs for the template; create the directory if it does not exist)
 - Modify: `docs/agent-loop/subagents.md`
-- Modify: `docs/agent-loop/designs/agent-workspace-control.md` (final status header)
+- Modify: `docs/agent-loop/designs/agent-workspace-control.md` (final status header at
+  **:10-12**, which at `275d735d` still reads *"Current — **proposal only; nothing
+  below is implemented.**"* — correct today, and this task is what makes it false)
+
+⚠ **The `subagent_status` doc sweep has FOUR live sites, not three** (amended
+2026-07-28). Task 19b owns `docs/agent-loop/tool-routing.md:33` and the newly-found
+`docs/security/privacy-tiers.md:1677`; **this** task owns the two in the design doc,
+`agent-workspace-control.md:421` (§4.5 step 5's "the existing `subagent_status` cancel")
+and `:545` (§ the polish-phase bullet). Task 21 Step 6 already rewrites `:421` as part
+of aligning the design with the merged surface; confirm both are gone here rather than
+assuming. The authoritative check is the same command Task 19b Step 1 uses:
+
+```bash
+grep -rn "subagent_status" docs/ | grep -v "^docs/history/" | grep -v br71-execution-plan
+# Expected by the end of this task: no output.
+# docs/history/** keeps its 3 hits and is an immutable record — never edit it.
+```
 
 - [ ] **Step 1: Write `workspace.md`** covering: what the extension does; the **two
 tiers** and why they differ (decision 21 — a session with delegation enabled loads the
@@ -16528,6 +18539,13 @@ git commit -m "docs(br71): workspace extension user docs + subagents glass-box u
 
 ### Task 44: Final release gates
 
+⚠ **This task re-runs the sweeps and counts corrected in Tasks 19, 19b and 21, and
+inherits every one of them** (amended 2026-07-28). Nothing here re-derives a number: the
+authoritative expectations are Task 19 Step 1 (**13** spawn-tool sites in 3 files), Task
+19b Step 1 (**31** `subagent_status` code sites in 5 files, **4** live doc sites) and
+Task 21 Step 4. If a count here disagrees with one of those, the task text is stale, not
+the tree — fix it there, once, rather than in two places.
+
 - [ ] `cargo fmt && ./scripts/clippy-lint.sh` — clean.
 - [ ] `just check-everything` — includes version-consistency + `npm run themes -- --check`.
 - [ ] `cargo test --workspace --no-fail-fast` — green modulo the recorded pre-existing
@@ -16537,6 +18555,24 @@ git commit -m "docs(br71): workspace extension user docs + subagents glass-box u
   `cargo test -p biorouter-mcp --lib knowledge::` (untouched, must stay green),
   `cargo test -p biorouter-server --lib routes::apps` (the pattern donor must be
   unaffected).
+- [ ] ⚠ **The four families this plan must PRESERVE, run by name** (added 2026-07-28).
+  `--workspace` covers them, but a `--lib`-only spot check does not, and three of the
+  four live in **integration** targets that no `--lib` filter can reach. Each is the net
+  for an invariant a BR-71 task is capable of breaking silently:
+
+  ```bash
+  cargo test -p biorouter --test conversation_writeback_freshness   # 32 tests: 5 #59 completeness + 3 #59 ordering + the #51 set
+  cargo test -p biorouter --test conversation_writeback_stress      # #51 under concurrent append
+  cargo test -p biorouter-server --lib routes::reply::tests::writeback_tests   # 6 — #51 W5's 409 refusal (the `::tests::` segment is required; see Task 21)
+  cargo test -p biorouter --lib context_mgmt                        # pin_tests + pins.rs + the 2 eager-compaction tests
+  ```
+
+  Expected: all green. `pin_tests` is **15** after Task 14 (14 before it), `pins.rs`'s
+  `mod tests` is **12** and unchanged, and `run_eager_compaction_preserves_a_concurrent_append`
+  / `run_eager_compaction_aborts_when_the_prefix_moved` are the two that replaced the
+  deleted `eager_swap_is_safe`. **`PLATFORM_EXTENSIONS.len()` is the one assertion in
+  this list BR-71 is entitled to change** (5 → 6, reconciliation #5); a red result
+  anywhere else here is a BR-71 regression, not a test to update.
 - [ ] `just generate-openapi && git diff --exit-code ui/desktop/openapi.json` — exit 0.
 - [ ] `cd ui/desktop && npm run test:run && npm run lint:check` — green.
 - [ ] `node scripts/workspace/glassbox-harness.mjs` against `just debug-server` —
@@ -16570,7 +18606,10 @@ removing security-relevant or adding process-spawning extensions confirms **rega
 permission mode** — ships with v1, not as a fast-follow, using the
 `SensitiveOpsInspector` precedent. → **Task 10** (`WorkspaceMutationInspector`). Precedence
 is free: `apply_inspection_results_to_permissions` promotes any `RequireApproval` over
-another inspector's `Allow` (`tool_inspection.rs:262-278`), so it beats Auto mode and a
+another inspector's `Allow` (`crate::tool_inspection` — a **top-level** module, not
+`agents/tool_inspection.rs`: `apply_inspection_results_to_permissions` at `:205`, the
+`needs_approval.push` at `:273`, the "*don't override other inspectors' decisions*"
+comment at `:277-280`), so it beats Auto mode and a
 per-tool always-allow grant alike.
 *Implementation refined after review, four ways —* the guarantee is scoped to "grants a
 capability to another conversation", not to one tool name: it inspects **`workspace_open`
@@ -16579,7 +18618,7 @@ escalation by an easier route); it classifies add-risk **structurally across all
 `ExtensionConfig` variants** rather than matching `Stdio` alone (`InlinePython` execs
 `uvx`; `Sse`/`StreamableHttp` carry credentials to a remote endpoint); it **normalizes
 both sides** of every name comparison, because the executor normalizes before removing
-(`extension_manager.rs:834-839`), so `remove_extensions: ["Workspace"]` really does
+(`extension_manager.rs:976-981`), so `remove_extensions: ["Workspace"]` really does
 strip the audit trail; and it confirms the two capability dimensions decisions b and c
 added to `workspace_set_tools` after §5 was written — a **provider switch** and a
 **skill grant**. See reconciliation #19.
@@ -16595,9 +18634,13 @@ redirects a turn the user is watching and is the most intrusive thing the tool d
 (ii) the injected text is wrapped in an **untrusted-data envelope**
 (reconciliation #15) — provenance lives in `MessageMetadata`, which never reaches the
 provider, so without framing another agent's output arrives as an indistinguishable
-user instruction; (iii) `mode:"note"` **refuses a target with a turn in flight**
-(reconciliation #16), because an in-turn compaction would silently delete the note
-after the tool reported success.
+user instruction; (iii) `mode:"note"` is **persisted pinned**
+(`Message::pinned`, `message.rs:1033`), so it survives both the concurrent write-back
+and the next compaction. *Superseded 2026-07-28:* this clause used to read *"refuses a
+target with a turn in flight (reconciliation #16), because an in-turn compaction would
+silently delete the note after the tool reported success"*. #51 removed that hazard —
+both in-turn rewrite sites now carry a foreign append over instead of deleting it — so
+the refusal is retired and the pin takes its place.
 
 **3. Observer stream: same-secret, all-sessions — ACCEPTED**, including the Electron
 origin allowance. The new exposure is *liveness* (transcripts were already readable via
@@ -16605,8 +18648,12 @@ origin allowance. The new exposure is *liveness* (transcripts were already reada
 *Implementation refined after review:* the allowance is **`file://` only — `null` is
 refused.** `null` is the opaque origin of every sandboxed frame, including the
 agent-authored figures this app itself serves through the unauthenticated
-`/mcp-ui-proxy` (`sandbox='allow-scripts allow-downloads'`, no `allow-same-origin`,
-`mcp_ui_proxy.rs:44`), and `routes/mod.rs`'s own `origin_tests` rejects it by name.
+`/mcp-ui-proxy` (`sandbox='allow-scripts allow-downloads'`, no `allow-same-origin` —
+the attribute is set in the **served document**,
+`routes/templates/mcp_ui_proxy.html:43`, and pinned by the assertion at
+`routes/mcp_ui_proxy.rs:45`; the plan's old `mcp_ui_proxy.rs:44` is the *neighbouring*
+assertion, about `params.get('url')`, which is a different property), and
+`routes/mod.rs`'s own `origin_tests` rejects it by name.
 Admitting it would make this socket's origin gate strictly weaker than the app agent
 socket's (`apps.rs:538-546`), which the design claims parity with. Task 31 must record
 what the packaged renderer actually sends; if it is `null`, the fix is on the renderer
@@ -16617,7 +18664,7 @@ GUI is attached.** No invisible parked prompts; an explicit error that names the
 forward (`mode:"note"`, or open the app). → **Task 14**.
 *Implementation refined after review, three ways:* (i) the mode read is the **target
 agent's** `AgentConfig.biorouter_mode` (fixed at agent creation,
-`execution/manager.rs:119-121`), not `Config::global().get_biorouter_mode()`; (ii) it is
+`execution/manager.rs:120-122`), not `Config::global().get_biorouter_mode()`; (ii) it is
 read with a **non-constructive `AgentManager::peek_agent`**, because
 `get_or_create_agent` is create-on-miss and its miss path performs exactly the global
 read this refinement exists to avoid — and leaves a bare, provider-less agent cached for
@@ -16625,7 +18672,7 @@ the turn runner to pick up. No live agent ⇒ take the conservative branch; (iii
 "approval mode" is the **two modes that can actually prompt** (`Approve`,
 `SmartApprove`). `Chat` cannot: `PermissionInspector::inspect` returns early
 (`permission/permission_inspector.rs:449-452`) and the agent loop skips every tool call
-(`agent.rs:3706-3716`), so refusing there would block the safest configuration there is
+(`agent.rs:4355-4371`), so refusing there would block the safest configuration there is
 with a message that is false for it.
 
 **5. `workspace_open.new.working_dir` DEFAULTS to the caller's directory.** A different
@@ -16685,14 +18732,19 @@ mention in the instruction block.
 
 ## Other decisions
 
-**6. KB plurality is a separate issue, implemented FIRST.** Single-active-KB is the real
-design, not a testing artifact (verified: `set_active_for_session` persists one id;
-`kb_id_or_active` errors without one; single-base search; `active_kb: Option<String>` on
-the wire; single-select GUI chip). It became [issue
+**6. KB plurality is a separate issue, implemented FIRST.** Single-active-KB was the real
+design at the time, not a testing artifact (verified then: `set_active_for_session`
+persists one id; `kb_id_or_active` errors without one; single-base search;
+`active_kb: Option<String>` on the wire; single-select GUI chip). It became [issue
 #45](https://github.com/BaranziniLab/biorouter/issues/45) with its own plan. BR-71
-*consumes* the plural API for assignment at session start and hot-swap mid-session.
-→ [Prerequisites](#prerequisites--two-both-ship-before-this-plan), Tasks 9, 12,
-15, 24, 32 — with a clearly-marked single-KB fallback if #45 slips.
+*consumes* the resulting API for assignment at session start and hot-swap mid-session.
+→ [Prerequisites](#prerequisites--two-both-now-shipped), Tasks 9, 12,
+15, 24, 32.
+*Amended 2026-07-28, after #45 landed:* what shipped is a **subtractive hidden-set model
+with a validated primary pointer**, not a plural rename of the old names, so the
+decision's *consumption* half is unchanged but every signature moved. The single-KB
+fallback this decision used to point at is **deleted** — it described a world neither
+branch of #45 produced. See reconciliation #6.
 
 **7. Focus etiquette ships NOW** (design §8.1): a "never open tabs automatically" setting,
 honoured by the daemon (so the tool result cannot claim a tab opened when none did).
@@ -16781,7 +18833,7 @@ dispatches, both `workspace__subagent` and the bare `subagent` are intercepted.
 → **Task 19**.
 *Implementation refined after review:* because the interception happens **before**
 `ExtensionManager::dispatch_tool_call`, the `available_tools` check at
-`extension_manager.rs:1333` never runs for this name — so the arm re-checks the grant
+`extension_manager.rs:1483-1484` never runs for this name — so the arm re-checks the grant
 itself (`is_extension_tool_available("workspace", "subagent")`). Without it, a session
 whose `workspace` entry was deliberately restricted could still spawn via the bare name.
 
@@ -16795,7 +18847,7 @@ subagents spawn this way; the standalone `create_subagent_tool` advertisement go
 **21. AUTO-ENABLE: a session with subagents enabled gets the workspace extension
 injected.** Two-tier, so §5's blast radius is unchanged: an auto-injected entry carries
 `available_tools: ["subagent"]` (enforced on both the advertisement path,
-`extension_manager.rs:971`, and the dispatch path, `:1332`), while a user-enabled entry
+`extension_manager.rs:1119`, and the dispatch path, `:1483-1484`), while a user-enabled entry
 carries `[]` = everything. → **Task 18**.
 *Implementation refined after review, twice:* (i) the injection runs **before**
 `get_prefixed_tools`, not where the old push was — that function reads the extension
@@ -16836,6 +18888,14 @@ out; headless degrades to today's invisible run with no parameter and no error.
 **25. Nesting stays FLAT — no nested subagents.** Now enforced twice: the precise
 `is_spawn_tool_call` guard and the broader §5 workspace guard (the spawn tool is a
 workspace tool). → **Task 36**.
+⚠ **`is_spawn_tool_call` does not exist in the tree — this plan creates it.** Read
+"enforced twice" as the *post-plan* state. At HEAD the spawn-call test is an inline
+predicate, `let bound_dispatch = tool_call.name != SUBAGENT_TOOL_NAME;`
+(`agent.rs:2812`, reasoning `:2805-2810`), and **Task 19 Step 5 extracts it into
+`is_spawn_tool_call` before Task 36 can guard with it**. That makes 19 → 36 a real
+dependency, not just a number ordering. Noted here because a reader who takes this
+decision at face value goes looking for a helper that has never existed — the same
+phantom hunt reconciliation #17 was corrected to prevent.
 
 **26. Visible child tabs are CAPPED at 4 per fan-out.** Beyond the cap children run in the
 background — never refused — and are reachable from History and from the parent's summary,
@@ -16845,7 +18905,8 @@ with `BIOROUTER_WORKSPACE_MAX_VISIBLE_CHILD_TABS`, matching the injected-turn ca
 decision explicitly points at; (ii) the cap is claimed **atomically** inside
 `VisibleChildGuard::try_claim`. The check-then-claim shape it replaced cannot hold under
 a parallel fan-out — which is the only situation the cap exists for, since subagent
-dispatch is deliberately excluded from the tool-dispatch semaphore (`agent.rs:2318`) and
+dispatch is deliberately excluded from the tool-dispatch semaphore (`agent.rs:2812`, the
+`let bound_dispatch = tool_call.name != SUBAGENT_TOOL_NAME;` line; reasoning `:2805-2810`) and
 concurrent calls are driven by `select_all`; (iii) **announce-only (decision 7) claims
 no slot**, so the cap counts tabs that actually exist and its message stays true;
 (iv) "the parent's summary, which says why" is delivered on the **background path too**
@@ -16854,7 +18915,7 @@ spawn returns before any `SubagentResult` exists, and a fan-out of background ch
 is precisely the shape this cap exists for.
 
 **27. Build order: multi-KB (#45) first, then this plan end-to-end** (all four phases).
-→ [Prerequisites](#prerequisites--two-both-ship-before-this-plan).
+→ [Prerequisites](#prerequisites--two-both-now-shipped).
 
 **28. Review mode: revise → re-run the adversarial critics → fix findings → summarize.**
 Implementation does not start on the summary alone; the operator reviews the revised plan
@@ -16875,40 +18936,41 @@ entries below are kept for the reasoning, each prefixed with the ruling:
 - **Question 2 — RULED: keep 600 s.** `workspace_watch` inherits `send_prompt`'s clamp
   verbatim, per decision a. Question 8, which asks the same thing from the other
   direction, is settled by the same ruling.
-- **Question 9 — RULED: fix the root cause instead.** The operator rejected both in-plan
-  options (refuse, and route through the soft-interrupt queue). The requirement they set
-  is stronger than either, and stronger than "don't lose the write":
+- **Question 9 — RULED: fix the root cause instead. SATISFIED 2026-07-28.** The operator
+  rejected both in-plan options (refuse, and route through the soft-interrupt queue). The
+  requirement they set is stronger than either, and stronger than "don't lose the write":
 
   > **A note must always be inserted into the prompt, wherever in the conversation it
   > sits — and it must not disappear when the conversation is compacted.**
 
-  That is **two** defects, not one, and `note` is unsafe until both are fixed:
+  That is **two** defects, not one, and `note` was unsafe until both were fixed. Both
+  shipped, merged as `a869a650` (#51):
 
-  **(a) The append is destroyed by a concurrent write-back.**
+  **(a) The append is destroyed by a concurrent write-back. FIXED.**
   `replace_conversation` DELETEs and re-INSERTs the entire message set, so a turn that
-  computed its conversation before the note existed writes a set without it. BR-12's
-  freshness discipline (`eager_swap_is_safe`, `context_mgmt/mod.rs:661-671`) guards the
-  background compaction path but was never extended to the in-turn sites
-  (`agents/agent.rs:3061`, `:4388`). The tool has already returned success by then.
+  computed its conversation before the note existed wrote a set without it — after the
+  tool had already returned success. Both in-turn sites now go through
+  `replace_conversation_preserving_tail`, which carries a foreign append over instead of
+  deleting it (`agent.rs:3606-3613`; `:5034` → `:2086`/`:2188`). The old guard this
+  section named, `eager_swap_is_safe`, was **deleted** by `505fe77c` — the discipline
+  moved into the store rather than being extended outward.
 
-  **(b) The note is summarized away even when the write survives.**
+  **(b) The note is summarized away even when the write survives. FIXED — and it is now
+  Task 14's job to use the fix.**
   Compaction keeps only the last `keep_last_turns` turns verbatim (default 4,
-  `DEFAULT_COMPACT_KEEP_LAST_TURNS`) and summarizes the older prefix
-  (`recent_window_split`, `compact_messages_with_window`). **There is no mechanism to
-  preserve an individual message across that boundary** — no pin, no sticky flag, nothing
-  `recent_window_split` consults. So a note that has fallen more than four turns back is
-  dissolved into a summary at best and dropped at worst. Fixing (a) alone would produce a
-  note that lands, is confirmed, and then quietly evaporates a few turns later — which is
-  the same broken promise arriving more slowly.
+  `DEFAULT_COMPACT_KEEP_LAST_TURNS`) and summarizes the older prefix. When this question
+  was written there was **no mechanism** to preserve an individual message across that
+  boundary. There is now: `MessageMetadata.pinned`, honoured at all five compaction
+  sites, with a budget and oldest-first eviction (`context_mgmt::pins`). It is
+  unconsumed in the shipped tree and reserved for this call **by name**
+  (`message.rs:617-621`).
 
-  Both parts are `biorouter`-crate changes outside this plan's blast radius, tracked on
-  `fix/conversation-writeback-freshness`. Reconciliation #16's "refuse" is the interim
-  behaviour, not the answer.
-
-  **What Task 14 may assume once the prerequisite lands:** that a message marked for
-  preservation is carried verbatim through every compaction path, so `note` can append and
-  return success truthfully. **What it must not do before then:** ship any `note`
-  implementation, including one that appends and hopes.
+  **What Task 14 must do:** call `Message::pinned` on the note. Half (a) alone would
+  produce a note that lands, is confirmed, and then quietly evaporates a few turns later
+  — the same broken promise arriving more slowly, which is what this ruling exists to
+  prevent. Reconciliation #16's interim "refuse" is **retired**, not merely satisfied:
+  the hazard it named is gone, and refusing would deny the tool's own recommended
+  headless fallback in the case a parent most wants it.
 
 1. **Should the auto-injected spawn surface be visible in Settings?** *Restated after
    review — the previous version of this question was based on a false premise.* It
@@ -16978,16 +19040,14 @@ entries below are kept for the reasoning, each prefixed with the ruling:
    lower it in both places and add a per-process cap on concurrently parked workspace
    waits.
 9. **Should `mode:"note"` queue instead of refusing when the target is mid-turn?**
-   Reconciliation #16 makes it refuse, because a note appended during a turn that then
-   compacts is silently deleted after the tool reported success. Refusing is the
-   conservative direction and names the alternatives (`steer` now, or `workspace_watch`
-   then retry). The richer fix — route `note` through the soft-interrupt queue so the
-   running turn itself persists it — would make it always succeed, at the cost of
-   changing "note" from "append quietly" into "the running agent sees this mid-turn",
-   which is `steer`'s semantics. A third option is to fix the root cause: extend the
-   BR-12 freshness discipline (`context_mgmt/mod.rs:661-671`) to the two in-turn
-   `replace_conversation` sites, which is a `biorouter` change outside this plan's blast
-   radius and deserves its own issue.
+   **CLOSED — neither. It appends, pinned, mid-turn or not.** The question presupposed
+   that a note appended during a turn that then compacts is silently deleted after the
+   tool reported success. It no longer is: the third option this entry floated — fix the
+   root cause — is what the operator chose and what shipped (#51). Both in-turn rewrite
+   sites are guarded, a foreign append is carried over, and `MessageMetadata.pinned`
+   keeps the note out of the summary. So neither the refusal (reconciliation #16,
+   retired) nor the soft-interrupt-queue variant (which would have silently turned
+   "append quietly" into `steer`'s "the running agent sees this mid-turn") is needed.
 10. **Is `AnnounceOnly` a fourth spawn outcome the GUI should surface differently?**
     Task 36 gives it its own `ChildVisibility` variant and its own truthful
     `parent_note`, and it still posts the downgraded notification. What it does not do
@@ -17009,13 +19069,26 @@ following three adversarial critic passes (decision 28's review gate is satisfie
 - **Execution mode: subagent-driven, task by task** — option 1 below. A fresh implementer
   per task carrying the FULL task text, then a spec-compliance reviewer and a
   code-quality reviewer per task. Never parallel implementers. Stop on BLOCKED.
+- **Binding orderings inside Phase 1 — FIVE, not four:** 6 → 8, **7 → 8**, 11 → 15,
+  18 → 19, 19 → 19b. The 7 → 8 entry was added by the 2026-07-28 drift reconciliation
+  and is the one an orchestrator is most likely to violate, because 7 and 8 look like
+  independent files. They are not: Task 8's SSE loop calls two functions Task 7 creates,
+  and one of them (`map_bus_event`) must gain a `MessagesPersisted` arm to compile at all
+  against today's eight-variant `AgentEvent`. Dispatching 8 before 7 produces an
+  implementer under compile pressure who reaches for `_ => None` and silently turns off
+  #59 for every `/reply` client. See [Execution options](#execution-options).
 - **Prerequisite 1 — issue #45 (multi-KB): SATISFIED.** Merged to `main` in `84d27fd4`
   on 2026-07-27; verification recorded in `docs/knowledge-base/multi-kb-verification.md`.
-- **Prerequisite 2 — a note always reaches the prompt: IN PROGRESS** on
-  `fix/conversation-writeback-freshness`. Task 1 does not start until it merges, and
-  Task 14 must not ship a `mode: "note"` implementation before it. It has **two parts**
-  (see the ruling on question 9): the append must survive the write-back race, *and* it
-  must survive compaction.
+  ⚠ It shipped in a **different shape** from the one this plan predicted — a subtractive
+  hidden-set model with a mandatory, validated primary pointer, not a plural rename. See
+  [Prerequisites](#prerequisites--two-both-now-shipped) and reconciliation #6;
+  Tasks 9, 12, 15, 24 and 32 were rewritten against the real API on 2026-07-28.
+- **Prerequisite 2 — a note always reaches the prompt: SATISFIED.** Merged to `main` as
+  `a869a650` (#51). Both parts landed (see the ruling on question 9): the append survives
+  the write-back race (`replace_conversation_preserving_tail` at both in-turn sites), and
+  it survives compaction (`MessageMetadata.pinned`). Task 1 is unblocked. **Task 14 now
+  carries an obligation rather than a prohibition:** it must persist the note *pinned*,
+  and reconciliation #16's interim mid-turn refusal is retired.
 
 Also ruled on at approval time, and folded into the questions section above: question 1
 (stay silent — no delegation badge), questions 2 and 8 (keep the 600 s clamp), and
@@ -17037,17 +19110,36 @@ its runner, the always-confirm hook, the auto-injection and its persistence excl
 the breaking tool-surface change, permission-relevant code, the control-plane bridge, and
 the cross-subsystem consult unification — on the most capable.
 
-**Four orderings inside Phase 1 are not negotiable**, because each earlier task removes
-a hazard the later one would otherwise create: Task 6 before Task 8; Task 11 before
-Task 15; **Task 18 before Task 19** (Task 19 deletes the standalone spawn advertisement,
-so without Task 18's injection *and* its extension-side advertisement every existing
-config loses delegation the moment it lands); and **Task 19 before Task 19b** (19b's
-`subagent_status` removal assumes the dispatch rewiring is already in).
+**Five orderings inside Phase 1 are not negotiable**, because each earlier task removes
+a hazard the later one would otherwise create: Task 6 before Task 8; **Task 7 before
+Task 8** (see below); Task 11 before Task 15; **Task 18 before Task 19** (Task 19 deletes
+the standalone spawn advertisement, so without Task 18's injection *and* its
+extension-side advertisement every existing config loses delegation the moment it lands);
+and **Task 19 before Task 19b** (19b's `subagent_status` removal assumes the dispatch
+rewiring is already in).
+
+**7 → 8 is a hard build dependency, not a numbering convention.** Task 8's SSE
+subscription calls `crate::routes::session_events::map_bus_event` and
+`bus_lag_resync_frame`; both are created by Task 7, so a Task 8 landed first does not
+compile. It is listed here as binding because the failure it prevents is worse than a
+missing symbol: `map_bus_event` must carry an explicit `AgentEvent::MessagesPersisted`
+arm (`AgentEvent` has eight variants — `agent.rs:672`), and an implementer who writes
+Task 8's loop first, hits `E0004`, and silences it with `_ => None` gets a green build,
+a green test suite, and no `/reply` client that ever learns a stored message id again.
 
 **2. Inline Execution** — the executing-plans skill in one session with checkpoints at
 each phase gate (Tasks 21, 31, 40, 44).
 
-# Self-review (re-performed after the SECOND and THIRD adversarial-critic fix passes, 2026-07-27)
+# Self-review (re-performed after the SECOND and THIRD adversarial-critic fix passes, 2026-07-27; a FOURTH pass — the drift amendment — was added 2026-07-28)
+
+> **Read this first.** The three passes below ran against a tree that no longer exists.
+> On 2026-07-28 this plan was amended against **181 commits** of `main`
+> (`67822ea3` → `275d735d`; 175 non-merge, 11 merges, 146 files, +42,112/−4,173), and
+> **eight of its 45 tasks were CONFLICTED** — not drifted, *conflicted*: they rested on
+> premises the tree had made false. See [Fourth pass](#fourth-pass--the-drift-amendment-2026-07-28-181-commits)
+> for what changed and what is still unverified. **Nothing in this plan has been
+> compiled**, before or after the amendment; that has been true at every pass and is
+> the single most important thing to know about it.
 
 A fresh pass over the twice-revised document, then a third pass over the result. Each
 self-review made claims the next critic falsified; those are corrected here rather than
@@ -17194,8 +19286,9 @@ every Rust and TypeScript anchor in this plan is unmoved).
   `import { ExtensionsSection }` is `undefined` and React throws at render);
   `<ExtensionsSection /* the props the component requires */ />`, prose in a code fence;
   and no `ConfigContext` mock, though the component calls `useConfig()`, which **throws**
-  outside a provider (`ConfigContext.tsx:341-347`) — and the context object is
-  module-private (`:66`), so it cannot simply be wrapped. Rewritten in full against the
+  outside a provider (`ConfigContext.tsx:437-443`, throw at `:440` — the third pass's
+  `:341-347` was correct at `67822ea3` and is pre-drift now) — and the context object is
+  module-private (`:90`, was `:66`), so it cannot simply be wrapped. Rewritten in full against the
   sibling `capabilities/CapabilitiesSection.test.tsx` precedent, and — unlike every other
   code block in this document — **executed against the real component before being
   written down**, including the negative control (with the Step 3 wiring removed the
@@ -17245,6 +19338,157 @@ every Rust and TypeScript anchor in this plan is unmoved).
   its test, and the new `ExtensionsSection.test.tsx` — were missing from the created-files
   inventory and are added.
 
+## Fourth pass — the drift amendment, 2026-07-28 (181 commits)
+
+Not an adversarial-critic pass. A **reconciliation against the tree**, forced by the
+gap between where this plan was written and where `main` had got to, and run in three
+phases (blockers → drift → defects) against `275d735d`.
+
+**The measurement, stated plainly so nobody re-derives it:**
+
+```bash
+git log --oneline 67822ea3..275d735d | wc -l              # 181  (175 non-merge, 11 merges)
+git diff --stat 67822ea3..275d735d | tail -1              # 146 files, +42,112 / -4,173
+git log --oneline 67822ea3..275d735d -- crates/biorouter/src/agents/agent.rs | wc -l  # 13
+```
+
+The churn landed on exactly the files this plan modifies most: `agent.rs` **13**
+commits (6,001 → 6,817 lines), `session_manager.rs` **11**, `context_mgmt/` **6**,
+`routes/reply.rs` **4** (1,429 → 1,832), `extension_manager.rs` **4**.
+
+**Eight of 45 tasks were CONFLICTED — 6, 7, 8, 9, 14, 15, 24, 34.** "Conflicted" is a
+stronger word than the twenty-one merely-drifted tasks earn, and it is the right one:
+each rested on a premise the tree had made false, so following the task literally
+produced code that did not compile or, worse, compiled and was wrong.
+
+- **7 and 34** were straight `E0004`s. `AgentEvent` gained an eighth variant
+  (`MessagesPersisted`, `agent.rs:672`); the plan's `map_bus_event` matched seven
+  arms with no wildcard. The dangerous part was never the compile error but its
+  obvious repair: `_ => None` builds green, tests green, and **no `/reply` client ever
+  learns a stored message id again** — silently undoing #59.
+- **6 and 8** would have reintroduced #51 W5, a data-loss fix that had merged eight
+  commits earlier, *and certified it*: Task 8's gate read
+  `grep -c "replace_conversation" turn.rs # Expected: 1`, so an implementer who wrote
+  the correct seed-only runner would have seen `0`, read the gate, and **added** the
+  destructive call to satisfy it. Both greps are now anchored patterns behind two
+  property tests, with "necessary and not sufficient" stated in the task.
+- **9, 15, 24 and 32** were written against `get_active_for_session` /
+  `set_active_for_session`, which #45 did not make plural — it deleted them. The
+  replacement is a subtractive hidden-set model plus a mandatory four-valued primary
+  pointer. The plan's single-KB FALLBACK block was **deleted rather than left**,
+  because #45 invalidated *both* of its branches and a stale escape hatch reads as a
+  fully-specified design.
+- **14** conflicted in the plan's favour: its blocker had shipped. `eager_swap_is_safe`
+  was deleted, both in-turn rewrite sites are guarded, and `MessageMetadata.pinned`
+  landed reserved for `workspace_send_prompt { mode: "note" }` **by name**. So
+  reconciliation #16's mid-turn refusal is retired and Task 14 gained an obligation
+  instead: call `.pinned()`.
+
+**What the amendment also had to fix that was never drift.** Three review passes had
+each approved text the next pass falsified, and this one found the same. The sharpest:
+`is_spawn_tool_call` — cited by reconciliation #17 *and* Task 19 Step 5 *and* decision
+25 as something to extend — **has never existed anywhere under `crates/`** (the only
+hits in the repo are this plan file's own 29 references to the name). The exemption
+is an inline `let bound_dispatch = tool_call.name != SUBAGENT_TOOL_NAME;`
+(`agent.rs:2812`), so Task 19 Step 5 now *extracts* the predicate and then adds its
+sibling, in that order, and decision 25 says so too.
+
+**Two of the drift survey's own findings did not survive re-measurement, and the plan
+now records the adjudication rather than the finding.** The survey reported Task 19's
+`create_subagent_tool` sweep as "13 expected, 10 actual" and Task 19b's
+`subagent_status` sweep as "31 expected, 22 actual". Re-running the plan's *exact*
+pipelines at `275d735d` reproduces **13** (agent.rs 6 / reply_parts.rs 2 /
+subagent_tool_tests.rs 5) and **31** (subagent_tool.rs 17 / agent.rs 5 /
+subagent_handle.rs 5 / reply_parts.rs 3 / agents/mod.rs 1), line for line. The survey
+had dropped the `SUBAGENT_TOOL_NAME` alternation and the `grep -v` exclusion from the
+first, and counted occurrences rather than lines in the second. Both steps now carry a
+⚠ telling the engineer to **run the command as written and suspect the command before
+the tree** — because this plan's own warning applies to its reviewers too: *an
+engineer who reads a live count as a regression may delete a live call site to make
+the number match.*
+
+**Anchors: re-verified where amended, NOT globally.** Every file:line written *into*
+the plan by this pass was read out of `275d735d` first, and a resolver was run over
+all ~19,400 lines to prove no citation points past the end of its file. That is a
+weaker guarantee than it sounds: a citation can be in range and still wrong, and the
+near misses are the expensive ones. Three found by this pass, each in text a previous
+pass had approved:
+
+- `extension_manager.rs:999` was cited for `is_extension_enabled` in **Task 18** — the
+  one task whose whole subject is that `get_extension_configs` (which *is* at `:999`)
+  snapshots every loaded extension. `is_extension_enabled` is `:987`. Following the
+  citation lands on the exact function the task exists to defend against.
+- `CHAT_MODE_TOOL_SKIPPED_RESPONSE` moved **files**, not just lines
+  (`agents/tool_execution.rs:43`); no line-offset sweep finds that.
+- `routes/apps.rs:1879` was correct at the anchor commit and now lands in
+  `consult_deadline`'s doc. The anchor is `app_data_envelope` (`:1919`).
+
+**Where the amendment's blind spot was.** The drift pass re-anchored 24 task *bodies*
+and left **fourteen stale anchors in the reconciliations table** — the section a
+reader opens precisely when a task's number misses. Task bodies carry a
+"re-verified at `275d735d`" banner and get swept; the reconciliations read as settled
+prose about *decisions* and do not. The same asymmetry produced the three near misses
+above, all of which sit in prose rather than in a Files list. **A future drift pass
+should treat the preamble, the decisions of record and the self-review as first-class
+targets**, not as commentary on the tasks.
+
+**That blind spot was still open when this was written, and a later pass proved it
+(2026-07-28, second verification).** The paragraph above correctly *names* the failure
+mode and then does not close it. An independent sweep of all 122 comment-embedded
+citations found ten more errors, every one of them inside a `//` comment in a code
+snippet or in running prose, and **not one** in a Files list or an anchor table — the
+distribution the paragraph predicts. Two of them were inside tasks this very amendment
+rewrote. Concretely:
+
+- **Task 18** cited `:2424-2439` and `:2445-2461` for the two bodies its Step-3 snippet
+  leaves unchanged (real `:2918-2933` / `:2940-2955`), `:2565` for the non-Frontend
+  `add_extension` arm (real `:3057-3061`), and `:2596` / `:2600-2607` for
+  `subagents_enabled`'s mode gate and gemini refusal (real `:3082-3084` / `:3085-3092`).
+  All five are ~+490 off and all five land on plausible, unrelated code — while the same
+  task's Files list was correctly re-anchored, which is exactly what makes the comments
+  dangerous: an implementer who checks the Files list will trust the comments.
+- **Task 19** cited `:2656-2657` for the `sub_workflows` read feeding
+  `create_subagent_tool` (real `:3150-3151`), and **Task 19b** `:2653` for the
+  `if subagents_enabled { … }` block it empties (real `:3149-3160`) — same drift family.
+- **Task 13** attributed `message_blobs::externalize` to `session_manager.rs:3223`, which
+  is `get_conversation` (real call sites `:3475` and `:3687`).
+- **Task 1** placed the `ensure_session_incarnation_schema` call in `run_migrations`
+  (it is in `reconcile_loop_schema`) and cited a test at `:5620` (real `:5615`).
+- **Task 9's** server impl would not have compiled: its import list named
+  `WorkspaceServices` and `WorkspaceTurnLease` but not `KbPrimaryChoice` /
+  `KbSelectionView`, which the impl's own signatures use — an E0412 the plan flagged as a
+  class *two lines earlier*, for the neighbouring type.
+
+Worse than any anchor, that pass found a **gate that ran zero tests and exited 0**:
+Tasks 21 and 44 both filtered on `routes::reply::writeback_tests`, but the module is
+nested inside `mod tests`, so the substring never matched and the command reported
+`0 passed` — green, while testing nothing, over the exact regression blocker B2 exists to
+prevent. Every `--lib` filter in this plan has since been executed against the real test
+lists of all four crates; that one was the only filter naming existing code that matched
+nothing, and it is fixed. The remaining zero-match filters all name modules a task
+*creates*, which is correct by construction.
+
+**So the honest statement of this plan's citation coverage is:** Files lists and anchor
+tables have been swept repeatedly and are reliable; **comment- and prose-embedded
+citations have now been swept once, mechanically, for Tasks 1-21 only** (symbol-vs-line
+matching against the tree at `275d735d`, plus manual adjudication of every flagged hit).
+Tasks 22-44 have had no such sweep, so their inline comments should be read as
+*unverified* — check any `:NNN` in a comment against the symbol named beside it before
+acting on it. The anchor rule (trust the symbol, not the number) is what makes that
+survivable, and it is the reason none of the ten errors above was capable of causing a
+silent wrong edit — but it is not a substitute for the sweep.
+
+**What this pass did NOT do**, stated so it is not mistaken for done:
+
+- **It compiled nothing.** See the honest note below; the amendment does not weaken it.
+- It did not walk the bodies of the tasks the survey marked CLEAN (16, 17, 20, 22, 23,
+  25, 26, 28-31, 38-42) symbol by symbol. They received the whole-file citation sweep
+  and the semantic spot-check that found the `ConfigContext.tsx` anchors, and nothing
+  more.
+- It did not re-derive the design; every amendment is a change of *premise* or of
+  *anchor*, and where a decision's implementation moved, the decision of record was
+  edited to match rather than left to disagree with its task.
+
 ## Coverage and consistency (re-checked, not carried forward)
 
 - **Decision coverage:** all 28 decisions are implemented and traceable —
@@ -17255,7 +19499,14 @@ every Rust and TypeScript anchor in this plan is unmoved).
   without a task or a stated non-action. Decisions **1, 2, 3, 4, a, b, c, 7, 10, 11, 17,
   19, 21, 23 and 26** carry an "*Implementation refined after review*" note in
   [Decisions of record](#decisions-of-record-operator-approved-2026-07-27) naming what
-  changed and why.
+  changed and why — fifteen decisions, fifteen notes, re-counted.
+  *Three decisions were edited by the 2026-07-28 amendment and say so in place:*
+  **2** (clause (iii): the `note` is *persisted pinned* — the superseded text is quoted
+  so a reader of the old plan sees what replaced it), **6** (the KB API #45 actually
+  shipped, and the deletion of the single-KB fallback the decision used to point at),
+  and **25** (`is_spawn_tool_call` is created by Task 19 Step 5, which makes 19 → 36 a
+  dependency rather than a numbering). Decision **4**'s Chat-mode citation and decision
+  **1**'s `tool_inspection` path were re-anchored without changing the ruling.
 - **Spec coverage:** every design-doc section maps to tasks (conformance table). The
   seven tools (12, 13, 14, 15, 16, 17, 24) plus the merged `subagent` (18 advertises,
   19 rewires), both spine pieces (5-8), the bridge + frames + echo (22, 23, 25, 26),
@@ -17265,10 +19516,31 @@ every Rust and TypeScript anchor in this plan is unmoved).
   `/interrupt` → pinned registered live child → drain (steer); Stop → `/agent/cancel` →
   lease token → `SubagentResult` → parent resolution — and asserted live by the Task 39
   harness (interrupt-202, user_direct-in-stream, cancel-true) gated at Task 40.
-- **Reconciliations:** twenty entries, six added by this pass (15 untrusted framing, 16
-  note-vs-compaction, 17 semaphore exemption, 18 bus ring reclamation, 19 the widened
-  always-confirm hook, 20 the operator-disabled gate), plus amendments to 12 (list scope),
-  13 (both persist paths) and 14 (bundle composition).
+- **Reconciliations:** twenty entries at the time of this pass, six added by it (15
+  untrusted framing, 16 note-vs-compaction, 17 semaphore exemption, 18 bus ring
+  reclamation, 19 the widened always-confirm hook, 20 the operator-disabled gate), plus
+  amendments to 12 (list scope), 13 (both persist paths) and 14 (bundle composition).
+  *Now **twenty-three**:* the 2026-07-28 drift reconciliation added **21** (the client
+  write-back stays in `/reply`; the runner performs no whole-history rewrite), **22**
+  (`map_bus_event` carries `MessagesPersisted`, exhaustively) and **23** (the subagent
+  bus tee is total while the parent's accumulation is not — `subagent_handler.rs` owns a
+  *second* exhaustive `AgentEvent` match that 22 does not reach), **retired 16** (its
+  hazard was closed by #51; `note` pins instead of refusing), and rewrote **6** against
+  the API #45 actually shipped. The same pass re-anchored the stale `agent.rs` /
+  `reply.rs` / `extension_manager.rs` numbers inside **1, 2, 9, 11, 12, 13, 14 and 17**;
+  those are line-number repairs, not changes of substance, and each names the pre-drift
+  number it replaced so a reader of the old plan is not left guessing.
+  *No entry was added by the amendment's third (defects) phase* — it introduced no
+  deviation from the design, only repairs: the pre-drift `is_spawn_tool_call` phantom
+  (now also flagged on **decision 25**, which had it too), three near-miss anchors in
+  prose rather than in Files lists (`routes/apps.rs`'s `app_data_envelope`,
+  `mcp_ui_proxy`'s sandbox attribute, `ConfigContext.tsx`'s `useConfig` throw), the
+  `start_agent` / working-dir-guard pair in **#7**, the `extension_manager.rs`
+  prefix-stripping precedent that Task 36's doc comment still gave as `:1294-1304`
+  while **#11** had already corrected it to `:1444-1457`, and a broken intra-document
+  link — five references to `#prerequisites--two-both-ship-before-this-plan`, an anchor
+  the amendment itself invalidated when it retitled that section to
+  "BOTH NOW SHIPPED".
 - **Type consistency:** `SessionBusEvent`'s four variants (Task 5) are what Tasks 6, 8,
   14, 17, 34 and 41 publish and Task 7 maps — including `TurnFinished.token_state` at
   **every** construction site and the five `TurnError` fields, with `scope` documented
@@ -17276,9 +19548,13 @@ every Rust and TypeScript anchor in this plan is unmoved).
   13, 14, 32, 35 with the same three variants; `TurnExtras.reasoning_effort` is
   `Option<ReasoningEffort>`, matching `ChatRequest` and `SessionConfig`;
   `WorkspaceServices` (Task 9) signatures match every call site in 14-17, 23, 24, 32, 33,
-  36 — with the **plural** `set_knowledge_bases(&[String])` /
-  `active_knowledge_bases() -> Vec<String>`, and `WorkspaceTurnLease` imported where it
-  is named; `list_session_summaries` takes four arguments after Task 4 and every caller
+  36 — *as amended 2026-07-28*, the KB pair is
+  `set_knowledge_bases(&str, &[String], KbPrimaryChoice) -> Result<KbSelectionView, String>`
+  and `knowledge_selection(&str) -> KbSelectionView`, and `start_session` takes a fourth
+  `KbPrimaryChoice` argument; the previous revision's `active_knowledge_bases() ->
+  Vec<String>` is gone, along with the `set_active_for_session` it was written against
+  (reconciliation #6). `WorkspaceTurnLease` is imported where it is named;
+  `list_session_summaries` takes four arguments after Task 4 and every caller
   in the tree is enumerated; `WorkspaceCommand` fields (Task 25) match the frames emitted
   in 14, 15, 16, 24, 29, 36; `human_intervened` flows 35 → 37 → harness 39; the run token
   flows parent-token → `child_token()` → lease / active-work / `agent.reply` in Task 33;
@@ -17291,9 +19567,10 @@ every Rust and TypeScript anchor in this plan is unmoved).
   `#[serial_test::serial(workspace_services)]`; **every whole-module workspace-extension
   run** is sandboxed with `BIOROUTER_PATH_ROOT=$(mktemp -d)`, because
   `AgentManager::instance()` resolves the real data dir and runs first-run init —
-  `grep -c 'BIOROUTER_PATH_ROOT=\$(mktemp -d)'` returns **11**, which is every "Step 4/5:
+  `grep -c 'BIOROUTER_PATH_ROOT=\$(mktemp -d)'` returns **12**, which is every "Step 4/5:
   Run tests" command that names `agents::workspace_extension` (the previous revision's
-  "four" was stale when written). The eight unsandboxed occurrences are all fail-first
+  "four" was stale when written, and the "11" that replaced it was itself off by one —
+  re-counted against this file). The eight unsandboxed occurrences are all fail-first
   Step 2 commands filtered to a single not-yet-existing test, where the expected outcome
   is a compile error and no handler runs; that is sound but **unverified per command**,
   and it is listed under residuals rather than claimed as audited. The tests that reach
@@ -17308,7 +19585,7 @@ every Rust and TypeScript anchor in this plan is unmoved).
   ≤2,500-character budget holds at each step (2,061 → 2,195 → 2,252 measured).
 - **Mechanical-move discipline:** the moves are marked as such WITH their verification
   commands — Task 6's `emit_completion_metrics` is explicitly a **derived copy, not a
-  move**, Task 8's handler rewrite has seven greps with expected counts including three
+  move**, Task 8's handler rewrite has ten greps (`:4878-4916`) with expected counts including three
   that catch a *silent deletion* rather than a compile error, and Task 34's stream-loop
   re-nesting. Task 19's dispatch-arm change states which lines must be byte-identical.
   Task 8's rollback note now names the commit at which its byte-for-byte revert window
@@ -17351,15 +19628,31 @@ every Rust and TypeScript anchor in this plan is unmoved).
 
 ## Honest note on what this pass did NOT verify
 
-**Almost nothing in this plan has been compiled.** Every code block is written against
-symbols and signatures read from the tree (`a01be9b7`, re-confirmed unmoved at
-`67822ea3`), and all three critic passes found real compile errors in code the previous
-pass had already reviewed — which is the empirical argument for treating "reads
+**Almost nothing in this plan has been compiled.** ⚠ **Still true after the 2026-07-28
+drift amendment — which re-anchored and re-premised the document against 181 commits
+without running `cargo check` once.** Every code block is written against symbols and
+signatures read from the tree: originally `a01be9b7`, re-confirmed unmoved at
+`67822ea3`, and — for the parts the amendment touched, which is most of Phase 1 —
+re-read at `275d735d`. Three critic passes each found real compile errors in code the
+previous pass had already reviewed, which is the empirical argument for treating "reads
 correctly" as strictly weaker than `cargo check`. The second pass found eleven; it
 predicted "a third pass would find fewer but not zero", and the third pass found one
 more (Task 12's `E0599` on two `AgentManager` methods that do not exist until Task 33),
 which is the worst kind, because it fails the whole crate's test target rather than one
-test. **Assume a fourth pass would still find something.**
+test. **That prediction then came true a fourth time, and harder**: the drift
+reconciliation found two more `E0004`s (Tasks 7 and 34, on an `AgentEvent` variant that
+did not exist when the plan was written) plus four tasks written against knowledge-base
+functions that had been deleted. **Assume a fifth pass would still find something.**
+
+**The amendment did not make this claim weaker or stronger — it made it broader.** The
+three critic passes were reading a plan against a *fixed* tree. The fourth was reading
+it against a tree that had moved 181 commits, so "the symbol is there" had to be
+re-established for every claim it touched, and could not be for the claims it did not.
+The plan is therefore in two states at once: the amended surfaces are accurate as of
+`275d735d`, and the untouched ones are accurate as of `67822ea3`. **The ground rule is
+what reconciles them — anchor on the SYMBOL, never the line number** — and the reason
+the plan says how far the numbers are off (`agent.rs` by ~+490, `reply.rs` by ~+180) is
+so a near miss is not mistaken for a hit.
 
 The one exception is Task 30's Step 3b. That component test — with its three mocks, the
 `Toggle Workspace extension` switch label, and the disabled-between-clicks behaviour —
@@ -17398,3 +19691,13 @@ symbols its seven findings name (`AgentManager`'s method surface,
 `ExtensionsSection`'s export form and props, `useConfig`'s throw, `chatrecall`'s
 capability membership, `serial_test` in `crates/biorouter/Cargo.toml:139`, Task 18's
 Files list) rather than re-auditing every anchor.*
+
+*⚠ **That anchoring statement is now historical.** The fourth pass (2026-07-28) ran at
+`275d735d`, where `git log --oneline 67822ea3..275d735d | wc -l` is **181** and
+`git diff --stat` is 146 files / +42,112 / −4,173 — so the "no anchor moved" claim
+above holds only up to `67822ea3`. Eight tasks (6, 7, 8, 9, 14, 15, 24, 34) were
+CONFLICTED and were re-premised; twenty-one were re-anchored; both prerequisites (#45
+in `84d27fd4`, #51 in `a869a650`) **shipped** and their sections were rewritten from
+blockers into records. Task counts are unchanged: still 45 units across 4 phases,
+still gated at 21 / 31 / 40 / 44. What changed is what those tasks are written
+against — and, in Tasks 6 and 8, what they would have destroyed.*
