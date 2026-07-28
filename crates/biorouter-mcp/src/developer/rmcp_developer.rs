@@ -353,8 +353,17 @@ pub struct DeveloperServer {
 impl ServerHandler for DeveloperServer {
     #[allow(clippy::too_many_lines)]
     fn get_info(&self) -> ServerInfo {
-        // Get base instructions and working directory
-        let cwd = std::env::current_dir().expect("should have a current working dir");
+        // Get base instructions and working directory. Report the base the tools
+        // actually resolve against, so the instructions can never name a
+        // directory the jail disagrees with. It is legitimately unavailable when
+        // the working directory has been deleted, and `get_info` runs during
+        // `initialize` — saying so beats taking the process down with an
+        // `expect` (#64).
+        let cwd = self.effective_cwd().ok();
+        let cwd_display = cwd.as_ref().map_or_else(
+            || "unavailable (the working directory no longer exists)".to_string(),
+            |dir| dir.to_string_lossy().into_owned(),
+        );
         let os = std::env::consts::OS;
         let in_container = Self::is_definitely_container();
 
@@ -386,7 +395,7 @@ impl ServerHandler for DeveloperServer {
                 {container_info}
                 "#,
                 os=os,
-                cwd=cwd.to_string_lossy(),
+                cwd=cwd_display,
                 container_info=if in_container { "container: true" } else { "" },
             },
             _ => {
@@ -421,7 +430,7 @@ impl ServerHandler for DeveloperServer {
             {container_info}
                 "#,
                 os=os,
-                cwd=cwd.to_string_lossy(),
+                cwd=cwd_display,
                 shell=shell_info,
                 container_info=if in_container { "container: true" } else { "" },
                 }
@@ -554,7 +563,7 @@ impl ServerHandler for DeveloperServer {
             _ => format!("{}{}", common_shell_instructions, unix_specific),
         };
 
-        let git_desc = git_context_block(&cwd);
+        let git_desc = cwd.as_deref().map(git_context_block).unwrap_or_default();
 
         let instructions =
             format!("{base_instructions}{git_desc}{editor_description}\n{shell_tool_desc}");
@@ -1826,13 +1835,76 @@ impl DeveloperServer {
         ]))
     }
 
+    /// The base a caller explicitly *sanctioned* for this server: the session
+    /// working directory it was constructed with, else `BIOROUTER_WORKING_DIR`
+    /// (which the app sets to the same value for child extension processes).
+    ///
+    /// Unlike [`Self::session_cwd_or_fallback`] this does not check existence —
+    /// it answers "was a base ever chosen for us?", which is what separates
+    /// "the process cwd *is* the intended base" (plain `biorouter session`, no
+    /// folder picked) from "the intended base has disappeared". An empty env var
+    /// counts as unset, since the desktop app writes `''` when no folder is
+    /// selected.
+    fn sanctioned_base(&self) -> Option<PathBuf> {
+        self.working_dir.clone().or_else(|| {
+            std::env::var("BIOROUTER_WORKING_DIR")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+                .map(PathBuf::from)
+        })
+    }
+
     // Helper method to resolve and validate file paths
-    /// The base directory file operations resolve against and are jailed to.
-    /// Prefers the session working directory (so the text_editor jail tracks the
-    /// same directory the shell runs in), falling back to the process cwd.
-    fn effective_cwd(&self) -> PathBuf {
-        self.session_cwd_or_fallback()
-            .unwrap_or_else(|| std::env::current_dir().expect("should have a current working dir"))
+    /// The base directory file operations resolve against and are jailed to:
+    /// the session working directory (so the text_editor jail tracks the same
+    /// directory the shell runs in), or the process cwd when no base was ever
+    /// chosen.
+    ///
+    /// **This is a jail base, so it is never guessed** (#64). When a base *was*
+    /// sanctioned and has since vanished, this fails instead of quietly
+    /// substituting the process cwd or `"."`: those are different directories —
+    /// usually much wider ones (`/` under the desktop app) — and re-rooting the
+    /// jail there would hand the tools every path the sanctioned base excluded,
+    /// under a justification ("don't panic") that has nothing to do with the
+    /// boundary it moves. Failing the call keeps the boundary intact and says
+    /// exactly what went wrong; only the caller's directory can restore it.
+    ///
+    /// Note the deliberate asymmetry with [`Self::session_cwd_or_fallback`],
+    /// which the shell uses: *where a command runs* may fall back, because the
+    /// shell is not jailed by this base at all and a fallback grants nothing.
+    /// *What the file tools may touch* may not.
+    fn effective_cwd(&self) -> Result<PathBuf, ErrorData> {
+        if let Some(dir) = self.session_cwd_or_fallback() {
+            return Ok(dir);
+        }
+        if let Some(gone) = self.sanctioned_base() {
+            return Err(ErrorData::new(
+                ErrorCode::INTERNAL_ERROR,
+                format!(
+                    "The working directory `{}` no longer exists, so file paths cannot be \
+                     resolved. File access stays confined to that directory and is not \
+                     re-rooted elsewhere: recreate it, or start a session in a directory \
+                     that exists, and retry.",
+                    gone.display()
+                ),
+                None,
+            ));
+        }
+        // No base was ever chosen, so the process cwd is the intended one. If
+        // even that is gone (the directory a `biorouter session` started in was
+        // deleted) there is nothing to resolve against — fail this call rather
+        // than the whole process.
+        std::env::current_dir().map_err(|e| {
+            ErrorData::new(
+                ErrorCode::INTERNAL_ERROR,
+                format!(
+                    "No working directory is available to resolve file paths against: the \
+                     process working directory could not be read ({e}). Run from a directory \
+                     that exists, or set BIOROUTER_WORKING_DIR."
+                ),
+                None,
+            )
+        })
     }
 
     fn resolve_path(&self, path_str: &str) -> Result<PathBuf, ErrorData> {
@@ -1853,14 +1925,16 @@ impl DeveloperServer {
         path_str: &str,
         jail_relaxed: bool,
     ) -> Result<PathBuf, ErrorData> {
-        let cwd = self.effective_cwd();
         let expanded = expand_path(path_str);
         let path = Path::new(&expanded);
 
+        // Ask for the base only where it is actually used: an absolute path
+        // needs none, so Auto mode keeps resolving one even when the working
+        // directory is gone. A relative path is meaningless without a base.
         let resolved = if is_absolute_path(&expanded) {
             path.to_path_buf()
         } else {
-            cwd.join(path)
+            self.effective_cwd()?.join(path)
         };
 
         // Auto mode: the containment jail is relaxed (sensitive writes are still
@@ -1869,6 +1943,9 @@ impl DeveloperServer {
         if jail_relaxed {
             return Ok(resolved);
         }
+
+        // Enforcing the jail always needs the base.
+        let cwd = self.effective_cwd()?;
 
         // Canonicalize the cwd for comparison
         let canonical_cwd = std::fs::canonicalize(&cwd).map_err(|e| {
@@ -2421,26 +2498,143 @@ mod tests {
         assert_eq!(resolved, target);
     }
 
-    /// #2 regression: if the session dir is deleted, the editor jail falls back
-    /// to a real cwd (the same view the shell uses) rather than failing to
-    /// canonicalize a nonexistent root.
+    /// #2 regression, narrowed by #64: if the session dir is deleted, the editor
+    /// jail must not blow up on a missing root — the #2 failure was an opaque
+    /// "Failed to canonicalize working directory" INTERNAL_ERROR. That intent is
+    /// kept: the caller gets a clean error that names the directory and says how
+    /// to fix it.
+    ///
+    /// What #64 overturns is the *other* half of the original #2 fix, which made
+    /// this resolve against the process cwd instead. That silently moved the
+    /// jail base — the one value bounding every path these tools may touch —
+    /// onto a directory nobody sanctioned, and the widening is asserted against
+    /// directly in `editor_jail_is_not_widened_when_session_dir_disappears`. The
+    /// shell keeps its fallback (see `shell_cwd_missing_session_dir_falls_back`):
+    /// it is not jailed by this base, so running elsewhere grants nothing.
     #[test]
     #[serial]
-    fn editor_path_jail_falls_back_when_session_dir_missing() {
+    fn editor_path_jail_refuses_when_session_dir_missing() {
         let saved = std::env::var("BIOROUTER_WORKING_DIR").ok();
         std::env::remove_var("BIOROUTER_WORKING_DIR");
 
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().to_path_buf();
         drop(tmp);
-        let server = DeveloperServer::new().with_working_dir(dir);
-        // A relative path resolves against the fallback cwd and does not blow up
-        // on a missing session root.
-        assert!(server.resolve_path("scratch.txt").is_ok());
+        let server = DeveloperServer::new().with_working_dir(dir.clone());
+        let err = server.resolve_path_jailed("scratch.txt", false).expect_err(
+            "a relative path has no base to resolve against once the session dir is gone",
+        );
 
         if let Some(v) = saved {
             std::env::set_var("BIOROUTER_WORKING_DIR", v);
         }
+
+        assert_eq!(err.code, ErrorCode::INTERNAL_ERROR);
+        assert!(
+            err.message.contains(&dir.display().to_string()),
+            "the error must name the directory that vanished, got: {}",
+            err.message
+        );
+        assert!(
+            !err.message.contains("canonicalize"),
+            "and must not surface as the opaque canonicalize failure #2 fixed, got: {}",
+            err.message
+        );
+    }
+
+    /// #64: the jail base is not re-rooted when the session working directory
+    /// disappears. Every path the developer tools may touch is resolved relative
+    /// to this base, so quietly substituting the process cwd — a *different*,
+    /// usually much wider directory (`/` under the desktop app) — hands the tools
+    /// everything the sanctioned base excluded, and does it under a justification
+    /// ("don't panic") that has nothing to do with the boundary it moves.
+    #[test]
+    #[serial]
+    fn editor_jail_is_not_widened_when_session_dir_disappears() {
+        let saved_env = std::env::var("BIOROUTER_WORKING_DIR").ok();
+        std::env::remove_var("BIOROUTER_WORKING_DIR");
+        let saved_cwd = std::env::current_dir().ok();
+
+        // The process sits in `outside`; the session is jailed to `session`.
+        let outside = tempfile::tempdir().unwrap();
+        let outside_path = std::fs::canonicalize(outside.path()).unwrap();
+        std::env::set_current_dir(&outside_path).unwrap();
+
+        let session = tempfile::tempdir().unwrap();
+        let server = DeveloperServer::new().with_working_dir(session.path().to_path_buf());
+
+        // A real file that lives in the process cwd but outside the session jail.
+        let probe = outside_path.join("outside-the-jail.txt");
+        std::fs::write(&probe, "not for the tools").unwrap();
+        let probe_str = probe.to_str().unwrap().to_string();
+        // Sanity: while the session dir exists the jail refuses it.
+        assert!(
+            server.resolve_path_jailed(&probe_str, false).is_err(),
+            "sanity: a path outside the session dir must be refused"
+        );
+
+        // The session directory disappears mid-session.
+        drop(session);
+
+        let outcome = server.resolve_path_jailed(&probe_str, false);
+
+        if let Some(dir) = saved_cwd {
+            let _ = std::env::set_current_dir(dir);
+        }
+        if let Some(v) = saved_env {
+            std::env::set_var("BIOROUTER_WORKING_DIR", v);
+        }
+
+        let err = outcome.expect_err(
+            "a path outside the session dir must stay refused after the session dir \
+             disappears — the jail must not be re-rooted onto the process cwd",
+        );
+        assert!(
+            err.message.contains("no longer exists"),
+            "the refusal must name the real reason, got: {}",
+            err.message
+        );
+    }
+
+    /// #64: `effective_cwd` used to `expect()` the process working directory, so
+    /// in `biorouter session` — where the process cwd *is* the session cwd —
+    /// deleting the directory you started in panicked the whole process on the
+    /// next tool call. The tool call must fail; the process must not.
+    #[test]
+    #[serial]
+    fn resolve_path_errors_instead_of_panicking_when_process_cwd_is_gone() {
+        let saved_env = std::env::var("BIOROUTER_WORKING_DIR").ok();
+        std::env::remove_var("BIOROUTER_WORKING_DIR");
+        let saved_cwd = std::env::current_dir().ok();
+
+        // No session working directory: the process cwd is the intended base.
+        let server = DeveloperServer::new();
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        drop(tmp);
+
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            server.resolve_path_jailed("scratch.txt", false)
+        }));
+
+        // Put the process back on a real directory *before* asserting, so a
+        // failure here cannot strand the rest of the suite without a cwd.
+        if let Some(dir) = saved_cwd {
+            let _ = std::env::set_current_dir(dir);
+        }
+        if let Some(v) = saved_env {
+            std::env::set_var("BIOROUTER_WORKING_DIR", v);
+        }
+
+        let resolved =
+            outcome.expect("a vanished working directory must not panic the whole process");
+        let err = resolved.expect_err("with no base to resolve against, the call must fail");
+        assert_eq!(err.code, ErrorCode::INTERNAL_ERROR);
+        assert!(
+            err.message.contains("working directory"),
+            "the error must say what is missing, got: {}",
+            err.message
+        );
     }
 
     /// Creates a test transport using in-memory streams instead of stdio
