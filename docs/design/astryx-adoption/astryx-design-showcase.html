@@ -382,10 +382,20 @@ section { padding-top:56px; }
                 font-size:var(--t-support); line-height:16px; color:var(--ink-muted); }
 .hmeta { gap:14px; color:var(--ink-subtle); }
 .hmeta span { display:inline-flex; align-items:center; gap:5px; min-width:0; }
-.hstats { display:flex; align-items:center; gap:14px; padding-top:2px;
-          font-size:var(--t-support); color:var(--ink-subtle); font-variant-numeric:tabular-nums; }
-.hstats span { display:inline-flex; align-items:center; gap:5px; }
-.hrow .acts { padding-top:1px; }
+/* Every right-hand cluster centres on the SAME 20px axis as the title's first
+   line: a 20px-high flex box with align-items:center, so a 16px glyph, a 12px
+   figure and a 32px button all land on one line no matter their box height. */
+.hstats, .hrow .acts { height:20px; align-items:center; }
+.hstats { display:flex; gap:16px; font-size:var(--t-support); color:var(--ink-subtle);
+          font-variant-numeric:tabular-nums; }
+.hstats > span { display:inline-flex; align-items:center; gap:6px; }
+/* Fixed figure widths + tabular-nums make the glyphs a column down the list
+   instead of drifting with each value's width. */
+.hstats i { font-style:normal; display:inline-block; text-align:right; }
+.hstats > span:nth-child(1) i { min-width:3ch; }
+.hstats > span:nth-child(2) i { min-width:7ch; }
+.hstats > span:nth-child(3) i { min-width:2ch; }
+.hrow .acts { display:flex; gap:2px; }
 table { width:100%; border-collapse:collapse; font-size:var(--t-body); }
 th { text-align:left; font-weight:600; color:var(--ink-muted); font-size:var(--t-body); }
 th, td { padding:8px 12px; border-bottom:1px solid var(--line); }
@@ -413,9 +423,14 @@ tbody tr:hover { background:var(--ov-hover); }
                 padding:8px 12px; background:var(--surface); border-bottom:1px solid var(--line);
                 font-size:var(--t-support); font-weight:500; }
 .railbody { padding:0 8px 10px; }
-.band { height:var(--chrome); display:flex; align-items:center; gap:8px; padding:0 12px;
+/* The traffic lights are the OS's; the two app controls are ours. A 16px
+   channel separates the two ownerships, and the pair itself sits at 2px —
+   one control group, not two loose buttons. */
+.band { height:var(--chrome); display:flex; align-items:center; gap:16px; padding:0 12px;
         border-bottom:1px solid var(--rail-line); margin:0 -8px 8px;
         transition:height var(--dur-med) var(--ease); }
+.tbctl { display:flex; align-items:center; gap:2px; }
+.brandrow { display:flex; align-items:center; height:32px; padding:0 10px; margin-bottom:2px; }
 .dots { display:flex; gap:6px; }
 .dots i { width:11px; height:11px; border-radius:999px; display:block; }
 .navrow {
@@ -1066,9 +1081,9 @@ footer { margin-top:72px; padding-top:24px; border-top:1px solid var(--line);
                 <div class="hmeta"><span><svg class="ico sm"><use href="#i-clock"/></svg>9:34 AM</span><span class="mono">~/Desktop/biorouter</span></div>
               </div>
               <div class="hstats">
-                <span><svg class="ico sm"><use href="#i-message"/></svg>41</span>
-                <span class="num">24,818</span>
-                <span><svg class="ico sm"><use href="#i-puzzle"/></svg>14</span>
+                <span><svg class="ico sm"><use href="#i-message"/></svg><i>41</i></span>
+                <span><i>24,818</i></span>
+                <span><svg class="ico sm"><use href="#i-puzzle"/></svg><i>14</i></span>
               </div>
               <div class="acts">
                 <button class="btn btn--ghost iconbtn" aria-label="Open in new window"><svg class="ico"><use href="#i-newwindow"/></svg></button>
@@ -1083,9 +1098,9 @@ footer { margin-top:72px; padding-top:24px; border-top:1px solid var(--line);
                 <div class="hmeta"><span><svg class="ico sm"><use href="#i-clock"/></svg>9:12 AM</span><span class="mono">~/Desktop/biorouter</span></div>
               </div>
               <div class="hstats">
-                <span><svg class="ico sm"><use href="#i-message"/></svg>4</span>
-                <span class="num">5,084</span>
-                <span><svg class="ico sm"><use href="#i-puzzle"/></svg>14</span>
+                <span><svg class="ico sm"><use href="#i-message"/></svg><i>4</i></span>
+                <span><i>5,084</i></span>
+                <span><svg class="ico sm"><use href="#i-puzzle"/></svg><i>14</i></span>
               </div>
               <div class="acts">
                 <button class="btn btn--ghost iconbtn" aria-label="Open in new window"><svg class="ico"><use href="#i-newwindow"/></svg></button>
@@ -1096,12 +1111,12 @@ footer { margin-top:72px; padding-top:24px; border-top:1px solid var(--line);
             <div class="hrow">
               <div class="hmain">
                 <div class="htitle">Clinical note de-identification</div>
-                <div class="hmeta"><span><svg class="ico sm"><use href="#i-clock"/></svg>07/24/2026 2:39 PM</span><span class="mono">~/Desktop/cdw</span></div>
+                <div class="hmeta"><span><svg class="ico sm"><use href="#i-clock"/></svg>8:47 AM</span><span class="mono">~/Desktop/cdw</span></div>
               </div>
               <div class="hstats">
-                <span><svg class="ico sm"><use href="#i-message"/></svg>88</span>
-                <span class="num">894,974</span>
-                <span><svg class="ico sm"><use href="#i-puzzle"/></svg>13</span>
+                <span><svg class="ico sm"><use href="#i-message"/></svg><i>88</i></span>
+                <span><i>894,974</i></span>
+                <span><svg class="ico sm"><use href="#i-puzzle"/></svg><i>13</i></span>
               </div>
               <div class="acts">
                 <button class="btn btn--ghost iconbtn" aria-label="Open in new window"><svg class="ico"><use href="#i-newwindow"/></svg></button>
@@ -1278,8 +1293,10 @@ footer { margin-top:72px; padding-top:24px; border-top:1px solid var(--line);
             <div class="railbody">
               <div class="band" style="height:52px">
                 <span class="dots"><i style="background:#ff5f57"></i><i style="background:#febc2e"></i><i style="background:#28c840"></i></span>
-                <button class="btn btn--ghost iconbtn" style="width:28px;height:28px" aria-label="Toggle sidebar"><svg class="ico"><use href="#i-panelleft"/></svg></button>
-                <button class="btn btn--ghost iconbtn" style="width:28px;height:28px" aria-label="New window"><svg class="ico"><use href="#i-newwindow"/></svg></button>
+                <span class="tbctl">
+                  <button class="btn btn--ghost iconbtn" style="width:28px;height:28px" aria-label="Toggle sidebar"><svg class="ico"><use href="#i-panelleft"/></svg></button>
+                  <button class="btn btn--ghost iconbtn" style="width:28px;height:28px" aria-label="New window"><svg class="ico"><use href="#i-newwindow"/></svg></button>
+                </span>
               </div>
               <div class="navrow" style="height:32px"><span class="mark" style="font-size:14px">Bio<i>Router</i></span></div>
               <div class="caps">Menu</div>
@@ -1301,14 +1318,16 @@ footer { margin-top:72px; padding-top:24px; border-top:1px solid var(--line);
             </div>
           </div>
           <div class="railbox">
-            <div class="cap"><span>Proposed</span><span class="mono" style="color:var(--accent-ink)">≈190px · 3 rows</span></div>
+            <div class="cap"><span>Proposed</span><span class="mono" style="color:var(--accent-ink)">≈222px · 3 rows</span></div>
             <div class="railbody">
               <div class="band" style="height:44px">
                 <span class="dots"><i style="background:#ff5f57"></i><i style="background:#febc2e"></i><i style="background:#28c840"></i></span>
-                <button class="btn btn--ghost iconbtn" style="width:28px;height:28px" aria-label="Toggle sidebar"><svg class="ico"><use href="#i-panelleft"/></svg></button>
-                <button class="btn btn--ghost iconbtn" style="width:28px;height:28px" aria-label="New window"><svg class="ico"><use href="#i-newwindow"/></svg></button>
-                <span class="mark" style="font-size:13px;margin-left:2px">Bio<i>Router</i></span>
+                <span class="tbctl">
+                  <button class="btn btn--ghost iconbtn" style="width:28px;height:28px" aria-label="Toggle sidebar"><svg class="ico"><use href="#i-panelleft"/></svg></button>
+                  <button class="btn btn--ghost iconbtn" style="width:28px;height:28px" aria-label="New window"><svg class="ico"><use href="#i-newwindow"/></svg></button>
+                </span>
               </div>
+              <div class="brandrow"><span class="mark" style="font-size:15px">Bio<i>Router</i></span></div>
               <div class="navrow on"><svg class="ico ic"><use href="#i-home"/></svg>Home</div>
               <button class="navrow navrow--action" id="newSessionRow" style="width:100%;border:0;background:transparent;font:inherit;text-align:left;cursor:pointer"><svg class="ico ic"><use href="#i-plus"/></svg>New Session</button>
               <button class="navrow" id="compToggle" aria-expanded="false" style="width:100%;border:0;background:transparent;font:inherit;text-align:left;cursor:pointer">
@@ -1332,17 +1351,16 @@ footer { margin-top:72px; padding-top:24px; border-top:1px solid var(--line);
             </div>
           </div>
           <div style="display:flex;flex-direction:column;gap:14px">
-            <div class="lbl" style="margin:0">Where the 272px comes from</div>
+            <div class="lbl" style="margin:0">Where the 240px comes from</div>
             <div class="tally">
               <div><span>Band 52 → 44</span><span>−8</span></div>
-              <div><span>Brand row folded into the band</span><span>−32</span></div>
               <div><span>"MENU" header deleted</span><span>−32</span></div>
               <div><span>Nine nav rows → three</span><span>−192</span></div>
               <div><span>Divider block halved</span><span>−8</span></div>
-              <div class="tot"><span>Returned to content</span><span>−272px</span></div>
+              <div class="tot"><span>Returned to content</span><span>−240px</span></div>
             </div>
             <p style="font-size:var(--t-support);color:var(--ink-subtle)">The rail carries only what you reach for constantly — <b>New Session</b> and <b>Home</b> — plus one <b>Components</b> disclosure holding the seven destination views. <span style="color:var(--accent-ink)">Click it</span> to expand; the group remembers its state, and everything below it is history.</p>
-            <p style="font-size:var(--t-support);color:var(--ink-subtle)">The two titlebar controls — collapse the sidebar, open a new window — keep their place beside the traffic lights; folding the wordmark into that band is what buys the 44px chrome without displacing them.</p>
+            <p style="font-size:var(--t-support);color:var(--ink-subtle)">The wordmark keeps its own line. Sharing the band with the traffic lights saved 32px but buried the brand between two rows of controls; on its own line it introduces the app properly, and the compaction still lands because the row count does the work. In the band, a 16px channel separates the OS's traffic lights from our two controls, and the pair itself sits at 2px — one control group, not two loose buttons.</p>
             <p style="font-size:var(--t-support);color:var(--ink-subtle)">The Recents <b>well is gone</b> — the app's only surface grounded on a <code>color-mix</code> of a <i>border</i> token, at a radius nothing else in the rail uses. The list now sits directly on the rail like every other list, glyphs at their real weight: a chat is a message square, a diverged session is a branch. Running sessions get a trailing status dot; the ring-and-glow stays in the chat.</p>
             <p style="font-size:var(--t-support);color:var(--ink-subtle)">Width stays 240px. Rows stay 32px — already the rail rhythm, now written down.</p>
           </div>
@@ -1568,11 +1586,10 @@ test result: <span class="p">ok</span>. 122 passed; 0 failed; 2 ignored
                 <span class="cdiv"></span>
                 <span class="cchip"><svg class="ico sm"><use href="#i-brain"/></svg>gpt-5.5</span>
                 <span class="sp" style="flex:1"></span>
-                <button class="btn btn--ghost iconbtn" aria-label="Attach a file"><svg class="ico"><use href="#i-paperclip"/></svg></button>
                 <button class="btn btn--primary iconbtn" aria-label="Send"><svg class="ico"><use href="#i-send"/></svg></button>
               </div>
             </div>
-            <p class="vnote"><b>No border.</b> The elevation lifts it; a 1px inset ring keeps the edge crisp in dark families where a shadow alone disappears — the shared floating-surface recipe from §02. Radius 16 → 12 with everything else. One 12px inset grid, 8px toolbar. Every chip is one recipe at 16px with a real hit area. Send is an actual primary icon button, and attach comes out of the overflow because it is the one thing people reach for. <span style="color:var(--accent-ink)">Click the composer</span>: focus is a 2px inset accent ring — the same one every input in §03 uses, so nothing shifts layout and drag-over can speak the same language.</p>
+            <p class="vnote"><b>No border.</b> The elevation lifts it; a 1px inset ring keeps the edge crisp in dark families where a shadow alone disappears — the shared floating-surface recipe from §02. Radius 16 → 12 with everything else, and one 12px inset grid replaces the four that meet inside the card today. <b>The toolbar is unchanged</b> — same controls, same order, same reading; each chip just gets a real hit area at one icon size. <span style="color:var(--accent-ink)">Click the composer</span>: focus is a 2px inset accent ring — the same one every input in §03 uses, so nothing shifts layout and drag-over can speak the same language.</p>
           </div>
         </div>
         <p class="note">This is the element the design system already singles out as the only one permitted <code>--elev-composer</code>. Making it the one element that also draws a border was never a decision — it accumulated. Dropping it costs nothing and settles the rule for every raised surface: <b>elevation or a border, never both.</b></p>

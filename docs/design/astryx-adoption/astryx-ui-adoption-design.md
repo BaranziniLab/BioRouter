@@ -249,7 +249,9 @@ List items: 8px padding, `--radius-element`, 2px gaps, two-line construction (14
 
 **A list gets no container.** Chat history already works this way and is the app's best-looking list: rows sit directly on the page, separated by hairlines, and the only box that ever appears is the hover wash under the row you are pointing at. A bordered list inside a bordered card is a box in a box, and it is what makes the rest of the app look heavier than Chat history does.
 
-**One row spec, enforced:** title `14/500`, metadata `supporting` in muted ink, stat figures in `tabular-nums` so columns align down the list, at most **three visible actions** at 32px with 16px icons, everything else behind a `⋯` overflow. Destructive actions live only in the overflow. This ends: five row-title treatments, the 28-vs-32px delete-button fork, Scheduler's 14px icons, seven-action workflow rows, and primary-filled Launch/Play buttons that are invisible until hover.
+**One optical axis per row.** Every right-hand cluster — stat glyphs, figures, action buttons — centres on the same axis as the title's first line, by giving each cluster a 20px-high box with `align-items: center` rather than trusting a 32px button and a 16px glyph to agree. Figures take fixed widths on top of `tabular-nums`, so the glyphs form real columns down the list instead of drifting with each value's width.
+
+**One row spec, enforced:** title `14/500`, metadata `supporting` in muted ink, at most **three visible actions** at 32px with 16px icons, everything else behind a `⋯` overflow. Destructive actions live only in the overflow. This ends: five row-title treatments, the 28-vs-32px delete-button fork, Scheduler's 14px icons, seven-action workflow rows, and primary-filled Launch/Play buttons that are invisible until hover.
 
 **Running is a breathing dot, not a badge.** A green "Running" pill states the fact at the visual weight of a call to action, and it needs a lane reserved for it in every row that might ever have one. A 7px dot with a slow expanding ring shows the same thing and then gets out of the way — the chat's existing working motif, scaled down — and it rides beside the title where the eye already is. One motif, three scales: 16px in the chat, 7px in a row, and the same 1.8s period throughout.
 
@@ -263,7 +265,7 @@ The audit measured **~462px of fixed chrome above the first recent chat**: a 52p
 
 **Proposal.**
 
-1. **Fold the wordmark into the chrome band**, right of the two titlebar controls, and drop the band to 44px. The controls — collapse the sidebar, open a new window — keep their place beside the traffic lights; folding the wordmark in is what buys the shorter band without displacing them.
+1. **Drop the band to 44px and keep the wordmark on its own line.** Folding the mark into the band saved 32px but buried the brand between two rows of controls; on its own line it introduces the app properly, and the compaction still lands because the row count does the work. Inside the band, a **16px channel** separates the OS's traffic lights from our two controls (collapse the sidebar, open a new window), and the pair itself sits at **2px** — one control group, not two loose buttons.
 2. **Delete the "MENU" header** (32px labelling something self-evident) and keep only the Recents header, which is doing real work.
 3. **The rail carries one destination and one action.** **Home** sits at the top — it is where the rail returns you — with **New Session** beneath it. The other seven (Workflows, Scheduler, Extensions, Skills, Knowledge, Applications, Apps) move behind a single **Components** disclosure: a 32px row identical to an item with a leading chevron, no uppercase mini-label, remembering its state. Expanded, its children indent 24px and keep the same 32px height — hierarchy by indent, never by size.
 
@@ -275,14 +277,14 @@ The audit measured **~462px of fixed chrome above the first recent chat**: a 52p
 | | Today | Proposed |
 |---|---|---|
 | Chrome band | 52 | 44 |
-| Brand row | 32 | 0 (in the band) |
+| Brand row | 32 | 32 (kept — it is the branding) |
 | "MENU" header | 32 | 0 |
 | Nav rows | 288 (9 × 32) | 96 (3 × 32) |
 | Divider block | 18 | 10 |
 | Recents header | 32 | 32 |
-| **Before the first chat** | **462px** | **190px** |
+| **Before the first chat** | **462px** | **222px** |
 
-Net: **272px** of rail returned to content. The sidebar keeps 240px of width, and rows stay 32px — already the rail rhythm, now written down.
+Net: **240px** of rail returned to content. The sidebar keeps 240px of width, and rows stay 32px — already the rail rhythm, now written down.
 
 Merging "Applications" and "Apps" — two adjacent near-synonyms — was previously part of this compaction. With both now inside Components the adjacency is far less costly, so the merge is no longer forced by the layout; it stands or falls on its own merits and is not proposed here.
 
@@ -308,7 +310,7 @@ Change:
 
 - **Metadata drops to `supporting`** (12px). Timestamps are currently 14px — the same size as message content — repeated under every message; this is the surface's single biggest density cost. One `MessageMeta` primitive replaces three hand-copied animation stacks.
 - **One muted ink.** `text-text-default/70` and `text-text-muted` are used interchangeably across the composer toolbar, panel chrome and gauges; the semantic token wins.
-- **Composer — elevation or a border, never both.** The composer carries a 1px border *and* `--shadow-composer`, so it is the one element in the app stating its edge twice; the shadow is what lifts it off the canvas and the border is the redundant half. It drops the border and gains the shared floating-surface recipe: elevation plus a 1px inset ring, which is what keeps the edge crisp in dark families where a shadow alone disappears. Focus stops being a border-colour shift and becomes the same 2px inset accent ring every other input uses (§3.2), so nothing shifts layout and drag-over can speak the same language. Radius 16 → 12; one 12px inset grid replacing four different insets (`px-4 pt-3 pb-3` shell, `px-3 pt-3 pb-1.5` textarea, `px-2 pt-2 pb-1` toolbar, `p-4` attachments); the dead focus ternary deleted; and Send becomes a real primary icon button instead of an `outline` repainted by a className override.
+- **Composer — elevation or a border, never both.** The composer carries a 1px border *and* `--shadow-composer`, so it is the one element in the app stating its edge twice; the shadow is what lifts it off the canvas and the border is the redundant half. It drops the border and gains the shared floating-surface recipe: elevation plus a 1px inset ring, which is what keeps the edge crisp in dark families where a shadow alone disappears. Focus stops being a border-colour shift and becomes the same 2px inset accent ring every other input uses (§3.2), so nothing shifts layout and drag-over can speak the same language. Radius 16 → 12, and one 12px inset grid replaces the four that meet inside the card today (`px-4 pt-3 pb-3` shell, `px-3 pt-3 pb-1.5` textarea, `px-2 pt-2 pb-1` toolbar, `p-4` attachments). **The toolbar itself is unchanged** — same controls, same order, same reading; each chip only gains a real hit area at one icon size. The dead focus ternary is deleted, and Send becomes a real primary icon button instead of an `outline` repainted by a className override.
 - **Composer toolbar chips**: one recipe — 16px icons (retiring the 18px outliers), ≥6px horizontal padding (today `px-0.5` gives ~20px hit zones), one metadata size in their popovers (today: 10, 11, 12 and 13px).
 - **Tool-call interiors** get one inset grid, replacing five recipes, and arguments render in mono per the app's own mono-for-data rule. The disclosure chevron becomes visible at rest — today it appears on hover, so first-run users get no signal that rows expand.
 - **Landing state** adopts Astryx's AI-chat template: the greeting, the composer card, and a row of ghost suggestion chips beneath it — optional, and the one place a "what can I ask?" affordance genuinely belongs.
