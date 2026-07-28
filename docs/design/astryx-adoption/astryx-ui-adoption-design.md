@@ -366,6 +366,17 @@ The rules that make it work: **one motion, not two** — a sweeping progress bar
 
 That leaves the transcript with exactly **one** running motif at three scales: the thinking dot, the tool ring, and the sidebar's session dot — same period, same construction, different sizes.
 
+#### Queued and steered
+
+The app already has both, and they are genuinely different acts. **Queueing** parks a message to send when the turn ends — the queue bar lives in the composer with a "Next" label, a pulsing dot and a `+N` badge (`MessageQueue.tsx`). **Steering** (BR-61, ⌘↵ mid-turn) injects the text into the turn that is *already running* without cancelling it, and the activity indicator echoes the words back in quotes so the press is visibly acknowledged (`TurnActivityIndicator.tsx`). Both keep their behaviour; what changes is that they stop inventing their own vocabulary:
+
+- The queue's dot becomes the **breathing dot** rather than Tailwind's generic `animate-pulse`, so "this will run" joins the one running vocabulary; **Paused is completely still** — a muted dot, no ring. Motion means the queue will drain; stillness means it will not.
+- `+N` takes the squared chip recipe instead of its own bordered pill.
+- The steer action gets a **visible label**. Today it is an icon whose meaning lives only in a `title` attribute — the least discoverable place in the interface for the one control that changes what the agent is doing right now.
+- The steer echo keeps the thing that makes it work — the user's exact words, quoted back — and only restyles the chip: `--radius-inner` rather than a full pill, `supporting` size, the muted-ink token instead of a `/70` alpha. It rides the working row itself, so the acknowledgement sits on the thing it modified.
+
+**Why they must not look alike:** queued is reversible and steered is not. A queued message can be reordered, edited or dropped before it runs; a steer has already reached the model. So queued lives in the **composer**, where things go before they are sent, and steered lives in the **transcript**, where everything is already history. The queue bar also keeps its own compact rhythm rather than borrowing the 32px control height — it is a status strip, not a toolbar, and it must not make the composer taller than the message being written.
+
 This is additive. The collapsed row, the verb grammar and the humanised summaries are all kept; what it adds is a state the eye can find without reading.
 
 #### A long message — collapsed by default (not built yet)

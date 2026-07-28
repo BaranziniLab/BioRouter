@@ -687,6 +687,21 @@ dialog::backdrop { animation:fade var(--dur-med) var(--ease) backwards; }
 .composer--new .cchip { padding:0 6px; gap:6px; }
 .composer--new .cdiv { margin:0 8px; }
 .composer--new .cinput { padding-left:6px; }
+/* the queue bar — a status strip inside the composer, deliberately shorter
+   than the 32px control rhythm so a queued message never makes the composer
+   taller than the one being written */
+.qbar { display:flex; align-items:center; gap:8px; padding:6px 6px 6px 8px; margin:-4px -6px 6px;
+        border-radius:var(--r-element); background:var(--ov-hover); }
+.qlabel { font-size:var(--t-caps); font-weight:500; letter-spacing:.06em; text-transform:uppercase;
+          color:var(--ink-muted); flex:none; }
+.qtext { flex:1; min-width:0; font-size:var(--t-secondary); color:var(--ink);
+         overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.qdot-paused { width:6px; height:6px; border-radius:999px; background:var(--ink-subtle); flex:none; }
+/* the steer echo: the user's own words, quoted back on the row they modified */
+.steerchip { margin-left:8px; padding:1px 6px; border-radius:var(--r-inner); background:var(--ov-select);
+             font-size:var(--t-support); color:var(--ink-muted); max-width:32ch;
+             overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
 /* the working directory: a control before the first message, a fact after it */
 .cchip--set { border:0; font:inherit; font-size:12px; cursor:pointer; color:var(--ink-muted); }
 .cchip--set .chev-sm { width:12px; height:12px; opacity:.7; margin-left:-1px; }
@@ -1928,6 +1943,70 @@ IndexError: index out of range for axis 0 with size 18452</div>
           </div>
         </div>
         <p class="note">This is additive — the collapsed row, its verb grammar and the humanised summaries are all kept. What it adds is a state that the eye can find without reading: today, distinguishing a running call from a finished one means parsing the first word of the line.</p>
+
+        <div style="margin-top:22px;padding-top:18px;border-top:1px solid var(--line)">
+          <h3 style="font-size:var(--t-sub);margin-bottom:4px">Queued and steered — two ways to talk over a running turn</h3>
+          <p class="rule">Biorouter already has both, and they are genuinely different acts. <b>Queueing</b> parks a message to send when the turn ends; the queue bar lives in the composer with a "Next" label, a pulsing dot and a <code>+N</code> badge. <b>Steering</b> (⌘↵ mid-turn) injects your words into the turn that is <i>already running</i>, without cancelling it, and the activity indicator echoes them back in quotes so the press is visibly acknowledged. Both keep their behaviour; what changes is that they stop inventing their own vocabulary.</p>
+          <div class="vs">
+            <div class="vs-col">
+              <div class="vs-tag on">Queued — waiting for the turn to end</div>
+              <div class="composer composer--new">
+                <div class="qbar">
+                  <span class="live" style="width:6px;height:6px"></span>
+                  <span class="qlabel">Next</span>
+                  <span class="qtext">also check whether the doublet filter changed the cluster count</span>
+                  <span class="pill" style="height:20px">+2</span>
+                  <button class="btn btn--ghost btn--sm" title="Add to the current turn without stopping it">Add to turn</button>
+                </div>
+                <div class="cinput">Ask anything, or drop a file</div>
+                <div class="ctools">
+                  <span class="cchip"><svg class="ico sm"><use href="#i-folderdot"/></svg>…/Desktop</span>
+                  <span class="cdiv"></span>
+                  <span class="cchip"><svg class="ico sm"><use href="#i-brain"/></svg>gpt-5.5</span>
+                  <span class="sp" style="flex:1"></span>
+                  <button class="btn btn--primary iconbtn" aria-label="Send"><svg class="ico"><use href="#i-send"/></svg></button>
+                </div>
+              </div>
+              <p class="vnote">The dot becomes the <b>breathing dot</b> rather than Tailwind's generic <code>animate-pulse</code>, so "this will run" joins the one running vocabulary. <code>+2</code> takes the squared chip recipe instead of its own bordered pill. And the steer action gets a <b>visible label</b> — today it is an icon whose meaning lives only in a <code>title</code> attribute, which is the least discoverable place in the interface for the one control that changes what the agent is doing right now.</p>
+
+              <div class="vs-tag" style="margin-top:18px">Paused — the queue is holding</div>
+              <div class="composer composer--new">
+                <div class="qbar">
+                  <span class="qdot-paused"></span>
+                  <span class="qlabel">Paused</span>
+                  <span class="qtext">also check whether the doublet filter changed the cluster count</span>
+                  <span class="pill" style="height:20px">+2</span>
+                  <button class="btn btn--ghost btn--sm">Resume</button>
+                </div>
+                <div class="cinput">Ask anything, or drop a file</div>
+                <div class="ctools">
+                  <span class="cchip"><svg class="ico sm"><use href="#i-folderdot"/></svg>…/Desktop</span>
+                  <span class="cdiv"></span>
+                  <span class="cchip"><svg class="ico sm"><use href="#i-brain"/></svg>gpt-5.5</span>
+                  <span class="sp" style="flex:1"></span>
+                  <button class="btn btn--primary iconbtn" aria-label="Send"><svg class="ico"><use href="#i-send"/></svg></button>
+                </div>
+              </div>
+              <p class="vnote">Paused is <b>completely still</b> — a muted dot with no ring. That is the whole distinction: motion means the queue will drain, stillness means it will not. Nothing else in the bar changes, so the two states are one glance apart.</p>
+            </div>
+
+            <div class="vs-col">
+              <div class="vs-tag on">Steered — your words joined the running turn</div>
+              <div class="chatpane">
+                <div class="chatrow"><span class="lead"><span class="thinkdot"><i></i></span></span>Working<span class="steerchip">“use resolution 0.6 instead”</span><span class="right">18.2s</span></div>
+                <div class="chatrow chatrow--running"><span class="lead"><svg class="ico"><use href="#i-terminal"/></svg></span><span class="verb">Running</span>&nbsp;<span class="target">python</span>&nbsp;<span class="detail">· re-clustering</span><span class="right">3.1s</span></div>
+              </div>
+              <p class="vnote">The steer keeps the thing that makes it work — <b>your exact words, quoted back</b> — because a generic spinner cannot be connected to what you just typed. What changes is the chip: <code>--radius-inner</code> rather than a full pill, <code>supporting</code> size, and the muted-ink token instead of a <code>/70</code> alpha. It rides the working row itself, so the acknowledgement sits on the thing it modified rather than floating beside it.</p>
+
+              <div class="lbl" style="margin-top:18px">Why they must not look alike</div>
+              <ul style="margin:0;padding-left:18px;font-size:var(--t-secondary);color:var(--ink-muted);display:flex;flex-direction:column;gap:8px">
+                <li><b>Queued is reversible; steered is not.</b> A queued message can be reordered, edited or dropped before it runs. A steer has already reached the model.</li>
+                <li>So queued lives in the <b>composer</b> — the place things go before they are sent — and steered lives in the <b>transcript</b>, where everything is already history.</li>
+                <li>The queue bar keeps its own compact rhythm rather than borrowing the 32px control height: it is a status strip, not a toolbar, and it must not make the composer taller than the message being written.</li>
+              </ul>
+            </div>
+          </div>
+        </div>
       </div>
     </section>
 
