@@ -1206,27 +1206,30 @@ fn main_agent_prompt(manifest: &Manifest, cfg: &AgentConfig, report: &Capability
     prompt
 }
 
-/// Make `kb` available to an app session without disturbing anything else.
+/// Make `kb` a member of a session's knowledge set, without disturbing
+/// anything else the session already holds.
 ///
-/// Every profile of an app shares one session id, so per-profile KB isolation
-/// has never existed — the previous `set_active_for_session` per profile was
-/// simply last-writer-wins. Composing is not a widening of the sandbox: the
-/// grant never restricted what the session could reach, it only chose a focus.
-/// What changes is that the outcome is now stated rather than ordering-derived.
+/// Composing is not a widening of the sandbox: the grant never restricted what
+/// the session could reach, it only chose a focus. What changes is that the
+/// outcome is stated rather than ordering-derived.
+///
+/// One root-locked `include_kb`, not a read-modify-write. An app with worker
+/// profiles issues several grants while configuring one connection, and
+/// reading the hidden list, filtering, and writing it back means each grant
+/// writes a list computed before the others' edits — so the last write puts
+/// back the bases the earlier ones had just released. It also errors on a base
+/// that does not exist, which is what `configure_agent` has always assumed
+/// (it reports `missing_knowledge_base` on `Err`) but only ever got for the
+/// primary-taking grant, since only `PrimaryUpdate::Set` validated the id.
 pub(crate) fn grant_knowledge_base(
     svc: &biorouter_mcp::knowledge::service::KnowledgeService,
     session_id: &str,
     kb: &str,
     make_primary: bool,
 ) -> anyhow::Result<()> {
-    let hidden = svc
-        .get_hidden_for_session_or_persisted(session_id)?
-        .into_iter()
-        .filter(|id| id != kb)
-        .collect::<Vec<_>>();
-    svc.set_selection(
+    svc.include_kb(
         Some(session_id),
-        Some(&hidden),
+        kb,
         if make_primary {
             biorouter_mcp::knowledge::service::PrimaryUpdate::Set(kb)
         } else {
@@ -4657,6 +4660,84 @@ mod tests {
             Some("main-kb"),
             "the main agent's grant owns the primary; a worker's grant must not steal it"
         );
+        Ok(())
+    }
+
+    /// Two grants land at once whenever an app declares worker profiles: the
+    /// main agent and every worker are configured from the same connection.
+    /// Composing them by reading the hidden list, filtering, and writing it
+    /// back is a read-modify-write across two unlocked calls — both grants read
+    /// the same list, each removes only its own base, and the second write
+    /// restores the base the first had just released.
+    #[test]
+    fn concurrent_grants_all_survive() -> anyhow::Result<()> {
+        use biorouter_mcp::knowledge::service::KnowledgeService;
+        use std::sync::{Arc, Barrier};
+
+        let tmp = tempfile::TempDir::new()?;
+        let svc = Arc::new(KnowledgeService::new(tmp.path().to_path_buf()));
+        let bases = ["kb-a", "kb-b", "kb-c"];
+        for id in bases {
+            svc.create_base(id, id, None)?;
+        }
+
+        // Repeat: the losing interleaving is likely but not certain per round.
+        for round in 0..12 {
+            let session = format!("s{round}");
+            svc.set_visible_kbs(
+                Some(&session),
+                &[],
+                biorouter_mcp::knowledge::service::PrimaryUpdate::Unchanged,
+            )?;
+
+            let barrier = Arc::new(Barrier::new(bases.len()));
+            let handles = bases
+                .iter()
+                .map(|kb| {
+                    let svc = Arc::clone(&svc);
+                    let barrier = Arc::clone(&barrier);
+                    let session = session.clone();
+                    let kb = kb.to_string();
+                    std::thread::spawn(move || {
+                        barrier.wait();
+                        super::grant_knowledge_base(&svc, &session, &kb, false)
+                    })
+                })
+                .collect::<Vec<_>>();
+            for handle in handles {
+                handle.join().expect("grant thread panicked")?;
+            }
+
+            let selection = svc.selection(Some(&session))?;
+            assert_eq!(
+                selection.kb_ids,
+                bases.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+                "round {round}: every granted base must survive a concurrent grant"
+            );
+        }
+        Ok(())
+    }
+
+    /// A grant naming a base that does not exist must fail. `configure_agent`
+    /// already branches on the error to report `missing_knowledge_base` to the
+    /// page and to the model instead of leaving the KB tools armed against
+    /// nothing — but only the primary-taking grant ever produced one, because
+    /// only `PrimaryUpdate::Set` validated the id. A worker's grant silently
+    /// succeeded against a typo.
+    #[test]
+    fn a_grant_for_a_base_that_does_not_exist_is_an_error() -> anyhow::Result<()> {
+        use biorouter_mcp::knowledge::service::KnowledgeService;
+
+        let tmp = tempfile::TempDir::new()?;
+        let svc = KnowledgeService::new(tmp.path().to_path_buf());
+        svc.create_base("real-kb", "real-kb", None)?;
+
+        assert!(
+            super::grant_knowledge_base(&svc, "s1", "typo-kb", false).is_err(),
+            "a worker grant for a missing base must be reported, not swallowed"
+        );
+        assert!(super::grant_knowledge_base(&svc, "s1", "typo-kb", true).is_err());
+        assert!(super::grant_knowledge_base(&svc, "s1", "real-kb", false).is_ok());
         Ok(())
     }
 
