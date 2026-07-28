@@ -3450,6 +3450,8 @@
         "tags": [
           "Session Management"
         ],
+        "summary": "Prepare a session for an edited message.",
+        "description": "`diverge` (the default) copies the history into a NEW session, trimmed at the\nedited message, and returns that session's id. The original is untouched.\n\n`edit` truncates THIS session in place, dropping every message from\n`timestamp` onwards. Because that destroys history a concurrent writer may\nalready have been told was saved, it must carry `expectedMessageIds` — the\nids of every message your view of the session holds. The cut is refused, with\nnothing deleted, if a turn is in flight or if the session holds a message\nyour view does not name; the 409 body's `missing_message_ids` says which, so\nyou can re-read the session and retry.",
         "operationId": "edit_message",
         "parameters": [
           {
@@ -3484,13 +3486,16 @@
             }
           },
           "400": {
-            "description": "Bad request - Invalid message timestamp"
+            "description": "Bad request - invalid session id, or an `edit` with no `expectedMessageIds` to check the truncation against"
           },
           "401": {
             "description": "Unauthorized - Invalid or missing API key"
           },
           "404": {
             "description": "Session or message not found"
+          },
+          "409": {
+            "description": "A turn is in flight for this session, or `expectedMessageIds` is missing messages the server holds (nothing was deleted; re-read the session and retry)"
           },
           "500": {
             "description": "Internal server error"
@@ -5487,6 +5492,14 @@
         "properties": {
           "editType": {
             "$ref": "#/components/schemas/EditType"
+          },
+          "expectedMessageIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Your view of this session: the durable ids (`Message.id`) of every\nmessage it holds, in any order.\n\nREQUIRED for `edit`, which truncates the live session: it is how the\nserver checks that you are deleting the history you actually saw. Ignored\nfor `diverge`, which writes only to a new session and cannot destroy\nanything.",
+            "nullable": true
           },
           "timestamp": {
             "type": "integer",

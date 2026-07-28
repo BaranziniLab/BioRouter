@@ -470,6 +470,16 @@ export type DivergeSessionResponse = {
 
 export type EditMessageRequest = {
     editType?: EditType;
+    /**
+     * Your view of this session: the durable ids (`Message.id`) of every
+     * message it holds, in any order.
+     *
+     * REQUIRED for `edit`, which truncates the live session: it is how the
+     * server checks that you are deleting the history you actually saw. Ignored
+     * for `diverge`, which writes only to a new session and cannot destroy
+     * anything.
+     */
+    expectedMessageIds?: Array<string> | null;
     timestamp: number;
 };
 
@@ -4862,7 +4872,7 @@ export type EditMessageData = {
 
 export type EditMessageErrors = {
     /**
-     * Bad request - Invalid message timestamp
+     * Bad request - invalid session id, or an `edit` with no `expectedMessageIds` to check the truncation against
      */
     400: unknown;
     /**
@@ -4873,6 +4883,10 @@ export type EditMessageErrors = {
      * Session or message not found
      */
     404: unknown;
+    /**
+     * A turn is in flight for this session, or `expectedMessageIds` is missing messages the server holds (nothing was deleted; re-read the session and retry)
+     */
+    409: unknown;
     /**
      * Internal server error
      */
