@@ -168,6 +168,116 @@ pub fn normalize(input: &str) -> String {
     result.to_lowercase()
 }
 
+/// Which registry owns a bundled extension, and therefore which spawn path a
+/// `/ext:` selection has to be dispatched to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BundledExtensionKind {
+    /// A bundled MCP server in `biorouter_mcp::BUILTIN_EXTENSIONS`.
+    Builtin,
+    /// An in-process platform extension in `PLATFORM_EXTENSIONS`.
+    Platform,
+}
+
+/// A bundled extension a `/ext:<name>` marker resolved to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BundledExtensionTarget {
+    kind: BundledExtensionKind,
+    /// The name the owning registry is keyed by — what the spawn path in
+    /// `add_extension` looks up. For a platform extension this may be a display
+    /// string (`"Extension Manager"`), which is exactly why it must never be
+    /// handed to the *builtin* lookup.
+    name: String,
+}
+
+impl BundledExtensionTarget {
+    pub fn kind(&self) -> BundledExtensionKind {
+        self.kind
+    }
+
+    /// The key this extension is stored under once enabled — also the `__`
+    /// prefix its tools carry, so it is what the model should be told to use.
+    pub fn key(&self) -> String {
+        normalize(&crate::config::extensions::name_to_key(&self.name))
+    }
+
+    /// The config that enables this target, dispatched to the right variant.
+    pub fn into_config(self, description: String) -> ExtensionConfig {
+        match self.kind {
+            BundledExtensionKind::Builtin => ExtensionConfig::Builtin {
+                name: self.name,
+                description,
+                display_name: None,
+                timeout: Some(300),
+                bundled: Some(true),
+                available_tools: Vec::new(),
+            },
+            BundledExtensionKind::Platform => ExtensionConfig::Platform {
+                name: self.name,
+                description,
+                bundled: Some(true),
+                available_tools: Vec::new(),
+            },
+        }
+    }
+}
+
+/// Reduce an extension reference to its comparable id: letters and digits only,
+/// lowercased. Collapses the spellings a user or a registry may use for the same
+/// extension — `agent_drafter` / `agent-drafter` / `agentdrafter`, and
+/// `Extension Manager` / `extensionmanager`.
+fn extension_reference_key(name: &str) -> String {
+    name.chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+/// Resolve a `/ext:<name>` target to the bundled extension it names, **by id and
+/// owning registry** rather than by display name.
+///
+/// Two of the five platform extensions are registered under a display string
+/// (`"Extension Manager"`, `"Chat Recall"`). The `/ext:` resolver used to hand
+/// that string to the *builtin* lookup, which failed with
+/// `Unknown builtin extension: Extension Manager` — making a perfectly valid
+/// request indistinguishable from a policy refusal (issue #48). Platform targets
+/// now resolve to `ExtensionConfig::Platform` and take the platform spawn path.
+///
+/// Returns `None` for anything that is not bundled; a user-configured
+/// stdio/http/inline_python/frontend extension is never auto-enabled from a chat
+/// marker, so an operator-disabled entry stays disabled.
+pub fn resolve_bundled_extension(requested: &str) -> Option<BundledExtensionTarget> {
+    let key = extension_reference_key(requested);
+    // The bundled figure server is spelled the British way; accept the American
+    // spelling of it too.
+    let key = if key == "autovisualizer" {
+        "autovisualiser".to_string()
+    } else {
+        key
+    };
+
+    // Platform first: its registry is the smaller, hand-written one and shares
+    // no ids with the builtin registry.
+    if let Some(def) = PLATFORM_EXTENSIONS.iter().find(|(registry_key, def)| {
+        extension_reference_key(registry_key) == key || extension_reference_key(def.name) == key
+    }) {
+        return Some(BundledExtensionTarget {
+            kind: BundledExtensionKind::Platform,
+            name: def.1.name.to_string(),
+        });
+    }
+
+    if let Some(def) = biorouter_mcp::BUILTIN_EXTENSIONS.iter().find(|(k, def)| {
+        extension_reference_key(k) == key || extension_reference_key(def.name) == key
+    }) {
+        return Some(BundledExtensionTarget {
+            kind: BundledExtensionKind::Builtin,
+            name: def.1.name.to_string(),
+        });
+    }
+
+    None
+}
+
 /// Generates extension name from server info; adds random suffix on collision.
 fn generate_extension_name(
     server_info: Option<&ServerInfo>,
@@ -2715,5 +2825,159 @@ mod tests {
         let persisted = std::collections::HashSet::new();
         assert!(config_disabled_extension_lines(&entries, &persisted).is_empty());
         assert!(config_disabled_extension_lines(&[], &persisted).is_empty());
+    }
+
+    // ---- issue #48: `/ext:` resolution by id + owning registry ----
+
+    /// `/ext:extensionmanager` used to build an `ExtensionConfig::Builtin` named
+    /// `"Extension Manager"` — the entry's *display* string — and the builtin
+    /// lookup rejected it with `Unknown builtin extension: Extension Manager`,
+    /// which the turn reported as if the extension had been refused.
+    #[tokio::test]
+    async fn ext_marker_enables_a_platform_extension() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let em = Arc::new(ExtensionManager::new_without_provider(
+            temp_dir.path().to_path_buf(),
+        ));
+
+        let target = resolve_bundled_extension("extensionmanager")
+            .expect("`extensionmanager` is a bundled extension");
+        assert_eq!(target.kind(), BundledExtensionKind::Platform);
+        assert_eq!(target.key(), "extensionmanager");
+
+        let config = target.into_config("Selected via explicit resource marker".to_string());
+        assert!(
+            matches!(config, ExtensionConfig::Platform { .. }),
+            "a platform target must take the platform spawn path, not the builtin one: {config:?}"
+        );
+
+        em.add_extension(config)
+            .await
+            .expect("/ext:extensionmanager must enable the Extension Manager");
+        assert!(em.is_extension_enabled("extensionmanager").await);
+    }
+
+    /// The `builtin` case that already worked must keep working, end to end.
+    #[tokio::test]
+    async fn ext_marker_enables_a_builtin_extension() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let em = Arc::new(ExtensionManager::new_without_provider(
+            temp_dir.path().to_path_buf(),
+        ));
+
+        let target =
+            resolve_bundled_extension("developer").expect("`developer` is a bundled extension");
+        assert_eq!(target.kind(), BundledExtensionKind::Builtin);
+        assert_eq!(target.key(), "developer");
+
+        let config = target.into_config("Selected via explicit resource marker".to_string());
+        assert!(matches!(config, ExtensionConfig::Builtin { .. }));
+
+        em.add_extension(config)
+            .await
+            .expect("/ext:developer must enable the developer extension");
+        assert!(em.is_extension_enabled("developer").await);
+    }
+
+    /// Every bundled extension must resolve to the registry that actually owns
+    /// it, whether it is keyed by a lowercase id or by a display string.
+    #[test]
+    fn resolves_every_bundled_extension_to_its_owning_registry() {
+        for (registry_key, def) in PLATFORM_EXTENSIONS.iter() {
+            for reference in [*registry_key, def.name] {
+                let target = resolve_bundled_extension(reference)
+                    .unwrap_or_else(|| panic!("platform extension `{reference}` must resolve"));
+                assert_eq!(
+                    target.kind(),
+                    BundledExtensionKind::Platform,
+                    "`{reference}` must resolve to the platform registry"
+                );
+                assert!(
+                    matches!(
+                        target.clone().into_config(String::new()),
+                        ExtensionConfig::Platform { .. }
+                    ),
+                    "`{reference}` must produce a Platform config"
+                );
+                // The name handed to the config is the one the spawn path looks
+                // up, so it has to be present in PLATFORM_EXTENSIONS.
+                let config = target.into_config(String::new());
+                let ExtensionConfig::Platform { name, .. } = &config else {
+                    unreachable!()
+                };
+                assert!(
+                    PLATFORM_EXTENSIONS.contains_key(normalize(name).as_str()),
+                    "`{name}` must be spawnable by the platform path"
+                );
+            }
+        }
+
+        for (registry_key, def) in biorouter_mcp::BUILTIN_EXTENSIONS.iter() {
+            for reference in [*registry_key, def.name] {
+                let target = resolve_bundled_extension(reference)
+                    .unwrap_or_else(|| panic!("builtin extension `{reference}` must resolve"));
+                assert_eq!(
+                    target.kind(),
+                    BundledExtensionKind::Builtin,
+                    "`{reference}` must resolve to the builtin registry"
+                );
+                let config = target.into_config(String::new());
+                let ExtensionConfig::Builtin { name, .. } = &config else {
+                    panic!("`{reference}` must produce a Builtin config")
+                };
+                assert!(
+                    biorouter_mcp::BUILTIN_EXTENSIONS.contains_key(name.as_str()),
+                    "`{name}` must be spawnable by the builtin path"
+                );
+            }
+        }
+    }
+
+    /// Moved here from `resource_refs`, which used to own this table.
+    #[test]
+    fn resolves_bundled_extension_spelling_aliases() {
+        for reference in ["agentdrafter", "agent-drafter", "agent_drafter"] {
+            let target = resolve_bundled_extension(reference).expect(reference);
+            assert_eq!(target.kind(), BundledExtensionKind::Builtin);
+            assert_eq!(target.key(), "agent_drafter");
+        }
+        for reference in [
+            "autovisualizer",
+            "auto-visualizer",
+            "auto_visualiser",
+            "autovisualiser",
+        ] {
+            let target = resolve_bundled_extension(reference).expect(reference);
+            assert_eq!(target.kind(), BundledExtensionKind::Builtin);
+            assert_eq!(target.key(), "autovisualiser");
+        }
+        for reference in [
+            "extensionmanager",
+            "extension-manager",
+            "extension_manager",
+            "Extension Manager",
+        ] {
+            let target = resolve_bundled_extension(reference).expect(reference);
+            assert_eq!(target.kind(), BundledExtensionKind::Platform);
+            assert_eq!(target.key(), "extensionmanager");
+        }
+        for reference in ["chatrecall", "chat-recall", "Chat Recall"] {
+            let target = resolve_bundled_extension(reference).expect(reference);
+            assert_eq!(target.kind(), BundledExtensionKind::Platform);
+            assert_eq!(target.key(), "chatrecall");
+        }
+    }
+
+    /// A non-bundled reference resolves to nothing, so a `/ext:` marker can
+    /// never auto-enable a user-configured (stdio / streamable_http /
+    /// inline_python / frontend / sse) extension the operator turned off.
+    #[test]
+    fn does_not_resolve_non_bundled_extensions() {
+        for reference in ["", "pubmed", "spokeagent", "some-stdio-server"] {
+            assert!(
+                resolve_bundled_extension(reference).is_none(),
+                "`{reference}` must not resolve to a bundled extension"
+            );
+        }
     }
 }
