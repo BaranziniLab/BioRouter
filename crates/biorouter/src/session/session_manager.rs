@@ -1079,8 +1079,24 @@ impl CheckpointRow {
 /// Read through the `idx_messages_session` covering index, so it is index-only:
 /// no table rows, no JSON. Cheaper than the `COUNT(*)` `get_session` already
 /// does.
+///
+/// `(count, max_rowid)` is only non-repeating within ONE INCARNATION of the
+/// session row, which is why `incarnation` is part of the token. A session id
+/// is REUSABLE: `create_session` allocates `YYYYMMDD_N` as `MAX(N) + 1` over
+/// the `sessions` table, so once that table is emptied the ids restart at 1.
+/// Pair that with a rewound message sequence and a one-message session at
+/// `(1, 1)` is reproducible by an entirely different conversation — a
+/// detached rewrite from the previous incarnation would then pass the prefix
+/// check and overwrite it (#51 W3). `incarnation` is minted per session ROW
+/// from `random()` and never reused, so a basis taken before a wipe can never
+/// match after one, whatever the rowids do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ConversationRevision {
+    /// Identity of the session ROW this revision was read from. `0` means
+    /// "unknown" — a row written before the column existed and somehow missed
+    /// the backfill. Two unknowns compare equal, degrading to the rowid guard
+    /// alone rather than refusing every rewrite on such a database.
+    incarnation: i64,
     count: i64,
     max_rowid: i64,
 }
@@ -1092,8 +1108,12 @@ impl ConversationRevision {
     }
 
     #[cfg(test)]
-    pub(crate) fn from_parts(count: i64, max_rowid: i64) -> Self {
-        Self { count, max_rowid }
+    pub(crate) fn from_parts(incarnation: i64, count: i64, max_rowid: i64) -> Self {
+        Self {
+            incarnation,
+            count,
+            max_rowid,
+        }
     }
 }
 
@@ -2026,7 +2046,8 @@ impl SessionStorage {
                 model_config_json TEXT,
                 diverged_from TEXT,
                 external_key TEXT,
-                branch_point_msg_uid TEXT
+                branch_point_msg_uid TEXT,
+                incarnation INTEGER NOT NULL DEFAULT 0
             )
         "#,
         )
@@ -2199,8 +2220,8 @@ impl SessionStorage {
             total_tokens, input_tokens, output_tokens,
             accumulated_total_tokens, accumulated_input_tokens, accumulated_output_tokens,
             schedule_id, workflow_json, user_workflow_values_json,
-            provider_name, model_config_json, diverged_from
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            provider_name, model_config_json, diverged_from, incarnation
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, random())
         "#,
         )
         .bind(&session.id)
@@ -2287,6 +2308,7 @@ impl SessionStorage {
     async fn reconcile_loop_schema(pool: &Pool<Sqlite>) -> Result<()> {
         Self::create_checkpoints_table(pool).await?;
         Self::ensure_message_identity_schema(pool).await?;
+        Self::ensure_session_incarnation_schema(pool).await?;
         Self::create_and_backfill_messages_fts(pool, false).await?;
         Self::create_message_blobs_table(pool).await?;
         Ok(())
@@ -2702,6 +2724,27 @@ impl SessionStorage {
         Ok(())
     }
 
+    /// #51 W3: give every session ROW a token that is never handed to a later
+    /// row with the same id, so a [`ConversationRevision`] taken from one
+    /// incarnation can never be satisfied by another.
+    ///
+    /// Idempotent and version-independent, like the rest of
+    /// `reconcile_loop_schema`. `ALTER TABLE ... ADD COLUMN` may not carry an
+    /// expression default, so the column lands as `0` ("unknown") and is
+    /// backfilled here; `random()` is re-evaluated per row, so the UPDATE gives
+    /// each existing session its own value.
+    async fn ensure_session_incarnation_schema(pool: &Pool<Sqlite>) -> Result<()> {
+        if !Self::table_has_column(pool, "sessions", "incarnation").await? {
+            sqlx::query("ALTER TABLE sessions ADD COLUMN incarnation INTEGER NOT NULL DEFAULT 0")
+                .execute(pool)
+                .await?;
+        }
+        sqlx::query("UPDATE sessions SET incarnation = random() WHERE IFNULL(incarnation, 0) = 0")
+            .execute(pool)
+            .await?;
+        Ok(())
+    }
+
     async fn create_and_backfill_messages_fts(pool: &Pool<Sqlite>, rebuild: bool) -> Result<()> {
         let existed = Self::messages_fts_exists(pool).await;
         sqlx::query(MESSAGES_FTS_DDL).execute(pool).await?;
@@ -2806,7 +2849,7 @@ impl SessionStorage {
         let today = chrono::Utc::now().format("%Y%m%d").to_string();
         let session = sqlx::query_as(
             r#"
-                INSERT INTO sessions (id, name, user_set_name, session_type, working_dir, extension_data)
+                INSERT INTO sessions (id, name, user_set_name, session_type, working_dir, extension_data, incarnation)
                 VALUES (
                     ? || '_' || CAST(COALESCE((
                         SELECT MAX(CAST(SUBSTR(id, 10) AS INTEGER))
@@ -2817,7 +2860,8 @@ impl SessionStorage {
                     FALSE,
                     ?,
                     ?,
-                    '{}'
+                    '{}',
+                    random()
                 )
                 RETURNING *
                 "#,
@@ -3516,6 +3560,18 @@ impl SessionStorage {
                 return Ok((ReplaceOutcome::SessionNotFound, Vec::new()));
             }
 
+            // Row identity FIRST (#51 W3). A session id outlives the session:
+            // `/reset` History empties `sessions`, and the next
+            // `create_session` on the same day hands the id straight back. A
+            // rewrite that snapshotted the previous occupant must never be
+            // allowed to reason about rowids in the new one's message set —
+            // `(count, max_rowid)` is only meaningful within one incarnation.
+            let incarnation = Self::read_incarnation(&mut tx, session_id).await?;
+            if incarnation != basis.incarnation {
+                tx.rollback().await?;
+                return Ok((ReplaceOutcome::Stale, Vec::new()));
+            }
+
             // Prefix integrity: every message the basis covered must still be
             // there, unmoved. A concurrent truncate lowers this; a concurrent
             // wholesale rewrite renumbers every row and drives it to 0. Either
@@ -3913,13 +3969,39 @@ impl SessionStorage {
     where
         E: sqlx::Executor<'e, Database = Sqlite>,
     {
-        let (count, max_rowid) = sqlx::query_as::<_, (i64, i64)>(
-            "SELECT COUNT(*), IFNULL(MAX(id), 0) FROM messages WHERE session_id = ?",
+        // The incarnation rides along as an uncorrelated scalar subquery — one
+        // primary-key probe of `sessions`, evaluated once, so this is still a
+        // single round trip and a single scan of `idx_messages_session`.
+        let (count, max_rowid, incarnation) = sqlx::query_as::<_, (i64, i64, i64)>(
+            "SELECT COUNT(*), IFNULL(MAX(id), 0), \
+             IFNULL((SELECT incarnation FROM sessions WHERE id = ?), 0) \
+             FROM messages WHERE session_id = ?",
         )
+        .bind(session_id)
         .bind(session_id)
         .fetch_one(executor)
         .await?;
-        Ok(ConversationRevision { count, max_rowid })
+        Ok(ConversationRevision {
+            incarnation,
+            count,
+            max_rowid,
+        })
+    }
+
+    /// The session row's incarnation token, read over the rewrite's own
+    /// transaction. `0` for a row that predates the column (or does not exist).
+    async fn read_incarnation(
+        tx: &mut sqlx::Transaction<'_, Sqlite>,
+        session_id: &str,
+    ) -> Result<i64> {
+        let incarnation = sqlx::query_scalar::<_, i64>(
+            "SELECT IFNULL(incarnation, 0) FROM sessions WHERE id = ?",
+        )
+        .bind(session_id)
+        .fetch_optional(&mut **tx)
+        .await?
+        .unwrap_or(0);
+        Ok(incarnation)
     }
 
     async fn list_sessions_by_types(&self, types: &[SessionType]) -> Result<Vec<Session>> {
@@ -4049,10 +4131,17 @@ impl SessionStorage {
                 .execute(&mut *tx)
                 .await?;
         }
-        sqlx::query("DELETE FROM sqlite_sequence WHERE name IN ('messages', 'token_events')")
-            .execute(&mut *tx)
-            .await?;
-
+        // The AUTOINCREMENT high-water marks are deliberately LEFT ALONE
+        // (#51 W3). `messages.id` is what [`ConversationRevision`] is built
+        // from, and its whole value is that a rowid is never minted twice for
+        // the lifetime of the database. Rewinding `sqlite_sequence` here made a
+        // wipe hand the next session the rowids of the one it deleted, so a
+        // detached rewrite holding a pre-wipe revision could pass the freshness
+        // guard against a brand-new conversation and destroy it. `token_events`
+        // rides along for the same reason: its ids are referenced by the usage
+        // ledger's own dedupe, and there is nothing to gain from replaying
+        // them. A cleared database is empty either way; only the two counters
+        // survive, at 8 bytes each.
         tx.commit().await?;
         Ok(count as u64)
     }
@@ -8566,15 +8655,147 @@ mod tests {
         assert_ne!(original, refilled, "revision must not ABA");
     }
 
+    /// The mechanism the test below turns into data loss. An AUTOINCREMENT
+    /// sequence exists precisely to keep a rowid non-reusable for the LIFETIME
+    /// OF THE DATABASE; `DELETE FROM messages` already leaves it alone (that is
+    /// what makes the truncate-and-refill test above hold). Deleting the
+    /// `sqlite_sequence` row hands the next session the rowids of a session
+    /// that is gone.
+    #[tokio::test]
+    async fn clearing_all_sessions_does_not_rewind_the_message_rowids() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let first = revision_session(&sm).await;
+        sm.add_message(&first, &umsg(1, "one")).await.unwrap();
+        sm.add_message(&first, &umsg(2, "two")).await.unwrap();
+        let before = sm.conversation_revision(&first).await.unwrap();
+
+        sm.clear_all_sessions().await.unwrap();
+
+        let second = revision_session(&sm).await;
+        sm.add_message(&second, &umsg(3, "three")).await.unwrap();
+        let after = sm.conversation_revision(&second).await.unwrap();
+
+        assert!(
+            after.max_rowid > before.max_rowid,
+            "a message written after the wipe must not reuse a rowid the wipe \
+             freed ({} -> {})",
+            before.max_rowid,
+            after.max_rowid
+        );
+    }
+
+    /// #51 W3: the revision must not ABA across a `/reset` History wipe either.
+    ///
+    /// `clear_all_sessions` empties every table, and `create_session` allocates
+    /// `YYYYMMDD_N` as `MAX(suffix) + 1` over a now-empty `sessions` table — so
+    /// the next session created the same day REUSES the id. If the message
+    /// AUTOINCREMENT sequence is rewound with it, a rewrite still holding a
+    /// revision from the previous incarnation finds its basis satisfied by a
+    /// brand-new session's brand-new message and destroys it. Eager compaction
+    /// is detached from its turn, so it really can still be in flight across a
+    /// wipe.
+    #[tokio::test]
+    async fn a_guarded_rewrite_cannot_cross_a_clear_and_recreate() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+
+        let old = revision_session(&sm).await;
+        sm.add_message(&old, &umsg(1, "first incarnation"))
+            .await
+            .unwrap();
+        // A detached rewrite (eager compaction) snapshots the session...
+        let (known, basis) = snapshot(&sm, &old).await;
+
+        // ...and while it is still working, the user wipes History from /reset.
+        sm.clear_all_sessions().await.unwrap();
+
+        let new = revision_session(&sm).await;
+        assert_eq!(new, old, "the ABA needs the session id to be reused");
+        sm.add_message(&new, &umsg(2, "second incarnation"))
+            .await
+            .unwrap();
+
+        let replacement =
+            Conversation::new_unvalidated(vec![umsg(9, "summary of the first incarnation")]);
+        let (outcome, _) = sm
+            .replace_conversation_preserving_tail(&new, &replacement, basis, &known)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            outcome,
+            ReplaceOutcome::Stale,
+            "a revision from a previous incarnation of this id must never match"
+        );
+        assert_eq!(
+            stored_texts(&sm, &new).await,
+            vec!["second incarnation".to_string()],
+            "the new session's acknowledged message must survive the stale rewrite"
+        );
+    }
+
+    /// ...and the incarnation token has to close it BY ITSELF, not merely as a
+    /// consequence of leaving `sqlite_sequence` alone. Any number of things
+    /// present a rewound sequence to a running process — a database restored
+    /// from a backup, a hand-copied `sessions.db`, a future wipe path that
+    /// re-creates the file. Here the pre-fix conditions are reproduced
+    /// EXACTLY: the old session's rowids are replayed one for one, so
+    /// `(count, max_rowid)` is byte-identical across the two incarnations and
+    /// only the row identity can tell them apart.
+    #[tokio::test]
+    async fn a_guarded_rewrite_is_refused_even_when_the_rowids_are_replayed_exactly() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+
+        let old = revision_session(&sm).await;
+        sm.add_message(&old, &umsg(1, "first incarnation"))
+            .await
+            .unwrap();
+        let (known, basis) = snapshot(&sm, &old).await;
+
+        sm.clear_all_sessions().await.unwrap();
+        // Rewind the message sequence behind the store's back.
+        let pool = sm.storage().pool().await.unwrap();
+        sqlx::query("DELETE FROM sqlite_sequence WHERE name = 'messages'")
+            .execute(pool)
+            .await
+            .unwrap();
+
+        let new = revision_session(&sm).await;
+        assert_eq!(new, old);
+        sm.add_message(&new, &umsg(2, "second incarnation"))
+            .await
+            .unwrap();
+
+        let replayed = sm.conversation_revision(&new).await.unwrap();
+        assert_eq!(
+            (replayed.count, replayed.max_rowid),
+            (basis.count, basis.max_rowid),
+            "this test is only meaningful if the rowids really were replayed"
+        );
+
+        let replacement = Conversation::new_unvalidated(vec![umsg(9, "summary")]);
+        let (outcome, _) = sm
+            .replace_conversation_preserving_tail(&new, &replacement, basis, &known)
+            .await
+            .unwrap();
+
+        assert_eq!(outcome, ReplaceOutcome::Stale);
+        assert_eq!(
+            stored_texts(&sm, &new).await,
+            vec!["second incarnation".to_string()]
+        );
+    }
+
     #[tokio::test]
     async fn conversation_revision_is_zero_for_an_empty_session() {
         let temp_dir = TempDir::new().unwrap();
         let sm = SessionManager::new(temp_dir.path().to_path_buf());
         let id = revision_session(&sm).await;
-        assert_eq!(
-            sm.conversation_revision(&id).await.unwrap(),
-            ConversationRevision::from_parts(0, 0)
-        );
+        let revision = sm.conversation_revision(&id).await.unwrap();
+        assert_eq!(revision.count, 0);
+        assert_eq!(revision.max_rowid, 0);
     }
 
     /// A rewrite changes the session's content, so it must move `updated_at`
@@ -8899,7 +9120,7 @@ mod tests {
             .replace_conversation_preserving_tail(
                 "no-such-session",
                 &Conversation::new_unvalidated(vec![umsg(1, "x")]),
-                ConversationRevision::from_parts(0, 0),
+                ConversationRevision::from_parts(0, 0, 0),
                 &empty,
             )
             .await
