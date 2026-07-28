@@ -840,6 +840,71 @@ describe('ChatStreamRegistry', () => {
     expect('expectedMessageIds' in body).toBe(false);
   });
 
+  // #59 follow-on: "every message names itself" is NOT the same claim as "we
+  // name every stored row", and after the reply loop started stamping ids on
+  // the copies it yields, the first became true on turns where the second is
+  // false. One streamed assistant reply is stored as two or three rows — the
+  // rebuilt thinking row plus one `tool_use` row per request — and only the
+  // first keeps the id the client was shown; the model-only rows (BR-47
+  // diagnostics, loop-guard nudges, hook context) are never yielded at all.
+  // `crates/biorouter/tests/conversation_writeback_freshness.rs
+  // ::a_reply_split_into_several_stored_rows_publishes_every_one_of_their_ids`
+  // asserts exactly that inequality server-side: stored rows > streamed
+  // messages. So a list built from a watched turn is short, and a short list is
+  // not a weaker claim but a false one — a guaranteed 409 on a session nobody
+  // else has touched, i.e. "Edit in Place" dead again with a
+  // `Failed to edit message` toast. Only a view read straight back from the
+  // store may be claimed as complete.
+  it('omits its view after a live turn, even though every message it holds is named', async () => {
+    const registry = new ChatStreamRegistry();
+    const sessionId = 'edit-in-place-after-live-turn';
+    const conversation: Message[] = [
+      {
+        id: 'u1',
+        role: 'user',
+        created: 10,
+        content: [{ type: 'text', text: 'original prompt' }],
+        metadata: { userVisible: true, agentVisible: true },
+      },
+    ];
+    vi.mocked(resumeAgent).mockResolvedValue({
+      data: { session: { ...session(sessionId), conversation } },
+    } as never);
+    vi.mocked(editMessage).mockResolvedValue({ data: { sessionId } } as never);
+    vi.mocked(getSession).mockResolvedValue({ data: { conversation } } as never);
+    vi.mocked(reply).mockImplementation(
+      async () =>
+        ({
+          stream: (async function* () {
+            // #59 `named()`: the yielded copy now always carries an id. The
+            // store, meanwhile, split this one reply into a thinking row and a
+            // `tool_use` row and only published the extra id on
+            // `MessagesPersisted`, which this client does not consume.
+            yield {
+              type: 'Message',
+              message: assistantMessage('a-live', 'thinking, then a tool call'),
+              token_state: tokenState,
+            } as MessageEvent;
+            yield { type: 'Finish', reason: 'done', token_state: tokenState } as MessageEvent;
+          })(),
+        }) as never
+    );
+
+    const controller = registry.getController(sessionId);
+    await controller.loadSession();
+    await controller.handleSubmit('run a tool for me');
+    await flush();
+
+    // Every message the client holds names itself...
+    expect(controller.getSnapshot().messages.every((m) => typeof m.id === 'string')).toBe(true);
+
+    await controller.onMessageUpdate('u1', 'updated prompt', 'edit');
+
+    // ...and it still must not claim its view is the whole store.
+    const body = vi.mocked(editMessage).mock.calls[0][0].body as Record<string, unknown>;
+    expect('expectedMessageIds' in body).toBe(false);
+  });
+
   it('reports a rejected soft interrupt so the caller can fall back', async () => {
     const registry = new ChatStreamRegistry();
     const controlled = createControlledStream();
