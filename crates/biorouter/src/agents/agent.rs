@@ -6239,6 +6239,103 @@ mod tests {
 
 /// BR-32: the reply loop's stall-check seam — when it runs, when it stays silent,
 /// and who owns stall detection when a `/goal` is set.
+/// #51: the seed half of [`RewriteBasis::known_with`], which nothing else
+/// covers.
+///
+/// The union is load-bearing and its failure mode is silent. `known` is what
+/// the store reads message ids out of to tell another writer's append from the
+/// turn's own history: a row ABOVE the watermark whose id `known` does not name
+/// is treated as foreign and carried over verbatim. Because the basis is seeded
+/// EARLY, a row that landed between `snapshot_for_rewrite`'s two reads sits
+/// above the watermark AND inside the seed — so if the turn-start normalizer
+/// then merged or dropped it from the live conversation, passing `live` alone
+/// would have the store "recover" it onto the tail of the very summary that
+/// already contains it. A duplicate, not a loss, but wrong.
+///
+/// That window is two adjacent database reads wide, so no end-to-end test can
+/// hit it on demand — which is exactly why the union needs pinning here. It was
+/// verified to be untested: replacing `&basis.known_with(conversation)` with a
+/// bare `conversation` left all 24 freshness, 9 stress and 462 `agents::` tests
+/// green.
+#[cfg(test)]
+mod rewrite_basis_tests {
+    use super::*;
+    use crate::session::session_manager::SessionType;
+    use crate::session::SessionManager;
+    use std::path::PathBuf;
+    use tempfile::TempDir;
+
+    /// A session holding `texts`, plus the basis paired with that history.
+    async fn seeded(texts: &[&str]) -> (TempDir, SessionManager, String, RewriteBasis) {
+        let dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(dir.path().to_path_buf());
+        let id = sm
+            .create_session(PathBuf::from("."), "basis".to_string(), SessionType::User)
+            .await
+            .unwrap()
+            .id;
+        for text in texts {
+            sm.add_message(&id, &Message::user().with_text(*text))
+                .await
+                .unwrap();
+        }
+        let basis = RewriteBasis::read(&sm, &id).await.unwrap();
+        (dir, sm, id, basis)
+    }
+
+    fn ids(conversation: &Conversation) -> Vec<String> {
+        conversation
+            .messages()
+            .iter()
+            .filter_map(|m| m.id.clone())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn known_with_still_names_a_message_the_normalizer_dropped() {
+        let (_dir, _sm, _id, basis) = seeded(&["one", "two", "three"]).await;
+        let seed_ids = ids(basis.known());
+        assert_eq!(seed_ids.len(), 3, "the seed must carry all three ids");
+
+        // Stand in for the turn-start normalizer merging the middle message
+        // away: the live conversation no longer names it.
+        let live = Conversation::new_unvalidated(
+            basis
+                .known()
+                .messages()
+                .iter()
+                .filter(|m| m.id.as_deref() != Some(seed_ids[1].as_str()))
+                .cloned()
+                .collect::<Vec<Message>>(),
+        );
+        assert!(
+            !ids(&live).contains(&seed_ids[1]),
+            "the fixture must actually drop a message, or this proves nothing"
+        );
+
+        let known = basis.known_with(&live);
+        let named = ids(&known);
+        for seed_id in &seed_ids {
+            assert!(
+                named.contains(seed_id),
+                "known_with must name every id the seed carried — {seed_id} is missing, so the \
+                 store would treat that row as another writer's append and recover it verbatim \
+                 onto the tail of its own summary; named: {named:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn known_with_borrows_when_the_live_view_already_names_everything() {
+        let (_dir, _sm, _id, basis) = seeded(&["one", "two"]).await;
+        let live = basis.known().clone();
+        assert!(
+            matches!(basis.known_with(&live), std::borrow::Cow::Borrowed(_)),
+            "the common case must not copy the transcript"
+        );
+    }
+}
+
 #[cfg(test)]
 mod stall_seam_tests {
     use super::*;
