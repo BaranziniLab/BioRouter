@@ -72,7 +72,9 @@ pub mod types;
 pub mod vault_refs;
 pub mod workspace_summary;
 
-pub use agent::{Agent, AgentConfig, AgentEvent, ConfirmationOutcome, ExtensionLoadResult};
+pub use agent::{
+    Agent, AgentConfig, AgentEvent, ConfirmationOutcome, ExtensionLoadResult, PersistedMessage,
+};
 pub use budget::ReplyBudget;
 pub use effort::ReasoningEffort;
 pub use execute_commands::COMPACT_TRIGGERS;

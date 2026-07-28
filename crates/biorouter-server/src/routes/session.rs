@@ -113,10 +113,13 @@ pub struct EditMessageRequest {
     // reduced to what a truncation needs: ids alone prove the client has seen
     // everything stored, and unlike that field this one supplies no content.
     //
-    // Optional rather than required because of #59: the reply stream does not
-    // publish the ids messages are persisted under, so a client that watched a
-    // live turn cannot name them and a REQUIRED field would 409 every in-place
-    // edit in every live chat. See `edit_in_place`.
+    // Optional, and still optional now that #59 has landed. The reply stream
+    // DOES publish the ids a turn persisted (`MessagesPersisted`), so a client
+    // can now be complete — but only one that consumes that frame, and no
+    // shipped client does yet: the desktop claims completeness solely for a
+    // session it has just re-read from the store. A REQUIRED field would
+    // therefore still 409 every in-place edit in every live chat. See
+    // `edit_in_place`.
     #[serde(default)]
     expected_message_ids: Option<Vec<String>>,
 }
@@ -744,11 +747,19 @@ async fn edit_message(
 ///    from a previous incarnation of a recycled session id is refused outright.
 ///
 /// Guard 2 is the only one that needs the client's cooperation, and it is
-/// therefore the only optional one. It landed REQUIRED, which was wrong: #59
-/// established that the reply stream never publishes the ids messages are
-/// persisted under, so a client that has watched a live turn cannot name them —
-/// a required field would 409 every in-place edit in every live chat, which is a
-/// regression against the unguarded endpoint this replaced. Sent, it is enforced
+/// therefore the only optional one. It landed REQUIRED, which was wrong: at the
+/// time the reply stream never published the ids messages are persisted under,
+/// so a client that had watched a live turn could not name them — a required
+/// field would 409 every in-place edit in every live chat, which is a regression
+/// against the unguarded endpoint this replaced.
+///
+/// #59 has since made the stream publish them (`MessagesPersisted`), so a
+/// complete client view is now ACHIEVABLE. It is not yet ACHIEVED: a client only
+/// has one if it consumes that frame, and none does — the desktop supplies the
+/// field solely for a session it has just re-read from the store. Making this
+/// field required again is the last step of #59, not a precondition of it, and
+/// the log below is what will show when that step is safe to take.
+/// Sent, it is enforced
 /// exactly as strictly as before; omitted, the cut falls back to guards 1 and 3,
 /// which need nothing from the client and are still strictly more than the
 /// nothing that shipped before this. The gap is logged at `warn`, per cut, so it
@@ -840,8 +851,9 @@ async fn edit_in_place(
                 "In-place edit of session {} carries no `expectedMessageIds`, so the wide race \
                  (a message appended between the client rendering the conversation and this \
                  request) is unchecked; the cut is still under the turn lock and bounded to the \
-                 {} message(s) the server just read. See issue #59 — the reply stream does not \
-                 publish the ids messages are persisted under, so clients cannot yet supply one.",
+                 {} message(s) the server just read. The reply stream now publishes the ids a \
+                 turn persisted (issue #59, `MessagesPersisted`), so a client that consumes that \
+                 frame can supply a view — this one did not.",
                 session_id,
                 stored.messages().len()
             );
@@ -1568,10 +1580,14 @@ mod edit_message_tests {
     }
 
     /// An `Edit` that supplies no view is NOT refused. The field landed
-    /// required, and #59 proved no client can satisfy it — the reply stream
-    /// never publishes the ids messages are persisted under — so requiring it
+    /// required, and at the time no client could satisfy it — the reply stream
+    /// did not publish the ids messages are persisted under — so requiring it
     /// broke "Edit in Place" in every live chat, which is a regression against
-    /// the unguarded endpoint it replaced. Omitting it now falls back to the two
+    /// the unguarded endpoint it replaced. #59 has since made the stream publish
+    /// them, but a client only benefits if it consumes that frame, so the
+    /// no-view path this covers is still the one every live chat takes and this
+    /// test still guards a reachable case, not a historical one.
+    /// Omitting it now falls back to the two
     /// guards that need nothing from the client: the turn lock (covered by
     /// `edit_without_an_expected_view_still_refuses_while_a_turn_is_in_flight`)
     /// and the bounded cut against the server's own snapshot.

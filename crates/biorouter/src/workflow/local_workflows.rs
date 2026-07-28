@@ -26,11 +26,117 @@ const BIOROUTER_WORKFLOW_PATH_ENV_VAR: &str = "BIOROUTER_WORKFLOW_PATH";
 /// in it are still skipped quietly.
 const BIOROUTER_WORKFLOW_SCAN_WORKING_DIR_ENV_VAR: &str = "BIOROUTER_WORKFLOW_SCAN_WORKING_DIR";
 
+/// Where a workflow library lives.
+///
+/// `is_global` picks the user-wide library, which is always resolvable, or this
+/// project's, which needs a working directory that still exists. When there is
+/// none, the project answer is the empty path — a value that names nothing,
+/// never `exists()`, and cannot be written to, so a caller fails instead of
+/// operating on some other directory.
+///
+/// **Search roots never come from here.** They come from
+/// [`project_workflow_library_dir`], which reports the same condition as `None`
+/// and is then left out of the search entirely; see the note there for why a
+/// stand-in path is not an acceptable substitute.
 pub fn get_workflow_library_dir(is_global: bool) -> PathBuf {
     if is_global {
-        Paths::config_dir().join("workflows")
+        global_workflow_library_dir()
     } else {
-        env::current_dir().unwrap().join(".biorouter/workflows")
+        project_workflow_library_dir(working_directory_snapshot().as_deref()).unwrap_or_default()
+    }
+}
+
+/// The user-wide workflow library, `~/.config/biorouter/workflows`. It does not
+/// depend on where the process is standing, so it is always available.
+fn global_workflow_library_dir() -> PathBuf {
+    Paths::config_dir().join("workflows")
+}
+
+/// The single absolute snapshot of the process working directory that every
+/// project-relative search root is derived from.
+///
+/// Taken **once** per resolution. The process working directory is mutable and
+/// this codebase moves it itself — `biorouter-cli`'s session builder calls
+/// `std::env::set_current_dir` when a resumed session goes back to its original
+/// directory — so re-reading it per root, or deferring the read to whenever a
+/// root is finally used, would let one search list describe two directories.
+/// One snapshot means the whole list describes one project or none.
+///
+/// Split from [`snapshot_working_directory`] only so the failure branch is
+/// testable without deleting a directory out from under the test binary.
+fn working_directory_snapshot() -> Option<PathBuf> {
+    snapshot_working_directory(env::current_dir())
+}
+
+/// Turn the working-directory lookup into "this project" or "no project",
+/// saying so in the log.
+///
+/// Resolving it used to `unwrap`. A session's working directory is user-chosen
+/// and can vanish while the process is still running: a scratch directory
+/// cleaned up, a volume unmounted, a `git worktree remove`. In the CLI that
+/// panic ended one command; in `biorouterd` it took down a long-lived daemon
+/// serving every other session, so the user lost the backend for reasons
+/// unrelated to whatever they were doing. Listing workflows is not worth that.
+fn snapshot_working_directory(working_dir: std::io::Result<PathBuf>) -> Option<PathBuf> {
+    match working_dir {
+        Ok(dir) => Some(dir),
+        Err(err) => {
+            // Listing is user-triggered (opening the workflows view, a CLI
+            // lookup), not polled, so warning per call reports an ongoing
+            // condition rather than flooding the log.
+            tracing::warn!(
+                "Cannot resolve the working directory ({}); skipping the project \
+                 workflow library. Global workflows and BIOROUTER_WORKFLOW_PATH \
+                 entries are unaffected.",
+                err
+            );
+            None
+        }
+    }
+}
+
+/// The project workflow library — `<working dir>/.biorouter/workflows` — or
+/// `None` when there is no working directory to hang it on.
+///
+/// `None` is the whole point. The obvious degradation is to keep the path
+/// *relative* to the directory that just failed, on the reasoning that a
+/// directory which is gone has no library and a relative path pointing into it
+/// resolves to nothing. It does not: a relative root is not tied to the
+/// directory whose lookup failed, it is tied to whatever the working directory
+/// is when the root is eventually consumed — and something has to consume it,
+/// because roots are collected first and scanned afterwards. Move the process
+/// in between and `.biorouter/workflows` binds to a *different* project, whose
+/// workflows are then loaded and shown as this session's.
+///
+/// That is worse than the panic this replaced. A panic is loud, immediate and
+/// local; quietly reading another project's directory is none of those. So an
+/// unavailable project library is omitted from the search entirely, and the
+/// global library and every `BIOROUTER_WORKFLOW_PATH` entry keep working.
+fn project_workflow_library_dir(working_dir: Option<&Path>) -> Option<PathBuf> {
+    working_dir.map(|dir| dir.join(".biorouter").join("workflows"))
+}
+
+/// Bind a search root to the snapshotted working directory, or drop it.
+///
+/// Anything still relative when it reaches the search list is a deferred
+/// lookup, not a decided one — see [`project_workflow_library_dir`]. A relative
+/// `BIOROUTER_WORKFLOW_PATH` entry is a real declaration and is anchored to the
+/// snapshot; with no working directory it cannot mean anything at all, so it is
+/// dropped rather than left to attach itself to a later one.
+fn anchor_to_working_dir(root: PathBuf, working_dir: Option<&Path>) -> Option<PathBuf> {
+    if root.is_absolute() {
+        return Some(root);
+    }
+    match working_dir {
+        Some(cwd) => Some(cwd.join(root)),
+        None => {
+            tracing::debug!(
+                "Dropping the relative workflow directory {}: there is no working \
+                 directory to resolve it against.",
+                root.display()
+            );
+            None
+        }
     }
 }
 
@@ -76,10 +182,11 @@ fn env_flag_is_on(value: Option<&str>) -> bool {
 /// files and is granted by intent — a dedicated location, an entry on
 /// `BIOROUTER_WORKFLOW_PATH`, or an explicit opt-in — never by proximity.
 fn local_workflow_scan_dirs() -> Vec<(PathBuf, ScanOrigin)> {
+    let working_dir = working_directory_snapshot();
     collect_workflow_dirs(
         env::var(BIOROUTER_WORKFLOW_PATH_ENV_VAR).ok().as_deref(),
-        get_workflow_library_dir(true),
-        get_workflow_library_dir(false),
+        global_workflow_library_dir(),
+        working_dir.as_deref(),
         env_flag_is_on(
             env::var(BIOROUTER_WORKFLOW_SCAN_WORKING_DIR_ENV_VAR)
                 .ok()
@@ -98,10 +205,11 @@ fn local_workflow_scan_dirs() -> Vec<(PathBuf, ScanOrigin)> {
 /// command still saves there by default, so this is the compatibility that
 /// matters.
 fn local_workflow_lookup_dirs() -> Vec<PathBuf> {
+    let working_dir = working_directory_snapshot();
     collect_workflow_dirs(
         env::var(BIOROUTER_WORKFLOW_PATH_ENV_VAR).ok().as_deref(),
-        get_workflow_library_dir(true),
-        get_workflow_library_dir(false),
+        global_workflow_library_dir(),
+        working_dir.as_deref(),
         true,
     )
     .into_iter()
@@ -112,15 +220,25 @@ fn local_workflow_lookup_dirs() -> Vec<PathBuf> {
 /// The env-free core of [`local_workflow_scan_dirs`] and
 /// [`local_workflow_lookup_dirs`], so the origin tagging and the
 /// working-directory decision can be tested without mutating process state.
+///
+/// `working_dir` is the one snapshot from [`working_directory_snapshot`], and
+/// it is the *only* way the working directory enters: the project library and
+/// the working-directory root are both derived from it here, and a relative
+/// `BIOROUTER_WORKFLOW_PATH` entry is anchored to it. `None` means there is no
+/// working directory, and every root that would have needed one is simply
+/// absent — so a returned list never contains a root that will re-resolve
+/// against a directory the process moves to afterwards.
 fn collect_workflow_dirs(
     workflow_path_env: Option<&str>,
     global_library: PathBuf,
-    project_library: PathBuf,
+    working_dir: Option<&Path>,
     include_working_directory: bool,
 ) -> Vec<(PathBuf, ScanOrigin)> {
     let mut local_dirs = Vec::new();
     if include_working_directory {
-        local_dirs.push((PathBuf::from("."), ScanOrigin::WorkingDirectory));
+        if let Some(working_dir) = working_dir {
+            local_dirs.push((working_dir.to_path_buf(), ScanOrigin::WorkingDirectory));
+        }
     }
 
     if let Some(workflow_path_env) = workflow_path_env {
@@ -128,11 +246,20 @@ fn collect_workflow_dirs(
         local_dirs.extend(
             workflow_path_env
                 .split(path_separator)
-                .map(|dir| (PathBuf::from(dir), ScanOrigin::WorkflowLibrary)),
+                // An empty entry (a stray `::` or a trailing separator) is not
+                // a shorthand for the working directory here: honouring it as
+                // one would promote the user's own directory to a workflow
+                // library, which is exactly the licence-to-read this scan
+                // withholds.
+                .filter(|dir| !dir.is_empty())
+                .filter_map(|dir| anchor_to_working_dir(PathBuf::from(dir), working_dir))
+                .map(|dir| (dir, ScanOrigin::WorkflowLibrary)),
         );
     }
     local_dirs.push((global_library, ScanOrigin::WorkflowLibrary));
-    local_dirs.push((project_library, ScanOrigin::WorkflowLibrary));
+    if let Some(project_library) = project_workflow_library_dir(working_dir) {
+        local_dirs.push((project_library, ScanOrigin::WorkflowLibrary));
+    }
 
     let mut dirs: Vec<(PathBuf, ScanOrigin)> = local_dirs
         .into_iter()
@@ -492,18 +619,25 @@ mod tests {
         );
     }
 
+    /// A working directory that is *also* a declared workflow library, so the
+    /// same path arrives twice with two different origins.
     #[test]
     fn a_workflow_library_that_is_also_the_working_directory_keeps_the_stricter_origin() {
-        let library = tempfile::tempdir().unwrap();
-        let cwd = env::current_dir().unwrap().canonicalize().unwrap();
+        let global = tempfile::tempdir().unwrap();
+        let working_dir = tempfile::tempdir().unwrap();
+        let path_env = working_dir.path().display().to_string();
 
-        // The project library resolves to the working directory itself, so the
-        // same path arrives twice with two different origins.
-        let dirs = collect_workflow_dirs(None, library.path().to_path_buf(), cwd.clone(), true);
+        let dirs = collect_workflow_dirs(
+            Some(&path_env),
+            global.path().to_path_buf(),
+            Some(working_dir.path()),
+            true,
+        );
 
+        let canonical = working_dir.path().canonicalize().unwrap();
         let origins: Vec<ScanOrigin> = dirs
             .iter()
-            .filter(|(dir, _)| *dir == cwd)
+            .filter(|(dir, _)| *dir == canonical)
             .map(|(_, origin)| *origin)
             .collect();
         assert_eq!(
@@ -516,14 +650,16 @@ mod tests {
     #[test]
     fn no_workflow_library_is_ever_treated_as_an_arbitrary_directory() {
         let global = tempfile::tempdir().unwrap();
-        let project = tempfile::tempdir().unwrap();
+        let working_dir = tempfile::tempdir().unwrap();
+        let project = working_dir.path().join(".biorouter").join("workflows");
+        fs::create_dir_all(&project).unwrap();
         let on_path = tempfile::tempdir().unwrap();
         let path_env = on_path.path().display().to_string();
 
         let dirs = collect_workflow_dirs(
             Some(&path_env),
             global.path().to_path_buf(),
-            project.path().to_path_buf(),
+            Some(working_dir.path()),
             true,
         );
 
@@ -532,11 +668,8 @@ mod tests {
             .filter(|(_, origin)| *origin == ScanOrigin::WorkingDirectory)
             .map(|(dir, _)| dir)
             .collect();
-        assert_eq!(
-            ambient,
-            vec![&env::current_dir().unwrap().canonicalize().unwrap()]
-        );
-        for dir in [global.path(), project.path(), on_path.path()] {
+        assert_eq!(ambient, vec![&working_dir.path().canonicalize().unwrap()]);
+        for dir in [global.path(), project.as_path(), on_path.path()] {
             let canonical = dir.canonicalize().unwrap();
             assert!(
                 dirs.contains(&(canonical.clone(), ScanOrigin::WorkflowLibrary)),
@@ -549,18 +682,18 @@ mod tests {
     #[test]
     fn listing_does_not_enumerate_the_working_directory_by_default() {
         let global = tempfile::tempdir().unwrap();
-        let project = tempfile::tempdir().unwrap();
-        let cwd = env::current_dir().unwrap().canonicalize().unwrap();
+        let working_dir = tempfile::tempdir().unwrap();
 
         let dirs = collect_workflow_dirs(
             None,
             global.path().to_path_buf(),
-            project.path().to_path_buf(),
+            Some(working_dir.path()),
             false,
         );
 
+        let canonical = working_dir.path().canonicalize().unwrap();
         assert!(
-            !dirs.iter().any(|(dir, _)| *dir == cwd),
+            !dirs.iter().any(|(dir, _)| *dir == canonical),
             "the working directory root is the user's, not a workflow library; \
              listing must not open every .json/.yaml in it. dirs were {dirs:?}"
         );
@@ -602,20 +735,20 @@ mod tests {
     #[test]
     fn the_working_directory_can_be_scanned_by_explicit_opt_in() {
         let global = tempfile::tempdir().unwrap();
-        let project = tempfile::tempdir().unwrap();
-        let cwd = env::current_dir().unwrap().canonicalize().unwrap();
+        let working_dir = tempfile::tempdir().unwrap();
 
         let dirs = collect_workflow_dirs(
             None,
             global.path().to_path_buf(),
-            project.path().to_path_buf(),
+            Some(working_dir.path()),
             true,
         );
 
         // Opting in must not also promote the directory to a workflow library:
         // that would resurrect the error log about everyone else's files.
+        let canonical = working_dir.path().canonicalize().unwrap();
         assert!(
-            dirs.contains(&(cwd.clone(), ScanOrigin::WorkingDirectory)),
+            dirs.contains(&(canonical, ScanOrigin::WorkingDirectory)),
             "the opt-in restores the scan while keeping the lenient origin; \
              dirs were {dirs:?}"
         );
@@ -701,6 +834,345 @@ mod tests {
         assert!(
             logs.contains("ERROR") && logs.contains("not-yaml.yaml"),
             "an unparseable file in a workflow directory is a broken workflow; logs were:\n{logs}"
+        );
+    }
+
+    #[test]
+    fn a_readable_working_directory_still_gives_the_project_library() {
+        let cwd = PathBuf::from("/some/project");
+
+        assert_eq!(
+            project_workflow_library_dir(Some(&cwd)),
+            Some(cwd.join(".biorouter").join("workflows"))
+        );
+    }
+
+    /// A working directory that cannot be resolved yields *no* project library
+    /// — not a stand-in path — and says so once, at a level someone reading the
+    /// daemon log will see.
+    ///
+    /// This test used to require the opposite: that the fallback be the
+    /// **relative** path `.biorouter/workflows`, on the reasoning that a
+    /// directory which is gone has no library and a relative path pointing into
+    /// it resolves to nothing. The reasoning does not hold. A relative root is
+    /// not tied to the directory whose lookup failed; it is tied to whatever
+    /// the working directory is when the root is finally used — and roots are
+    /// collected first and scanned afterwards, so something always uses it
+    /// later. `biorouter-cli`'s session builder calls `set_current_dir` itself,
+    /// and `biorouterd` serves other sessions from the same process, so "later"
+    /// can easily be a different project — whose workflows would then be loaded
+    /// and shown as this session's. The old expectation asked for exactly the
+    /// silent cross-project read it was written to forbid.
+    #[test]
+    fn an_unreadable_working_directory_yields_no_project_library_and_a_warning() {
+        let logs = CapturedLogs::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(logs.clone())
+            .with_max_level(tracing::Level::DEBUG)
+            .with_ansi(false)
+            .finish();
+
+        let snapshot = tracing::subscriber::with_default(subscriber, || {
+            snapshot_working_directory(Err(std::io::Error::from(std::io::ErrorKind::NotFound)))
+        });
+
+        assert_eq!(
+            snapshot, None,
+            "no working directory means no project, not a placeholder project"
+        );
+        assert_eq!(
+            project_workflow_library_dir(snapshot.as_deref()),
+            None,
+            "an absent project library must be absent, so callers leave the \
+             root out of the search instead of resolving it against whatever \
+             directory the process is standing in when they get to it"
+        );
+        let logs = logs.text();
+        assert!(
+            logs.contains("WARN") && logs.contains("working directory"),
+            "a working directory that cannot be resolved is worth saying out \
+             loud; logs were:\n{logs}"
+        );
+    }
+
+    /// The public accessor is the other way this used to hand out a path bound
+    /// to nothing in particular. Whatever it returns for an absent project, it
+    /// must not be a relative path that a `join` or a `read_dir` would later
+    /// resolve against an unrelated directory.
+    #[test]
+    fn the_library_accessor_never_returns_a_relative_project_path() {
+        // The one case that matters is covered end-to-end, with a real deleted
+        // working directory, in
+        // `a_lost_working_directory_never_binds_a_root_to_another_project`;
+        // here we can only assert the readable case, which must be absolute
+        // because the snapshot is.
+        let dir = get_workflow_library_dir(false);
+        assert!(
+            dir.is_absolute(),
+            "a project library derived from the working-directory snapshot is \
+             absolute by construction; got {}",
+            dir.display()
+        );
+        assert!(get_workflow_library_dir(true).is_absolute());
+    }
+
+    #[test]
+    fn a_relative_workflow_path_entry_is_anchored_to_the_snapshot_or_dropped() {
+        let cwd = PathBuf::from("/some/project");
+
+        assert_eq!(
+            anchor_to_working_dir(PathBuf::from("wf"), Some(&cwd)),
+            Some(cwd.join("wf")),
+            "a declared library is anchored to the directory that was current \
+             when the search list was built"
+        );
+        assert_eq!(
+            anchor_to_working_dir(PathBuf::from("/abs/wf"), None),
+            Some(PathBuf::from("/abs/wf")),
+            "an absolute entry needs no working directory"
+        );
+        assert_eq!(
+            anchor_to_working_dir(PathBuf::from("wf"), None),
+            None,
+            "with no working directory a relative entry cannot mean anything; \
+             keeping it would let it mean a later directory"
+        );
+    }
+
+    /// A stray `::` or a trailing separator must not turn the user's own
+    /// directory into a workflow library — the strict origin that makes every
+    /// unrelated `.yaml` in it an error.
+    #[test]
+    fn an_empty_workflow_path_entry_is_not_the_working_directory() {
+        let global = tempfile::tempdir().unwrap();
+        let working_dir = tempfile::tempdir().unwrap();
+        let on_path = tempfile::tempdir().unwrap();
+        let path_env = format!("{}::", on_path.path().display());
+
+        let dirs = collect_workflow_dirs(
+            Some(&path_env),
+            global.path().to_path_buf(),
+            Some(working_dir.path()),
+            false,
+        );
+
+        let canonical = working_dir.path().canonicalize().unwrap();
+        assert!(
+            !dirs.iter().any(|(dir, _)| *dir == canonical),
+            "dirs were {dirs:?}"
+        );
+    }
+
+    /// Env var that tells a re-executed copy of this test binary that it is the
+    /// child half of [`listing_workflows_survives_a_deleted_working_directory`].
+    const DELETED_CWD_CHILD: &str = "BIOROUTER_TEST_DELETED_CWD_CHILD";
+
+    /// A session's working directory is user-chosen and can vanish while the
+    /// process is still running — a scratch directory cleaned up, a volume
+    /// unmounted, a `git worktree remove`. In the CLI resolving it badly costs
+    /// one command; in `biorouterd` it takes down a daemon serving every other
+    /// session, and the user sees the backend disappear for reasons unrelated
+    /// to anything they did. Listing workflows must not be able to do that.
+    ///
+    /// Deleting the working directory is process-global state, so this cannot
+    /// run beside the other tests in this binary: it re-executes the test
+    /// binary and does the destructive part in a child process. The child is
+    /// pointed at its own config root so it never reads or logs against the
+    /// real one.
+    #[test]
+    #[cfg(unix)]
+    fn listing_workflows_survives_a_deleted_working_directory() {
+        if env::var(DELETED_CWD_CHILD).is_ok() {
+            let scratch = tempfile::tempdir().unwrap().keep();
+            env::set_current_dir(&scratch).unwrap();
+            fs::remove_dir_all(&scratch).unwrap();
+            assert!(
+                env::current_dir().is_err(),
+                "the child must actually be standing in a deleted directory, \
+                 otherwise it proves nothing"
+            );
+
+            // None of these may panic: they are all reachable from a daemon
+            // request while a session's working directory is gone.
+            let project_library = get_workflow_library_dir(false);
+            assert!(
+                !project_library.is_relative() || project_library.as_os_str().is_empty(),
+                "with no working directory there is no project library; a \
+                 relative stand-in would bind to whatever directory the process \
+                 moves to next, got {}",
+                project_library.display()
+            );
+            let _ = local_workflow_lookup_dirs();
+            let workflows = list_local_workflows()
+                .expect("listing must degrade to the directories that still exist");
+            assert!(workflows.is_empty());
+            assert!(
+                load_local_workflow_file("no-such-workflow").is_err(),
+                "a named lookup must fail as a normal error, not a panic"
+            );
+            return;
+        }
+
+        let config_root = tempfile::tempdir().unwrap();
+        let output = std::process::Command::new(env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "--nocapture",
+                "workflow::local_workflows::tests::listing_workflows_survives_a_deleted_working_directory",
+            ])
+            .env(DELETED_CWD_CHILD, "1")
+            // Hermetic: its own config root, no inherited workflow path, and
+            // the working-directory scan opted in so the deleted `.` is
+            // enumerated too.
+            .env("BIOROUTER_PATH_ROOT", config_root.path())
+            .env(BIOROUTER_WORKFLOW_SCAN_WORKING_DIR_ENV_VAR, "1")
+            .env_remove(BIOROUTER_WORKFLOW_PATH_ENV_VAR)
+            .output()
+            .unwrap();
+
+        assert!(
+            output.status.success(),
+            "a deleted working directory must not take the process down.\n\
+             --- child stdout ---\n{}\n--- child stderr ---\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+
+    /// Env var carrying the decoy project's path to the child half of
+    /// [`a_lost_working_directory_never_binds_a_root_to_another_project`].
+    const DECOY_CWD_CHILD: &str = "BIOROUTER_TEST_DECOY_CWD_CHILD";
+
+    /// A search root decided while the working directory is unresolvable must
+    /// not later attach itself to a *different* project.
+    ///
+    /// The process working directory is mutable and this codebase moves it
+    /// itself — `biorouter-cli`'s session builder calls
+    /// `std::env::set_current_dir` when a resumed session asks to go back to
+    /// its original directory — while `biorouterd` serves other sessions from
+    /// the same process. So a root that is still *relative* when it goes into
+    /// the search list is not a root at all: it is a promise to look in
+    /// whatever directory the process happens to be standing in when the list
+    /// is finally consumed. If that is another project, that project's
+    /// workflows are loaded and presented as this one's.
+    ///
+    /// That is strictly worse than the panic this fallback replaced: a panic is
+    /// loud and local, silently reading someone else's directory is neither.
+    ///
+    /// Moving the working directory is process-global, so the destructive half
+    /// runs in a re-executed copy of this test binary, pointed at its own
+    /// config root.
+    #[test]
+    #[cfg(unix)]
+    fn a_lost_working_directory_never_binds_a_root_to_another_project() {
+        if let Ok(decoy) = env::var(DECOY_CWD_CHILD) {
+            let decoy = PathBuf::from(decoy);
+
+            // Stand in a directory and lose it, as a cleaned-up scratch dir or
+            // a `git worktree remove` does under a live session.
+            let scratch = tempfile::tempdir().unwrap().keep();
+            env::set_current_dir(&scratch).unwrap();
+            fs::remove_dir_all(&scratch).unwrap();
+            assert!(
+                env::current_dir().is_err(),
+                "the child must actually be standing in a deleted directory, \
+                 otherwise it proves nothing"
+            );
+
+            // Decide the roots now — this is what a listing request or a named
+            // lookup does the moment it arrives.
+            let scan_roots = local_workflow_scan_dirs();
+            let lookup_roots = local_workflow_lookup_dirs();
+
+            // ...and now the process moves, exactly as the session builder
+            // moves it, into an unrelated project that has a workflow library.
+            env::set_current_dir(&decoy).unwrap();
+
+            let mut found = Vec::new();
+            for (dir, origin) in &scan_roots {
+                found.extend(scan_directory_for_workflows(dir, *origin).unwrap());
+            }
+            let leaked: Vec<String> = found
+                .iter()
+                .filter(|(_, workflow)| workflow.title.starts_with("Decoy"))
+                .map(|(path, _)| path.display().to_string())
+                .collect();
+            assert!(
+                leaked.is_empty(),
+                "the working directory these roots were derived from is gone, so \
+                 they name nothing; instead they bound themselves to whatever \
+                 directory the process moved to and listed that project's \
+                 workflows as this session's. Leaked: {leaked:?}; roots were \
+                 {scan_roots:?}"
+            );
+
+            for dir in &lookup_roots {
+                assert!(
+                    load_workflow_file_from_dir(dir, "decoy-workflow").is_err(),
+                    "a named lookup resolved into another project's workflow \
+                     library ({}); lookup roots were {lookup_roots:?}",
+                    dir.display()
+                );
+            }
+
+            // The structural invariant behind both assertions: a root that is
+            // still relative has not been decided, only deferred.
+            for (dir, _) in &scan_roots {
+                assert!(
+                    dir.is_absolute(),
+                    "search root {} is relative, so it re-resolves against \
+                     whatever the working directory is when it is used",
+                    dir.display()
+                );
+            }
+            for dir in &lookup_roots {
+                assert!(
+                    dir.is_absolute(),
+                    "lookup root {} is relative, so it re-resolves against \
+                     whatever the working directory is when it is used",
+                    dir.display()
+                );
+            }
+            return;
+        }
+
+        let decoy = tempfile::tempdir().unwrap();
+        let decoy_library = decoy.path().join(".biorouter").join("workflows");
+        fs::create_dir_all(&decoy_library).unwrap();
+        write_file(
+            &decoy_library,
+            "decoy-workflow.yaml",
+            "title: Decoy Project Library\ndescription: another project's workflow\nprompt: go\n",
+        );
+        // The working-directory root is the second relative root in the list,
+        // so give the decoy something there too.
+        write_file(
+            decoy.path(),
+            "decoy-root.yaml",
+            "title: Decoy Working Directory\ndescription: another project's workflow\nprompt: go\n",
+        );
+
+        let config_root = tempfile::tempdir().unwrap();
+        let output = std::process::Command::new(env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "--nocapture",
+                "workflow::local_workflows::tests::a_lost_working_directory_never_binds_a_root_to_another_project",
+            ])
+            .env(DECOY_CWD_CHILD, decoy.path())
+            .env("BIOROUTER_PATH_ROOT", config_root.path())
+            .env(BIOROUTER_WORKFLOW_SCAN_WORKING_DIR_ENV_VAR, "1")
+            .env_remove(BIOROUTER_WORKFLOW_PATH_ENV_VAR)
+            .output()
+            .unwrap();
+
+        assert!(
+            output.status.success(),
+            "a search root decided without a working directory must not attach \
+             itself to a later one.\n\
+             --- child stdout ---\n{}\n--- child stderr ---\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
         );
     }
 

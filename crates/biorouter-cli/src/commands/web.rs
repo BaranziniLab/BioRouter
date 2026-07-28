@@ -623,6 +623,8 @@ async fn process_message_streaming(
                     // Advisory pending tool-call UI hint; the web bridge renders
                     // authoritative messages only.
                     Ok(AgentEvent::ToolCallPending(_)) => {}
+                    // #59: persisted-id bookkeeping; not part of the web transcript.
+                    Ok(AgentEvent::MessagesPersisted(_)) => {}
                     Ok(AgentEvent::TurnAborted { code, message }) => {
                         // The turn ended without doing its work — report it as an
                         // error rather than letting the stream finish normally.

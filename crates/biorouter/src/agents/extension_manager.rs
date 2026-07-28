@@ -3021,12 +3021,17 @@ mod tests {
             "extension-manager",
             "extension_manager",
             "Extension Manager",
+            // Issue #60: the exact token the desktop mention popover and both
+            // CLI completers now insert for a display name with a space, since
+            // `extract_inline_refs` splits the message on whitespace and
+            // `/ext:Extension Manager` would arrive truncated to `Extension`.
+            "ExtensionManager",
         ] {
             let target = resolve_bundled_extension(reference).expect(reference);
             assert_eq!(target.kind(), BundledExtensionKind::Platform);
             assert_eq!(target.key(), "extensionmanager");
         }
-        for reference in ["chatrecall", "chat-recall", "Chat Recall"] {
+        for reference in ["chatrecall", "chat-recall", "Chat Recall", "ChatRecall"] {
             let target = resolve_bundled_extension(reference).expect(reference);
             assert_eq!(target.kind(), BundledExtensionKind::Platform);
             assert_eq!(target.key(), "chatrecall");

@@ -70,6 +70,14 @@ struct RaceProvider {
     /// the reply loop ever pushing the message into its in-memory conversation
     /// — `drain_elicitation_messages`, `biorouter term log`, a note tool.
     notes_during_main_call: Vec<(usize, String)>,
+    /// #59: main-call indices that answer with THINKING plus two tool calls.
+    /// One streamed message, which the loop splits into three stored assistant
+    /// rows under three different ids.
+    tools_on: Vec<usize>,
+    /// #59: main-call indices that fail with a *recoverable* provider error, so
+    /// BR-66 absorbs it and persists its hint as a model-only row the user is
+    /// deliberately never shown.
+    server_error_on: Vec<usize>,
     /// Zero-based *summarizer* call indices that fail outright. Models the
     /// provider going away between a first summarization and its retry.
     fail_summarization_on: Vec<usize>,
@@ -94,6 +102,8 @@ impl RaceProvider {
             pinned_notes_during_summarization: Vec::new(),
             rewrites_during_summarization: Vec::new(),
             notes_during_main_call: Vec::new(),
+            tools_on: Vec::new(),
+            server_error_on: Vec::new(),
             fail_summarization_on: Vec::new(),
             context_limit: 200_000,
             seen: Mutex::new(Vec::new()),
@@ -126,6 +136,18 @@ impl RaceProvider {
 
     fn note_during_main_call(mut self, call: usize, text: &str) -> Self {
         self.notes_during_main_call.push((call, text.to_string()));
+        self
+    }
+
+    /// #59: answer this main call with thinking + two tool calls.
+    fn tools_on(mut self, call: usize) -> Self {
+        self.tools_on.push(call);
+        self
+    }
+
+    /// #59: fail this main call with a recoverable provider error.
+    fn server_error_on(mut self, call: usize) -> Self {
+        self.server_error_on.push(call);
         self
     }
 
@@ -264,6 +286,30 @@ impl Provider for RaceProvider {
             ));
         }
 
+        if self.server_error_on.contains(&n) {
+            // Recoverable (see `mistakes::is_recoverable`), so BR-66 absorbs it
+            // and stores a model-only hint instead of ending the turn.
+            return Err(ProviderError::ServerError("mock 503".to_string()));
+        }
+
+        if self.tools_on.contains(&n) {
+            let mut reply = Message::assistant()
+                .with_thinking("weighing two options", "sig-mock")
+                .with_text("Calling two tools.");
+            for i in 0..2 {
+                reply = reply.with_tool_request(
+                    format!("call-{i}"),
+                    Ok(rmcp::model::CallToolRequestParams {
+                        task: None,
+                        name: "definitely_not_a_real_tool".into(),
+                        arguments: None,
+                        meta: None,
+                    }),
+                );
+            }
+            return Ok((reply, usage));
+        }
+
         Ok((Message::assistant().with_text("All done."), usage))
     }
 
@@ -349,6 +395,12 @@ async fn harness(build: impl FnOnce(RaceProvider) -> RaceProvider) -> (Harness, 
 
 impl Harness {
     async fn run_turn(&self, prompt: &str) -> Result<Vec<AgentEvent>> {
+        self.run_turn_with(Message::user().with_text(prompt)).await
+    }
+
+    /// The same turn, for a prompt that is not plain text — an elicitation
+    /// answer, say, which `reply()` handles before it reaches the loop at all.
+    async fn run_turn_with(&self, message: Message) -> Result<Vec<AgentEvent>> {
         let session_config = SessionConfig {
             id: self.session_id.clone(),
             schedule_id: None,
@@ -358,10 +410,7 @@ impl Harness {
             budget: None,
             reasoning_effort: None,
         };
-        let stream = self
-            .agent
-            .reply(Message::user().with_text(prompt), session_config, None)
-            .await?;
+        let stream = self.agent.reply(message, session_config, None).await?;
         tokio::pin!(stream);
         let mut out = Vec::new();
         while let Some(ev) = stream.next().await {
@@ -1848,8 +1897,10 @@ async fn agent_visible_frontend_tool_request(h: &Harness, id: &str) -> bool {
 // ── NF-D follow-on: can a live client actually satisfy `expectedMessageIds`? ──
 
 /// Every message id a client could possibly know after streaming a whole turn:
-/// the `id` on each streamed `Message`, plus the ids in a `HistoryReplaced`
-/// (which the desktop applies wholesale as `UpdateConversation`).
+/// the `id` on each streamed `Message`, the ids in a `HistoryReplaced` (which
+/// the desktop applies wholesale as `UpdateConversation`), and the ids in a
+/// `MessagesPersisted` (#59 — the frame the loop publishes after each persist,
+/// forwarded on the wire as `MessagesPersisted`).
 fn ids_a_client_can_learn(events: &[AgentEvent]) -> std::collections::HashSet<String> {
     let mut ids = std::collections::HashSet::new();
     for ev in events {
@@ -1861,6 +1912,9 @@ fn ids_a_client_can_learn(events: &[AgentEvent]) -> std::collections::HashSet<St
             }
             AgentEvent::HistoryReplaced(conversation) => {
                 ids.extend(conversation.iter().filter_map(|m| m.id.clone()));
+            }
+            AgentEvent::MessagesPersisted(persisted) => {
+                ids.extend(persisted.iter().map(|p| p.id.clone()));
             }
             _ => {}
         }
@@ -1886,25 +1940,20 @@ async fn stored_ids(h: &Harness) -> Vec<(String, String)> {
         .collect()
 }
 
-/// **KNOWN RED — this is a reproduction of an open defect (#59), not a passing
-/// gate.** Run it with `cargo test -p biorouter --test
-/// conversation_writeback_freshness -- --ignored a_client_that_watched`; it
-/// fails in ~0.2s.
-///
 /// `POST /sessions/{id}/edit_message` with `edit_type: "edit"` accepts
 /// `expectedMessageIds` — the ids of every message the client's view holds — and
 /// answers 409 if the store holds one the view does not name. That check is only
 /// satisfiable if a client that has watched a whole turn go by actually ends up
 /// knowing every id the store persisted.
 ///
-/// It does not. `Message::user()` / `Message::assistant()` mint no id, the reply
-/// loop yields those messages *before* persisting them, and `add_message` then
-/// mints a UUIDv7 that is never published back to the stream. On the minimal
-/// turn below the client can learn **zero** of the two stored ids. Three
-/// independent sources of the same gap:
+/// It did not (#59). `Message::user()` / `Message::assistant()` mint no id, the
+/// reply loop yields those messages *before* persisting them, and `add_message`
+/// then mints a UUIDv7 that was never published back to the stream. On the
+/// minimal turn below the client could learn **zero** of the two stored ids.
+/// Three independent sources of the same gap:
 ///
 /// 1. the ordinary assistant reply — `response_to_message` builds a bare
-///    `Message::assistant()`, so the client sees `id: null` and the store holds
+///    `Message::assistant()`, so the client saw `id: null` while the store held
 ///    a uid it was never told;
 /// 2. the tool-call split (`agent.rs`, `next_assistant_id`) — one streamed
 ///    response becomes up to three stored rows, and every row after the first
@@ -1917,21 +1966,22 @@ async fn stored_ids(h: &Harness) -> Vec<(String, String)> {
 /// required it, the desktop's "Edit in Place" button 409'd on a session nobody
 /// else had touched, from the first assistant reply onward, until the session
 /// was reloaded — loud and safe, and dead in a live chat. So `expectedMessageIds`
-/// is now enforced when sent and absent-tolerated when not (the cut still runs
+/// is enforced when sent and absent-tolerated when not (the cut still runs
 /// under the turn lock and still bounded to the rows the handler read), and the
 /// desktop sends it only for a view in which every message names itself. This
 /// test is what says when that condition can become unconditional again.
 ///
-/// The fix belongs on the server side of the stream: a message must be yielded
-/// under the id it was persisted under, the rule `add_message_adopting_uid`
-/// already encodes for the six sites that persist before yielding. Re-reading
-/// the session from the client instead would be theatre for the same reason
-/// spelled out for this endpoint in
+/// The fix is on the server side of the stream: (1) is closed by naming a reply
+/// BEFORE it is yielded, the inverse of the rule `add_message_adopting_uid`
+/// already encodes for the six sites that persist before yielding; (2) and (3)
+/// cannot be expressed as a yielded copy at all — there is no yielded copy of a
+/// row the client is deliberately not shown, and one streamed message cannot
+/// carry three ids — so every persist site publishes what it stored as
+/// `AgentEvent::MessagesPersisted`. Re-reading the session from the client
+/// instead would be theatre for the same reason spelled out for this endpoint in
 /// `docs/agent-loop/conversation-writeback-freshness.md` — the re-read happens
 /// *after* the concurrent append has committed, so it would name the very row
 /// the guard exists to protect and pass every time.
-#[ignore = "reproduces open defect #59: the reply stream does not publish the ids \
-            messages are persisted under, so `expectedMessageIds` is unsatisfiable"]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_client_that_watched_the_turn_knows_every_stored_message_id() {
     let (h, _provider) = harness(|p| p).await;
@@ -1955,4 +2005,440 @@ async fn a_client_that_watched_the_turn_knows_every_stored_message_id() {
         known,
         stored
     );
+
+    // The assistant reply is not merely *named somewhere* — the copy the client
+    // was handed carries the id of the row it became. That is the half of #59
+    // `MessagesPersisted` cannot express: a client merges streamed deltas by id,
+    // so a reply that arrives as `id: null` is unmergeable as well as unnameable.
+    let streamed_assistant_ids: Vec<Option<String>> = events
+        .iter()
+        .filter_map(|ev| match ev {
+            AgentEvent::Message(m) if m.role == rmcp::model::Role::Assistant => Some(m.id.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        !streamed_assistant_ids.is_empty()
+            && streamed_assistant_ids.iter().all(Option::is_some),
+        "every assistant message the client is shown must name itself; got {streamed_assistant_ids:#?}"
+    );
+}
+
+/// #59, the shape the minimal turn cannot reach: **one** streamed assistant
+/// message becomes **three** stored assistant rows.
+///
+/// A reply carrying thinking plus two tool calls is yielded once, and the loop
+/// then rebuilds it as thinking / request / request rows — only the first of
+/// which keeps the reply's id (`next_assistant_id` mints a fresh uuid for each
+/// later one, because two rows may not share a `msg_uid`). No id stamped on the
+/// streamed copy can cover that, which is exactly why the persist site publishes
+/// what it stored rather than the stream trying to pre-announce it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reply_split_into_several_stored_rows_publishes_every_one_of_their_ids() {
+    let (h, provider) = harness(|p| p.tools_on(0)).await;
+
+    let events = h.run_turn(USER_PROMPT).await.unwrap();
+    assert_eq!(
+        provider.main_call_count(),
+        2,
+        "the tool call must have run and the loop come back for a second reply"
+    );
+
+    let stored = stored_ids(&h).await;
+    let streamed_messages = events
+        .iter()
+        .filter(|ev| matches!(ev, AgentEvent::Message(_)))
+        .count();
+    assert!(
+        stored.len() > streamed_messages,
+        "this test is only meaningful when the store holds MORE rows than the \
+         client was streamed messages; stored {} vs streamed {}",
+        stored.len(),
+        streamed_messages
+    );
+
+    let known = ids_a_client_can_learn(&events);
+    let unknowable: Vec<&(String, String)> = stored
+        .iter()
+        .filter(|(id, _)| !known.contains(id))
+        .collect();
+    assert!(
+        unknowable.is_empty(),
+        "a reply split across several stored rows must publish every row's id.\n\
+         unknowable: {unknowable:#?}\nstreamed ids: {known:#?}\nstored: {stored:#?}"
+    );
+}
+
+/// #59: a row the client is deliberately **not shown** must still be
+/// distinguishable from one it simply was not told about.
+///
+/// BR-66 absorbs a recoverable provider error by storing its hint as a
+/// `with_visibility(false, true)` user message — model-visible plumbing that is
+/// never yielded as a `Message`. Before this it was invisible to the client in
+/// the strong sense: not drawn *and* not nameable, so `expectedMessageIds` could
+/// not include it and the guard refused the edit. It is now published with
+/// `user_visible: false` — named, and marked "draw nothing for this".
+#[tokio::test(flavor = "multi_thread")]
+async fn a_row_the_user_is_never_shown_is_published_as_not_user_visible() {
+    let (h, provider) = harness(|p| p.server_error_on(0)).await;
+
+    let events = h.run_turn(USER_PROMPT).await.unwrap();
+    assert_eq!(
+        provider.main_call_count(),
+        2,
+        "the recoverable error must have been absorbed and the turn retried"
+    );
+
+    // The hidden row exists on disk and was never streamed as a Message.
+    let hidden: Vec<String> = h
+        .session_manager
+        .get_session(&h.session_id, true)
+        .await
+        .unwrap()
+        .conversation
+        .unwrap()
+        .messages()
+        .iter()
+        .filter(|m| !m.is_user_visible())
+        .map(|m| m.id.clone().expect("a stored row always has an id"))
+        .collect();
+    assert_eq!(
+        hidden.len(),
+        1,
+        "expected exactly one model-only row; stored: {:#?}",
+        stored_ids(&h).await
+    );
+    let streamed_message_ids: std::collections::HashSet<String> = events
+        .iter()
+        .filter_map(|ev| match ev {
+            AgentEvent::Message(m) => m.id.clone(),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        !streamed_message_ids.contains(&hidden[0]),
+        "the model-only row must NOT be drawn — it is not yielded as a Message"
+    );
+
+    // ...and it is published, flagged as not-for-drawing.
+    let published: Vec<(String, bool)> = events
+        .iter()
+        .filter_map(|ev| match ev {
+            AgentEvent::MessagesPersisted(rows) => Some(rows),
+            _ => None,
+        })
+        .flatten()
+        .map(|p| (p.id.clone(), p.user_visible))
+        .collect();
+    assert!(
+        published.contains(&(hidden[0].clone(), false)),
+        "the hidden row must be published as user_visible=false, so a client can \
+         name it without drawing it; published: {published:#?}"
+    );
+
+    // The general promise still holds on this turn too.
+    let known = ids_a_client_can_learn(&events);
+    let stored = stored_ids(&h).await;
+    let unknowable: Vec<&(String, String)> = stored
+        .iter()
+        .filter(|(id, _)| !known.contains(id))
+        .collect();
+    assert!(
+        unknowable.is_empty(),
+        "unknowable: {unknowable:#?}\nstreamed ids: {known:#?}\nstored: {stored:#?}"
+    );
+}
+
+/// #59: nothing may be published that is not durable.
+///
+/// The published id is what a client will hand back as `expectedMessageIds`, so
+/// claiming a row that was never written would make the guard refuse a perfectly
+/// fresh session. Every id the turn published must name a row that is actually
+/// on disk when the stream ends — the converse of the assertion above.
+#[tokio::test(flavor = "multi_thread")]
+async fn nothing_is_published_that_the_store_does_not_hold() {
+    let (h, _provider) = harness(|p| p.tools_on(0)).await;
+
+    let events = h.run_turn(USER_PROMPT).await.unwrap();
+    let stored: std::collections::HashSet<String> =
+        stored_ids(&h).await.into_iter().map(|(id, _)| id).collect();
+
+    let published: Vec<String> = events
+        .iter()
+        .filter_map(|ev| match ev {
+            AgentEvent::MessagesPersisted(rows) => Some(rows),
+            _ => None,
+        })
+        .flatten()
+        .map(|p| p.id.clone())
+        .collect();
+    assert!(
+        !published.is_empty(),
+        "the turn must have published something"
+    );
+
+    let phantom: Vec<&String> = published
+        .iter()
+        .filter(|id| !stored.contains(*id))
+        .collect();
+    assert!(
+        phantom.is_empty(),
+        "published {} id(s) the store does not hold: {phantom:#?}",
+        phantom.len()
+    );
+}
+
+/// #59 contract: `userVisible: true` on a published row is **not** an
+/// instruction to draw it.
+///
+/// `PersistedMessage::user_visible` is `Message::is_user_visible()`, and the
+/// rows one streamed reply is split into — the rebuilt thinking row and one
+/// `tool_use` row per request — are built with `Message::assistant()` /
+/// `Message::new`, i.e. `MessageMetadata::default()`, i.e. `user_visible: true`.
+/// Only the first of them keeps the reply's id; every later one is stored under
+/// a fresh uuid and is therefore an ASSISTANT row, marked visible, that the
+/// client was never streamed — even though it was shown that exact content once
+/// already, inside the single `filtered_response` it did receive. A client
+/// implementing "true means draw" renders the same tool request twice.
+///
+/// The flag is exact in ONE direction only: `false` means "must not appear in
+/// the transcript". `true` means "not hidden", and the frame is for accounting —
+/// naming rows so `expectedMessageIds` can be complete.
+///
+/// This pins both halves, because the tempting "fix" is to flip the split rows
+/// to `user_visible: false` so the flag can mean "draw this" — which would be a
+/// real regression: those rows ARE the transcript when the session is re-read
+/// from disk, so hiding them erases the assistant side of every tool call.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_published_user_visible_row_is_not_an_instruction_to_draw() {
+    let (h, provider) = harness(|p| p.tools_on(0)).await;
+
+    let events = h.run_turn(USER_PROMPT).await.unwrap();
+    assert_eq!(
+        provider.main_call_count(),
+        2,
+        "the tool call must have run and the loop come back for a second reply"
+    );
+
+    let drawn: std::collections::HashSet<String> = events
+        .iter()
+        .filter_map(|ev| match ev {
+            AgentEvent::Message(m) => m.id.clone(),
+            _ => None,
+        })
+        .collect();
+    let published: std::collections::HashMap<String, bool> = events
+        .iter()
+        .filter_map(|ev| match ev {
+            AgentEvent::MessagesPersisted(rows) => Some(rows),
+            _ => None,
+        })
+        .flatten()
+        .map(|p| (p.id.clone(), p.user_visible))
+        .collect();
+
+    // Assistant rows only: the user's own prompt is also visible-and-unstreamed
+    // (the client authored it), and counting it would make this pass whatever
+    // the split rows are flagged as.
+    let split_rows: Vec<String> = h
+        .session_manager
+        .get_session(&h.session_id, true)
+        .await
+        .unwrap()
+        .conversation
+        .unwrap()
+        .messages()
+        .iter()
+        .filter(|m| m.role == rmcp::model::Role::Assistant && m.is_user_visible())
+        .filter_map(|m| m.id.clone())
+        .filter(|id| !drawn.contains(id))
+        .collect();
+
+    assert!(
+        !split_rows.is_empty(),
+        "expected at least one user-visible ASSISTANT row the client was never \
+         streamed — the split `tool_use` row. If that stopped being true, the \
+         split rows were probably re-flagged hidden, which erases the assistant \
+         side of every tool call from a re-read session.\nstored: {:#?}\n\
+         streamed ids: {drawn:#?}",
+        stored_ids(&h).await
+    );
+    for id in &split_rows {
+        assert_eq!(
+            published.get(id),
+            Some(&true),
+            "row {id} is a user-visible assistant row the client never saw, so \
+             `MessagesPersisted` must publish it as user_visible=true — which is \
+             precisely why that flag cannot mean \"draw this\".\npublished: \
+             {published:#?}"
+        );
+    }
+}
+
+// ── #59 ordering: content first, then the frame that names it ────────────────
+//
+// Every assertion above reduces a turn to a SET of ids and asks only *whether*
+// an id arrived. Ordering is invisible to that shape, and ordering is half the
+// contract: `MessagesPersisted` is an accounting frame, and accounting that
+// arrives before the thing it accounts for is how a client ends up believing a
+// truncated transcript is complete.
+
+/// A one-line shape per event, so an ordering assertion reads the way the wire
+/// does: `Message` frames carry their role, `MessagesPersisted` its row count.
+fn event_shapes(events: &[AgentEvent]) -> Vec<String> {
+    events
+        .iter()
+        .map(|ev| match ev {
+            AgentEvent::Message(m) => match m.role {
+                rmcp::model::Role::User => "Message(user)".to_string(),
+                rmcp::model::Role::Assistant => "Message(assistant)".to_string(),
+            },
+            AgentEvent::MessagesPersisted(rows) => format!("MessagesPersisted[{}]", rows.len()),
+            AgentEvent::HistoryReplaced(_) => "HistoryReplaced".to_string(),
+            other => format!("{other:?}"),
+        })
+        .collect()
+}
+
+/// Every id a turn published in a `MessagesPersisted` that a **later** `Message`
+/// frame turns out to carry — i.e. every id the client was handed before the
+/// message it names.
+///
+/// This is the ordering the server's own SSE adapter is built around: it flushes
+/// the coalescer before forwarding a `MessagesPersisted`, "so the client never
+/// learns an id before the message it belongs to"
+/// (`crates/biorouter-server/src/routes/reply.rs`). The adapter can only flush
+/// what it is *holding* — an order the agent loop emits backwards passes through
+/// it untouched, so the invariant has to hold at the source.
+fn ids_named_before_their_own_message(events: &[AgentEvent]) -> Vec<String> {
+    let mut named: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut early = Vec::new();
+    for ev in events {
+        match ev {
+            AgentEvent::MessagesPersisted(rows) => {
+                named.extend(rows.iter().map(|r| r.id.clone()));
+            }
+            AgentEvent::Message(m) => {
+                if let Some(id) = m.id.as_ref().filter(|id| named.contains(*id)) {
+                    early.push(id.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+    early
+}
+
+/// #59 ordering: a slash command that answers inline must hand over both
+/// messages BEFORE it names them.
+///
+/// The inline-answer path persisted the user message and the response, published
+/// both ids, and only then yielded the two `Message` frames. A client consuming
+/// the new frame the way it is meant to be consumed — union its ids into
+/// `expectedMessageIds` — that lost the connection in between (any send failure
+/// ends the stream, `routes/reply.rs`) would hold the id of **every** stored row
+/// while missing the response body. `POST /sessions/{id}/edit_message` checks
+/// only `stored ∖ client`, so that client passes the guard with an incomplete
+/// transcript and the server truncates rows still on the user's screen. The
+/// desktop is insulated today only because it ignores the frame, which is not a
+/// property of the wire contract.
+///
+/// `/clear` is the whole shape in one turn: two rows persisted inline, both
+/// yielded, and a history rewrite to announce afterwards.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_slash_command_hands_over_its_messages_before_it_names_them() {
+    let (h, _provider) = harness(|p| p).await;
+
+    let events = h.run_turn("/clear").await.unwrap();
+
+    assert_eq!(
+        event_shapes(&events),
+        vec![
+            "Message(user)",
+            "Message(assistant)",
+            "MessagesPersisted[2]",
+            "HistoryReplaced",
+        ],
+        "content first, then the accounting frame that names it, then the \
+         rewrite: a client that stops reading at any point holds a transcript \
+         no shorter than the id set it would claim"
+    );
+
+    let early = ids_named_before_their_own_message(&events);
+    assert!(
+        early.is_empty(),
+        "{} id(s) were published before the `Message` frame carrying them: \
+         {early:#?}\nevents: {:#?}",
+        early.len(),
+        event_shapes(&events)
+    );
+}
+
+/// #59 ordering at the second batch `reply()` can return instead of running the
+/// loop: an elicitation answer with nowhere to go.
+///
+/// BR-41 — a daemon restart between the elicitation and the reply leaves no live
+/// request for the answer, so the turn ends immediately: the prompt is stored and
+/// an "it was interrupted" notice is streamed. The stored row is never yielded as
+/// a `Message` here, so this batch could not corrupt a client's id set the way
+/// the slash-command one could. It is ordered the same way regardless, because a
+/// rule carrying a per-site exemption ("this one's trailing frame happens not to
+/// be persisted") is the reasoning that produced the defect above.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_undeliverable_elicitation_answer_is_ordered_the_same_way() {
+    let (h, _provider) = harness(|p| p).await;
+
+    // Nothing ever elicited, so no live request is waiting on this id — the
+    // post-restart state exactly.
+    let events = h
+        .run_turn_with(Message::user().with_content(
+            MessageContent::action_required_elicitation_response(
+                "no-such-elicitation",
+                serde_json::json!({ "answer": "yes" }),
+            ),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        event_shapes(&events),
+        vec!["Message(assistant)", "MessagesPersisted[1]"],
+        "content first, then the accounting frame — the same order every batch \
+         uses, so the rule can be checked by reading rather than by re-deriving \
+         which rows happen to be yielded at each site"
+    );
+}
+
+/// The same ordering on every other turn shape #59 drives — the regression net
+/// for the audit of the remaining publication sites, not the gate for the defect
+/// above (these already held; the inline slash-command path did not).
+///
+/// A row is allowed to be published without ever being yielded (the model-only
+/// plumbing) and to be yielded without being published in that batch. What is
+/// never allowed is publishing an id and yielding its message afterwards.
+#[tokio::test(flavor = "multi_thread")]
+async fn no_turn_shape_names_a_row_before_it_hands_it_over() {
+    let (plain, _p) = harness(|p| p).await;
+    let plain_events = plain.run_turn(USER_PROMPT).await.unwrap();
+
+    let (with_tools, _p) = harness(|p| p.tools_on(0)).await;
+    let tool_events = with_tools.run_turn(USER_PROMPT).await.unwrap();
+
+    let (recovered, _p) = harness(|p| p.server_error_on(0)).await;
+    let recovered_events = recovered.run_turn(USER_PROMPT).await.unwrap();
+
+    for (shape, events) in [
+        ("an ordinary reply", plain_events),
+        ("a reply split across several stored rows", tool_events),
+        ("a recovered provider error", recovered_events),
+    ] {
+        let early = ids_named_before_their_own_message(&events);
+        assert!(
+            early.is_empty(),
+            "{shape}: {} id(s) were published before the `Message` frame \
+             carrying them: {early:#?}\nevents: {:#?}",
+            early.len(),
+            event_shapes(&events)
+        );
+    }
 }

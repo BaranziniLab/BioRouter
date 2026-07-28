@@ -1,6 +1,7 @@
 use biorouter::agents::extension::Envs;
 use biorouter::agents::extension::ToolInfo;
 use biorouter::agents::ExtensionConfig;
+use biorouter::agents::PersistedMessage;
 use biorouter::agents::ReasoningEffort;
 use biorouter::config::permission::PermissionLevel;
 use biorouter::config::ExtensionEntry;
@@ -533,6 +534,8 @@ derive_utoipa!(Icon as IconSchema);
         SystemNotificationType,
         SystemNotificationContent,
         MessageEvent,
+        // #59: the per-row ids `MessageEvent::MessagesPersisted` publishes.
+        PersistedMessage,
         TurnErrorScope,
         JsonObjectSchema,
         RoleSchema,

@@ -291,6 +291,31 @@ class ChatStreamController {
   private listeners = new Set<() => void>();
   private finishListeners = new Set<() => void>();
   private messagesRef: Message[] = [];
+  /**
+   * Whether `messagesRef` names EVERY row the session store holds — the
+   * precondition for sending `expectedMessageIds` (see `onMessageUpdate`).
+   *
+   * True only immediately after reading the conversation back from the server,
+   * which is the one moment we provably hold the whole stored set: both
+   * `/agent/resume` and `edit_message`'s own freshness check read
+   * `get_session(id, true)`, so they see the same rows, hidden ones included.
+   *
+   * Any other assignment to `messagesRef` clears it, because a view assembled
+   * from the stream is structurally short of the store (#59): one streamed
+   * assistant reply becomes two or three stored rows — the rebuilt thinking row
+   * plus one `tool_use` row per request — and only the first keeps the id we
+   * were shown, while the model-only rows (BR-47 post-edit diagnostics,
+   * loop-guard / stall / budget nudges, hook context) are never yielded at all.
+   * `conversation_writeback_freshness.rs
+   * ::a_reply_split_into_several_stored_rows_publishes_every_one_of_their_ids`
+   * asserts that inequality from the server side.
+   *
+   * FOLLOW-UP: #59 publishes those ids on `MessagesPersisted`, which this store
+   * does not yet consume. Folding them into a per-session id set would let a
+   * watched turn KEEP this true instead of dropping the guard for the rest of
+   * the session, and is what makes `expectedMessageIds` mandatory server-side.
+   */
+  private viewNamesEveryStoredRow = false;
   private abortController: AbortController | null = null;
   private activeStreamId = 0;
   private lastInteractionTime = Date.now();
@@ -453,6 +478,9 @@ class ChatStreamController {
   // would inherit a running clock.
   private updateMessages = (messages: Message[], receivedAt?: number): void => {
     this.messagesRef = messages;
+    // Default-deny: only the two callers that just read the conversation back
+    // from the store re-assert completeness, immediately after this returns.
+    this.viewNamesEveryStoredRow = false;
     this.updateSnapshot((prev) => {
       // BR-61: the echo of our own steer is what retires the optimistic chip.
       const steerLanded = steerWasEchoed(prev.pendingSteer, messages, this.steerAfterCount);
@@ -485,6 +513,9 @@ class ChatStreamController {
     receivedAt: number
   ): void => {
     this.messagesRef = messages;
+    // A streamed message is not the row (or rows) it was stored as; see
+    // `viewNamesEveryStoredRow`.
+    this.viewNamesEveryStoredRow = false;
 
     const hasToolConfirmation = msg.content.some(
       (content) => content.type === 'toolConfirmationRequest'
@@ -664,6 +695,9 @@ class ChatStreamController {
     const cached = cacheGet(this.sessionId);
     if (cached) {
       this.messagesRef = cached.messages;
+      // The LRU holds whatever the transcript last looked like, which may be a
+      // streamed view. Not a store read, so it proves nothing.
+      this.viewNamesEveryStoredRow = false;
       this.updateSnapshot((prev) => ({
         ...prev,
         session: cached.session,
@@ -716,6 +750,11 @@ class ChatStreamController {
           const loadedSession = resumeData?.session;
 
           this.messagesRef = loadedSession?.conversation || [];
+          // `/agent/resume` returns `get_session(id, true)` — the same read
+          // `edit_message`'s freshness check makes, hidden rows included — so
+          // this view provably names every stored row. See
+          // `viewNamesEveryStoredRow`.
+          this.viewNamesEveryStoredRow = true;
           this.updateSnapshot((prev) => ({
             ...prev,
             session: loadedSession,
@@ -1275,18 +1314,31 @@ class ChatStreamController {
       // window, the CLI, a scheduled run) the server refuses with 409 rather
       // than silently destroying what we never saw. `diverge` ignores it.
       //
-      // #59: we can only make that assertion when every message we hold names
-      // ITSELF. From the first streamed assistant reply onward it does not —
-      // the reply stream yields a message before persisting it and never
-      // publishes the id it was persisted under — so a list built from a live
-      // transcript is missing exactly those ids and would buy a guaranteed 409
-      // on a session nobody else has touched. A partial list is not a weaker
-      // claim, it is a false one, so send nothing instead: the server keeps the
-      // cut under its turn lock and bounded to the rows it read. When #59 lands
-      // this condition is simply always true and every edit is checked again.
+      // We can only make that assertion when our view IS the stored set. Two
+      // separate things have to hold, and it is a mistake to check only one:
+      //
+      //   1. every message we hold names itself — otherwise we cannot even list
+      //      what we have; and
+      //   2. we hold every row the store has (`viewNamesEveryStoredRow`).
+      //
+      // (2) does not follow from (1). #59 made the reply loop stamp an id on the
+      // copy it yields, so from that point on (1) is true on turns where (2) is
+      // false: one streamed reply is stored as two or three rows and only the
+      // first keeps the id we were shown, and the model-only rows are never
+      // yielded at all. Checking (1) alone would send a SHORT list — not a
+      // weaker claim, a false one — and buy a guaranteed 409 on a session nobody
+      // else has touched, i.e. kill this button in every live chat.
+      //
+      // So: send it when we just read the conversation back from the store, and
+      // omit it otherwise. Omitted, the cut still runs under the server's turn
+      // lock and still bounded to the rows the handler itself read. Making it
+      // unconditional again means consuming `MessagesPersisted` — see
+      // `viewNamesEveryStoredRow`.
       const namedIds = this.messagesRef.flatMap((m) => (typeof m.id === 'string' ? [m.id] : []));
       const expectedMessageIds =
-        namedIds.length === this.messagesRef.length ? namedIds : undefined;
+        this.viewNamesEveryStoredRow && namedIds.length === this.messagesRef.length
+          ? namedIds
+          : undefined;
 
       const response = await editMessage({
         path: {
@@ -1330,6 +1382,10 @@ class ChatStreamController {
 
         if (sessionResponse.data?.conversation) {
           this.updateMessages(sessionResponse.data.conversation);
+          // `GET /sessions/{id}` is the same `get_session(id, true)` read as
+          // `/agent/resume` and as the freshness check itself, so the truncated
+          // conversation we just read back is again provably the whole store.
+          this.viewNamesEveryStoredRow = true;
         }
         await this.handleSubmit(newContent);
       }
