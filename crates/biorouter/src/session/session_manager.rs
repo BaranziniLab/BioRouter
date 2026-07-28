@@ -1142,6 +1142,19 @@ impl ReplaceOutcome {
     }
 }
 
+/// Outcome of [`SessionManager::truncate_conversation_bounded`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TruncateOutcome {
+    /// The cut landed; `removed` message rows went with it.
+    Truncated { removed: usize },
+    /// The basis came from a previous incarnation of this session id, so its
+    /// rowid watermark describes a conversation that no longer exists. NOTHING
+    /// was deleted.
+    Stale,
+    /// No session with that id. NOTHING was deleted.
+    SessionNotFound,
+}
+
 /// Outcome of [`SessionManager::try_update_working_dir_if_empty`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkingDirUpdate {
@@ -1558,9 +1571,42 @@ impl SessionManager {
             .await
     }
 
+    /// Drop every message at or after `timestamp` — checkpoint restore and the
+    /// message-edit flow.
+    ///
+    /// The range is open above, so it also takes anything appended between the
+    /// caller reading the conversation and this call landing. That is only
+    /// sound for a caller that owns the whole tail (the edit flow's
+    /// just-created divergence). A caller working from a snapshot of a LIVE
+    /// session should hold on to the revision it read and use
+    /// [`Self::truncate_conversation_bounded`], which cuts only as far as that
+    /// view reached.
     pub async fn truncate_conversation(&self, session_id: &str, timestamp: i64) -> Result<()> {
         self.storage
             .truncate_conversation(session_id, timestamp)
+            .await
+    }
+
+    /// [`Self::truncate_conversation`] bounded by the caller's own view.
+    ///
+    /// `basis` is the revision the decision to cut at `timestamp` was made
+    /// from (see [`Self::snapshot_for_rewrite`] /
+    /// [`Self::conversation_revision`]). Messages stored above its watermark
+    /// were appended after that view and are KEPT: they are not part of the
+    /// tail the caller asked to drop, and their writer has already been told
+    /// the append succeeded.
+    ///
+    /// A basis from a previous incarnation of this session id is refused
+    /// outright — its watermark describes rowids that belonged to a different
+    /// conversation (see [`ConversationRevision`]).
+    pub async fn truncate_conversation_bounded(
+        &self,
+        session_id: &str,
+        timestamp: i64,
+        basis: ConversationRevision,
+    ) -> Result<TruncateOutcome> {
+        self.storage
+            .truncate_conversation_bounded(session_id, timestamp, basis)
             .await
     }
 
@@ -4834,15 +4880,163 @@ impl SessionStorage {
         Ok(count)
     }
 
-    async fn truncate_conversation(&self, session_id: &str, timestamp: i64) -> Result<()> {
+    /// Delete every message of `session_id` at or after `timestamp`, together
+    /// with the side state those rows owned, in ONE transaction.
+    ///
+    /// `upper` bounds the delete by rowid. `None` means "whatever exists when
+    /// this transaction takes the write lock", which is the historical
+    /// timestamp-only behaviour; `Some(max_rowid)` restricts it to the rows a
+    /// caller's own view covered, so an append that landed after that view was
+    /// taken — necessarily newer, therefore necessarily inside an open-ended
+    /// `created_timestamp >= ?` range — is NOT part of the tail being dropped.
+    ///
+    /// Three things used to be skipped here that the rewrite path has always
+    /// done, and all three are why this is a transaction rather than a
+    /// statement:
+    /// - the FTS recall mirror kept a row per deleted message forever (every
+    ///   checkpoint restore leaked more; only an unrelated `INNER JOIN
+    ///   messages` in the search query kept them from surfacing as hits),
+    /// - the BR-7 payload of a deleted oversized tool response was stranded in
+    ///   `message_blobs` with nothing referencing it,
+    /// - `sessions.updated_at` never moved, so an edited or restored session
+    ///   sorted as untouched in the `ORDER BY updated_at DESC` list.
+    ///
+    /// Returns how many message rows were removed.
+    async fn truncate_conversation_inner(
+        &self,
+        session_id: &str,
+        timestamp: i64,
+        upper: Option<i64>,
+    ) -> Result<(bool, usize)> {
         let pool = self.pool().await?;
-        sqlx::query("DELETE FROM messages WHERE session_id = ? AND created_timestamp >= ?")
+        let mut tx = pool.begin().await?;
+
+        // LOAD-BEARING FIRST STATEMENT, AND IT MUST BE A WRITE. DO NOT REORDER.
+        // Identical reasoning to `replace_conversation_inner`: a deferred
+        // transaction that reads first pins a WAL snapshot and the later
+        // upgrade to a writer fails SQLITE_BUSY_SNAPSHOT immediately, bypassing
+        // the busy timeout. Opening with the `updated_at` bump takes the write
+        // lock up front, which is also what makes the row set selected below
+        // identical to the row set deleted afterwards.
+        let touched = sqlx::query("UPDATE sessions SET updated_at = datetime('now') WHERE id = ?")
+            .bind(session_id)
+            .execute(&mut *tx)
+            .await?;
+        if touched.rows_affected() == 0 {
+            tx.rollback().await?;
+            return Ok((false, 0));
+        }
+
+        let upper = match upper {
+            Some(upper) => upper,
+            // Read under the lock, so it names exactly the rows that exist now.
+            None => {
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT IFNULL(MAX(id), 0) FROM messages WHERE session_id = ?",
+                )
+                .bind(session_id)
+                .fetch_one(&mut *tx)
+                .await?
+            }
+        };
+
+        const DOOMED: &str =
+            "FROM messages WHERE session_id = ? AND created_timestamp >= ? AND id <= ?";
+
+        // The doomed rows' payload references, captured before they go. Nothing
+        // can interleave under the write lock, so re-evaluating the same
+        // predicate in the DELETE below selects exactly this set — which is why
+        // there is no need to marshal thousands of ids through an IN list.
+        let doomed = sqlx::query_scalar::<_, String>(&format!("SELECT content_json {DOOMED}"))
             .bind(session_id)
             .bind(timestamp)
-            .execute(pool)
+            .bind(upper)
+            .fetch_all(&mut *tx)
             .await?;
+        if doomed.is_empty() {
+            tx.commit().await?;
+            return Ok((true, 0));
+        }
+        let dropped_a_stub = doomed
+            .iter()
+            .any(|content_json| message_blobs::content_json_has_stub(content_json));
 
-        Ok(())
+        if Self::messages_fts_exists(&mut *tx).await {
+            sqlx::query(&format!(
+                "DELETE FROM messages_fts WHERE session_id = ? \
+                 AND message_id IN (SELECT id {DOOMED})"
+            ))
+            .bind(session_id)
+            .bind(session_id)
+            .bind(timestamp)
+            .bind(upper)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        let removed = sqlx::query(&format!("DELETE {DOOMED}"))
+            .bind(session_id)
+            .bind(timestamp)
+            .bind(upper)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected() as usize;
+
+        // Only when a dropped row actually carried a stub — the same "pay for
+        // the scan only when there is something to sweep" discipline as the
+        // read path.
+        if dropped_a_stub {
+            let survivors = sqlx::query_scalar::<_, String>(
+                "SELECT content_json FROM messages WHERE session_id = ?",
+            )
+            .bind(session_id)
+            .fetch_all(&mut *tx)
+            .await?;
+            let mut live_blob_uids: Vec<String> = Vec::new();
+            for content_json in &survivors {
+                if !message_blobs::content_json_has_stub(content_json) {
+                    continue;
+                }
+                let content: Vec<MessageContent> = serde_json::from_str(content_json)?;
+                live_blob_uids.extend(message_blobs::referenced_uids(&content));
+            }
+            Self::sweep_orphan_blobs(&mut tx, session_id, &live_blob_uids).await?;
+        }
+
+        tx.commit().await?;
+        Ok((true, removed))
+    }
+
+    async fn truncate_conversation(&self, session_id: &str, timestamp: i64) -> Result<()> {
+        self.truncate_conversation_inner(session_id, timestamp, None)
+            .await
+            .map(|_| ())
+    }
+
+    /// See [`SessionManager::truncate_conversation_bounded`].
+    async fn truncate_conversation_bounded(
+        &self,
+        session_id: &str,
+        timestamp: i64,
+        basis: ConversationRevision,
+    ) -> Result<TruncateOutcome> {
+        // Row identity before the watermark is trusted, for the same reason the
+        // guarded rewrite checks it (#51 W3): a session id is reusable, and a
+        // rowid watermark from a previous occupant describes a conversation
+        // that no longer exists.
+        let pool = self.pool().await?;
+        let current = Self::read_revision(pool, session_id).await?;
+        if current.incarnation != basis.incarnation {
+            return Ok(TruncateOutcome::Stale);
+        }
+
+        let (found, removed) = self
+            .truncate_conversation_inner(session_id, timestamp, Some(basis.max_rowid))
+            .await?;
+        if !found {
+            return Ok(TruncateOutcome::SessionNotFound);
+        }
+        Ok(TruncateOutcome::Truncated { removed })
     }
 
     // BR-43 shadow-git checkpoints: the `checkpoints` side-table CRUD. Kept here
@@ -5187,6 +5381,46 @@ mod blob_tests {
             .unwrap();
         assert_eq!(conv.messages().len(), 1);
         assert_eq!(response_text(&conv, 0), kept);
+    }
+
+    /// #51 W4: truncation drops message rows too, so it owes the side table the
+    /// same sweep a rewrite does. Without it a checkpoint restore or a message
+    /// edit strands every externalized payload behind the cut — megabytes per
+    /// oversized tool result, kept alive by nothing and reachable by nobody.
+    #[tokio::test]
+    async fn a_truncation_sweeps_the_blobs_it_orphaned() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let id = session(&sm).await;
+
+        let kept = huge("keep");
+        let mut first = tool_response_message("call_1", kept.clone());
+        first.created = 100;
+        sm.add_message(&id, &first).await.unwrap();
+        let mut dropped = tool_response_message("call_2", huge("drop"));
+        dropped.created = 500;
+        sm.add_message(&id, &dropped).await.unwrap();
+        assert_eq!(blob_count(&sm, &id).await, 2);
+
+        sm.truncate_conversation(&id, 500).await.unwrap();
+
+        assert_eq!(
+            blob_count(&sm, &id).await,
+            1,
+            "the truncated message's payload must go with it"
+        );
+        let conv = sm
+            .get_session(&id, true)
+            .await
+            .unwrap()
+            .conversation
+            .unwrap();
+        assert_eq!(conv.messages().len(), 1);
+        assert_eq!(
+            response_text(&conv, 0),
+            kept,
+            "...and the surviving message's payload must still hydrate"
+        );
     }
 
     /// A message RECOVERED by the freshness guard carries its externalized
@@ -9265,6 +9499,181 @@ mod tests {
                 .results
                 .is_empty(),
             "a compacted-away message must drop out of the index"
+        );
+    }
+
+    // ── truncate_conversation ────────────────────────────────────────────────
+
+    async fn fts_hits(sm: &SessionManager, term: &str) -> usize {
+        sm.search_chat_history(term, None, None, None, None)
+            .await
+            .unwrap()
+            .results
+            .len()
+    }
+
+    /// Rows in the recall mirror with no message behind them.
+    async fn orphan_fts_rows(sm: &SessionManager, id: &str) -> i64 {
+        let pool = sm.storage().pool().await.unwrap();
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM messages_fts f WHERE f.session_id = ? \
+             AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.id = f.message_id)",
+        )
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+    }
+
+    /// #51 W4: a checkpoint restore / message edit deletes message rows without
+    /// touching the FTS recall mirror, so the mirror keeps a row per dropped
+    /// message forever — every restore leaks more, and the only thing keeping
+    /// them from surfacing as hits is an `INNER JOIN messages` in an unrelated
+    /// query. The rewrite path has always kept the two in lockstep; truncation
+    /// never did.
+    #[tokio::test]
+    async fn truncating_a_conversation_drops_its_rows_from_chat_recall() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let id = revision_session(&sm).await;
+        sm.add_message(&id, &umsg(1, "photosynthesis"))
+            .await
+            .unwrap();
+        sm.add_message(&id, &amsg(2, "chemiosmosis in mitochondria"))
+            .await
+            .unwrap();
+        assert_eq!(fts_hits(&sm, "chemiosmosis").await, 1, "seeded");
+
+        sm.truncate_conversation(&id, 2).await.unwrap();
+
+        assert_eq!(
+            orphan_fts_rows(&sm, &id).await,
+            0,
+            "the recall mirror must not keep a row for a message that is gone"
+        );
+        assert_eq!(
+            fts_hits(&sm, "chemiosmosis").await,
+            0,
+            "a truncated message must drop out of chat recall"
+        );
+        assert_eq!(
+            fts_hits(&sm, "photosynthesis").await,
+            1,
+            "...and a surviving one must stay in it"
+        );
+    }
+
+    /// #51 W4: truncation changes the session's content, so it must move
+    /// `updated_at` for the same reason a rewrite must — otherwise an edited or
+    /// restored session sorts as untouched in the `ORDER BY updated_at DESC`
+    /// session list.
+    #[tokio::test]
+    async fn truncating_a_conversation_bumps_the_session_updated_at() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let id = revision_session(&sm).await;
+        sm.add_message(&id, &umsg(1, "one")).await.unwrap();
+        sm.add_message(&id, &amsg(2, "two")).await.unwrap();
+
+        let pool = sm.storage().pool().await.unwrap();
+        sqlx::query("UPDATE sessions SET updated_at = '2000-01-01 00:00:00' WHERE id = ?")
+            .bind(&id)
+            .execute(pool)
+            .await
+            .unwrap();
+        let before = sm.get_session(&id, false).await.unwrap().updated_at;
+
+        sm.truncate_conversation(&id, 2).await.unwrap();
+
+        let after = sm.get_session(&id, false).await.unwrap().updated_at;
+        assert!(
+            after > before,
+            "a truncation must bump updated_at ({before} -> {after})"
+        );
+    }
+
+    /// #51 W4: the deletion range is `created_timestamp >= ts`, which is open
+    /// above — so a message appended after the caller decided where to cut is
+    /// necessarily inside it and is destroyed, after its writer was told the
+    /// append succeeded. Bounding by the rowid watermark the caller's view
+    /// actually covered is what separates "the tail the user asked to drop"
+    /// from "a message that arrived while we were deciding".
+    #[tokio::test]
+    async fn a_bounded_truncate_keeps_an_append_the_caller_never_saw() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let id = revision_session(&sm).await;
+        sm.add_message(&id, &umsg(1, "one")).await.unwrap();
+        sm.add_message(&id, &amsg(2, "two")).await.unwrap();
+
+        // The caller reads the conversation and decides to cut at ts 2.
+        let basis = sm.conversation_revision(&id).await.unwrap();
+
+        // ...and another writer appends before the delete lands. Its timestamp
+        // is necessarily >= the cut.
+        sm.add_message(&id, &umsg(9, "NOTE from elsewhere"))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            sm.truncate_conversation_bounded(&id, 2, basis)
+                .await
+                .unwrap(),
+            TruncateOutcome::Truncated { removed: 1 }
+        );
+
+        assert_eq!(
+            stored_texts(&sm, &id).await,
+            vec!["one".to_string(), "NOTE from elsewhere".to_string()],
+            "the cut tail goes; the append the caller never saw stays"
+        );
+    }
+
+    /// A watermark from a previous incarnation of the id describes rowids that
+    /// belonged to a different conversation, so it may not bound a delete in
+    /// this one — the same reasoning as the guarded rewrite (#51 W3).
+    #[tokio::test]
+    async fn a_bounded_truncate_refuses_a_basis_from_a_previous_incarnation() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let old = revision_session(&sm).await;
+        sm.add_message(&old, &umsg(1, "first incarnation"))
+            .await
+            .unwrap();
+        let basis = sm.conversation_revision(&old).await.unwrap();
+
+        sm.clear_all_sessions().await.unwrap();
+        let new = revision_session(&sm).await;
+        assert_eq!(new, old);
+        sm.add_message(&new, &umsg(2, "second incarnation"))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            sm.truncate_conversation_bounded(&new, 1, basis)
+                .await
+                .unwrap(),
+            TruncateOutcome::Stale
+        );
+        assert_eq!(
+            stored_texts(&sm, &new).await,
+            vec!["second incarnation".to_string()],
+            "a refused truncation must not delete anything"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_bounded_truncate_reports_a_missing_session() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let _ = revision_session(&sm).await;
+        let basis = sm.conversation_revision("no-such-session").await.unwrap();
+
+        assert_eq!(
+            sm.truncate_conversation_bounded("no-such-session", 0, basis)
+                .await
+                .unwrap(),
+            TruncateOutcome::SessionNotFound
         );
     }
 
