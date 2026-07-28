@@ -173,8 +173,8 @@ impl PinSelection {
             max_tokens = limits.max_tokens,
             evicted_ids = ?ids,
             "#51: the preserved set exceeded its budget; the OLDEST preserved \
-             messages lost their summarization exemption and will be condensed \
-             with the rest of the older history"
+             messages lost their summarization exemption and are now summarized \
+             like any other older message"
         );
     }
 
@@ -187,7 +187,7 @@ impl PinSelection {
     /// hard-errors on one):
     ///
     /// 1. an agent-only text note, so the model knows a message it was told to
-    ///    keep is now only present via the summary;
+    ///    keep has lost that protection;
     /// 2. a user-only inline notification, so the human who pinned it finds out.
     pub fn eviction_notices(&self) -> Vec<Message> {
         if self.evicted.is_empty() {
@@ -205,16 +205,20 @@ impl PinSelection {
             max_tokens: 0,
         });
 
+        // The wording is deliberately "no longer exempt" rather than "has been
+        // condensed". Selection is newest-first, so an evicted pin is always
+        // older than every honoured one — but when the budget cannot hold even
+        // the newest, an evicted pin can still be sitting inside the verbatim
+        // recent window this time round. It has genuinely lost its protection
+        // (the next compaction will summarize it), which is what to say; that
+        // it was condensed *already* would not always be true.
         vec![
             Message::assistant()
                 .with_text(format!(
-                    "{n} earlier {plural} marked to be preserved verbatim could not be kept: \
-                     the preserved set exceeded {reason}. The oldest preserved {plural} \
-                     {} been condensed into the summary above along with the rest of the \
-                     older history, so treat the summary as the only remaining record of \
-                     {}.",
-                    if n == 1 { "has" } else { "have" },
-                    if n == 1 { "it" } else { "them" },
+                    "{n} earlier {plural} marked to be preserved verbatim could not all be \
+                     kept: the marked set exceeded {reason}. The oldest of them are no \
+                     longer exempt from summarization, so rely on the summary rather than \
+                     on their exact wording.",
                 ))
                 .with_metadata(MessageMetadata::agent_only()),
             Message::assistant().with_system_notification(
@@ -222,7 +226,7 @@ impl PinSelection {
                 format!(
                     "Compaction could not preserve {n} pinned {plural}: the pinned set \
                      exceeded {reason} (at most {} messages and ~{} tokens). The oldest \
-                     pinned {plural} were summarized with the rest of the history.",
+                     pinned {plural} are no longer protected from summarization.",
                     limits.max_messages, limits.max_tokens,
                 ),
             ),
