@@ -192,17 +192,18 @@ const WORKFLOW_INTENT_KEYS: &[&str] = &["instructions", "prompt", "activities", 
 
 /// Whether a document in an arbitrary directory declares itself a workflow.
 ///
-/// The `workflow:` envelope is a declaration on its own — it is the key
-/// `Workflow::from_content` branches on. Otherwise at least one distinctive
-/// workflow key must be present.
+/// The `workflow:` envelope is a declaration on its own, *whatever it holds* —
+/// `Workflow::from_content` branches on the mere presence of that key, so
+/// `workflow: []` is a workflow someone wrote and broke, not an unrelated file.
+/// Demanding a mapping under it would hide exactly the documents this triage
+/// exists to surface. Otherwise at least one distinctive workflow key must be
+/// present.
 fn declares_workflow_intent(value: &serde_yaml::Value) -> bool {
     let serde_yaml::Value::Mapping(map) = value else {
         return false;
     };
-    if let Some(nested) = map.get(serde_yaml::Value::from("workflow")) {
-        if nested.is_mapping() {
-            return true;
-        }
+    if map.contains_key(serde_yaml::Value::from("workflow")) {
+        return true;
     }
     WORKFLOW_INTENT_KEYS
         .iter()
@@ -219,11 +220,14 @@ fn declares_workflow_intent(value: &serde_yaml::Value) -> bool {
 fn report_workflow_load_failure(path: &Path, error: &anyhow::Error, origin: ScanOrigin) {
     let is_broken_workflow = match origin {
         ScanOrigin::WorkflowLibrary => true,
-        ScanOrigin::WorkingDirectory => fs::read_to_string(path).map_or(true, |content| {
-            // Unparseable content is reported as an error: a `.yaml`/`.json` file
-            // that is not even valid YAML/JSON is broken, whoever owns it.
+        // In a directory that is not ours, a file we cannot read or cannot
+        // parse offers no evidence it was ever meant to be a workflow — and a
+        // malformed document nobody claimed is somebody else's malformed
+        // document. Promoting it to error is how the loader used to shout
+        // about unrelated files it had no business opening.
+        ScanOrigin::WorkingDirectory => fs::read_to_string(path).is_ok_and(|content| {
             serde_yaml::from_str::<serde_yaml::Value>(&content)
-                .map_or(true, |value| declares_workflow_intent(&value))
+                .is_ok_and(|value| declares_workflow_intent(&value))
         }),
     };
 
@@ -337,6 +341,16 @@ mod tests {
 
     fn write_file(dir: &Path, name: &str, contents: &str) {
         fs::write(dir.join(name), contents).unwrap();
+    }
+
+    /// Content that not even `serde_yaml::Value` will accept, so the tests
+    /// using it provably exercise the parse-failure branch of the triage
+    /// rather than the "parsed fine, no workflow keys" one.
+    const UNPARSEABLE: &str = "{{ mustache }}: [unclosed\n";
+
+    #[test]
+    fn the_unparseable_fixture_really_is_unparseable() {
+        assert!(serde_yaml::from_str::<serde_yaml::Value>(UNPARSEABLE).is_err());
     }
 
     #[test]
@@ -478,6 +492,57 @@ mod tests {
         assert!(
             logs.contains("ERROR") && logs.contains("broken.yaml"),
             "a file that looks like a workflow but does not load must be an error; logs were:\n{logs}"
+        );
+    }
+
+    #[test]
+    fn a_malformed_workflow_envelope_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        // `Workflow::from_content` branches on the presence of the `workflow`
+        // key alone and then fails to deserialise the sequence under it. That
+        // is a workflow someone wrote and broke, whatever its value's type.
+        write_file(dir.path(), "enveloped.yaml", "workflow: []\n");
+
+        let (workflows, logs) = scan_with_logs(dir.path(), ScanOrigin::WorkingDirectory);
+
+        assert!(workflows.is_empty());
+        assert!(
+            logs.contains("ERROR") && logs.contains("enveloped.yaml"),
+            "a `workflow:` envelope is a declaration of intent whatever it holds; logs were:\n{logs}"
+        );
+    }
+
+    #[test]
+    fn unparseable_yaml_in_the_working_directory_is_not_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        // Someone else's broken file, or a template that is not YAML at all.
+        // Nothing here says "workflow", so nothing here is our failure.
+        write_file(dir.path(), "not-yaml.yaml", UNPARSEABLE);
+
+        let (workflows, logs) = scan_with_logs(dir.path(), ScanOrigin::WorkingDirectory);
+
+        assert!(workflows.is_empty());
+        assert!(
+            !logs.contains("ERROR"),
+            "a malformed file in someone else's directory is someone else's problem; logs were:\n{logs}"
+        );
+        assert!(
+            logs.contains("DEBUG") && logs.contains("not-yaml.yaml"),
+            "the skip should still be recorded at debug; logs were:\n{logs}"
+        );
+    }
+
+    #[test]
+    fn unparseable_yaml_in_a_workflow_directory_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        write_file(dir.path(), "not-yaml.yaml", UNPARSEABLE);
+
+        let (workflows, logs) = scan_with_logs(dir.path(), ScanOrigin::WorkflowLibrary);
+
+        assert!(workflows.is_empty());
+        assert!(
+            logs.contains("ERROR") && logs.contains("not-yaml.yaml"),
+            "an unparseable file in a workflow directory is a broken workflow; logs were:\n{logs}"
         );
     }
 
