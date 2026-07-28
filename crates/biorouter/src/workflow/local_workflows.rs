@@ -126,14 +126,7 @@ fn scan_directory_for_workflows(dir: &Path) -> Result<Vec<(PathBuf, Workflow)>> 
                 if WORKFLOW_FILE_EXTENSIONS.contains(&extension.to_string_lossy().as_ref()) {
                     match Workflow::from_file_path(&path) {
                         Ok(workflow) => workflows.push((path.clone(), workflow)),
-                        Err(e) => {
-                            let error_message = format!(
-                                "Failed to load workflow from file {}: {}",
-                                path.display(),
-                                e
-                            );
-                            tracing::error!("{}", error_message);
-                        }
+                        Err(e) => report_workflow_load_failure(&path, &e),
                     }
                 }
             }
@@ -141,6 +134,66 @@ fn scan_directory_for_workflows(dir: &Path) -> Result<Vec<(PathBuf, Workflow)>> 
     }
 
     Ok(workflows)
+}
+
+/// Keys that mark a document as an attempt at a workflow. The scanned
+/// directories (the working directory, `~/.config/biorouter/workflows`, any
+/// `BIOROUTER_WORKFLOW_PATH` entry) also hold JSON belonging to other tools —
+/// `~/.claude.json` is the canonical example — and those are not failures.
+const WORKFLOW_MARKER_KEYS: &[&str] = &[
+    "title",
+    "description",
+    "instructions",
+    "prompt",
+    "activities",
+    "parameters",
+    "extensions",
+    "sub_workflows",
+    "version",
+];
+
+/// A document is workflow-shaped when it is a mapping carrying at least two
+/// workflow keys, or a mapping with the `workflow:` envelope
+/// `Workflow::from_content` accepts. One key alone is too weak a signal — a
+/// great many unrelated config files carry `version` or `description`.
+fn is_workflow_shaped(value: &serde_yaml::Value) -> bool {
+    let serde_yaml::Value::Mapping(map) = value else {
+        return false;
+    };
+    if let Some(nested) = map.get(serde_yaml::Value::from("workflow")) {
+        if nested.is_mapping() {
+            return true;
+        }
+    }
+    let markers = WORKFLOW_MARKER_KEYS
+        .iter()
+        .filter(|key| map.contains_key(serde_yaml::Value::from(**key)))
+        .count();
+    markers >= 2
+}
+
+/// Log a file that did not load as a workflow at the level its shape deserves.
+///
+/// A file that was never a workflow is not a failed workflow: it is skipped at
+/// `debug`. `error` is reserved for a document that looks like a workflow and
+/// still does not load — the case someone actually needs to see in the log.
+fn report_workflow_load_failure(path: &Path, error: &anyhow::Error) {
+    let looks_like_workflow = fs::read_to_string(path).map_or(true, |content| {
+        // Unparseable content is reported as an error: a `.yaml`/`.json` file
+        // that is not even valid YAML/JSON is broken, whoever owns it.
+        serde_yaml::from_str::<serde_yaml::Value>(&content)
+            .map_or(true, |value| is_workflow_shaped(&value))
+    });
+
+    if looks_like_workflow {
+        tracing::error!(
+            "Failed to load workflow from file {}: {}",
+            path.display(),
+            error
+        );
+    } else {
+        tracing::debug!("Skipping non-workflow file {}: {}", path.display(), error);
+    }
 }
 
 fn generate_workflow_filename(title: &str, workflow_library_dir: &Path) -> PathBuf {
@@ -192,4 +245,115 @@ pub fn save_workflow_to_file(
     let yaml_content = workflow.to_yaml()?;
     fs::write(&file_path_value, yaml_content)?;
     Ok(file_path_value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+    use tracing_subscriber::fmt::MakeWriter;
+
+    /// Collects formatted tracing output so a test can assert the *level* a
+    /// message was emitted at, not merely that it was emitted.
+    #[derive(Clone, Default)]
+    struct CapturedLogs(Arc<Mutex<Vec<u8>>>);
+
+    impl CapturedLogs {
+        fn text(&self) -> String {
+            String::from_utf8_lossy(&self.0.lock().unwrap()).to_string()
+        }
+    }
+
+    impl std::io::Write for CapturedLogs {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().write(buf)
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> MakeWriter<'a> for CapturedLogs {
+        type Writer = CapturedLogs;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    fn scan_with_logs(dir: &Path) -> (Vec<(PathBuf, Workflow)>, String) {
+        let logs = CapturedLogs::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(logs.clone())
+            .with_max_level(tracing::Level::DEBUG)
+            .with_ansi(false)
+            .finish();
+        let workflows = tracing::subscriber::with_default(subscriber, || {
+            scan_directory_for_workflows(dir).unwrap()
+        });
+        (workflows, logs.text())
+    }
+
+    fn write_file(dir: &Path, name: &str, contents: &str) {
+        fs::write(dir.join(name), contents).unwrap();
+    }
+
+    #[test]
+    fn unrelated_json_in_a_scanned_directory_is_not_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        // Shaped like ~/.claude.json: another tool's config that happens to
+        // live in a directory the workflow loader scans.
+        write_file(
+            dir.path(),
+            "unrelated.json",
+            r#"{"numStartups": 12, "installMethod": "brew", "projects": {}}"#,
+        );
+
+        let (workflows, logs) = scan_with_logs(dir.path());
+
+        assert!(workflows.is_empty());
+        assert!(
+            !logs.contains("ERROR"),
+            "a file that was never a workflow is not a failed workflow; logs were:\n{logs}"
+        );
+        assert!(
+            logs.contains("DEBUG") && logs.contains("unrelated.json"),
+            "the skip should still be recorded at debug; logs were:\n{logs}"
+        );
+    }
+
+    #[test]
+    fn a_malformed_workflow_is_still_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        // Carries workflow keys but is missing the required `title`.
+        write_file(
+            dir.path(),
+            "broken.yaml",
+            "description: does something\nprompt: do the thing\n",
+        );
+
+        let (workflows, logs) = scan_with_logs(dir.path());
+
+        assert!(workflows.is_empty());
+        assert!(
+            logs.contains("ERROR") && logs.contains("broken.yaml"),
+            "a file that looks like a workflow but does not load must be an error; logs were:\n{logs}"
+        );
+    }
+
+    #[test]
+    fn valid_workflows_are_still_loaded_alongside_unrelated_files() {
+        let dir = tempfile::tempdir().unwrap();
+        write_file(
+            dir.path(),
+            "good.yaml",
+            "title: Good\ndescription: A good workflow\nprompt: go\n",
+        );
+        write_file(dir.path(), "unrelated.json", r#"{"machineID": "abc"}"#);
+
+        let (workflows, logs) = scan_with_logs(dir.path());
+
+        assert_eq!(workflows.len(), 1);
+        assert_eq!(workflows[0].1.title, "Good");
+        assert!(!logs.contains("ERROR"), "logs were:\n{logs}");
+    }
 }
