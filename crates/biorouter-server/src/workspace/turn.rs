@@ -517,11 +517,19 @@ where
                 session_events::publish(session_id, SessionBusEvent::Agent(event));
             }
             Err(e) => {
+                // `"inference_error"`, the code `/reply`'s own arm for this
+                // exact `Ok(Some(Err(e)))` case has always published — NOT
+                // `"stream_error"`, which the desktop mints for itself when the
+                // SSE socket dies (`clientTurnError(error, 'stream_error',
+                // 'transport')`) and reserves in `MIDSTREAM_CODES`. Reusing it
+                // here would give one code two unrelated meanings, separable
+                // only by `scope`, and would silently re-bucket every log and
+                // dashboard keyed on `code` the moment Task 8 lands.
                 tracing::error!("turn: stream error: {e}");
                 publish_turn_error(
                     session_id,
                     e.to_string(),
-                    "stream_error",
+                    "inference_error",
                     TurnErrorScope::Inference,
                     false,
                     None,
@@ -912,6 +920,40 @@ mod tests {
             provider_kind.as_deref(),
             Some(ProviderErrorKind::RateLimit.wire_code())
         );
+    }
+
+    /// A mid-stream inference failure keeps `/reply`'s wire code.
+    ///
+    /// `"stream_error"` is not a free string: the desktop mints it itself for a
+    /// dead SSE socket (`chatStreamStore.tsx`, `clientTurnError(error,
+    /// 'stream_error', 'transport')`) and reserves it in `ChatTurnError`'s
+    /// `MIDSTREAM_CODES`. Publishing it here for a *model* failure would make
+    /// one code name two unrelated things — a provider/inference failure and a
+    /// dropped connection — separable only by `scope`, and would silently
+    /// re-bucket every log and dashboard keyed on `code` the moment Task 8
+    /// moves `/reply` onto this runner. The handler's own arm for the identical
+    /// `Ok(Some(Err(e)))` case publishes `"inference_error"`; so does this one.
+    #[tokio::test]
+    async fn a_mid_stream_failure_keeps_the_handlers_inference_error_code() {
+        let sid = "br71-drive-stream-error";
+        let mut rx = session_events::subscribe(sid);
+        let mut all = Conversation::new_unvalidated(Vec::new());
+        let mut stream = futures::stream::iter(vec![Err(anyhow::anyhow!("provider hung up"))]);
+
+        let terminal_error =
+            drive_stream(sid, &mut stream, &CancellationToken::new(), &mut all).await;
+        assert!(terminal_error, "a stream error ends the turn on an error");
+
+        let seen = drain(&mut rx).await;
+        assert_eq!(seen.len(), 1, "exactly one frame: {seen:?}");
+        let SessionBusEvent::TurnError { code, scope, .. } = &seen[0] else {
+            panic!("expected a TurnError, got {:?}", seen[0]);
+        };
+        assert_eq!(
+            code, "inference_error",
+            "`stream_error` is the desktop's own code for a dead SSE socket"
+        );
+        assert_eq!(scope, "inference");
     }
 
     /// A defaulted `TurnExtras` must not put an EMPTY string in the
