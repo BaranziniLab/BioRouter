@@ -934,26 +934,58 @@ async fn a_racing_truncate_is_refused_and_never_resurrects() {
 /// detects loss (a race test that passes on broken code is worthless), and it
 /// pins the semantics of the exception, so a future change that quietly makes
 /// `replace_conversation` guard itself has to come here and say so.
+///
+/// **The loss is handshaken, not hoped for.** Left to the scheduler this test
+/// asserts that a race it does not control happened to occur: a run that
+/// serialized the appender ahead of the first rewrite would destroy nothing and
+/// fail with no bug present and no behaviour changed — the single worst failure
+/// mode a control can have, because it teaches the reader to distrust it. So the
+/// first rewrite parks after its snapshot until one append has COMMITTED, which
+/// makes `ctl-0` a message the rewrite provably never saw and provably deletes.
+/// Every rewrite after the first is unsynchronized, so the storm is unchanged.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn the_unguarded_rewrite_still_destroys_concurrent_appends() {
     const APPENDS: usize = 300;
     const REWRITES: usize = 60;
+    /// The append the handshake guarantees lands strictly between the first
+    /// rewrite's snapshot and its write-back.
+    const VICTIM: &str = "ctl-0";
 
     let temp = TempDir::new().unwrap();
     let sm = Arc::new(SessionManager::new(temp.path().to_path_buf()));
     let id = seeded_session(&sm, "control").await;
 
+    let snapshot_taken = Arc::new(AtomicBool::new(false));
+    let victim_committed = Arc::new(AtomicBool::new(false));
+
     let appender = {
         let sm = Arc::clone(&sm);
         let id = id.clone();
+        let snapshot_taken = Arc::clone(&snapshot_taken);
+        let victim_committed = Arc::clone(&victim_committed);
         tokio::spawn(async move {
+            // Half one of the handshake: not a single append until the rewriter
+            // holds a snapshot, so `ctl-0` cannot possibly be inside it.
+            while !snapshot_taken.load(Ordering::SeqCst) {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
             let mut written = Vec::new();
             for i in 0..APPENDS {
                 let uid = format!("ctl-{i}");
-                sm.add_message(&id, &user(&uid, &format!("note {i}")))
-                    .await
-                    .unwrap();
-                written.push(uid);
+                match sm.add_message(&id, &user(&uid, &format!("note {i}"))).await {
+                    Ok(_) => written.push(uid),
+                    // Tolerated for the same reason as everywhere else in this
+                    // file (see `is_busy`) — the caller was TOLD it failed, so
+                    // it is not loss. `ctl-0` cannot land here: the rewriter is
+                    // parked and holding no lock when it is written.
+                    Err(e) if is_busy(&e.to_string()) => {
+                        assert_ne!(uid, VICTIM, "the handshaken append must not be starved");
+                    }
+                    Err(e) => panic!("control append {uid} failed for a non-lock reason: {e}"),
+                }
+                if i == 0 {
+                    victim_committed.store(true, Ordering::SeqCst);
+                }
                 tokio::task::yield_now().await;
             }
             written
@@ -962,12 +994,32 @@ async fn the_unguarded_rewrite_still_destroys_concurrent_appends() {
     let rewriter = {
         let sm = Arc::clone(&sm);
         let id = id.clone();
+        let snapshot_taken = Arc::clone(&snapshot_taken);
+        let victim_committed = Arc::clone(&victim_committed);
         tokio::spawn(async move {
             for i in 0..REWRITES {
                 // Exactly what every in-turn compaction site did before the fix:
                 // read a snapshot, take time, write the whole thing back.
                 let known = stored(&sm, &id).await;
-                tokio::time::sleep(Duration::from_millis(2)).await;
+                if i == 0 {
+                    // Half two: announce the snapshot, then park until the
+                    // append it cannot contain is durable.
+                    snapshot_taken.store(true, Ordering::SeqCst);
+                    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+                    while !victim_committed.load(Ordering::SeqCst) {
+                        assert!(
+                            std::time::Instant::now() < deadline,
+                            "the appender never committed; the handshake is broken"
+                        );
+                        tokio::time::sleep(Duration::from_millis(1)).await;
+                    }
+                    assert!(
+                        !ids_of(&known).iter().any(|u| u == VICTIM),
+                        "the parked snapshot must predate the victim append"
+                    );
+                } else {
+                    tokio::time::sleep(Duration::from_millis(2)).await;
+                }
                 let mut msgs = known.messages().clone();
                 msgs.push(assistant(&format!("c-sum-{i}"), &format!("summary {i}")));
                 sm.replace_conversation(&id, &Conversation::new_unvalidated(msgs))
@@ -984,6 +1036,16 @@ async fn the_unguarded_rewrite_still_destroys_concurrent_appends() {
         .iter()
         .filter(|u| !final_ids.contains(*u))
         .collect();
+    assert!(
+        appended.iter().any(|u| u == VICTIM),
+        "the store acknowledged the handshaken append, or there is nothing to lose"
+    );
+    assert!(
+        lost.iter().any(|u| *u == VICTIM),
+        "the unguarded rewrite kept an append it demonstrably never read — it has \
+         grown a guard it must not have, and every other test in this file is now \
+         asserting a property nothing is testing"
+    );
     assert!(
         !lost.is_empty(),
         "the unguarded rewrite destroyed nothing under a 300-append storm — either \
