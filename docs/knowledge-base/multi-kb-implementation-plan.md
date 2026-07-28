@@ -10,7 +10,7 @@ Before this change a session had two selections that could disagree: a plural `h
 
 **Goal:** Collapse the two overlapping knowledge-base axes into one. A session's **visible set** *is* its knowledge-base set — every base in it is searchable, readable and usable — and the single `active_kb` becomes an explicit **primary** pointer: the write target for KB-less mutating calls and the default subject for single-base reads and the Knowledge view. Six pre-existing bugs uncovered by the survey are fixed on the way. No storage format changes, so an older on-PATH `biorouter` keeps working.
 
-**Architecture:** One axis + one pointer. The axis already exists and already works — `hidden_kbs` (plural, ordered, session-scoped with a machine-wide fallback), driving `kb_list_bases`, the cross-base `kb_search` fan-out with per-hit `kb_id` attribution, and the chat KB chip. This plan adds nothing to it except the ability to say "explicitly nothing hidden". The pointer is today's `active_kb`, renamed to `primary` throughout the code and given one enforced invariant: **the primary is always a member of the set.** It is never invented — a session that has not chosen one has none, and a KB-less write then fails with an error that names the candidates and the exact command to fix it. When a set change orphans the primary, the writer repairs it deterministically and persists the repair, so the user can see what happened.
+**Architecture:** One axis + one pointer. The axis already exists and already works — `hidden_kbs` (plural, ordered, session-scoped with a machine-wide fallback), driving `kb_list_bases`, the cross-base `kb_search` fan-out with per-hit `kb_id` attribution, and the chat KB chip. This plan adds nothing to it except the ability to say "explicitly nothing hidden". The pointer is today's `active_kb`, renamed to `primary` throughout the code and given one enforced invariant: **the primary is always a member of the set.** One is never *invented* for a session that has none — a session that has not chosen a primary has none, and a KB-less write then fails with an error that names the candidates and the exact command to fix it. A primary the session already had is a different matter: when a set change orphans it, the writer repairs it deterministically and persists the repair, so the user can see what happened.
 
 **Tech Stack:** Rust 1.92 workspace (`crates/biorouter-mcp` knowledge module, `crates/biorouter-server` Axum + utoipa, `crates/biorouter-cli` clap), Electron + React 19 + TypeScript (Vite, Vitest, `@testing-library/react`), OpenAPI-generated TS client (`@hey-api`).
 
@@ -43,9 +43,16 @@ Each decision is **resolved**. The rejected alternative is named so a future rea
 Invariant: **the primary is a member of the session's set.** Enforced on both sides:
 
 - *Read side* (`primary_for_session`): the stored id is returned only while it names a member. Otherwise `None`. It never promotes at read time — a read must not silently invent a write target.
-- *Write side* (`repair_primary_unlocked`, run by every writer that changes the set): if the stored primary has left the set, **promote** to the lexicographically first remaining member, or **clear** when the set is now empty. The repair is persisted, so the CLI, the GUI and the model all see the same answer.
+- *Write side* (`repair_primary_unlocked`, run by every writer that changes the set): if the primary the scope is **using** has left the set, **promote** to the lexicographically first remaining member, or **clear** when the set is now empty. The repair is persisted, so the CLI, the GUI and the model all see the same answer.
 
-Deletion is the one exception to promotion: `delete_base` **clears** a primary that pointed at the deleted base (today's behaviour, pinned by `service.rs:1682` `session_scoped_active_kb_tracks_rename_and_delete`). Hiding a base is a scoping gesture and the base still exists, so promoting is friendly; deleting one is destructive, and silently re-pointing the write target at an unrelated base immediately after a destructive act is the wrong default.
+"The primary the scope is **using**" is load-bearing, and getting it wrong was a real bug. A session's own primary file has three states (D5), and the great majority of chats sit in the `Inherit` one: they have pinned nothing and are displaying the machine-wide pointer. If the repair only fires for a chat with its own stored pin, then two chats showing the user the identical thing — "alpha is this chat's primary" — answer the identical click two different ways: the pinning chat promotes to beta, the inheriting chat comes back with no primary at all, and the inheriting case is the common one. So the repair resolves the pointer through the session → machine fallback first, and **writes the result at the session's own scope**: a chat that has moved off the machine default is precisely what a session-scope pin represents, and repairing one chat must never move another chat's pointer.
+
+**Never invented, but it does move.** Two rules that read as one contradiction until they are stated apart:
+
+1. **A scope that has no primary is never handed one.** Creating a base does not pin it (not even the first base on a fresh machine), a sole visible base is not promoted, and a pointer at a base that no longer *exists* is cleared rather than promoted. A KB-less write then fails loudly with the candidate list.
+2. **A primary the user already had, whose base they just removed from this chat, moves to another member of the set.** Nothing is invented here: the user ranked that base, and the gesture was "take it out of this chat", not "disarm my write target".
+
+Deletion is the one exception to promotion: `delete_base` **clears** a primary that pointed at the deleted base. Hiding a base is a scoping gesture and the base still exists, so promoting is friendly; deleting one is destructive, and silently re-pointing the write target at an unrelated base immediately after a destructive act is the wrong default. The same reasoning covers a *dangling* pointer — one naming a base that is not installed, which an upgrade from an older `.active-kb` can produce: it is cleared, never promoted, so an unrelated hide cannot turn it into a base nobody chose. A session that merely *inherits* a dangling pointer has nothing of its own to clear and is left untouched, which reads the same way (no primary) without silently severing that chat from the machine default over a pointer it never chose.
 
 **Rationale.** Read-time promotion would make "no primary" unreachable whenever the set is non-empty, which sounds convenient until you notice it means a KB-less *write* lands in the alphabetically first base of a set the user never ranked. Write-time repair keeps the pointer honest, makes every change visible, and leaves exactly one state — "you have bases but have not chosen one" — where a KB-less write fails loudly with the fix in the message.
 
@@ -630,7 +637,10 @@ Add to the tests module:
         assert_eq!(svc.get_primary_for_session("session-a")?, None);
 
         // A machine-wide primary is inherited by a session that has not chosen
-        // one — but only while that session actually holds the base.
+        // one — and hiding it repairs inside that session exactly as hiding a
+        // pinned primary does, leaving the machine pointer alone for every
+        // other chat. (D2: the repair reasons about the pointer the scope is
+        // *using*, not only one it pinned itself.)
         svc.set_primary_persisted(Some("gamma"))?;
         assert_eq!(
             svc.primary_for_session(Some("session-b"))?.as_deref(),
@@ -638,9 +648,15 @@ Add to the tests module:
         );
         svc.set_hidden_for_session("session-b", &["gamma".to_string()])?;
         assert_eq!(
-            svc.primary_for_session(Some("session-b"))?,
-            None,
-            "a machine default this session hides must not leak in as its primary"
+            svc.primary_for_session(Some("session-b"))?.as_deref(),
+            Some("alpha"),
+            "hiding the inherited primary promotes inside the session, exactly as \
+             hiding a pinned one does"
+        );
+        assert_eq!(
+            svc.get_primary_persisted()?.as_deref(),
+            Some("gamma"),
+            "and it leaves the machine pointer alone for every other chat"
         );
         Ok(())
     }
@@ -3620,7 +3636,7 @@ with:
 
 ```markdown
 - **Storage layout:** `~/.config/biorouter/knowledge/<kb-id>/` with `raw/`, `knowledge/`, `index.md`, `log.md`, `schema.md`, and a hidden `.git/`.
-- **One axis, one pointer.** A session's knowledge bases are the *visible* set — everything not in `.hidden-kbs` (machine-wide) or `.hidden-kb-sessions/<sha256(session_id)>` (per session, and an empty `[]` there means "this chat hides nothing", not "inherit"). Every base in the set is searched by a `kb_id`-less `kb_search`, with per-hit `kb_id` attribution. One member is the **primary**, persisted as a bare id in `.active-kb` / `.active-kb-sessions/<digest>` (historical filenames, kept so a lagging PATH-installed CLI still reads a valid id): it is the write target for KB-less mutating calls, the default for single-base reads, and the Knowledge view's subject. The primary is always a member of the set — hiding it promotes to the lexicographically first remaining base, deleting it clears it — and it is never invented, so a KB-less write with no primary fails with the candidate list. There is no third "active" collection; `kb_set_active` moves the primary and does not narrow search.
+- **One axis, one pointer.** A session's knowledge bases are the *visible* set — everything not in `.hidden-kbs` (machine-wide) or `.hidden-kb-sessions/<sha256(session_id)>` (per session, and an empty `[]` there means "this chat hides nothing", not "inherit"). Every base in the set is searched by a `kb_id`-less `kb_search`, with per-hit `kb_id` attribution. One member is the **primary**, persisted as a bare id in `.active-kb` / `.active-kb-sessions/<digest>` (historical filenames, kept so a lagging PATH-installed CLI still reads a valid id): it is the write target for KB-less mutating calls, the default for single-base reads, and the Knowledge view's subject. The primary is always a member of the set — hiding its base promotes to the lexicographically first remaining one (identically whether the chat pinned that primary itself or was merely displaying the machine-wide one, since the two are indistinguishable to the user; the promotion is written at the chat's own scope so the machine pointer stays put for every other chat), deleting its base clears it — and a primary is never *invented* for a scope that has none, so a KB-less write with no primary fails with the candidate list. There is no third "active" collection; `kb_set_active` moves the primary and does not narrow search.
 ```
 
 - [ ] **Step 2: Update `docs/knowledge-base/README.md`**

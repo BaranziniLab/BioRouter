@@ -34,7 +34,8 @@ Knowledge bases in this session:
 - One of them is the **primary**. It is the base that KB-less writes land in, and the base that single-base reads (`kb_list_pages`, `kb_read_page`, `kb_get_graph`, `kb_list_history`) default to when you omit `kb_id`. Call `kb_get_active` to see the session's bases and which is primary; call `kb_set_active` to move the primary to another of them.
 - **Do not switch the primary in order to read another base.** Pass that base's `kb_id` on the call. Changing the primary changes where writes go for the rest of the session, which is rarely what the user asked for.
 - Writes name their base. `kb_write_page`, `kb_add_raw_source`, `kb_append_log`, `kb_restore_state` and the transaction tools all require `kb_id` — this is deliberate, so a write is never ambiguous. Tools that write on the user's behalf without one (for example `platform__ingest_conversation`) use the primary and tell you which base they used.
-- If the session has no primary, a KB-less write fails and the error lists the bases you can choose from. Call `kb_set_active` with one of them, or pass `kb_id` on the call.
+- If the session has no primary, a KB-less write fails and the error lists the bases you can choose from. Call `kb_set_active` with one of them, or pass `kb_id` on the call. A primary is never invented for you: no base is made primary just because it was created, or because it is the only one in the session.
+- The primary can move without you asking. Removing its base from this session **promotes** the primary to the first remaining base rather than leaving the write target dangling; deleting that base leaves the session with **no** primary. Re-read `kb_get_active` rather than assuming the primary you saw earlier still holds.
 
 Personal context (Soul):
 
