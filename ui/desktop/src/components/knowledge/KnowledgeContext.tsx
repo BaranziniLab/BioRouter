@@ -116,7 +116,11 @@ export function KnowledgeProvider({
             console.warn('setActive (server sync) returned no selection:', res?.error);
             return;
           }
-          const applied = data.primary_kb ?? null;
+          // `active_kb` is the deprecated mirror. Reading only `primary_kb`
+          // would turn a *successful* write against an older daemon into "there
+          // is no primary" — and the design forbids inventing one back, so the
+          // pointer would stay lost. Same fallback as the hydrate path below.
+          const applied = data.primary_kb ?? data.active_kb ?? null;
           setPrimaryKbIdState(applied);
           if (applied) localStorage.setItem(storageKey, applied);
           else localStorage.removeItem(storageKey);

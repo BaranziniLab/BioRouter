@@ -1,7 +1,27 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { KnowledgeProvider, useKnowledge } from './KnowledgeContext';
+
+/** A promise the test resolves by hand, so "after the response settled" is a fact, not a race. */
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+/** Resolve/reject a pending sync and let React apply every queued state update. */
+async function settle(action: () => void) {
+  await act(async () => {
+    action();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+}
 
 const mocks = vi.hoisted(() => ({
   listBases: vi.fn(),
@@ -20,13 +40,17 @@ function base(id: string) {
 }
 
 function Probe() {
-  const { primaryKbId, hiddenKbIds, setPrimaryKbId, toggleKbHidden } = useKnowledge();
+  const { primaryKbId, hiddenKbIds, visibleBases, setPrimaryKbId, toggleKbHidden } = useKnowledge();
   return (
     <div>
       <span data-testid="primary">{primaryKbId ?? 'none'}</span>
       <span data-testid="hidden">{hiddenKbIds.join(',') || 'none'}</span>
+      <span data-testid="visible">{visibleBases.map((b) => b.id).join(',') || 'none'}</span>
       <button type="button" onClick={() => setPrimaryKbId('beta')}>
         make beta primary
+      </button>
+      <button type="button" onClick={() => setPrimaryKbId('alpha')}>
+        make alpha primary
       </button>
       <button type="button" onClick={() => toggleKbHidden('alpha')}>
         toggle alpha
@@ -113,5 +137,28 @@ describe('KnowledgeContext', () => {
     expect(body.clear_primary).toBe(false);
     expect(body.hidden_kbs).toEqual(['alpha', 'beta']);
     await waitFor(() => expect(screen.getByTestId('primary')).toHaveTextContent('beta'));
+  });
+
+  // Mixed versions: a new renderer against a daemon that predates `primary_kb`.
+  // Its POST answer carries only the deprecated `active_kb` mirror, and reading
+  // just `primary_kb` turns a *successful* write into "there is no primary" —
+  // which the design forbids inventing back, so the pointer would stay lost.
+  // Every other reader already falls back to the mirror; this one must too.
+  it('reads the deprecated active_kb mirror out of a successful POST', async () => {
+    const pending = deferred<unknown>();
+    renderProvider();
+    await waitFor(() => expect(screen.getByTestId('primary')).toHaveTextContent('alpha'));
+
+    mocks.setActive.mockReturnValue(pending.promise);
+    await userEvent.click(screen.getByRole('button', { name: 'make beta primary' }));
+    await waitFor(() => expect(mocks.setActive).toHaveBeenCalled());
+
+    await settle(() =>
+      pending.resolve({
+        data: { kb_ids: ['alpha', 'beta'], active_kb: 'beta', hidden_kbs: [] },
+      })
+    );
+
+    expect(screen.getByTestId('primary')).toHaveTextContent('beta');
   });
 });
