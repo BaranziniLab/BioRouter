@@ -25,8 +25,9 @@ use biorouter::config::declarative_providers::{
 };
 use biorouter::conversation::message::{
     ActionRequired, ActionRequiredData, FrontendToolRequest, Message, MessageContent,
-    MessageMetadata, RedactedThinkingContent, SystemNotificationContent, SystemNotificationType,
-    ThinkingContent, TokenState, ToolConfirmationRequest, ToolRequest, ToolResponse,
+    MessageMetadata, MessageProvenance, ProvenanceKind, RedactedThinkingContent,
+    SystemNotificationContent, SystemNotificationType, ThinkingContent, TokenState,
+    ToolConfirmationRequest, ToolRequest, ToolResponse,
 };
 use biorouter::conversation::tool_preview::{ToolPreview, ToolPreviewLine, ToolPreviewLineKind};
 use biorouter::permission::tool_risk::ToolRisk;
@@ -507,6 +508,14 @@ derive_utoipa!(Icon as IconSchema);
         Message,
         MessageContent,
         MessageMetadata,
+        // utoipa 4.x does NOT auto-collect nested schemas, so a type only ever
+        // reached through another type's field must be listed here too. Omitting
+        // these two leaves `MessageMetadata.provenance` pointing at a
+        // `#/components/schemas/MessageProvenance` that does not exist, and
+        // `just generate-openapi` aborts in `@hey-api/openapi-ts` with
+        // `MissingPointerError` rather than merely producing a stale client.
+        MessageProvenance,
+        ProvenanceKind,
         TokenState,
         ContentSchema,
         EmbeddedResourceSchema,

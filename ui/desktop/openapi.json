@@ -7226,9 +7226,37 @@
             "type": "boolean",
             "description": "#51: carry this message verbatim through every compaction instead of\ndissolving it into a summary. Never dropped by summarization — but still\nsubject to the overall context budget, which trims the oldest pins first\nand reports it. Defaults to false."
           },
+          "provenance": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/MessageProvenance"
+              }
+            ],
+            "nullable": true
+          },
           "userVisible": {
             "type": "boolean",
             "description": "Whether the message should be visible to the user in the UI"
+          }
+        }
+      },
+      "MessageProvenance": {
+        "type": "object",
+        "description": "Where a message came from, when it did not originate with this session's own\nuser↔agent pair. Cross-session control without provenance is\nindistinguishable from prompt injection (BR-71 §2.4) — stamped in storage,\nnot just in the UI, and never suppressible.\n\n`Hash` is derived deliberately: this value is part of\n[`crate::conversation::normalize`]'s per-message cache validator. See\n`message_fingerprint` there.",
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "fromSessionId": {
+            "type": "string",
+            "nullable": true
+          },
+          "fromSessionName": {
+            "type": "string",
+            "nullable": true
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ProvenanceKind"
           }
         }
       },
@@ -7617,6 +7645,14 @@
         "enum": [
           "Extension",
           "Tool"
+        ]
+      },
+      "ProvenanceKind": {
+        "type": "string",
+        "enum": [
+          "agent_injection",
+          "user_direct",
+          "spawn_context"
         ]
       },
       "ProviderDetails": {

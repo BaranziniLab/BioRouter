@@ -1053,10 +1053,27 @@ export type MessageMetadata = {
      * and reports it. Defaults to false.
      */
     pinned?: boolean;
+    provenance?: MessageProvenance | null;
     /**
      * Whether the message should be visible to the user in the UI
      */
     userVisible: boolean;
+};
+
+/**
+ * Where a message came from, when it did not originate with this session's own
+ * user↔agent pair. Cross-session control without provenance is
+ * indistinguishable from prompt injection (BR-71 §2.4) — stamped in storage,
+ * not just in the UI, and never suppressible.
+ *
+ * `Hash` is derived deliberately: this value is part of
+ * [`crate::conversation::normalize`]'s per-message cache validator. See
+ * `message_fingerprint` there.
+ */
+export type MessageProvenance = {
+    fromSessionId?: string | null;
+    fromSessionName?: string | null;
+    kind: ProvenanceKind;
 };
 
 export type ModelCacheStatus = 'downloaded' | 'partial' | 'not_downloaded';
@@ -1253,6 +1270,8 @@ export type PricingResponse = {
 };
 
 export type PrincipalType = 'Extension' | 'Tool';
+
+export type ProvenanceKind = 'agent_injection' | 'user_direct' | 'spawn_context';
 
 export type ProviderDetails = {
     is_configured: boolean;
