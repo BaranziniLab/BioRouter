@@ -342,17 +342,16 @@ pub fn get_parameter_names(tool: &Tool) -> Vec<String> {
     names
 }
 
-async fn child_process_client(
-    mut command: Command,
-    timeout: &Option<u64>,
-    provider: SharedProvider,
-    working_dir: Option<&PathBuf>,
-    routed_only: bool,
-) -> ExtensionResult<McpClient> {
-    #[cfg(unix)]
-    command.process_group(0);
-    configure_command_no_window(&mut command);
-
+/// The environment every stdio-extension child is spawned with.
+///
+/// Runs after the caller has applied the extension's own declared `envs` /
+/// `env_keys`, and is the last thing to touch the child's environment before
+/// [`TokioChildProcess`] spawns it — which is what lets it strip BioRouter's
+/// daemon-private variables from a child no matter who put them there.
+///
+/// The working directory is resolved here too (explicit argument first, then
+/// `BIOROUTER_WORKING_DIR`).
+fn prepare_child_environment(command: &mut Command, working_dir: Option<&PathBuf>) {
     if let Ok(path) = SearchPaths::builder().path() {
         command.env("PATH", path);
     }
@@ -379,6 +378,26 @@ async fn child_process_client(
     } else {
         tracing::info!("No working directory specified, using default");
     }
+
+    // Last, so neither the block above nor the extension's own declared `envs`
+    // can leave a daemon credential in the child (issue #57). An extension that
+    // needs its own secrets still gets them: they are not in BioRouter's
+    // namespace, so the policy never looks at them.
+    biorouter_mcp::developer::shell::strip_daemon_private_env(command);
+}
+
+async fn child_process_client(
+    mut command: Command,
+    timeout: &Option<u64>,
+    provider: SharedProvider,
+    working_dir: Option<&PathBuf>,
+    routed_only: bool,
+) -> ExtensionResult<McpClient> {
+    #[cfg(unix)]
+    command.process_group(0);
+    configure_command_no_window(&mut command);
+
+    prepare_child_environment(&mut command, working_dir);
 
     let (transport, mut stderr) = TokioChildProcess::builder(command)
         .stderr(Stdio::piped())
@@ -2977,6 +2996,145 @@ mod tests {
             assert!(
                 resolve_bundled_extension(reference).is_none(),
                 "`{reference}` must not resolve to a bundled extension"
+            );
+        }
+    }
+
+    // ---- issue #57: the daemon's auth secret must not reach an extension ------
+
+    /// Child half of the stdio-extension leak probe.
+    ///
+    /// The leak is in the *inherited* environment, so exercising it means
+    /// controlling this process's environment — and `set_var` is unsound in a
+    /// threaded test binary. So the parent re-invokes this test binary with the
+    /// canary exported, and this half spawns a real child through the real
+    /// [`prepare_child_environment`] — exactly what every stdio / inline-python
+    /// extension is spawned with — and prints the environment it received.
+    #[cfg(unix)]
+    #[tokio::test]
+    #[ignore]
+    async fn leak_probe_prints_extension_child_env() {
+        // What `merge_environments` hands the spawn path for an extension that
+        // declares its own credentials.
+        let declared = HashMap::from([
+            (
+                "CLINICAL_RECORDS_TOKEN".to_string(),
+                "declared-credential-ok".to_string(),
+            ),
+            (
+                "EXTENSION_MODE".to_string(),
+                "declared-plain-ok".to_string(),
+            ),
+        ]);
+        let mut command = Command::new("printenv");
+        command.envs(declared);
+        prepare_child_environment(&mut command, None);
+        let out = command.output().await.expect("extension child must spawn");
+        println!("BEGIN_CHILD_ENV");
+        println!("{}", probe_report(&String::from_utf8_lossy(&out.stdout)));
+        println!("END_CHILD_ENV");
+    }
+
+    /// What the probe reports back: BioRouter's own namespace, the variables the
+    /// parent injected, and — under *any* name — anything whose value carries
+    /// the canary, so a copy of the secret under a different key is still
+    /// caught. Everything else is dropped: printing the whole environment of
+    /// whoever runs the suite would be its own small leak.
+    #[cfg(unix)]
+    fn probe_report(raw: &str) -> String {
+        let canary = std::env::var("BR_TEST_CANARY").unwrap_or_default();
+        raw.lines()
+            .filter(|line| {
+                let key = line.split('=').next().unwrap_or("");
+                // The channel that carries the canary *to* the probe is itself
+                // inherited; it is not the leak under test.
+                if key == "BR_TEST_CANARY" {
+                    return false;
+                }
+                key.starts_with("BIOROUTER_")
+                    || key.starts_with("GOOSE_")
+                    || matches!(
+                        key,
+                        "PATH"
+                            | "HOME"
+                            | "BR_TEST_USER_VAR"
+                            | "CLINICAL_RECORDS_TOKEN"
+                            | "EXTENSION_MODE"
+                    )
+                    || (!canary.is_empty() && line.contains(&canary))
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[cfg(unix)]
+    fn run_extension_leak_probe(canary: &str) -> String {
+        let m = module_path!();
+        let without_crate = m.split_once("::").map(|(_, rest)| rest).unwrap_or(m);
+        let exe = std::env::current_exe().expect("test binary path");
+        let out = std::process::Command::new(exe)
+            .args([
+                "--exact",
+                &format!("{without_crate}::leak_probe_prints_extension_child_env"),
+                "--ignored",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env("BIOROUTER_SERVER__SECRET_KEY", canary)
+            .env("BR_TEST_CANARY", canary)
+            .env("BIOROUTER_PORT", "54321")
+            .env("BR_TEST_USER_VAR", "user-env-ok")
+            .output()
+            .expect("re-invoking the test binary must work");
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        stdout
+            .split_once("BEGIN_CHILD_ENV\n")
+            .and_then(|(_, rest)| rest.split_once("END_CHILD_ENV"))
+            .map(|(body, _)| body.to_string())
+            .unwrap_or_else(|| {
+                panic!(
+                    "probe produced no child environment.\nstdout:\n{stdout}\nstderr:\n{}",
+                    String::from_utf8_lossy(&out.stderr)
+                )
+            })
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn daemon_secret_never_reaches_an_extension_child() {
+        const CANARY: &str = "canary-daemon-secret-4b71";
+        let child_env = run_extension_leak_probe(CANARY);
+        assert!(
+            !child_env.contains(CANARY),
+            "issue #57: the daemon's auth secret reached a stdio extension, which \
+             can then call biorouterd as an authenticated client.\nchild env:\n{child_env}"
+        );
+        assert!(
+            !child_env.contains("BIOROUTER_SERVER__SECRET_KEY"),
+            "the key name itself must be gone, not just the value:\n{child_env}"
+        );
+    }
+
+    /// The other direction: an extension's own declared credentials, and the
+    /// user's environment, must still arrive. Note `CLINICAL_RECORDS_TOKEN` is
+    /// secret-shaped by name — the policy deliberately does not touch names
+    /// outside BioRouter's own namespace.
+    #[cfg(unix)]
+    #[test]
+    fn extension_child_still_receives_declared_and_user_environment() {
+        let child_env = run_extension_leak_probe("canary-unused");
+        for expected in [
+            "PATH=",
+            "HOME=",
+            "BIOROUTER_PORT=54321",
+            "BR_TEST_USER_VAR=user-env-ok",
+            "CLINICAL_RECORDS_TOKEN=declared-credential-ok",
+            "EXTENSION_MODE=declared-plain-ok",
+        ] {
+            assert!(
+                child_env.lines().any(|l| l.starts_with(expected)),
+                "extension child lost {expected:?} — removing too much is its own \
+                 regression.\nchild env:\n{child_env}"
             );
         }
     }
