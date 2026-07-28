@@ -211,6 +211,19 @@ pub struct ReplyContext {
     pub initial_messages: Conversation,
 }
 
+/// What one overflow-recovery compaction achieved.
+struct OverflowCompactionSwap {
+    /// The conversation now on disk — `None` when the swap could not be made
+    /// safely, in which case the store is untouched and `compacted` is adopted
+    /// in memory only so the turn can still make progress.
+    stored: Option<Conversation>,
+    /// The compaction that was computed, persisted or not.
+    compacted: Conversation,
+    /// Every summarization round-trip this made, oldest first. All of it is
+    /// spend (BR-35) whether or not the result was kept.
+    usages: Vec<crate::providers::base::ProviderUsage>,
+}
+
 /// BR-56: normalize the transcript before every provider call, not just once per
 /// reply. Kill switch: `BIOROUTER_NORMALIZE_EACH_TURN=false`.
 fn normalize_each_turn() -> bool {
@@ -1756,6 +1769,71 @@ impl Agent {
         budget.record_usage(&provider_name, usage);
     }
 
+    /// BR-13 overflow recovery, persisted safely against a concurrent writer.
+    ///
+    /// Compacts `conversation` with `recovery`, then swaps it in under the
+    /// store's freshness guard. If the basis moved out from under us the
+    /// compaction is recomputed once against the fresh history and retried;
+    /// bounded at one retry because every attempt re-spends a billed
+    /// summarization call.
+    ///
+    /// Never returns `Err` for a lost race — only for a real failure (the
+    /// summarizer, or the database). This site is the last rung before the turn
+    /// dies with "context limit still exceeded", so declining to persist must
+    /// not also decline to continue.
+    async fn swap_overflow_compaction(
+        &self,
+        session_id: &str,
+        conversation: &Conversation,
+        basis: crate::session::session_manager::ConversationRevision,
+        recovery: crate::context_mgmt::OverflowRecovery,
+    ) -> Result<OverflowCompactionSwap> {
+        let session_manager = self.config.session_manager.clone();
+        let mut usages = Vec::new();
+
+        let (compacted, usage) =
+            compact_messages_with_recovery(self.provider().await?.as_ref(), conversation, recovery)
+                .await?;
+        usages.push(usage);
+
+        let (outcome, stored) = session_manager
+            .replace_conversation_preserving_tail(session_id, &compacted, basis, conversation)
+            .await?;
+        if outcome.stored() {
+            return Ok(OverflowCompactionSwap {
+                stored: Some(stored),
+                compacted,
+                usages,
+            });
+        }
+
+        warn!(
+            "Overflow-recovery compaction for session {session_id} was declined ({outcome:?}); \
+             recomputing against the current history and retrying once"
+        );
+        let (fresh_session, fresh_basis) = session_manager.snapshot_for_rewrite(session_id).await?;
+        let Some(fresh) = fresh_session.conversation else {
+            return Ok(OverflowCompactionSwap {
+                stored: None,
+                compacted,
+                usages,
+            });
+        };
+        let (recompacted, retry_usage) =
+            compact_messages_with_recovery(self.provider().await?.as_ref(), &fresh, recovery)
+                .await?;
+        usages.push(retry_usage);
+
+        let (retry_outcome, retry_stored) = session_manager
+            .replace_conversation_preserving_tail(session_id, &recompacted, fresh_basis, &fresh)
+            .await?;
+        Ok(OverflowCompactionSwap {
+            stored: retry_outcome.stored().then_some(retry_stored),
+            compacted: recompacted,
+            usages,
+        })
+    }
+
     /// BR-28: the turn-boundary settle for observe-only (`fire`d) hook events —
     /// Notification, SubagentStart/Stop, Pre/PostCompact.
     ///
@@ -3187,6 +3265,23 @@ impl Agent {
 
         let session_manager = self.config.session_manager.clone();
 
+        // Freshness basis for this turn's overflow-recovery compactions.
+        //
+        // Captured HERE — after `reply()`'s auto-compaction has already run and,
+        // if it fired, rewritten (and therefore renumbered) every row. A basis
+        // taken before it would fail the prefix check on every overflow recovery
+        // that follows an auto-compaction, silently disabling durable recovery
+        // compaction on exactly the largest sessions. Re-seeded after each
+        // successful swap for the same reason.
+        //
+        // It deliberately is NOT compared against the in-memory conversation's
+        // length: the normalizer merges and drops messages at turn start, and
+        // the retry manager pushes messages that are never persisted, so the two
+        // are routinely unequal with zero concurrency.
+        let mut rewrite_basis = session_manager
+            .conversation_revision(&session_config.id)
+            .await?;
+
         // BR-63: the turn's reasoning effort. `Normal` (the default) changes
         // nothing: same provider object, same caps.
         let effort = self.resolve_effort(&session_config).await;
@@ -4437,22 +4532,38 @@ impl Agent {
                                 "auto",
                                 Some("context_overflow"),
                             );
-                            let compaction_usage_event_key = uuid::Uuid::new_v4().to_string();
-                            match compact_messages_with_recovery(self.provider().await?.as_ref(), &conversation, recovery).await {
-                                Ok((compacted_conversation, usage)) => {
-                                    session_manager.replace_conversation(&session_config.id, &compacted_conversation).await?;
-                                    // BR-35: a summarization round-trip inside the
-                                    // reply is spend like any other — bill it to the
-                                    // budget too, not just the session gauge.
-                                    self.record_budget_usage(&mut budget, &usage).await;
-                                    self.update_session_metrics(
-                                        &session_config,
-                                        &usage,
-                                        true,
-                                        &compaction_usage_event_key,
-                                    ).await?;
-                                    conversation = compacted_conversation;
+                            match self.swap_overflow_compaction(
+                                &session_config.id,
+                                &conversation,
+                                rewrite_basis,
+                                recovery,
+                            ).await {
+                                Ok(swap) => {
+                                    let persisted = swap.stored.is_some();
+                                    let last = swap.usages.len().saturating_sub(1);
+                                    for (i, usage) in swap.usages.iter().enumerate() {
+                                        // BR-35: a summarization round-trip inside the
+                                        // reply is spend like any other — bill it to the
+                                        // budget too, not just the session gauge. That
+                                        // holds for a round-trip whose result was
+                                        // discarded: the provider charged for it.
+                                        self.record_budget_usage(&mut budget, usage).await;
+                                        // Only the attempt that actually landed replaced
+                                        // the context; marking a discarded one as a
+                                        // compaction would reset the live gauge to the
+                                        // summary's size over a history that never shrank.
+                                        self.update_session_metrics(
+                                            &session_config,
+                                            usage,
+                                            persisted && i == last,
+                                            &uuid::Uuid::new_v4().to_string(),
+                                        ).await?;
+                                    }
+
                                     did_recovery_compact_this_iteration = true;
+                                    // PostCompact pairs with the PreCompact above on both
+                                    // paths: a compaction did happen and the turn adopts
+                                    // it. Only its durability differs.
                                     self.fire_compaction_hook(
                                         crate::hooks::HookEvent::PostCompact,
                                         &session_config.id,
@@ -4464,7 +4575,32 @@ impl Agent {
                                     if let Some(token_state) = self.current_token_state(&session_config.id).await {
                                         yield AgentEvent::TokenUsage(token_state);
                                     }
-                                    yield AgentEvent::HistoryReplaced(conversation.clone());
+
+                                    match swap.stored {
+                                        Some(stored) => {
+                                            conversation = stored;
+                                            // The rewrite renumbered every row and minted a
+                                            // uid for the summary, so a second overflow in
+                                            // this same turn needs the new basis.
+                                            rewrite_basis = session_manager
+                                                .conversation_revision(&session_config.id)
+                                                .await?;
+                                            yield AgentEvent::HistoryReplaced(conversation.clone());
+                                        }
+                                        None => {
+                                            // Twice declined. Do NOT clobber: keep going
+                                            // in memory so the turn can still finish, and
+                                            // do not claim the stored history was replaced
+                                            // — a reload would then look like it
+                                            // resurrected messages.
+                                            warn!(
+                                                "Overflow-recovery compaction for session {} was not persisted; \
+                                                 continuing in memory with the stored history intact",
+                                                session_config.id
+                                            );
+                                            conversation = swap.compacted;
+                                        }
+                                    }
                                     break;
                                 }
                                 Err(e) => {
