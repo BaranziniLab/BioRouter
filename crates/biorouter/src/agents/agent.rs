@@ -1777,10 +1777,15 @@ impl Agent {
     /// bounded at one retry because every attempt re-spends a billed
     /// summarization call.
     ///
-    /// Never returns `Err` for a lost race — only for a real failure (the
-    /// summarizer, or the database). This site is the last rung before the turn
-    /// dies with "context limit still exceeded", so declining to persist must
-    /// not also decline to continue.
+    /// Never returns `Err` for a lost race. It also never returns `Err` once
+    /// the FIRST summarization has been billed: past that point a failure —
+    /// the retry's summarizer, or the database — degrades to
+    /// `stored: None` with `usages` intact, so the spend is still reported and
+    /// the turn still has a compaction to continue from. Only a failure before
+    /// anything was charged propagates, because there is then nothing to
+    /// salvage. This site is the last rung before the turn dies with "context
+    /// limit still exceeded", so declining to persist must not also decline to
+    /// continue.
     async fn swap_overflow_compaction(
         &self,
         session_id: &str,
@@ -1811,7 +1816,30 @@ impl Agent {
             "Overflow-recovery compaction for session {session_id} was declined ({outcome:?}); \
              recomputing against the current history and retrying once"
         );
-        let (fresh_session, fresh_basis) = session_manager.snapshot_for_rewrite(session_id).await?;
+        // From here on `usages` holds a summarization the provider already
+        // CHARGED for, and `compacted` is a perfectly usable in-memory result.
+        // A `?` past this point drops both: the caller's `Err` arm only logs
+        // and breaks, so the spend vanishes from the budget and the session
+        // gauge (contradicting `OverflowCompactionSwap::usages`' own contract —
+        // "all of it is spend whether or not the result was kept"), the turn
+        // ends where it could have continued, and the `PreCompact` the caller
+        // fired never gets its `PostCompact`. Degrade to "could not persist"
+        // instead, which is exactly what a declined swap already returns.
+        let (fresh_session, fresh_basis) =
+            match session_manager.snapshot_for_rewrite(session_id).await {
+                Ok(snapshot) => snapshot,
+                Err(e) => {
+                    warn!(
+                        "Could not re-read session {session_id} to retry the overflow-recovery \
+                     compaction ({e}); continuing in memory with the first compaction"
+                    );
+                    return Ok(OverflowCompactionSwap {
+                        stored: None,
+                        compacted,
+                        usages,
+                    });
+                }
+            };
         let Some(fresh) = fresh_session.conversation else {
             return Ok(OverflowCompactionSwap {
                 stored: None,
@@ -1819,19 +1847,62 @@ impl Agent {
                 usages,
             });
         };
+        let provider = match self.provider().await {
+            Ok(provider) => provider,
+            Err(e) => {
+                warn!(
+                    "No provider to retry the overflow-recovery compaction for session \
+                     {session_id} ({e}); continuing in memory with the first compaction"
+                );
+                return Ok(OverflowCompactionSwap {
+                    stored: None,
+                    compacted,
+                    usages,
+                });
+            }
+        };
         let (recompacted, retry_usage) =
-            compact_messages_with_recovery(self.provider().await?.as_ref(), &fresh, recovery)
-                .await?;
+            match compact_messages_with_recovery(provider.as_ref(), &fresh, recovery).await {
+                Ok(result) => result,
+                Err(e) => {
+                    warn!(
+                        "Retry summarization for session {session_id} failed ({e}); continuing \
+                         in memory with the first compaction"
+                    );
+                    return Ok(OverflowCompactionSwap {
+                        stored: None,
+                        compacted,
+                        usages,
+                    });
+                }
+            };
         usages.push(retry_usage);
 
-        let (retry_outcome, retry_stored) = session_manager
+        match session_manager
             .replace_conversation_preserving_tail(session_id, &recompacted, fresh_basis, &fresh)
-            .await?;
-        Ok(OverflowCompactionSwap {
-            stored: retry_outcome.stored().then_some(retry_stored),
-            compacted: recompacted,
-            usages,
-        })
+            .await
+        {
+            Ok((retry_outcome, retry_stored)) => Ok(OverflowCompactionSwap {
+                stored: retry_outcome.stored().then_some(retry_stored),
+                compacted: recompacted,
+                usages,
+            }),
+            // The write failed rather than being declined. Same shape as the
+            // declined case one line up — including keeping `recompacted`, the
+            // compaction of the store's CURRENT history, over the staler
+            // `compacted`.
+            Err(e) => {
+                warn!(
+                    "Could not persist the retried overflow-recovery compaction for session \
+                     {session_id} ({e}); continuing in memory with the stored history intact"
+                );
+                Ok(OverflowCompactionSwap {
+                    stored: None,
+                    compacted: recompacted,
+                    usages,
+                })
+            }
+        }
     }
 
     /// BR-28: the turn-boundary settle for observe-only (`fire`d) hook events —

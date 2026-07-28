@@ -64,6 +64,9 @@ struct RaceProvider {
     /// the reply loop ever pushing the message into its in-memory conversation
     /// — `drain_elicitation_messages`, `biorouter term log`, a note tool.
     notes_during_main_call: Vec<(usize, String)>,
+    /// Zero-based *summarizer* call indices that fail outright. Models the
+    /// provider going away between a first summarization and its retry.
+    fail_summarization_on: Vec<usize>,
     context_limit: usize,
     /// Message texts the provider saw on each main-loop call.
     seen: Mutex<Vec<Vec<String>>>,
@@ -80,6 +83,7 @@ impl RaceProvider {
             notes_during_summarization: Vec::new(),
             rewrites_during_summarization: Vec::new(),
             notes_during_main_call: Vec::new(),
+            fail_summarization_on: Vec::new(),
             context_limit: 200_000,
             seen: Mutex::new(Vec::new()),
         }
@@ -87,6 +91,11 @@ impl RaceProvider {
 
     fn overflow_on(mut self, calls: &[usize]) -> Self {
         self.overflow_on = calls.to_vec();
+        self
+    }
+
+    fn fail_summarization_on(mut self, call: usize) -> Self {
+        self.fail_summarization_on.push(call);
         self
     }
 
@@ -155,6 +164,11 @@ impl Provider for RaceProvider {
 
         if Self::is_summarizer_call(messages) {
             let n = self.summarizer_calls.fetch_add(1, Ordering::SeqCst);
+            if self.fail_summarization_on.contains(&n) {
+                return Err(ProviderError::RequestFailed(
+                    "mock summarizer failure".to_string(),
+                ));
+            }
             // Append the foreign message *during* the summarization round-trip:
             // after the caller took its snapshot, before it writes back.
             for (call, text) in &self.notes_during_summarization {
@@ -733,6 +747,76 @@ async fn overflow_recovery_retries_once_then_keeps_going_without_clobbering() {
         !after.iter().any(|t| t.contains("User Intent")),
         "nothing was persisted, so no summary may appear on disk; after: {after:#?}"
     );
+    assert!(
+        history_replaced_texts(&events).is_none(),
+        "HistoryReplaced must not claim a replacement that never happened"
+    );
+}
+
+/// A retry that FAILS must not throw away the first summarization's spend.
+///
+/// The first swap is declined, so the ladder recomputes and retries — and the
+/// retry's summarization errors. By then the provider has already charged for
+/// the first round-trip, and there is a perfectly usable compaction in memory.
+/// Bailing with `?` there dropped both: the spend never reached the budget or
+/// the session gauge (contradicting `OverflowCompactionSwap::usages`' own
+/// contract, "all of it is spend whether or not the result was kept"), and the
+/// caller's `Err` arm ended the turn instead of continuing on the compaction it
+/// already had.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_retry_still_bills_the_first_summarization_and_finishes_the_turn() {
+    let (h, provider) = harness(|p| {
+        p.overflow_on(&[0])
+            // Declines the first swap: the basis moves under the caller.
+            .rewrite_during_summarization(0)
+            // ...and the retry's summarizer is gone.
+            .fail_summarization_on(1)
+    })
+    .await;
+
+    h.session_manager
+        .add_message(&h.session_id, &Message::user().with_text("earlier turn"))
+        .await
+        .unwrap();
+    let before = h.stored_texts().await;
+
+    let events = h.run_turn(USER_PROMPT).await.unwrap();
+
+    assert_eq!(
+        provider.summarizer_call_count(),
+        2,
+        "the ladder must still attempt exactly one retry"
+    );
+    assert_eq!(
+        provider.main_call_count(),
+        2,
+        "a failed RETRY must not end the turn — the first compaction is still \
+         usable in memory"
+    );
+
+    // The billed spend: the first summarization (15) plus the main call that
+    // finished the turn (15). The failed retry charged nothing and is absent.
+    let session = h
+        .session_manager
+        .get_session(&h.session_id, false)
+        .await
+        .unwrap();
+    assert_eq!(
+        session.accumulated_total_tokens,
+        Some(30),
+        "the first summarization was charged by the provider and must still be \
+         reported, even though its result was never persisted"
+    );
+
+    // Nothing was persisted, so the stored history must be intact and no
+    // HistoryReplaced may claim otherwise.
+    let after = h.stored_texts().await;
+    for text in &before {
+        assert!(
+            after.contains(text),
+            "a failed retry must leave the stored history intact; {text:?} vanished"
+        );
+    }
     assert!(
         history_replaced_texts(&events).is_none(),
         "HistoryReplaced must not claim a replacement that never happened"
