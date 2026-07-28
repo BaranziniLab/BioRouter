@@ -19,7 +19,8 @@ arrived looking for one of those, leave now.
 
 | Document | What it covers |
 |----------|----------------|
-| [Launching the dev GUI from a shell without a TTY](launching-the-dev-gui.md) | The procedure for starting the Electron dev GUI from an agent shell or CI step, and the four failure modes that make a working app look broken — `ELECTRON_RUN_AS_NODE`, forge's stdin EOF, a bare `npx vite` serving the app with no CSS, and full-screen screenshots. Current. |
+| [Launching the dev GUI from a shell without a TTY](launching-the-dev-gui.md) | The procedure for starting the Electron dev GUI from an agent shell or CI step, and the five failure modes that make a working app look broken — `ELECTRON_RUN_AS_NODE`, forge's stdin EOF, a bare `npx vite` serving the app with no CSS, full-screen screenshots, and an invisible NSAlert that deadlocks the dev bundle. Current. |
+| [Renderer testing traps](renderer-testing-traps.md) | Ways a frontend test passes while the code it covers is broken: a `vi.fn` spy makes a floating promise unobservable, `throwOnError` is off by default so an HTTP 500 resolves, and a request-generation counter keyed on "newest issued" discards results it should keep. Current. |
 | [Debugging the dev GUI with agent-browser](agent-browser-debugging.md) | How to drive the Electron dev GUI from an ordinary terminal with the `agent-browser` CLI over the Chrome DevTools Protocol, and why this repo exposes that protocol on port 9333 rather than the Playwright default of 9222. Current. |
 | [Diverge behavior checklist](diverge-behavior-checklist.md) | A catalog of 68 user actions for Diverge — the feature that branches a conversation into a new session — each paired with the behavior BioRouter must exhibit, serving as both a manual QA script and the spec the automated tests encode. Current; last revised 2026-07-18, when the dashboard-canvas items were deleted alongside dashboard mode itself. |
 
