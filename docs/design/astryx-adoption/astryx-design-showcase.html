@@ -658,13 +658,34 @@ dialog::backdrop { animation:fade var(--dur-med) var(--ease) backwards; }
                  transition:box-shadow var(--dur-fast) var(--ease), border-radius var(--dur-med) var(--ease); }
 .composer--new:focus, .composer--new:focus-within { box-shadow:var(--elev-1), inset 0 0 0 2px var(--accent-muted); }
 .cinput { font-size:14px; line-height:20px; color:var(--ink-subtle); padding:4px 2px 12px; }
+.ctools { align-items:center; }
 .ctools { display:flex; align-items:center; gap:6px; }
-/* Spacing is IDENTICAL on both sides. The whole point of the comparison is
-   that only the surface treatment changes, so the toolbar must not move. */
-.cchip { display:inline-flex; align-items:center; gap:6px; height:28px; padding:0 6px;
-         border-radius:var(--r-element); font-size:12px; color:var(--ink-muted); white-space:nowrap;
+.cchip { display:inline-flex; align-items:center; height:28px; border-radius:var(--r-element);
+         font-size:12px; color:var(--ink-muted); white-space:nowrap;
          transition:background-color var(--dur-min) var(--ease), color var(--dur-min) var(--ease); }
 .cchip:hover { background:var(--ov-hover); color:var(--ink); }
+
+/* TODAY, as shipped: a 6px row gap with 2px chip padding, so the hit area is
+   barely wider than the glyph and the row reads as one undifferentiated run. */
+.composer--today .ctools { gap:6px; }
+.composer--today .cchip { padding:0 2px; gap:4px; }
+.composer--today .cdiv { margin:0; }
+
+/* PROPOSED: tighter overall, and grouped. Chips inside a group sit at 2px and
+   carry their own 6px padding (a real hit target), so adjacent glyphs are 14px
+   apart; a divider adds 8px either side, opening a 22px channel between
+   groups. Same rhythm as a menu: related things touch, unrelated things do
+   not. The first chip's 6px inset matches the placeholder's, so the toolbar
+   starts on the same left edge as the text above it. */
+.composer--new .ctools { gap:2px; }
+.composer--new .cchip { padding:0 6px; gap:6px; }
+.composer--new .cdiv { margin:0 8px; }
+.composer--new .cinput { padding-left:6px; }
+/* the working directory: a control before the first message, a fact after it */
+.cchip--set { border:0; font:inherit; font-size:12px; cursor:pointer; color:var(--ink-muted); }
+.cchip--set .chev-sm { width:12px; height:12px; opacity:.7; margin-left:-1px; }
+.cchip--locked { cursor:default; }
+.cchip--locked:hover { background:transparent; color:var(--ink-muted); }
 /* the collapsed composer: one "+" stands in for the whole toolbar */
 .composer--narrow { max-width:340px; }
 .cpop { width:248px; padding:4px; background:var(--surface); border-radius:var(--r-container);
@@ -1711,10 +1732,46 @@ IndexError: index out of range for axis 0 with size 18452</span>
                 <button class="btn btn--primary iconbtn" aria-label="Send"><svg class="ico"><use href="#i-send"/></svg></button>
               </div>
             </div>
-            <p class="vnote"><b>No border.</b> The elevation lifts it; a 1px inset ring keeps the edge crisp in dark families where a shadow alone disappears — the shared floating-surface recipe from §02. Radius 16 → 12 with everything else, and one 12px inset grid replaces the four that meet inside the card today. <b>The toolbar does not move.</b> Same controls, same order, same spacing, same icon sizes — pixel for pixel. That is deliberate: if the toolbar shifted too you could not tell which change did what, and the only thing being argued here is the surface. <span style="color:var(--accent-ink)">Click the composer</span>: focus is a 2px inset accent ring — the same one every input in §03 uses, so nothing shifts layout and drag-over can speak the same language.</p>
+            <p class="vnote"><b>No border.</b> The elevation lifts it; a 1px inset ring keeps the edge crisp in dark families where a shadow alone disappears — the shared floating-surface recipe from §02. Radius 16 → 12 with everything else, and one 12px inset grid replaces the four that meet inside the card today. <b>The toolbar tightens and groups.</b> Same controls in the same order, but the spacing now says something: chips inside a group sit at 2px and carry a real 6px hit area (14px between adjacent glyphs), while a divider opens a 22px channel between groups — directory, then context, then model. The first chip's inset matches the placeholder's, so the toolbar starts on the <b>same left edge</b> as the text above it. Today the row runs at one flat rhythm with 2px hit targets, so it reads as an undifferentiated run of glyphs. <span style="color:var(--accent-ink)">Click the composer</span>: focus is a 2px inset accent ring — the same one every input in §03 uses, so nothing shifts layout and drag-over can speak the same language.</p>
           </div>
         </div>
         <p class="note">This is the element the design system already singles out as the only one permitted <code>--elev-composer</code>. Making it the one element that also draws a border was never a decision — it accumulated. Dropping it costs nothing and settles the rule for every raised surface: <b>elevation or a border, never both.</b></p>
+
+        <div style="margin-top:22px;padding-top:18px;border-top:1px solid var(--line)">
+          <h3 style="font-size:var(--t-sub);margin-bottom:4px">Working directory — a control before the first message, a fact after it</h3>
+          <p class="rule">The directory can only be chosen while a session is still empty; once a turn has run, everything the agent did is relative to it and changing it would silently invalidate the transcript. The app enforces this already — the chip becomes a plain label — but the two states look near enough alike that the second one reads as a control that stopped working. They should not look alike at all.</p>
+          <div class="vs">
+            <div class="vs-col">
+              <div class="vs-tag on">Before the first message — editable</div>
+              <div class="composer composer--new composer--narrow">
+                <div class="cinput">Ask anything, or drop a file</div>
+                <div class="ctools">
+                  <button class="cchip cchip--set"><svg class="ico sm"><use href="#i-folderdot"/></svg>…/Desktop<svg class="ico sm chev-sm"><use href="#i-chevrondown"/></svg></button>
+                  <span class="cdiv"></span>
+                  <span class="cchip"><svg class="ico sm"><use href="#i-brain"/></svg>gpt-5.5</span>
+                  <span class="sp" style="flex:1"></span>
+                  <button class="btn btn--primary iconbtn" aria-label="Send"><svg class="ico"><use href="#i-send"/></svg></button>
+                </div>
+              </div>
+              <p class="vnote">It looks like a control because it is one: a trailing chevron, the hover wash, a pointer cursor. Clicking opens the directory picker. This is the only window in which it is offered, so it should be the most obviously clickable thing on the row.</p>
+            </div>
+            <div class="vs-col">
+              <div class="vs-tag">After the session has started — settled</div>
+              <div class="composer composer--new composer--narrow">
+                <div class="cinput">Ask anything, or drop a file</div>
+                <div class="ctools">
+                  <span class="cchip cchip--locked" title="Set when this session started. Start a new session to work somewhere else."><svg class="ico sm"><use href="#i-folderdot"/></svg>…/Desktop</span>
+                  <span class="cdiv"></span>
+                  <span class="cchip"><svg class="ico sm"><use href="#i-brain"/></svg>gpt-5.5</span>
+                  <span class="sp" style="flex:1"></span>
+                  <button class="btn btn--primary iconbtn" aria-label="Send"><svg class="ico"><use href="#i-send"/></svg></button>
+                </div>
+              </div>
+              <p class="vnote">No chevron, no hover wash, no pointer — it reads as a stated fact, the same weight as the model beside it. The tooltip carries both the full path <i>and</i> the reason: "Set when this session started. Start a new session to work somewhere else." A disabled-looking control invites a click and then refuses it; a label never makes the offer.</p>
+            </div>
+          </div>
+          <p class="note">The same rule generalises: <b>state what is true, don't disable what was once offered.</b> A greyed-out control is a promise the interface has already broken — where an action is genuinely no longer available, the affordance should disappear rather than persist in a dead form.</p>
+        </div>
 
         <div style="margin-top:22px;padding-top:18px;border-top:1px solid var(--line)">
           <h3 style="font-size:var(--t-sub);margin-bottom:4px">Collapsed — when the artifact panel takes the width</h3>
@@ -1741,11 +1798,9 @@ IndexError: index out of range for axis 0 with size 18452</span>
                   <div class="mi"><svg class="ico"><use href="#i-puzzle"/></svg>Extensions<span class="sp"></span><span class="kbd">4</span></div>
                   <div class="mi"><svg class="ico"><use href="#i-layers"/></svg>Skills<span class="sp"></span><span class="kbd">11</span></div>
                   <div class="mi"><svg class="ico"><use href="#i-knowledge"/></svg>Knowledge bases<span class="sp"></span><span class="kbd">2</span></div>
-                  <div class="msep"></div>
-                  <div class="mi"><svg class="ico"><use href="#i-paperclip"/></svg>Attach a file<span class="sp"></span><span class="kbd">⌘U</span></div>
                 </div>
               </div>
-              <p class="vnote">The standard menu recipe from §04 — 4px container padding, 32px rows, 2px gaps — rather than the bespoke <code>w-64 p-2</code> popover it uses today. Each row keeps its glyph <i>and</i> its current value on the right, so the popover answers "what is set?" without being opened twice. Order matches the expanded row exactly, so the collapse never rearranges anything.</p>
+              <p class="vnote">The standard menu recipe from §04 — 4px container padding, 32px rows, 2px gaps — rather than the bespoke <code>w-64 p-2</code> popover it uses today. Each row keeps its glyph <i>and</i> its current value on the right, so the popover answers "what is set?" without being opened twice. Order matches the expanded row exactly, so the collapse never rearranges anything. <b>No "Attach a file" row</b> — dropping a file on the composer already does it, and a menu item for a gesture the surface teaches by itself is a row that earns nothing.</p>
             </div>
           </div>
         </div>
