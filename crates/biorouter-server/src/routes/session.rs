@@ -59,6 +59,21 @@ fn default_sidebar_session_limit() -> u32 {
     DEFAULT_SIDEBAR_SESSION_LIMIT
 }
 
+/// The session types `GET /sessions` lists. BR-71: `sub_agent` is opt-in; the
+/// default arm is exactly `list_sessions()`'s own filter, so the default path is
+/// behaviour-identical to what the route did before the flag existed.
+fn listed_session_types(include_subagents: bool) -> &'static [SessionType] {
+    if include_subagents {
+        &[
+            SessionType::User,
+            SessionType::Scheduled,
+            SessionType::SubAgent,
+        ]
+    } else {
+        &[SessionType::User, SessionType::Scheduled]
+    }
+}
+
 #[derive(Debug, Serialize, ToSchema)]
 pub struct SidebarSessionListResponse {
     sessions: Vec<SessionSummary>,
@@ -255,18 +270,9 @@ async fn list_sessions(
     State(state): State<Arc<AppState>>,
     Query(query): Query<ListSessionsQuery>,
 ) -> Result<Json<SessionListResponse>, StatusCode> {
-    let types: &[SessionType] = if query.include_subagents {
-        &[
-            SessionType::User,
-            SessionType::Scheduled,
-            SessionType::SubAgent,
-        ]
-    } else {
-        &[SessionType::User, SessionType::Scheduled]
-    };
     let sessions = state
         .session_manager()
-        .list_sessions_by_types(types)
+        .list_sessions_by_types(listed_session_types(query.include_subagents))
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
@@ -1196,6 +1202,117 @@ mod diverge_tests {
             assert!(!session.contains_key("conversation"));
             assert!(!session.contains_key("extension_data"));
             assert!(!session.contains_key("workflow"));
+        }
+    }
+
+    /// BR-71: the two type slices `GET /sessions` chooses between. A wrong slice
+    /// — a dropped `Scheduled`, say, which would silently empty History of every
+    /// scheduled run — compiles and passes every route test in this file, because
+    /// those run read-only against whatever the real database happens to hold.
+    /// This pins both arms exactly.
+    #[test]
+    fn listed_session_types_make_subagents_opt_in() {
+        assert_eq!(
+            listed_session_types(false),
+            [SessionType::User, SessionType::Scheduled]
+        );
+        assert_eq!(
+            listed_session_types(true),
+            [
+                SessionType::User,
+                SessionType::Scheduled,
+                SessionType::SubAgent
+            ]
+        );
+    }
+
+    async fn get_sessions(
+        state: Arc<AppState>,
+        query: &str,
+    ) -> (axum::http::StatusCode, serde_json::Value) {
+        let app = routes(state);
+        let req = Request::builder()
+            .method("GET")
+            .uri(format!("/sessions{query}"))
+            .body(Body::empty())
+            .unwrap();
+        let res = app.oneshot(req).await.unwrap();
+        let status = res.status();
+        let bytes = to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+        (status, json)
+    }
+
+    /// BR-71 gave `GET /sessions` a `Query` extractor where it previously had
+    /// none. serde ignores unknown fields, so no caller that was already sending
+    /// a query string can start getting a 400 — only a malformed value of the
+    /// brand-new `include_subagents` parameter can, and that parameter did not
+    /// exist before. This pins that distinction.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn list_sessions_route_still_accepts_unknown_query_params() {
+        let state = AppState::new().await.unwrap();
+        for query in ["", "?foo=bar"] {
+            let (status, _) = get_sessions(state.clone(), query).await;
+            assert_eq!(status, axum::http::StatusCode::OK, "query {query:?}");
+        }
+    }
+
+    /// BR-71: neither listing route may surface a `sub_agent` row unless asked,
+    /// and neither may ever surface `hidden`/`terminal`. Read-only against the
+    /// real database, so every assertion is a one-directional membership check
+    /// that cannot flake on an empty or unusual database.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn listing_routes_hide_subagents_unless_asked() {
+        let state = AppState::new().await.unwrap();
+        let cases = [
+            ("default", "", ["user", "scheduled"].as_slice()),
+            (
+                "opt-in",
+                "include_subagents=true",
+                ["user", "scheduled", "sub_agent"].as_slice(),
+            ),
+        ];
+
+        for (label, param, allowed) in cases {
+            let (status, body) = get_sessions(state.clone(), &format!("?{param}")).await;
+            assert_eq!(status, axum::http::StatusCode::OK, "/sessions {label}");
+            for session in body["sessions"].as_array().expect("sessions array") {
+                let session_type = session["session_type"]
+                    .as_str()
+                    .unwrap_or_else(|| panic!("no session_type in {session:?}"));
+                assert!(
+                    allowed.contains(&session_type),
+                    "/sessions {label} leaked a {session_type} session"
+                );
+            }
+
+            let (status, body) =
+                get_sidebar_sessions(state.clone(), &format!("?limit=50&{param}")).await;
+            assert_eq!(
+                status,
+                axum::http::StatusCode::OK,
+                "/sessions/sidebar {label}"
+            );
+            for session in body["sessions"].as_array().expect("sessions array") {
+                let session_type = session["session_type"]
+                    .as_str()
+                    .unwrap_or_else(|| panic!("no session_type in {session:?}"));
+                assert!(
+                    allowed.contains(&session_type),
+                    "/sessions/sidebar {label} leaked a {session_type} session"
+                );
+                // The sidebar must keep passing `include_empty: false`. Flipping
+                // it would start showing message-less "Untitled chat" rows in
+                // every user's sidebar — a visible regression no test would
+                // otherwise catch, since `include_empty` has no other caller
+                // until `workspace_list`.
+                assert!(
+                    session["message_count"].as_i64().unwrap_or_default() >= 1,
+                    "/sessions/sidebar {label} listed an empty session: {session:?}"
+                );
+            }
         }
     }
 
