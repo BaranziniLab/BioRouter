@@ -638,6 +638,18 @@ dialog::backdrop { animation:fade var(--dur-med) var(--ease) backwards; }
 .meta + .amsg + .meta { text-align:left; }
 .amsg { font-size:14px; line-height:20px; }
 
+/* a long paste, clamped. The fade is drawn in the bubble's OWN fill token so
+   it works in every family without a second colour being picked. */
+.umsg--clamped { position:relative; max-height:200px; overflow:hidden; white-space:pre-wrap;
+                 font-family:ui-monospace,"SF Mono",Menlo,monospace; font-size:12.5px; line-height:20px;
+                 max-width:100%; transition:max-height var(--dur-med) var(--ease); }
+.umsg--clamped::after { content:""; position:absolute; inset:auto 0 0 0; height:56px; pointer-events:none;
+                        background:linear-gradient(to bottom, transparent, var(--medium)); }
+.umsg--open { max-height:1200px; }
+.umsg--open::after { opacity:0; }
+.pastefoot { display:flex; align-items:center; gap:10px; justify-content:flex-end; margin-top:6px; }
+.pastemeta { font-size:var(--t-support); color:var(--ink-subtle); font-variant-numeric:tabular-nums; }
+
 /* the composer — today draws a border AND a shadow; proposed drops the border */
 .composer { background:var(--surface); }
 .composer--today { border:1px solid var(--line); border-radius:16px; box-shadow:var(--elev-1); padding:12px 16px; }
@@ -647,11 +659,16 @@ dialog::backdrop { animation:fade var(--dur-med) var(--ease) backwards; }
 .composer--new:focus, .composer--new:focus-within { box-shadow:var(--elev-1), inset 0 0 0 2px var(--accent-muted); }
 .cinput { font-size:14px; line-height:20px; color:var(--ink-subtle); padding:4px 2px 12px; }
 .ctools { display:flex; align-items:center; gap:6px; }
-.cchip { display:inline-flex; align-items:center; gap:6px; height:28px; padding:0 8px;
+/* Spacing is IDENTICAL on both sides. The whole point of the comparison is
+   that only the surface treatment changes, so the toolbar must not move. */
+.cchip { display:inline-flex; align-items:center; gap:6px; height:28px; padding:0 6px;
          border-radius:var(--r-element); font-size:12px; color:var(--ink-muted); white-space:nowrap;
          transition:background-color var(--dur-min) var(--ease), color var(--dur-min) var(--ease); }
 .cchip:hover { background:var(--ov-hover); color:var(--ink); }
-.composer--today .cchip { padding:0 2px; gap:4px; }
+/* the collapsed composer: one "+" stands in for the whole toolbar */
+.composer--narrow { max-width:340px; }
+.cpop { width:248px; padding:4px; background:var(--surface); border-radius:var(--r-container);
+        box-shadow:var(--elev-2), var(--ring-inset); display:flex; flex-direction:column; gap:2px; }
 .cdiv { width:1px; height:16px; background:var(--line); flex:none; }
 .sendbtn-today { width:28px; height:28px; padding:0; border:1px solid var(--line-strong);
                  border-radius:var(--r-element); background:var(--accent); color:var(--on-accent); }
@@ -1340,7 +1357,6 @@ footer { margin-top:72px; padding-top:24px; border-top:1px solid var(--line);
                 <div class="navrow" style="padding-left:34px"><svg class="ico ic"><use href="#i-layers"/></svg>Skills</div>
                 <div class="navrow" style="padding-left:34px"><svg class="ico ic"><use href="#i-knowledge"/></svg>Knowledge</div>
                 <div class="navrow" style="padding-left:34px"><svg class="ico ic"><use href="#i-appwindow"/></svg>Applications</div>
-                <div class="navrow" style="padding-left:34px"><svg class="ico ic"><use href="#i-appwindowmac"/></svg>Apps</div>
               </div>
               <div class="hr"></div>
               <div class="caps">Recents</div>
@@ -1359,10 +1375,10 @@ footer { margin-top:72px; padding-top:24px; border-top:1px solid var(--line);
               <div><span>Divider block halved</span><span>−8</span></div>
               <div class="tot"><span>Returned to content</span><span>−240px</span></div>
             </div>
-            <p style="font-size:var(--t-support);color:var(--ink-subtle)">The rail carries only what you reach for constantly — <b>New Session</b> and <b>Home</b> — plus one <b>Components</b> disclosure holding the seven destination views. <span style="color:var(--accent-ink)">Click it</span> to expand; the group remembers its state, and everything below it is history.</p>
+            <p style="font-size:var(--t-support);color:var(--ink-subtle)">The rail carries only what you reach for constantly — <b>Home</b> and <b>New Session</b> — plus one <b>Components</b> disclosure holding the six destination views. <span style="color:var(--accent-ink)">Click it</span> to expand; the group remembers its state, and everything below it is history.</p>
             <p style="font-size:var(--t-support);color:var(--ink-subtle)">The wordmark keeps its own line. Sharing the band with the traffic lights saved 32px but buried the brand between two rows of controls; on its own line it introduces the app properly, and the compaction still lands because the row count does the work. In the band, a 16px channel separates the OS's traffic lights from our two controls, and the pair itself sits at 2px — one control group, not two loose buttons.</p>
             <p style="font-size:var(--t-support);color:var(--ink-subtle)">The Recents <b>well is gone</b> — the app's only surface grounded on a <code>color-mix</code> of a <i>border</i> token, at a radius nothing else in the rail uses. The list now sits directly on the rail like every other list, glyphs at their real weight: a chat is a message square, a diverged session is a branch. Running sessions get a trailing status dot; the ring-and-glow stays in the chat.</p>
-            <p style="font-size:var(--t-support);color:var(--ink-subtle)">Width stays 240px. Rows stay 32px — already the rail rhythm, now written down.</p>
+            <p style="font-size:var(--t-support);color:var(--ink-subtle)"><b>"Apps" is not a concept.</b> Biorouter has Applications, full stop. The second row is a conditional entry (hidden unless an extension advertises MCP apps) listing a different source — <code>/agent/list_apps</code> rather than the apps you built — under a name a user cannot tell apart from its neighbour. It folds into Applications as a section there. Width stays 240px; rows stay 32px — already the rail rhythm, now written down.</p>
           </div>
         </div>
       </div>
@@ -1552,6 +1568,56 @@ test result: <span class="p">ok</span>. 122 passed; 0 failed; 2 ignored
       </div>
 
       <div class="card">
+        <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap">
+          <h3 style="margin:0">A long paste — collapsed by default</h3>
+          <span class="pill" style="background:color-mix(in srgb,var(--info) 18%,transparent);color:var(--info)">Not built yet · next round</span>
+        </div>
+        <p class="rule">Paste a stack trace, a CSV or half a log file and today the bubble renders every line of it, so one message can push the whole conversation off screen and the reply that followed becomes unreachable without a long scroll back. Nothing truncates. This is the pre-design for the fix; it is <b>not</b> in the ten phases, and is written down here so the next round starts from a decided shape rather than an invented one.</p>
+        <div class="vs">
+          <div class="vs-col">
+            <div class="vs-tag">Collapsed — the default above the threshold</div>
+            <div class="chatpane">
+              <div class="umsg umsg--clamped" id="pasteDemo">
+<span class="pasteinner">Traceback (most recent call last):
+  File "run_pipeline.py", line 118, in &lt;module&gt;
+    main(parse_args())
+  File "run_pipeline.py", line 94, in main
+    adata = qc.filter_cells(adata, min_genes=200)
+  File "/opt/conda/lib/python3.12/site-packages/qc/filters.py", line 61
+    mask = counts &gt;= min_genes
+ValueError: operands could not be broadcast together with shapes (18452,) (0,)
+  File "/opt/conda/lib/python3.12/site-packages/qc/filters.py", line 62
+    adata = adata[mask].copy()
+  File "/opt/conda/lib/python3.12/site-packages/anndata/_core/anndata.py", line 1102
+    raise IndexError(msg)
+IndexError: index out of range for axis 0 with size 18452</span>
+              </div>
+              <div class="pastefoot">
+                <button class="btn btn--ghost btn--sm" id="pasteToggle">Show more</button>
+                <span class="pastemeta">214 lines · 8.4 KB pasted</span>
+              </div>
+              <div class="meta">9:34 AM · <span style="color:var(--accent-ink)">Copy</span> · <span style="color:var(--accent-ink)">Diverge</span></div>
+            </div>
+            <p class="vnote">Clamped to <b>10 lines</b>, with the bubble's own fill fading the cut so it reads as "there is more" rather than as a rendering bug — a gradient in the fill token, so it works in every family without a second colour. The control sits <i>below</i> the bubble, not inside it: it belongs to the message, not to the text.</p>
+          </div>
+          <div class="vs-col">
+            <div class="vs-tag on">The rules it carries</div>
+            <div class="stage" style="padding:14px">
+              <ul style="margin:0;padding-left:18px;font-size:var(--t-secondary);color:var(--ink-muted);display:flex;flex-direction:column;gap:8px">
+                <li><b>Threshold, not always-on.</b> Collapse only above ~10 lines or ~600 characters. A three-line paste that collapses is worse than no collapse at all.</li>
+                <li><b>The count is the value.</b> "214 lines · 8.4 KB" tells you whether expanding is worth it; a bare "Show more" does not.</li>
+                <li><b>Expanded is sticky per message</b>, and never re-collapses while you are reading. Re-collapsing on scroll is the behaviour people hate in every app that does it.</li>
+                <li><b>Copy takes the whole thing</b>, collapsed or not — the clamp is a view state, never a content state.</li>
+                <li><b>Send it collapsed too.</b> The same clamp applies in the composer's queued-message chip, so a long paste does not push the toolbar off screen before you have sent it.</li>
+                <li><b>A very large paste is an attachment.</b> Past ~50KB the right answer is not a taller bubble — it is a file chip with a preview, which the composer already knows how to render.</li>
+              </ul>
+            </div>
+            <p class="vnote">Motion: expanding animates <code>max-height</code> at <code>--dur-med</code>, the tier for layout rearrangement. Collapsing is instant — you are moving away from it.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
         <h3>The composer — the same principle, one surface up</h3>
         <p class="rule">The user bubble drops its border because the fill already separates it. The composer has the stronger version of that argument: it carries a 1px border <i>and</i> <code>--shadow-composer</code>, so it is the one element in the app stating its edge twice. The shadow is what lifts it off the canvas; the border is the redundant half.</p>
         <div class="vs">
@@ -1589,10 +1655,44 @@ test result: <span class="p">ok</span>. 122 passed; 0 failed; 2 ignored
                 <button class="btn btn--primary iconbtn" aria-label="Send"><svg class="ico"><use href="#i-send"/></svg></button>
               </div>
             </div>
-            <p class="vnote"><b>No border.</b> The elevation lifts it; a 1px inset ring keeps the edge crisp in dark families where a shadow alone disappears — the shared floating-surface recipe from §02. Radius 16 → 12 with everything else, and one 12px inset grid replaces the four that meet inside the card today. <b>The toolbar is unchanged</b> — same controls, same order, same reading; each chip just gets a real hit area at one icon size. <span style="color:var(--accent-ink)">Click the composer</span>: focus is a 2px inset accent ring — the same one every input in §03 uses, so nothing shifts layout and drag-over can speak the same language.</p>
+            <p class="vnote"><b>No border.</b> The elevation lifts it; a 1px inset ring keeps the edge crisp in dark families where a shadow alone disappears — the shared floating-surface recipe from §02. Radius 16 → 12 with everything else, and one 12px inset grid replaces the four that meet inside the card today. <b>The toolbar does not move.</b> Same controls, same order, same spacing, same icon sizes — pixel for pixel. That is deliberate: if the toolbar shifted too you could not tell which change did what, and the only thing being argued here is the surface. <span style="color:var(--accent-ink)">Click the composer</span>: focus is a 2px inset accent ring — the same one every input in §03 uses, so nothing shifts layout and drag-over can speak the same language.</p>
           </div>
         </div>
         <p class="note">This is the element the design system already singles out as the only one permitted <code>--elev-composer</code>. Making it the one element that also draws a border was never a decision — it accumulated. Dropping it costs nothing and settles the rule for every raised surface: <b>elevation or a border, never both.</b></p>
+
+        <div style="margin-top:22px;padding-top:18px;border-top:1px solid var(--line)">
+          <h3 style="font-size:var(--t-sub);margin-bottom:4px">Collapsed — when the artifact panel takes the width</h3>
+          <p class="rule">Open a preview beside the chat and the column narrows until the toolbar cannot hold its row; the app already folds every control behind a single <b>+</b> at the lower left. That state exists but was never designed — it inherits the same four insets and the same repainted Send. Here it is on the proposed surface.</p>
+          <div class="vs">
+            <div class="vs-col">
+              <div class="vs-tag on">Collapsed</div>
+              <div class="composer composer--new composer--narrow" tabindex="0">
+                <div class="cinput">Ask anything, or drop a file</div>
+                <div class="ctools">
+                  <button class="btn btn--ghost iconbtn" id="cpopBtn" aria-expanded="false" aria-label="Show composer controls"><svg class="ico"><use href="#i-plus"/></svg></button>
+                  <span class="cchip" style="color:var(--ink-subtle)">gpt-5.5</span>
+                  <span class="sp" style="flex:1"></span>
+                  <button class="btn btn--primary iconbtn" aria-label="Send"><svg class="ico"><use href="#i-send"/></svg></button>
+                </div>
+              </div>
+              <p class="vnote">The <b>+</b> takes the 32px icon-button box, so the collapsed row is the same height as the expanded one — the composer does not change size when the panel opens, only its contents do. Two things never collapse: the <b>model</b>, because it changes what your next message costs and does, and <b>Send</b>. Everything else is one click away.</p>
+            </div>
+            <div class="vs-col">
+              <div class="vs-tag on">What the + opens</div>
+              <div class="stage" style="padding:14px;display:flex;justify-content:center">
+                <div class="cpop">
+                  <div class="mi"><svg class="ico"><use href="#i-folderdot"/></svg>Working directory<span class="sp"></span><span class="kbd">…/Desktop</span></div>
+                  <div class="mi"><svg class="ico"><use href="#i-puzzle"/></svg>Extensions<span class="sp"></span><span class="kbd">4</span></div>
+                  <div class="mi"><svg class="ico"><use href="#i-layers"/></svg>Skills<span class="sp"></span><span class="kbd">11</span></div>
+                  <div class="mi"><svg class="ico"><use href="#i-knowledge"/></svg>Knowledge bases<span class="sp"></span><span class="kbd">2</span></div>
+                  <div class="msep"></div>
+                  <div class="mi"><svg class="ico"><use href="#i-paperclip"/></svg>Attach a file<span class="sp"></span><span class="kbd">⌘U</span></div>
+                </div>
+              </div>
+              <p class="vnote">The standard menu recipe from §04 — 4px container padding, 32px rows, 2px gaps — rather than the bespoke <code>w-64 p-2</code> popover it uses today. Each row keeps its glyph <i>and</i> its current value on the right, so the popover answers "what is set?" without being opened twice. Order matches the expanded row exactly, so the collapse never rearranges anything.</p>
+            </div>
+          </div>
+        </div>
       </div>
 
       <div class="card">
@@ -1841,6 +1941,14 @@ test result: <span class="p">ok</span>. 122 passed; 0 failed; 2 ignored
     document.getElementById(id).addEventListener('click', function () { dlg.close(); });
   });
   dlg.addEventListener('click', function (e) { if (e.target === dlg) dlg.close(); });
+
+  // The long-paste clamp (pre-design; not shipped)
+  var pasteDemo = document.getElementById('pasteDemo');
+  var pasteToggle = document.getElementById('pasteToggle');
+  pasteToggle.addEventListener('click', function () {
+    var open = pasteDemo.classList.toggle('umsg--open');
+    pasteToggle.textContent = open ? 'Show less' : 'Show more';
+  });
 
   // "New Session" is an action, not a destination: a pointer click fires it and
   // the rail moves on, so focus must not linger. `event.detail > 0` is true only
