@@ -335,9 +335,10 @@ exception, so it still works with no client view and with a turn in flight.
 
 #### No client can satisfy the precondition yet
 
-The guard is right and the desktop cannot pass it. **A client that watches a whole turn go
-by does not learn the ids that turn's messages were persisted under**, so the list it sends
-is missing them and the endpoint refuses a session nobody else has touched.
+Tracked as [#59](https://github.com/BaranziniLab/biorouter/issues/59). The guard is right and
+the desktop cannot pass it. **A client that watches a whole turn go by does not learn the ids
+that turn's messages were persisted under**, so the list it sends is missing them and the
+endpoint refuses a session nobody else has touched.
 `a_client_that_watched_the_turn_knows_every_stored_message_id` (in
 `crates/biorouter/tests/conversation_writeback_freshness.rs`, landed `#[ignore]`d because it
 reproduces an open defect rather than guarding a fixed one) drives the real reply loop and

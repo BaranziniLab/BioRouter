@@ -1886,9 +1886,10 @@ async fn stored_ids(h: &Harness) -> Vec<(String, String)> {
         .collect()
 }
 
-/// **KNOWN RED — this is a reproduction of an open defect, not a passing gate.**
-/// Run it with `cargo test -p biorouter --test conversation_writeback_freshness
-/// -- --ignored a_client_that_watched`; it fails in ~0.2s.
+/// **KNOWN RED — this is a reproduction of an open defect (#59), not a passing
+/// gate.** Run it with `cargo test -p biorouter --test
+/// conversation_writeback_freshness -- --ignored a_client_that_watched`; it
+/// fails in ~0.2s.
 ///
 /// `POST /sessions/{id}/edit_message` with `edit_type: "edit"` now REQUIRES
 /// `expectedMessageIds` — the ids of every message the client's view holds — and
@@ -1925,7 +1926,7 @@ async fn stored_ids(h: &Harness) -> Vec<(String, String)> {
 /// `docs/agent-loop/conversation-writeback-freshness.md` — the re-read happens
 /// *after* the concurrent append has committed, so it would name the very row
 /// the guard exists to protect and pass every time.
-#[ignore = "reproduces an open defect: the reply stream does not publish the ids \
+#[ignore = "reproduces open defect #59: the reply stream does not publish the ids \
             messages are persisted under, so `expectedMessageIds` is unsatisfiable"]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_client_that_watched_the_turn_knows_every_stored_message_id() {
