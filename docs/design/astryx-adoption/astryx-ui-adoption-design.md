@@ -339,7 +339,9 @@ The chat is the product, and these are the changes least safe to describe withou
 | Chain-of-thought | a native `<details>`, browser triangle, 4px radius, no motion | the standard 32px disclosure row, chevron **visible at rest** |
 | Tool-call line | a line, not a card (D-17) | unchanged, plus a visible chevron and a legible state (below) |
 
-**One left edge.** Every row in the transcript — a thinking disclosure, a tool call, a paragraph — starts at the same x. The hover wash still breathes 8px wider than the text, achieved with a negative margin against an equal padding, so a row can feel roomy without its content stepping right. The shipped app already does this; it is written down because it is easy to break by giving one row type its own padding.
+**The breathing dot stays.** It is the most elegant thing the app already owns, and thinking keeps it unchanged — a 6px core with an expanding ring and a breathing glow sharing one 1.8s period. The only requirement placed on it is geometric: it occupies the same **16px lead slot** as every chevron and tool glyph, so an active thinking row is left-aligned with the entire transcript rather than sitting in its own indent. When the thought resolves, the dot gives way to a chevron and the row restates itself in the past tense ("Thought for 4.2s"), which is also what makes it obvious the row is now expandable.
+
+**One left edge.** Every row in the transcript — a thinking row, a tool call, a paragraph — starts at the same x. The hover wash still breathes 8px wider than the text, achieved with a negative margin against an equal padding, so a row can feel roomy without its content stepping right. The shipped app already does this; it is written down because it is easy to break by giving one row type its own padding.
 
 #### Tool state — running versus finished
 
@@ -347,6 +349,7 @@ A tool row currently conveys its state almost entirely through its opening verb 
 
 | State | Glyph | Motion | Right slot |
 |---|---|---|---|
+| **Thinking** | the **breathing dot**, kept exactly as it is | 6px core + expanding ring + breathing glow, one 1.8s period | elapsed, counting |
 | Queued | tool glyph, 55% opacity | none | — |
 | **Running** | tool glyph + breathing ring | a 2px accent hairline sweeps the row, 1.5s | elapsed, counting, after 2s |
 | Done | check in `--text-success` | none | elapsed + result summary |

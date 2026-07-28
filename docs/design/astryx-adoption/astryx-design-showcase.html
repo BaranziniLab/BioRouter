@@ -733,6 +733,22 @@ dialog::backdrop { animation:fade var(--dur-med) var(--ease) backwards; }
   content:""; position:absolute; inset:-3px; border-radius:999px;
   border:1px solid var(--accent); animation:breathe-ring 1.8s var(--ease) infinite;
 }
+/* THINKING — the app's existing working motif, kept as-is: a 6px core with an
+   expanding ring and a breathing glow on the same 1.8s period. It occupies the
+   same 16px lead slot as every chevron and tool glyph, so an active thinking
+   row is left-aligned with the entire transcript. */
+.thinkdot { position:relative; width:16px; height:16px; display:grid; place-items:center; }
+.thinkdot i { display:block; width:6px; height:6px; border-radius:999px; background:var(--accent); }
+.thinkdot::before { content:""; position:absolute; inset:0; border-radius:999px; background:var(--accent);
+                    animation:think-glow 1.8s ease-in-out infinite; }
+.thinkdot::after { content:""; position:absolute; inset:0; border-radius:999px; border:1px solid var(--accent);
+                   animation:think-ring 1.8s ease-out infinite; }
+@keyframes think-ring { 0% { transform:scale(.5); opacity:.7; } 100% { transform:scale(1.55); opacity:0; } }
+@keyframes think-glow { 0%,100% { transform:scale(.9); opacity:.14; } 50% { transform:scale(1.18); opacity:.26; } }
+@media (prefers-reduced-motion:reduce) {
+  .thinkdot::before { animation:none; opacity:.18; }
+  .thinkdot::after { animation:none; opacity:.35; transform:scale(1.1); }
+}
 .chatrow--done .lead { color:var(--success); }
 .chatrow--failed { background:color-mix(in srgb, var(--danger) 5%, transparent); }
 .chatrow--failed .lead { color:var(--danger); }
@@ -1780,11 +1796,12 @@ IndexError: index out of range for axis 0 with size 18452</span>
           <div class="vs-col">
             <div class="vs-tag on">Proposed</div>
             <div class="chatpane">
-              <div class="chatrow" data-open="false"><span class="lead"><svg class="ico chev"><use href="#i-chevrondown"/></svg></span>Thinking<span class="right">4.2s</span></div>
+              <div class="chatrow"><span class="lead"><span class="thinkdot"><i></i></span></span>Thinking<span class="right">2.4s</span></div>
+              <div class="chatrow" data-open="false"><span class="lead"><svg class="ico chev"><use href="#i-chevrondown"/></svg></span>Thought for 4.2s<span class="right"></span></div>
               <div class="chatrow" data-open="false"><span class="lead"><svg class="ico chev"><use href="#i-chevrondown"/></svg></span><span class="verb">Ran</span>&nbsp;<span class="target">rg</span>&nbsp;<span class="detail">across 412 files</span><span class="right">1.2s</span></div>
               <p style="margin-top:10px;font-size:14px;line-height:20px">Fourteen clusters at resolution 0.8.</p>
             </div>
-            <p class="vnote">One disclosure component, and <b>one left edge</b>: the chevron, the tool glyph and the prose below all start at the same x. The hover wash still breathes 8px wider than the text — a negative margin against an equal padding — so the row feels roomy without the content stepping right. The chevron is <b>visible at rest</b>; today it appears only on hover, so first-run users get no signal these rows open.</p>
+            <p class="vnote"><b>The breathing dot stays.</b> It is the most elegant thing the app already owns, so thinking keeps it — a 6px core with an expanding ring and a breathing glow on one 1.8s period — and it sits in the same 16px lead slot as every chevron and tool glyph, so an active thinking row is <b>left-aligned with the whole transcript</b>. When the thought resolves the dot gives way to a chevron and the row states its duration in the past tense. Below it, the tool row and the prose start at that same x; the hover wash breathes 8px wider via a negative margin against an equal padding, so rows feel roomy without content stepping right.</p>
           </div>
         </div>
       </div>
@@ -1794,6 +1811,7 @@ IndexError: index out of range for axis 0 with size 18452</span>
         <p class="rule">Today a tool row conveys its state almost entirely through a verb — "Working on / Ran / Problem with / Stopped" — plus an 8px dot on the glyph, and <code>interrupted</code> is drawn with the same grey dot as <code>pending</code>, so <i>Stopped</i> and <i>never started</i> look identical. Five states, one row, aligned on the same edge:</p>
         <div class="stage" style="background:transparent;padding:0">
           <div class="chatpane">
+            <div class="chatrow"><span class="lead"><span class="thinkdot"><i></i></span></span><span class="verb">Thinking</span><span class="right">2.4s</span></div>
             <div class="chatrow chatrow--queued"><span class="lead"><svg class="ico"><use href="#i-workflow"/></svg></span><span class="verb">Queued</span>&nbsp;<span class="target">write_file</span><span class="right">—</span></div>
             <div class="chatrow chatrow--running"><span class="lead"><svg class="ico"><use href="#i-terminal"/></svg></span><span class="verb">Running</span>&nbsp;<span class="target">cargo test</span>&nbsp;<span class="detail">· compiling biorouter-mcp</span><span class="right">12.4s</span></div>
             <div class="chatrow chatrow--done"><span class="lead"><svg class="ico"><use href="#i-check"/></svg></span><span class="verb">Ran</span>&nbsp;<span class="target">rg</span>&nbsp;<span class="detail">across 412 files</span><span class="right">1.2s · 1 result</span></div>
