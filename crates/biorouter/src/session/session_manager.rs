@@ -4883,12 +4883,14 @@ impl SessionStorage {
     /// Delete every message of `session_id` at or after `timestamp`, together
     /// with the side state those rows owned, in ONE transaction.
     ///
-    /// `upper` bounds the delete by rowid. `None` means "whatever exists when
+    /// `bound` bounds the delete by rowid. `None` means "whatever exists when
     /// this transaction takes the write lock", which is the historical
-    /// timestamp-only behaviour; `Some(max_rowid)` restricts it to the rows a
+    /// timestamp-only behaviour; `Some(basis)` restricts it to the rows that
     /// caller's own view covered, so an append that landed after that view was
     /// taken — necessarily newer, therefore necessarily inside an open-ended
     /// `created_timestamp >= ?` range — is NOT part of the tail being dropped.
+    /// A `basis` from a previous incarnation of the id is refused: its rowids
+    /// describe a conversation that no longer exists.
     ///
     /// Three things used to be skipped here that the rewrite path has always
     /// done, and all three are why this is a transaction rather than a
@@ -4906,8 +4908,8 @@ impl SessionStorage {
         &self,
         session_id: &str,
         timestamp: i64,
-        upper: Option<i64>,
-    ) -> Result<(bool, usize)> {
+        bound: Option<ConversationRevision>,
+    ) -> Result<TruncateOutcome> {
         let pool = self.pool().await?;
         let mut tx = pool.begin().await?;
 
@@ -4924,11 +4926,20 @@ impl SessionStorage {
             .await?;
         if touched.rows_affected() == 0 {
             tx.rollback().await?;
-            return Ok((false, 0));
+            return Ok(TruncateOutcome::SessionNotFound);
         }
 
-        let upper = match upper {
-            Some(upper) => upper,
+        let upper = match bound {
+            // Row identity is checked UNDER THE LOCK, alongside the watermark it
+            // qualifies — reading it from the pool first would leave a window in
+            // which the id is re-issued between the check and the delete.
+            Some(basis) => {
+                if Self::read_incarnation(&mut tx, session_id).await? != basis.incarnation {
+                    tx.rollback().await?;
+                    return Ok(TruncateOutcome::Stale);
+                }
+                basis.max_rowid
+            }
             // Read under the lock, so it names exactly the rows that exist now.
             None => {
                 sqlx::query_scalar::<_, i64>(
@@ -4955,7 +4966,7 @@ impl SessionStorage {
             .await?;
         if doomed.is_empty() {
             tx.commit().await?;
-            return Ok((true, 0));
+            return Ok(TruncateOutcome::Truncated { removed: 0 });
         }
         let dropped_a_stub = doomed
             .iter()
@@ -5004,7 +5015,7 @@ impl SessionStorage {
         }
 
         tx.commit().await?;
-        Ok((true, removed))
+        Ok(TruncateOutcome::Truncated { removed })
     }
 
     async fn truncate_conversation(&self, session_id: &str, timestamp: i64) -> Result<()> {
@@ -5020,23 +5031,8 @@ impl SessionStorage {
         timestamp: i64,
         basis: ConversationRevision,
     ) -> Result<TruncateOutcome> {
-        // Row identity before the watermark is trusted, for the same reason the
-        // guarded rewrite checks it (#51 W3): a session id is reusable, and a
-        // rowid watermark from a previous occupant describes a conversation
-        // that no longer exists.
-        let pool = self.pool().await?;
-        let current = Self::read_revision(pool, session_id).await?;
-        if current.incarnation != basis.incarnation {
-            return Ok(TruncateOutcome::Stale);
-        }
-
-        let (found, removed) = self
-            .truncate_conversation_inner(session_id, timestamp, Some(basis.max_rowid))
-            .await?;
-        if !found {
-            return Ok(TruncateOutcome::SessionNotFound);
-        }
-        Ok(TruncateOutcome::Truncated { removed })
+        self.truncate_conversation_inner(session_id, timestamp, Some(basis))
+            .await
     }
 
     // BR-43 shadow-git checkpoints: the `checkpoints` side-table CRUD. Kept here
