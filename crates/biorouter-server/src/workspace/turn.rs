@@ -469,7 +469,30 @@ async fn drive_stream<S>(
 where
     S: futures::Stream<Item = anyhow::Result<AgentEvent>> + Unpin,
 {
-    while let Some(item) = stream.next().await {
+    loop {
+        // The hard cancellation escape. Without it this loop can only end when
+        // the agent yields, and `AppState::cancel_turn` deliberately does not
+        // remove the session's map entry — it relies on the `TurnGuard`
+        // clearing the slot as the turn task unwinds. So an agent parked inside
+        // a provider call that never observes the token would hold the turn
+        // lock indefinitely and every later `/reply` for that session would
+        // 409 until the daemon restarted; it would also make
+        // `ActiveWorkKind::DetachedTurn`'s cancel closure, which does nothing
+        // but trip this token, a no-op.
+        //
+        // Unbiased, exactly like `/reply`'s `select!`: a stream item that is
+        // already ready may still be processed in the iteration the token
+        // trips. That is the behaviour Task 8 replaces, so it is the behaviour
+        // reproduced here.
+        let item = tokio::select! {
+            _ = cancel_token.cancelled() => {
+                tracing::info!("turn: cancelled");
+                break;
+            }
+            item = stream.next() => item,
+        };
+        let Some(item) = item else { break };
+
         match item {
             Ok(event) => {
                 // Bookkeeping that belongs to the TURN, not to any consumer:
@@ -538,7 +561,6 @@ where
             }
         }
     }
-    let _ = cancel_token;
     false
 }
 
@@ -919,6 +941,54 @@ mod tests {
         assert_eq!(
             provider_kind.as_deref(),
             Some(ProviderErrorKind::RateLimit.wire_code())
+        );
+    }
+
+    /// Cancelling a turn must end it even when the agent is not yielding.
+    ///
+    /// `/reply`'s loop is a `select!` whose first arm is
+    /// `_ = task_cancel.cancelled() => break`, so tripping the token ends the
+    /// turn within one iteration *regardless of what the agent is doing*. A
+    /// bare `while let Some(item) = stream.next().await` can only end when the
+    /// agent yields, and `AppState::cancel_turn` deliberately does NOT remove
+    /// the map entry — it relies on the `TurnGuard` clearing the slot as the
+    /// turn task unwinds. So an agent parked inside a provider call that never
+    /// observes the token would hold the session's turn lock forever and every
+    /// later `/reply` would 409 until the daemon restarted. This codebase has
+    /// already shipped that failure once (the Versa/Bedrock no-timeout freeze).
+    /// It also neuters `ActiveWorkKind::DetachedTurn`'s cancel closure, whose
+    /// only effect is to trip this same token.
+    ///
+    /// `stream::pending()` is the agent that never yields.
+    #[tokio::test]
+    async fn a_cancelled_turn_escapes_a_stream_that_never_yields() {
+        let sid = "br71-drive-stream-cancel";
+        let mut rx = session_events::subscribe(sid);
+        let mut all = Conversation::new_unvalidated(Vec::new());
+        let mut stream = futures::stream::pending::<anyhow::Result<AgentEvent>>();
+
+        let cancel = CancellationToken::new();
+        let trip = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            trip.cancel();
+        });
+
+        let terminal_error = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            drive_stream(sid, &mut stream, &cancel, &mut all),
+        )
+        .await
+        .expect("a cancelled turn must escape a stalled agent stream");
+
+        // Cancellation is not an error terminal: `/reply` breaks with
+        // `terminal_error` still false and finishes with `reason: "cancelled"`,
+        // and `run_turn` reads the token for the same decision.
+        assert!(!terminal_error, "cancellation is not a terminal error");
+        let seen = drain(&mut rx).await;
+        assert!(
+            seen.is_empty(),
+            "the loop publishes nothing of its own on cancel: {seen:?}"
         );
     }
 
