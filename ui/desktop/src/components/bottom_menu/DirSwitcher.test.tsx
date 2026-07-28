@@ -249,3 +249,52 @@ describe('DirSwitcher once the chat has messages (locked, #44)', () => {
     expect(onWorkingDirChange).not.toHaveBeenCalled();
   });
 });
+
+// #50 — the chip's Tooltip must keep ONE control mode for its whole life.
+// Both branches render `<TooltipProvider><Tooltip>` in the same position, so
+// React reconciles them into a single Tooltip instance; when the working
+// directory locks after the first message the instance would flip from
+// controlled (`open`/`onOpenChange`) to uncontrolled. Radix warns about it,
+// and the state it warns about is the one that later yields a stuck-open or
+// unresponsive tooltip.
+describe('DirSwitcher tooltip control mode (#50)', () => {
+  const CONTROL_MODE_WARNING = /changing from (controlled|uncontrolled) to/;
+
+  it('does not flip the tooltip between controlled and uncontrolled when the dir locks', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const { rerender } = render(
+      <DirSwitcher className="" sessionId="session-1" workingDir={WORKING_DIR} locked={false} />
+    );
+    // The chat gets its first message: the same chip becomes read-only.
+    rerender(
+      <DirSwitcher className="" sessionId="session-1" workingDir={WORKING_DIR} locked={true} />
+    );
+    // ...and a later unlock (new empty session in the same chip) must not flip back.
+    rerender(
+      <DirSwitcher className="" sessionId="session-2" workingDir={WORKING_DIR} locked={false} />
+    );
+
+    await waitFor(() => expect(screen.getByRole('button')).toBeInTheDocument());
+
+    const controlModeWarnings = warn.mock.calls.filter((call) =>
+      call.some((arg) => typeof arg === 'string' && CONTROL_MODE_WARNING.test(arg))
+    );
+    expect(controlModeWarnings).toEqual([]);
+
+    warn.mockRestore();
+  });
+
+  it('still reveals the full path on hover once locked', async () => {
+    const user = userEvent.setup();
+    const { rerender } = render(
+      <DirSwitcher className="" sessionId="session-1" workingDir={WORKING_DIR} locked={false} />
+    );
+    rerender(
+      <DirSwitcher className="" sessionId="session-1" workingDir={WORKING_DIR} locked={true} />
+    );
+
+    await user.hover(screen.getByTestId('dir-switcher-locked'));
+    expect(await screen.findByRole('tooltip')).toHaveTextContent(WORKING_DIR);
+  });
+});
