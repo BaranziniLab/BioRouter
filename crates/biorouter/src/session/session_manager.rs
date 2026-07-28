@@ -3318,6 +3318,28 @@ impl SessionStorage {
     ) -> Result<()> {
         let mut tx = pool.begin().await?;
 
+        // LOAD-BEARING FIRST STATEMENT, AND IT MUST BE A WRITE. DO NOT REORDER.
+        //
+        // sqlx's `pool.begin()` emits a bare (DEFERRED) `BEGIN`. Under WAL, a
+        // deferred transaction that READS first pins a read snapshot; if another
+        // connection commits before our first write, the upgrade to a writer
+        // returns SQLITE_BUSY_SNAPSHOT *immediately* — measured at 0.0000s,
+        // i.e. the 5s `busy_timeout` is bypassed, because a busy handler is not
+        // consulted for a snapshot upgrade. Opening with a WRITE takes the
+        // single per-file write lock up front, so any SELECT that follows reads
+        // true latest-committed state and the DELETE below cannot fail that way.
+        // (A concurrent writer then blocks on the busy timeout, which is
+        // correct.) The freshness guard added on top of this relies on it.
+        //
+        // It also fixes a real gap: this rewrite never bumped
+        // `sessions.updated_at`, so a compaction or an edit was invisible to the
+        // `ORDER BY updated_at DESC` session list even though it changed the
+        // session's content. `insert_message` has always bumped it.
+        sqlx::query("UPDATE sessions SET updated_at = datetime('now') WHERE id = ?")
+            .bind(session_id)
+            .execute(&mut *tx)
+            .await?;
+
         sqlx::query("DELETE FROM messages WHERE session_id = ?")
             .bind(session_id)
             .execute(&mut *tx)
@@ -7946,6 +7968,42 @@ mod tests {
         assert!(!before.contains(new_id));
     }
 
+    /// A rewrite changes the session's content, so it must move `updated_at`
+    /// like any other write — otherwise a compacted or edited session sorts as
+    /// untouched in the `ORDER BY updated_at DESC` session list. (The bump is
+    /// also the rewrite transaction's write-first lock acquisition; see the
+    /// comment on `replace_conversation_inner`.)
+    #[tokio::test]
+    async fn a_conversation_rewrite_bumps_the_session_updated_at() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let s = sm
+            .create_session(PathBuf::from("/tmp/a"), "s".into(), SessionType::User)
+            .await
+            .unwrap();
+        sm.add_message(&s.id, &umsg(1, "hello")).await.unwrap();
+
+        // Back-date it so the one-second resolution of `datetime('now')` cannot
+        // make a real bump look like no change.
+        let pool = sm.storage().pool().await.unwrap();
+        sqlx::query("UPDATE sessions SET updated_at = '2000-01-01 00:00:00' WHERE id = ?")
+            .bind(&s.id)
+            .execute(pool)
+            .await
+            .unwrap();
+        let before = sm.get_session(&s.id, false).await.unwrap().updated_at;
+
+        sm.replace_conversation(&s.id, &Conversation::new_unvalidated(vec![umsg(2, "bye")]))
+            .await
+            .unwrap();
+
+        let after = sm.get_session(&s.id, false).await.unwrap().updated_at;
+        assert!(
+            after > before,
+            "a whole-history rewrite must bump updated_at ({before} -> {after})"
+        );
+    }
+
     /// #41 resilience: inserting a message whose caller-supplied id already
     /// exists in the session with DIFFERENT content must NOT abort — the store
     /// re-mints the uid, keeps both rows, and RETURNS the effective uid so the
@@ -8833,4 +8891,5 @@ mod activity_tests {
         assert!(!w.days[0].tokens_complete);
         assert!(w.days[1].tokens_complete);
     }
+
 }
