@@ -2260,6 +2260,40 @@ mod tests {
         DeveloperServer::new()
     }
 
+    /// Enters a directory for the duration of a `#[serial]` test and puts the
+    /// process back where it was on drop.
+    ///
+    /// The tests below run in a temporary directory and let the `TempDir` drop
+    /// at the end — which deletes the directory the **process** is standing in
+    /// and leaves everything that runs afterwards with no valid working
+    /// directory. `std::env::current_dir()` then fails for reasons that have
+    /// nothing to do with the code under test, which is precisely why #64's
+    /// panic was so easy to reproduce in this file: the condition it needed was
+    /// already lying around, left by an earlier test.
+    ///
+    /// Restoration has to be on `Drop`, not a line at the end of the test: a
+    /// failing assertion unwinds past that line, so exactly the runs that most
+    /// need a clean process are the ones that leak. Declaring the guard *after*
+    /// the `TempDir` also gets the teardown order right — locals drop in reverse,
+    /// so the cwd is restored before the directory is removed.
+    struct CwdGuard(Option<PathBuf>);
+
+    impl CwdGuard {
+        fn enter(dir: impl AsRef<Path>) -> Self {
+            let previous = std::env::current_dir().ok();
+            std::env::set_current_dir(dir).unwrap();
+            CwdGuard(previous)
+        }
+    }
+
+    impl Drop for CwdGuard {
+        fn drop(&mut self) {
+            if let Some(dir) = self.0.take() {
+                let _ = std::env::set_current_dir(dir);
+            }
+        }
+    }
+
     /// #2: the shell runs in the session working directory, an absolute
     /// `working_directory` overrides it, and a relative one resolves against it.
     #[test]
@@ -2593,12 +2627,11 @@ mod tests {
     fn editor_jail_is_not_widened_when_session_dir_disappears() {
         let saved_env = std::env::var("BIOROUTER_WORKING_DIR").ok();
         std::env::remove_var("BIOROUTER_WORKING_DIR");
-        let saved_cwd = std::env::current_dir().ok();
 
         // The process sits in `outside`; the session is jailed to `session`.
         let outside = tempfile::tempdir().unwrap();
         let outside_path = std::fs::canonicalize(outside.path()).unwrap();
-        std::env::set_current_dir(&outside_path).unwrap();
+        let _cwd = CwdGuard::enter(&outside_path);
 
         let session = tempfile::tempdir().unwrap();
         let server = DeveloperServer::new().with_working_dir(session.path().to_path_buf());
@@ -2618,9 +2651,7 @@ mod tests {
 
         let outcome = server.resolve_path_jailed(&probe_str, false);
 
-        if let Some(dir) = saved_cwd {
-            let _ = std::env::set_current_dir(dir);
-        }
+        // The cwd is `CwdGuard`'s job now; only the env var is restored by hand.
         if let Some(v) = saved_env {
             std::env::set_var("BIOROUTER_WORKING_DIR", v);
         }
@@ -2686,7 +2717,6 @@ mod tests {
     #[serial]
     fn editor_jail_is_not_widened_to_the_env_base_when_session_dir_disappears() {
         let saved_env = std::env::var("BIOROUTER_WORKING_DIR").ok();
-        let saved_cwd = std::env::current_dir().ok();
 
         // The env base is the *parent*; the session works in a subdirectory of
         // it. This is the shape that widens: the two do not vanish together.
@@ -2713,9 +2743,8 @@ mod tests {
 
         let outcome = server.resolve_path_jailed(&probe_str, false);
 
-        if let Some(dir) = saved_cwd {
-            let _ = std::env::set_current_dir(dir);
-        }
+        // This test never moves the process cwd, so only the env var needs
+        // restoring before the assertions can unwind.
         match saved_env {
             Some(v) => std::env::set_var("BIOROUTER_WORKING_DIR", v),
             None => std::env::remove_var("BIOROUTER_WORKING_DIR"),
@@ -2746,23 +2775,20 @@ mod tests {
     fn resolve_path_errors_instead_of_panicking_when_process_cwd_is_gone() {
         let saved_env = std::env::var("BIOROUTER_WORKING_DIR").ok();
         std::env::remove_var("BIOROUTER_WORKING_DIR");
-        let saved_cwd = std::env::current_dir().ok();
 
         // No session working directory: the process cwd is the intended base.
+        // This test is the one that genuinely *wants* the process standing on a
+        // deleted directory, so `CwdGuard` earning its keep here — restoring on
+        // unwind, not at a line the assertions jump over — is the whole point.
         let server = DeveloperServer::new();
         let tmp = tempfile::tempdir().unwrap();
-        std::env::set_current_dir(tmp.path()).unwrap();
+        let _cwd = CwdGuard::enter(tmp.path());
         drop(tmp);
 
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             server.resolve_path_jailed("scratch.txt", false)
         }));
 
-        // Put the process back on a real directory *before* asserting, so a
-        // failure here cannot strand the rest of the suite without a cwd.
-        if let Some(dir) = saved_cwd {
-            let _ = std::env::set_current_dir(dir);
-        }
         if let Some(v) = saved_env {
             std::env::set_var("BIOROUTER_WORKING_DIR", v);
         }
@@ -2956,7 +2982,7 @@ mod tests {
     #[serial]
     async fn test_text_editor_size_limits() {
         let temp_dir = tempfile::tempdir().unwrap();
-        std::env::set_current_dir(&temp_dir).unwrap();
+        let _cwd = CwdGuard::enter(temp_dir.path());
         let server = create_test_server();
 
         // Test file size limit
@@ -3020,7 +3046,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let file_path = temp_dir.path().join("test.txt");
         let file_path_str = file_path.to_str().unwrap();
-        std::env::set_current_dir(&temp_dir).unwrap();
+        let _cwd = CwdGuard::enter(temp_dir.path());
 
         let server = create_test_server();
 
@@ -3074,7 +3100,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let file_path = temp_dir.path().join("doc.txt");
         let file_path_str = file_path.to_str().unwrap().to_string();
-        std::env::set_current_dir(&temp_dir).unwrap();
+        let _cwd = CwdGuard::enter(temp_dir.path());
         let server = create_test_server();
 
         let write = |text: &str| {
@@ -3120,7 +3146,7 @@ mod tests {
     #[serial]
     async fn test_shell_redirect_snapshot_enables_undo() {
         let temp_dir = tempfile::tempdir().unwrap();
-        std::env::set_current_dir(&temp_dir).unwrap();
+        let _cwd = CwdGuard::enter(temp_dir.path());
         let out = temp_dir.path().join("out.txt");
         std::fs::write(&out, "before\n").unwrap();
         let server = create_test_server();
@@ -3140,7 +3166,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let file_path = temp_dir.path().join("test.txt");
         let file_path_str = file_path.to_str().unwrap();
-        std::env::set_current_dir(&temp_dir).unwrap();
+        let _cwd = CwdGuard::enter(temp_dir.path());
 
         let server = create_test_server();
 
@@ -3199,7 +3225,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let file_path = temp_dir.path().join("test.txt");
         let file_path_str = file_path.to_str().unwrap();
-        std::env::set_current_dir(&temp_dir).unwrap();
+        let _cwd = CwdGuard::enter(temp_dir.path());
 
         let server = create_test_server();
 
@@ -3267,7 +3293,7 @@ mod tests {
     #[serial]
     async fn test_biorouter_ignore_basic_patterns() {
         let temp_dir = tempfile::tempdir().unwrap();
-        std::env::set_current_dir(&temp_dir).unwrap();
+        let _cwd = CwdGuard::enter(temp_dir.path());
 
         // Create .biorouterignore file with patterns
         fs::write(".biorouterignore", "secret.txt\n*.env").unwrap();
@@ -3307,7 +3333,7 @@ mod tests {
     #[serial]
     async fn test_text_editor_respects_ignore_patterns() {
         let temp_dir = tempfile::tempdir().unwrap();
-        std::env::set_current_dir(&temp_dir).unwrap();
+        let _cwd = CwdGuard::enter(temp_dir.path());
 
         // Create .biorouterignore file
         fs::write(".biorouterignore", "secret.txt").unwrap();
@@ -3359,7 +3385,7 @@ mod tests {
     fn test_shell_respects_ignore_patterns() {
         run_shell_test(|| async {
             let temp_dir = tempfile::tempdir().unwrap();
-            std::env::set_current_dir(&temp_dir).unwrap();
+            let _cwd = CwdGuard::enter(temp_dir.path());
 
             let server = create_test_server();
             let running_service = serve_directly(server.clone(), create_test_transport(), None);
@@ -3427,7 +3453,7 @@ mod tests {
     #[serial]
     async fn test_text_editor_descriptions() {
         let temp_dir = tempfile::tempdir().unwrap();
-        std::env::set_current_dir(&temp_dir).unwrap();
+        let _cwd = CwdGuard::enter(temp_dir.path());
 
         // Test without editor API configured (should be the case in tests due to cfg!(test))
         let server = create_test_server();
@@ -3452,7 +3478,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let file_path = temp_dir.path().join("test.txt");
         let file_path_str = file_path.to_str().unwrap();
-        std::env::set_current_dir(&temp_dir).unwrap();
+        let _cwd = CwdGuard::enter(temp_dir.path());
 
         let server = create_test_server();
 
@@ -3514,7 +3540,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let file_path = temp_dir.path().join("test.txt");
         let file_path_str = file_path.to_str().unwrap();
-        std::env::set_current_dir(&temp_dir).unwrap();
+        let _cwd = CwdGuard::enter(temp_dir.path());
 
         let server = create_test_server();
 
@@ -3574,7 +3600,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let file_path = temp_dir.path().join("test.txt");
         let file_path_str = file_path.to_str().unwrap();
-        std::env::set_current_dir(&temp_dir).unwrap();
+        let _cwd = CwdGuard::enter(temp_dir.path());
 
         let server = create_test_server();
 
@@ -3618,7 +3644,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let file_path = temp_dir.path().join("test.txt");
         let file_path_str = file_path.to_str().unwrap();
-        std::env::set_current_dir(&temp_dir).unwrap();
+        let _cwd = CwdGuard::enter(temp_dir.path());
 
         let server = create_test_server();
 
@@ -3678,7 +3704,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let file_path = temp_dir.path().join("test.txt");
         let file_path_str = file_path.to_str().unwrap();
-        std::env::set_current_dir(&temp_dir).unwrap();
+        let _cwd = CwdGuard::enter(temp_dir.path());
 
         let server = create_test_server();
 
@@ -3740,7 +3766,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let file_path = temp_dir.path().join("test.txt");
         let file_path_str = file_path.to_str().unwrap();
-        std::env::set_current_dir(&temp_dir).unwrap();
+        let _cwd = CwdGuard::enter(temp_dir.path());
 
         let server = create_test_server();
 
@@ -3800,7 +3826,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let file_path = temp_dir.path().join("test.txt");
         let file_path_str = file_path.to_str().unwrap();
-        std::env::set_current_dir(&temp_dir).unwrap();
+        let _cwd = CwdGuard::enter(temp_dir.path());
 
         let server = create_test_server();
 
@@ -3860,7 +3886,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let file_path = temp_dir.path().join("test.txt");
         let file_path_str = file_path.to_str().unwrap();
-        std::env::set_current_dir(&temp_dir).unwrap();
+        let _cwd = CwdGuard::enter(temp_dir.path());
 
         let server = create_test_server();
 
@@ -3905,7 +3931,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let file_path = temp_dir.path().join("test.txt");
         let file_path_str = file_path.to_str().unwrap();
-        std::env::set_current_dir(&temp_dir).unwrap();
+        let _cwd = CwdGuard::enter(temp_dir.path());
 
         let server = create_test_server();
 
@@ -3966,7 +3992,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let file_path = temp_dir.path().join("test.txt");
         let file_path_str = file_path.to_str().unwrap();
-        std::env::set_current_dir(&temp_dir).unwrap();
+        let _cwd = CwdGuard::enter(temp_dir.path());
 
         let server = create_test_server();
 
@@ -4034,7 +4060,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let file_path = temp_dir.path().join("nonexistent.txt");
         let file_path_str = file_path.to_str().unwrap();
-        std::env::set_current_dir(&temp_dir).unwrap();
+        let _cwd = CwdGuard::enter(temp_dir.path());
 
         let server = create_test_server();
 
@@ -4064,7 +4090,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let file_path = temp_dir.path().join("large_file.txt");
         let file_path_str = file_path.to_str().unwrap();
-        std::env::set_current_dir(&temp_dir).unwrap();
+        let _cwd = CwdGuard::enter(temp_dir.path());
 
         let server = create_test_server();
 
@@ -4166,7 +4192,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let file_path = temp_dir.path().join("file_2000.txt");
         let file_path_str = file_path.to_str().unwrap();
-        std::env::set_current_dir(&temp_dir).unwrap();
+        let _cwd = CwdGuard::enter(temp_dir.path());
 
         let server = create_test_server();
 
@@ -4227,7 +4253,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let file_path = temp_dir.path().join("small_file.txt");
         let file_path_str = file_path.to_str().unwrap();
-        std::env::set_current_dir(&temp_dir).unwrap();
+        let _cwd = CwdGuard::enter(temp_dir.path());
 
         let server = create_test_server();
 
@@ -4289,7 +4315,7 @@ mod tests {
         let temp_path = temp_dir.path();
 
         // Set the current directory before creating the server
-        std::env::set_current_dir(temp_path).unwrap();
+        let _cwd = CwdGuard::enter(temp_path);
 
         // Create some test files and directories
         fs::create_dir(temp_path.join("subdir1")).unwrap();
@@ -4348,7 +4374,7 @@ mod tests {
         let temp_path = temp_dir.path();
 
         // Set the current directory before creating the server
-        std::env::set_current_dir(temp_path).unwrap();
+        let _cwd = CwdGuard::enter(temp_path);
 
         // Create more than 50 files to test the limit
         for i in 0..60 {
@@ -4404,7 +4430,7 @@ mod tests {
         let temp_path = temp_dir.path();
 
         // Set the current directory before creating the server
-        std::env::set_current_dir(temp_path).unwrap();
+        let _cwd = CwdGuard::enter(temp_path);
 
         let server = create_test_server();
 
@@ -4651,7 +4677,7 @@ mod tests {
     #[serial]
     async fn test_process_shell_output_short() {
         let dir = TempDir::new().unwrap();
-        std::env::set_current_dir(dir.path()).unwrap();
+        let _cwd = CwdGuard::enter(dir.path());
 
         let server = create_test_server();
 
@@ -4668,7 +4694,7 @@ mod tests {
     #[serial]
     async fn test_process_shell_output_empty() {
         let dir = TempDir::new().unwrap();
-        std::env::set_current_dir(dir.path()).unwrap();
+        let _cwd = CwdGuard::enter(dir.path());
 
         let server = create_test_server();
 
@@ -4686,7 +4712,7 @@ mod tests {
     fn test_shell_output_without_trailing_newline() {
         run_shell_test(|| async {
             let temp_dir = tempfile::tempdir().unwrap();
-            std::env::set_current_dir(&temp_dir).unwrap();
+            let _cwd = CwdGuard::enter(temp_dir.path());
 
             let server = create_test_server();
             let running_service = serve_directly(server.clone(), create_test_transport(), None);
@@ -4748,7 +4774,7 @@ mod tests {
     #[serial]
     async fn test_shell_output_handling_logic() {
         let temp_dir = tempfile::tempdir().unwrap();
-        std::env::set_current_dir(&temp_dir).unwrap();
+        let _cwd = CwdGuard::enter(temp_dir.path());
 
         let server = create_test_server();
 
@@ -4782,7 +4808,7 @@ mod tests {
     #[serial]
     async fn test_default_patterns_when_no_ignore_files() {
         let temp_dir = tempfile::tempdir().unwrap();
-        std::env::set_current_dir(&temp_dir).unwrap();
+        let _cwd = CwdGuard::enter(temp_dir.path());
 
         // Don't create any ignore files
         let server = create_test_server();
@@ -4810,7 +4836,7 @@ mod tests {
     #[serial]
     fn test_resolve_path_absolute() {
         let temp_dir = tempfile::tempdir().unwrap();
-        std::env::set_current_dir(&temp_dir).unwrap();
+        let _cwd = CwdGuard::enter(temp_dir.path());
 
         let server = create_test_server();
         let absolute_path = temp_dir.path().join("test.txt");
@@ -4824,7 +4850,7 @@ mod tests {
     #[serial]
     async fn test_resolve_path_relative() {
         let temp_dir = tempfile::tempdir().unwrap();
-        std::env::set_current_dir(&temp_dir).unwrap();
+        let _cwd = CwdGuard::enter(temp_dir.path());
 
         let server = create_test_server();
         let relative_path = "subdir/test.txt";
@@ -4838,7 +4864,7 @@ mod tests {
     #[serial]
     async fn test_text_editor_with_absolute_path() {
         let temp_dir = tempfile::tempdir().unwrap();
-        std::env::set_current_dir(&temp_dir).unwrap();
+        let _cwd = CwdGuard::enter(temp_dir.path());
 
         let server = create_test_server();
         let absolute_path = temp_dir.path().join("absolute_test.txt");
@@ -4866,7 +4892,7 @@ mod tests {
     #[serial]
     async fn test_text_editor_with_relative_path() {
         let temp_dir = tempfile::tempdir().unwrap();
-        std::env::set_current_dir(&temp_dir).unwrap();
+        let _cwd = CwdGuard::enter(temp_dir.path());
 
         let server = create_test_server();
         let relative_path = "relative_test.txt";

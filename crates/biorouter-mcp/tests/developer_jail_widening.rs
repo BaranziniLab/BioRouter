@@ -116,7 +116,9 @@ async fn text_editor_jail_does_not_widen_to_the_env_base() {
     //
     // A relative path: pre-fix this landed in the env base — one level above the
     // directory the session was actually given.
-    let relative = server.text_editor(write_params("inside.txt", "after")).await;
+    let relative = server
+        .text_editor(write_params("inside.txt", "after"))
+        .await;
     let escaped_relative = env_path.join("inside.txt");
     let relative_escaped = escaped_relative.exists();
 
