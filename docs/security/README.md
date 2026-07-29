@@ -24,6 +24,7 @@ documents below cover those layers in that order.
 | [Secret storage](secret-storage.md) | How API keys are held in the macOS Keychain, Windows Credential Manager, or Linux Secret Service, why macOS prompts for a password, and the plaintext escape hatch. |
 | [Data privacy and patient data](data-privacy-and-phi.md) | UCSF guidance on which providers are acceptable for PHI, clinical records, and other sensitive research data, plus de-identification practice. |
 | [Privacy tiers](privacy-tiers.md) | **Proposed.** The two-lattice capability system that stops a conversation touched by a private model or a private data source from ever reaching an externally hosted model: how models, sessions and extensions acquire a tier, the five enforcement gates, and the cost. |
+| [Privacy tiers — implementation plan](privacy-tiers-execution-plan.md) | **Proposed.** The forty-task execution plan for the design above, in seven phases: the tier model, nine enforcement gates, the barrier surfaces, the badges and declassification flow, the marketplace, and the migration. Carries the eleven non-negotiable orderings, the decisions of record, and the anchor-drift table the design's own line numbers need. |
 
 ## Where to start
 
