@@ -747,9 +747,20 @@ impl Default for DeveloperServer {
 #[tool_router(router = tool_router)]
 impl DeveloperServer {
     pub fn new() -> Self {
-        // Build the shared secret/ignore guard (BR-23) rooted at the cwd.
-        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        let secret_guard = SecretGuard::for_dir(&cwd);
+        // Build the shared secret/ignore guard (BR-23) rooted where the file
+        // tools will actually work (#68).
+        //
+        // `with_working_dir` re-roots it for the in-process builtin, but the
+        // out-of-process server — `biorouter mcp developer` and `biorouterd mcp
+        // developer` — never calls it: that child is told its base through
+        // `BIOROUTER_WORKING_DIR`. Rooting the guard at the process cwd there
+        // left the guard and the jail pointing at two different directories,
+        // and the ignore file of the directory the tools were working in was
+        // never read (measured, not inferred). Both now consult the one
+        // resolution routine, so they cannot disagree.
+        let base = Self::sanctioned_base_of(None)
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+        let secret_guard = SecretGuard::for_dir(&base);
 
         // Initialize editor model for AI-powered code editing
         let editor_model = create_editor_model();
@@ -1885,7 +1896,18 @@ impl DeveloperServer {
     /// counts as unset, since the desktop app writes `''` when no folder is
     /// selected.
     fn sanctioned_base(&self) -> Option<PathBuf> {
-        self.working_dir.clone().or_else(|| {
+        Self::sanctioned_base_of(self.working_dir.as_deref())
+    }
+
+    /// [`Self::sanctioned_base`] without a server, so construction can resolve
+    /// the same base the file tools will later jail to (#68).
+    ///
+    /// This is the single place the rule lives. `new()` roots the `SecretGuard`
+    /// through it before any working directory is bound; `effective_cwd` reads
+    /// it on every call. Two copies of the rule is what let the guard sit at
+    /// the process cwd while the jail followed `BIOROUTER_WORKING_DIR`.
+    fn sanctioned_base_of(working_dir: Option<&Path>) -> Option<PathBuf> {
+        working_dir.map(Path::to_path_buf).or_else(|| {
             std::env::var("BIOROUTER_WORKING_DIR")
                 .ok()
                 .filter(|s| !s.trim().is_empty())
