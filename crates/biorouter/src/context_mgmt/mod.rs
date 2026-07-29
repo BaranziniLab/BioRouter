@@ -3012,4 +3012,54 @@ mod pin_tests {
             "an unmarked message must still be summarized away"
         );
     }
+
+    /// BR-71: a `workspace_send_prompt { mode: "note" }` body, eight turns back,
+    /// still reaches the model — and its unpinned twin does not.
+    ///
+    /// The framed shape matters and is not incidental. `frame_workspace_injection`
+    /// (Task 2) wraps the payload in an untrusted-data envelope, so this also
+    /// pins that the envelope does not make the message pin-ineligible.
+    #[tokio::test]
+    async fn a_workspace_note_survives_compaction_and_its_unpinned_twin_does_not() {
+        use crate::conversation::message::frame_workspace_injection;
+
+        let note_body = frame_workspace_injection(Some("planner"), "use the log scale");
+        let twin_body = frame_workspace_injection(Some("planner"), "and cite the source");
+
+        // Both sit in the same old prefix, far outside the verbatim window.
+        // Identical in every way except the marker.
+        let mut messages = vec![
+            Message::user().with_text("q1"),
+            Message::assistant().with_text("a1"),
+            Message::user().with_text(note_body.clone()).pinned(),
+            Message::user().with_text(twin_body.clone()),
+        ];
+        for i in 2..=8 {
+            messages.push(Message::user().with_text(format!("q{i}")));
+            messages.push(Message::assistant().with_text(format!("a{i}")));
+        }
+        let conversation = Conversation::new_unvalidated(messages);
+
+        let (compacted, _usage) =
+            compact_messages_with_window(&provider(100_000), &conversation, false, 2)
+                .await
+                .unwrap();
+
+        assert!(
+            find(&compacted, &note_body).is_agent_visible(),
+            "the pinned note must still reach the model; agent-visible was: {:#?}",
+            agent_texts(&compacted)
+        );
+        assert!(
+            find(&compacted, &note_body).is_pinned(),
+            "and it must stay marked, so the NEXT compaction honours it too"
+        );
+        // THE CONTROL. Without this the test above passes on a conversation
+        // nothing compacted, and Task 14 could drop `.pinned()` with a green
+        // suite — which is the exact defect this pair exists to catch.
+        assert!(
+            !find(&compacted, &twin_body).is_agent_visible(),
+            "an UNPINNED note is summarized away — that is why `note` pins"
+        );
+    }
 }

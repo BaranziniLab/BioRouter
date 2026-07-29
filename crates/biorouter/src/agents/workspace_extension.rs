@@ -159,6 +159,23 @@ struct WorkspaceReadParams {
     max_chars: Option<usize>,
 }
 
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct WorkspaceSendPromptParams {
+    session_id: String,
+    text: String,
+    /// "turn": start the target's agent on the text (target must be idle).
+    /// "steer": inject mid-turn (target must be running). "note": append
+    /// context without triggering a turn.
+    mode: String,
+    /// "none" (default) | "final_message": park until the target's turn
+    /// finishes and return its final assistant message.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    wait: Option<String>,
+    /// Bound for wait:"final_message" (default 120, max 600).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    timeout_s: Option<u64>,
+}
+
 /// The tools [`INSTRUCTIONS`] names whose handler is still a placeholder, each
 /// with the task that lands it.
 ///
@@ -172,7 +189,6 @@ struct WorkspaceReadParams {
 /// dispatch arm is shadowed by nothing and the surface test fails — and adds it
 /// to `get_tools()` in the same commit.
 const PENDING_TOOLS: &[(&str, &str)] = &[
-    ("workspace_send_prompt", "Task 14"),
     ("workspace_set_tools", "Task 15"),
     ("workspace_close", "Task 16"),
     ("workspace_watch", "Task 17"),
@@ -242,8 +258,17 @@ impl WorkspaceClient {
                 serde_json::to_value(schema_for!(WorkspaceReadParams)).unwrap(),
                 true,
             ),
-            // Tasks 14-17 and 19/24 append:
-            // workspace_send_prompt, workspace_set_tools, workspace_close,
+            Self::tool(
+                "workspace_send_prompt",
+                "Inject a prompt into another conversation. mode turn: start its \
+                 agent (target idle); steer: redirect mid-turn (target running); \
+                 note: append context without a turn. Injections are permanently \
+                 provenance-labeled. wait:\"final_message\" returns its answer.",
+                serde_json::to_value(schema_for!(WorkspaceSendPromptParams)).unwrap(),
+                false,
+            ),
+            // Tasks 15-17 and 19/24 append:
+            // workspace_set_tools, workspace_close,
             // workspace_watch, workspace_open, and `subagent` (advertised only;
             // the spawn dispatch lives in agent.rs — see Task 19).
         ]
@@ -556,6 +581,417 @@ impl WorkspaceClient {
             session.id, session.name, session.session_type, clipped
         ))])
     }
+
+    /// PER-CALLER-SESSION cap on concurrently injected detached turns (§5
+    /// bounded fan-out: "a per-session cap on concurrently injected detached
+    /// turns (default 4)"). The counter map below is keyed by the CALLING
+    /// session id, so one conversation cannot saturate the daemon's turn locks
+    /// while independent conversations keep their own budgets.
+    fn injected_turn_cap() -> usize {
+        std::env::var("BIOROUTER_WORKSPACE_MAX_INJECTED_TURNS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .filter(|&n: &usize| n > 0)
+            .unwrap_or(4)
+    }
+
+    async fn caller_provenance(
+        &self,
+        caller_session_id: &str,
+    ) -> crate::conversation::message::MessageProvenance {
+        use crate::conversation::message::{MessageProvenance, ProvenanceKind};
+        let from_session_name = self
+            .context
+            .session_manager
+            .get_session(caller_session_id, false)
+            .await
+            .ok()
+            .map(|s| s.name);
+        MessageProvenance {
+            kind: ProvenanceKind::AgentInjection,
+            from_session_id: Some(caller_session_id.to_string()),
+            from_session_name,
+        }
+    }
+
+    /// §5 autonomous-mode visibility, and decision 2's "toasts": a cross-session
+    /// action must never be silent in the GUI. Best-effort — a toast that cannot
+    /// be delivered never fails the tool.
+    ///
+    /// Defined HERE rather than in Task 16, because `workspace_send_prompt` is
+    /// the highest-blast-radius consumer (`mode:"steer"` redirects a turn the
+    /// user is actively watching). Task 16's `workspace_close` reuses it as-is.
+    async fn notify_target(&self, session_id: &str, message: String) {
+        if let Some(services) = workspace_services::get() {
+            if services.gui_attached() {
+                let _ = services
+                    .gui_command(
+                        json!({
+                            "type": "workspace", "cmd": "notify",
+                            "session_id": session_id,
+                            "level": "info",
+                            "message": message,
+                        }),
+                        false,
+                    )
+                    .await;
+            }
+        }
+    }
+
+    /// Decision 4, read from the RIGHT place — and read WITHOUT creating an
+    /// agent.
+    ///
+    /// The mode that decides whether the *target's* turn raises confirmations is
+    /// the target agent's own `AgentConfig.biorouter_mode`, fixed when that
+    /// agent was created (`execution/manager.rs`'s `get_or_create_agent` reads
+    /// the global config **once**, at creation). Reading
+    /// `Config::global().get_biorouter_mode()` here instead judges the target by
+    /// whatever the machine's mode happens to be *now*, and is wrong in both
+    /// directions.
+    ///
+    /// **`get_or_create_agent` cannot be used to ask this question.** It is
+    /// create-on-miss, and its miss path is precisely the
+    /// `Config::global().get_biorouter_mode()` read this method exists to
+    /// avoid — so for any target with no live agent (the normal case for
+    /// `workspace_send_prompt` on a conversation the user has not opened this
+    /// run) the check would MINT the agent and then read today's global config
+    /// off it. Worse, it would leave a bare agent cached under that session id:
+    /// no extensions, and no provider at all (`AgentManager::default_provider`
+    /// has no production setter, so `Agent::provider()` returns
+    /// `Err("Provider not set")`). The turn runner would then pick that agent up.
+    async fn target_mode_requires_approval(&self, target_session_id: &str) -> bool {
+        let Ok(manager) = crate::execution::manager::AgentManager::instance().await else {
+            return true;
+        };
+        match manager.peek_agent(target_session_id).await {
+            Some(agent) => mode_requires_approval(agent.config.biorouter_mode),
+            // No live agent: its mode is not yet fixed, so there is nothing to
+            // read. Take the conservative branch rather than minting one.
+            None => true,
+        }
+    }
+
+    async fn handle_send_prompt(
+        &self,
+        caller_session_id: &str,
+        arguments: Option<JsonObject>,
+    ) -> Result<Vec<Content>, String> {
+        use crate::session_events::{self, SessionBusEvent};
+
+        let args: WorkspaceSendPromptParams = parse_args(arguments)?;
+        if args.session_id == caller_session_id {
+            return Err(
+                "refusing to inject into your own session — just continue the conversation".into(),
+            );
+        }
+        if args.text.trim().is_empty() {
+            return Err("text must not be empty".into());
+        }
+        let provenance = self.caller_provenance(caller_session_id).await;
+        let services = workspace_services::get();
+
+        match args.mode.as_str() {
+            "note" => {
+                // NO mid-turn refusal. Reconciliation #16 used to put one here,
+                // on the premise that the in-turn compaction sites rewrote the
+                // whole history with no freshness check. #51 closed that: both
+                // sites now go through
+                // `SessionManager::replace_conversation_preserving_tail`, which
+                // classifies a message appended above the rewrite's watermark
+                // and absent from the turn's `known` conversation as FOREIGN and
+                // carries it over rather than deleting it. Refusing now would
+                // deny the tool's own recommended headless fallback in the exact
+                // case a parent most wants it.
+                //
+                // What the store CANNOT do for us is the second half. A note that
+                // survives the write-back is still summarized away by the next
+                // compaction once it falls out of the `keep_last_turns` window —
+                // so it is PINNED below. `MessageMetadata.pinned` (#51) exists
+                // for this call and says so by name; this is its first consumer.
+                //
+                // Append without a turn: user_visible + agent_visible (picked up
+                // as context on the target's next turn, §4.1), provenance-stamped
+                // AND wrapped in an untrusted-data envelope — see
+                // `frame_workspace_injection`.
+                let body = crate::conversation::message::frame_workspace_injection(
+                    provenance.from_session_name.as_deref(),
+                    &args.text,
+                );
+                let mut message = crate::conversation::message::Message::user()
+                    .with_text(body)
+                    .with_provenance(provenance)
+                    // ⚠ Do not drop this. Without it the tool reports success and
+                    // the note evaporates a few turns later — the same broken
+                    // promise, arriving more slowly. The pin is honoured only on
+                    // a message with no tool request/response content and only
+                    // while it is agent-visible
+                    // (`context_mgmt::pins::pin_is_eligible`); a framed text note
+                    // satisfies both, and the tests prove it rather than assuming
+                    // it.
+                    .pinned();
+                self.context
+                    .session_manager
+                    .add_message_adopting_uid(&args.session_id, &mut message)
+                    .await
+                    .map_err(|e| format!("failed to append note: {e}"))?;
+                Ok(vec![Content::text(format!(
+                    "Note appended to session {} (no turn started; preserved across \
+                     compaction).",
+                    args.session_id
+                ))])
+            }
+            "steer" => {
+                let services = services.ok_or(
+                    "steer requires the BioRouter daemon (no workspace services installed)",
+                )?;
+                if !services.is_turn_active(&args.session_id) {
+                    return Err(
+                        "target session has no turn in flight — use mode:\"turn\" instead".into(),
+                    );
+                }
+                let agent_manager = crate::execution::manager::AgentManager::instance()
+                    .await
+                    .map_err(|e| e.to_string())?;
+                // Returns the LIVE agent whose loop drains the queue: /reply-
+                // driven sessions are registered by the server's get_agent, and
+                // glass-box subagent runs register themselves (Task 33) — the
+                // steer lands on the running instance in both cases.
+                let agent = agent_manager
+                    .get_or_create_agent(args.session_id.clone())
+                    .await
+                    .map_err(|e| e.to_string())?;
+                // The drain loop frames agent-provenance steers (Task 3); the
+                // raw text is queued so the human's own soft interrupt, which
+                // carries no provenance, stays unframed.
+                //
+                // GUARDED (#69): the unconditional `queue_soft_interrupt_with_
+                // provenance` returns `()`, so it would report "queued" for a
+                // turn that has already closed its queue and will never consume
+                // it. `is_turn_active` above is the server's lock, which is
+                // released *after* the loop stops accepting — so the two can
+                // disagree, and only `try_queue_soft_interrupt` observes the
+                // queue's own state atomically.
+                let turn = agent
+                    .try_queue_soft_interrupt(args.text, Some(provenance.clone()))
+                    .map_err(|refused| {
+                        format!(
+                            "steer refused for session {}: {refused} — use mode:\"turn\" instead",
+                            args.session_id
+                        )
+                    })?;
+                // §5 / decision 2: a cross-session mutation is never silent in
+                // the GUI. Redirecting a turn the user is watching is the most
+                // intrusive thing this tool does, so it gets the same toast
+                // `workspace_close` and `workspace_set_tools` post.
+                self.notify_target(
+                    &args.session_id,
+                    format!(
+                        "Another agent ({}) steered this turn.",
+                        provenance
+                            .from_session_name
+                            .as_deref()
+                            .unwrap_or(caller_session_id)
+                    ),
+                )
+                .await;
+                Ok(vec![Content::text(format!(
+                    "Steer queued for session {}'s running turn ({turn}).",
+                    args.session_id
+                ))])
+            }
+            "turn" => {
+                let services = services.ok_or(
+                    "mode:\"turn\" requires the BioRouter daemon (no workspace services installed); \
+                     use mode:\"note\" to leave context headlessly",
+                )?;
+                // Decision 4: never park an approval prompt where nobody can see
+                // it. In manual/smart-approval modes a detached turn's tool
+                // confirmations arrive as ToolConfirmationRequest messages that
+                // only a GUI (or an observer) can answer; with no GUI attached
+                // the turn would sit until its timeout with no one watching.
+                // Refuse clearly instead — the caller can use mode:"note", or
+                // the user can open the app.
+                if !services.gui_attached()
+                    && self.target_mode_requires_approval(&args.session_id).await
+                {
+                    return Err(format!(
+                        "refusing to start a turn in session {}: this machine is in an \
+                         approval permission mode and no desktop window is attached, so any \
+                         tool confirmation the turn raises would wait unseen until it timed \
+                         out. Use mode:\"note\" to leave the text as context, or ask the user \
+                         to open the Biorouter app.",
+                        args.session_id
+                    ));
+                }
+                // Bounded fan-out, PER CALLING SESSION (§5): subscribe before
+                // starting so completion is never missed, and count this
+                // caller's own in-flight injections.
+                let (inflight, _cap_guard) = InjectedTurnGuard::enter(caller_session_id);
+                if inflight > Self::injected_turn_cap() {
+                    return Err(format!(
+                        "this session already has {} injected turns in flight (cap {}); \
+                         wait for one to finish",
+                        inflight - 1,
+                        Self::injected_turn_cap()
+                    ));
+                }
+
+                let mut rx = session_events::subscribe(&args.session_id);
+                let body = crate::conversation::message::frame_workspace_injection(
+                    provenance.from_session_name.as_deref(),
+                    &args.text,
+                );
+                let message = crate::conversation::message::Message::user()
+                    .with_text(body)
+                    .with_provenance(provenance.clone());
+                let turn_id = services
+                    .start_detached_turn(&args.session_id, message)
+                    .await
+                    .map_err(|e| format!("could not start turn: {e}"))?;
+                // §5 / decision 2: GUI-visible, always.
+                self.notify_target(
+                    &args.session_id,
+                    format!(
+                        "Another agent ({}) started a turn here.",
+                        provenance
+                            .from_session_name
+                            .as_deref()
+                            .unwrap_or(caller_session_id)
+                    ),
+                )
+                .await;
+
+                if args.wait.as_deref() != Some("final_message") {
+                    return Ok(vec![Content::text(format!(
+                        "Detached turn {turn_id} started on session {}.",
+                        args.session_id
+                    ))]);
+                }
+
+                // ui_ask-style bounded park (§4.1): watch the bus for the final
+                // assistant message, bounded by timeout_s.
+                let timeout =
+                    std::time::Duration::from_secs(args.timeout_s.unwrap_or(120).min(600));
+                let mut last_assistant: Option<String> = None;
+                let waited = tokio::time::timeout(timeout, async {
+                    loop {
+                        match rx.recv().await {
+                            Ok(SessionBusEvent::Agent(crate::agents::AgentEvent::Message(m)))
+                                if m.role == rmcp::model::Role::Assistant =>
+                            {
+                                let text: String = m
+                                    .content
+                                    .iter()
+                                    .filter_map(|c| c.as_text())
+                                    .collect::<Vec<_>>()
+                                    .join("\n");
+                                if !text.trim().is_empty() {
+                                    last_assistant = Some(text);
+                                }
+                            }
+                            // `..` because `TurnFinished` also carries
+                            // `token_state` (Task 5) — a two-field pattern here
+                            // is a missing-field compile error.
+                            Ok(SessionBusEvent::TurnFinished { reason, .. }) => return Ok(reason),
+                            // A turn publishes "exactly one `TurnError` or one
+                            // `TurnFinished`, never both" (workspace/turn.rs), so
+                            // an error is TERMINAL: without this arm the park
+                            // would sit out its whole timeout after the turn had
+                            // already died, and then report "still running".
+                            Ok(SessionBusEvent::TurnError { message, .. }) => return Err(message),
+                            Ok(_) => {}
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                            Err(e) => return Err(e.to_string()),
+                        }
+                    }
+                })
+                .await;
+
+                match waited {
+                    Ok(Ok(reason)) => Ok(vec![Content::text(format!(
+                        "Turn {turn_id} finished ({reason}). Final message:\n\n{}",
+                        last_assistant.unwrap_or_else(|| "<no assistant text>".into())
+                    ))]),
+                    Ok(Err(e)) => Err(format!("turn {turn_id} ended in error: {e}")),
+                    Err(_) => Ok(vec![Content::text(format!(
+                        "Turn {turn_id} is still running after {}s; it continues in the background. \
+                         Read it later with workspace_read_conversation.",
+                        timeout.as_secs()
+                    ))]),
+                }
+            }
+            other => Err(format!("unknown mode '{other}' (turn | steer | note)")),
+        }
+    }
+}
+
+/// True in every permission mode that can ACTUALLY raise a tool confirmation.
+/// Free and pure, so the decision is testable without writing global config.
+///
+/// Exhaustive `match`, not `matches!(…, Auto)`: a fifth mode must be classified
+/// deliberately rather than inherit a default.
+fn mode_requires_approval(mode: crate::config::BioRouterMode) -> bool {
+    use crate::config::BioRouterMode;
+    match mode {
+        // Fully Automatic never prompts.
+        BioRouterMode::Auto => false,
+        // Chat CANNOT prompt. `PermissionInspector::inspect` returns
+        // `Ok(vec![])` before inspecting anything in Chat mode, the agent loop
+        // skips every remaining tool call and splices
+        // `CHAT_MODE_TOOL_SKIPPED_RESPONSE`, and the tool list is stripped from
+        // the prompt entirely. There is no confirmation that could park unseen,
+        // so decision 4's refusal — whose message claims one would — must not
+        // fire here. Decision 4's trigger is "manual mode"; Chat is not one.
+        // Classifying it as an approval mode would refuse every headless
+        // `mode:"turn"` on a Chat-mode machine, which is the SAFEST
+        // configuration, with a message that is false for it.
+        BioRouterMode::Chat => false,
+        BioRouterMode::Approve | BioRouterMode::SmartApprove => true,
+    }
+}
+
+/// §5 bounded fan-out: PER-SESSION counts of injected detached turns, keyed by
+/// the CALLING session id (the design's "per-session cap", default 4). RAII:
+/// the guard decrements its own key on drop and removes empty entries so the
+/// map never grows unboundedly.
+static INJECTED_TURNS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, usize>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+struct InjectedTurnGuard {
+    caller: String,
+}
+
+impl InjectedTurnGuard {
+    /// Increment the caller's count; returns (new count, guard).
+    fn enter(caller_session_id: &str) -> (usize, Self) {
+        let mut map = INJECTED_TURNS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let count = map.entry(caller_session_id.to_string()).or_insert(0);
+        *count += 1;
+        (
+            *count,
+            Self {
+                caller: caller_session_id.to_string(),
+            },
+        )
+    }
+}
+
+impl Drop for InjectedTurnGuard {
+    fn drop(&mut self) {
+        let mut map = INJECTED_TURNS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(count) = map.get_mut(&self.caller) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                map.remove(&self.caller);
+            }
+        }
+    }
 }
 
 fn parse_args<T: serde::de::DeserializeOwned>(arguments: Option<JsonObject>) -> Result<T, String> {
@@ -710,6 +1146,7 @@ impl McpClientTrait for WorkspaceClient {
         let content = match name {
             "workspace_list" => self.handle_list(caller, arguments).await,
             "workspace_read_conversation" => self.handle_read_conversation(caller, arguments).await,
+            "workspace_send_prompt" => self.handle_send_prompt(caller, arguments).await,
             // BR-71 decision 22: the spawn tool is advertised here but
             // dispatched by the agent loop (it needs the parent's TaskConfig).
             // Reachable only if that interception is ever removed.
@@ -1708,5 +2145,164 @@ mod tests {
             passed_through.content[0].as_text().unwrap().text,
             small_text
         );
+    }
+
+    #[tokio::test]
+    async fn send_prompt_note_appends_with_provenance_without_running_a_turn() {
+        use crate::conversation::message::ProvenanceKind;
+        let c = client();
+        let sm = c.context.session_manager.clone();
+        let caller = sm
+            .create_session(
+                std::env::temp_dir(),
+                "caller-name".into(),
+                crate::session::session_manager::SessionType::User,
+            )
+            .await
+            .unwrap();
+        let target = sm
+            .create_session(
+                std::env::temp_dir(),
+                "target".into(),
+                crate::session::session_manager::SessionType::User,
+            )
+            .await
+            .unwrap();
+
+        let args: rmcp::model::JsonObject = serde_json::from_value(serde_json::json!({
+            "session_id": target.id, "text": "context for later", "mode": "note"
+        }))
+        .unwrap();
+        let meta = crate::agents::mcp_client::McpMeta::new(caller.id.clone());
+        let result = c
+            .call_tool(
+                "workspace_send_prompt",
+                Some(args),
+                meta,
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_ne!(result.is_error, Some(true));
+
+        let reread = sm.get_session(&target.id, true).await.unwrap();
+        let msgs = reread.conversation.unwrap().messages().to_vec();
+        let injected = msgs.last().expect("note appended");
+        let p = injected
+            .metadata
+            .provenance
+            .as_ref()
+            .expect("provenance stamped");
+        assert_eq!(p.kind, ProvenanceKind::AgentInjection);
+        assert_eq!(p.from_session_id.as_deref(), Some(caller.id.as_str()));
+        assert_eq!(p.from_session_name.as_deref(), Some("caller-name"));
+
+        // …and the TEXT carries the untrusted-data envelope. The provenance
+        // stamp lives in `MessageMetadata`, which never reaches the provider —
+        // only the framing tells the target's MODEL that this came from another
+        // agent rather than from its user.
+        let body = injected
+            .content
+            .iter()
+            .filter_map(|c| c.as_text())
+            .collect::<Vec<_>>()
+            .join("");
+        assert!(body.contains("untrusted=\"true\""), "got: {body}");
+        assert!(body.contains("caller-name"), "the frame names the source");
+        assert!(body.contains("context for later"), "the payload survives");
+
+        // …and it is PINNED, and the pin is actually honourable.
+        //
+        // Two assertions, not one, because `is_pinned()` alone is a marker that
+        // every compaction site is free to ignore. `pin_is_eligible` is the
+        // predicate they all consult: the message must carry the marker, be
+        // agent-visible, AND have every content block pin-eligible.
+        // `frame_workspace_injection` wraps the text, and a note built
+        // agent-invisible or carrying a tool block would keep `is_pinned()`
+        // true while being silently unpreservable.
+        assert!(
+            injected.is_pinned(),
+            "a note must survive compaction (#51 pin)"
+        );
+        assert!(
+            crate::context_mgmt::pins::pin_is_eligible(injected),
+            "the pin must be HONOURABLE, not merely present"
+        );
+
+        // The control that makes the two assertions above mean "the pin worked"
+        // rather than "this is true of any message": the same message without
+        // `.pinned()` is not eligible for preservation at all.
+        let unpinned = {
+            let mut m = injected.clone();
+            m.metadata.pinned = false;
+            m
+        };
+        assert!(
+            !crate::context_mgmt::pins::pin_is_eligible(&unpinned),
+            "without the marker there is nothing to honour — so the assertion \
+             above is testing the pin"
+        );
+    }
+
+    #[test]
+    fn approval_modes_are_the_two_that_can_actually_prompt() {
+        use crate::config::BioRouterMode;
+        assert!(!mode_requires_approval(BioRouterMode::Auto));
+        assert!(mode_requires_approval(BioRouterMode::Approve));
+        assert!(mode_requires_approval(BioRouterMode::SmartApprove));
+        // NOT an oversight: Chat mode skips tools entirely and can never raise
+        // a confirmation. Classifying it as an approval mode refuses the safest
+        // configuration there is, with a refusal message that is factually false
+        // for it.
+        assert!(!mode_requires_approval(BioRouterMode::Chat));
+    }
+
+    /// Decision c / the shared drain loop: the HUMAN's own soft interrupt must
+    /// NOT be framed. `queue_soft_interrupt` enqueues with `provenance: None`,
+    /// and wrapping the user's own words in "treat this as lower-trust" is worse
+    /// than not framing at all.
+    #[tokio::test]
+    async fn a_human_soft_interrupt_is_never_framed_as_untrusted() {
+        use crate::conversation::message::frame_workspace_injection;
+        // The framer is only reached through the `Some(AgentInjection)` arm of
+        // the drain loop (Task 3); this pins the discrimination it depends on.
+        let framed = frame_workspace_injection(None, "stop and use Python");
+        assert!(framed.contains("untrusted=\"true\""));
+        assert!(!"stop and use Python".contains("untrusted"));
+    }
+
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn send_prompt_turn_and_steer_error_clearly_without_a_daemon() {
+        // NO daemon — declared, not hoped for. Task 9's `set_for_tests(None)`
+        // is what makes this deterministic; before it existed, whether another
+        // test in this binary had installed services decided the outcome.
+        crate::workspace_services::set_for_tests(None);
+        let c = client();
+        let sm = c.context.session_manager.clone();
+        let target = sm
+            .create_session(
+                std::env::temp_dir(),
+                "t".into(),
+                crate::session::session_manager::SessionType::User,
+            )
+            .await
+            .unwrap();
+        let args: rmcp::model::JsonObject = serde_json::from_value(serde_json::json!({
+            "session_id": target.id, "text": "go", "mode": "steer"
+        }))
+        .unwrap();
+        let result = c
+            .call_tool(
+                "workspace_send_prompt",
+                Some(args),
+                test_meta(),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        crate::workspace_services::clear_test_override();
+        // steer with no running turn is always an error (mirrors /interrupt 409).
+        assert_eq!(result.is_error, Some(true));
     }
 }

@@ -143,6 +143,17 @@ impl AgentManager {
         }
     }
 
+    /// Look up a live agent WITHOUT creating one. `get_or_create_agent` reads
+    /// the process-wide mode at creation time, so using it to *inspect* a
+    /// target's mode reads today's global config and then leaves a bare,
+    /// provider-less, extension-less agent cached under that session id.
+    ///
+    /// `sessions` is an LRU, so reading it needs the write lock (`get` promotes
+    /// the entry) — the same call `get_or_create_agent`'s hit path makes.
+    pub async fn peek_agent(&self, session_id: &str) -> Option<Arc<Agent>> {
+        self.sessions.write().await.get(session_id).map(Arc::clone)
+    }
+
     pub async fn remove_session(&self, session_id: &str) -> Result<()> {
         let mut sessions = self.sessions.write().await;
         sessions
