@@ -4337,7 +4337,7 @@ instead of failing.
 
 | Action | Path | Anchor (re-verified at `9558c346`) |
 |---|---|---|
-| Modify | `crates/biorouter-mcp/src/knowledge/server.rs` | **CP1.** `assert_kb_reachable` beside `gated_kb_id`; one call in `call_tool` (Task 10B). The two fan-out filters: `visible_bases_for_session` `:240-249` (retain at `:247`) and `search_visible_bases` `:258-286` (per-base loop at `:266`), both gaining `caller_private: bool`; `visible_bases_for_context` `:251-256` derives it from the context it already has. **Plus the third filter: `kb_id_or_primary` `:312-342`**, whose no-primary error (`let ids` `:323`, `ids.join(", ")` `:338`) formats `service.session_kb_ids(..)` into `"Pass kb_id explicitly (one of: …)"` — see ⚠ "the barrier must not narrate what it refuses". ⚠ Anchor any `awk` on `fn kb_id_or_primary\(` **with the paren**: the existing test `kb_id_or_primary_errors_with_the_candidate_list` `:886` also matches the bare prefix, and the two ranges concatenate to 56 lines instead of 31 |
+| Modify | `crates/biorouter-mcp/src/knowledge/server.rs` | **CP1.** `assert_kb_reachable` beside `gated_kb_id`; one call in `call_tool` (Task 10B). The two fan-out filters: `visible_bases_for_session` `:240-249` (retain at `:247`) and `search_visible_bases` `:258-286` (per-base loop at `:266`), both gaining `caller_private: bool`; `visible_bases_for_context` `:251-256` derives it from the context it already has. **Plus the third filter: `kb_id_or_primary` `:312-342`**, whose no-primary error (`let ids` `:323`, `ids.join(", ")` `:338`) formats `service.session_kb_ids(..)` into `"Pass kb_id explicitly (one of: …)"` — see ⚠ "the barrier must not narrate what it refuses". ⚠ Anchor any `awk` on `fn kb_id_or_primary\(` **with the paren**: the existing test `kb_id_or_primary_errors_with_the_candidate_list` `:886` also matches the bare prefix, and the two ranges concatenate to 56 lines instead of 31. **Plus the fourth and fifth filters, the two pointer tools:** `selection_value` `:691-706` (17 lines; serialises `primary_kb`, `knowledge_bases` **and** the deprecated `active_kb` mirror) and `set_primary_json` `:667-683` (18 lines), reached from `kb_set_active` `:712` and `kb_get_active` `:725`; `selection_json` `:686-689` forwards. Four existing test call sites gain the new argument — `:956`, `:970`, `:980`, `:985`, all inside `set_primary_validates_membership_and_reports_the_set` `:946` |
 | Modify | `crates/biorouter-mcp/src/knowledge/macros/ingest.rs` / `query.rs` / `lint.rs` | **CP2.** one `tier::assert_reachable(svc.root(), &args.kb_id, args.caller_is_private)?;` on the line above each `raise_tier` (`ingest.rs:48`, `query.rs:47`, `lint.rs:218`) |
 | Modify | `crates/biorouter-server/src/routes/apps.rs` | **CP3.** one check in `handle_kb_frame` `:2474`, immediately after `resolve_kb_grant` returns `kb_id` and before the `match op` — so it covers `run_kb_read` `:2376` and the `ingest` arm `:2533` together |
 | Modify | `crates/biorouter-mcp/src/agent_drafter/mod.rs` | **CP4.** one check in `stage_full_payload`'s kb loop at `:1418`, before `svc.export_brkb(kb)` `:1423`; the existing export-payload test is at `:3894-3899` |
@@ -4345,11 +4345,20 @@ instead of failing.
 
 ⚠ **Five tools are deliberately not in `KB_ID_GATED_TOOLS`, and each has a different reason.**
 
-- **`kb_set_active` / `kb_get_active`** move and report a *pointer*, and the pointer is a bare kb id
-  the session already had to know to pass. Refusing there would break the "one axis, one pointer"
-  repair logic in `CLAUDE.md` (a hidden primary promotes to the lexicographically first remaining
-  base) for reasons that have nothing to do with privacy. A public session may point at a private
-  base and will then be refused on every read.
+- **`kb_set_active` / `kb_get_active`** are not `kb_id`-gated — but they are **capability-aware in
+  their own bodies**, and the previous draft's reason for exempting them outright was false on the
+  tree. It said "the pointer is a bare kb id the session already had to know to pass". `kb_get_active`
+  (`:725`) **takes no arguments at all**, and both tools return `selection_value` (`:691`), which
+  serialises `knowledge_bases` — *every* visible id — alongside `primary_kb` and its deprecated
+  `active_kb` mirror. So `kb_get_active {}` was a one-call enumeration of every base on the machine
+  that the session can see, private ones included: the same list `kb_list_bases` omits four
+  functions away, through a tool the exemption blessed. And a *failed* `kb_set_active` enumerates
+  too — `apply_selection_unlocked`'s `PrimaryUpdate::Set` arm bails with
+  `next_ids.join(", ")` (`service.rs:1645-1655`), the whole set. Step 3 (d) makes both filter the
+  **view**; the store is untouched, which is what keeps the "one axis, one pointer" repair logic
+  (`docs/knowledge-base/multi-kb-implementation-plan.md`; `repair_decision`, `service.rs:1405-1428`)
+  working exactly as it does today — see the ⚠ below it for why filtering the store instead would
+  be a persisted, machine-wide side effect of a *read*.
 - **`kb_create_base` / `kb_import`** name a base that **does not exist yet**. There is nothing to
   leak, and gating them is what banned knowledge-base creation for public sessions in the previous
   draft. `tier::assert_reachable` would permit them anyway — a kb id with no directory on disk is
@@ -4524,6 +4533,64 @@ async fn a_public_session_whose_only_base_is_private_is_told_it_has_none() {
     assert!(!t.contains("one of:"), "left an empty enumeration: {t}");
 }
 
+#[tokio::test]
+async fn kb_get_active_does_not_enumerate_a_private_base_or_point_at_one() {
+    // The tool that takes NO arguments and returned the whole selection.
+    // `selection_value` (:691) serialises `knowledge_bases`, `primary_kb` and
+    // the deprecated `active_kb` mirror — all three are asserted, because
+    // filtering two of the three is the natural half-fix and `active_kb` is
+    // the one a reader forgets.
+    let (srv, root) = server_at_migrated_root(&["default", "omop"]);
+    tier::raise_unlocked(&root, "omop", true).unwrap();
+    set_primary(&root, "sess-1", "omop");
+
+    let v = call_tool_json_as_session(&srv, "kb_get_active", json!({}), "sess-1", Public).await;
+    assert_eq!(v["knowledge_bases"], json!(["default"]));
+    // The pointer is metadata too. It reads null rather than naming a base this
+    // caller may not reach — the truthful answer for THIS caller, which has no
+    // usable write target, and the same omission rule kb_list_bases takes.
+    assert_eq!(v["primary_kb"], json!(null));
+    assert_eq!(v["active_kb"], json!(null), "the deprecated mirror leaked it");
+
+    let v = call_tool_json_as_session(&srv, "kb_get_active", json!({}), "sess-1", Private).await;
+    assert_eq!(v["knowledge_bases"], json!(["default", "omop"]));
+    assert_eq!(v["primary_kb"], json!("omop"));
+
+    // And the STORE was not touched by the public read: `.active-kb-sessions`
+    // still names omop. This is the assertion that fails the "filter it in
+    // `service::selection`" implementation, which looks identical from the
+    // tool's output and silently re-points the user's primary.
+    assert_eq!(stored_primary(&root, "sess-1"), Some("omop".to_string()));
+}
+
+#[tokio::test]
+async fn a_private_target_and_a_nonexistent_one_are_indistinguishable_to_kb_set_active() {
+    // Two halves. (1) A public caller may not move the pointer onto a private
+    // base. (2) The refusal must be BYTE-IDENTICAL to the answer a base that
+    // does not exist gets — Task 10D's rule, one crate over: a message saying
+    // "that base is private" confirms it exists, in a politer sentence.
+    let (srv, root) = server_at_migrated_root(&["default", "omop"]);
+    tier::raise_unlocked(&root, "omop", true).unwrap();
+
+    let private_target = err_of(call_tool_as_session(&srv, "kb_set_active",
+        json!({ "kb_id": "omop" }), "sess-1", Public).await);
+    let absent_target = err_of(call_tool_as_session(&srv, "kb_set_active",
+        json!({ "kb_id": "no-such-kb" }), "sess-1", Public).await);
+    assert_eq!(private_target.replace("omop", "no-such-kb"), absent_target,
+               "the two answers differ, so the difference is the oracle");
+    assert!(!private_target.to_lowercase().contains("private"), "{private_target}");
+    // The candidate list in the refusal is filtered, for the same reason
+    // `the_no_primary_error_names_only_the_bases_the_caller_may_reach` exists.
+    assert!(private_target.contains("default") && !private_target.contains("omop, "),
+            "the refusal enumerated the set it refused: {private_target}");
+    assert_eq!(stored_primary(&root, "sess-1"), None, "the refused set was written anyway");
+
+    // A private caller still moves it.
+    call_tool_as_session(&srv, "kb_set_active", json!({ "kb_id": "omop" }),
+                         "sess-1", Private).await.unwrap();
+    assert_eq!(stored_primary(&root, "sess-1"), Some("omop".to_string()));
+}
+
 #[test]
 fn every_kb_tool_is_gated_or_listed_as_exempt() {
     // The gate that makes a TWENTIETH tool a test failure instead of a silent
@@ -4599,10 +4666,15 @@ fn export_app_leaves_a_private_knowledge_base_out_of_the_payload() {
 ```
 
 - [ ] **Step 2: Run** → **FAIL** on every gated probe, on the omitted-`kb_id` test, on both fan-out
-      tests, on both no-primary-error tests, on the app-socket test and on the drafter test; the HTTP
-      test's 409 half fails and its 200 half passes. `every_kb_tool_is_gated_or_listed_as_exempt`
-      passes from the start — it is a regression net, not a red test. No **compile** error anywhere:
-      Task 10B put every signature in place, which is the whole point of splitting the two tasks.
+      tests, on both no-primary-error tests, on **both pointer-tool tests**, on the app-socket test
+      and on the drafter test; the HTTP test's 409 half fails and its 200 half passes.
+      `every_kb_tool_is_gated_or_listed_as_exempt` passes from the start — it is a regression net,
+      not a red test. No **compile** error anywhere: Task 10B put every signature in place, which is
+      the whole point of splitting the two tasks. ⚠ The one exception is inside this task's own Step
+      3: the moment `selection_value` / `set_primary_json` / `selection_json` take
+      `caller_private`, the four existing call sites in
+      `set_primary_validates_membership_and_reports_the_set` (`:956`, `:970`, `:980`, `:985`) stop
+      compiling. That is the forcing function, not a break — pass `true` at all four.
 
 - [ ] **Step 3: Implement** — one helper, four `if`s, two filters:
 
@@ -4665,6 +4737,157 @@ The third filter, in `kb_id_or_primary` (`:323-341`) — the ⚠ above is why:
 ⚠ It reads the tier **per id**, not once: `is_private` is a lookup in a file the process has
 already `stat`ed, and doing it per id is what lets the public bases survive the private one — the
 same all-or-nothing trap the fan-out tests exist to catch, in a third place.
+
+(d) **The fourth and fifth filters — the two pointer tools.** One shared helper, then three small
+edits. The helper is the only new symbol:
+
+```rust
+    /// The ids in `selection` this caller may reach — the **view**, never the
+    /// store.
+    ///
+    /// ⚠ The filter is HERE and not in `service::selection` (`service.rs:1461`)
+    /// or `apply_selection_unlocked` (`:1604`). Those two feed `repair_decision`
+    /// (`:1405-1428`), which promotes the primary to `next_ids.first()` and then
+    /// **writes it to disk**. Filtering the service would therefore make a
+    /// public model's `kb_get_active` silently re-point the user's primary at
+    /// the lexicographically first public base — a persisted, machine-wide
+    /// change as a side effect of a read, and one the Knowledge view would then
+    /// show. The store keeps one truth; the two model-facing tools render a
+    /// filtered projection of it.
+    fn visible_kb_ids(
+        selection: &crate::knowledge::service::KbSelection,
+        root: &std::path::Path,
+        caller_private: bool,
+    ) -> Vec<String> {
+        selection
+            .kb_ids
+            .iter()
+            .filter(|id| caller_private || !crate::knowledge::tier::is_private(root, id))
+            .cloned()
+            .collect()
+    }
+```
+
+`selection_value` (`:691`) becomes a method — it needs `self.service.root()` — and filters all
+three fields it emits:
+
+```rust
+    fn selection_value(
+        &self,
+        selection: &crate::knowledge::service::KbSelection,
+        caller_private: bool,
+        ok: bool,
+    ) -> serde_json::Value {
+        let kb_ids = Self::visible_kb_ids(selection, self.service.root(), caller_private);
+        // Issue #56. The POINTER is metadata too, and it is the single id that
+        // makes the explicit-`kb_id` branch writable without guessing. A primary
+        // the caller may not reach reads `null` — truthful for this caller (it
+        // has no write target it can use) and the same OMISSION rule
+        // `kb_list_bases` takes. `active_kb` is the deprecated mirror and must
+        // move with it; filtering two of the three fields is the natural
+        // half-fix and this is the field it forgets.
+        let primary = selection
+            .primary_kb
+            .as_ref()
+            .filter(|id| kb_ids.iter().any(|visible| visible == *id))
+            .cloned();
+        let mut v = serde_json::json!({
+            "primary_kb": primary.clone(),
+            "knowledge_bases": kb_ids,
+            "active_kb": primary,
+        });
+        if ok {
+            v["ok"] = serde_json::Value::Bool(true);
+        }
+        v
+    }
+```
+
+`set_primary_json` (`:667`) decides membership against the caller's own view, and **answers there**,
+so the service's candidate list is never reached from a tool:
+
+```rust
+    fn set_primary_json(
+        &self,
+        session_id: Option<&str>,
+        kb_id: &str,
+        caller_private: bool,
+    ) -> Result<serde_json::Value, ErrorData> {
+        crate::knowledge::paths::validate_kb_id(kb_id)
+            .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
+        // Issue #56. Membership is decided against the set THIS CALLER can see.
+        // A private base is not "refused" — it is NOT A MEMBER, byte-identical
+        // to the answer an id that does not exist gets. Refusing it by name
+        // would confirm it exists (Task 10D's `..._not_as_granted` rule).
+        let selection = self.service.selection(session_id).map_err(into_err)?;
+        let visible = Self::visible_kb_ids(&selection, self.service.root(), caller_private);
+        if !visible.iter().any(|id| id == kb_id) {
+            return Err(ErrorData::invalid_params(
+                not_a_member(kb_id, &visible, session_id),
+                None,
+            ));
+        }
+        let selection = self
+            .service
+            .set_selection(
+                session_id,
+                None,
+                crate::knowledge::service::PrimaryUpdate::Set(kb_id),
+            )
+            // Pre-checked above, so an `Err` here is a concurrent hide (or I/O).
+            // Answer with OUR list either way: `apply_selection_unlocked`'s
+            // message is built from `next_ids` — the WHOLE set — and would put
+            // every private id into a public caller's error on a race.
+            .map_err(|e| {
+                tracing::warn!("kb_set_active: {e:#}");
+                ErrorData::invalid_params(not_a_member(kb_id, &visible, session_id), None)
+            })?;
+        Ok(self.selection_value(&selection, caller_private, true))
+    }
+```
+
+with the one spelling of the sentence, a free function beside them — deliberately a **verbatim**
+mirror of `apply_selection_unlocked`'s two branches (`service.rs:1645-1655`), including its
+session/no-session vocabulary split (D11), so that moving the decision up a layer does not invent a
+second message the model can tell apart from the old one:
+
+```rust
+/// "That is not one of your knowledge bases", built from the ids the caller may
+/// see. ONE sentence for a base that does not exist and for one that is private:
+/// telling them apart is the leak (issue #56).
+fn not_a_member(kb_id: &str, visible: &[String], session_id: Option<&str>) -> String {
+    let available = if visible.is_empty() {
+        "none".to_string()
+    } else {
+        visible.join(", ")
+    };
+    match session_id {
+        Some(_) => format!(
+            "knowledge base '{kb_id}' is not one of this session's knowledge bases \
+             ({available}). Add it to the session first, or pass kb_id explicitly to read it once."
+        ),
+        None => format!(
+            "knowledge base '{kb_id}' is not available ({available}) — it does not exist, or it \
+             is hidden."
+        ),
+    }
+}
+```
+
+Then `selection_json` (`:686`) takes `caller_private` and forwards it, and the two tools read the
+capability from the context they already hold (`Self::caller_is_private(Some(&context))`, Task 10A
+(f)) — `kb_get_active` `:725-731` and `kb_set_active` `:712-720`. Both already take a
+`RequestContext`; **no `#[tool]` signature moves**, which is why these two tools do not appear in
+Task 10B's "exactly two tools gained a `RequestContext`" gate.
+
+⚠ **The four existing test call sites are the forcing function, and one of them already asserts the
+new message.** `set_primary_validates_membership_and_reports_the_set` (`:946`) calls
+`set_primary_json` three times (`:956`, `:970`, `:980`) and `selection_json` once (`:985`); each
+needs the new argument (pass `true` — that test is about hiding, not privacy, and a private caller
+sees the unfiltered set, so its expectations do not move). Its refusal assertion is
+`err.message.contains("gamma") && err.message.contains("alpha, beta")` for a *hidden* base — which
+`not_a_member` satisfies verbatim. That is the check that the mirrored sentence really is the same
+sentence; if it fails, the spelling drifted.
 
 ⚠ **Do not put the check inside `kb_id_or_primary` (`:312`).** It looks like the choke point and is
 not: `kb_search`, `kb_search_raw_sources`, `kb_export` and all nine writes take `kb_id` directly and
@@ -4776,9 +4999,40 @@ echo "⚠ BOTH detectors are blind to base METADATA by construction: neither pat
 echo "  names list_bases or session_kb_ids, because those return ids and names"
 echo "  rather than content. That is exactly the hole the two leaks in this round"
 echo "  came through. Task 10D owns the metadata detector; run it too."
-# The pointer tools and the GUI read routes are untouched, deliberately.
-awk '/pub async fn kb_set_active/,/^    }/' crates/biorouter-mcp/src/knowledge/server.rs \
-  | grep -c "assert_kb_reachable" ; echo "expect: 0"
+# The two POINTER tools filter the VIEW and never the store. This is the gate
+# for the wrong implementation that is invisible in the tools' output: filtering
+# inside `service::selection` produces identical JSON and silently re-points the
+# user's primary, because `repair_decision` (service.rs:1405) writes
+# `next_ids.first()` to disk.
+grep -c "fn visible_kb_ids(" crates/biorouter-mcp/src/knowledge/server.rs ; echo "expect: 1"
+grep -rn "tier::is_private\|caller_is_private\|caller_private" \
+  crates/biorouter-mcp/src/knowledge/service.rs
+echo "expect: no output — the SERVICE stays capability-blind. A hit here means the"
+echo "  filter was pushed into the store, where repair_decision consumes it."
+# Both tools reach the filter, and all THREE serialised fields move together.
+awk '/fn selection_value/,/^    }/' crates/biorouter-mcp/src/knowledge/server.rs | wc -l
+echo "expect: 17 today, > 1 after — assert the range before reading it"
+awk '/fn selection_value/,/^    }/' crates/biorouter-mcp/src/knowledge/server.rs \
+  | grep -c "visible_kb_ids" ; echo "expect: 1"
+awk '/fn selection_value/,/^    }/' crates/biorouter-mcp/src/knowledge/server.rs \
+  | grep -n "visible_kb_ids\|primary_kb\|active_kb" | head -4
+echo "Expected, in this order: visible_kb_ids, then primary_kb, then active_kb —"
+echo "  the deprecated mirror is derived from the filtered pointer, not from"
+echo "  selection.primary_kb a second time (which is the half-fix)."
+# `kb_set_active` answers from its own list, so the service's candidate list —
+# built from the whole set — is unreachable from a tool.
+awk '/fn set_primary_json/,/^    }/' crates/biorouter-mcp/src/knowledge/server.rs | wc -l
+echo "expect: 18 today, > 1 after"
+awk '/fn set_primary_json/,/^    }/' crates/biorouter-mcp/src/knowledge/server.rs \
+  | grep -n "visible_kb_ids\|not_a_member\|set_selection" | head -4
+echo "Expected, in this order: visible_kb_ids, not_a_member, set_selection, not_a_member —"
+echo "  the membership decision precedes the write, and the write's own error is"
+echo "  re-answered rather than propagated."
+grep -c "fn not_a_member(" crates/biorouter-mcp/src/knowledge/server.rs ; echo "expect: 1"
+# The refusal does not say 'private' — the same rule as Task 10D's validators.
+awk '/fn not_a_member/,/^}/' crates/biorouter-mcp/src/knowledge/server.rs \
+  | grep -ci "private" ; echo "expect: 0"
+# The GUI read routes are untouched, deliberately.
 for h in get_graph list_pages read_page get_page_body list_history preview_state export_brkb; do
   echo -n "$h: "
   awk "/pub async fn $h/,/^}/" crates/biorouter-server/src/routes/knowledge.rs \
@@ -4809,7 +5063,12 @@ that returns base *content* and none that returns a base *id*, so the refusal it
 it refused — `the_no_primary_error_names_only_the_bases_the_caller_may_reach` is the only test that
 fails it, and neither new-surface detector can see it, because both key on `store::` and on service
 content calls while this one goes through `session_kb_ids`. Task 10D closes the same class in
-`agent_drafter`.
+`agent_drafter`. (7) Leaving the two **pointer** tools alone because "the caller already knows the
+id" — which is false for `kb_get_active`, a no-argument tool that returns the whole selection, so
+one call enumerates every visible base including the private ones and names the primary;
+`kb_get_active_does_not_enumerate_a_private_base_or_point_at_one` is the only test that fails it,
+and its *store* assertion is the only thing that fails the plausible half-fix of filtering inside
+`service::selection`, which produces identical JSON while re-pointing the user's primary on disk.
 
 - [ ] **Step 6: Commit**
 
