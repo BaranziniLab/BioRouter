@@ -2,15 +2,16 @@
 
 > **What this is.** The task-by-task execution plan for the privacy-tier capability system
 > designed in [`privacy-tiers.md`](privacy-tiers.md) ([issue #56](https://github.com/BaranziniLab/biorouter/issues/56)):
-> forty-five tasks in seven phases — forty numbered, plus **4b** (resolve every test filter against a
-> real `cargo --list`) and **10A, 10B, 10C and 10D**, the knowledge-base tier the operator ruled on
-> after the first adversarial review — each with a Files table, a failing test, complete
+> forty-eight tasks in seven phases — forty numbered, plus **4b** (resolve every test filter against a
+> real `cargo --list`), **10A, 10B, 10C and 10D**, the knowledge-base tier the operator ruled on
+> after the first adversarial review, and **14A, 14B and 14C**, the read-deny sandbox the operator
+> ruled on after the fifth — each with a Files table, a failing test, complete
 > implementation code, a run step, a gate that fails a plausible wrong implementation, and one commit.
 > **Status:** Proposed — ready to execute. The design's rulings are settled (see
 > [Decisions of record](#decisions-of-record)); the costs the operator knowingly accepted are in
-> [Accepted risks](#accepted-risks); sixteen questions remain open (see
-> [Open questions](#open-questions)) — the design's eleven plus five this plan surfaced — and none
-> of them blocks Phase 0–3.
+> [Accepted risks](#accepted-risks); **eighteen** questions remain open (see
+> [Open questions](#open-questions)) — the design's eleven minus the one the fifth-round ruling
+> closed (question 3), plus eight this plan surfaced — and none of them blocks Phase 0–3.
 > **Audience:** the engineer or agent implementing issue #56, and the reviewer of its PRs.
 
 > **For agentic workers:** follow the subagent-driven-development or executing-plans skill and
@@ -68,6 +69,29 @@
 > every such line now asserts the printed count. And **an `awk` range gate asserts its own
 > non-emptiness first**, because `grep -c` over no output is `0`, which reads identically to a
 > correct absence.
+
+> **Revision note (fifth round — the channel that needs no tool call).** A reviewer read the
+> worktree against `main` and returned one CRITICAL: **a public-capability model never has to defeat
+> CP1–CP5, because it can read the private material straight off the filesystem.** `developer__shell`
+> runs an arbitrary command, the shell is explicitly not jailed by the file tools' base
+> (`rmcp_developer.rs:1950`), the OS sandbox that could confine it defaults to **Off**
+> (`shell_sandbox/mod.rs:244`), `computercontroller__automation_script` executes a model-written
+> script, SecretGuard's floor covers credentials but not the session database, knowledge or memory
+> roots (`secret_guard.rs:28`) and its scan is lexical and existence-gated (`:265`), and `sessions.db`
+> carries a **contentful** FTS mirror of every message by design (`session_manager.rs:29`). The design
+> named this channel at `privacy-tiers.md:692` and this plan never closed it.
+>
+> **The operator ruled**, and the ruling is implemented rather than re-argued: a mandatory read-deny
+> sandbox for public-capability sessions, **on by default** (DR-14, Tasks 14A–14C), plus a single
+> master toggle that disables the whole feature (DR-15, Task 30 rewritten). The sandbox hides four
+> directories and nothing else, so private sessions and ordinary work are untouched; where a platform
+> cannot express the exclusion the fail direction is **closed** and the tool is refused. What the
+> ruling did not settle and this revision decides: the toggle's key, scope and default; that badges
+> stay visible and say "enforcement off" rather than disappearing; that the ratchet stops with
+> everything else, with the permanent consequence written out as AR-7; the four roots, resolved from
+> real symbols across **two** directories (`data_dir` for the session store, `config_dir` for the
+> other three); and that Landlock cannot express a read-deny at all, so on Linux the control needs
+> `bubblewrap` (Open question 17).
 
 > **Revision note (fourth round — the barrier's edges, and the first real `cargo` run).** A verifier
 > re-derived the four choke points independently and could not break them on content: it read
@@ -318,11 +342,26 @@ state, which is the condition under which people stop reading failures. Three ru
    caller. "Task N adds this field" in a Files table, for a field task N−1 makes required, is a task
    that cannot compile — see Task 10B's ⚠ on `conversation_ingest.rs:205`.
 
+**O14 — Every read-deny is emitted AFTER the allow it subtracts from, and every capability check
+runs BEFORE the early return it would otherwise sit behind.**
+Four places, one shape, and all four failures are silent. In SBPL the last matching rule wins, so a
+`(deny file-read* …)` emitted before `BASE_POLICY`'s `(allow file-read*)` (`seatbelt.rs:35`) or
+before the writable-roots block produces a profile that compiles, runs, reports `Full`, and denies
+nothing. In bubblewrap the later filesystem option wins for an overlapping path, so a `--tmpfs` that
+precedes the writable `--bind`s is overridden whenever a deny root sits inside a writable root — and
+three of DR-14's four roots sit under `$HOME`, which is routinely the working directory. In
+`shell_sandbox_wrap` the DR-14 arm must precede the `mode == SandboxMode::Off` early return
+(`developer/shell.rs:168-170`), or the whole control is dead for every user who never set
+`BIOROUTER_SHELL_SANDBOX` — which is every user. And in `resolve_path_jailed` it must precede the
+`if jail_relaxed { return Ok(resolved) }` at `rmcp_developer.rs:2084-2087`, because relaxed **is**
+Auto mode, the mode agents run in. Each of the four is gated by an ordering assertion in Task 14A or
+14B rather than by a test that could pass either way.
+
 ---
 
 ## Departures from the design
 
-Eight, each forced by a measurement.
+Nine, each forced by a measurement.
 
 | # | Design says | This plan does | Why |
 |---|---|---|---|
@@ -333,6 +372,7 @@ Eight, each forced by a measurement.
 | D5 | §15.1: "added by the same `ALTER TABLE sessions ADD COLUMN` arm BR-71 Task 1 uses" | Shape-guarded arm 17 **plus** an unconditional `ensure_privacy_schema` | O10. |
 | D6 | §18.4: the prompt-hook provider check is "v1 emits a load-time warning; the hard skip is v1.1" | Hard refusal in v1, in the same task as the CLI plan-mode refusal | The Stop hook's payload is `crate::agents::goal::transcript_tail(&conversation)` (`agent.rs:5495-5496`) — a real transcript excerpt — shipped to an arbitrary endpoint resolved by `HooksManager::resolve_prompt_provider` (`hooks/mod.rs:690`) and sent by `run_prompt_hook` (`hooks/prompt_runner.rs:57`). It is structurally identical to P6 and carries the same content. |
 | D7 | §9.3 B4: "Ratchet a KB's classification on ingest … **or** state plainly that KBs are a designed public sink" | Ratchets (operator ruling), and enforces the read side at **five choke points**, not at an enumeration of tool call sites | The design says "a public-capability session may not read a private KB" without naming where that is enforced, and the obvious answer — one check per `kb_*` tool — does not survive measurement. It misses four whole surfaces (`agent_drafter::export_app`, `routes/apps.rs::run_kb_read`, that route's `ingest` arm, and the `KbToolDispatch` sub-agent tool set), and **nine of the nineteen `kb_*` tools take no `RequestContext`** so they cannot learn the caller's capability at all. The barrier therefore sits at `<KnowledgeServer as ServerHandler>::call_tool` (which receives the `RequestContext` for every tool), the three sub-agent macro entries, `handle_kb_frame`, and `stage_full_payload`. A **fifth**, `Catalog::discover` (Task 10D), covers the surface the other four cannot see by construction: a base's **id and name**, which `list_platform_catalog` hands to any model with no arguments at all. Full derivation, with the measurements and what it costs, in Task 10A's ⚠ "where the barrier goes" and its coverage table. |
+| D9 | §9.3 A2: "Add `**/sessions.db*` and the Biorouter data directory" to `DEFAULT_SECRET_PATTERNS` | Does **not** touch `DEFAULT_SECRET_PATTERNS`; hides four roots with an OS sandbox instead (DR-14, Tasks 14A–14C) | Two measurements. `DEFAULT_SECRET_PATTERNS` (`secret_guard.rs:33-45`) is **unconditional** — it is an always-on floor applied to every session, so adding the data directory there would hide the user's own knowledge base and chat history from a **private** session too, which no requirement asks for and AR-1 already shows is expensive. And it would not close the read anyway: the design says so itself ("this raises the cost, it does not close the read"), because `candidate_is_denied` (`:278-292`) is lexical and existence-gated, so `sqlite3 "$(printf '%s' ~/.local/share/biorouter/sessions/sessions.db)"` walks past it. A capability-conditional kernel deny is the only form that is both scoped and a barrier. |
 | D8 | §9.3 B4 and the first version of this plan put the cross-session ingest guard in `Agent::handle_ingest_conversation` | Puts it in `biorouter::knowledge::conversation_ingest::ingest_conversation` as a **required** `caller_capability` argument | Measured: `grep -rn "conversation_ingest::ingest_conversation\|ingest_conversation(" --include='*.rs' crates/` returns **three** production callers, not one — `agents/knowledge_tool.rs:61` (the platform tool), `biorouter-server/src/routes/knowledge.rs:1233` (`POST /knowledge/bases/{id}/ingest-conversation`, whose `session_ids` array at `:1192-1212` is caller-supplied and loaded with `get_session(sid, true)` at `:1203`) and `biorouter-cli/src/commands/knowledge.rs:571`. A guard in the platform tool leaves the HTTP route — reachable with nothing but the secret key — as an unguarded copy of the same primitive. A required parameter makes all three a compile error. |
 
 ---
@@ -347,6 +387,9 @@ crates/biorouter/src/providers/tier_tests.rs           Task 5  — `#[cfg(test)]
 crates/biorouter/src/privacy/registry_private.rs       Task 8  — @generated from landing/
 crates/biorouter/src/privacy/extensions.rs             Task 8  — classify_extension(name)
 crates/biorouter-mcp/src/knowledge/tier.rs             Task 10A — the KB tier store + migration
+crates/biorouter-sandbox/src/private_data.rs           Task 14B — PrivateDataGuard + the read-deny refusal
+crates/biorouter-sandbox/tests/read_deny.rs            Task 14A — the live kernel-enforcement proof
+crates/biorouter/src/privacy/private_roots.rs          Task 14B — the four roots DR-14 hides
 crates/biorouter/src/privacy/refusal.rs                Task 12 — PrivacyRefusal; Tasks 13/14/23 add to it
 crates/biorouter/src/privacy/alt_provider.rs           Task 19 — assert_alt_provider_allowed
 crates/biorouter/src/privacy/visibility.rs             Task 21 — the §7 matrix as one predicate
@@ -446,33 +489,6 @@ exactly the O6 hazard Gate E exists to avoid. Task 19 ships the cheap half inste
 local write says out loud, in the tool result, that the note will be readable by any session opened
 in that directory. [Open question 14](#open-questions) carries the real fix.
 
-### AR-7 — While the tiers are off, nothing is recorded, and turning them back on does not reclassify the gap
-
-DR-15's master toggle stops the classification ratchet along with the gates, because the operator's
-ruling is that with it off *"nothing will be impacted"* — and a ratchet that keeps firing is an
-impact, just a deferred one. The consequence is one-way and permanent:
-
-- A session that ran on a private model, called `ucsfomopagent`, and pulled a cohort into its
-  transcript **while the toggle was off** is stamped `public`, because DR-4's two triggers never
-  fired. Turning the toggle back on does not re-examine it: there is no content scan, no provenance
-  on the messages, and `privacy_tier` is monotone — the reconcile can only raise a value that a
-  trigger wrote, and no trigger wrote one.
-- So after the toggle goes back on, that session is readable by `chatrecall` from a public-model
-  chat, and its provider may be swapped to a public one with no 409. It looks, to every gate, like
-  an ordinary public conversation.
-- The same holds for knowledge bases: an ingest performed while the toggle was off does not raise
-  the base's tier, and AR-1 records that there is no KB declassification path to correct it in
-  either direction.
-
-The alternative — keep ratcheting while the guardrails are off — was considered and rejected: it
-would silently privatise sessions a user believes are unprotected, and the first they would learn of
-it is a refusal weeks later when they turn the feature back on. Between "the toggle means what it
-says" and "the toggle secretly keeps a ledger", the operator's ruling picks the first.
-
-**The mitigation is disclosure, not mechanism.** Task 30's confirmation dialog says this in one
-sentence before the switch flips, and the persistent strip repeats it while the toggle is off. A
-user who accepts that sentence has accepted AR-7.
-
 ### AR-4 — `medcp` stays callable by a public model
 
 Unchanged from DR-11. Listed here so the accepted-cost list is complete rather than split across two
@@ -506,6 +522,72 @@ graph, a history entry or an export from it (CP1–CP4), and it cannot obtain th
 the first place (CP5 and the two error lists). Closing the last inch needs constant-shape responses
 on `kb_create_base`, which DR-7 declines and which would cost the user a truthful error on the
 overwhelmingly common non-adversarial case.
+
+### AR-6 — On a host that cannot express the read-deny a public session loses the shell, and two costs come with the sandbox itself
+
+DR-14 fails **closed**. Three consequences were put to the operator and accepted.
+
+**(1) Windows loses `developer__shell`, `automation_script` and `computer_control` for every
+public-capability chat.** There is no unprivileged, general-purpose way to hide a directory from an
+arbitrary command on Windows — `shell_sandbox/windows.rs:1-51` works through the five candidates and
+why each fails — so the refusal fires for the common configuration (a commercial model on a Windows
+laptop). The same applies to a Linux host without `bubblewrap`, or with unprivileged user namespaces
+disabled, though there the refusal names a third fix (`apt install bubblewrap`) that actually works.
+macOS is unaffected: Seatbelt ships with the OS and expresses the deny directly.
+
+The escape hatches are the two the refusal names — switch the chat to a private model, or turn
+privacy tiers off entirely (DR-15) — and the second is a large part of why the operator asked for a
+master toggle at the same time as the sandbox. The refused tools are **not** hidden from the model's
+tool list: hiding them makes a model invent workarounds, while a deterministic refusal that
+forecloses the retry makes it stop.
+
+**(2) A public-capability session cannot use the `biorouter` CLI, or any other tool, to read its own
+chat history from the shell.** `biorouter session list` reads the session store, which is deny root
+#1. This is correct — the CLI is a general-purpose reader of exactly the material the sandbox
+hides — but it will read as a bug the first time someone hits it, so the refusal names the four
+directories rather than saying "permission denied".
+
+**(3) A public-capability session cannot reach an Agent Drafter app's files from the shell.** The
+drafter's own tools (`create_app`, `configure_app`, `update_app`, `build_app`) are unaffected — they
+run in-process and do not resolve caller-supplied paths into the app tree — but `cd
+~/.config/biorouter/agent_drafter/my-app && cat src/main.ts` is refused. The root is on the list for
+two reasons and only one of them is `.vault/`: it is also the only place on disk an **app id** can
+be read, and an app id is enough to drive that app's agent over the unauthenticated
+`GET /apps/{id}/agent` socket (Task 14C (c)). Narrowing the deny to `.vault/` would reopen that.
+[Open question 19](#open-questions) records the narrowing.
+
+**The residual DR-14 does not close:** a public-capability model that *already knows* an app id — it
+was told one, or it read one before the sandbox existed — can still fetch `GET /apps/{id}/`, read the
+per-app socket token out of the served page, and drive that app. Closing it needs the app socket
+authenticated by something the page has and a shell does not, which is a change to how apps are
+served. [Open question 18](#open-questions).
+
+### AR-7 — While the tiers are off, nothing is recorded, and turning them back on does not reclassify the gap
+
+DR-15's master toggle stops the classification ratchet along with the gates, because the operator's
+ruling is that with it off *"nothing will be impacted"* — and a ratchet that keeps firing is an
+impact, just a deferred one. The consequence is one-way and permanent:
+
+- A session that ran on a private model, called `ucsfomopagent`, and pulled a cohort into its
+  transcript **while the toggle was off** is stamped `public`, because DR-4's two triggers never
+  fired. Turning the toggle back on does not re-examine it: there is no content scan, no provenance
+  on the messages, and `privacy_tier` is monotone — the reconcile can only raise a value that a
+  trigger wrote, and no trigger wrote one.
+- So after the toggle goes back on, that session is readable by `chatrecall` from a public-model
+  chat, and its provider may be swapped to a public one with no 409. It looks, to every gate, like
+  an ordinary public conversation.
+- The same holds for knowledge bases: an ingest performed while the toggle was off does not raise
+  the base's tier, and AR-1 records that there is no KB declassification path to correct it in
+  either direction.
+
+The alternative — keep ratcheting while the guardrails are off — was considered and rejected: it
+would silently privatise sessions a user believes are unprotected, and the first they would learn of
+it is a refusal weeks later when they turn the feature back on. Between "the toggle means what it
+says" and "the toggle secretly keeps a ledger", the operator's ruling picks the first.
+
+**The mitigation is disclosure, not mechanism.** Task 30's confirmation dialog says this in one
+sentence before the switch flips, and the persistent strip repeats it while the toggle is off. A
+user who accepts that sentence has accepted AR-7.
 
 ---
 
@@ -583,10 +665,14 @@ count is therefore paired with either a named-test filter or a pre/post delta th
 which runs `cargo test -p <pkg> --lib -- --list` for all five packages this plan filters on and
 resolves every one of its **42** `(package, filter)` pairs against the real listing. It is placed
 immediately after Task 4 because Task 4 is the first commit that produces a `privacy::` module, and
-it is docs-only. What it cannot close is the seven modules later tasks create
-(`privacy::{extensions,refusal,alt_provider,visibility,declassify}`, `providers::tier_tests`,
-`knowledge::tier`); those are a named deferred set that Task 20's and Task 40's gates re-run with a
-shrinking and then an empty list. Two further facts Task 4b's design turns on, both easy to get
+it is docs-only. What it cannot close is the **nine** modules later tasks create
+(`privacy::{extensions,refusal,alt_provider,visibility,declassify,private_roots}`,
+`providers::tier_tests`, `knowledge::tier`, and `private_data` in the **sixth** package,
+`biorouter-sandbox` — which no earlier revision of this plan filtered on at all, so Task 4b's
+`--list` sweep must add it); those are a named deferred set that Task 20's and Task 40's gates re-run
+with a shrinking and then an empty list. Task 14A also introduces a **second integration binary** in
+that package, `--test read_deny`, alongside the existing `--test sandbox`; a `--test` filter naming a
+binary that does not exist is a cargo hard error rather than a silent zero, so it is self-checking. Two further facts Task 4b's design turns on, both easy to get
 wrong: this plan spells its filters in **two** forms (`--lib <FILTER>`, 34 occurrences, and
 `--lib -- <NAME> <NAME>`, 7 — an audit of only the first misses `privacy::refusal` and
 `privacy::alt_provider` entirely), and a libtest filter is a **substring** match, not a prefix, so
@@ -2455,7 +2541,16 @@ fn the_private_set_is_exactly_the_two_the_registry_publishes() {
         assert_eq!(classify_extension(name), Public, "{name}");
     }
 }
+```
 
+⚠ **`developer` and `computercontroller` stay Public, and that is not the plan overlooking the
+shell.** They are built-ins, R11 makes built-ins public, and reclassifying them Private would ban
+the shell from every public chat — which is a far larger change than the one the threat needs. The
+answer to "a public model can read `sessions.db` with `developer__shell`" is **DR-14**, a read-deny
+sandbox on the *tools* (Tasks 14A–14C), not a tier on the *extension*. Gate C keeps letting a public
+caller reach `developer`; the sandbox is what makes reaching it harmless. Do not "fix" this list.
+
+```rust
 #[test]
 fn classification_is_case_and_whitespace_insensitive_the_way_the_key_is() {
     // `name_to_key` (config/extensions.rs:23) strips whitespace and lowercases,
@@ -6351,6 +6446,1518 @@ is not part of this commit.
 
 ---
 
+### Task 14A: The read-deny sandbox policy — what each platform can actually express
+
+**Why this task exists.** Gates A–H, and CP1–CP5 over knowledge bases, all sit on *tool calls*. A
+public-capability model does not have to defeat any of them: `developer__shell` runs an arbitrary
+command (`rmcp_developer.rs:1307`), the code says in as many words that the shell is **not** jailed
+by the file tools' base (`:1950`'s doc-comment, "the shell is not jailed by this base at all"), the
+OS sandbox that could confine it defaults to **Off** (`shell_sandbox/mod.rs:244-260`), and
+`computercontroller__automation_script` writes a model-supplied script to a temp file and executes it
+(`computercontroller/mod.rs:833-…`). `sessions.db` is then a plain file with a **contentful** FTS5
+mirror of every message by design (`session_manager.rs:14-28`, `MESSAGES_FTS_DDL`), so
+`sqlite3 … "select text from messages_fts"` is the whole attack. SecretGuard does not cover it:
+`DEFAULT_SECRET_PATTERNS` (`secret_guard.rs:33-45`) names credentials and nothing else, and its scan
+is lexical and existence-gated (`candidate_is_denied` `:278-292`), so a computed path or a shell
+expression walks past it. The design named this channel in §9.3 A2 and the plan never closed it.
+
+**The operator has ruled** (DR-14): a public-capability session's process-spawning and path-reading
+tools run under a **read-deny sandbox that is on by default**, hiding four directories — the session
+store, the knowledge roots, the global memory root and the Agent Drafter app root — and nothing else.
+Private-capability sessions are untouched; this is not a general jail and must not become one.
+
+This task is the **mechanism half**, in `biorouter-sandbox` alone, with no privacy concepts in it:
+teach `SandboxPolicy` to express a read-deny, make each backend say honestly whether it *can*, and
+prove enforcement with a live kernel test. Task 14B wires it to capability. Splitting them this way
+is deliberate: a reviewer of 14B should be reading one `if`, not a Seatbelt profile.
+
+**Files:**
+
+| Action | Path | Anchor (re-verified at `9558c346`) |
+|---|---|---|
+| Modify | `crates/biorouter-sandbox/src/shell_sandbox/mod.rs` | `SandboxPolicy` `:54-79` (two fields today); `ShellSandboxError` `:157-165`; `trait ShellSandbox` `:169-179`; `NullSandbox` impl `:186-199` |
+| Modify | `crates/biorouter-sandbox/src/seatbelt.rs` | `BASE_POLICY` `:28-89` with `(allow file-read*)` at `:35`; `SeatbeltPolicy` `:94-99`; `profile()` `:117-139` (writable-roots block `:123-130`); `wrap()` `:145-163` |
+| Modify | `crates/biorouter-sandbox/src/shell_sandbox/macos.rs` | `probe` `:19-32`, `wrap` `:34-45` |
+| Modify | `crates/biorouter-sandbox/src/shell_sandbox/linux.rs` | `bwrap_on_path` `:99-101`; `run_selftest` `:124-136`; `effective_backend` `:140-178`; `wrap` `:210-226`; `wrap_bubblewrap` `:258-286`; `apply_landlock` `:403-445` — **read accesses are deliberately unhandled at `:413-418`** |
+| Modify | `crates/biorouter-sandbox/src/shell_sandbox/windows.rs` | `probe` `:61-70`, `wrap` `:72-78` |
+| Create | `crates/biorouter-sandbox/tests/read_deny.rs` | new — the live kernel proof |
+| Reference | `crates/biorouter-sandbox/tests/sandbox.rs` | the existing integration binary; this is a **second** one, so the new tests get their own filter |
+
+#### ⚠ What each platform can express, measured — not assumed
+
+| Platform | Mechanism | Read-deny of a subpath | Cost |
+|---|---|---|---|
+| **macOS** | Seatbelt (`sandbox-exec`) | **Yes, directly.** SBPL is last-match-wins, so `(deny file-read* (subpath (param "DENY_ROOT_0")))` appended *after* `BASE_POLICY`'s `(allow file-read*)` (`seatbelt.rs:35`) subtracts that subtree. | Two string pushes and one `-D` argument per root. Nothing measurable. |
+| **Linux + bubblewrap** | `bwrap` | **Yes, directly.** After `--ro-bind / /`, `--tmpfs <root>` overmounts the directory with an empty tmpfs in the child's own mount namespace. A real subtraction: no enumeration, no race, no per-command recomputation. | Needs `bwrap` installed **and** unprivileged user namespaces enabled. One `execve` of a small setuid-free helper per command, which `wrap_bubblewrap` already pays today. |
+| **Linux, Landlock only** | `landlock` + `seccompiler` | **No — not at all.** A Landlock ruleset is a set of **grants** over paths. There is no deny rule and no way to subtract a subpath from a broader grant. `apply_landlock` (`:413-418`) handles `AccessFs::from_write(abi)` *only*, precisely so reads stay unhandled and therefore open. | See below. |
+| **Windows** | — | **No.** `WindowsSandbox::probe` already reports `tier: None`, and its module docs (`windows.rs:1-51`) work through why no unprivileged, general-purpose confinement exists there. AppContainer could express it and is the designed W2 tier, but it is unimplemented, breaks `git`/`node`/`python` without ACL work, and cannot be validated off a Windows runner. | — |
+
+**Why the Landlock complement is not attempted in v1.** Expressing "deny `$HOME/.config/biorouter/knowledge`"
+in a grant-only model means handling `ReadFile|ReadDir` and then granting read to the *complement*:
+walk the ancestor chain of every deny root (`/`, `/home`, `$HOME`, `$HOME/.config`, `$HOME/.local`,
+`$HOME/.local/share`) and add a `PathBeneath` rule for every sibling entry at every level. Three
+measured consequences, and the third is disqualifying:
+
+1. Every granted path needs an open fd during ruleset construction — a few hundred `open(2)`s per
+   shell command on an ordinary `$HOME`.
+2. The complement must be recomputed per command, because those directories change.
+3. **Anything created inside an enumerated ancestor *after* the ruleset is built is unreadable for
+   that command's lifetime.** `cd ~ && mkdir out && echo x > out/f && cat out/f` fails — the file
+   exists, the command created it, and it cannot read it back. That is a policy whose failure mode
+   is indistinguishable from a Biorouter bug, and it is exactly the class of thing that gets a
+   security control switched off wholesale.
+
+So on Linux the read-deny is expressible **only** through bubblewrap, and `LinuxSandbox` must invert
+its usual preference (`effective_backend` picks Landlock first, `:162-177`) when a policy carries
+deny roots. [Open question 17](#open-questions) keeps the complement approach on the record.
+
+- [ ] **Step 1: Write the failing tests**
+
+`crates/biorouter-sandbox/tests/read_deny.rs` — **live**, because no string assertion can
+distinguish a backend that honours `deny_read_roots` from one that accepts the field and drops it on
+the floor. That is the single most likely wrong implementation here: the code compiles, every
+existing argv test still passes, `probe()` still says `Full`, and nothing is denied.
+
+```rust
+//! Kernel-level proof of the DR-14 read-deny. Two tests, and their `if`
+//! conditions PARTITION the hosts: on a host that can express a read-deny the
+//! first runs, on a host that cannot the second runs. Neither can be skipped
+//! into vacuity, which is the failure mode a bare `if !supported { return; }`
+//! would have.
+
+use biorouter_sandbox::shell_sandbox::{
+    detect, SandboxPolicy, ShellSandboxError, Wrapped,
+};
+use std::path::PathBuf;
+
+fn run(w: &Wrapped, script: &str) -> std::process::Output {
+    let mut args = w.prefix_args.clone();
+    args.push("-c".to_string());
+    args.push(script.to_string());
+    std::process::Command::new(&w.program)
+        .args(&args)
+        .output()
+        .expect("spawn the wrapper")
+}
+
+#[test]
+fn a_deny_root_is_unreadable_and_the_rest_of_the_disk_is_not() {
+    let backend = detect();
+    if !backend.supports_read_deny() {
+        eprintln!("host cannot express a read-deny; covered by the sibling test");
+        return;
+    }
+    let secret_root = tempfile::tempdir().unwrap();
+    std::fs::write(secret_root.path().join("transcript.txt"), "COHORT-SENTINEL").unwrap();
+    let ordinary_root = tempfile::tempdir().unwrap();
+    std::fs::write(ordinary_root.path().join("notes.txt"), "ORDINARY-SENTINEL").unwrap();
+
+    let policy = SandboxPolicy::unconfined()
+        .with_deny_read_roots(vec![secret_root.path().to_path_buf()]);
+    let w = backend.wrap(&policy, "/bin/sh").expect("wrap");
+
+    let denied = run(&w, &format!("cat {}/transcript.txt", secret_root.path().display()));
+    assert!(
+        !String::from_utf8_lossy(&denied.stdout).contains("COHORT-SENTINEL"),
+        "the deny root was readable: {:?}",
+        String::from_utf8_lossy(&denied.stdout)
+    );
+    assert!(!denied.status.success(), "reading a deny root must fail");
+
+    let ok = run(&w, &format!("cat {}/notes.txt", ordinary_root.path().display()));
+    assert!(
+        String::from_utf8_lossy(&ok.stdout).contains("ORDINARY-SENTINEL"),
+        "ordinary work must be untouched: {:?}",
+        String::from_utf8_lossy(&ok.stderr)
+    );
+}
+
+/// The ordering half, and the one a correct-looking implementation fails.
+/// A deny root can sit INSIDE a writable root — the session working directory
+/// is `$HOME` under the desktop app, and three of the four DR-14 roots are
+/// under `$HOME`. On macOS the deny block must be emitted after BOTH
+/// `(allow file-read*)` and the writable-roots block; on Linux the `--tmpfs`
+/// options must come after the `--bind`s. Emit either one early and this is the
+/// only test that notices.
+#[test]
+fn a_deny_root_inside_a_writable_root_is_still_denied() {
+    let backend = detect();
+    if !backend.supports_read_deny() {
+        return;
+    }
+    let home = tempfile::tempdir().unwrap();
+    let inner = home.path().join("config").join("biorouter").join("knowledge");
+    std::fs::create_dir_all(&inner).unwrap();
+    std::fs::write(inner.join("page.md"), "COHORT-SENTINEL").unwrap();
+
+    let policy = SandboxPolicy::new(vec![home.path().to_path_buf()])
+        .with_deny_read_roots(vec![inner.clone()]);
+    let w = backend.wrap(&policy, "/bin/sh").expect("wrap");
+
+    let out = run(&w, &format!("cat {}/page.md", inner.display()));
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("COHORT-SENTINEL"));
+    // …and the write side with it: a public model deleting the user's only
+    // knowledge base is not a smaller problem than reading it.
+    let write = run(&w, &format!("rm -f {}/page.md", inner.display()));
+    assert!(!write.status.success(), "a deny root must not be writable either");
+    assert!(inner.join("page.md").exists());
+}
+
+#[test]
+fn a_backend_that_cannot_express_it_refuses_instead_of_dropping_it() {
+    let backend = detect();
+    if backend.supports_read_deny() {
+        eprintln!("host CAN express a read-deny; covered by the sibling tests");
+        return;
+    }
+    let policy = SandboxPolicy::unconfined()
+        .with_deny_read_roots(vec![PathBuf::from("/nonexistent-private-root")]);
+    assert!(
+        matches!(
+            backend.wrap(&policy, "/bin/sh"),
+            Err(ShellSandboxError::PolicyUnsupported(_))
+        ),
+        "a backend that cannot subtract reads must say PolicyUnsupported, not \
+         Unavailable and not Ok — the caller's fail-closed branch keys on it"
+    );
+}
+```
+
+and, in `seatbelt.rs`'s own `mod tests`, the profile-shape half:
+
+```rust
+#[test]
+fn deny_roots_are_emitted_after_the_read_allow_and_after_the_write_block() {
+    let p = SeatbeltPolicy::new(vec![PathBuf::from("/work")])
+        .with_deny_read_roots(vec![PathBuf::from("/work/private")])
+        .profile();
+    let allow_read = p.find("(allow file-read*)").expect("base policy");
+    let allow_write = p.find("(allow file-write*").expect("writable block");
+    let deny_read = p.find("(deny file-read*").expect("deny block");
+    let deny_write = p.find("(deny file-write*").expect("deny block");
+    // SBPL is last-match-wins. Emitted before either allow, this profile
+    // compiles, runs, and enforces nothing.
+    assert!(deny_read > allow_read && deny_read > allow_write);
+    assert!(deny_write > allow_read && deny_write > allow_write);
+}
+
+#[test]
+fn a_deny_root_is_named_in_both_its_literal_and_canonical_spelling() {
+    // `/tmp` canonicalizes to `/private/tmp` on macOS, and Seatbelt matches
+    // `subpath` against the canonical path. A profile that names only one
+    // spelling is a deny with a documented way around it.
+    let policy = SeatbeltPolicy::new(vec![]).with_deny_read_roots(vec![PathBuf::from("/tmp")]);
+    let (_prog, args) = policy.wrap("/bin/sh");
+    let params: Vec<&String> = args.iter().filter(|a| a.starts_with("-DDENY_ROOT_")).collect();
+    assert!(params.iter().any(|a| a.ends_with("=/tmp")), "{params:?}");
+    if PathBuf::from("/tmp").canonicalize().map(|c| c != PathBuf::from("/tmp")).unwrap_or(false) {
+        assert_eq!(params.len(), 2, "both spellings, deduped: {params:?}");
+    }
+    // profile() and wrap() must agree on the count, or a `(param "DENY_ROOT_1")`
+    // references a parameter that was never passed and sandbox-exec errors out.
+    assert_eq!(policy.profile().matches("DENY_ROOT_").count(), params.len());
+}
+```
+
+- [ ] **Step 2: Run** → **COMPILE ERROR**
+(`no method with_deny_read_roots on SandboxPolicy`, `no method supports_read_deny`).
+
+```bash
+cargo test -p biorouter-sandbox 2>&1 | tail -20
+```
+
+- [ ] **Step 3: Implement**
+
+**(a) `shell_sandbox/mod.rs` — the policy gains one field and the trait one question.**
+
+```rust
+pub struct SandboxPolicy {
+    /// Directories the sandboxed process may write to (subpaths included).
+    /// Everything else on the filesystem is readable but not writable. Zero
+    /// roots means "no writes anywhere" — never "all writes".
+    pub writable_roots: Vec<PathBuf>,
+    /// Directories the sandboxed process may neither **read** nor **write**
+    /// (subpaths included), while the rest of the filesystem stays as
+    /// `writable_roots` leaves it. Empty is the historical behaviour and the
+    /// default.
+    ///
+    /// This is a *subtraction* from an otherwise-open read policy, which is why
+    /// it is not expressible on every backend — see
+    /// [`ShellSandbox::supports_read_deny`]. Writes are subtracted with reads
+    /// because a deny root can sit inside a writable root (issue #56: the
+    /// desktop app's working directory is often `$HOME`, and three of the four
+    /// DR-14 roots are under it), and a read-only-by-omission rule would leave
+    /// the user's knowledge base deletable by the model it was hidden from.
+    pub deny_read_roots: Vec<PathBuf>,
+    /// When false (the default), outbound network is denied.
+    pub allow_network: bool,
+}
+
+impl SandboxPolicy {
+    /// A policy that confines nothing: writes allowed everywhere, network
+    /// allowed. Only useful with `deny_read_roots` — it is the shape the
+    /// privacy read-deny (DR-14) needs, because that sandbox exists to subtract
+    /// four directories and must change nothing else about how the shell
+    /// behaves. `writable_roots = ["/"]` rather than a new boolean, so every
+    /// backend's existing writable-root path carries it with no new branch.
+    pub fn unconfined() -> Self {
+        Self {
+            writable_roots: vec![PathBuf::from(std::path::MAIN_SEPARATOR_STR)],
+            deny_read_roots: Vec::new(),
+            allow_network: true,
+        }
+    }
+
+    pub fn with_deny_read_roots(mut self, roots: Vec<PathBuf>) -> Self {
+        self.deny_read_roots = roots;
+        self
+    }
+}
+```
+
+⚠ `SandboxPolicy::new` and `Default` keep their present meaning — `new` still yields
+`deny_read_roots: []`, and `Default`'s `writable_roots: []` still means "no writes anywhere". The two
+existing constructors are what BR-69 callers use and neither changes behaviour. `unconfined()` is new
+and is used by exactly one caller (Task 14B).
+
+```rust
+pub enum ShellSandboxError {
+    #[error("shell sandbox unavailable: {0}")]
+    Unavailable(String),
+    /// The backend can sandbox on this host but cannot express *this* policy —
+    /// today, only a non-empty `deny_read_roots`. Deliberately distinct from
+    /// `Unavailable`: the caller's fail-closed branch must be able to say
+    /// "a sandbox exists, just not the one that was required", and must never
+    /// treat it as "run unsandboxed".
+    #[error("shell sandbox cannot express this policy: {0}")]
+    PolicyUnsupported(String),
+    #[error("{0}")]
+    Other(String),
+}
+
+pub trait ShellSandbox: Send + Sync {
+    fn probe(&self) -> SandboxReport;
+
+    /// Whether this backend can honour a non-empty
+    /// [`SandboxPolicy::deny_read_roots`] **on this host**.
+    ///
+    /// No default implementation, deliberately. A `{ false }` default lets a new
+    /// backend inherit "cannot" silently and a whole platform quietly stops
+    /// getting the control; a `{ true }` default lets one inherit a lie. Making
+    /// it a required method puts the answer in the backend's own file, where the
+    /// reviewer of that file can see it, and makes a new backend that forgets it
+    /// a compile error.
+    fn supports_read_deny(&self) -> bool;
+
+    fn wrap(&self, policy: &SandboxPolicy, program: &str) -> Result<Wrapped, ShellSandboxError>;
+}
+
+impl ShellSandbox for NullSandbox {
+    fn supports_read_deny(&self) -> bool {
+        false
+    }
+    // probe() and wrap() unchanged.
+}
+```
+
+**(b) `seatbelt.rs` — one field, one profile block, one param loop.**
+
+```rust
+pub struct SeatbeltPolicy {
+    pub writable_roots: Vec<PathBuf>,
+    pub deny_read_roots: Vec<PathBuf>,
+    pub allow_network: bool,
+}
+
+impl SeatbeltPolicy {
+    pub fn with_deny_read_roots(mut self, roots: Vec<PathBuf>) -> Self {
+        self.deny_read_roots = roots;
+        self
+    }
+
+    /// Every spelling Seatbelt has to be told about, deduped and in a stable
+    /// order. `subpath` matches the **canonical** path, so `/tmp` and
+    /// `/private/tmp` are two different rules on macOS; both are emitted
+    /// because naming one is a deny with a documented way around it, and the
+    /// cost of an extra `-D` is nothing.
+    ///
+    /// `profile()` and `wrap()` MUST both iterate this, or the profile
+    /// references a `(param "DENY_ROOT_n")` that was never passed and
+    /// `sandbox-exec` fails to start the command.
+    fn deny_root_params(&self) -> Vec<PathBuf> {
+        let mut out: Vec<PathBuf> = Vec::new();
+        for root in &self.deny_read_roots {
+            let canonical = root.canonicalize().unwrap_or_else(|_| root.clone());
+            for candidate in [root.clone(), canonical] {
+                if !out.contains(&candidate) {
+                    out.push(candidate);
+                }
+            }
+        }
+        out
+    }
+}
+```
+
+In `profile()`, **after** the writable-roots block and the network block — i.e. immediately before
+the final `p.push('\n')`:
+
+```rust
+        // Issue #56 DR-14. SBPL is LAST-MATCH-WINS, so this block must come
+        // after BASE_POLICY's `(allow file-read*)` (:35) and after the
+        // writable-roots `(allow file-write*)` above. Emitted earlier, the
+        // profile still compiles, `sandbox-exec` still runs, and nothing is
+        // denied — a silent no-op with a passing test suite.
+        //
+        // Two operations rather than one: `file-read*` and `file-write*` are
+        // the two SBPL operations BASE_POLICY and the writable block actually
+        // grant, so denying exactly those two is a complete subtraction of what
+        // was granted. (There is no need to reach for a broader `file*`.)
+        let deny_roots = self.deny_root_params();
+        if !deny_roots.is_empty() {
+            p.push_str("\n\n; Private data roots (issue #56 DR-14): no read, no write.\n");
+            for op in ["file-read*", "file-write*"] {
+                p.push_str(&format!("(deny {op}"));
+                for i in 0..deny_roots.len() {
+                    p.push_str(&format!("\n  (subpath (param \"DENY_ROOT_{i}\"))"));
+                }
+                p.push_str(")\n");
+            }
+        }
+```
+
+and in `wrap()`, beside the `-DWRITABLE_ROOT_n=` loop:
+
+```rust
+        for (i, root) in self.deny_root_params().iter().enumerate() {
+            args.push(format!("-DDENY_ROOT_{i}={}", root.display()));
+        }
+```
+
+**(c) `macos.rs` — thread the field, answer the question.**
+
+```rust
+    fn supports_read_deny(&self) -> bool {
+        // Same probe as `probe()`: SBPL deny rules are part of the language, so
+        // if `sandbox-exec` is here at all, the subtraction is expressible.
+        seatbelt::available()
+    }
+
+    fn wrap(&self, policy: &SandboxPolicy, program: &str) -> Result<Wrapped, ShellSandboxError> {
+        let p = SeatbeltPolicy::new(policy.writable_roots.clone())
+            .with_deny_read_roots(policy.deny_read_roots.clone())
+            .with_network(policy.allow_network);
+        let (program, prefix_args) = p.wrap(program);
+        Ok(Wrapped { program, prefix_args })
+    }
+```
+
+⚠ The existing `golden_argv_matches_seatbelt_policy` test (`macos.rs:56-73`) still passes
+byte-for-byte, because a policy with no deny roots emits no deny block and no `-DDENY_ROOT_`. **Do
+not weaken that test to accommodate this change** — it is the "no macOS behaviour change" guarantee
+for every BR-69 caller, and this task must not consume it.
+
+**(d) `linux.rs` — a live bubblewrap probe, and a forced backend choice.**
+
+```rust
+/// Whether bubblewrap can actually run here. `bwrap` on `PATH` is not enough:
+/// `--unshare-user` needs unprivileged user namespaces, which several hardened
+/// distros disable, and a PATH check would report `true` on a host where every
+/// wrapped command dies. Same discipline the module docs demand of `probe()` —
+/// run the real thing once, cache the answer.
+fn bubblewrap_can_deny_reads() -> bool {
+    static CACHE: OnceLock<bool> = OnceLock::new();
+    *CACHE.get_or_init(|| {
+        if !bwrap_on_path() {
+            return false;
+        }
+        let mut command = std::process::Command::new("bwrap");
+        command
+            .args([
+                "--unshare-user", "--die-with-parent",
+                "--ro-bind", "/", "/", "--proc", "/proc", "--dev", "/dev",
+                // The probe exercises the exact primitive the policy needs.
+                "--tmpfs", "/tmp",
+                "--", "/bin/true",
+            ])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        crate::environment::strip_daemon_private_env_std(&mut command);
+        command.status().map(|s| s.success()).unwrap_or(false)
+    })
+}
+```
+
+```rust
+    fn supports_read_deny(&self) -> bool {
+        // Landlock cannot express this AT ALL, and that is a property of the
+        // mechanism, not of this host: a ruleset is a set of GRANTS with no
+        // deny rule and no way to subtract a subpath from a broader grant.
+        // `apply_landlock` (:403) leaves read accesses unhandled on purpose so
+        // reads stay open; handling them would mean granting read to the
+        // complement of the deny roots — see this task's ⚠ for the three
+        // measured costs and why v1 declines. Bubblewrap can: `--tmpfs <root>`
+        // after `--ro-bind / /` is a real subtraction.
+        bubblewrap_can_deny_reads()
+    }
+
+    fn wrap(&self, policy: &SandboxPolicy, program: &str) -> Result<Wrapped, ShellSandboxError> {
+        // A read-deny FORCES the backend choice, overriding `effective_backend`'s
+        // Landlock-first preference (:162-177). Falling through to the helper
+        // here is the silent-no-op failure: the argv looks right, the tier still
+        // reads Full, and the deny roots are readable.
+        if !policy.deny_read_roots.is_empty() {
+            if !bubblewrap_can_deny_reads() {
+                return Err(ShellSandboxError::PolicyUnsupported(
+                    "Landlock grants access, it cannot subtract it, so it cannot hide a \
+                     directory from a command; and bubblewrap is unavailable here (not \
+                     installed, or unprivileged user namespaces are disabled)"
+                        .to_string(),
+                ));
+            }
+            return Ok(wrap_bubblewrap(policy, program));
+        }
+        match effective_backend() { /* unchanged */ }
+    }
+```
+
+In `wrap_bubblewrap`, **after** the writable-root `--bind` loop and before `--unshare-net`:
+
+```rust
+    // AFTER the writable `--bind`s. bubblewrap applies filesystem operations in
+    // argv order and the later one wins for an overlapping path, so a deny root
+    // inside a writable root is only subtracted if its `--tmpfs` comes last.
+    // Only existing roots are named: `--tmpfs` needs a mountpoint, and a root
+    // that does not exist holds nothing to read.
+    for root in &policy.deny_read_roots {
+        if root.is_dir() {
+            args.push("--tmpfs".to_string());
+            args.push(root.display().to_string());
+        }
+    }
+```
+
+⚠ `wrap_bubblewrap` today also passes `--unshare-pid`. Leave it exactly as it is: this task changes
+which backend is chosen and adds `--tmpfs` lines, and nothing else. Widening or narrowing the
+namespace set here would change BR-69 behaviour under a privacy commit.
+
+**(e) `windows.rs`.**
+
+```rust
+    fn supports_read_deny(&self) -> bool {
+        // See this module's header table. AppContainer is the designed W2 tier
+        // and could express this by omission; it is unimplemented and cannot be
+        // validated off a Windows runner, and an untested `unsafe` FFI sandbox
+        // claiming to hide clinical data is the security theatre those docs
+        // warn against.
+        false
+    }
+
+    fn wrap(&self, policy: &SandboxPolicy, _program: &str) -> Result<Wrapped, ShellSandboxError> {
+        if !policy.deny_read_roots.is_empty() {
+            return Err(ShellSandboxError::PolicyUnsupported(
+                "Windows has no unprivileged sandbox that can hide a directory from an \
+                 arbitrary command"
+                    .to_string(),
+            ));
+        }
+        Err(ShellSandboxError::Unavailable(
+            "no Windows shell sandbox tier is implemented (probe reports None)".to_string(),
+        ))
+    }
+```
+
+- [ ] **Step 4: Run**
+
+```bash
+cargo test -p biorouter-sandbox --lib 2>&1 | tail -5
+# The pre-count is measurable and non-zero, so assert the delta, not "no failures".
+# Measured at 9558c346: `cargo test -p biorouter-sandbox --lib -- --list` is the
+# number to record here before Step 3, and this task adds 2 (both in seatbelt.rs).
+cargo test -p biorouter-sandbox --test read_deny 2>&1 | tail -5
+# Expect: `3 passed` on macOS and on a Linux host with bubblewrap; on a host
+# without, still `3 passed` — one asserts enforcement, two assert the refusal.
+# `0 passed` means the new test binary was not registered: `tests/read_deny.rs`
+# must be a sibling of `tests/sandbox.rs`, not a module inside it.
+cargo check --workspace --all-targets
+```
+
+⚠ O13: this task changes a `pub` struct and a `pub` trait, so `cargo check --workspace --all-targets`
+runs in Step 4 **and** again before the commit. `SandboxPolicy` is constructed in
+`biorouter-mcp/src/developer/shell.rs:131-138` and the trait is implemented four times; a struct
+literal anywhere outside those would be a compile error this catches.
+
+- [ ] **Step 5: Gate**
+
+```bash
+# (1) The trait question has NO default body. This is the difference between
+#     "a future backend must answer" and "a future backend inherits an answer".
+awk '/pub trait ShellSandbox/,/^}/' crates/biorouter-sandbox/src/shell_sandbox/mod.rs \
+  | grep -c "fn supports_read_deny(&self) -> bool;"
+echo "expect: 1 — a semicolon, not a block"
+
+# (2) Every implementor answers for itself. FOUR impls today, measured:
+#     NullSandbox mod.rs:186, SeatbeltSandbox macos.rs:18, WindowsSandbox
+#     windows.rs:60, LinuxSandbox linux.rs:180.
+grep -rn "impl ShellSandbox for" crates/biorouter-sandbox/src/ | wc -l ; echo "expect: 4"
+grep -rn "fn supports_read_deny" crates/biorouter-sandbox/src/ | wc -l
+echo "expect: 5 — one declaration + four implementations"
+
+# (3) Landlock is UNTOUCHED. If someone 'implements' the read-deny by teaching
+#     apply_landlock to handle reads, this fires — and that implementation is
+#     the one whose failure mode is 'the file I just wrote is unreadable'.
+grep -c "AccessFs::from_read\|AccessFs::ReadFile\|AccessFs::ReadDir" \
+  crates/biorouter-sandbox/src/shell_sandbox/linux.rs
+echo "expect: 0 — Landlock still handles write accesses only (:413-418)"
+
+# (4) SBPL ordering, as a command rather than a claim. The whole macOS half
+#     turns on it and it cannot be seen by reading the emitted profile in a
+#     passing test, because a mis-ordered profile is still a valid profile.
+python3 - <<'PY'
+src = open('crates/biorouter-sandbox/src/seatbelt.rs').read().splitlines()
+def first(pat):
+    for i, l in enumerate(src, 1):
+        if pat in l:
+            return i
+    return None
+allow_read  = first('(allow file-read*)')       # BASE_POLICY :35
+allow_write = first('(allow file-write*')       # profile()'s writable block
+deny_read   = first('(deny file-read*')         # the new block
+assert allow_read and allow_write and deny_read, \
+    f'marker missing: {allow_read=} {allow_write=} {deny_read=}'
+assert deny_read > allow_read,  'deny emitted before (allow file-read*) — no-op'
+assert deny_read > allow_write, 'deny emitted before the writable block — no-op'
+print(f'OK  allow-read:{allow_read}  writable:{allow_write}  deny:{deny_read}')
+PY
+
+# (5) profile() and wrap() iterate the SAME parameter list, or sandbox-exec
+#     fails on an undefined `(param "DENY_ROOT_n")` at runtime — on the user's
+#     machine, not in CI.
+grep -c "deny_root_params()" crates/biorouter-sandbox/src/seatbelt.rs
+echo "expect: 3 — the definition, profile()'s call, wrap()'s call"
+
+# (6) The bubblewrap capability is a live probe, not a PATH check.
+awk '/fn bubblewrap_can_deny_reads/,/^}/' crates/biorouter-sandbox/src/shell_sandbox/linux.rs \
+  | grep -c '"--tmpfs"'
+echo "expect: 1 — the probe runs the primitive it is vouching for"
+```
+
+**What wrong implementation each of these rejects.**
+(1)+(2) A fifth backend added later that inherits a permissive default and silently stops denying on
+a whole platform. (3) A "Linux read-deny" built on the Landlock complement — which would pass the
+live test on a clean box and break on the first `mkdir` in `$HOME`. (4) The deny block emitted before
+the allows: **the single most likely macOS mistake**, because the natural place to add a block is
+next to the block it resembles, and the result compiles, runs, reports `Full`, and denies nothing.
+(5) A `deny_root_params()` inlined in one of the two places and hand-rolled in the other, which
+diverges the moment canonicalization changes the count. (6) `supports_read_deny() { bwrap_on_path() }`,
+which is green on every hardened distro where `bwrap` exists and user namespaces are off. And the
+live tests reject the base case the whole task exists for: a backend that accepts `deny_read_roots`
+and ignores it.
+
+- [ ] **Step 6: Commit**
+
+```bash
+cargo check --workspace --all-targets   # O13
+git add crates/biorouter-sandbox/
+git commit -m "feat(sandbox): a read-deny policy, and each backend's honest answer about it (#56)"
+```
+
+---
+
+
+### Task 14B: The four roots, the guard that carries them, and the refusal when the platform cannot
+
+Task 14A gave `biorouter-sandbox` a read-deny it can express and an honest answer about where it
+cannot. This task names the four directories, carries the answer "this session is public" from the
+one place that knows it to the two crates that need it, and decides what happens on a host that
+cannot comply. **It fails closed**: a public-capability session on a platform where the read-deny
+cannot be established does not get an unsandboxed arbitrary-execution tool.
+
+#### The four roots, resolved from real symbols
+
+| # | Root | Resolved by | Why it is private |
+|---|---|---|---|
+| 1 | `<data>/sessions` | `Paths::data_dir()` (`config/paths.rs:35-37`) + `SESSIONS_FOLDER` (`session_manager.rs:30`). The production store is `SessionStorage::new(Paths::data_dir())` at `:115`, and `SessionStorage::new` joins `SESSIONS_FOLDER` then `DB_NAME` at `:2007-2009`. | `sessions.db` carries `messages_fts`, a **contentful** FTS5 mirror of every message (`:14-28`). The whole directory, not the file, so `-wal`/`-shm` and any future sibling are covered. |
+| 2 | `<config>/knowledge` | `knowledge::paths::knowledge_root()` (`biorouter-mcp/src/knowledge/paths.rs:43-45`) → `crate::paths::in_config_dir("knowledge")` | The markdown tree CP1–CP5 exist to gate. Reading it off disk is the same crossing with none of the gates. |
+| 3 | `<config>/memory` | `memory::global_memory_dir()` (`biorouter-mcp/src/memory/mod.rs:82-84`) | AR-3 already concedes the *local* store is ungated; the global one is the one Task 19 refuses to write from a private session, and reading it back is the same content. |
+| 4 | `<config>/agent_drafter` | `agent_drafter::default_root()` (`biorouter-mcp/src/agent_drafter/mod.rs:815-817`) | App source, `.vault/` secrets, **and the app ids** — which matter for a reason spelled out in Task 14C. |
+
+Both crates' config resolvers agree byte for byte and there is a test that says so
+(`crates/biorouter/tests/path_resolver_agreement.rs`), so root 1 is computed from
+`biorouter::config::Paths` and roots 2–4 from the symbols above without the two disagreeing.
+
+⚠ **`<config>` is not `<data>`.** The design's §9.3 A2 already corrected this once: on this machine
+`sessions.db` is under `~/.local/share/biorouter/`, while `knowledge/`, `memory/` and
+`agent_drafter/` are under `~/.config/biorouter/`. A deny list written against one prefix misses
+three of the four roots and every test that uses `BIOROUTER_PATH_ROOT` (which relocates *both*) still
+passes.
+
+⚠ **Not on the list, deliberately:** `<config>/config.yaml`, `<config>/secrets.yaml` and the rest of
+the config dir. Denying the config directory wholesale would also deny `.biorouterignore`, the
+extension configs and the skills tree, which ordinary work reads; and the credential half is
+SecretGuard's `**/secrets.*` floor, which is a *different* control with a different owner (BR-23).
+The four roots are session **content**, which is what DR-3 is about. The residual — a public shell
+can read `~/.config/biorouter/config.yaml` — is pre-existing, is not made worse here, and belongs to
+§9.3 A1's still-open fix (2).
+
+**Files:**
+
+| Action | Path | Anchor (re-verified at `9558c346`) |
+|---|---|---|
+| Create | `crates/biorouter-sandbox/src/private_data.rs` | new — `PrivateDataGuard`, `is_under_any`, `read_deny_unavailable_message` |
+| Modify | `crates/biorouter-sandbox/src/lib.rs` | the `pub mod` list `:29-33` |
+| Create | `crates/biorouter/src/privacy/private_roots.rs` | new — the four roots, one function |
+| Modify | `crates/biorouter-mcp/src/lib.rs` | `SpawnServerFn` `:50-52`; `BuiltinDef` `:55-58`; the `builtin!` macro `:77-92`; `BUILTIN_EXTENSIONS` `:96-142` (7 entries — `developer` and `knowledge` hand-written, five via the macro); the re-export block `:34-39` |
+| Modify | `crates/biorouter-mcp/src/developer/shell.rs` | `build_sandbox_policy` `:131-138`; `shell_sandbox_wrap` `:163-215`; `shell_sandbox_status_line` `:222-258`; `configure_shell_command` `:330-377` (the `shell_sandbox_wrap` call at `:338`, the strip at `:368`) |
+| Modify | `crates/biorouter-mcp/src/developer/rmcp_developer.rs` | `DeveloperServer` fields `:329-357`; `new()` `:749-781`; `with_working_dir` `:816-819`; the `configure_shell_command` call `:1587`; `resolve_path_jailed` `:2066-2151` (the `jail_relaxed` early return at `:2084-2087`) |
+| Modify | `crates/biorouter-mcp/src/developer/background.rs` | the `configure_shell_command` call `:128` |
+| Modify | `crates/biorouter-mcp/src/computercontroller/mod.rs` | `automation_script_command` `:45-70`; `ComputerControllerServer::new` `:398`; `automation_script_impl` `:840-…`; the `computer_control` path via `platform/{macos,windows,linux}.rs` |
+| Modify | `crates/biorouter/src/agents/extension_manager.rs` | the `ExtensionConfig::Builtin` arm `:762-786`, `(def.spawn_server)(…)` at `:777`; `dispatch_tool_call` `:1438` where Task 14 computes `caller_tier` |
+| Reference | `crates/biorouter/tests/path_resolver_agreement.rs` | the cross-crate pin that lets roots 1 and 2–4 be computed in different crates |
+
+#### ⚠ Read this first: why a task-local will not work, and what does
+
+The obvious wiring is a `tokio::task_local` set in `dispatch_tool_call` — the pattern
+`autovisualiser/common.rs:198` already uses. **It cannot work here, and the reason is two lines of
+existing code.** `ExtensionConfig::Builtin` (`extension_manager.rs:762`) calls
+`(def.spawn_server)(server_read, server_write, …)` at `:777`, and every builtin's `spawn` ends in
+`spawn_and_serve` (`biorouter-mcp/src/lib.rs:60-75`), which does `tokio::spawn`. That is a **detached
+task**: task-locals do not cross it, and the server task is long-lived — it was spawned once at
+extension-admission time and every later tool call arrives over a duplex pipe into it. A task-local
+set at dispatch would be invisible inside the tool body, and the tell is that the value would read
+"unrestricted" 100% of the time, which is exactly the shape of a passing test suite over a dead
+control.
+
+Two properties the wiring must have instead:
+
+- **Per session.** One `ExtensionManager` per `Agent`, one `Agent` per session, therefore one
+  `DeveloperServer` per session. That is where a shared handle can live.
+- **Re-read per call, never captured at spawn.** Baking the tier into the server at admission time
+  is the **O6 hazard** — a mid-session model swap would leave the sandbox decided by whatever was
+  bound when the extension started. Gate E exists because of exactly this.
+
+So: a cheap shared cell, created by the manager, cloned into the builtin at spawn, **written at the
+one dispatch choke point** and read at each tool call. Writing it in `dispatch_tool_call` is what
+makes it impossible for the guard to be staler than Gate C itself, and `dispatch_tool_call` really
+is the only door — `grep -n "\.call_tool(" crates/biorouter/src/agents/extension_manager.rs` returns
+exactly **one** line (`:1562`), inside it.
+
+- [ ] **Step 1: Write the failing tests**
+
+```rust
+// crates/biorouter/src/privacy/private_roots.rs
+#[test]
+fn the_four_roots_are_the_four_the_ruling_names_and_span_both_dirs() {
+    let _g = env_lock::lock_env([("BIOROUTER_PATH_ROOT", Some("/tmp/pr-test"))]);
+    let roots = all();
+    assert_eq!(roots.len(), 4, "{roots:?}");
+    assert!(roots.contains(&PathBuf::from("/tmp/pr-test/data/sessions")));
+    assert!(roots.contains(&PathBuf::from("/tmp/pr-test/config/knowledge")));
+    assert!(roots.contains(&PathBuf::from("/tmp/pr-test/config/memory")));
+    assert!(roots.contains(&PathBuf::from("/tmp/pr-test/config/agent_drafter")));
+    // The bug this catches: three of the four written against `config` and the
+    // session store missed, which every BIOROUTER_PATH_ROOT test still passes
+    // because that variable relocates both dirs under one parent.
+    assert!(roots.iter().any(|r| r.starts_with("/tmp/pr-test/data")),
+            "the session store is under data_dir, not config_dir");
+}
+
+// crates/biorouter-sandbox/src/private_data.rs
+#[test]
+fn an_unwired_guard_is_unrestricted_and_a_cleared_one_goes_back() {
+    let g = PrivateDataGuard::default();
+    assert!(!g.is_restricted());
+    g.restrict_to(vec![PathBuf::from("/x")]);
+    assert!(g.is_restricted());
+    g.clear();
+    assert!(!g.is_restricted(), "a model swap back to private must un-sandbox");
+}
+
+#[test]
+fn a_symlink_into_a_deny_root_is_still_under_it() {
+    // The lexical check is the one a model beats in a single command:
+    // `ln -s ~/.config/biorouter/knowledge ./kb && cat ./kb/page.md`.
+    let root = tempfile::tempdir().unwrap();
+    let secret = root.path().join("knowledge");
+    std::fs::create_dir_all(&secret).unwrap();
+    let link_dir = tempfile::tempdir().unwrap();
+    let link = link_dir.path().join("kb");
+    std::os::unix::fs::symlink(&secret, &link).unwrap();
+    assert!(is_under_any(&link.join("page.md"), &[secret.clone()]));
+    assert!(is_under_any(&secret.join("../knowledge/page.md"), &[secret]));
+}
+
+// crates/biorouter-mcp/src/developer/rmcp_developer.rs
+#[tokio::test]
+async fn the_file_tools_refuse_a_private_root_even_when_the_jail_is_relaxed() {
+    // resolve_path_jailed returns EARLY when the jail is relaxed (:2084-2087),
+    // which is BioRouterMode::Auto — the mode agents run in. A deny placed after
+    // that return is a deny that never fires in the mode that matters, and every
+    // jailed-mode test still passes.
+    let (server, roots) = server_with_private_roots_restricted().await;
+    for relaxed in [true, false] {
+        let err = server
+            .resolve_path_jailed(&roots.knowledge.join("page.md").display().to_string(), relaxed)
+            .expect_err("a private root must not resolve");
+        assert!(format!("{err:?}").contains("private"), "{err:?}");
+    }
+    // …and ordinary work is untouched in both modes.
+    assert!(server.resolve_path_jailed("notes.txt", false).is_ok());
+}
+
+// crates/biorouter-mcp/src/developer/shell.rs
+#[test]
+fn a_restricted_guard_composes_with_br69_instead_of_replacing_it() {
+    // With BR-69's own gate OFF, the privacy sandbox subtracts four directories
+    // and changes NOTHING else: writes stay open, network stays open. A policy
+    // that quietly inherits BR-69's confinement ships "BR-69 on by default"
+    // wearing a privacy label, and the first bug report is `pip install` failing.
+    let g = PrivateDataGuard::default();
+    g.restrict_to(vec![PathBuf::from("/private-root")]);
+    let p = build_sandbox_policy(Some(Path::new("/work")), &g);
+    assert_eq!(p.deny_read_roots, vec![PathBuf::from("/private-root")]);
+    assert!(p.allow_network, "the privacy sandbox must not deny the network");
+    assert_eq!(p.writable_roots, vec![PathBuf::from(std::path::MAIN_SEPARATOR_STR)],
+               "the privacy sandbox must not confine writes");
+}
+
+#[test]
+fn an_unrestricted_guard_leaves_the_br69_policy_byte_for_byte() {
+    let g = PrivateDataGuard::default();
+    assert_eq!(
+        build_sandbox_policy(Some(Path::new("/work")), &g).writable_roots,
+        vec![PathBuf::from("/work"), std::env::temp_dir()],
+    );
+}
+
+#[tokio::test]
+async fn a_host_that_cannot_deny_reads_refuses_the_tool_and_names_both_exits() {
+    let msg = read_deny_unavailable_message("developer__shell", &unsupported_report());
+    assert!(msg.contains("developer__shell"));
+    assert!(msg.contains("private model"));          // exit 1
+    assert!(msg.contains("Settings"));               // exit 2
+    assert!(msg.contains("Do not retry"));           // forecloses the workaround
+    assert!(!msg.contains("unsandboxed"), "must not suggest a third way out");
+    // Deterministic: a model that sees a different string on retry concludes the
+    // refusal is transient and loops.
+    assert_eq!(msg, read_deny_unavailable_message("developer__shell", &unsupported_report()));
+}
+```
+
+and the end-to-end one, which is the only test that fails a wiring that compiles but never fires:
+
+```rust
+#[tokio::test]
+async fn a_public_session_shell_cannot_read_the_session_database() {
+    // Through the REAL agent-loop dispatch, not by calling configure_shell_command:
+    // the value of this test is that it exercises the write in dispatch_tool_call.
+    if !biorouter_mcp::shell_sandbox::detect().supports_read_deny() {
+        return; // covered by the refusal test below on such a host
+    }
+    let db = private_session_with_a_transcript_containing("COHORT-SENTINEL").await;
+    let out = shell_via_agent_loop_on(public_provider(),
+        &format!("sqlite3 {} 'select text from messages_fts'", db.display())).await;
+    assert!(!out.contains("COHORT-SENTINEL"), "the read-deny did not apply: {out}");
+
+    // A private-capability session is UNAFFECTED — this is not a general jail.
+    let out = shell_via_agent_loop_on(private_provider(),
+        &format!("sqlite3 {} 'select text from messages_fts'", db.display())).await;
+    assert!(out.contains("COHORT-SENTINEL"), "a private session must not be sandboxed: {out}");
+
+    // …and the swap back is honoured on the NEXT call, without re-admitting the
+    // extension: the O6 hazard, as an assertion.
+    let (agent, s) = agent_on(private_provider()).await;
+    assert!(shell_in(&agent, &s, "cat …").await.contains("COHORT-SENTINEL"));
+    agent.update_provider(public_provider(), &s.id).await.unwrap();
+    assert!(!shell_in(&agent, &s, "cat …").await.contains("COHORT-SENTINEL"));
+}
+```
+
+- [ ] **Step 2: Run** → **COMPILE ERROR** (`unresolved module private_data`, and
+`configure_shell_command` takes 3 arguments not 4).
+
+- [ ] **Step 3: Implement**
+
+**(a) `biorouter-sandbox/src/private_data.rs` — the shared cell, and the refusal.**
+
+```rust
+//! The private-data read-deny (issue #56, DR-14): a per-session handle saying
+//! which directories this session's process-spawning and path-reading tools may
+//! not touch, plus the refusal for a host that cannot enforce it.
+//!
+//! It lives in this leaf crate for one structural reason: `biorouter-mcp`
+//! cannot depend on `biorouter` (circular), and the tools that must obey are in
+//! `biorouter-mcp` while the only code that knows a session's capability is in
+//! `biorouter`. This crate is the one both can see.
+//!
+//! **It carries paths, not a tier.** The writer folds both the capability and
+//! the master opt-out into "restricted / not", so nothing below `biorouter`
+//! needs to know what a `ProviderTier` is, and there is exactly one place in
+//! the tree where turning privacy tiers off turns the sandbox off.
+
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, RwLock};
+
+use crate::shell_sandbox::SandboxReport;
+
+/// The directories this session's tools may not read or write. Cloned between
+/// the extension manager (the sole writer) and the in-process builtin servers
+/// (the readers); a clone shares the same cell, so a write is visible to every
+/// reader on its next call.
+#[derive(Debug, Clone, Default)]
+pub struct PrivateDataGuard {
+    roots: Arc<RwLock<Vec<PathBuf>>>,
+}
+
+impl PrivateDataGuard {
+    /// Empty — no restriction. This is `Default`, and it is what a server
+    /// constructed outside an `ExtensionManager` gets (`biorouter mcp
+    /// developer`, unit tests).
+    ///
+    /// ⚠ That default is fail-**open**, and no type can fix it: a guard nobody
+    /// wired has no roots to deny, and inventing some would break every
+    /// standalone use. What protects against "nobody wired it" is Step 1's
+    /// end-to-end test through the real agent loop, and nothing else. Do not
+    /// replace it with a unit test on this type.
+    pub fn unrestricted() -> Self {
+        Self::default()
+    }
+
+    pub fn restrict_to(&self, roots: Vec<PathBuf>) {
+        *self.roots.write().expect("private-data guard poisoned") = roots;
+    }
+
+    pub fn clear(&self) {
+        self.roots.write().expect("private-data guard poisoned").clear();
+    }
+
+    pub fn denied_roots(&self) -> Vec<PathBuf> {
+        self.roots.read().expect("private-data guard poisoned").clone()
+    }
+
+    pub fn is_restricted(&self) -> bool {
+        !self.roots.read().expect("private-data guard poisoned").is_empty()
+    }
+
+    /// Whether `path` lands inside a denied root. Used by the in-process
+    /// readers (the developer file tools); the process-spawning tools get the
+    /// kernel's answer instead.
+    pub fn denies(&self, path: &Path) -> bool {
+        is_under_any(path, &self.denied_roots())
+    }
+}
+
+/// Symlink-aware containment. `Path::starts_with` alone loses to
+/// `ln -s ~/.config/biorouter/knowledge ./kb`, and to any `..` in the middle;
+/// canonicalizing the deepest existing ancestor is the same technique
+/// `SecretGuard::is_inside_root` (`secret_guard.rs:242-263`) already uses in
+/// this tree, and it costs one `stat` per component only when the lexical
+/// answer is "no".
+pub fn is_under_any(path: &Path, roots: &[PathBuf]) -> bool {
+    if roots.is_empty() {
+        return false;
+    }
+    let real_roots: Vec<PathBuf> = roots
+        .iter()
+        .map(|r| r.canonicalize().unwrap_or_else(|_| r.clone()))
+        .collect();
+    let hit = |p: &Path| {
+        roots.iter().any(|r| p.starts_with(r)) || real_roots.iter().any(|r| p.starts_with(r))
+    };
+    if hit(path) {
+        return true;
+    }
+    let mut ancestor = path;
+    loop {
+        if let Ok(real) = ancestor.canonicalize() {
+            let tail = path.strip_prefix(ancestor).unwrap_or(Path::new(""));
+            return hit(&real.join(tail));
+        }
+        match ancestor.parent() {
+            Some(parent) => ancestor = parent,
+            None => return false,
+        }
+    }
+}
+
+/// The refusal a tool returns when this host cannot establish the read-deny.
+/// Pure, deterministic and platform-aware; `report` is the backend's own
+/// [`SandboxReport`], which is stable for the life of a host.
+pub fn read_deny_unavailable_message(tool: &str, report: &SandboxReport) -> String {
+    let remedy = if cfg!(target_os = "linux") {
+        "\n\nOn Linux there is a third fix for the machine itself: install bubblewrap \
+         (`sudo apt install bubblewrap`, `sudo dnf install bubblewrap`) and make sure \
+         unprivileged user namespaces are enabled. It is the one Linux mechanism that can \
+         hide a directory from a command."
+    } else if cfg!(target_os = "windows") {
+        "\n\nWindows has no unprivileged sandbox that can hide a directory from an arbitrary \
+         command, so the two options above are the only ones here."
+    } else {
+        ""
+    };
+    format!(
+        "{tool} cannot run in this chat.\n\n\
+         This chat's capability is public: its model is hosted outside the institution. \
+         Biorouter runs a public chat's shell, script and file tools under an OS sandbox that \
+         hides four directories from them — your saved chats, your knowledge bases, your saved \
+         memories and your Biorouter apps — so a public model cannot read private material \
+         straight off the disk. Everything else on this machine stays readable and writable \
+         exactly as before.\n\n\
+         This computer cannot provide that sandbox: {summary}. Rather than run {tool} with those \
+         four directories exposed, Biorouter refuses it.\n\n\
+         There are two ways forward and there is no third:\n\
+         1. Switch this chat to a private model — Settings > Models, or the model chip in the \
+         composer. Private chats are not sandboxed, because a private model is allowed to read \
+         this material.\n\
+         2. Turn privacy tiers off for this machine in Settings > Privacy. That removes every \
+         privacy guardrail here, not just this one.\n\n\
+         Do not retry this command, rewrite it, or route it through another tool: the answer is \
+         the same everywhere and will not change.{remedy}",
+        summary = report.summary()
+    )
+}
+```
+
+⚠ **This refusal lives here, not in `crates/biorouter/src/privacy/refusal.rs`** (Task 12's module),
+because the tools that must emit it are two crates below `biorouter` and cannot see it. It follows
+the same register the rest of that module uses — name the state, name the reason, foreclose the
+workaround, name the human action — and Task 12's `PrivacyRefusal` is unchanged.
+
+**(b) `biorouter/src/privacy/private_roots.rs` — four roots, one function.**
+
+```rust
+//! The directories DR-14 hides from a public-capability session's tools.
+//! Computed, never hardcoded: `BIOROUTER_PATH_ROOT` relocates all four, and a
+//! literal `~/.config/biorouter/...` would make every sandboxed test read the
+//! developer's real store.
+
+use std::path::PathBuf;
+
+use crate::config::paths::Paths;
+
+pub fn all() -> Vec<PathBuf> {
+    vec![
+        // 1. The session store. Under data_dir, NOT config_dir — see the task's ⚠.
+        Paths::data_dir().join(crate::session::session_manager::SESSIONS_FOLDER),
+        // 2-4. Under config_dir. Resolved through `biorouter_mcp`'s own accessors
+        // so a future move of any of them follows automatically;
+        // `crates/biorouter/tests/path_resolver_agreement.rs` pins the two
+        // crates' resolvers together.
+        biorouter_mcp::knowledge::paths::knowledge_root()
+            .unwrap_or_else(|_| Paths::in_config_dir("knowledge")),
+        Paths::in_config_dir("memory"),
+        biorouter_mcp::agent_drafter::default_root(),
+    ]
+}
+```
+
+⚠ `memory::global_memory_dir()` is private to its module (`memory/mod.rs:82`), so root 3 is spelled
+out here and `memory/mod.rs` gains a one-line test asserting the two agree — the same shape as the
+path-resolver agreement test, and the same reason: two spellings of one path is how a root silently
+stops being covered.
+
+**(c) `SpawnServerFn` grows a context struct.**
+
+```rust
+/// What a builtin needs from its spawner. A struct rather than a fourth
+/// parameter so the compiler names every site that must decide: adding a field
+/// breaks all seven builtins at once, which is the property that keeps a new
+/// one from silently opting out of a security control.
+pub struct BuiltinSpawnContext {
+    /// The session's working directory, when known.
+    pub working_dir: Option<std::path::PathBuf>,
+    /// Issue #56 DR-14. Empty for a private-capability session, or with privacy
+    /// tiers off.
+    pub private_data: biorouter_sandbox::private_data::PrivateDataGuard,
+}
+
+pub type SpawnServerFn =
+    fn(tokio::io::DuplexStream, tokio::io::DuplexStream, BuiltinSpawnContext);
+```
+
+`developer` and `computercontroller` consume `ctx.private_data`; the other five ignore it, so the
+`builtin!` macro's `_ctx: BuiltinSpawnContext` binding covers them unchanged.
+**`computercontroller` moves out of the `builtin!` macro** into a hand-written entry beside
+`developer`'s, because it now needs a builder call. And `crates/biorouter-mcp/src/lib.rs` re-exports
+`pub use biorouter_sandbox::private_data;` beside the existing `pub use
+biorouter_sandbox::shell_sandbox;` at `:39`, which is how `biorouter` — which does **not** depend on
+`biorouter-sandbox` directly (checked: it is absent from `crates/biorouter/Cargo.toml`) — reaches the
+type.
+
+**(d) The one write, in `dispatch_tool_call`**, immediately after the `caller_tier` Task 14 already
+computes and before its refusal:
+
+```rust
+        // Issue #56 DR-14. ONE line, at the ONE choke point, right beside the
+        // tier Gate C computes — so the guard can never be staler than the gate
+        // itself, and a mid-session model swap takes effect on the next tool
+        // call with no re-admission (the O6 hazard).
+        //
+        // The master opt-out is folded in HERE and nowhere else: with privacy
+        // tiers off the guard is cleared, so nothing below `biorouter` knows
+        // what a privacy tier is and there is a single place in the tree where
+        // "the user turned it off" turns the sandbox off.
+        if privacy_tiers_enabled() && !caller_tier.is_private() {
+            self.private_data.restrict_to(crate::privacy::private_roots::all());
+        } else {
+            self.private_data.clear();
+        }
+```
+
+**(e) `build_sandbox_policy` composes, it does not replace.**
+
+```rust
+/// BR-69's policy, plus issue #56's deny roots when the guard is restricted.
+///
+/// The two compose rather than one winning. With BR-69's gate ON the user asked
+/// for write confinement and a network deny and still gets them; with it OFF
+/// the privacy sandbox must subtract four directories and change **nothing
+/// else**, or what ships is BR-69-on-by-default wearing a privacy label — and
+/// the first bug report is `pip install` failing in every chat on a commercial
+/// model.
+fn build_sandbox_policy(
+    working_dir: Option<&std::path::Path>,
+    private_data: &PrivateDataGuard,
+) -> SandboxPolicy {
+    let mut policy = if SandboxMode::from_env().is_on() {
+        let mut roots = Vec::new();
+        if let Some(dir) = working_dir {
+            roots.push(dir.to_path_buf());
+        }
+        roots.push(env::temp_dir());
+        SandboxPolicy::new(roots).with_network(env_truthy("BIOROUTER_SHELL_SANDBOX_NETWORK"))
+    } else {
+        SandboxPolicy::unconfined()
+    };
+    policy.deny_read_roots = private_data.denied_roots();
+    policy
+}
+```
+
+**(f) `shell_sandbox_wrap` gains the fail-closed arm.** Today it returns `Ok(None)` — run
+unwrapped — whenever the mode is `Off`. That is still right when the guard is unrestricted, and
+wrong when it is not:
+
+```rust
+fn shell_sandbox_wrap(
+    program: &str,
+    working_dir: Option<&std::path::Path>,
+    private_data: &PrivateDataGuard,
+) -> Result<Option<(String, Vec<String>)>, String> {
+    let mode = SandboxMode::from_env();
+    // Issue #56 DR-14: a restricted guard makes the sandbox mandatory, whatever
+    // BIOROUTER_SHELL_SANDBOX says. Placed BEFORE the `mode == Off` early
+    // return at :168-170 — after it, the deny roots are unreachable in the
+    // default configuration, which is every user.
+    if private_data.is_restricted() {
+        let backend = shell_sandbox::detect();
+        if !backend.supports_read_deny() {
+            return Err(read_deny_unavailable_message("developer__shell", &backend.probe()));
+        }
+        let policy = build_sandbox_policy(working_dir, private_data);
+        return match backend.wrap(&policy, program) {
+            Ok(w) => Ok(Some((w.program, w.prefix_args))),
+            // Fail CLOSED. `auto`'s warn-and-run-anyway is the right answer for a
+            // control the user opted into; it is the wrong answer for one that
+            // exists because a public model must not read private material.
+            Err(e) => Err(read_deny_unavailable_message(
+                "developer__shell",
+                &SandboxReport::none("none", e.to_string()),
+            )),
+        };
+    }
+    if mode == SandboxMode::Off {
+        return Ok(None);
+    }
+    /* …the rest is BR-69's, unchanged… */
+}
+```
+
+`configure_shell_command` takes the guard as a fourth parameter and passes it through; both
+production callers (`rmcp_developer.rs:1587` and `background.rs:128`) pass `self.private_data.clone()`.
+Its `Result<_, String>` already surfaces as a tool error at `:1587-1588`, so the refusal reaches the
+model with no new plumbing. `shell_sandbox_status_line` grows one clause so the assistant-visible
+line says which four directories are hidden — the model can then stop trying to read them instead of
+retrying blindly.
+
+**(g) The in-process file tools.** The shell gets a kernel answer; `text_editor` and its siblings
+never spawn anything, so they need a check where the path is resolved. In `resolve_path_jailed`,
+immediately after `let resolved = …` (`:2076-2081`) and **before** the `if jail_relaxed` early
+return at `:2084-2087`:
+
+```rust
+        // Issue #56 DR-14. BEFORE the relaxed-jail early return: Auto mode is
+        // the mode agents run in, and a check placed after that return is a
+        // check that never fires in production while every jailed-mode test
+        // still passes.
+        if self.private_data.denies(&resolved) {
+            return Err(ErrorData::new(
+                rmcp::model::ErrorCode::INVALID_PARAMS,
+                read_deny_unavailable_message("developer__text_editor", &PRIVATE_ROOT_REPORT),
+                None,
+            ));
+        }
+```
+
+`DeveloperServer` gains a `private_data: PrivateDataGuard` field (the struct already derives
+`Clone`, and `PrivateDataGuard` is `Clone`), set by a `with_private_data(..)` builder called from the
+`developer` entry in `BUILTIN_EXTENSIONS`. `ComputerControllerServer` gains the same field and
+`automation_script_command` (`:45-70`) grows the same wrap that `configure_shell_command` performs —
+it is a `tokio::process::Command` builder in exactly the same shape, and the strip at `:69` stays
+**last**, after the sandbox wrap, for the reason its own doc-comment gives.
+
+**(h) `computer_control`** (`platform/{macos,windows,linux}.rs`) executes AppleScript / PowerShell /
+`xdotool`. On macOS and Linux it routes through the same wrap; **on Windows it is refused for a
+public-capability session** along with `automation_script`, because Windows cannot express the
+read-deny at all.
+
+- [ ] **Step 4: Run**
+
+```bash
+cargo test -p biorouter-sandbox --lib private_data
+cargo test -p biorouter --lib -- privacy::private_roots
+cargo test -p biorouter-mcp --lib -- developer::shell developer::rmcp_developer::tests
+cargo test -p biorouter --lib agents::extension_manager
+cargo check --workspace --all-targets     # O13: SpawnServerFn and two constructors changed
+```
+
+⚠ **Record the pre-count for the two module filters before Step 3.** `developer::shell` and
+`agents::extension_manager` both have substantial existing suites; "no failures" is satisfied by a
+run in which none of this task's tests were compiled in.
+
+- [ ] **Step 5: Gate**
+
+```bash
+# (1) The guard is written at the ONE choke point and nowhere else. Two writers
+#     is how it goes stale: the second one runs on a path the first does not.
+grep -rn "restrict_to(\|private_data.clear()" --include='*.rs' crates/ \
+  | grep -v "^crates/biorouter-sandbox/src/private_data.rs:"
+echo "expect: exactly 2 lines, both in crates/biorouter/src/agents/extension_manager.rs,"
+echo "        both inside dispatch_tool_call (the if and its else)."
+awk '/async fn dispatch_tool_call\(/,/^    }/' crates/biorouter/src/agents/extension_manager.rs \
+  | grep -c "restrict_to(\|private_data.clear()"
+echo "expect: 2"
+
+# (2) Ordering inside shell_sandbox_wrap: the DR-14 arm precedes the `mode == Off`
+#     early return. After it, the whole control is dead for every user who never
+#     set BIOROUTER_SHELL_SANDBOX — i.e. every user.
+python3 - <<'PY'
+import re
+src = open('crates/biorouter-mcp/src/developer/shell.rs').read()
+body = src[src.index('fn shell_sandbox_wrap'):]
+body = body[:body.index('\n}\n')]
+i_deny = body.index('private_data.is_restricted()')
+i_off  = body.index('mode == SandboxMode::Off')
+assert i_deny < i_off, 'the DR-14 arm must precede the mode==Off early return'
+print('OK  deny arm at', i_deny, ' mode==Off at', i_off)
+PY
+
+# (3) Same ordering in resolve_path_jailed, against the relaxed-jail early return.
+python3 - <<'PY'
+src = open('crates/biorouter-mcp/src/developer/rmcp_developer.rs').read()
+body = src[src.index('fn resolve_path_jailed'):]
+body = body[:body.index('\n    // Helper method to check if a path should be ignored')]
+i_deny = body.index('private_data.denies(')
+i_relax = body.index('if jail_relaxed {')
+assert i_deny < i_relax, 'the DR-14 check must precede the relaxed-jail early return'
+print('OK  deny at', i_deny, ' relaxed return at', i_relax)
+PY
+
+# (4) All four roots, and both directories. A list written entirely against
+#     config_dir passes every BIOROUTER_PATH_ROOT test and misses the session
+#     database — the one the design named in §9.3 A2.
+awk '/pub fn all\(\)/,/^}/' crates/biorouter/src/privacy/private_roots.rs \
+  | grep -c "SESSIONS_FOLDER\|knowledge_root\|\"memory\"\|default_root"
+echo "expect: 4"
+awk '/pub fn all\(\)/,/^}/' crates/biorouter/src/privacy/private_roots.rs | grep -c "data_dir()"
+echo "expect: 1 — the session store is under data_dir, and nothing else is"
+grep -c '"\~/\|\.config/biorouter' crates/biorouter/src/privacy/private_roots.rs
+echo "expect: 0 — computed, never a literal, or every sandboxed test reads the real store"
+
+# (5) Both shell spawn sites take the guard. `configure_shell_command` has
+#     exactly TWO production callers (measured: rmcp_developer.rs:1587,
+#     background.rs:128); a third that skips the guard is a background job the
+#     sandbox does not cover.
+grep -rn "configure_shell_command(" --include='*.rs' crates/ | grep -v "fn configure_shell_command" \
+  | grep -v "/tests\|mod tests" 
+echo "expect: exactly 2 production lines, each passing a private-data guard"
+
+# (6) Every builtin decides. Seven entries, and the compiler already forces the
+#     `BuiltinSpawnContext` binding — this catches the OTHER shape, a builtin
+#     that takes the context and drops the guard while its server can spawn.
+grep -c "private_data" crates/biorouter-mcp/src/lib.rs
+echo "expect: >= 3 — the struct field, developer's use, computercontroller's use"
+```
+
+**What wrong implementation each rejects.** (1) A second write site — the natural one is
+`update_provider`, which looks like the "real" place a capability changes and which
+`POST /agent/call_tool` never reaches. (2) The DR-14 arm added *after* the `mode == Off` return,
+which is the shape a reader gets from "add a branch to `shell_sandbox_wrap`"; it compiles, the unit
+tests that set the guard directly still pass, and the control is dead for every default install.
+(3) The same mistake in the file tools, where it is worse because Auto is the agent's own mode.
+(4) A root list written against one directory — three of four missed, all tests green. (5) A
+background job spawned through a path that never learned about the guard. (6) A builtin that accepts
+the context and ignores it. And Step 1's end-to-end test rejects the base case: everything wired,
+nothing written, guard permanently empty.
+
+- [ ] **Step 6: Commit**
+
+```bash
+cargo check --workspace --all-targets
+git add crates/biorouter-sandbox/ crates/biorouter-mcp/ crates/biorouter/src/privacy/ \
+        crates/biorouter/src/agents/extension_manager.rs
+git commit -m "feat(privacy): hide the four private data roots from a public session's tools (#56)"
+```
+
+---
+
+
+### Task 14C: The other door — the daemon's own HTTP API, pinned rather than assumed
+
+A sandboxed child cannot open `sessions.db`. It can still talk to the process that can:
+`GET /sessions/{id}/export` returns a transcript as JSON to anyone holding
+`BIOROUTER_SERVER__SECRET_KEY` (design §9.3 A1). DR-14's sandbox closes the front door; this task is
+the audit that the back one is shut, and it is an audit rather than a fix because **the strip is
+already there and already tested**. Recording *what was measured* is the point — the previous round
+of this plan spent a whole task on a leak that had been closed two commits before the fork.
+
+#### What was measured, at `9558c346`
+
+| Spawn family the DR-14 sandbox relies on | Strip call site | Already pinned by |
+|---|---|---|
+| `developer__shell`, foreground | `developer/shell.rs:368`, **last** in `configure_shell_command`, after every `.env()` | `daemon_secret_never_reaches_a_shell_child` (`shell.rs:766`) — re-invokes the test binary with the canary exported and reads a real child's environment |
+| `developer__shell background=true`, and the job control commands | `background.rs:128` builds through the same `configure_shell_command`; `:431`, `:680`, `:766`, `:802`, `:847` strip the control commands | **nothing** — see (a) below |
+| `computercontroller__automation_script` | `computercontroller/mod.rs:69`, last in `automation_script_command` | `daemon_secret_never_reaches_an_automation_script_child` (`:1731`) |
+| `computercontroller__computer_control` | `platform/macos.rs:14`, `platform/windows.rs:17`, `platform/linux.rs:135`/`:140`/`:277` | `daemon_secret_never_reaches_a_computer_control_child` (`:1812`) |
+| stdio MCP extensions | `extension_manager.rs:399`, last in `prepare_child_environment` | `daemon_secret_never_reaches_an_extension_child` (`:3169`) |
+| Agent Drafter's `esbuild` and app-smoke children | `agent_drafter/bundle.rs:938`-adjacent, `agent_drafter/mod.rs:884` | `daemon_secret_never_reaches_the_esbuild_child` (`bundle.rs:2102`), `..._the_app_smoke_child` (`mod.rs:4343`) |
+
+`strip_daemon_private_env` (`biorouter-sandbox/src/environment.rs:54-65`) removes both the
+**inherited** keys (`env::vars_os()`) and the ones **explicitly set on the command**
+(`doomed_env_keys` `:81-88`), and `is_daemon_private_env_key` (`:36-50`) is deny-by-default inside
+`BIOROUTER_SERVER__`/`GOOSE_SERVER__` plus a credential-shaped net over the rest of BioRouter's
+namespace. **`BIOROUTER_PORT` is deliberately kept** (`:116`'s assertion) — so a sandboxed child
+knows where the daemon is and has no way to authenticate to it. **That is the whole second-order
+argument, and it has three holes worth pinning.**
+
+**(a) Nothing asserts the background job *reaches* the strip.** It does today, because
+`background.rs:128` calls `configure_shell_command` — but that is a routing fact, and Task 2 point 3
+made exactly this argument about the extension spawn: *"a future third spawn that builds its own
+transport would leak with no test failing."* Same shape, different function.
+
+**(b) Nothing asserts the negative half.** Every existing test proves the secret is *absent* from
+the child. None proves that a client holding what the child *does* have — `BIOROUTER_PORT`, and
+nothing else — is actually refused. `auth.rs:115-126` is a plain header comparison and the rate
+limiter is keyed on a peer IP that is always `127.0.0.1`, so the refusal rests entirely on the header
+being absent. That is true, and it is one `.layer()` away from not being true.
+
+**(c) `GET /apps/{id}` and `GET /apps/{id}/agent` are deliberately unauthenticated**, and the
+sandbox does not close them. `check_token` (`auth.rs:80-100`) exempts `/status`, `/mcp-ui-proxy`,
+`/mcp-app-proxy`, and any GET matching `is_public_app_get` (`:52-78`) — which admits
+`/apps/{id}`, `/apps/{id}/agent`, `/apps/{id}/models`, `/apps/{id}/runstate` and the `dist`/`assets`
+trees. `serve_index` (`apps.rs:168-184`) embeds the per-app socket token in the page it serves, and
+`check_ws_auth` (`:539-551`) accepts a **missing** `Origin` because non-browser clients have none.
+So a loopback client that knows an app id can fetch the page, read the token, and drive that app's
+agent — including any knowledge base the manifest granted it.
+
+**Three things stand between a public-capability shell and that path, and they are worth stating
+because two of them are DR-14's doing:**
+
+1. `GET /apps` — the list — is **not** exempt (`auth.rs:71-73`'s comment says why: "an id is all
+   `/apps/{id}/agent` needs"), so the id cannot be enumerated over HTTP without the secret.
+2. The other place ids exist is the app tree on disk, `<config>/agent_drafter` — which is **deny
+   root #4**. This is the concrete reason the Agent Drafter root is on DR-14's list and not merely
+   because apps hold vault secrets.
+3. The socket carries the app's own capability grants, not the session's, so it is not a general
+   read of the user's data.
+
+**The residual is real and is [AR-6](#ar-6--on-a-host-that-cannot-express-the-read-deny-a-public-session-loses-the-shell-and-two-costs-come-with-the-sandbox-itself)'s
+last paragraph: a public-capability model that already knows an app id can still drive that app.**
+Closing it means authenticating the app socket with something the page has and a shell does not,
+which is a change to how apps are served and is out of this feature's scope.
+[Open question 18](#open-questions) carries it.
+
+**Files:**
+
+| Action | Path | Anchor (re-verified at `9558c346`) |
+|---|---|---|
+| Modify | `crates/biorouter-mcp/src/developer/background.rs` | the `configure_shell_command` call `:128`; the existing `#[cfg(test)] mod tests` |
+| Modify | `crates/biorouter-server/src/auth.rs` | `check_token` `:80-131`; `is_public_app_get` `:52-78`; its `mod tests` `:128-…` |
+| Reference | `crates/biorouter-sandbox/src/environment.rs` | `is_daemon_private_env_key` `:36-50`, `strip_daemon_private_env` `:54-65`, `doomed_env_keys` `:81-88`, the `BIOROUTER_PORT`-is-kept assertion `:116` |
+| Reference | `crates/biorouter-server/src/routes/apps.rs` | `serve_index` `:168-184`, `ws_token_for` `:513-526`, `check_ws_auth` `:539-551` |
+
+- [ ] **Step 1: Write the failing tests**
+
+```rust
+// background.rs — (a). The routing, not the mechanism.
+/// A background job's child must be built through `configure_shell_command`,
+/// which is where both the strip and the DR-14 wrap live. Asserting the strip
+/// again would re-test `shell.rs`; this asserts the thing that can silently
+/// change — that `BackgroundJobs::spawn` (`:113`, the one entry point) still
+/// goes through it.
+#[test]
+fn a_background_job_is_built_through_the_shared_shell_builder() {
+    let src = include_str!("background.rs");
+    let start = src.find("    pub async fn spawn(").expect("BackgroundJobs::spawn");
+    let body = &src[start..];
+    let body = &body[..body.find("\n    }\n").unwrap_or(body.len())];
+    assert!(
+        body.contains("configure_shell_command("),
+        "a background job that builds its own Command bypasses both the daemon-secret \
+         strip (issue #57) and the DR-14 read-deny sandbox, with no other test failing"
+    );
+    assert!(
+        !body.contains("process::Command::new("),
+        "found a hand-rolled Command in the job spawn path"
+    );
+}
+
+// auth.rs — (b). The negative half, at the layer that decides it.
+#[test]
+fn the_port_alone_does_not_authenticate() {
+    // Everything a DR-14-sandboxed child is left holding is BIOROUTER_PORT. This
+    // pins that knowing it buys nothing: no header, a wrong header, and an empty
+    // header all fail, and `/sessions/{id}/export` is not on any exempt list.
+    assert!(!secret_matches("", "the-real-secret"));
+    assert!(!secret_matches("the-real-secre", "the-real-secret"));
+    for path in [
+        "/sessions/abc/export", "/sessions/abc", "/sessions", "/agent/call_tool",
+        "/config/upsert", "/knowledge/bases", "/apps",
+    ] {
+        assert!(
+            !is_public_app_get(&Method::GET, path),
+            "{path} must require the secret"
+        );
+    }
+}
+
+/// (c), as a pin rather than a fix: the unauthenticated app surface is EXACTLY
+/// these five shapes. It is a deliberate carve-out with a comment explaining
+/// itself (`auth.rs:71-73`), and this test is what makes widening it a decision
+/// somebody has to make on purpose.
+#[test]
+fn the_unauthenticated_app_surface_does_not_grow_by_accident() {
+    for allowed in ["/apps/x", "/apps/x/", "/apps/x/agent", "/apps/x/models",
+                    "/apps/x/runstate", "/apps/x/dist/main.js", "/apps/x/assets/a/b.png"] {
+        assert!(is_public_app_get(&Method::GET, allowed), "{allowed}");
+    }
+    for denied in ["/apps", "/apps/x/export", "/apps/x/source", "/apps/x/vault",
+                   "/apps/../sessions", "/apps/x/agent/extra"] {
+        assert!(!is_public_app_get(&Method::GET, denied), "{denied}");
+    }
+    // Not a GET, not exempt — `POST /apps/x/agent` must still present the secret.
+    assert!(!is_public_app_get(&Method::POST, "/apps/x/agent"));
+}
+```
+
+- [ ] **Step 2: Run** → **PASS on all three.**
+
+⚠ **All three pass before Step 3, and that is the honest outcome.** They are regression pins
+on behaviour that is already correct, in the same spirit as Task 2. Do not manufacture a red by
+weakening the production code first, and do not "fix" the first test by loosening its assertion when
+it turns out `BackgroundJobs::spawn` was renamed — resolve the real entry point and pin *that*. A
+`find(..).expect(..)` that panics is a broken test, not a failing one; if Step 2 panics, the anchor
+moved and the test needs the new name before anything else is believed.
+
+- [ ] **Step 3: Implement**
+
+Nothing to implement unless Step 2's first test fails. If it does, route the job spawn through
+`configure_shell_command` — do **not** add a second `strip_daemon_private_env` call, which would
+leave two spawn paths to keep in step and is the divergence this task exists to prevent.
+
+- [ ] **Step 4: Run**
+
+```bash
+cargo test -p biorouter-mcp --lib -- developer::background
+cargo test -p biorouter-server --lib auth
+# The two live child-env tests this task's argument rests on. They are #[ignore]d
+# halves plus their drivers; run the drivers explicitly so this task's PR shows
+# them green rather than citing them.
+cargo test -p biorouter-mcp --lib -- daemon_secret_never_reaches_a_shell_child \
+                                     daemon_secret_never_reaches_an_automation_script_child \
+                                     daemon_secret_never_reaches_a_computer_control_child
+cargo test -p biorouter --lib -- daemon_secret_never_reaches_an_extension_child
+```
+
+Expected counts, asserted rather than "no failures" — all four are ordinary `#[test]`s and a libtest
+filter that matches nothing prints `0 passed` and exits 0, so a renamed test reads identically to a
+passing one: the third line's three names must print **3 passed**, and the fourth **1 passed**.
+
+- [ ] **Step 5: Gate**
+
+```bash
+# (1) Every spawn family the DR-14 argument names still calls the strip.
+#     TWENTY files, measured at 9558c346 (`| wc -l` -> 20). A new one appearing
+#     here is a new child that may carry the daemon's credentials past the
+#     sandbox; a missing one is a spawn family that stopped stripping.
+grep -rln "strip_daemon_private_env" --include='*.rs' crates/ | sort
+# expect exactly these 20, in this order:
+#   crates/biorouter-mcp/src/agent_drafter/bundle.rs
+#   crates/biorouter-mcp/src/agent_drafter/mod.rs
+#   crates/biorouter-mcp/src/computercontroller/mod.rs
+#   crates/biorouter-mcp/src/computercontroller/platform/linux.rs
+#   crates/biorouter-mcp/src/computercontroller/platform/macos.rs
+#   crates/biorouter-mcp/src/computercontroller/platform/windows.rs
+#   crates/biorouter-mcp/src/developer/background.rs
+#   crates/biorouter-mcp/src/developer/paths.rs
+#   crates/biorouter-mcp/src/developer/rmcp_developer.rs
+#   crates/biorouter-mcp/src/developer/shell.rs
+#   crates/biorouter-mcp/src/knowledge/convert/pdf.rs
+#   crates/biorouter-mcp/src/knowledge/source_paths.rs
+#   crates/biorouter-sandbox/src/docker.rs
+#   crates/biorouter-sandbox/src/environment.rs
+#   crates/biorouter-sandbox/src/local.rs
+#   crates/biorouter-sandbox/src/shell_sandbox/linux.rs
+#   crates/biorouter/src/agents/extension_manager.rs
+#   crates/biorouter/src/providers/llamacpp_sidecar.rs
+#   crates/biorouter/src/subprocess.rs
+#   crates/biorouter/src/system.rs
+# (`agents/retry.rs`, `hooks/command_runner.rs` and the five CLI-shaped providers
+#  reach it through `subprocess::prepare_agent_child_command`, which is why they
+#  are not in this list — grep for that name too if auditing by hand.)
+
+# (2) The strip is LAST in the two builders the sandbox relies on. Placed before
+#     a later `.env()`, it removes a key that is then put back — which no
+#     environment test catches unless it happens to name that key.
+python3 - <<'PY'
+for f, fn in [('crates/biorouter-mcp/src/developer/shell.rs', 'pub fn configure_shell_command'),
+              ('crates/biorouter-mcp/src/computercontroller/mod.rs', 'fn automation_script_command')]:
+    src = open(f).read()
+    body = src[src.index(fn):]
+    body = body[:body.index('\n}\n')]
+    i_strip = body.rindex('strip_daemon_private_env')
+    envs = [i for i in range(len(body)) if body.startswith('.env(', i) or body.startswith('cmd.env(', i)
+            or body.startswith('command.env(', i)]
+    late = [i for i in envs if i > i_strip]
+    assert not late, f'{f}: an .env() call at offset {late} runs AFTER the strip'
+    print('OK', f)
+PY
+
+# (3) BIOROUTER_PORT is still deliberately preserved. If a future hardening pass
+#     strips it too, the second-order argument in this task changes shape and
+#     the prose above must be rewritten rather than silently becoming stronger.
+grep -c 'BIOROUTER_PORT' crates/biorouter-sandbox/src/environment.rs
+echo "expect: 2 — the assertion and its expected value, in the strip test"
+```
+
+**What this catches.** A future background-job path that builds its own `Command` — the exact defect
+Task 2 point 3 names one layer down, where it would hand the daemon's secret to a child the DR-14
+sandbox has already confined, defeating the sandbox through the API rather than the filesystem. A
+`.env()` added after the strip in either builder. And an `is_public_app_get` widened by one more
+`matches!` arm, which is a one-line change that turns an unauthenticated read of an app id into an
+unauthenticated read of something else.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add crates/biorouter-mcp/src/developer/background.rs crates/biorouter-server/src/auth.rs
+git commit -m "test(privacy): pin the daemon-secret strip on every spawn the read-deny relies on (#56)"
+```
+
+---
+
+
 ### Task 15: Gate C's siblings — the eight other ways to reach an MCP server
 
 `dispatch_tool_call` is a complete choke point for *tool calls*, not for *reaching an MCP server*.
@@ -10204,6 +11811,7 @@ the implementation is wrong.
 | **DR-7** | **`chatrecall` obeys the barrier** — private models recall from private and public, public models from public only. **Side channels (existence, counts, timing) are explicitly out of scope**: no count padding, no constant-time responses, no decoys. Only content must not cross. |
 | **DR-8** | **Declassification is the user's alone** — an explicit deprivatise action in History. Nothing automatic, nothing an agent can invoke. Graded by `privacy_reason`: `mcp:*` gets a typed confirmation, `turn:*`-only gets single-click with undo. |
 | **DR-9** | ~~**A global opt-out exists, off by default**, scoped to Gate C (the MCP tool gate) only.~~ **Superseded by DR-15.** The operator has since ruled that the opt-out is a *master* switch over the whole feature, which is the wider of the two readings [Open question 3](#open-questions) recorded. The Gate-C-scoped key is retired rather than kept alongside the master one: two switches whose scopes nest are two things a user must reason about at the moment they are least able to, and the narrower one has no remaining job. |
+| **DR-14** | **A public-capability session's arbitrary-execution and path-reading tools run under a mandatory read-deny sandbox, on by default.** The tools that spawn a process (`developer__shell` and its background jobs, `computercontroller__automation_script`, `computer_control`) or resolve a caller-supplied path (`developer`'s file tools) run with **four directories hidden**: the session store, the knowledge roots, the global memory root and the Agent Drafter app root. Everything else on the filesystem stays readable and writable, so ordinary work is untouched — this is **not** a general jail and must not become one. **Private-capability sessions are unaffected.** Where the platform cannot express the exclusion, the fail direction is **closed**: those specific tools are refused with an error naming the two ways out (a private model, or turning privacy tiers off), never run unsandboxed. Tasks 14A, 14B and 14C. |
 | **DR-15** | **One master toggle turns the entire privacy-tier feature off**, config key `BIOROUTER_PRIVACY_TIERS`, default `on`. Off means: no bind gate, no turn gate, no dispatch gate, no discovery filter, no `chatrecall` filter, no knowledge-base barrier, no spawn matrix, no classification ratchet, and **no read-deny sandbox** (DR-14) — nothing is refused and nothing is sandboxed. It does **not** delete the columns, the stamps already written, or the audit rows, so turning it back on resumes enforcement over the history that existed when it was turned off. It does **not** hide the badges either: they keep rendering, restyled and suffixed *— enforcement off*, beside a persistent strip. A guardrail that vanishes when disabled cannot be noticed by the person who disabled it six months ago; a badge that still reads plain **Private** while nothing enforces it is a false statement. Neither is acceptable, so the badge stays and changes what it says. |
 | **DR-10** | **Fail directions differ by kind, deliberately.** Migration backfill → fail **open** (public). Runtime read of a missing/unparseable column → fail **closed** (private, with `error!`). Import with no tier → fail **closed**. Unknown provider → **Public** (fail-*safe*: less privileged). Unlisted extension → **Public** (fail-open, DR-6). Any gate's lookup failing → refuse, encoded inside `Ok(..)`, never as `Err`. |
 | **DR-11** | **`medcp` stays callable by a public model**, and that is the accepted cost of DR-6. It is enabled on the operator's machine with `CLINICAL_RECORDS_*` against a clinical MSSQL backend. The reasoning: a hand-installed extension is the user's own choice, and medcp is a *connector* rather than a data source. **The badge is a statement about provenance, not about the data behind the connector.** |
@@ -10234,9 +11842,13 @@ costs recorded in [Accepted risks](#accepted-risks) (AR-1, AR-2 and AR-5).
 | **10** | **`ActiveWorkItem.title` is cross-session content and predates all of this** — derived from a subagent's task prompt and surfaced process-wide with a session id. The visibility rule is applied to it, but it is exposed only via `GET /active_work` for the GUI (the model-facing `subagent_status` is session-scoped), so it may deserve its own fix rather than riding this one. | Task 21 provides `appears_in_list`; wiring `/active_work` to it is a follow-up. |
 | **11** | **`POST /agent/call_tool` remains inspector-free.** This design is correct either way because the barrier is in the extension manager, but the route is a standing hazard for every *future* inspector-based control, including BR-71's. | Task 14 fixes its error mapping so a refusal reaches the caller as text rather than a bare 500, and Task 20's gate exercises it explicitly. The route itself is unchanged. |
 
-Five more this plan surfaced. Twelve and thirteen need a ruling before the phase that touches them;
+Eight more this plan surfaced. Twelve and thirteen need a ruling before the phase that touches them;
 fourteen, fifteen and sixteen are follow-ups whose *residual* is already accepted (AR-3, AR-1, and —
 for sixteen — a pre-existing theme gap this feature neither creates nor is scoped to fix).
+Seventeen, eighteen and nineteen came out of DR-14 and each has its residual recorded in
+[AR-6](#ar-6--on-a-host-that-cannot-express-the-read-deny-a-public-session-loses-the-shell-and-two-costs-come-with-the-sandbox-itself);
+**nineteen must not be actioned before eighteen**, because narrowing the Agent Drafter root is only
+safe once the app socket no longer treats an app id as an authenticator.
 
 | # | Question | Blocks |
 |---|---|---|
@@ -10244,6 +11856,9 @@ for sixteen — a pre-existing theme gap this feature neither creates nor is sco
 | **13** | **Does `medcp`'s continued reachability need a first-run notice, or is the badge enough?** §13.5 specifies a one-time notice naming any **enabled** extension that is Public and declares clinical-looking credentials. On the operator's machine that names exactly one extension, `medcp`, and nothing else changes. | Task 38's notice copy. Hard-code that expectation into its test fixture. |
 | **14** | **How does `memory`'s local store get a tier?** AR-3: `compose_instructions` (`memory/mod.rs:277`) inlines local memories in full (`:310-322`) into every session opened in that directory, including one on a public model, and Task 19 ships only a disclosure. The design's §9.3 B3 names the fix — "classify memory entries and filter `retrieve_all` by the session's capability tier at init" — but the on-disk format carries no provenance (`:387-388` writes a `# {tags}` line and bare lines; `:414-418` reads them back keyed by the *tag string*), and `compose_instructions` runs once at `MemoryServer::new` (`:108`) rather than per turn, so a naive capability filter there freezes across a mid-session model swap — the O6 hazard. A real fix needs per-entry provenance **and** a per-turn recompute. | Nothing in this plan. Open it as a follow-up issue at Task 40 Step 6. |
 | **15** | **Does a knowledge base need a declassification path, and does the barrier belong on the GUI's own read routes?** Two halves of the same scope question. (a) AR-1: a session can be declassified (Task 29, user-only, graded, audited) and a KB cannot, so a user who ratchets their only base by accident has no in-product exit. (b) Task 10C gates the four `/knowledge/*` **macro** routes (they run a model) and deliberately leaves the GUI's read routes alone (the Knowledge view is the user, not a model) — a defensible line, but it means the *app* shows a private base that the *agent* in the next tab cannot read, and nobody has decided whether that asymmetry should be visible in the UI. | Nothing in this plan; both are follow-ups. (a) is the one a user will hit first. |
+| **17** | **Should Linux get a Landlock read-deny by granting the complement?** Landlock has no deny rule, so hiding a subpath means handling read accesses and granting read to every sibling of every ancestor of every deny root. Task 14A declines it in v1 for three measured reasons, the disqualifying one being that anything created in an enumerated ancestor *after* the ruleset is built is unreadable for that command's lifetime — `cd ~ && mkdir out && echo x > out/f && cat out/f` fails. | Task 14A makes `bubblewrap` the only Linux mechanism that can express the read-deny, and the refusal names `apt install bubblewrap` as the fix. A Landlock complement would remove that dependency; it needs a real ergonomics trial on a populated `$HOME` before it is worth the failure mode. |
+| **18** | **Should the per-app agent WebSocket be authenticated by something a shell cannot obtain?** `GET /apps/{id}` and `GET /apps/{id}/agent` are deliberately unauthenticated (`auth.rs:52-78`), and `serve_index` (`apps.rs:168-184`) embeds the socket token in the page it serves, so any loopback client that knows an app id can read the token and drive that app's agent. DR-14 removes the two local sources of app ids (`GET /apps` needs the secret; the app tree is deny root #4) but does not close the path for an id the model already has. | Nothing in this plan; the residual is stated in [AR-6](#ar-6--on-a-host-that-cannot-express-the-read-deny-a-public-session-loses-the-shell-and-two-costs-come-with-the-sandbox-itself) and pinned by Task 14C's `the_unauthenticated_app_surface_does_not_grow_by_accident`. |
+| **19** | **Should DR-14's Agent Drafter root narrow to `.vault/` plus other sessions' apps?** Denying the whole root means a public-capability chat cannot `cat` its own app's source from the shell, which is a real ergonomic loss for the drafter workflow (AR-6(3)). The whole root is on the list because it is also the only on-disk source of app **ids**, which Open question 18 shows are load-bearing. | Task 14B denies the whole root. Narrowing it is safe only after 18 is closed. |
 | **16** | **`--text-subtle` on `--background-medium` is sub-AA in three of the six family×mode scopes, and #56 is not the right owner of the fix.** Measured with `ui/desktop/scripts/lib/theme-tokens.mjs`: parchment:dark **3.75**, alma-mater:light **4.45**, alma-mater:dark **4.28**, against a 4.5 floor. `--background-medium` is the row-hover ground that `biorouter-list-row`, `SessionItem` and `ExtensionItem` all paint, so this affects every subtle label on a hovered row **today** — it is a pre-existing gap, not something the privacy badge introduces, and `check-contrast.mjs` has never asserted it. Task 26 therefore audits only `--text-default` and `--text-muted` on that ground (the two the badge actually uses) and the total is **288**, not 294. Auditing the third token as well makes the run exit 1 with three failures whose only fix is a theme-token edit — precisely the "Zero theme work" Task 26 Step 5 forbids, and a scope the privacy feature has no business taking. | Nothing in this plan. Open it as a theme/a11y follow-up at Task 40 Step 6, alongside the deferred findings from the 2026-07 theme redesign. Do **not** close it by lowering the threshold in `check-contrast.mjs`. |
 
 ---
