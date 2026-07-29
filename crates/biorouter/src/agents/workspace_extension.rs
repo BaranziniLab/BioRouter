@@ -595,6 +595,57 @@ impl WorkspaceClient {
             .unwrap_or(4)
     }
 
+    /// Keep a fan-out slot reserved for as long as the turn that took it is
+    /// actually running, then release it — the half of the cap that cannot be
+    /// done on the calling stack.
+    ///
+    /// The guard is RAII, so "hold it" means "own it somewhere that lives as
+    /// long as the turn". That place is this task: it owns the guard and the
+    /// turn's own [`TurnFollower`], and returns — dropping the guard — on the
+    /// turn's terminal event.
+    ///
+    /// The `is_turn_active` poll is the *safety valve*, not the mechanism. A
+    /// terminal event is guaranteed (`workspace/turn.rs` publishes exactly one
+    /// per turn, and `supervise_turn` publishes one even for a panicking task),
+    /// but an observer that fell 1024 events behind can be `Lagged` past it, and
+    /// a permanently-held slot would refuse this caller's injections for the
+    /// life of the process. The server drops the turn lock *after* publishing
+    /// the terminal, so a false release is not reachable the other way round.
+    fn hold_slot_until_turn_ends(
+        guard: InjectedTurnGuard,
+        mut follower: TurnFollower,
+        session_id: String,
+        services: std::sync::Arc<dyn workspace_services::WorkspaceServices>,
+    ) {
+        tokio::spawn(async move {
+            // Named, not `_`: `let _ = guard` would drop it immediately.
+            let _guard = guard;
+            loop {
+                tokio::select! {
+                    // `broadcast::Receiver::recv` is cancel-safe, and the
+                    // follower's `started` flag lives in the struct rather than
+                    // the future, so losing this branch to the timer costs
+                    // neither an event nor the correlation.
+                    outcome = follower.run() => {
+                        if let Err(e) = outcome {
+                            tracing::debug!(session_id, error = %e, "workspace: injected-turn watcher lost its stream");
+                        }
+                        return;
+                    }
+                    () = tokio::time::sleep(SLOT_RELEASE_POLL) => {
+                        if !services.is_turn_active(&session_id) {
+                            tracing::debug!(
+                                session_id,
+                                "workspace: releasing an injected-turn slot whose turn is no longer active"
+                            );
+                            return;
+                        }
+                    }
+                }
+            }
+        });
+    }
+
     async fn caller_provenance(
         &self,
         caller_session_id: &str,
@@ -677,7 +728,7 @@ impl WorkspaceClient {
         caller_session_id: &str,
         arguments: Option<JsonObject>,
     ) -> Result<Vec<Content>, String> {
-        use crate::session_events::{self, SessionBusEvent};
+        use crate::session_events;
 
         let args: WorkspaceSendPromptParams = parse_args(arguments)?;
         if args.session_id == caller_session_id {
@@ -827,7 +878,16 @@ impl WorkspaceClient {
                 // Bounded fan-out, PER CALLING SESSION (§5): subscribe before
                 // starting so completion is never missed, and count this
                 // caller's own in-flight injections.
-                let (inflight, _cap_guard) = InjectedTurnGuard::enter(caller_session_id);
+                //
+                // ⚠ The guard is NOT `_`-bound. A slot is occupied by a turn that
+                // is *in flight*, and a `wait:"none"` call returns while its turn
+                // runs on — so binding the guard to the call's stack frame would
+                // release every fire-and-forget injection's slot the instant the
+                // tool answered, and the cap would bound nothing at all (five,
+                // fifty, five hundred detached turns all accepted under a cap of
+                // four). It is moved into the reservation task below instead, and
+                // released on the turn's own terminal event.
+                let (inflight, cap_guard) = InjectedTurnGuard::enter(caller_session_id);
                 if inflight > Self::injected_turn_cap() {
                     return Err(format!(
                         "this session already has {} injected turns in flight (cap {}); \
@@ -837,7 +897,7 @@ impl WorkspaceClient {
                     ));
                 }
 
-                let mut rx = session_events::subscribe(&args.session_id);
+                let rx = session_events::subscribe(&args.session_id);
                 let body = crate::conversation::message::frame_workspace_injection(
                     provenance.from_session_name.as_deref(),
                     &args.text,
@@ -862,7 +922,27 @@ impl WorkspaceClient {
                 )
                 .await;
 
+                // ⚠ Everything the follower reads is scoped to THIS turn id. The
+                // subscription opened above is older than the turn: the real
+                // service hydrates the target's provider and extensions between
+                // the subscribe and `start_turn`
+                // (`biorouter-server/src/workspace/services.rs`), and a turn that
+                // was already running when the caller asked can finish inside
+                // that window — publishing its assistant text and its
+                // `TurnFinished` onto the very stream we are about to read. A
+                // loop that accepts the first terminal it sees therefore reports
+                // the PREVIOUS turn's answer as this one's.
+                let mut follower = TurnFollower::new(rx, turn_id.clone());
+
                 if args.wait.as_deref() != Some("final_message") {
+                    // Fire-and-forget, but not accounting-free: the reservation
+                    // outlives this call (see `InjectedTurnGuard::enter` above).
+                    Self::hold_slot_until_turn_ends(
+                        cap_guard,
+                        follower,
+                        args.session_id.clone(),
+                        std::sync::Arc::clone(&services),
+                    );
                     return Ok(vec![Content::text(format!(
                         "Detached turn {turn_id} started on session {}.",
                         args.session_id
@@ -873,52 +953,39 @@ impl WorkspaceClient {
                 // assistant message, bounded by timeout_s.
                 let timeout =
                     std::time::Duration::from_secs(args.timeout_s.unwrap_or(120).min(600));
-                let mut last_assistant: Option<String> = None;
-                let waited = tokio::time::timeout(timeout, async {
-                    loop {
-                        match rx.recv().await {
-                            Ok(SessionBusEvent::Agent(crate::agents::AgentEvent::Message(m)))
-                                if m.role == rmcp::model::Role::Assistant =>
-                            {
-                                let text: String = m
-                                    .content
-                                    .iter()
-                                    .filter_map(|c| c.as_text())
-                                    .collect::<Vec<_>>()
-                                    .join("\n");
-                                if !text.trim().is_empty() {
-                                    last_assistant = Some(text);
-                                }
-                            }
-                            // `..` because `TurnFinished` also carries
-                            // `token_state` (Task 5) — a two-field pattern here
-                            // is a missing-field compile error.
-                            Ok(SessionBusEvent::TurnFinished { reason, .. }) => return Ok(reason),
-                            // A turn publishes "exactly one `TurnError` or one
-                            // `TurnFinished`, never both" (workspace/turn.rs), so
-                            // an error is TERMINAL: without this arm the park
-                            // would sit out its whole timeout after the turn had
-                            // already died, and then report "still running".
-                            Ok(SessionBusEvent::TurnError { message, .. }) => return Err(message),
-                            Ok(_) => {}
-                            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-                            Err(e) => return Err(e.to_string()),
-                        }
-                    }
-                })
-                .await;
+                let waited = tokio::time::timeout(timeout, follower.run()).await;
 
                 match waited {
-                    Ok(Ok(reason)) => Ok(vec![Content::text(format!(
+                    Ok(Ok(TurnOutcome::Finished {
+                        reason,
+                        last_assistant,
+                    })) => Ok(vec![Content::text(format!(
                         "Turn {turn_id} finished ({reason}). Final message:\n\n{}",
                         last_assistant.unwrap_or_else(|| "<no assistant text>".into())
                     ))]),
-                    Ok(Err(e)) => Err(format!("turn {turn_id} ended in error: {e}")),
-                    Err(_) => Ok(vec![Content::text(format!(
-                        "Turn {turn_id} is still running after {}s; it continues in the background. \
-                         Read it later with workspace_read_conversation.",
-                        timeout.as_secs()
-                    ))]),
+                    Ok(Ok(TurnOutcome::Failed(e))) => {
+                        Err(format!("turn {turn_id} ended in error: {e}"))
+                    }
+                    Ok(Err(e)) => Err(format!("event stream error while waiting: {e}")),
+                    Err(_) => {
+                        // The park gave up; the TURN did not. It is still in
+                        // flight and still counts against the cap, so the
+                        // reservation is handed to the same background follower
+                        // the no-wait path uses — with its `started` state
+                        // intact, so it is still watching for THIS turn's
+                        // terminal and not the next one's.
+                        Self::hold_slot_until_turn_ends(
+                            cap_guard,
+                            follower,
+                            args.session_id.clone(),
+                            std::sync::Arc::clone(&services),
+                        );
+                        Ok(vec![Content::text(format!(
+                            "Turn {turn_id} is still running after {}s; it continues in the background. \
+                             Read it later with workspace_read_conversation.",
+                            timeout.as_secs()
+                        ))])
+                    }
                 }
             }
             other => Err(format!("unknown mode '{other}' (turn | steer | note)")),
@@ -948,6 +1015,121 @@ fn mode_requires_approval(mode: crate::config::BioRouterMode) -> bool {
         // configuration, with a message that is false for it.
         BioRouterMode::Chat => false,
         BioRouterMode::Approve | BioRouterMode::SmartApprove => true,
+    }
+}
+
+/// How often a background slot-holder re-checks whether its turn is still
+/// running, for the case where the terminal event was missed. See
+/// [`WorkspaceClient::hold_slot_until_turn_ends`].
+const SLOT_RELEASE_POLL: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// How one injected turn ended, as [`TurnFollower`] observed it.
+#[derive(Debug)]
+enum TurnOutcome {
+    /// `TurnFinished`, plus the last non-empty assistant text of THAT turn.
+    Finished {
+        reason: String,
+        last_assistant: Option<String>,
+    },
+    /// `TurnError` — terminal too. A turn publishes exactly one of the two.
+    Failed(String),
+}
+
+/// Follows ONE detached turn on the session bus, from its own
+/// `TurnStarted { turn_id }` to its terminal event.
+///
+/// **The `turn_id` gate is the whole point.** The subscription is deliberately
+/// opened before the turn is started (a ring is only created by `subscribe`, so
+/// subscribing after would drop `TurnStarted` and, on a fast turn, the terminal
+/// too). That makes the stream necessarily *older* than the turn: the daemon
+/// hydrates the target's provider and extensions before it acquires the turn
+/// lock, and a turn already in flight when the caller asked can publish its
+/// answer and its `TurnFinished` inside that window. Accepting the first
+/// terminal seen therefore attributes the previous turn's final message to this
+/// one, with no error and nothing in the text to give it away. Everything before
+/// this turn's own start belongs to somebody else and is discarded.
+///
+/// The state lives in the struct, not in the future returned by [`Self::run`],
+/// so a park that times out can hand the follower to a background task mid-turn
+/// without forgetting that the start was already seen.
+struct TurnFollower {
+    events: crate::session_events::Subscription,
+    turn_id: String,
+    started: bool,
+    last_assistant: Option<String>,
+}
+
+impl TurnFollower {
+    fn new(events: crate::session_events::Subscription, turn_id: String) -> Self {
+        Self {
+            events,
+            turn_id,
+            started: false,
+            last_assistant: None,
+        }
+    }
+
+    /// Fold one bus event in. `Some` when the turn reached its terminal.
+    fn step(&mut self, event: crate::session_events::SessionBusEvent) -> Option<TurnOutcome> {
+        use crate::session_events::SessionBusEvent;
+        if !self.started {
+            if let SessionBusEvent::TurnStarted { turn_id } = &event {
+                if *turn_id == self.turn_id {
+                    self.started = true;
+                }
+            }
+            return None;
+        }
+        match event {
+            SessionBusEvent::Agent(crate::agents::AgentEvent::Message(m))
+                if m.role == rmcp::model::Role::Assistant =>
+            {
+                let text: String = m
+                    .content
+                    .iter()
+                    .filter_map(|c| c.as_text())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if !text.trim().is_empty() {
+                    self.last_assistant = Some(text);
+                }
+                None
+            }
+            // `..` because `TurnFinished` also carries `token_state` (Task 5) —
+            // a two-field pattern here is a missing-field compile error.
+            SessionBusEvent::TurnFinished { reason, .. } => Some(TurnOutcome::Finished {
+                reason,
+                last_assistant: self.last_assistant.take(),
+            }),
+            // A turn publishes "exactly one `TurnError` or one `TurnFinished`,
+            // never both" (`workspace/turn.rs`), so an error is TERMINAL:
+            // without this arm a park would sit out its whole timeout after the
+            // turn had already died, and then report "still running".
+            SessionBusEvent::TurnError { message, .. } => Some(TurnOutcome::Failed(message)),
+            _ => None,
+        }
+    }
+
+    /// Read until the turn ends. `Err` only when the stream itself is gone.
+    ///
+    /// Cancel-safe: the only await is `recv`, which is, and no state is held in
+    /// the future.
+    async fn run(&mut self) -> Result<TurnOutcome, String> {
+        loop {
+            match self.events.recv().await {
+                Ok(event) => {
+                    if let Some(outcome) = self.step(event) {
+                        return Ok(outcome);
+                    }
+                }
+                // Falling behind loses events, not the stream. The one event
+                // whose loss matters is this turn's `TurnStarted`, and the
+                // caller bounds that: a park times out, and a background
+                // slot-holder polls `is_turn_active`.
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(e) => return Err(e.to_string()),
+            }
+        }
     }
 }
 
