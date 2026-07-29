@@ -828,6 +828,67 @@ async fn stream_bus_to_client(
     }
 }
 
+/// The 409 body a refused `/reply` answers with, kept byte-identical to what the
+/// handler has always produced.
+///
+/// `duplicate` is the whole point of the distinction: a client that re-POSTs the
+/// same `turn_id` (an SSE reconnect) is told "this turn is already in progress",
+/// which it treats as "re-attach", while a genuinely concurrent caller is told
+/// "a turn is already in progress" and backs off. Same status, different copy —
+/// so both strings live here together where they cannot drift apart.
+fn turn_conflict_response(
+    session_id: &str,
+    conflict: &crate::state::TurnConflict,
+) -> axum::response::Response {
+    tracing::warn!(
+        "Rejected concurrent /reply for session {}: turn {} already in flight (duplicate={})",
+        session_id,
+        conflict.running_turn_id,
+        conflict.duplicate
+    );
+    let error = if conflict.duplicate {
+        "This turn is already in progress for this session."
+    } else {
+        "A turn is already in progress for this session."
+    };
+    (
+        StatusCode::CONFLICT,
+        Json(serde_json::json!({
+            "type": "Error",
+            "error": error,
+            "running_turn_id": conflict.running_turn_id,
+            "duplicate": conflict.duplicate,
+        })),
+    )
+        .into_response()
+}
+
+/// One `workflow_runs` counter per workflow *run*, not per turn: the
+/// `mark_workflow_run_if_absent` gate is what keeps a ten-turn workflow from
+/// reporting ten runs, and it is a session-scoped latch, so this must stay a
+/// single call site.
+async fn record_workflow_run(state: &Arc<AppState>, session_id: &str, request: &ChatRequest) {
+    let Some(workflow_name) = request.workflow_name.clone() else {
+        return;
+    };
+    if !state.mark_workflow_run_if_absent(session_id).await {
+        return;
+    }
+    let workflow_version = request
+        .workflow_version
+        .clone()
+        .unwrap_or_else(|| "unknown".to_string());
+
+    tracing::info!(
+        counter.biorouter.workflow_runs = 1,
+        workflow_name = %workflow_name,
+        workflow_version = %workflow_version,
+        session_type = "app",
+        interface = "ui",
+        "Workflow execution started"
+    );
+}
+
 #[utoipa::path(
     post,
     path = "/reply",
@@ -881,48 +942,10 @@ pub async fn reply(
         request.turn_id.clone(),
     ) {
         Ok(guard) => guard,
-        Err(conflict) => {
-            tracing::warn!(
-                "Rejected concurrent /reply for session {}: turn {} already in flight (duplicate={})",
-                session_id,
-                conflict.running_turn_id,
-                conflict.duplicate
-            );
-            let error = if conflict.duplicate {
-                "This turn is already in progress for this session."
-            } else {
-                "A turn is already in progress for this session."
-            };
-            return (
-                StatusCode::CONFLICT,
-                Json(serde_json::json!({
-                    "type": "Error",
-                    "error": error,
-                    "running_turn_id": conflict.running_turn_id,
-                    "duplicate": conflict.duplicate,
-                })),
-            )
-                .into_response();
-        }
+        Err(conflict) => return turn_conflict_response(&session_id, &conflict),
     };
 
-    if let Some(workflow_name) = request.workflow_name.clone() {
-        if state.mark_workflow_run_if_absent(&session_id).await {
-            let workflow_version = request
-                .workflow_version
-                .clone()
-                .unwrap_or_else(|| "unknown".to_string());
-
-            tracing::info!(
-                counter.biorouter.workflow_runs = 1,
-                workflow_name = %workflow_name,
-                workflow_version = %workflow_version,
-                session_type = "app",
-                interface = "ui",
-                "Workflow execution started"
-            );
-        }
-    }
+    record_workflow_run(&state, &session_id, &request).await;
 
     // #51 W5: the client's copy of the history is stored HERE, before the turn
     // task is spawned, because it can now be REFUSED — once the SSE response has
