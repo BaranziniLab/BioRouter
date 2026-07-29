@@ -219,6 +219,35 @@ mod tests {
         AgentManager::run_first_run_init(manager.scheduler()).await;
     }
 
+    /// BR-71: `peek_agent` is a LOOKUP. Its whole reason to exist is that
+    /// `get_or_create_agent` cannot be used to *inspect* a session — its miss
+    /// path reads today's process-wide `biorouter_mode` and then caches a bare,
+    /// provider-less, extension-less agent under that id, which the turn runner
+    /// will happily pick up. `workspace_send_prompt mode:"turn"` asks this
+    /// question about targets the user has not opened, so a `peek_agent` that
+    /// quietly delegated to `get_or_create_agent` would mint an agent for every
+    /// one of them while still answering "found".
+    #[tokio::test]
+    async fn peek_agent_finds_live_agents_and_creates_none() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = create_test_manager(&temp_dir).await;
+        let session = uuid::Uuid::new_v4().to_string();
+
+        assert!(manager.peek_agent(&session).await.is_none());
+        // …and asking did not answer itself into existence.
+        assert!(!manager.has_session(&session).await);
+        assert_eq!(manager.session_count().await, 0);
+        assert!(manager.peek_agent(&session).await.is_none());
+
+        let created = manager.get_or_create_agent(session.clone()).await.unwrap();
+        let peeked = manager.peek_agent(&session).await.expect("now live");
+        assert!(
+            Arc::ptr_eq(&created, &peeked),
+            "peek must hand back THE live agent, not an equivalent one — the \
+             caller reads its `config.biorouter_mode`"
+        );
+    }
+
     #[test]
     fn test_execution_mode_constructors() {
         assert_eq!(
