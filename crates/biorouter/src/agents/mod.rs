@@ -39,6 +39,9 @@ mod resource_refs;
 pub mod retry;
 mod schedule_tool;
 mod session_blob_tool;
+// BR-71 decision (c): per-session skill enablement, kept strictly out of the
+// machine-wide `skills-config.json`.
+pub mod session_skills;
 // Pub so the CLI (`biorouter skill …`) reuses the exact same skill discovery
 // roots and frontmatter parsing as this backend extension, instead of keeping
 // a drifting duplicate (Codex B2 findings 5+6).

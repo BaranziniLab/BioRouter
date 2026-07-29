@@ -134,13 +134,21 @@ struct SkillCatalogItem {
 pub struct SkillsClient {
     info: InitializeResult,
     skills: HashMap<String, Skill>,
+    /// Retained so the session-scoped skill override can be hydrated from the
+    /// session row — the same reason `ChatRecallClient` keeps its context.
+    context: PlatformExtensionContext,
+    /// BR-71: the session this client instance serves. `ExtensionManager` — and
+    /// therefore this client — is per-Agent and an Agent is per-session, so this
+    /// is stable once learned. It is learned from the first tool call because
+    /// `McpClientTrait` gives `list_tools`/`get_info` no session id.
+    bound_session: std::sync::RwLock<Option<String>>,
 }
 
 const DEFAULT_SKILL_PAGE_LIMIT: usize = 20;
 const MAX_SKILL_PAGE_LIMIT: usize = 50;
 
 impl SkillsClient {
-    pub fn new(_context: PlatformExtensionContext) -> Result<Self> {
+    pub fn new(context: PlatformExtensionContext) -> Result<Self> {
         let info = InitializeResult {
             protocol_version: ProtocolVersion::V_2025_03_26,
             capabilities: ServerCapabilities {
@@ -192,9 +200,30 @@ impl SkillsClient {
             }
         }
 
-        let mut client = Self { info, skills };
+        let mut client = Self {
+            info,
+            skills,
+            context,
+            bound_session: std::sync::RwLock::new(None),
+        };
         client.info.instructions = Some(client.generate_instructions());
         Ok(client)
+    }
+
+    /// Learn (or re-learn) which session this client serves, and load that
+    /// session's override into the process cache. Called at the top of every
+    /// `call_tool`; also the seam the unit test uses.
+    pub(crate) async fn bind_session(&self, session_id: &str) {
+        {
+            let mut bound = self
+                .bound_session
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if bound.as_deref() != Some(session_id) {
+                *bound = Some(session_id.to_string());
+            }
+        }
+        crate::agents::session_skills::hydrate(&self.context.session_manager, session_id).await;
     }
 
     /// Seed (or refresh) the built-in skills under the user's skills directory
@@ -454,12 +483,52 @@ impl SkillsClient {
                 .is_some_and(|bundle| disabled.contains(bundle))
     }
 
+    /// The composed disabled test for the session this client serves: the
+    /// machine-wide file (`skills-config.json`, which contains skill names AND
+    /// bundle names) composed with the session override (`workspace_skills`).
+    /// Never writes anything.
+    ///
+    /// The session override is keyed by SKILL name only — `workspace_set_tools`
+    /// grants and revokes individual skills — so it is applied on top of the
+    /// existing two-part machine test rather than replacing it.
+    fn is_skill_enabled_for_session(
+        name: &str,
+        skill: &Skill,
+        machine_disabled: &std::collections::HashSet<String>,
+        over: &crate::agents::session_skills::SessionSkillOverride,
+    ) -> bool {
+        if over.add.iter().any(|s| s == name) {
+            return true; // explicit session grant wins over everything
+        }
+        if over.remove.iter().any(|s| s == name) {
+            return false; // explicit session revoke
+        }
+        Self::is_skill_enabled(name, skill, machine_disabled)
+    }
+
+    /// This client's session override, or the empty one when no session is
+    /// bound yet (`list_tools`/`get_info` carry no session id).
+    fn session_override(&self) -> crate::agents::session_skills::SessionSkillOverride {
+        let Some(session_id) = self
+            .bound_session
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+        else {
+            return Default::default();
+        };
+        crate::agents::session_skills::for_session(&session_id)
+    }
+
     fn enabled_skill_entries(&self) -> Vec<(&String, &Skill)> {
         let disabled = Self::get_disabled_skills();
+        let over = self.session_override();
         let mut skill_list: Vec<_> = self
             .skills
             .iter()
-            .filter(|(name, skill)| Self::is_skill_enabled(name, skill, &disabled))
+            .filter(|(name, skill)| {
+                Self::is_skill_enabled_for_session(name, skill, &disabled, &over)
+            })
             .collect();
         skill_list.sort_by_key(|(name, _)| *name);
         skill_list
@@ -633,12 +702,12 @@ impl SkillsClient {
         // Runtime check: reject disabled skills even mid-session
         let disabled = Self::get_disabled_skills();
         if let Some(skill) = self.skills.get(skill_name) {
-            let is_disabled = disabled.contains(skill_name)
-                || skill
-                    .bundle_name
-                    .as_deref()
-                    .is_some_and(|b| disabled.contains(b));
-            if is_disabled {
+            if !Self::is_skill_enabled_for_session(
+                skill_name,
+                skill,
+                &disabled,
+                &self.session_override(),
+            ) {
                 return Err(format!(
                     "Skill '{}' is currently disabled. Enable it in Biorouter's Skills settings to use it.",
                     skill_name
@@ -771,9 +840,11 @@ impl McpClientTrait for SkillsClient {
         &self,
         name: &str,
         arguments: Option<JsonObject>,
-        _meta: McpMeta,
+        meta: McpMeta,
         _cancellation_token: CancellationToken,
     ) -> Result<CallToolResult, Error> {
+        self.bind_session(&meta.session_id).await;
+
         let content = match name {
             "searchSkills" => self.handle_search_skills(arguments).await,
             "listSkills" => self.handle_list_skills(arguments).await,
@@ -800,6 +871,18 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::TempDir;
+
+    /// A context for the literal `SkillsClient { … }` constructions below.
+    /// Those tests never bind a session, so the manager is never queried — it
+    /// exists only to satisfy the field BR-71's session override needs.
+    fn test_context() -> PlatformExtensionContext {
+        PlatformExtensionContext {
+            extension_manager: None,
+            session_manager: std::sync::Arc::new(crate::session::SessionManager::new(
+                std::env::temp_dir().join("biorouter-skills-test-sessions"),
+            )),
+        }
+    }
 
     #[test]
     fn test_parse_frontmatter() {
@@ -1033,8 +1116,10 @@ Content from dir3
         );
     }
 
-    #[test]
-    fn test_empty_instructions_when_no_skills() {
+    // BR-71: `test_context()` builds a `SessionManager`, whose lazy sqlx pool
+    // must be constructed inside a Tokio runtime, so this is now an async test.
+    #[tokio::test]
+    async fn test_empty_instructions_when_no_skills() {
         let temp_dir = TempDir::new().unwrap();
         let empty_dir = temp_dir.path().join("empty");
         fs::create_dir(&empty_dir).unwrap();
@@ -1066,6 +1151,8 @@ Content from dir3
                 instructions: Some(String::new()),
             },
             skills,
+            context: test_context(),
+            bound_session: std::sync::RwLock::new(None),
         };
 
         let instructions = client.generate_instructions();
@@ -1109,6 +1196,8 @@ Content from dir3
                 instructions: Some(String::new()),
             },
             skills,
+            context: test_context(),
+            bound_session: std::sync::RwLock::new(None),
         };
 
         let result = client
@@ -1164,6 +1253,8 @@ Content
                 instructions: Some(String::new()),
             },
             skills,
+            context: test_context(),
+            bound_session: std::sync::RwLock::new(None),
         };
 
         let result = client
@@ -1219,6 +1310,8 @@ Content
                 instructions: Some(String::new()),
             },
             skills,
+            context: test_context(),
+            bound_session: std::sync::RwLock::new(None),
         };
 
         let args = serde_json::json!({ "offset": 1, "limit": 1 })
@@ -1296,6 +1389,8 @@ Content
                 instructions: Some(String::new()),
             },
             skills,
+            context: test_context(),
+            bound_session: std::sync::RwLock::new(None),
         };
 
         let args = serde_json::json!({ "query": "sequencing reads", "limit": 10 })
@@ -1357,8 +1452,10 @@ Content
         assert_eq!(payload["skills"][0]["name"], "systematic-review-prisma");
     }
 
-    #[test]
-    fn test_instructions_with_skills() {
+    // BR-71: `test_context()` builds a `SessionManager`, whose lazy sqlx pool
+    // must be constructed inside a Tokio runtime, so this is now an async test.
+    #[tokio::test]
+    async fn test_instructions_with_skills() {
         let temp_dir = TempDir::new().unwrap();
         let skills_dir = temp_dir.path().join("skills");
         fs::create_dir(&skills_dir).unwrap();
@@ -1416,6 +1513,8 @@ Content
                 instructions: Some(String::new()),
             },
             skills,
+            context: test_context(),
+            bound_session: std::sync::RwLock::new(None),
         };
 
         let instructions = client.generate_instructions();
@@ -1691,6 +1790,165 @@ Working dir biorouter content
         assert!(
             filtered.is_empty(),
             "bundle skill should be filtered when bundle name is disabled"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_session_override_filters_the_catalog_without_touching_the_config_file() {
+        fn fixture_skill(name: &str, root: &std::path::Path) -> Skill {
+            Skill {
+                metadata: SkillMetadata {
+                    name: name.to_string(),
+                    description: format!("{name} fixture"),
+                },
+                body: String::new(),
+                directory: root.join(name),
+                supporting_files: Vec::new(),
+                bundle_name: None,
+                source_root: root.to_path_buf(),
+            }
+        }
+
+        let temp = TempDir::new().unwrap();
+        let session_manager = std::sync::Arc::new(crate::session::SessionManager::new(
+            temp.path().to_path_buf(),
+        ));
+        // Slot 2 — session ids are allocated per sessions database, so without
+        // this every test in this binary would share one process-wide override
+        // cache entry. See `session_skills::unique_test_session`.
+        let session = crate::agents::session_skills::unique_test_session(
+            &session_manager,
+            temp.path().to_path_buf(),
+            "skills-override",
+            2,
+        )
+        .await;
+
+        let mut client = SkillsClient::new(PlatformExtensionContext {
+            extension_manager: None,
+            session_manager: session_manager.clone(),
+        })
+        .unwrap();
+        // Replace whatever this machine happens to have installed with a known
+        // two-skill catalog, so the assertion is about the override and not
+        // about the developer's ~/.config. (`mod tests` is a descendant of the
+        // module that defines `SkillsClient`, so its private fields are in
+        // scope here — the same access the existing frontmatter tests use.)
+        client.skills = HashMap::from([
+            ("alpha".to_string(), fixture_skill("alpha", temp.path())),
+            ("beta".to_string(), fixture_skill("beta", temp.path())),
+        ]);
+        client.bind_session(&session.id).await;
+
+        let machine_config = Paths::config_dir().join("skills-config.json");
+        let before = fs::read_to_string(&machine_config).ok();
+
+        assert_eq!(
+            client.enabled_skill_entries().len(),
+            2,
+            "both fixtures start enabled"
+        );
+
+        // Disable one FOR THIS SESSION ONLY.
+        crate::agents::session_skills::apply(
+            &session_manager,
+            &session.id,
+            &[],
+            &["beta".to_string()],
+        )
+        .await
+        .unwrap();
+        // No re-bind needed: `apply` writes the process cache as well as the
+        // session row, and the composed filter reads the cache through
+        // `for_session`. The assertion below is therefore about the live path,
+        // not about hydration (which `hydrate_restores_the_override_after_a_
+        // process_restart` already covers).
+
+        let names: Vec<String> = client
+            .enabled_skill_entries()
+            .into_iter()
+            .map(|(name, _)| name.clone())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["alpha".to_string()],
+            "the session override must shrink this client's catalog"
+        );
+
+        // Decision (c): the machine-wide preference file is byte-identical —
+        // including the case where it never existed and must still not exist.
+        assert_eq!(
+            fs::read_to_string(&machine_config).ok(),
+            before,
+            "workspace/session skill scoping must never write skills-config.json"
+        );
+    }
+
+    /// Decision (c), the half a file-untouched assertion cannot see: a session
+    /// override must not change what the machine-wide preference MEANS.
+    ///
+    /// The machine-wide disabled array holds skill names AND bundle names
+    /// (`is_skill_enabled` tests both; the existing
+    /// `test_bundle_disabled_by_bundle_name` puts a bundle id in it). Any
+    /// implementation that composes the override by rebuilding a name set from
+    /// `self.skills.keys()` drops every bundle entry, so an unrelated
+    /// `add_skills` silently re-enables a whole disabled bundle for that
+    /// session — with `skills-config.json` still byte-identical, so the test
+    /// above stays green.
+    ///
+    /// Asserted against the composed FILTER directly, with a hand-built
+    /// disabled set, exactly as `test_bundle_disabled_by_bundle_name` does.
+    /// Going through `enabled_skill_entries` would require writing
+    /// `Paths::config_dir()/skills-config.json` — the developer's real machine
+    /// preference file, which `get_disabled_skills` is the only reader of and
+    /// which this feature must never touch.
+    #[test]
+    fn a_session_grant_does_not_resurrect_a_machine_disabled_bundle() {
+        use crate::agents::session_skills::SessionSkillOverride;
+
+        let temp = TempDir::new().unwrap();
+        let bundled = Skill {
+            metadata: SkillMetadata {
+                name: "gamma".to_string(),
+                description: "bundled fixture".to_string(),
+            },
+            body: String::new(),
+            directory: temp.path().join("gamma"),
+            supporting_files: Vec::new(),
+            bundle_name: Some("bundle-x".to_string()),
+            source_root: temp.path().to_path_buf(),
+        };
+
+        // The operator disabled the BUNDLE machine-wide.
+        let mut machine = std::collections::HashSet::new();
+        machine.insert("bundle-x".to_string());
+
+        // Baseline: no override at all.
+        let none = SessionSkillOverride::default();
+        assert!(
+            !SkillsClient::is_skill_enabled_for_session("gamma", &bundled, &machine, &none),
+            "baseline: a machine-disabled bundle hides its skills"
+        );
+
+        // An UNRELATED session grant must not change that.
+        let unrelated = SessionSkillOverride {
+            add: vec!["something-else".to_string()],
+            remove: Vec::new(),
+        };
+        assert!(
+            !SkillsClient::is_skill_enabled_for_session("gamma", &bundled, &machine, &unrelated),
+            "a session grant for another skill must not re-enable a machine-disabled BUNDLE"
+        );
+
+        // An EXPLICIT session grant of this skill still wins — that is the
+        // feature, and it is scoped to one session and one skill.
+        let explicit = SessionSkillOverride {
+            add: vec!["gamma".to_string()],
+            remove: Vec::new(),
+        };
+        assert!(
+            SkillsClient::is_skill_enabled_for_session("gamma", &bundled, &machine, &explicit),
+            "an explicit session grant of this skill is the documented escape hatch"
         );
     }
 
