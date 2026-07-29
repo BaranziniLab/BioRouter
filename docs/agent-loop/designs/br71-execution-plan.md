@@ -6706,13 +6706,60 @@ session. The two existing users show both spellings: `agents/goal.rs:312`
 (`data.set_extension_state(RUN_STATE_KEY, RUN_STATE_VER, v)`, on an already-borrowed
 `data`). This task adds a third under `("workspace_skills", "v1")`.
 
-**Stated residual (reconciliation #14).** `McpClientTrait::list_tools` and `get_info`
-take no session id, so the *instruction line's* skill count and the "are any skills
-enabled at all" gate in `list_tools` use the machine-wide view. Every handler that
-answers a question about skills — `listSkills`, `searchSkills`, `loadSkill` — is
+> ⚠ **Superseded, post-review.** That two-statement writer shape — `get_session` →
+> mutate the whole `ExtensionData` → `update(id).extension_data(..)` — is exactly what
+> made both existing users lossy: `extension_data` is ONE JSON column, so two
+> overlapping writers each serialize a stale snapshot of the *whole* object and the
+> later commit erases the earlier one **even when they touched different keys**
+> (measured: 8 concurrent appends → 1 survivor). Tool calls do overlap; the agent loop
+> drives them through `select_all`. Task 11 as shipped therefore adds
+> `SessionManager::update_extension_state(session_id, ext, ver, mutate)` /
+> `get_extension_state(..)` — a read-modify-write of a SINGLE key inside one
+> transaction that opens with a write, the same load-bearing trick as
+> `replace_conversation_inner` — and writes through that. Pinned by
+> `session::session_manager::tests::extension_state_atomicity`. New writers of
+> per-session extension state should use it; `goal.rs` and `run_state.rs` are
+> pre-existing and unconverted.
+
+**Stated residual (reconciliation #14), corrected post-review.** `McpClientTrait::list_tools`
+and `get_info` take no session id, so the *instruction line's* skill count and the "are
+any skills enabled at all" gate in `list_tools` use the machine-wide view. Every handler
+that answers a question about skills — `listSkills`, `searchSkills`, `loadSkill` — is
 session-aware from the first call, because `call_tool` receives `McpMeta`. Practically:
-a skill added by `workspace_set_tools` is loadable immediately; the header sentence
-reflects it from the next turn. Test 3 below pins exactly this.
+a skill added by `workspace_set_tools` is listable, searchable and loadable
+**immediately**, and a revoked one is refused immediately.
+
+⚠ The earlier claim that "the header sentence reflects it from the next turn" was
+**false and is withdrawn**. The instruction string is generated once in
+`SkillsClient::new` — before any session exists — `get_info` returns that snapshot, and
+`ExtensionManager` clones it at registration. There is no per-turn refresh anywhere on
+that path, so the count is machine-wide **permanently**, for the life of the process.
+This is a *permanent* residual, not a one-turn lag, and it is confined to the count in
+one sentence. Closing it means giving `get_info` a session id across every extension;
+the cheap alternative — mutating this client per session — is ruled out by the
+shared-client hazard below.
+
+⚠ **The client holds no per-session state at all** (also post-review). An earlier draft
+stored the "currently bound session" on `SkillsClient` and had handlers read it back.
+That is unsound: the ACP server shares one `Agent` — hence one `ExtensionManager`, hence
+one `SkillsClient` — across every session (`biorouter-acp/src/server.rs`, `with_config`)
+and spawns prompts concurrently, so session A could resume after an await and resolve
+`loadSkill` against session B's grant. The override is instead read **once per
+`call_tool` dispatch** from `meta.session_id` and passed down to the handlers. Pinned by
+`concurrent_dispatches_for_two_sessions_never_see_each_others_overrides`.
+
+⚠ **No process-wide cache, and both reads fail CLOSED** (also post-review). Session ids
+are display ids allocated `YYYYMMDD_<max+1>` and are handed back after a delete or a
+`/reset` History, so a cache keyed by the id follows that id into an unrelated new
+conversation — carrying the previous occupant's grants. A cache also cannot tell "no
+override" from "could not read it", so a transient failure or a corrupt value would be
+cached permanently as a grant of everything the session had revoked. `for_session` now
+takes the `SessionManager`, reads the row (one indexed single-column `SELECT`) and
+returns `Result`; `call_tool` refuses the call on error rather than answering from the
+machine-wide view. Pinned by
+`a_reused_session_id_does_not_inherit_the_previous_occupants_override`,
+`a_corrupt_override_is_refused_by_both_the_reader_and_the_writer` and
+`an_unreadable_override_refuses_the_call_instead_of_granting_everything`.
 
 - [ ] **Step 1: Write the failing tests** (in the new file)
 
@@ -6811,6 +6858,18 @@ Run: `cargo test -p biorouter --lib agents::session_skills`
 Expected: COMPILE ERROR — module not found.
 
 - [ ] **Step 3: Implement**
+
+> ⚠ **The listing below is the pre-review draft; read the four ⚠ notes above first.**
+> It is kept because it is the record the fail-first run was taken against, but three
+> things in it did **not** ship and must not be reintroduced: the process-wide
+> `OVERRIDES` cache (with `hydrate`/`forget_for_tests`), the infallible
+> `for_session(session_id)` signature, and the two-statement
+> `get_session`/`update().extension_data(..)` write. What shipped: `for_session` takes
+> `&SessionManager` and returns `Result<SessionSkillOverride>` reading the row directly,
+> and `apply` routes its read-merge-write through
+> `SessionManager::update_extension_state`. The composition rule
+> (`SessionSkillOverride::is_disabled`, add > remove > machine-wide) is unchanged and is
+> still the shipped code.
 
 ```rust
 //! BR-71 decision (c): per-SESSION skill enablement.
@@ -6956,6 +7015,28 @@ pub(crate) fn forget_for_tests(session_id: &str) {
 ```
 
 - [ ] **Step 4: Teach `SkillsClient` to consult it**
+
+> ⚠ **Pre-review draft; see the ⚠ notes above.** Edit (a) — the `bound_session` field,
+> `bind_session`, and `session_override()` — did **not** ship: one `SkillsClient` serves
+> many sessions concurrently under ACP, so it holds no per-session state. What shipped
+> instead: `call_tool` reads `session_skills::for_session(&self.context.session_manager,
+> &meta.session_id).await` once per dispatch, refuses the call if that read fails, and
+> passes the resulting `&SessionSkillOverride` into `handle_list_skills` /
+> `handle_search_skills` / `handle_load_skill`; `enabled_skill_entries` takes the
+> override as a parameter, and `generate_instructions` passes
+> `&SessionSkillOverride::default()` (the machine-wide view — the permanent residual).
+> `SkillsClient` does keep its `context` (edit (a)'s other half). Edits (b) and (c) —
+> `is_skill_enabled_for_session` composed on TOP of the two-part machine test, never a
+> flattened name set — shipped exactly as written and are the load-bearing part.
+>
+> The two tests listed at the end of this step shipped with
+> `a_session_override_filters_the_catalog_without_touching_the_config_file` rewritten to
+> the parameterised `enabled_skill_entries`, plus three new ones that pin the runtime
+> seam a hand-bound unit test leaves free to regress:
+> `a_persisted_override_reaches_call_tool_with_no_in_process_binding` (persist → cold
+> client → `listSkills`/`loadSkill` through `call_tool` with a real `McpMeta`),
+> `concurrent_dispatches_for_two_sessions_never_see_each_others_overrides`, and
+> `an_unreadable_override_refuses_the_call_instead_of_granting_everything`.
 
 Three edits in `skills_extension.rs`, all narrow:
 
@@ -7254,8 +7335,11 @@ import `get_disabled_skills` uses at **:263**
 - [ ] **Step 5: Run tests**
 
 ```bash
-cargo test -p biorouter --lib agents::session_skills agents::skills_extension
+cargo test -p biorouter --lib -- agents::session_skills agents::skills_extension
 ```
+
+(The `--` is required: without it Cargo reads the second name as its own positional
+argument and exits with `unexpected argument 'agents::skills_extension'`.)
 
 Expected: **PASS**. The one test in that second target this task must not break is
 `test_bundle_disabled_by_bundle_name` (**:1661-1695**) — reconciliation #14's whole
@@ -9429,7 +9513,7 @@ four dimensions:
 | Field | Mechanism | Takes effect |
 |---|---|---|
 | `add_extensions` / `remove_extensions` | `agent.add_extension` / `remove_extension` + `persist_extension_state` — the exact `/agent/add_extension` handler path (`routes/agent.rs:744-767`) | Immediately (live agent) |
-| `add_skills` / `remove_skills` | `session_skills::apply` (Task 11) — session-scoped, never the machine-wide file | Immediately for load/search; instruction line next turn |
+| `add_skills` / `remove_skills` | `session_skills::apply` (Task 11) — session-scoped, never the machine-wide file | Immediately for list/search/load; the instruction line's skill count stays machine-wide **permanently** (see Task 11's residual) |
 | `model` / `provider` | `providers::create(name, ModelConfig)` + `agent.update_provider` — the `/agent/update_provider` handler path (`routes/agent.rs:686-730`) | **Next turn** (the running turn keeps its provider) |
 | `set_knowledge_bases` (+ `primary_knowledge_base`) | `WorkspaceServices::set_knowledge_bases(sid, &kbs, choice)` → `KnowledgeService::set_visible_kbs(Some(sid), &kbs, PrimaryUpdate)` (post-#45; `set_active_for_session` no longer exists — see [Prerequisites](#prerequisites--two-both-now-shipped)) | Immediately |
 
