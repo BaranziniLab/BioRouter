@@ -105,7 +105,7 @@
 >
 > | # | Blocker | Fixed by | Mirror check |
 > |---|---|---|---|
-> | **B1** | `list_platform_catalog` (`agent_drafter/mod.rs:2626`) serialises `{id, name}` for **every** base, and `validate::check_*` renders the same list into three rejection strings — an enumeration oracle needing no valid input. Neither of Task 10C's new-surface detectors can see it: both key on `store::`/service **content** calls and this goes through `list_bases` | **New [Task 10D](#task-10d-the-metadata-surface--cp5-because-a-barrier-that-names-what-it-refused-has-not-refused-it)** — CP5 at `Catalog::discover`, a measured 6-production-caller choke point, plus a metadata new-surface detector (20 hits / 15 production) | Swept every `list_bases`/`session_kb_ids` caller outside `knowledge/` by hand — 20, all classified. Found the **third** instance, `resolve_target_kb` (below) |
+> | **B1** | `list_platform_catalog` (`agent_drafter/mod.rs:2626`) serialises `{id, name}` for **every** base, and `validate::check_*` renders the same list into three rejection strings — an enumeration oracle needing no valid input. Neither of Task 10C's new-surface detectors can see it: both key on `store::`/service **content** calls and this goes through `list_bases` | **New [Task 10D](#task-10d-the-metadata-surface--cp5-because-a-barrier-that-names-what-it-refused-has-not-refused-it)** — CP5 at `Catalog::discover`, a measured 6-production-caller choke point, plus a metadata new-surface detector (two sweeps: 27 hits / 18 production outside `knowledge/`, 22 / 5 inside) | Swept every `list_bases`/`session_kb_ids` caller outside `knowledge/` by hand — 20, all classified. Found the **third** instance, `resolve_target_kb` (below) |
 > | **B2** | `gated_kb_id`'s deliberate fall-through lets `kb_id_or_primary` (`server.rs:323-341`) answer with `"Pass kb_id explicitly (one of: default, omop)"`, built from a list filtered on `hidden` only — while the same task asserts `kb_list_bases` returns `["default"]` | **Task 10C** gains a third filter and two tests | The mirror is `resolve_target_kb` (`knowledge_tool.rs:149`), the same shape in `biorouter`, which Task 10C cannot reach. **Fixed in Task 11**, with its own test |
 > | **B3** | `crates/biorouter-mcp/tests/knowledge_macros_e2e.rs` constructs `IngestArgs`/`QueryArgs` and was in no Files table, no `git add` and no run step; every `cargo test -p biorouter-mcp` here is `--lib` | **Task 10B** adds the file, a `--test` line and `cargo check --workspace --all-targets`; **O13** states the rule | Swept `crates/*/tests/` for every changed type: that file is the only out-of-lib constructor of the three macro `Args`, and Task 10D's `Catalog::discover` has two more (`catalog_write_boundary.rs`, `testdrive_corpus_relint.rs`) — both now listed |
 > | **B4** | 10B made `IngestArgs.caller_is_private` required, which makes `conversation_ingest.rs:205` a compile error with nothing to pass; the field was reserved for Task 11. The only compiling answer was a hardcoded `false`, which reproduces §10A ⚠(3) verbatim — *"every per-file gate reported green"* | **`caller_capability` moves to Task 10B**, together with all three callers; Task 11 keeps only the guard, and its Step 2 now expects FAIL rather than COMPILE ERROR | Checked the inverse: 10B's gate now also greps for a hardcoded `ProviderTier::Private` / `caller_is_private: true`, which is the way to compile while disabling the ratchet |
@@ -3150,7 +3150,7 @@ choke points cover everything" (they do not — they cover everything they were 
 | The 7 `/knowledge/*` GUI **read** routes | **nothing, by decision** | The Knowledge view is the user, not a model (Task 10C's ⚠). [Open question 15](#open-questions) records that the asymmetry is undecided in the UI. |
 | The `/knowledge/*` **write** routes, the CLI's write commands, `soul.rs`, `reset.rs` | **nothing, by decision** | No model is involved; there is no service-level write choke point to hang a raise on (Task 10B's second exclusion list). |
 | Existence of a base, from a *guessed* id (`create_base`'s "already exists", `resolve_target_kb:141`) | **nothing, by decision** | DR-7 puts side channels out of scope. [AR-5](#ar-5--the-existence-of-a-private-knowledge-base-is-still-inferable). |
-| A **future** surface of either kind | **a detector, not a construction** | Task 10C's Step 5 has two content detectors (expect 4 and 4); Task 10D's Step 5 has the metadata one (expect 20 hits / 15 production). All three are counted enumerations that fail when they grow. That is a tripwire, not coverage. |
+| A **future** surface of either kind | **a detector, not a construction** | Task 10C's Step 5 has two content detectors (expect 4 and 4); Task 10D's Step 5 has the metadata one, in **two** sweeps (27 hits / 18 production outside `knowledge/`, 22 / 5 inside it — the second added after a single-sweep version proved structurally unable to see `kb_get_active`), plus the metadata register, which classifies *tools* rather than call sites. All are counted enumerations that fail when they grow. That is a tripwire, not coverage. |
 
 **What the operator is accepting by taking choke points rather than an enumeration.** Three things,
 stated plainly so no one discovers them later:
@@ -5541,6 +5541,30 @@ Task 10A decision (5a) rejected for `create_base` only because that one measured
 | Modify | `crates/biorouter-mcp/tests/testdrive_corpus_relint.rs` | `Catalog::discover()` `:103` — same |
 | Reference | `crates/biorouter-mcp/src/agent_drafter/validate.rs` | `check_knowledge_base` `:18-58` — the three `Catalog::render_list(&catalog.kb_ids())` renderings at `:33`, `:42`, `:52` (`:78` and `:98` are the skill and extension lists, out of scope). **Unchanged**, and that is the point: filtering at CP5 fixes all three at once, because they read the catalog they are handed; the in-file test constructions are `:179`, `:250`, `:261` |
 
+⚠ **The metadata register — every model-facing tool in the tree that can return a KB id or name,
+and what pins it.** The detectors below find *call sites*; this finds *tools*, which is the level a
+leak is actually reasoned about. It is the artefact the round that produced Task 10D was missing:
+both leaks it found (`list_platform_catalog`, and then `kb_get_active` one review later) were tools
+nobody had enumerated, reached through call sites the detectors excluded.
+
+| Tool | Surface | Behaviour required | Task | Pinned by |
+|---|---|---|---|---|
+| `kb_list_bases` | `KnowledgeServer` | omit private rows | 10C | `kb_list_bases_omits_a_private_base_rather_than_redacting_it` |
+| `kb_get_active` | `KnowledgeServer` | omit ids; pointer `null` | 10C | `kb_get_active_does_not_enumerate_a_private_base_or_point_at_one` |
+| `kb_set_active` | `KnowledgeServer` | not-a-member, filtered list | 10C | `a_private_target_and_a_nonexistent_one_are_indistinguishable_to_kb_set_active` |
+| `kb_read_page`, `kb_list_pages`, `kb_get_graph`, `kb_list_history` | `KnowledgeServer`, **no-primary error path only** | filtered candidate list | 10C | `the_no_primary_error_names_only_the_bases_the_caller_may_reach` |
+| every other `kb_*` | `KnowledgeServer` | volunteers nothing | 10C | `no_exempt_tool_volunteers_a_private_bases_id_to_a_public_caller` + the 19-tool probe |
+| `platform__ingest_conversation` | `Agent` | filtered candidate list | 11 | `the_no_target_error_names_only_the_bases_the_caller_may_reach` |
+| `list_platform_catalog` | `agent_drafter` | omit from the catalog | **10D** | `list_platform_catalog_is_scoped_to_the_calling_sessions_capability` |
+| `create_app`, `configure_app`, `update_app`, `declare_profiles` | `agent_drafter` (validator strings) | omit from the catalog | **10D** | `every_drafter_tool_that_builds_a_catalog_scopes_it` |
+| `br.kb` frames | the app socket | names no base the manifest did not | — | `resolve_kb_grant` (`routes/apps.rs:2268-2298`) reads the **manifest only** and never the store, so it cannot enumerate — measured, not assumed |
+| `kb_create_base`, `kb_import` | `KnowledgeServer` | existence of a **supplied** id | AR-5 | out of scope by DR-7 — the caller named it |
+
+**This gate rejects: a new model-facing tool that returns `{id, name}` for every base.** It is
+rejected twice — once by whichever detector sweep sees its call site, and once by the register,
+which a reviewer can read in one screen and which fails on the question "which row is this?".
+Neither detector alone would have rejected `kb_get_active`.
+
 ⚠ **Filter the catalog, do not add a check to the validators.** The validators are the tempting
 place — they are where the string is formatted — but there are three of them for knowledge bases
 alone, plus `has_kb`, plus the report's `missing_knowledge_base`, and a private base that is *absent
@@ -5708,6 +5732,29 @@ async fn every_drafter_tool_that_builds_a_catalog_scopes_it() {
                 "{tool} leaked a private base id");//  update_app, declare_profiles
     }
 }
+
+#[tokio::test]
+async fn every_drafter_tool_that_can_name_a_base_is_in_the_register() {
+    // The register, as a test rather than only as a table: no drafter tool may
+    // produce a base id it was not given. Universal over the WHOLE router, not
+    // over a hand-picked list — `CATALOG_BUILDING_TOOLS` above is the five this
+    // task knows about, and the leak this task exists to close was a tool
+    // nobody had enumerated. Arguments name only the public base, so a hit is
+    // volunteering and not echoing (Task 10C's rule, same sentence).
+    let (srv, root) = drafter_at_root_with_kbs(&["default", "omop-cohort-412"]);
+    tier::raise_unlocked(&root, "omop-cohort-412", true).unwrap();
+    for tool in srv.tool_router().list_all() {
+        let out = call_drafter_tool_as(&srv, &tool.name,
+                                       benign_args_for(&tool), Public).await;
+        assert!(!rendered(&out).contains("omop-cohort-412"),
+                "{} volunteered a private base id — add it to the metadata register \
+                 or scope it", tool.name);
+    }
+    // …and a private caller still sees it, so the assertion above cannot be
+    // satisfied by a router that answers nothing.
+    let out = call_drafter_tool_as(&srv, "list_platform_catalog", json!({}), Private).await;
+    assert!(rendered(&out).contains("omop-cohort-412"));
+}
 ```
 
 ```rust
@@ -5771,7 +5818,7 @@ async fn a_public_worker_profile_is_not_granted_a_private_base() {
 ```bash
 cargo test -p biorouter-mcp --lib agent_drafter::catalog    # 5 today (measured, Task 4b); assert 5 + 1
 cargo test -p biorouter-mcp --lib agent_drafter::validate
-cargo test -p biorouter-mcp --lib agent_drafter::           # 244 today (measured); assert 244 + 5
+cargo test -p biorouter-mcp --lib agent_drafter::           # 244 today (measured); assert 244 + 6
 cargo test -p biorouter-server --lib routes::apps           # 90 today (measured); assert 90 + 2
 ```
 
@@ -5930,26 +5977,55 @@ echo "  being pinned to a private base as its KB-less write target."
 # METADATA new-surface detector — the one Task 10C's two detectors are blind to
 # by construction, and the reason this task exists. PRINT with line numbers and
 # compare against the `#[cfg(test)]` boundaries; a bare count is the fragile shape
-# this plan has already been burned by twice. Measured at 9558c346: 20 hits, of
-# which 15 are production and 5 are inside test modules
-# (biorouter-cli/src/commands/knowledge.rs `#[cfg(test)]` at :755 → :1024 :1048
-#  :1077 :1080; biorouter-server/src/routes/reset.rs at :387 → :418).
-grep -rn "\.list_bases()\|\.session_kb_ids(" --include='*.rs' crates/*/src/ \
+# this plan has already been burned by twice.
+#
+# ⚠ TWO sweeps, and `.selection(` in the pattern. The previous version was ONE
+# sweep ending in `grep -v "src/knowledge/"`, which made it structurally unable
+# to see the largest metadata leak in the tree: `kb_get_active`
+# (`knowledge/server.rs:725`) reaches the whole set through `service.selection(`
+# at `:687`, inside the excluded directory, through a verb the pattern did not
+# name. A detector that excludes the module the surface lives in is not a
+# detector. The exclusion had a real purpose — keeping the service's own
+# internal reads out of the list — so it is kept as sweep (1) and paired with
+# sweep (2) rather than deleted.
+#
+# (1) OUTSIDE knowledge/ — measured at 9558c346: 27 hits, 18 production.
+grep -rn "\.list_bases()\|\.session_kb_ids(\|\.selection(" --include='*.rs' crates/*/src/ \
   | grep -v "src/knowledge/" | sort
-echo "expect: 20 hits / 15 production, every one accounted for:"
+echo "expect: 27 hits / 18 production, every one accounted for:"
 echo "  agent_drafter/catalog.rs:130               CP5 — THIS TASK"
 echo "  biorouter/src/agents/knowledge_tool.rs:149 the id LIST — Task 11 (same class as"
 echo "                                             kb_id_or_primary, second file)"
 echo "  biorouter/src/agents/knowledge_tool.rs:134 :141  existence of a SUPPLIED id, AR-5"
 echo "  biorouter-server/routes/knowledge.rs:344   the Knowledge view — the user, ungated"
+echo "  biorouter-server/routes/knowledge.rs:749   selection_response, GET /knowledge/active —"
+echo "                                             the Knowledge view again; it returns kb_ids,"
+echo "                                             primary_kb AND hidden_kbs, a superset of what"
+echo "                                             kb_get_active returns, and is ungated for the"
+echo "                                             same reason the seven read handlers are: no"
+echo "                                             model is on that path (Task 10C's scope ⚠)"
 echo "  biorouter-server/routes/reset.rs:118 :178  factory reset — the user, ungated"
-echo "  biorouter-server/routes/workflow.rs:134    workflow authoring — the user, ungated"
-echo "  biorouter-cli x7 (commands/knowledge.rs:54 :123 :214 :519, session/completion.rs:274,"
+echo "  biorouter-server/routes/workflow.rs:134 :151  workflow authoring — the user, ungated"
+echo "  biorouter-cli x8 (commands/knowledge.rs:54 :123 :129 :214 :519, session/completion.rs:274,"
 echo "                    session/tui/mod.rs:1626 :1754)  the terminal — the user, ungated"
-echo "NOTE: the 'grep -v src/knowledge/' above also drops biorouter/src/knowledge/soul.rs:73 (the"
-echo "  user's own Soul base). That exclusion is inherited from Task 10C's detectors and"
-echo "  is deliberate; soul.rs calls only create_base/list_bases and is out of scope."
-echo "A TWENTY-FIRST hit is a new metadata surface and must be classified before it lands."
+echo "  9 test-module hits: biorouter-cli/commands/knowledge.rs (#[cfg(test)] :755) :1024 :1048"
+echo "                      :1077 :1080; routes/reset.rs (:387) :418; routes/apps.rs (:4623)"
+echo "                      :4661 :4673 :4734; routes/agent.rs (:1379) :1489"
+# (2) INSIDE knowledge/ — measured: 22 hits, 5 production. This is the sweep that
+# would have caught the pointer tools.
+grep -rn "\.list_bases()\|\.session_kb_ids(\|\.selection(" --include='*.rs' crates/*/src/ \
+  | grep "src/knowledge/" | sort
+echo "expect: 22 hits / 5 production, every one accounted for:"
+echo "  knowledge/server.rs:246  visible_bases_for_session — filtered, Task 10C (1st filter)"
+echo "  knowledge/server.rs:325  kb_id_or_primary's candidate list — Task 10C (3rd filter)"
+echo "  knowledge/server.rs:687  selection_json -> selection_value — Task 10C (4th/5th filters),"
+echo "                           i.e. kb_get_active and kb_set_active"
+echo "  knowledge/service.rs:1338  service-internal (effective_primary), reaches no caller"
+echo "  biorouter/src/knowledge/soul.rs:73  the user's own Soul base, out of scope"
+echo "  17 test-module hits: brkb.rs (#[cfg(test)] :132) :171; service.rs (:1841) :1879 and"
+echo "                       fifteen more between :2413 and :3039"
+echo "A hit outside these two accounted lists is a NEW metadata surface and must be"
+echo "classified — against the register below — before it lands."
 ```
 
 **What this catches.** Four wrong implementations. (1) Fixing `list_platform_catalog` only — the
@@ -5971,6 +6047,15 @@ ordering gate and `the_app_capability_report_follows_the_MANIFESTS_provider_not_
 it, and only because that test goes through `configure_agent` — a direct `capability_report(&cfg,
 false)` passes against the defect. (6) Fixing the main agent and leaving `configure_worker_agent`'s
 grant (`:1561`) ungated, which pins a private base as a public worker profile's KB-less write target.
+(7) **A metadata detector that excludes the module the surface lives in.** Its previous form was one
+sweep ending in `grep -v "src/knowledge/"`, so it could not — by construction, not by luck — see
+`kb_get_active`, which reaches the whole set through `service.selection(` at `server.rs:687`, inside
+the excluded directory and through a verb the pattern did not name. **This gate rejects: a metadata
+leak inside `crates/*/src/knowledge/`,** via the second sweep (22 hits / 5 production, each
+accounted for) and `.selection(` added to the pattern. The register above rejects it a second time,
+at the level a leak is actually reasoned about — the *tool*, not the call site — and
+`every_drafter_tool_that_can_name_a_base_is_in_the_register` makes the same rule executable over the
+drafter's whole router rather than over the five tools this task happens to know about.
 
 - [ ] **Step 6: Commit**
 
@@ -9698,13 +9783,19 @@ echo "expect: 2 FILES — knowledge/tier.rs and agents/mcp_client.rs (Task 10A, 
 grep -rn "store::\(list_pages\|read_page\|write_page\|search\|search_with_scope\)(" \
   --include='*.rs' crates/ | grep -v "src/knowledge/" | wc -l
 echo "expect: 4 — see Task 10C Step 5 for the enumeration"
-# ...and no new way to reach base METADATA. 20 hits / 15 production at 9558c346;
-# a twenty-first is a new surface and must be classified. This is the detector the
-# fourth adversarial round showed was missing — both content detectors above pass
-# a tree in which `list_platform_catalog` hands every base id to a public model.
-grep -rn "\.list_bases()\|\.session_kb_ids(" --include='*.rs' crates/*/src/ \
+# ...and no new way to reach base METADATA. BOTH sweeps: 27 outside knowledge/
+# (18 production) and 22 inside it (5 production), at 9558c346. A hit beyond
+# those is a new surface and must be classified against Task 10D's register.
+# This is the detector the fourth adversarial round showed was missing — both
+# content detectors above pass a tree in which `list_platform_catalog` hands
+# every base id to a public model — and the `grep -v src/knowledge/` half is
+# why the fifth round then missed `kb_get_active`.
+grep -rn "\.list_bases()\|\.session_kb_ids(\|\.selection(" --include='*.rs' crates/*/src/ \
   | grep -v "src/knowledge/" | wc -l
-echo "expect: 20 — see Task 10D Step 5 for the enumeration and the 5 test-module hits"
+echo "expect: 27 — see Task 10D Step 5 sweep (1)"
+grep -rn "\.list_bases()\|\.session_kb_ids(\|\.selection(" --include='*.rs' crates/*/src/ \
+  | grep "src/knowledge/" | wc -l
+echo "expect: 22 — see Task 10D Step 5 sweep (2), the one that sees the pointer tools"
 # The two id-list error messages omit rather than enumerate (Tasks 10C, 11).
 awk '/fn kb_id_or_primary\(/,/^    }/' crates/biorouter-mcp/src/knowledge/server.rs \
   | grep -c "tier::is_private" ; echo "expect: 1"
@@ -12560,10 +12651,15 @@ grep -rn "store::\(list_pages\|read_page\|write_page\|search\|search_with_scope\
   --include='*.rs' crates/ | grep -v "src/knowledge/" | wc -l
 echo "expect: 4 — a FIFTH is a new CONTENT surface; see Task 10C Step 5"
 # ...and the METADATA tripwire, which the two content detectors cannot express.
-# 20 at 9558c346; a twenty-first is a new way to hand a model a base id or name.
-grep -rn "\.list_bases()\|\.session_kb_ids(" --include='*.rs' crates/*/src/ \
+# BOTH sweeps, at 9558c346: a growth in either is a new way to hand a model a
+# base id or name. One sweep with `grep -v src/knowledge/` is what let the
+# pointer tools through a whole review round.
+grep -rn "\.list_bases()\|\.session_kb_ids(\|\.selection(" --include='*.rs' crates/*/src/ \
   | grep -v "src/knowledge/" | wc -l
-echo "expect: 20 — see Task 10D Step 5 for the 15 production / 5 test-module split"
+echo "expect: 27 — 18 production / 9 test-module; see Task 10D Step 5 sweep (1)"
+grep -rn "\.list_bases()\|\.session_kb_ids(\|\.selection(" --include='*.rs' crates/*/src/ \
+  | grep "src/knowledge/" | wc -l
+echo "expect: 22 — 5 production / 17 test-module; see Task 10D Step 5 sweep (2)"
 # The two id-list error messages omit rather than enumerate (Tasks 10C, 11).
 awk '/fn kb_id_or_primary\(/,/^    }/' crates/biorouter-mcp/src/knowledge/server.rs \
   | grep -c "tier::is_private" ; echo "expect: 1"
