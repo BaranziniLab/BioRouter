@@ -2,14 +2,14 @@
 
 > **What this is.** The task-by-task execution plan for the privacy-tier capability system
 > designed in [`privacy-tiers.md`](privacy-tiers.md) ([issue #56](https://github.com/BaranziniLab/biorouter/issues/56)):
-> forty-three tasks in seven phases — forty numbered, plus **10A, 10B and 10C**, the knowledge-base
-> tier the operator ruled on after the first adversarial review — each with a Files table, a failing
-> test, complete implementation code, a run step, a gate that fails a plausible wrong implementation,
-> and one commit.
+> forty-five tasks in seven phases — forty numbered, plus **4b** (resolve every test filter against a
+> real `cargo --list`) and **10A, 10B, 10C and 10D**, the knowledge-base tier the operator ruled on
+> after the first adversarial review — each with a Files table, a failing test, complete
+> implementation code, a run step, a gate that fails a plausible wrong implementation, and one commit.
 > **Status:** Proposed — ready to execute. The design's rulings are settled (see
 > [Decisions of record](#decisions-of-record)); the costs the operator knowingly accepted are in
-> [Accepted risks](#accepted-risks); fifteen questions remain open (see
-> [Open questions](#open-questions)) — the design's eleven plus four this plan surfaced — and none
+> [Accepted risks](#accepted-risks); sixteen questions remain open (see
+> [Open questions](#open-questions)) — the design's eleven plus five this plan surfaced — and none
 > of them blocks Phase 0–3.
 > **Audience:** the engineer or agent implementing issue #56, and the reviewer of its PRs.
 
@@ -24,12 +24,81 @@
 > the `floor` caller-audit test was rewritten (it could not pass at any point, and two later phase
 > gates ran it); six gates whose expected count would have failed a *correct* implementation were
 > recomputed or replaced with anchored patterns; one vacuous gate (`awk 'NR==247'`) was re-anchored
-> to a symbol; the contrast total is **294** in both places that quote it; and the hand-traced type
+> to a symbol; the contrast total agrees in both places that quote it (now **288** — see the third
+> round's note below); and the hand-traced type
 > errors S1–S9 are corrected. Two further defects this pass found on its own are also fixed: the
 > `privacy::` test count in Task 7's gate was 4 where the code produces 5, and
 > `POST /knowledge/bases/{id}/ingest-conversation` is a **third** fully-open cross-session read that
 > the first version's Gate G did not cover. See
 > [Which test filters are validated, and which are not](#which-test-filters-are-validated-and-which-are-not).
+
+> **Revision note (third round — the gates were RUN).** A verifier executed every runnable gate
+> command in this plan against the worktree and compared the real output with each stated
+> expectation. It found roughly eighteen broken or vacuous gates, and this revision fixes all of
+> them. The four classes, because the classes matter more than the list:
+>
+> - **Gates that fail a correct implementation.** A counted `fn tier(&self)` gate satisfiable by
+>   deleting an override (Task 5); an `awk` whose START matched two functions and concatenated them
+>   (Task 15's `list_prompts`); an `awk` whose END pattern occurred nowhere in the file, so the range
+>   ran to EOF (Task 10); a `-v` filter that did not match the negated form of the assertion it meant
+>   to exclude (Task 30); two `cargo test -p biorouter-mcp --test mcp_integration_test` invocations
+>   naming a target that lives in `crates/biorouter/tests/`, which cargo hard-errors on (Tasks 20,
+>   40); and a contrast total of **294** that is unreachable — three of its eighteen new assertions
+>   fail AA and the same task forbids the theme edit that would fix them (Tasks 26, 32; now **288**,
+>   with the deferred pair recorded as [Open question 16](#open-questions)).
+> - **Gates that pass vacuously**, which is worse, because they are reported as verification:
+>   `grep -c '"409"'` (already 6 before any #56 code); `grep -rn "PrivacyInspector"` in three places
+>   (a name this plan invented — 0 today and 0 under every wrong implementation, so green both ways;
+>   now an enumeration of the real `impl ToolInspector for` set); `grep -c "sessionId"` (already 17);
+>   Task 33's registry-fixture loop, whose script has **no argv handling** and whose fixture
+>   directory does not exist, so any error — a bad flag, an ENOENT, a `ReferenceError` — satisfied
+>   it; and Task 37's `npx vitest run registry -t "…"`, which matches three unrelated suites, filters
+>   every test out, and prints green having run **zero** of the four tests it exists to protect.
+> - **A whole task on a false premise.** Task 2 claimed the daemon-secret leak in the stdio MCP spawn
+>   was live. It was closed in `b249a203` + `8e7407fe`, **both ancestors of this plan's own
+>   verification anchor**, and a passing test already covers it. The task is rewritten as a
+>   pin-and-correct; Task 3's gate, which inherited the same false baseline, is rewritten with it.
+> - **A pre-count table wrong in the direction that hides a no-op.** §[Which test filters are
+>   validated](#which-test-filters-are-validated-and-which-are-not) said `routes::agent` and
+>   `routes::session` had no test module. They have **8** and **20** tests respectively, so a worker
+>   told to expect zero reads `8 passed` as "my tests landed" when none did.
+>
+> Two rules were applied throughout and are worth stating once. **A named `cargo test` filter is
+> never gated on "PASS"** — libtest prints `0 passed` and exits 0 when a filter matches nothing, so
+> every such line now asserts the printed count. And **an `awk` range gate asserts its own
+> non-emptiness first**, because `grep -c` over no output is `0`, which reads identically to a
+> correct absence.
+
+> **Revision note (fourth round — the barrier's edges, and the first real `cargo` run).** A verifier
+> re-derived the four choke points independently and could not break them on content: it read
+> `rmcp-macros-0.14.0/src/tool_handler.rs` and confirmed the hand-written `call_tool` body is
+> verbatim, that `ToolCallContext::new` is `pub`, and that all four named surfaces are genuinely
+> covered (it also found `KbToolDispatch` has **seven** tools, not five — `kb_classify_source` and
+> `kb_list_pages` too, both still covered). **The architecture is settled and is not re-opened here.**
+> What broke was around the edges: two surfaces hand a public model the base ids CP1 then refuses,
+> and three ordering/packaging defects left nine consecutive commits failing `cargo test`. One fix
+> per blocker, each checked for the mirror defect the way the verifier checked:
+>
+> | # | Blocker | Fixed by | Mirror check |
+> |---|---|---|---|
+> | **B1** | `list_platform_catalog` (`agent_drafter/mod.rs:2626`) serialises `{id, name}` for **every** base, and `validate::check_*` renders the same list into three rejection strings — an enumeration oracle needing no valid input. Neither of Task 10C's new-surface detectors can see it: both key on `store::`/service **content** calls and this goes through `list_bases` | **New [Task 10D](#task-10d-the-metadata-surface--cp5-because-a-barrier-that-names-what-it-refused-has-not-refused-it)** — CP5 at `Catalog::discover`, a measured 6-production-caller choke point, plus a metadata new-surface detector (20 hits / 15 production) | Swept every `list_bases`/`session_kb_ids` caller outside `knowledge/` by hand — 20, all classified. Found the **third** instance, `resolve_target_kb` (below) |
+> | **B2** | `gated_kb_id`'s deliberate fall-through lets `kb_id_or_primary` (`server.rs:323-341`) answer with `"Pass kb_id explicitly (one of: default, omop)"`, built from a list filtered on `hidden` only — while the same task asserts `kb_list_bases` returns `["default"]` | **Task 10C** gains a third filter and two tests | The mirror is `resolve_target_kb` (`knowledge_tool.rs:149`), the same shape in `biorouter`, which Task 10C cannot reach. **Fixed in Task 11**, with its own test |
+> | **B3** | `crates/biorouter-mcp/tests/knowledge_macros_e2e.rs` constructs `IngestArgs`/`QueryArgs` and was in no Files table, no `git add` and no run step; every `cargo test -p biorouter-mcp` here is `--lib` | **Task 10B** adds the file, a `--test` line and `cargo check --workspace --all-targets`; **O13** states the rule | Swept `crates/*/tests/` for every changed type: that file is the only out-of-lib constructor of the three macro `Args`, and Task 10D's `Catalog::discover` has two more (`catalog_write_boundary.rs`, `testdrive_corpus_relint.rs`) — both now listed |
+> | **B4** | 10B made `IngestArgs.caller_is_private` required, which makes `conversation_ingest.rs:205` a compile error with nothing to pass; the field was reserved for Task 11. The only compiling answer was a hardcoded `false`, which reproduces §10A ⚠(3) verbatim — *"every per-file gate reported green"* | **`caller_capability` moves to Task 10B**, together with all three callers; Task 11 keeps only the guard, and its Step 2 now expects FAIL rather than COMPILE ERROR | Checked the inverse: 10B's gate now also greps for a hardcoded `ProviderTier::Private` / `caller_is_private: true`, which is the way to compile while disabling the ratchet |
+> | **B5** | `awk KB_RATCHETING_TOOLS \| grep -c '"kb_'` expects **3** and measures **1**: the const is 94 characters, rustfmt keeps it on one line, and `grep -c` counts lines | **`grep -o … \| wc -l`** in both 10B and 10C | The sibling `KB_ID_GATED_TOOLS` gate happens to measure 14 only because rustfmt explodes *that* array — same gate, opposite side of a formatter's line-wrap. Both converted |
+>
+> **Also in this round: the first `cargo` this plan has ever run.** Every previous pass ended with
+> *"nothing has been compiled or run"*, and the last verifier named an actual `cargo test -- --list`
+> after Task 4 as the single thing that would most change its confidence. That is now
+> **[Task 4b](#task-4b-resolve-every-test-filter-against-a-real-cargo---list-docs-only)**, a short
+> docs-only task placed immediately after Task 4, and its Step 1 was executed while writing this
+> revision — against `main` at `89c1f026`, whose only difference from the plan's anchor is six
+> developer-only files. Four of the five packages listed clean and the measured counts are pasted
+> into the task. Two of the plan's own numbers were wrong and are corrected there;
+> `agents::chatrecall_extension` and `session::chat_history_search` really are **0**, as claimed, and
+> `routes::agent` = 8 / `routes::session` = 20 are confirmed exactly. What remains unrun is stated in
+> the task rather than implied: seven modules this plan creates cannot be listed until they exist,
+> and Tasks 20 and 40 re-run the audit with a shrinking and then an empty deferred set.
 
 **Goal.** Two lattices, one column pair, five gates plus four the design did not name. A session's
 **capability** (what it may *do*) is the least-privileged model bound to it; its **classification**
@@ -117,7 +186,7 @@ Anchors that **check out unchanged**: `Extension` struct's six fields (`extensio
 
 ## Non-negotiable orderings
 
-BR-71 names five; this plan has twelve, and each one has a failure mode behind it.
+BR-71 names five; this plan has thirteen, and each one has a failure mode behind it.
 
 **O1 — The types precede the column, and the column precedes every gate.**
 Nothing can consult a tier that does not exist. Task 4 (types) → Task 6 (columns) → any gate.
@@ -176,7 +245,7 @@ review round, is `POST /knowledge/bases/{id}/ingest-conversation` (`routes/knowl
 Task 11 closes all three at once by guarding the function they share (departure D8).
 
 ⚠ **The second read's gate cannot ship before its sink has a tier**, so O12's three tasks sit between
-the two: the phase opens with Task 10 (LOAD), then Tasks 10A–10C (the sink), then Task 11 (ingest).
+the two: the phase opens with Task 10 (LOAD), then Tasks 10A–10D (the sink), then Task 11 (ingest).
 That is not a weakening of O8. Closing the *read* while leaving the *sink* an unclassified
 machine-wide tree fixes the narrower half and leaves the laundering path open — which is exactly what
 the first version of this plan did, and what the operator's ruling reverses. Task 11's own second
@@ -195,7 +264,7 @@ already has `CURRENT_SCHEMA_VERSION = 17` with a **written, working** `17 => ALT
 ADD COLUMN parent_session_id TEXT`. Whoever merges second silently re-uses a number, and a database
 that already ran the other branch's 17 skips the second feature's arm entirely — the exact incident
 `run_migrations`' own comment at `:2344-2348` records for v11-v14. Task 6 therefore ships a
-**shape-guarded numbered arm plus an unconditional `reconcile_privacy_schema`**, following the
+**shape-guarded numbered arm plus an unconditional `ensure_privacy_schema`**, following the
 `ensure_session_incarnation_schema` precedent (`:2782-2789`, called from `reconcile_loop_schema`
 `:2354`, itself called at `:2349` *after* the version loop). With that, merge order is free in both
 directions.
@@ -205,9 +274,14 @@ Enforcement runs off the compiled-in const, so the website blocks nothing. It is
 because its `--check` gate needs the generated Rust file to exist, not because anything waits on it.
 
 **O12 — The knowledge-base tier store precedes the KB ratchet, which precedes the KB read barrier,
-and all three precede Gate G.**
+which precedes the metadata scope, and all four precede Gate G.**
 Task 10A (store + caller-capability channel + migration) → Task 10B (the ratchet on every write) →
-Task 10C (the read barrier) → Task 11 (Gate G). Reversing 10B and 10C ships a barrier that refuses
+Task 10C (the read barrier) → **Task 10D (the metadata surface)** → Task 11 (Gate G). 10D is last of
+the four because it consumes both halves: it reads `tier::is_private` (10A) through the meta channel
+10B installs, and it is only meaningful once 10C refuses the content — a catalog that omits a base
+whose pages are still readable protects nothing. It is *before* Task 11 because Task 11 closes the
+third instance of 10D's own defect (`resolve_target_kb`'s id list) and should be written with 10D's
+ruling already on the page. Reversing 10B and 10C ships a barrier that refuses
 nothing, because on a freshly-migrated machine **every** KB is public until a private session writes
 to one — so a read gate landing first is green everywhere and proves nothing, and its own tests have
 to fabricate a tier the tree cannot yet produce. And Task 11's second test asserts the ratchet, so it
@@ -216,6 +290,33 @@ lives in its own machine-local store (`<knowledge-root>/.kb-tiers`), because
 `crates/biorouter-mcp` **cannot depend on `crates/biorouter`** — the dependency runs the other way
 (`extension_manager.rs:1512` uses `biorouter_mcp::secret_guard`), which is the same constraint that
 made the knowledge macros take a `Box<dyn Completer>` instead of a `Provider`.
+
+⚠ **The ordering also carries the plumbing.** 10A–10C hang off the *same* four choke points
+(Task 10A's ⚠, CP1–CP4). 10B is what installs the caller's capability at each seam — a hand-written
+`KnowledgeServer::call_tool`, a required `caller_is_private` on the three macro `Args`, a parameter
+on `handle_kb_frame` and on `stage_full_payload` — and 10C is then literally one `if` at each. Doing
+10C first means writing all of that plumbing inside the barrier task, where a reviewer cannot tell
+the signature churn from the control. 10D adds a **fifth** choke point of its own
+(`Catalog::discover`) rather than a check at any of the four, because the surface it closes returns
+metadata and never touches base content — the reason both of 10C's new-surface detectors are blind
+to it.
+
+**O13 — Every task's commit leaves `cargo test` green, and where it cannot, the task says what red
+to expect.**
+Not a style rule: the previous draft left **nine consecutive commits** (10B through 19) failing
+`cargo test`, because 10B changed three struct signatures and the only file outside `crates/*/src/`
+that constructs them — `crates/biorouter-mcp/tests/knowledge_macros_e2e.rs` — was in no Files table,
+no `git add` and no run step, and every `cargo test -p biorouter-mcp` in the plan is `--lib`. Nine red
+commits is not a cosmetic cost: a worker at commit six cannot tell a genuine break from the expected
+state, which is the condition under which people stop reading failures. Three rules follow, and Tasks
+10B, 10C, 10D and 11 all carry them:
+1. A task that changes a `pub` or `pub(crate)` signature runs **`cargo check --workspace --all-targets`**
+   in its Step 4 and again in Step 6 before `git commit`. `--lib` does not compile `crates/*/tests/`.
+2. Every out-of-lib constructor of a changed type is a **row in the Files table**, a line in the
+   `git add`, and a `--test <name>` line in Step 4.
+3. A field a later task consumes is declared by the **earlier** task, together with a value for every
+   caller. "Task N adds this field" in a Files table, for a field task N−1 makes required, is a task
+   that cannot compile — see Task 10B's ⚠ on `conversation_ingest.rs:205`.
 
 ---
 
@@ -229,9 +330,9 @@ Eight, each forced by a measurement.
 | D2 | §9.3 B1: "put the carry-over on `create_session` itself, parameterised" | Introduces one `create_derived_session` helper that the three copy paths share | `grep -rn --include='*.rs' "\.create_session(" crates/` returns **104** call sites. Parameterising a 3-arg function with 104 callers to fix three of them is a worse trade than collapsing the three hand-rolled builders into one. Task 22 keeps the design's enumeration test. |
 | D3 | §5.1: `Classification` as the stored enum name | `SessionClassification` | `crates/biorouter/src/security/classification_client.rs` already defines `ClassificationClient` / `ClassificationRequest` / `ClassificationResponse` (an unrelated HuggingFace text classifier) in the same crate. |
 | D4 | §14.1: Private pill = `--background-muted` fill + `--text-standard` label; Public pill = 1 px `--border-subtle` hairline + `--text-subtle` label | Private = `bg-background-muted text-text-default`; Public = `bg-background-muted text-text-muted` | `--text-standard` **does not exist** (`grep -rn "var(--text-standard)" ui/desktop/src` → 0; the only textual hit is a comment in `search.css:2` saying so). And no border token in the system reaches 3:1 on a pill's real ground: measured with the repo's own `ui/desktop/scripts/lib/theme-tokens.mjs`, `--border-subtle` vs `--background-muted` is **1.00–1.24** across all six family×mode scopes (parchment:dark is exactly 1.00 — identical colours). An outline pill is not expressible here. Full measurements in Task 26. |
-| D5 | §15.1: "added by the same `ALTER TABLE sessions ADD COLUMN` arm BR-71 Task 1 uses" | Shape-guarded arm 17 **plus** an unconditional `reconcile_privacy_schema` | O10. |
+| D5 | §15.1: "added by the same `ALTER TABLE sessions ADD COLUMN` arm BR-71 Task 1 uses" | Shape-guarded arm 17 **plus** an unconditional `ensure_privacy_schema` | O10. |
 | D6 | §18.4: the prompt-hook provider check is "v1 emits a load-time warning; the hard skip is v1.1" | Hard refusal in v1, in the same task as the CLI plan-mode refusal | The Stop hook's payload is `crate::agents::goal::transcript_tail(&conversation)` (`agent.rs:5495-5496`) — a real transcript excerpt — shipped to an arbitrary endpoint resolved by `HooksManager::resolve_prompt_provider` (`hooks/mod.rs:690`) and sent by `run_prompt_hook` (`hooks/prompt_runner.rs:57`). It is structurally identical to P6 and carries the same content. |
-| D7 | §9.3 B4: "Ratchet a KB's classification on ingest … **or** state plainly that KBs are a designed public sink" | Ratchets (operator ruling), **and** enumerates the read side rather than stating it abstractly: seven explicit-`kb_id` entry points, not just `kb_search` | The design says "a public-capability session may not read a private KB" without naming where that is enforced. `kb_id_or_primary`'s own doc comment (`knowledge/server.rs:308-311`) says "An explicit `kb_id` always wins and is **never filtered** against the session's set", and four tools route through it (`kb_list_pages` `:379`, `kb_read_page` `:396`, `kb_get_graph` `:482`, `kb_list_history` `:497`) on top of `kb_search`'s own branch at `:590-592`, `kb_search_raw_sources`' at `:618-619` and `kb_export` at `:743`. Gating only `kb_search` leaves six live doors, which is the Task 15 failure mode one module over. |
+| D7 | §9.3 B4: "Ratchet a KB's classification on ingest … **or** state plainly that KBs are a designed public sink" | Ratchets (operator ruling), and enforces the read side at **five choke points**, not at an enumeration of tool call sites | The design says "a public-capability session may not read a private KB" without naming where that is enforced, and the obvious answer — one check per `kb_*` tool — does not survive measurement. It misses four whole surfaces (`agent_drafter::export_app`, `routes/apps.rs::run_kb_read`, that route's `ingest` arm, and the `KbToolDispatch` sub-agent tool set), and **nine of the nineteen `kb_*` tools take no `RequestContext`** so they cannot learn the caller's capability at all. The barrier therefore sits at `<KnowledgeServer as ServerHandler>::call_tool` (which receives the `RequestContext` for every tool), the three sub-agent macro entries, `handle_kb_frame`, and `stage_full_payload`. A **fifth**, `Catalog::discover` (Task 10D), covers the surface the other four cannot see by construction: a base's **id and name**, which `list_platform_catalog` hands to any model with no arguments at all. Full derivation, with the measurements and what it costs, in Task 10A's ⚠ "where the barrier goes" and its coverage table. |
 | D8 | §9.3 B4 and the first version of this plan put the cross-session ingest guard in `Agent::handle_ingest_conversation` | Puts it in `biorouter::knowledge::conversation_ingest::ingest_conversation` as a **required** `caller_capability` argument | Measured: `grep -rn "conversation_ingest::ingest_conversation\|ingest_conversation(" --include='*.rs' crates/` returns **three** production callers, not one — `agents/knowledge_tool.rs:61` (the platform tool), `biorouter-server/src/routes/knowledge.rs:1233` (`POST /knowledge/bases/{id}/ingest-conversation`, whose `session_ids` array at `:1192-1212` is caller-supplied and loaded with `get_session(sid, true)` at `:1203`) and `biorouter-cli/src/commands/knowledge.rs:571`. A guard in the platform tool leaves the HTTP route — reachable with nothing but the secret key — as an unguarded copy of the same primitive. A required parameter makes all three a compile error. |
 
 ---
@@ -288,10 +389,21 @@ The cost, stated plainly:
   `knowledge/paths.rs:43-45`) and there is exactly one default base on most installs. The moment a
   single Versa-backed chat writes one page into it, that base is private — and every subsequent chat
   on a commercial model gets a refusal from `kb_search`, `kb_read_page`, `kb_list_pages`,
-  `kb_get_graph`, `kb_list_history`, `kb_search_raw_sources` and `kb_export`, **including for
-  material that had nothing to do with the private work**. The KB does not un-ratchet. There is no
-  per-page tier and there will not be one in v1: pages are markdown in a git tree, and per-page
-  classification is a storage redesign.
+  `kb_get_graph`, `kb_list_history`, `kb_search_raw_sources` and `kb_export`, from the `ingest` /
+  `query` / `lint` macros the GUI Knowledge view runs, from any **BioRouter app** that declared that
+  base as a `br.kb` source, and from `export_app`'s payload — **including for material that had
+  nothing to do with the private work**. The KB does not un-ratchet. There is no per-page tier and
+  there will not be one in v1: pages are markdown in a git tree, and per-page classification is a
+  storage redesign.
+- **A published app stops working, for its users, when a base it reads is ratcheted by someone
+  else's chat.** The app's manifest grant (`resolve_kb_grant`, `routes/apps.rs:2268`) still permits
+  it; the privacy barrier does not. The app surfaces the refusal string in its `kb_result` error
+  frame rather than failing silently, but it is a working app that stops answering for a reason the
+  app author did not cause and cannot fix.
+- **The Knowledge view itself keeps working.** `GET /knowledge/bases/{id}/page`, `/pages`, `/graph`,
+  `/history`, `/preview`, `/export` are not gated (Task 10C's second ⚠): the user reading their own
+  notes is not a model. So the base is not *lost* — it is unreachable to models on a public
+  capability, and readable by hand.
 - The repair is the same one every other private surface offers — switch the chat to a private model
   — and it is discoverable, because the refusal string names it. It is still a real loss of
   ergonomics for a user whose default model is commercial and whose knowledge base has one private
@@ -339,34 +451,87 @@ in that directory. [Open question 14](#open-questions) carries the real fix.
 Unchanged from DR-11. Listed here so the accepted-cost list is complete rather than split across two
 tables.
 
+### AR-5 — The existence of a private knowledge base is still inferable
+
+Tasks 10C, 10D and 11 stop a public model from being *handed* the id or name of a private base:
+`kb_list_bases` omits it, the Agent Drafter catalog omits it, and neither the no-primary nor the
+no-target error enumerates it. **None of that stops a public model from asking about one id at a
+time and learning the answer.** Two paths remain open, both by decision:
+
+- `kb_create_base("omop")` on an existing base bails with `kb 'omop' already exists at
+  <path>` (`service.rs:451`) — an existence answer *and* a filesystem path. The tool is deliberately
+  outside `KB_ID_GATED_TOOLS` (Task 10C's ⚠) because gating it is what banned knowledge-base creation
+  for public sessions in an earlier draft.
+- `resolve_target_kb`'s `knowledge base '{id}' does not exist` (`knowledge_tool.rs:141`) answers the
+  same question for a supplied id.
+
+**This is DR-7 applied consistently, not an oversight.** The operator ruled side channels —
+existence, counts, timing — out of scope for `chatrecall`: *"Only content must not cross."* The same
+rule here would be incoherent if it were applied differently, so it is not. What *is* in scope, and
+what Tasks 10C/10D/11 close, is the plan's own countervailing rule from one test over: **a knowledge
+base's id and name are user-authored content** — *"a KB name is user-authored and routinely names a
+cohort or a study"* — so volunteering the whole list is a content crossing, while answering one
+guess is a side channel.
+
+The residual cost, plainly: a determined public-capability model that already knows or can guess an
+id can confirm the base exists, and can learn its on-disk path. It cannot read a page, a snippet, a
+graph, a history entry or an export from it (CP1–CP4), and it cannot obtain the id from Biorouter in
+the first place (CP5 and the two error lists). Closing the last inch needs constant-shape responses
+on `kb_create_base`, which DR-7 declines and which would cost the user a truthful error on the
+overwhelmingly common non-adversarial case.
+
 ---
 
 ## Which test filters are validated, and which are not
 
-The adversarial verifier could not run a single `cargo test` filter — the `privacy::` modules do not
-exist yet, so `cargo test -- --list` cannot resolve them even after a build — and named this "the
-single biggest hole in my own coverage", because BR-71's most expensive defect was *a filter that
-names a nested module by the wrong path, prints `0 passed`, and exits 0*. This section closes as much
-of that hole as is closable before any code exists.
+The adversarial verifiers could not run a single `cargo test` filter, and named this "the single
+biggest hole in my own coverage", because BR-71's most expensive defect was *a filter that names a
+nested module by the wrong path, prints `0 passed`, and exits 0*. This section closes as much of that
+hole as is closable by reading; **[Task 4b](#task-4b-resolve-every-test-filter-against-a-real-cargo---list-docs-only)
+closes the rest by running it**, and its Step 3 carries the measured pre-count of all 30 filters that
+resolve today. Where this section and Task 4b disagree, **Task 4b wins** — it is the measurement.
 
 **How each filter was checked.** For every `cargo test` line in this plan, the module path it implies
 was resolved against the tree: for an existing module, that the file exists at the path the filter
 spells **and** that it contains a `#[cfg(test)] mod tests`; for a module this plan creates, that the
 task's Files table puts the file where the filter's path implies.
 
-**Four filters name a module that has no test module today, so they print `0 passed` and exit 0 until
+**Two filters name a module that has no test module today, so they print `0 passed` and exit 0 until
 the task that owns them lands.** This is not a defect in the filter — it is the reason each of those
 tasks must state a *pre-count of zero* and assert the exact post-count:
 
 | Filter | Module today | Task |
 |---|---|---|
-| `cargo test -p biorouter --lib agents::chatrecall_extension` | `chatrecall_extension.rs` has **no** `mod tests` | 10, 17 |
-| `cargo test -p biorouter --lib session::chat_history_search` | `chat_history_search.rs` has **no** `mod tests` | 17 |
-| `cargo test -p biorouter-server --lib routes::agent` | `routes/agent.rs` has **no** `mod tests` | 12, 14 |
-| `cargo test -p biorouter-server --lib routes::session` | `routes/session.rs` has **no** `mod tests` | 22, 29 |
+| `cargo test -p biorouter --lib agents::chatrecall_extension` | `chatrecall_extension.rs` has **no** `#[cfg(test)]` at all (verified: 0 hits; **confirmed 0 by Task 4b's `--list`**) | 10, 17 |
+| `cargo test -p biorouter --lib session::chat_history_search` | `chat_history_search.rs` has **no** `#[cfg(test)]` at all (verified: 0 hits; **confirmed 0 by Task 4b's `--list`**) | 17 |
 
-Ten of the twelve `crates/biorouter-server/src/routes/*.rs` files with tests were checked; `apps.rs`
-and `config_management.rs` (the two this plan filters on besides the four above) both have one.
+⚠ **The other two filters this plan leans on are NOT zero today, and a previous version of this
+section said they were.** That error runs in the direction that hides a no-op: a worker told to
+expect `0 passed` reads `8 passed` as "my tests landed" when in fact none of them did. Both
+modules already have **two** `#[cfg(test)]` blocks each, neither of them named `tests`, so a filter
+on the module path picks them up:
+
+| Filter | Module today — **measured at `9558c346`, confirmed by Task 4b's `--list`** | Task |
+|---|---|---|
+| `cargo test -p biorouter-server --lib routes::agent` | **8 tests**, in `mod working_dir_lock_tests` (`routes/agent.rs:1279`, 4 tests) and `mod knowledge_selection_tests` (`:1380`, 4 tests) | 12, 14 |
+| `cargo test -p biorouter-server --lib routes::session` | **20 tests**, in `mod diverge_tests` (`routes/session.rs:1038`, 11 tests) and `mod edit_message_tests` (`:1417`, 9 tests) | 22, 29 |
+
+⚠ **And a third, which the hand search missed: `agents::agent` spans three test modules**, not one —
+`agents::agent::tests` (14), `agents::agent::rewrite_basis_tests` (2), `agents::agent::stall_seam_tests`
+(5), total **21**. Task 4b found it by listing. The general lesson is stated below and is worth
+repeating here: **do not assume `mod tests` is the only shape, and do not trust a hand search to have
+found every module that isn't.**
+
+So Tasks 12, 14, 22 and 29 must record the **pre-count** with the same command before Step 3 and
+assert `post == pre + N`, exactly as Task 2 and Task 6 already do — never "expect a non-zero count",
+which those two filters satisfy before a line of #56 exists.
+
+Thirteen of the `crates/biorouter-server/src/routes/*.rs` files carry at least one `#[cfg(test)]`
+block; `apps.rs` and `config_management.rs` (the two this plan filters on besides the four above)
+both have one. Note also that the two non-zero modules above are the concrete instance of failure
+mode (a) named at the end of this section — **a test module nested under a name its file does not
+advertise**. Neither is called `tests`; both are reached by the module-path filter anyway. Do not
+assume `mod tests` is the only shape.
 
 **Two syntax rules, both verified analytically.**
 `cargo test --lib A B` is a hard error (`unexpected argument 'B' found`) — cargo takes exactly one
@@ -379,14 +544,26 @@ its own `TESTNAME` positional to libtest as *another* OR'd filter, so the module
 names after `--` add nothing. Task 6 Step 2 carried this shape and has been corrected to drop the
 positional. If you want exactly N named tests, pass **only** names after `--`.
 
-**What remains unvalidated, and why.** Nothing here was *executed*. The filters were resolved
-statically against file paths and `mod tests` presence, which catches the BR-71 defect class (a path
-that resolves to nothing) but not two others: (a) a test that exists under a *different* nesting than
-its file suggests — e.g. a helper `mod` inside `mod tests` — and (b) an expected pass-count that is
-right for the module today and wrong after another task adds tests to the same module. Every gate in
-this plan that quotes a pass count is therefore paired with either a named-test filter or a
-pre/post delta the task records itself. **The first worker to run `cargo test -- --list` should paste
-the real module paths into a PR comment**; that is the only thing that closes (a) completely.
+**What remains unvalidated, and why — and the task that closes it.** Nothing in this section was
+*executed* when it was written. The filters were resolved statically against file paths and
+`mod tests` presence, which catches the BR-71 defect class (a path that resolves to nothing) but not
+two others: (a) a test that exists under a *different* nesting than its file suggests — e.g. a helper
+`mod` inside `mod tests` — and (b) an expected pass-count that is right for the module today and
+wrong after another task adds tests to the same module. Every gate in this plan that quotes a pass
+count is therefore paired with either a named-test filter or a pre/post delta the task records itself.
+
+**(a) is closed by [Task 4b](#task-4b-resolve-every-test-filter-against-a-real-cargo---list-docs-only)**,
+which runs `cargo test -p <pkg> --lib -- --list` for all five packages this plan filters on and
+resolves every one of its **42** `(package, filter)` pairs against the real listing. It is placed
+immediately after Task 4 because Task 4 is the first commit that produces a `privacy::` module, and
+it is docs-only. What it cannot close is the seven modules later tasks create
+(`privacy::{extensions,refusal,alt_provider,visibility,declassify}`, `providers::tier_tests`,
+`knowledge::tier`); those are a named deferred set that Task 20's and Task 40's gates re-run with a
+shrinking and then an empty list. Two further facts Task 4b's design turns on, both easy to get
+wrong: this plan spells its filters in **two** forms (`--lib <FILTER>`, 34 occurrences, and
+`--lib -- <NAME> <NAME>`, 7 — an audit of only the first misses `privacy::refusal` and
+`privacy::alt_provider` entirely), and a libtest filter is a **substring** match, not a prefix, so
+`privacy` matches more than `privacy::…` and the pre-counts must be measured rather than reasoned.
 
 ---
 
@@ -603,141 +780,232 @@ git commit -m "docs(security): correct privacy-tiers against the tree (#56)"
 
 ---
 
-### Task 2: Scrub daemon credentials from the stdio MCP extension spawn
+### Task 2: §9.3 A1 is already closed — correct the design, and pin the half nothing asserts
 
-The remaining half of §9.3 A1, and a live credential leak independent of this design. Any stdio MCP
-extension the user installs inherits `BIOROUTER_SERVER__SECRET_KEY` from the daemon's environment,
-which is plain header equality at `auth.rs:115-126` against a loopback-bound API that exposes
-`GET /sessions/{id}/export`.
+⚠ **The first version of this task was built on a false premise and prescribed a redundant fix.** It
+claimed the stdio MCP extension spawn still leaks `BIOROUTER_SERVER__SECRET_KEY`, citing
+`extension_manager.rs:749`'s `command.args(args).envs(all_envs)` with "no `strip_daemon_private_env`
+anywhere near it". That observation is literally true and materially wrong: it greps the wrong stack
+frame. Measured at `9558c346`:
+
+- the stdio spawn hands its `Command` to `child_process_client` (`:752`),
+- `child_process_client` (`:402`) calls `prepare_child_environment` (`:413`),
+- `prepare_child_environment` (`:367`) ends at `:399` with
+  `biorouter_mcp::developer::shell::strip_daemon_private_env(command)` — deliberately last, with a
+  comment saying so, so that neither the block above it nor the extension's own declared `envs` can
+  leave a credential behind,
+- and `strip_daemon_private_env` (`biorouter-sandbox/src/environment.rs:54`) removes both the
+  **inherited** keys (`env::vars_os()`) and the ones **explicitly set on the command**
+  (`command.as_std().get_envs()`), via `doomed_env_keys` `:81-88`.
+
+It landed in `b249a203` ("the daemon's auth secret no longer reaches tool processes") and
+`8e7407fe` ("centralize the daemon-secret strip at the sandbox boundary"), **both ancestors of this
+plan's own verification anchor `9558c346`** — confirm with
+`git merge-base --is-ancestor b249a203 9558c346`. A passing test already covers it:
+`daemon_secret_never_reaches_an_extension_child` (`extension_manager.rs:3169`), which re-invokes the
+test binary with the secret exported and spawns a real child through the real
+`prepare_child_environment`. `grep -c "BIOROUTER_SERVER__SECRET_KEY" extension_manager.rs` returns
+**2 today**, and both hits are inside that test — which is why the first version's gate
+(`expect: 2 — both in Step 1's test`) would have failed a *correct* implementation of its own
+Step 1: the new test would have made it 4.
+
+So this task ships **no** new scrub. It ships the three things that are genuinely missing.
+
+1. **The design still says the leak is live** and prescribes `.env_remove(…)` as fix (1) of three.
+   A reviewer checking §9.3 A1 against the tree finds the fix already there and concludes the plan
+   was written against a different tree. Correct it, and record which of A1's three fixes remain
+   open — (2) *stop carrying the secret in the environment at all* and (3) *bind declassify to a
+   one-shot capability token* are both still open, and (3) is Task 29's business.
+2. **Nothing pins the explicit/declared half at this layer.** The existing probe declares
+   `CLINICAL_RECORDS_TOKEN` and `EXTENSION_MODE`; neither is in BioRouter's namespace, so the run
+   never exercises `doomed_env_keys`' `.chain(explicit)`. This matters because
+   `merge_environments` (`:471-510`) will *fetch* a declared `env_keys` entry out of the config or
+   the OS keyring and put it on the command — so a `.brxt` manifest saying
+   `env_keys: ["BIOROUTER_SERVER__SECRET_KEY"]` is a real, cheap attempt. Only
+   `developer/shell.rs:643-655` pins that direction, one layer over.
+3. **Nothing pins the structural invariant** that the extension spawn path *reaches*
+   `prepare_child_environment` at all. Both spawns route through `child_process_client` today, and
+   `TokioChildProcess::builder(` occurs exactly once in the whole tree (`:415`, two lines after the
+   call). A future third spawn that builds its own transport would leak with no test failing.
 
 **Files:**
 
 | Action | Path | Anchor (re-verified at `9558c346`) |
 |---|---|---|
-| Modify | `crates/biorouter/src/agents/extension_manager.rs` | the stdio spawn `Command::new(cmd).configure(...)` at `:738-750`; `command.args(args).envs(all_envs)` at `:748-750` |
-| Modify | `crates/biorouter/Cargo.toml` | add `biorouter-sandbox` if absent (check first: `grep -n biorouter-sandbox crates/biorouter/Cargo.toml`) |
-| Reference | `crates/biorouter-sandbox/src/environment.rs` | `strip_daemon_private_env` `:54-79`; `is_daemon_private_env_key` `:36-50`; its own test `:94-103` |
+| Modify | `docs/security/privacy-tiers.md` | §9.3 A1 at `:676-707`: the `printenv`/`curl` repro `:679-681`, the `build_shell_command` claim `:687-688` (Task 1 Correction 1 already replaces the *symbol*; this task replaces the *status*), the stdio claim `:689-690`, and the "Three fixes, all needed" list `:701-707` |
+| Modify | `crates/biorouter/src/agents/extension_manager.rs` | `leak_probe_prints_extension_child_env` `:3080-3100` (the `declared` map at `:3084-3095`); `daemon_secret_never_reaches_an_extension_child` `:3167-3181`; `run_extension_leak_probe` `:3134-3165` |
+| Reference | `crates/biorouter/src/agents/extension_manager.rs` | `prepare_child_environment` `:367-400` (strip at `:399`); `child_process_client` `:402-413`; the two spawns `:748` (stdio) and `:814` (inline-python), both handing off at `:752`/`:822` |
+| Reference | `crates/biorouter-sandbox/src/environment.rs` | `is_daemon_private_env_key` `:36-50`; `strip_daemon_private_env` `:54-67`; `doomed_env_keys` `:81-88`; its own test `:94-113` |
+| Reference | `crates/biorouter-mcp/src/developer/shell.rs` | `:643-655` — the only place the *explicit* direction is pinned today, and the shape to copy |
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the test**
 
-Add to `#[cfg(test)] mod tests` in `extension_manager.rs`:
+⚠ **This one starts green, and that is stated rather than hidden.** Every other task in this plan
+opens with a red test; here the behaviour already works and the test is a **pin**. Step 2 is
+therefore a *mutation* check — the same shape Task 7 Step 2 uses to give an empty `EXPECTED` meaning.
+Do not "fix" a passing Step 1 by weakening it.
+
+Extend the child half of the existing probe so it declares a daemon-private key of its own, exactly
+as a hostile `.brxt` manifest would (`extension_manager.rs:3084`):
 
 ```rust
-#[test]
-fn the_stdio_spawn_environment_carries_no_daemon_credential() {
-    // The daemon puts BIOROUTER_SERVER__SECRET_KEY into every child's
-    // environment (ui/desktop/src/biorouterd.ts additionalEnv). auth.rs is a
-    // plain header equality and the API is loopback-bound, so any stdio MCP
-    // server that inherits it can read every session's transcript through
-    // GET /sessions/{id}/export. BIOROUTER_PORT is deliberately NOT stripped:
-    // exported apps need it (see biorouter-sandbox environment.rs:94-103).
-    let mut env: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-    env.insert("BIOROUTER_SERVER__SECRET_KEY".into(), "s3cret".into());
-    env.insert("BIOROUTER_ACP_WS_TOKEN".into(), "tok".into());
-    env.insert("BIOROUTER_PORT".into(), "3000".into());
-    env.insert("MY_EXTENSION_KEY".into(), "keep-me".into());
-
-    let scrubbed = super::scrub_daemon_env(env);
-
-    assert!(!scrubbed.contains_key("BIOROUTER_SERVER__SECRET_KEY"));
-    assert!(!scrubbed.contains_key("BIOROUTER_ACP_WS_TOKEN"));
-    assert_eq!(scrubbed.get("BIOROUTER_PORT").map(String::as_str), Some("3000"));
-    assert_eq!(scrubbed.get("MY_EXTENSION_KEY").map(String::as_str), Some("keep-me"));
-}
+        // What `merge_environments` hands the spawn path for an extension that
+        // declares its own credentials — including, since #56, one it is not
+        // entitled to. A manifest may name any key in `env_keys`, and
+        // merge_environments will resolve it out of the config or the OS
+        // keyring and set it on the Command. `strip_daemon_private_env` covers
+        // the explicitly-set case as well as the inherited one
+        // (`doomed_env_keys` chains `env::vars_os()` with the command's own
+        // envs); this is the assertion that says so at THIS layer rather than
+        // only at developer/shell.rs:643.
+        let declared = HashMap::from([
+            (
+                "CLINICAL_RECORDS_TOKEN".to_string(),
+                "declared-credential-ok".to_string(),
+            ),
+            (
+                "EXTENSION_MODE".to_string(),
+                "declared-plain-ok".to_string(),
+            ),
+            (
+                "BIOROUTER_SERVER__SECRET_KEY".to_string(),
+                "declared-daemon-secret-9f2c".to_string(),
+            ),
+            (
+                "BIOROUTER_ACP_WS_TOKEN".to_string(),
+                "declared-acp-token-9f2c".to_string(),
+            ),
+        ]);
 ```
 
-- [ ] **Step 2: Run it**
+and add the assertion to the existing test (`:3169`), beside the two it already makes:
+
+```rust
+        // A manifest that ASKS for the daemon's key does not get it either. The
+        // inherited path is covered by CANARY above; this is the explicit path,
+        // and it is the one a malicious extension author controls.
+        assert!(
+            !child_env.contains("declared-daemon-secret-9f2c")
+                && !child_env.contains("declared-acp-token-9f2c"),
+            "an extension declared a daemon-private key in its own envs and received it:\n{child_env}"
+        );
+```
+
+- [ ] **Step 2: Run it, then break the strip and watch it fail**
 
 ```bash
-cargo test -p biorouter --lib agents::extension_manager::tests::the_stdio_spawn_environment_carries_no_daemon_credential
+cargo test -p biorouter --lib \
+  agents::extension_manager::tests::daemon_secret_never_reaches_an_extension_child \
+  | grep "test result:" ; echo "expect: 1 passed; 0 failed"
 ```
 
-Expected: **COMPILE ERROR** — `cannot find function scrub_daemon_env in this scope`.
+Then comment out `biorouter_mcp::developer::shell::strip_daemon_private_env(command);` at
+`extension_manager.rs:399`, re-run the same command, and confirm **`0 passed; 1 failed`** with the
+new assertion in the failure message — not the pre-existing CANARY one, which would mean the new
+assertion is unreachable. **Restore the line.** A pin that cannot fail is a comment.
 
-- [ ] **Step 3: Implement**
+⚠ Assert the printed **count**, not the exit code: a libtest filter that matches nothing prints
+`0 passed` and exits 0 (see
+[Which test filters are validated, and which are not](#which-test-filters-are-validated-and-which-are-not)).
 
-In `extension_manager.rs`, above the stdio spawn:
+- [ ] **Step 3: Correct the design**
 
-```rust
-/// Remove the daemon's own credentials from an environment about to be handed
-/// to a child process. Issue #57 did this for the Developer shell
-/// (`configure_shell_command` -> `strip_daemon_private_env`); the stdio MCP
-/// spawn was missed, so every installed extension inherited
-/// `BIOROUTER_SERVER__SECRET_KEY` and could read any session through
-/// `GET /sessions/{id}/export`. Reuses the same key predicate so the two paths
-/// can never diverge — `BIOROUTER_PORT` is intentionally preserved.
-fn scrub_daemon_env(
-    mut envs: std::collections::HashMap<String, String>,
-) -> std::collections::HashMap<String, String> {
-    envs.retain(|k, _| !biorouter_sandbox::environment::is_daemon_private_env_key(k));
-    envs
-}
-```
+In `docs/security/privacy-tiers.md` §9.3 A1, replace the two "verified" sentences that assert the
+leak is live with the measurement above, and rewrite the fix list. Keep the finding — the *reasoning*
+about why an environment-carried secret defeats Gates B and D is correct and load-bearing for Task 29
+— but state its status:
 
-and at the spawn (`:748-750`), change
-
-```rust
-        command.args(args).envs(all_envs);
-```
-
-to
-
-```rust
-        command.args(args).envs(scrub_daemon_env(all_envs));
-```
-
-If `is_daemon_private_env_key` is not `pub`, make it `pub` in
-`crates/biorouter-sandbox/src/environment.rs` in the same commit; do **not** re-implement the key
-list here.
+> **Closed for the tool-process paths (2026-07).** `strip_daemon_private_env`
+> (`crates/biorouter-sandbox/src/environment.rs:54`) removes BioRouter's daemon-private variables
+> from every child spawned on an agent's behalf, both the inherited copies and any the extension's
+> own manifest explicitly declares. It is invoked last inside `prepare_child_environment`
+> (`extension_manager.rs:399`), which every stdio and inline-python extension spawn reaches through
+> `child_process_client`, and inside `configure_shell_command` (`developer/shell.rs:368`), which is
+> the Developer server's `shell`. Landed in `b249a203` and `8e7407fe` (issue #57). Fix (1) below is
+> therefore **done**, and pinned by `daemon_secret_never_reaches_an_extension_child`
+> (`extension_manager.rs:3169`).
+>
+> Fixes (2) and (3) remain open. (2) — stop carrying the secret in the environment at all — is
+> unaddressed and is the reason this finding is not simply deleted: the strip is a filter, and a
+> filter is only as good as its key list. (3) — bind declassification to a one-shot capability token
+> rather than to `X-Secret-Key` — is [Open question 13](privacy-tiers-execution-plan.md#open-questions)
+> and is why Task 29's R9 property is "only a human *through the GUI*", not "only a human".
 
 - [ ] **Step 4: Run**
 
 ```bash
-cargo test -p biorouter --lib agents::extension_manager
-cargo test -p biorouter-sandbox --lib environment
+cargo test -p biorouter --lib agents::extension_manager 2>&1 | grep "test result:"
+cargo test -p biorouter-sandbox --lib environment 2>&1 | grep "test result:"
+cargo test -p biorouter-mcp --lib developer::shell 2>&1 | grep "test result:"
 ```
 
-Expected: **PASS**. Record the pre-task count for `agents::extension_manager` before Step 3 and
-assert the post-task count is exactly `pre + 1`.
+Record the `agents::extension_manager` pre-count **before** Step 1 with the identical command; the
+post-count must be exactly `pre + 0` — this task adds assertions to an existing test, not a new one.
+A `pre + 1` means the assertion was written as a separate `#[test]` that does not re-invoke the
+probe, and therefore does not exercise the spawn path at all.
 
 - [ ] **Step 5: Gate**
 
 ```bash
-# The one call site exists...
-grep -c "scrub_daemon_env(all_envs)" crates/biorouter/src/agents/extension_manager.rs ; echo "expect: 1"
-# ...and the unscrubbed form is gone.
-grep -c "\.envs(all_envs)" crates/biorouter/src/agents/extension_manager.rs ; echo "expect: 0"
-# The key list is not duplicated — asserted on the HELPER, not on the file.
-awk '/fn scrub_daemon_env/,/^}/' crates/biorouter/src/agents/extension_manager.rs \
-  | grep -c "BIOROUTER_" ; echo "expect: 0 — the helper names no key; it delegates to the predicate"
-awk '/fn scrub_daemon_env/,/^}/' crates/biorouter/src/agents/extension_manager.rs \
-  | grep -c "is_daemon_private_env_key" ; echo "expect: 1"
-# And the file-wide count, which exists only to catch a key literal that escaped
-# the helper into the spawn itself.
-grep -c "BIOROUTER_SERVER__SECRET_KEY" crates/biorouter/src/agents/extension_manager.rs
-echo "expect: 2 — both in Step 1's test (the env.insert and the assert!), and nowhere else"
+cd /Users/wgu/Desktop/BioRouter-privacy
+# The strip is where it must be: last in prepare_child_environment, on the one
+# path both spawns take. Anchored on the ENCLOSING FUNCTION — a file-wide count
+# would be satisfied by a call anywhere, including inside a test.
+awk '/fn prepare_child_environment/,/^}/' crates/biorouter/src/agents/extension_manager.rs \
+  | grep -c "strip_daemon_private_env" ; echo "expect: 1"
+# STRUCTURAL: there is exactly one place a child transport is built, and the
+# strip runs immediately before it. This is the gate that survives a future
+# third spawn path — the only way this leak can come back.
+grep -c "TokioChildProcess::builder(" crates/biorouter/src/agents/extension_manager.rs
+echo "expect: 1 — a second one is a spawn that may never have seen prepare_child_environment"
+awk '/async fn child_process_client/,/^}/' crates/biorouter/src/agents/extension_manager.rs \
+  | grep -n "prepare_child_environment\|TokioChildProcess::builder(" | head -2
+echo "expect: prepare_child_environment on the SMALLER line number"
+# The key list is not duplicated: nothing outside biorouter-sandbox names a
+# daemon-private key in PRODUCTION code. PRINT the hits with line numbers and
+# compare them against the `#[cfg(test)]` boundary rather than counting: a bare
+# count is exactly the fragile shape that made the first version of this gate
+# wrong. Measured today: 2 hits, at :3148 (run_extension_leak_probe's .env) and
+# :3178 (the CANARY assertion), both far below the tests boundary at :1832.
+grep -n "BIOROUTER_SERVER__SECRET_KEY\|BIOROUTER_ACP_WS_TOKEN" \
+  crates/biorouter/src/agents/extension_manager.rs
+grep -n "#\[cfg(test)\]" crates/biorouter/src/agents/extension_manager.rs | tail -1
+echo "expect: 4 hits after this task (the 2 above, plus the 2 new keys in the declared map),"
+echo "  and EVERY hit's line number must be GREATER than the #[cfg(test)] line printed last."
+echo "  The two new assertions match on the VALUES (declared-daemon-secret-9f2c,"
+echo "  declared-acp-token-9f2c), not the key names, so they add no hits here."
+echo "  A hit ABOVE the boundary is a re-implemented key list in production code."
+# And no second scrubber was invented. `scrub_daemon_env` was the first version
+# of this task's own proposal; it must not exist, and neither must a hand-rolled
+# env_remove of a DAEMON-PRIVATE key.
+# ⚠ Match the two daemon-private prefixes exactly, not `"BIOROUTER`: there is a
+# legitimate pre-existing `.env_remove("BIOROUTERD_BIN")` at
+# crates/biorouter-mcp/src/agent_drafter/render.rs:1596 (an exported app's
+# launcher path, not a credential), and a broader pattern reads red on a correct
+# implementation. Measured with the pattern below: 0 today.
+grep -rnE 'fn scrub_daemon_env|\.env_remove\("BIOROUTER_(SERVER__|ACP_)' --include='*.rs' crates/
+echo "expect: no output — the one predicate lives in biorouter-sandbox and is shared"
+# The design no longer asserts a closed leak is open.
+grep -c "Closed for the tool-process paths" docs/security/privacy-tiers.md ; echo "expect: 1"
+grep -c "build_shell_command" docs/security/privacy-tiers.md ; echo "expect: 0 (Task 1 removed it)"
 ```
 
-⚠ **`expect: 1 (the test only)` was wrong** and would have failed a correct implementation: Step 1's
-test names the key **twice**, once in `env.insert(..)` and once in
-`assert!(!scrubbed.contains_key(..))`. Counting occurrences of a literal in a whole file is exactly
-the fragile shape this plan warns about elsewhere; the two `awk` gates above are the ones that
-actually express "the key list is not duplicated", because they are scoped to the helper. Keep the
-file-wide count as a tripwire, not as the gate, and update its expected number if you add or remove
-an assertion in the test.
-
-**What this catches.** The wrong implementation writes `.env_remove("BIOROUTER_SERVER__SECRET_KEY")`
-on the `Command`, which (a) misses `BIOROUTER_ACP_WS_TOKEN` and every future key and (b) leaves a
-second copy of the key list that will drift from `biorouter-sandbox`'s. The two helper-scoped `awk`
-gates are what catch it: an inline key list puts a `BIOROUTER_` literal inside `scrub_daemon_env`,
-and delegating to the shared predicate is the only way to score 0/1. A test asserting only "the
-secret is absent" passes the `.env_remove` version.
+**What this catches.** Three things, none of which is "the leak". (1) A worker who takes the first
+version of this task at face value and adds `scrub_daemon_env` at the *narrower* layer: the tree
+then strips twice, at two layers, with two key lists — and the second one drifts. The
+`fn scrub_daemon_env` zero-count forbids it by name. (2) A worker who "corrects the design" by
+deleting §9.3 A1 outright, losing fixes (2) and (3) — which are open, and (3) of which is the reason
+R9 is scoped to the GUI. The positive count on the new status paragraph is what keeps the finding
+alive. (3) The real future regression: a third extension spawn that builds its own
+`TokioChildProcess` and never reaches `prepare_child_environment`. Nothing in the tree catches that
+today, and no behavioural test can — the leaking path would not exist yet. The two structural greps
+are the whole reason this task is not simply deleted.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add crates/biorouter/src/agents/extension_manager.rs crates/biorouter-sandbox/src/environment.rs
-git commit -m "fix(extensions): strip daemon credentials from the stdio MCP spawn (#56, completes #57)"
+git add crates/biorouter/src/agents/extension_manager.rs docs/security/privacy-tiers.md
+git commit -m "test(extensions): pin the declared-key half of the daemon-secret strip, and correct A1's status (#56, #57)"
 ```
 
 ---
@@ -763,13 +1031,28 @@ cargo fmt --check && ./scripts/clippy-lint.sh
 
 - [ ] **Step 3: The credential is genuinely off the child's environment (manual, once)**
 
+⚠ **"Before this task it is 1" was false**, and the whole point of running this by hand is to see
+that for yourself. `strip_daemon_private_env` landed in `b249a203`/`8e7407fe`, both ancestors of the
+fork point, so the count is **0 before Task 2 and 0 after it** — a bare zero-count here proves
+nothing at all. The check below is therefore a **paired** one: the daemon's key must be absent *and*
+the extension's own declared credential must be present, on the same probe run. Only the pair
+distinguishes "the strip works" from "the extension never started, or `env_clear()` took everything".
+
 ```bash
 just debug-server &      # BIOROUTER_SERVER__SECRET_KEY=test, port 3000
-# Add a trivial stdio extension whose command prints its own environment, then:
-curl -s -X POST http://127.0.0.1:3000/agent/call_tool -H 'X-Secret-Key: test' \
+# Add a trivial stdio extension whose command is `printenv` and whose manifest
+# declares BOTH an ordinary credential and a daemon-private one:
+#   envs:     { SPOKEAGENT_PASSCODE: "extension-private-ok" }
+#   env_keys: [ "BIOROUTER_SERVER__SECRET_KEY" ]
+ENV=$(curl -s -X POST http://127.0.0.1:3000/agent/call_tool -H 'X-Secret-Key: test' \
   -H 'Content-Type: application/json' \
-  -d '{"session_id":"'"$SID"'","name":"envprobe__printenv","arguments":{}}' | grep -c BIOROUTER_SERVER__SECRET_KEY
-# Expected: 0. Before this task it is 1.
+  -d '{"session_id":"'"$SID"'","name":"envprobe__printenv","arguments":{}}')
+echo "$ENV" | grep -c "BIOROUTER_SERVER__SECRET_KEY" ; echo "expect: 0 — inherited AND declared"
+echo "$ENV" | grep -c "BIOROUTER_ACP_WS_TOKEN"        ; echo "expect: 0"
+echo "$ENV" | grep -c "extension-private-ok"          ; echo "expect: 1 — the child really ran,"
+echo "  and the strip did not take the extension's own credential with it. Without this"
+echo "  positive half, an extension that failed to spawn scores a perfect 0/0 and reads green."
+echo "$ENV" | grep -c "BIOROUTER_PORT"                ; echo "expect: 1 — deliberately preserved"
 ```
 
 - [ ] **Step 4: Commit (no code; record the gate in the PR description)**
@@ -1045,6 +1328,243 @@ git commit -m "feat(privacy): add ProviderTier and SessionClassification, the tw
 
 ---
 
+### Task 4b: Resolve every test filter against a real `--list` (docs only)
+
+**This is the task that closes the plan's largest unclosed risk, and it costs one command.**
+
+Four adversarial passes have now read this plan and every one of them ended with the same sentence:
+*nothing has been compiled or run.* No `cargo`, no `vitest`, no OpenAPI regeneration. The
+consequence is named in
+[Which test filters are validated](#which-test-filters-are-validated-and-which-are-not): every
+`cargo test` filter here was resolved **statically** — file exists, `#[cfg(test)]` present — which
+catches a path that resolves to nothing but **cannot** catch *a test nested differently from the way
+its file suggests*. That is BR-71's single most expensive defect (a filter that prints `0 passed` and
+exits 0), and it is unruled-out for every filter in this plan, **including the ones this plan marks
+green**. The last verifier named an actual `cargo test -- --list` after Task 4 as the one thing that
+would most change its confidence.
+
+Task 4 is the first commit that produces a `privacy::` module, so this is the earliest point at which
+that command can be run. It is docs-only: it changes this file and nothing else.
+
+⚠ **Do this task even if — especially if — the filters look fine.** The two errors this catches are
+both silent: a filter that matches nothing is green, and a filter that matches *more* than intended
+is also green. §[Which test filters are validated](#which-test-filters-are-validated-and-which-are-not)
+already records two modules (`routes::agent`, `routes::session`) whose test blocks are **not** named
+`tests` and which a module-path filter picks up anyway — that is the shape, found by hand, and there
+is no reason to think the hand-search found all of them.
+
+**Files:**
+
+| Action | Path | Anchor |
+|---|---|---|
+| Modify | `docs/security/privacy-tiers-execution-plan.md` | §[Which test filters are validated](#which-test-filters-are-validated-and-which-are-not) `:400-462`, which gains the measured table; and any task whose filter the listing contradicts |
+
+- [ ] **Step 1: List the real module paths, all four packages**
+
+```bash
+cd /Users/wgu/Desktop/BioRouter-privacy
+mkdir -p /tmp/56-filters
+# Five packages, because this plan filters on five. `biorouter-sandbox` is easy to
+# forget — it appears exactly once (Task 2's `--lib environment`).
+for p in biorouter biorouter-server biorouter-mcp biorouter-cli biorouter-sandbox; do
+  cargo test -p "$p" --lib -- --list 2>/dev/null \
+    | sed -n 's/: test$//p' | sort > "/tmp/56-filters/$p.txt"
+  echo "$p: $(wc -l < /tmp/56-filters/$p.txt) tests"
+done
+# The privacy module as the tree actually nests it, verbatim:
+grep '^privacy' /tmp/56-filters/biorouter.txt
+```
+
+⚠ **libtest filters are SUBSTRING matches, not prefix matches** (there is no `--exact` anywhere in
+this plan). `privacy` therefore matches `privacy::tests::…` *and* anything else whose full path
+contains the word. That is not a defect to fix — it is how every gate in this plan will actually
+behave — so the resolution check below matches the same way, and the number it prints is the number
+the task's `pre + N` arithmetic must be built on.
+
+- [ ] **Step 2: Paste the output into the plan**
+
+Replace the placeholder below — in this task, in this file — with the literal `grep '^privacy'`
+output. Three tests exist at this point (Task 4 Step 1 wrote two, Step 5 added a third), so three
+lines are expected; **paste what the command printed, not what this sentence predicts.**
+
+```text
+PASTE HERE (Task 4b Step 1 output, run after Task 4 lands):
+privacy::tests::…
+privacy::tests::…
+privacy::tests::…
+```
+
+⚠ **Everything below in Step 3 was already measured**, against `main` at `89c1f026` on 2026-07-29,
+by running Step 1 verbatim (`89c1f026` differs from this plan's anchor `9558c346` in six
+developer-only files, none of which is a module any filter names). What Step 2 adds is the one thing
+that run could not produce: the `privacy::` paths, which do not exist until Task 4 lands. Everything
+else is a **re-run to confirm**, not a first measurement.
+
+- [ ] **Step 3: Resolve every filter, and correct the ones that disagree — MEASURED**
+
+Every `cargo test -p <pkg> --lib <FILTER>` line in this plan falls into exactly one of two sets, and
+the gate in Step 5 asserts that partition. **42** `(package, filter)` pairs, all of them below.
+
+**Resolves today — 30 pairs, with the pre-count the owning task must build its `pre + N` on:**
+
+| Package | Filter | **Measured** |
+|---|---|---|
+| `biorouter` | `agents::agent` | **21** (`::tests` 14, `::rewrite_basis_tests` 2, `::stall_seam_tests` 5 — *three* modules, none discoverable from the filter) |
+| `biorouter` | `agents::code_execution_extension` | 69 |
+| `biorouter` | `agents::extension_manager` | **37** — ⚠ `::tests` is 33; the filter also catches `agents::extension_manager_extension::tests` (4) by substring |
+| `biorouter` | `agents::extension_manager_extension` | 4 |
+| `biorouter` | `agents::knowledge_tool` | 4 |
+| `biorouter` | `agents::mcp_client` | 12 |
+| `biorouter` | `agents::reply_parts` | 2 |
+| `biorouter` | `agents::subagent_tool` | 16 |
+| `biorouter` | `hooks` | 93 |
+| `biorouter` | `knowledge::conversation_ingest` | 2 |
+| `biorouter` | `providers` | 359 |
+| `biorouter` | `scheduler` | 3 |
+| `biorouter` | `session::session_manager` | 139 |
+| `biorouter-cli` | `commands::knowledge` | 9 |
+| `biorouter-cli` | `session` | 166 |
+| `biorouter-mcp` | `agent_drafter` | 244 |
+| `biorouter-mcp` | `agent_drafter::catalog` | 5 |
+| `biorouter-mcp` | `agent_drafter::validate` | 9 |
+| `biorouter-mcp` | `developer::shell` | 16 |
+| `biorouter-mcp` | `knowledge` | **190** — ⚠ the plan said "~122"; see Task 10A Step 4 |
+| `biorouter-mcp` | `knowledge::macros` | 10 |
+| `biorouter-mcp` | `knowledge::macros::ingest` | 3 |
+| `biorouter-mcp` | `knowledge::server` | 11 |
+| `biorouter-mcp` | `knowledge::service` | 38 |
+| `biorouter-mcp` | `memory` | 12 |
+| `biorouter-sandbox` | `environment` | 1 |
+| `biorouter-server` | `routes::agent` | **8** ✓ confirms the hand-measured figure |
+| `biorouter-server` | `routes::apps` | 90 |
+| `biorouter-server` | `routes::config_management` | 3 |
+| `biorouter-server` | `routes::session` | **20** ✓ confirms the hand-measured figure |
+
+**Deferred — 12 pairs, each with the task that creates it. A filter in neither list is the defect:**
+
+| Package | Filter | Created by | Pre-count today |
+|---|---|---|---|
+| `biorouter` | `privacy` | Task 4 | **0** ✓ |
+| `biorouter` | `privacy::tests` | Task 4 | **0** ✓ |
+| `biorouter` | `providers::tier_tests` | Task 5 | **0** ✓ |
+| `biorouter` | `privacy::extensions` | Task 8 | **0** ✓ |
+| `biorouter` | `agents::chatrecall_extension` | Tasks 10, 17 | **0** ✓ confirms "no `#[cfg(test)]` at all" |
+| `biorouter-mcp` | `knowledge::tier` | Task 10A | **0** ✓ |
+| `biorouter` | `privacy::refusal` | Task 12 | **0** ✓ |
+| `biorouter` | `session::chat_history_search` | Task 17 | **0** ✓ confirms "no `#[cfg(test)]` at all" |
+| `biorouter` | `privacy::alt_provider` | Task 19 | **0** ✓ |
+| `biorouter` | `privacy::visibility` | Task 21 | **0** ✓ |
+| `biorouter` | `every_copy_path_carries_the_tier_and_the_provider` | Task 22 | **0** ✓ — a bare **test name**, not a module; it is in the `--lib -- …` form and is invisible to an audit of only the plain form |
+| `biorouter` | `privacy::declassify` | Task 29 | **0** ✓ |
+
+**What the measurement changed.** Three things, and none of them was catchable by reading:
+
+1. `knowledge::` is **190**, not "~122" (a stale figure inherited from `CLAUDE.md`). Task 10A's
+   `pre + 10` assertion built on 122 would have read a 68-test shortfall as a pass. Corrected in
+   Task 10A Step 4.
+2. `agents::extension_manager::tests` is **33**, not the 27 an earlier draft asserted, and the
+   *filter* reports **37** because libtest substring-matches
+   `agents::extension_manager_extension::tests`. Corrected in Task 10A Step 1's comment.
+3. `agents::agent` spans **three** test modules — `tests`, `rewrite_basis_tests`, `stall_seam_tests`
+   — of which only the first is named `tests`. That is the same shape as `routes::agent` and
+   `routes::session`, which §"Which test filters are validated" found by hand; the pattern is
+   general, and a hand search should not be trusted to have found all of it.
+
+**What it confirmed.** Every "0 today" claim this plan makes: `agents::chatrecall_extension` and
+`session::chat_history_search` really do have no tests, and `routes::agent` = 8 / `routes::session`
+= 20 are exact. No filter in this plan names a path that resolves to *something else* — the failure
+mode that would have been worst — and none is misspelled.
+
+For every filter that resolves, record the pre-count above in its owning task, so the task asserts
+`post == pre + N` rather than "non-zero".
+
+- [ ] **Step 4: Run** — nothing to run beyond Step 1. This task compiles no code and changes no code.
+
+- [ ] **Step 5: Gate**
+
+```bash
+cd /Users/wgu/Desktop/BioRouter-privacy
+PLAN=docs/security/privacy-tiers-execution-plan.md
+# (a) Every `-p <pkg> --lib <FILTER>` in the plan either resolves against that
+#     package's listing, or is in the deferred set with the task that creates it.
+#     A filter in NEITHER set is the BR-71 defect and fails here.
+# The 12 deferred names from Step 3's second table, verbatim. Every one measured 0.
+DEFERRED='privacy|privacy::tests|privacy::extensions|privacy::refusal|privacy::alt_provider|privacy::visibility|privacy::declassify|providers::tier_tests|knowledge::tier|agents::chatrecall_extension|session::chat_history_search|every_copy_path_carries_the_tier_and_the_provider'
+# BOTH spellings. Measured at this revision: 79 occurrences of the plain form
+# `--lib <FILTER>` and 7 of the `--lib -- <NAME> <NAME>` form, deduplicating to
+# 42 (package, filter) pairs. The second pattern is not optional: the first
+# misses it entirely, including the only two mentions of privacy::refusal and
+# privacy::alt_provider anywhere in this plan.
+{ grep -oE 'cargo test -p [a-z-]+ --lib [a-z_]+(::[a-z_]+)*' "$PLAN" \
+    | sed -E 's/cargo test -p ([a-z-]+) --lib /\1 /'
+  grep -oE 'cargo test -p [a-z-]+ --lib -- [a-z_: ]+' "$PLAN" \
+    | sed -E 's/cargo test -p ([a-z-]+) --lib -- /\1 /' \
+    | awk '{ for (i = 2; i <= NF; i++) print $1, $i }'
+} | sort -u > /tmp/56-filters/wanted.txt
+wc -l < /tmp/56-filters/wanted.txt ; echo "expect: 42 (pkg, filter) pairs audited"
+while read -r pkg filter; do
+  # ⚠ `|| n=0`, not `|| echo 0`: `grep -c` PRINTS 0 and EXITS 1 when it matches
+  # nothing, so `$(grep -c … || echo 0)` yields the two-line string "0\n0" and the
+  # `[ "$n" -gt 0 ]` below dies with "integer expression expected" — on every
+  # deferred filter, i.e. exactly the rows this gate exists to classify.
+  n=$(grep -c -- "$filter" "/tmp/56-filters/$pkg.txt" 2>/dev/null) || n=0
+  if [ "$n" -gt 0 ]; then
+    echo "OK      $pkg $filter ($n tests)"
+  elif echo "$filter" | grep -qE "^($DEFERRED)$"; then
+    # Anchored at BOTH ends. Unanchored, `privacy` would excuse any future filter
+    # containing the word — a deferral that never expires.
+    echo "DEFER   $pkg $filter (created by a later task — see Step 3's table)"
+  else
+    echo "MISSING $pkg $filter — names no test in the listing and no task creates it"
+  fi
+done < /tmp/56-filters/wanted.txt > /tmp/56-filters/verdict.txt
+sort /tmp/56-filters/verdict.txt
+grep -c '^MISSING' /tmp/56-filters/verdict.txt ; echo "expect: 0"
+grep -c '^DEFER'   /tmp/56-filters/verdict.txt ; echo "expect: 12 at this task; fewer at Task 20; 0 at Task 40"
+grep -c '^OK'      /tmp/56-filters/verdict.txt ; echo "expect: 30 at this task (Step 3's first table)"
+echo "⚠ The COUNT is the gate, never the exit code — the same rule as every named"
+echo "  cargo filter in this plan. And the loop reads from a file rather than a pipe"
+echo "  precisely so a verdict cannot be lost in a subshell."
+echo "A single MISSING line fails this gate. Do not 'fix' it by deleting the filter:"
+echo "  either the module path is wrong (correct it here) or the task's tests do not"
+echo "  exist yet (record a pre-count of 0 in that task, as Task 2 and Task 6 do)."
+# (b) Every DEFERRED entry is a module this plan actually creates. A deferred
+#     entry nothing creates is a filter that stays green forever.
+for f in privacy/extensions.rs privacy/refusal.rs privacy/alt_provider.rs \
+         privacy/visibility.rs privacy/declassify.rs; do
+  echo -n "crates/biorouter/src/$f: " ; grep -c "crates/biorouter/src/$f" "$PLAN"
+done
+echo -n "crates/biorouter-mcp/src/knowledge/tier.rs: "
+grep -c "crates/biorouter-mcp/src/knowledge/tier.rs" "$PLAN"
+echo "expect: >= 1 each — every deferred module has a Create row in this plan"
+echo "  (File structure, and the owning task's Files table)"
+# (c) Re-runnable, and the phase gates re-run it: after Task 20 the DEFERRED set
+#     must have lost knowledge::tier, privacy::extensions and privacy::refusal;
+#     after Task 40 it must be EMPTY.
+```
+
+**What this catches.** The one defect class no amount of reading closes: a filter that names a module
+by a nesting its file does not advertise, which libtest answers with `0 passed` and exit 0 — reported
+by every phase gate in this plan as a pass. It also catches the inverse, which nobody has looked for:
+a filter that resolves to *more* tests than the task believes, so a `pre + N` assertion is arithmetic
+on the wrong base. Both are invisible to `grep`, and both are one `--list` away from being visible.
+
+⚠ **This task does not close the risk for the twelve deferred filters** — they name modules and one
+test that do not exist yet and cannot be listed. It converts "unruled-out for all 42" into
+"unruled-out for 12, each owned by a named task", which is a different order of risk: **30 of 42
+pairs are now measured**, every "0 today" claim in this plan is confirmed, and two wrong pre-counts
+were found and corrected. Task 20's Step 4b and Task 40's Step 2b re-run Step 5 with a shrunk and
+then an **empty** `DEFERRED` set, which is what finishes the job.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add docs/security/privacy-tiers-execution-plan.md
+git commit -m "docs(privacy): resolve every test filter against a real cargo --list (#56)"
+```
+
+---
+
 ### Task 5: `Provider::tier()`, the private set, and the two demotion rules
 
 **Files:**
@@ -1243,29 +1763,53 @@ Expected: **PASS**. `openapi.json` gains `tier` on `ProviderMetadata`; commit th
 - [ ] **Step 5: Gate**
 
 ```bash
-# The tier is never keyed on a name in the enforcement path.
+# The tier is never keyed on a name in the enforcement path. `-v '_test'` filters
+# the PATH, and `tier_tests.rs` is the only file this task adds whose path
+# carries it — a `mod tests` INSIDE a provider file is not excluded and must not
+# name a private-provider list either.
 grep -rn 'PRIVATE_PROVIDERS' crates/biorouter/src/providers/ | grep -v '_test' ; echo "expect: no output"
-# The two renderer Sets are gone, and nothing reintroduces them.
-grep -c "new Set(\['versa_azure'" ui/desktop/src/components/settings/providers/providerOrdering.ts ; echo "expect: 0"
-grep -c "new Set(\['llamacpp'" ui/desktop/src/components/settings/providers/providerOrdering.ts ; echo "expect: 0"
-# Six tier() implementations, and the gate ENUMERATES them rather than counting:
-# one trait default plus five overrides. A bare count invites "fixing" a
-# mismatch by deleting an override, which is the one direction that leaks.
-grep -rln "fn tier(&self)" crates/biorouter/src/providers/ | sort
-# expect exactly these six, no more and no fewer:
-#   crates/biorouter/src/providers/base.rs          (the trait default = Public)
-#   crates/biorouter/src/providers/lead_worker.rs   (least of its two halves)
-#   crates/biorouter/src/providers/llamacpp.rs      (loopback-only)
-#   crates/biorouter/src/providers/ollama.rs        (loopback-only)
-#   crates/biorouter/src/providers/versa_azure.rs   (UCSF-gateway-host-only)
-#   crates/biorouter/src/providers/versa_bedrock.rs (UCSF-gateway-host-only)
-grep -rn "fn tier(&self)" crates/biorouter/src/providers/ | wc -l ; echo "expect: 6"
+# The two renderer Sets are gone, and nothing reintroduces them. Match the CONST
+# NAMES, not the first element: the sets are
+# `const INSTITUTIONAL = new Set(['versa_azure', 'versa_bedrock']);` (:4) and
+# `const LOCAL = new Set(['llamacpp', 'ollama']);` (:5), so a gate anchored on
+# `new Set(['versa_azure'` scores 0 the moment someone reorders the members while
+# leaving the hardcoded list fully intact. Measured today: 1 and 1.
+grep -cE "^const (INSTITUTIONAL|LOCAL) = new Set\(" \
+  ui/desktop/src/components/settings/providers/providerOrdering.ts ; echo "expect: 0 (2 today)"
+grep -cE "new Set\(\[[^]]*'(versa_azure|versa_bedrock|llamacpp|ollama)'" \
+  ui/desktop/src/components/settings/providers/providerOrdering.ts
+echo "expect: 0 — any Set literal naming a provider, in any member order"
+# ...and the grouping is derived from the tier the API now returns.
+grep -c "\.tier" ui/desktop/src/components/settings/providers/providerOrdering.ts ; echo "expect: >= 1"
+# ⚠ PRIORITY_ORDER (:7-19) also name-keys versa_azure/versa_bedrock/llamacpp/ollama
+# and is DELIBERATELY left alone: it is display order WITHIN a group, not a tier,
+# and deleting it silently reshuffles the provider grid. Do not "finish the job".
+grep -c "PRIORITY_ORDER" ui/desktop/src/components/settings/providers/providerOrdering.ts
+echo "expect: >= 2 — still defined and still used"
+# Six tier() implementations. ENUMERATED, never counted: a bare `| wc -l` is
+# satisfied by deleting versa_bedrock's override and adding one to anthropic.rs,
+# which is precisely the direction that leaks. `diff` against the expected list
+# makes the gate name the file that moved.
+diff <(grep -rl "fn tier(&self)" crates/biorouter/src/providers/ | sort) <(cat <<'EOF'
+crates/biorouter/src/providers/base.rs
+crates/biorouter/src/providers/lead_worker.rs
+crates/biorouter/src/providers/llamacpp.rs
+crates/biorouter/src/providers/ollama.rs
+crates/biorouter/src/providers/versa_azure.rs
+crates/biorouter/src/providers/versa_bedrock.rs
+EOF
+) && echo "OK: exactly the six expected files"
+# expect: no diff output, then "OK". base.rs is the trait DEFAULT (= Public);
+# lead_worker is `least` of its two halves; llamacpp/ollama are loopback-only;
+# the two versa_* are UCSF-gateway-host-only. Measured today: 0 files.
 ```
 
-⚠ **`expect: 5` was wrong** in the first version of this plan and would have failed a correct
-implementation: the trait default in `base.rs` matches `fn tier(&self)` too, so one default plus five
-overrides is **6**. Verified 0 in the tree today, so there is no pre-existing offset absorbing the
-difference. The file enumeration above is the real gate; the count is the tripwire.
+⚠ **`grep -rn "fn tier(&self)" … | wc -l ; expect: 6` was a counted gate**, and a count cannot
+express what this task needs. `expect: 5` was wrong in the first version (the trait default in
+`base.rs` matches too, so it is 6) and the fix round corrected the *number* without removing the
+*shape*: 6 is still reachable by deleting `versa_bedrock`'s override and adding an override to
+`anthropic.rs`, which is a leak that reads green. The `diff` above is the gate; there is no tripwire
+count, because a tripwire that a wrong implementation satisfies is worse than none.
 
 **What this catches.** Two wrong implementations at once. (1) A `PRIVATE_PROVIDERS: &[&str]` lookup
 on `get_name()` — the obvious reading of "the list that already exists, moved from the renderer to
@@ -1996,10 +2540,29 @@ cargo test -p biorouter --lib agents::extension_manager
 # The badge is on the record, not the config: ExtensionConfig gained no field,
 # so the OpenAPI schema for it is byte-identical.
 just generate-openapi && git diff --exit-code ui/desktop/openapi.json ; echo "expect: exit 0"
-# Exactly one function decides an extension's tier.
-grep -rn --include='*.rs' "PRIVATE_EXTENSIONS" crates/ | grep -v registry_private.rs | grep -v _test
-# expect: exactly 1 hit, in privacy/extensions.rs
-# The three admission points each stamp it.
+# Exactly one function decides an extension's tier. ⚠ `grep -v _test` filters
+# the PATH and excludes nothing that matters — this repo's Rust tests live in
+# `#[cfg(test)] mod` blocks INSIDE the file they test, so a legitimate assertion
+# in privacy/extensions.rs's own test module would be a second hit and read red.
+# PRINT the hits and require the CONSUMER to be one function instead.
+grep -rn --include='*.rs' "PRIVATE_EXTENSIONS" crates/ | grep -v "registry_private.rs"
+echo "expect: all hits in crates/biorouter/src/privacy/extensions.rs and nowhere else."
+awk '/pub fn classify_extension/,/^}/' crates/biorouter/src/privacy/extensions.rs \
+  | grep -c "PRIVATE_EXTENSIONS" ; echo "expect: 1 — the one consumer, in the one function"
+awk '/pub fn classify_extension/,/^}/' crates/biorouter/src/privacy/extensions.rs | wc -l
+echo "expect: > 1 — a zero here means the fn is named something else and the"
+echo "  count above is a vacuous pass over an empty awk range"
+# The three admission points each stamp it, one apiece — a bare 3 is also
+# satisfied by three calls in add_extension and none in the other two.
+# Note `[(<]`, and the braces around the variable: `add_inprocess_server` is
+# GENERIC (`pub async fn add_inprocess_server<S>(…)`, :901), so a pattern ending
+# in `\(` never matches it and the range is empty — a silent 0 that reads as a
+# pass. Measured spans with this pattern: 204, 14, 57.
+for fn in add_extension add_client add_inprocess_server; do
+  echo -n "$fn: "
+  awk "/pub async fn ${fn}[(<]/,/^    }/" crates/biorouter/src/agents/extension_manager.rs \
+    | grep -c "classify_extension("
+done ; echo "expect: 1 each"
 grep -c "classify_extension(" crates/biorouter/src/agents/extension_manager.rs ; echo "expect: 3"
 ```
 
@@ -2034,9 +2597,12 @@ cd ui/desktop && npx tsc --noEmit && npm run lint:check
 
 ```bash
 # Both directions, against real databases built by the real ladder.
+# ⚠ Assert the count: two OR'd names that BOTH resolve to nothing print
+# `0 passed` and exit 0, which reads exactly like success.
 cargo test -p biorouter --lib -- \
   the_reconcile_adds_the_columns_even_when_the_version_says_it_already_ran \
-  a_fresh_database_defaults_every_session_public
+  a_fresh_database_defaults_every_session_public \
+  | grep "test result:" ; echo "expect: 2 passed; 0 failed"
 # Then, by hand, against a copy of the operator's live DB:
 cp ~/.local/share/biorouter/sessions/sessions.db /tmp/p1-check.db
 sqlite3 /tmp/p1-check.db "select max(version) from schema_version;"   # expect 16
@@ -2064,12 +2630,14 @@ grep -rn --include='*.rs' "visible_to(" crates/ | grep -v "privacy/mod.rs" ; ech
 
 # Phase 2 — the gates
 
-Fourteen tasks — eleven numbered plus **10A, 10B and 10C**. The design names five gates; this phase
-ships **ten**, because adversarial review of the tree found five live paths the five do not cover
-(Tasks 11, 18 and 19) and the second review round added the knowledge-base barrier under an operator
-ruling (Tasks 10A–10C; see [Accepted risks](#accepted-risks)). Order inside the phase is O8 (the two
-fully-open reads first), then O12 (the KB tier, its ratchet, its barrier), then O3/O4 (bind, then
-turn), then the extension gates.
+Fifteen tasks — eleven numbered plus **10A, 10B, 10C and 10D**. The design names five gates; this
+phase ships **ten**, because adversarial review of the tree found five live paths the five do not
+cover (Tasks 11, 18 and 19) and the second review round added the knowledge-base barrier under an
+operator ruling (Tasks 10A–10D; see [Accepted risks](#accepted-risks)). Order inside the phase is O8
+(the two fully-open reads first), then O12 (the KB tier, its ratchet, its barrier, its metadata
+scope), then O3/O4 (bind, then turn), then the extension gates. O13 applies throughout: Tasks 10B,
+10C, 10D and 11 each verify `cargo check --workspace --all-targets` before committing, because this
+is the stretch where an earlier draft left nine consecutive commits red.
 
 ### Task 10: The chatrecall LOAD guard, and `ExtensionManager::capability_tier()`
 
@@ -2216,11 +2784,24 @@ task creates the module. Assert `3 passed`, not "no failures".
 - [ ] **Step 5: Gate**
 
 ```bash
-# The guard precedes the header construction, not follows it.
-awk '/fn handle_chatrecall/,/fn [a-z_]+\(.*SEARCH/' \
+# The guard precedes the header construction, not follows it. The range is
+# LOAD MODE only: both delimiters are real comments in the file
+# (`// LOAD MODE: Get session summary` at :91, `// SEARCH MODE: Search across all
+# sessions` at :161), and the span is 71 lines containing exactly ONE
+# "Working Dir:" — SEARCH has its own at :214 and must not be in the window.
+awk '/\/\/ LOAD MODE:/,/\/\/ SEARCH MODE:/' \
   crates/biorouter/src/agents/chatrecall_extension.rs \
-  | grep -n "visible_to\|Working Dir:" | head -4
-# Expected: the `visible_to` line comes BEFORE the "Working Dir:" line.
+  | grep -n "visible_to\|Working Dir:"
+# Expected: exactly TWO lines, `visible_to` on the SMALLER line number.
+# THREE lines means the range leaked into SEARCH; ONE means the guard is not in
+# LOAD at all.
+#
+# ⚠ The first version of this gate ranged `/fn handle_chatrecall/,/fn [a-z_]+\(.*SEARCH/`.
+# The END pattern occurs NOWHERE in the file (measured: 0), so awk ran the range
+# from :78 to EOF — 242 of the file's 319 lines, including the SEARCH builder and
+# the test module Step 1 adds. It caught the target bug by luck and would have
+# started printing a third and fourth line the moment anything else in the file
+# mentioned a working directory.
 # The refusal is constant and target-free.
 grep -c "loaded_session.name" crates/biorouter/src/agents/chatrecall_extension.rs ; echo "expect: 1 (the header only)"
 ```
@@ -2262,20 +2843,157 @@ with `kb_search`. That is the whole laundering path, and it needs no bug.
 This task adds the tier and nothing enforces it — the same Phase-1-style separation O1 uses, for the
 same reason: Task 10C is then one branch over an already-tested lookup.
 
+---
+
+#### ⚠ Read this first: where the barrier goes, and why it is **not** the tool layer
+
+The previous version of Tasks 10A–10C gated **sixteen enumerated `kb_*` tool call sites**. That
+design was taken apart by verification and does not survive. Its four independent failures, each
+measured against the tree:
+
+1. **The enumeration was incomplete, and could not be completed by enumerating harder.** Four whole
+   surfaces reach knowledge-base content without passing through a single one of the sixteen:
+   `agent_drafter`'s `export_app` (`agent_drafter/mod.rs:1419-1429` → `svc.export_brkb(kb)`, with
+   the ids taken from the **model-supplied** `include.knowledge_bases`, `:1397`), the app socket's
+   `run_kb_read` (`routes/apps.rs:2376-2422`, which calls `store::search` / `svc.read_page` /
+   `svc.get_graph` / `svc.list_history` **directly, never through `KnowledgeServer`**), that
+   socket's `ingest` arm (`routes/apps.rs:2533`, `svc.add_raw_source`), and `KbToolDispatch`
+   (`knowledge/subagent/kb_tools.rs:31-130`), a **second full KB tool surface** the macros' sub-agent
+   drives straight into `store::*`.
+2. **Six of the sixteen were unimplementable.** Nine of the nineteen `kb_*` tools take **no
+   `RequestContext`** — `kb_create_base` `:357`, `kb_write_page` `:409`, `kb_add_raw_source` `:454`,
+   `kb_restore_state` `:509`, `kb_begin_txn` `:527`, `kb_commit_txn` `:543`, `kb_abort_txn` `:562`,
+   `kb_append_log` `:650`, `kb_export` `:737` — so they cannot learn the caller's capability at all.
+   And `kb_import` takes `ImportArchiveParams { src_path }` (`server.rs:46-49`): **no `kb_id` exists**
+   until `import_brkb` returns (`:771`), so a pre-write check has no subject.
+3. **The ruling was not actually enforced.** `conversation_ingest::ingest_conversation` runs the
+   ingest macro's sub-agent, which writes through `KbToolDispatch` → `store::write_page` /
+   `svc.add_raw_source`. None of those was a raise site, so Task 11's headline test
+   `ingesting_your_own_private_conversation_ratchets_the_knowledge_base` failed while every per-file
+   gate reported green.
+4. **Two of the sixteen encoded a regression.** `kb_create_base` and `kb_import` name a base that
+   **does not exist yet**, and this task's own rule reads "no entry ⇒ private" — so a public session
+   could never create or import a knowledge base.
+
+Sixteen call sites becoming twenty-plus, six of them unbuildable, is the signature of gating at the
+wrong layer. So the real question was asked and answered against the tree.
+
+**A choke point exists.** Four of them, and together they cover every read and every write by
+construction. Each was verified, not assumed:
+
+| # | Choke point | Anchor | What it covers |
+|---|---|---|---|
+| CP1 | `<KnowledgeServer as ServerHandler>::call_tool` | today generated by `#[tool_handler(router = self.tool_router)]`, `server.rs:776-777` | **all nineteen** `kb_*` tools, including the nine that take no `RequestContext` — and the twentieth, the day it is written |
+| CP2 | `macros::ingest::ingest` `:47`, `macros::query::query` `:46`, `macros::lint::lint` `:217` | each opens `let _lock = svc.lock_kb(&args.kb_id).await?;` then `let kb_root = paths::kb_root(..)` | the four HTTP macro routes, `conversation_ingest` and its three callers, `bin/knowledge_ingest_probe.rs`, and the **whole `KbToolDispatch` sub-agent surface** |
+| CP3 | `routes/apps.rs::handle_kb_frame` `:2474` | the single funnel its three call sites (`:3288`, `:3513`, `:3847`) share, immediately after `resolve_kb_grant` `:2268` resolves the id | `run_kb_read` `:2376` (search / page / graph / history) **and** the `ingest` arm `:2533` |
+| CP4 | `agent_drafter::stage_full_payload` `:1390` | one caller (`export_app`, `:2790`); `knowledge_service_for_export` `:1274` also has exactly one caller | `export_app`'s `svc.export_brkb(kb)` `:1423` — the drafter's only door to the knowledge **content** store |
+| CP5 | `agent_drafter::catalog::Catalog::discover` `:69` (Task 10D) | 6 production callers, measured (`agent_drafter/mod.rs:1090` `:2071` `:2202` `:2511` `:2627`, `routes/apps.rs:772`) | the base **id and name** — `list_platform_catalog`, the three `validate::check_*` rejection strings, `capability_report`. CP1–CP4 are blind to it by construction: it returns metadata and touches no content, so neither new-surface detector's pattern names it |
+
+**Why CP1 is a real seam and not a wish.** `#[tool_handler]` is not magic: `rmcp-macros-0.14.0`'s
+`src/tool_handler.rs:25-63` appends exactly two methods to the `impl`, and `call_tool` is verbatim
+
+```rust
+async fn call_tool(
+    &self,
+    request: rmcp::model::CallToolRequestParams,
+    context: rmcp::service::RequestContext<rmcp::RoleServer>,
+) -> Result<rmcp::model::CallToolResult, rmcp::ErrorData> {
+    let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
+    self.tool_router.call(tcc).await
+}
+```
+
+`ToolCallContext::new` is `pub` (`rmcp-0.14.0/src/handler/server/tool.rs:40`) and `ToolRouter::call`
+is `pub async fn` (`.../router/tool.rs:240`), so **hand-writing that body is a drop-in**, not a fork.
+The handler receives the `RequestContext` for *every* tool — the individual `#[tool]` fn's signature
+is irrelevant to it — and `request.arguments: Option<JsonObject>` (`rmcp-0.14.0/src/model.rs:1898`)
+carries the `kb_id` before any tool body runs. That is the whole of failure (2), dissolved. The
+channel itself is already proven in this file: `session_id_from_context` (`:222-224`) reads
+`context.meta.0`, and that is the same `context`.
+
+**Why not the three layers the brief proposed.** Each was measured and each fails:
+
+- **`KnowledgeService` is not a choke point.** Nineteen sites call `store::list_pages` / `read_page`
+  / `write_page` / `search` / `search_with_scope` **around** it — including `routes/apps.rs:2394`
+  and all four content ops in `kb_tools.rs`. Making it one means first re-routing those through
+  service methods that do not exist (there is no service equivalent of `search_with_scope` with a
+  `SearchScope`), which is a behaviour-changing refactor inside a security task.
+- **`store::` cannot carry the question.** Every function there takes `kb_root: &Path`
+  (`store.rs:36`, `:82`, `:94`, `:224`, `:228`) — a resolved directory, with no kb id and no caller.
+  It is downstream of the decision, not the place to make it.
+- **`paths::kb_root` (`paths.rs:47-49`) genuinely is the universal resolver** — 44 call sites, and
+  every service method that touches content opens with `let kb_root = paths::kb_root(&self.root,
+  id);` — but it cannot be the gate, for three reasons. It returns `PathBuf`, not `Result`, so
+  refusing there changes all 44 sites. It is a free function with no caller channel, and it cannot
+  be given an ambient one: built-in MCP servers are served by a task `tokio::spawn`ed at extension
+  init (`spawn_and_serve`, `crates/biorouter-mcp/src/lib.rs:60`, over a `DuplexStream` pair), so a
+  `tokio::task_local` set in `dispatch_tool_call` **cannot** reach `KnowledgeServer` — the only
+  channel across that seam is the request meta, which lands at `call_tool`. And fatally, `kb_root`
+  also serves the surfaces this plan deliberately does **not** gate (the Knowledge view's HTTP
+  reads, the CLI, `soul.rs`, `reset.rs`), so a check there would have to permit whenever the caller
+  is unknown — inverting the fail direction for exactly the callers that matter.
+
+#### Coverage self-review — every knowledge-base surface, and what covers it
+
+Stated per surface rather than as a claim about the design, because the two leaks found in the fourth
+adversarial round were both in the gap between "the choke points are right" (they are) and "the
+choke points cover everything" (they do not — they cover everything they were derived over, which was
+**content**). Anyone extending this work should read the last column, not the first.
+
+| Surface | Covered by | How complete, honestly |
+|---|---|---|
+| All 19 `kb_*` MCP tools, and the 20th | **CP1** | **Complete by construction.** `call_tool` receives the `RequestContext` for every tool regardless of the tool's own signature. `every_kb_tool_is_gated_or_listed_as_exempt` (10C) turns a new tool into a test failure. |
+| The three macros' sub-agent (`KbToolDispatch`, 7 tools) | **CP2** | **Complete by construction.** The dispatch is bound to one `kb_id` field at construction (`kb_tools.rs:22-30`) and every arm derives from it, so a new sub-agent tool is covered the day it is written. Note **7**, not the 5 an earlier pass listed — `kb_classify_source` `:122` and `kb_list_pages` `:42` are also there. |
+| The 4 HTTP macro routes, `conversation_ingest` + its 3 callers, `bin/knowledge_ingest_probe.rs` | **CP2** | Complete *today*, and a required `caller_is_private` makes a new caller a compile error. A new macro that does not funnel through `ingest`/`query`/`lint` would not be covered. |
+| The app socket: `run_kb_read` + the `ingest` arm | **CP3** | Complete for the socket, because `handle_kb_frame` is the single funnel its three call sites share. |
+| `export_app` → `export_brkb` | **CP4** | Complete for the drafter's **content** door: `knowledge_service_for_export` has exactly one caller. |
+| A base's **id and name** — `list_platform_catalog`, `validate::check_*` rejection strings, `capability_report` | **CP5** (Task 10D) | **Found in round four, not derived in round three.** CP1–CP4 were derived over content and CP5 was not in the enumeration; both of Task 10C's new-surface detectors are structurally blind to it, because neither pattern names `list_bases`. Task 10D adds a metadata detector. |
+| The no-target/no-primary error id lists — `kb_id_or_primary` `:323-341`, `resolve_target_kb` `:149-159` | **Task 10C** and **Task 11** | Same class as CP5, same blind spot, two more instances. Both were found by sweeping `session_kb_ids` callers by hand; no detector in this plan would have found either. |
+| The 7 `/knowledge/*` GUI **read** routes | **nothing, by decision** | The Knowledge view is the user, not a model (Task 10C's ⚠). [Open question 15](#open-questions) records that the asymmetry is undecided in the UI. |
+| The `/knowledge/*` **write** routes, the CLI's write commands, `soul.rs`, `reset.rs` | **nothing, by decision** | No model is involved; there is no service-level write choke point to hang a raise on (Task 10B's second exclusion list). |
+| Existence of a base, from a *guessed* id (`create_base`'s "already exists", `resolve_target_kb:141`) | **nothing, by decision** | DR-7 puts side channels out of scope. [AR-5](#ar-5--the-existence-of-a-private-knowledge-base-is-still-inferable). |
+| A **future** surface of either kind | **a detector, not a construction** | Task 10C's Step 5 has two content detectors (expect 4 and 4); Task 10D's Step 5 has the metadata one (expect 20 hits / 15 production). All three are counted enumerations that fail when they grow. That is a tripwire, not coverage. |
+
+**What the operator is accepting by taking choke points rather than an enumeration.** Three things,
+stated plainly so no one discovers them later:
+
+- **A new *surface* is still a manual step, and round four is the proof.** CP1 covers any future
+  `kb_*` tool for free, and CP2 covers any future sub-agent macro tool for free. A future way to
+  reach the store that goes round both — a new HTTP route bypassing `KnowledgeServer`, a second
+  in-process server — is not covered by construction. Task 10C's Step 5 gate is written to detect
+  exactly that: it enumerates every `store::*` and `KnowledgeService` content call outside
+  `knowledge/` and fails if a new one appears. **But a detector only sees what its pattern names.**
+  Both content detectors missed `list_platform_catalog` — an *existing* surface, not a future one —
+  because it goes through `list_bases`, which is neither a `store::` call nor a service content call.
+  That is the whole of B1, and it is the reason Task 10D exists and ships a third detector keyed on
+  metadata. Treat the three detectors as three tripwires with three specific tripping conditions, not
+  as a proof of completeness.
+- **CP1 resolves an omitted `kb_id` to the session's primary by calling `primary_kb_for_context`, the
+  same function the tool will call moments later.** Two disk reads, so a concurrent `kb_set_active`
+  between them could in principle have the handler check base A while the tool reads base B. The
+  window is microseconds, it requires the user to move their own pointer mid-call, and the
+  tool-layer design had the identical window. Recorded, not fixed.
+- **The `.kb-tiers` file is machine-local and user-writable.** Deleting it re-runs the migration and
+  reads every base public again. That is the same fail-open direction AR-2 already accepts, and the
+  threat model here is "a public model reads private notes", not "a local attacker with a shell".
+
+---
+
 **Files:**
 
 | Action | Path | Anchor (re-verified at `9558c346`) |
 |---|---|---|
 | Create | `crates/biorouter-mcp/src/knowledge/tier.rs` | new |
-| Modify | `crates/biorouter-mcp/src/knowledge/mod.rs` | the `pub mod` list |
+| Modify | `crates/biorouter-mcp/src/knowledge/mod.rs` | the `pub mod` list, `:1-18` — insert `pub mod tier;` between `store` `:15` and `subagent` `:16` |
 | Modify | `crates/biorouter-mcp/src/knowledge/paths.rs` | add `kb_tiers_path` beside `primary_kb_path` `:62-64`, `primary_kb_sessions_dir` `:69-71`, `hidden_kbs_path` `:73-75`, `hidden_kb_sessions_dir` `:77-79`; `knowledge_root` `:43-45`; `kb_root` `:47-49`; `validate_kb_id` `:3-20` |
-| Modify | `crates/biorouter-mcp/src/knowledge/service.rs` | `KnowledgeService::new` `:404`, `new_default` `:411`, `root()` `:415`; `create_base` `:447`; `import_brkb` `:506`; `list_bases` `:523`; `delete_base` `:657`; `lock_root()` — the existing root-level lock the hidden-list setters take (`set_hidden_persisted` `:1193-1198`) |
-| Modify | `crates/biorouter-mcp/src/knowledge/server.rs` | `SESSION_ID_META_KEY` `:18`; `session_id_from_context` `:222-224`; `session_id` `:226-228`; `KnowledgeServer::new` `:214` |
+| Modify | `crates/biorouter-mcp/src/knowledge/service.rs` | `new` `:404` (best-effort migration); `root()` `:415`; `lock_root()` `:427` and `FileLockGuard::acquire` `:63-78` — **both private to this module**, which is why the lock wrappers live here; `create_base` `:447` (its `let _lock = self.lock_root()?;` is `:448`); `import_brkb` `:506` (lock at `:507`); `delete_base` `:657` (lock at `:658`); the `*_unlocked` convention this follows — 20 helpers, e.g. `set_hidden_path_unlocked` `:293`, `get_primary_persisted_unlocked` `:1123`, `selection_unlocked` `:1469` |
+| Modify | `crates/biorouter-mcp/src/knowledge/server.rs` | `SESSION_ID_META_KEY` `:18`; `session_id_from_context` `:222-224`; `session_id` `:226-228`; `KnowledgeServer::new` `:214` — add the `caller_is_private` reader beside them |
 | Modify | `crates/biorouter/src/agents/mcp_client.rs` | `McpMeta` `:136-144` (two fields today), `McpMeta::new` `:146-152`, `with_progress_token` `:156-159`, `inject_into_extensions` `:161-172` |
 | Modify | `crates/biorouter/src/agents/extension_manager.rs` | the sole production `McpMeta::new(&session_id)` at `:1557`, inside `dispatch_tool_call`'s spawned future (`:1544-1570`) |
 | Reference | `crates/biorouter-mcp/src/knowledge/manifest.rs` | `save` `:17-24` — the tmp-then-`rename` idiom to copy; and the reason the tier does **not** go in `Manifest` (`types.rs:58-66`): the manifest travels inside the `.brkb` archive |
+| Reference | `crates/biorouter-mcp/src/knowledge/brkb.rs` | `import`'s collision loop — `while knowledge_root.join(&id).exists() { suffix += 1; id = format!("{original_id}-{suffix}"); }` — means an import **never** overwrites an existing base; it always lands on a fresh id. That is what makes Task 10B's "stamp after the import" safe |
 
-⚠ **Four design decisions, each with a reason a reviewer will otherwise ask about.**
+⚠ **Five design decisions, each with a reason a reviewer will otherwise ask about.**
 
 1. **A `bool`, not a third enum.** `crates/biorouter-mcp` **cannot** depend on `crates/biorouter` —
    the dependency runs the other way (`extension_manager.rs:1512` uses
@@ -2291,17 +3009,51 @@ same reason: Task 10C is then one branch over an already-tested lookup.
    **attacker-supplied on import** — the exact shape Task 22 refuses for session imports. The
    sidecar sits beside `.active-kb` and `.hidden-kbs`, which are already machine-local, already
    outside every KB's repo, and already excluded from the archive.
-3. **Fail directions, and they differ on purpose** (DR-10's pattern, one module over). Migration →
-   **public** (fail open; AR-2). A kb id with no entry in an *existing* store → **private** (fail
-   closed: a directory that appeared without going through `create_base` or `import_brkb` has
-   unknown provenance). An absent capability meta key → the caller is **Public** (fail closed for
-   reads, which is what Task 10C consumes it for).
+3. **Three fail directions, and they differ on purpose** (DR-10's pattern, one module over).
+   *Migration* → **public** (fail open; AR-2). *A kb id with no entry, in a store that exists, for a
+   directory that does exist on disk* → **private** (fail closed: a base that appeared without
+   going through `create_base` or `import_brkb` has unknown provenance). *A kb id with no directory
+   on disk* → **permit** (there is no content to leak, and refusing here is what banned creation and
+   import for public sessions in the previous draft). *An absent capability meta key* → the caller
+   is **Public** (fail closed for reads, which is what Task 10C consumes it for).
 4. **The capability meta key goes to built-in servers only.** `McpMeta::new` already ships the
    session id to *every* MCP server including third-party stdio ones; the capability tier
    deliberately does not follow that precedent, because "this user is on an institutional model" is
    a fact about the user's configuration and a third-party server has no business learning it. The
    injection is conditioned on `biorouter_mcp::BUILTIN_EXTENSIONS` membership
    (`crates/biorouter-mcp/src/lib.rs:96`, 7 entries).
+5. **`create_base` / `import_brkb` / `delete_base` keep their signatures, and the `_unlocked`
+   convention is why the store does not deadlock.** Two separate corrections to the previous draft:
+
+   *(a) No required `caller_is_private` parameter.* The previous draft made it required on all three
+   "so every call site is a compile error rather than an omission". Measured, that is **~90 edits**:
+
+   | Function | Production call sites | Test call sites |
+   |---|---|---|
+   | `create_base` | 8 — `biorouter-cli/src/commands/knowledge.rs:388`, `:520`; `biorouter-mcp/src/knowledge/server.rs:364`; `biorouter-server/src/routes/knowledge.rs:359`; `biorouter-server/src/routes/reset.rs:123`; `biorouter-server/src/bin/knowledge_ingest_probe.rs:63`; `biorouter/src/agents/knowledge_tool.rs:135`; `biorouter/src/knowledge/soul.rs:76` | **~82** (`service.rs` alone has 30) |
+   | `import_brkb` | 2 — `knowledge/server.rs:771`, `routes/knowledge.rs:1577` | 2 |
+   | `delete_base` | 2 — `routes/knowledge.rs:447`, `routes/reset.rs:121` | 5 |
+
+   Eight security-relevant edits buried in eighty-two mechanical ones is a worse review than no
+   compile error at all, and six of the eight are user surfaces that would all pass `false`.
+   Instead: **`create_base` and `import_brkb` register the new id as PUBLIC**, unconditionally, and
+   the tier is then raised by whichever choke point the creating call came through (Task 10B). A
+   base is born public and privatised in the same call when the creator is private — the same
+   observable behaviour, reached without touching a signature that has ninety callers. The
+   registration is not optional: decision (3) reads an unregistered *existing* directory as private,
+   so a base created from the CLI with no registration would lock the user out of a base they just
+   made.
+
+   *(b) The lock discipline.* The previous draft said "take `KnowledgeService::lock_root()` around
+   every read-modify-write" **and** register from inside `create_base` / `import_brkb` /
+   `delete_base` — all three of which **already hold that lock** (`:448`, `:507`, `:658`).
+   `FileLockGuard::acquire` (`:63-78`) opens a fresh fd and `flock`s it exclusively, so a second
+   acquire in the same process blocks forever: the daemon would hang on the first `kb_create_base`
+   while Step 1's tests, which call the store on a bare root, all passed. Compounding it,
+   `lock_root` (`:427`) and `FileLockGuard` (`:58`) are **private to the `service` module** and a
+   free function in `knowledge::tier` cannot reach them. The tree already has the answer and uses it
+   twenty times: the **`_unlocked` suffix**. So `tier.rs` exposes *only* lock-free functions, and
+   `KnowledgeService` owns the two wrappers that take the lock.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2319,13 +3071,13 @@ fn an_unmigrated_root_migrates_every_existing_base_to_public_exactly_once() {
     let root = tempdir_with_bases(&["default", "omop"]);
     assert!(!tiers_file_exists(&root));
 
-    ensure_migrated(&root).unwrap();
-    assert_eq!(tier_of(&root, "default"), Public);
-    assert_eq!(tier_of(&root, "omop"), Public);
+    ensure_migrated_unlocked(&root).unwrap();
+    assert!(!is_private(&root, "default"));
+    assert!(!is_private(&root, "omop"));
 
-    raise(&root, "omop", /* caller_is_private */ true).unwrap();
-    ensure_migrated(&root).unwrap();                 // second launch
-    assert_eq!(tier_of(&root, "omop"), Private, "the migration re-ran and lowered a tier");
+    raise_unlocked(&root, "omop", /* caller_is_private */ true).unwrap();
+    ensure_migrated_unlocked(&root).unwrap();        // second launch
+    assert!(is_private(&root, "omop"), "the migration re-ran and lowered a tier");
 }
 
 #[test]
@@ -2334,26 +3086,51 @@ fn a_base_that_never_went_through_create_or_import_reads_private() {
     // "unknown". A store that listed only the private ids could not tell them
     // apart, which is why the file is a map and not a list like `.hidden-kbs`.
     let root = tempdir_with_bases(&["default"]);
-    ensure_migrated(&root).unwrap();
+    ensure_migrated_unlocked(&root).unwrap();
     std::fs::create_dir_all(root.join("dropped-in-by-hand")).unwrap();
-    assert_eq!(tier_of(&root, "dropped-in-by-hand"), Private);
-    assert_eq!(tier_of(&root, "default"), Public);
+    assert!(is_private(&root, "dropped-in-by-hand"));
+    assert!(!is_private(&root, "default"));
+}
+
+#[test]
+fn a_base_that_does_not_exist_on_disk_is_reachable_by_anyone() {
+    // Decision (3), third direction — and the bug the sixteen-site enumeration
+    // encoded: `kb_create_base` and `kb_import` name a base that does not exist
+    // yet, so a barrier that reads "no entry ⇒ private" bans a public session
+    // from ever creating or importing one. There is no content to leak from a
+    // directory that is not there.
+    let root = tempdir_with_bases(&["default"]);
+    ensure_migrated_unlocked(&root).unwrap();
+    assert!(!is_private(&root, "not-created-yet"));
+    assert_reachable(&root, "not-created-yet", /* caller_is_private */ false).unwrap();
 }
 
 #[test]
 fn raise_is_monotone_and_registers_an_absent_base_at_the_callers_tier() {
     let root = tempdir_with_bases(&[]);
-    ensure_migrated(&root).unwrap();
+    ensure_migrated_unlocked(&root).unwrap();
 
-    raise(&root, "fresh", false).unwrap();           // created from a public chat
-    assert_eq!(tier_of(&root, "fresh"), Public);
-    raise(&root, "fresh", true).unwrap();            // a private chat writes to it
-    assert_eq!(tier_of(&root, "fresh"), Private);
-    raise(&root, "fresh", false).unwrap();           // and a public chat writes again
-    assert_eq!(tier_of(&root, "fresh"), Private, "a public write lowered the tier");
+    raise_unlocked(&root, "fresh", false).unwrap();  // created from a public chat
+    assert!(!is_private(&root, "fresh"));
+    raise_unlocked(&root, "fresh", true).unwrap();   // a private chat writes to it
+    assert!(is_private(&root, "fresh"));
+    raise_unlocked(&root, "fresh", false).unwrap();  // and a public chat writes again
+    assert!(is_private(&root, "fresh"), "a public write lowered the tier");
 
-    raise(&root, "born-private", true).unwrap();
-    assert_eq!(tier_of(&root, "born-private"), Private);
+    raise_unlocked(&root, "born-private", true).unwrap();
+    assert!(is_private(&root, "born-private"));
+}
+
+#[test]
+fn register_public_never_lowers_an_already_private_base() {
+    // `create_base` registers unconditionally (decision 5a). If that registration
+    // could overwrite, then re-creating a deleted id — or any future caller that
+    // registers twice — would launder a private base to public.
+    let root = tempdir_with_bases(&["omop"]);
+    ensure_migrated_unlocked(&root).unwrap();
+    raise_unlocked(&root, "omop", true).unwrap();
+    register_public_if_absent_unlocked(&root, "omop").unwrap();
+    assert!(is_private(&root, "omop"), "registration lowered a ratcheted base");
 }
 
 #[test]
@@ -2361,11 +3138,11 @@ fn deleting_a_base_forgets_its_tier_so_the_id_can_be_reused() {
     // Otherwise `kb_create_base("omop")` from a public chat, after a private
     // `omop` was deleted, silently inherits Private and the user cannot see why.
     let root = tempdir_with_bases(&["omop"]);
-    ensure_migrated(&root).unwrap();
-    raise(&root, "omop", true).unwrap();
-    forget(&root, "omop").unwrap();
-    raise(&root, "omop", false).unwrap();
-    assert_eq!(tier_of(&root, "omop"), Public);
+    ensure_migrated_unlocked(&root).unwrap();
+    raise_unlocked(&root, "omop", true).unwrap();
+    forget_unlocked(&root, "omop").unwrap();
+    raise_unlocked(&root, "omop", false).unwrap();
+    assert!(!is_private(&root, "omop"));
 }
 
 #[test]
@@ -2373,17 +3150,88 @@ fn the_store_is_written_atomically_and_never_leaves_a_tmp_file() {
     // manifest.rs:17-24's idiom. A torn write here reads as "no entry", which
     // fails CLOSED and locks the user out of their own knowledge base.
     let root = tempdir_with_bases(&["default"]);
-    ensure_migrated(&root).unwrap();
-    raise(&root, "default", true).unwrap();
+    ensure_migrated_unlocked(&root).unwrap();
+    raise_unlocked(&root, "default", true).unwrap();
     let names: Vec<_> = std::fs::read_dir(&root).unwrap()
         .map(|e| e.unwrap().file_name().to_string_lossy().to_string()).collect();
     assert!(names.iter().any(|n| n == ".kb-tiers"));
     assert!(!names.iter().any(|n| n.ends_with(".tmp")));
 }
+
+#[test]
+fn the_refusal_names_no_base_and_no_page() {
+    // One string serves CP1..CP4, so it is asserted once, here.
+    let root = tempdir_with_bases(&["omop"]);
+    ensure_migrated_unlocked(&root).unwrap();
+    raise_unlocked(&root, "omop", true).unwrap();
+    let s = assert_reachable(&root, "omop", false).unwrap_err().to_string();
+    assert!(s.contains("private model"));
+    assert!(!s.contains("omop"), "the refusal named the base: {s}");
+}
 ```
 
 ```rust
-// crates/biorouter/src/agents/mcp_client.rs, in its existing #[cfg(test)] mod tests
+// crates/biorouter-mcp/src/knowledge/service.rs, in its existing #[cfg(test)] mod tests
+
+#[tokio::test]
+async fn registering_a_tier_from_inside_the_root_lock_does_not_deadlock() {
+    // The whole of decision (5b), as a test that TIMES OUT rather than fails if
+    // the `_unlocked` convention is broken — a deadlock does not assert, it
+    // waits. `create_base` holds `lock_root()` at :448; a `tier::raise` that
+    // acquires it again blocks forever and the daemon stops answering on the
+    // very first knowledge call, while every tier.rs unit test still passes
+    // because they call the store on a bare root no service is holding.
+    let d = tempfile::tempdir().unwrap();
+    let svc = KnowledgeService::new(d.path().to_path_buf());
+    let done = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+            svc.create_base("k", "K", None)?;   // registers, inside the lock
+            svc.raise_tier("k", true)?;         // the wrapper: takes the lock itself
+            svc.delete_base("k")                // forgets, inside the lock
+        }),
+    )
+    .await
+    .expect("create_base / raise_tier / delete_base deadlocked on the root lock");
+    done.unwrap().unwrap();
+}
+
+#[test]
+fn a_base_created_by_any_surface_is_registered_public_rather_than_unknown() {
+    // Decision (5a). Without the registration, decision (3) reads a freshly
+    // created base as PRIVATE and Task 10C locks the user out of a base they
+    // just made from the CLI or the Knowledge view.
+    let d = tempfile::tempdir().unwrap();
+    let svc = KnowledgeService::new(d.path().to_path_buf());
+    svc.create_base("k", "K", None).unwrap();
+    assert!(!crate::knowledge::tier::is_private(svc.root(), "k"));
+}
+```
+
+```rust
+// crates/biorouter/src/agents/extension_manager.rs, in its existing #[cfg(test)] mod tests
+// (:1833 — NOT mcp_client.rs's `mod tests` at :891, which holds only
+//  BioRouterClient helpers and none of the ExtensionManager fixtures.)
+//
+// ⚠ MEASURED by Task 4b, not counted by hand: `agents::extension_manager::tests`
+// holds **33** tests, and the FILTER `agents::extension_manager` reports **37**,
+// because libtest matches substrings and `agents::extension_manager_extension::tests`
+// (4) contains it. An earlier draft said "27 tests" here. Assert 37 + N, not 27 + N.
+
+#[tokio::test]
+async fn a_third_party_extension_never_learns_the_capability_tier() {
+    // Decision 4. The session id already goes everywhere; this does not.
+    use biorouter_mcp::knowledge::tier::CAPABILITY_TIER_META_KEY as KEY;
+    let em = manager_with(stdio_ext("some-third-party"), builtin_ext("knowledge")).await;
+    bind_private_provider(&em).await;
+    assert_eq!(meta_seen_by(&em, "some-third-party__ping").await.get(KEY), None);
+    assert_eq!(meta_seen_by(&em, "knowledge__kb_list_bases").await
+                   .get(KEY).and_then(|v| v.as_str()), Some("private"));
+}
+```
+
+```rust
+// crates/biorouter/src/agents/mcp_client.rs, in its existing #[cfg(test)] mod tests (:891)
 
 #[test]
 fn the_capability_tier_rides_the_same_meta_object_as_the_session_id() {
@@ -2393,27 +3241,20 @@ fn the_capability_tier_rides_the_same_meta_object_as_the_session_id() {
     assert_eq!(m.0.get("biorouter-session-id").and_then(|v| v.as_str()), Some("sess-1"));
     assert_eq!(m.0.get("biorouter-capability-tier").and_then(|v| v.as_str()), Some("private"));
 }
-
-#[tokio::test]
-async fn a_third_party_extension_never_learns_the_capability_tier() {
-    // Decision 4. The session id already goes everywhere; this does not.
-    let em = manager_with(stdio_ext("some-third-party"), builtin_ext("knowledge")).await;
-    bind_private_provider(&em).await;
-    assert_eq!(meta_seen_by(&em, "some-third-party__ping").await
-                   .get("biorouter-capability-tier"), None);
-    assert_eq!(meta_seen_by(&em, "knowledge__kb_list_bases").await
-                   .get("biorouter-capability-tier").and_then(|v| v.as_str()), Some("private"));
-}
 ```
 
 - [ ] **Step 2: Run**
 
 ```bash
 cargo test -p biorouter-mcp --lib knowledge::tier
+cargo test -p biorouter-mcp --lib knowledge::service
 cargo test -p biorouter --lib agents::mcp_client
+cargo test -p biorouter --lib agents::extension_manager
 ```
 
-Expected: **COMPILE ERROR** — `unresolved module tier`, and `no method with_capability_private`.
+Expected: **COMPILE ERROR** — `unresolved module tier` (`knowledge::tier` does not exist), `no method
+named raise_tier`, and `no method named with_capability_private`. Not a FAIL: every one of these
+tests names a symbol this task creates.
 
 - [ ] **Step 3: Implement**
 
@@ -2432,29 +3273,58 @@ pub fn kb_tiers_path(root: &std::path::Path) -> std::path::PathBuf {
 }
 ```
 
-(b) `tier.rs` — the whole store, ~90 lines, no I/O outside `root`:
+(b) `tier.rs` — the whole store, ~140 lines, no I/O outside `root`. **Every mutating function is
+`_unlocked`**; nothing here takes a lock, because the only lock that would serve is
+`KnowledgeService::lock_root` (`service.rs:427`) and it is private to that module — decision (5b):
 
 ```rust
 //! The knowledge-base privacy tier (issue #56, design §9.3 B4).
 //!
 //! A knowledge base takes the tier of the most sensitive session that has
-//! ingested into it. This module owns the store and the monotone raise; Task 10B
-//! calls `raise` from every content-bearing write and Task 10C reads `is_private`
-//! at every entry point that names a base.
+//! ingested into it. This module owns the store, the monotone raise and the
+//! refusal; Task 10B calls `raise` from the four choke points and Task 10C
+//! calls `assert_reachable` from the same four.
 //!
 //! A `bool` rather than an enum because `biorouter-mcp` cannot depend on
 //! `biorouter`, where `ProviderTier` lives — see the task's decision (1).
 //! `caller_is_private == true` is exactly `floor(Private) == Private`.
+//!
+//! ## Locking
+//!
+//! Every mutator here is `_unlocked` and takes NO lock. The knowledge root has
+//! exactly one lock, `KnowledgeService::lock_root` (`service.rs:427`), and both
+//! it and `FileLockGuard` (`:58`) are private to the `service` module — a free
+//! function cannot reach them, and `create_base`/`import_brkb`/`delete_base`
+//! are already inside it when they call these (`:448`, `:507`, `:658`). A
+//! second `FileLockGuard::acquire` in the same process blocks forever
+//! (`:63-78` opens a fresh fd and `flock`s exclusively). Callers OUTSIDE the
+//! service use `KnowledgeService::raise_tier` / `forget_tier`, which take the
+//! lock and delegate here. This is the tree's own `_unlocked` convention —
+//! twenty helpers in `service.rs` already follow it.
 
 const SCHEMA: u32 = 1;
+
+/// The meta key the daemon writes the caller's capability into. Defined here,
+/// not in `server.rs`, because `agent_drafter` (CP4) reads the same key and two
+/// spellings of it is exactly how a barrier silently stops working.
+pub const CAPABILITY_TIER_META_KEY: &str = "biorouter-capability-tier";
 
 #[derive(serde::Serialize, serde::Deserialize, Default)]
 struct Store {
     schema: u32,
-    /// kb id -> "public" | "private". An id ABSENT from a store that exists is
-    /// unknown provenance and reads PRIVATE; the whole file being absent means
-    /// the migration has not run yet.
+    /// kb id -> "public" | "private". An id ABSENT from a store that exists,
+    /// for a directory that DOES exist, is unknown provenance and reads
+    /// PRIVATE; the whole file being absent means the migration has not run.
     bases: std::collections::BTreeMap<String, String>,
+}
+
+/// The caller's capability, PUBLIC unless the meta says private.
+///
+/// Absent means one of: an older daemon, a non-built-in transport, or a direct
+/// unit-test construction. All three are "unknown", and unknown must be the
+/// restrictive answer for the reads Task 10C gates.
+pub fn caller_is_private(meta: &rmcp::model::Meta) -> bool {
+    meta.0.get(CAPABILITY_TIER_META_KEY).and_then(|v| v.as_str()) == Some("private")
 }
 
 /// One-time migration. Every base that exists when this first runs becomes
@@ -2462,27 +3332,66 @@ struct Store {
 /// as `ensure_privacy_schema` is guarded by `table_has_column`: re-running it on
 /// every startup would re-add a base whose entry a later `forget` removed, and
 /// would race the ratchet.
-pub fn ensure_migrated(root: &std::path::Path) -> anyhow::Result<()> { … }
+pub fn ensure_migrated_unlocked(root: &std::path::Path) -> anyhow::Result<()> { … }
 
-/// PRIVATE unless the store says otherwise. Fail-closed on: no entry, an
-/// unparseable file, an unreadable file. Each of those logs at `error!` and
-/// paints the base with a badge the user will report on day one — the same
-/// trade `SessionClassification::from_stored` makes for the same reason.
+/// PRIVATE unless the store says otherwise — with one exception that is the
+/// point of decision (3): a kb id with **no directory under `root`** is not
+/// private, because there is nothing there to leak and refusing would ban a
+/// public session from creating or importing a base.
+///
+/// Otherwise fail-closed on: no entry, an unparseable file, an unreadable file.
+/// Each of those logs at `error!` and paints the base with a badge the user will
+/// report on day one — the same trade `SessionClassification::from_stored`
+/// makes for the same reason. Lock-free: the store is only ever replaced by
+/// `rename`, so a reader sees the old file or the new one, never a torn one.
 pub fn is_private(root: &std::path::Path, kb_id: &str) -> bool { … }
+
+/// The single refusal for CP1..CP4. `Ok(())` permits.
+pub fn assert_reachable(
+    root: &std::path::Path,
+    kb_id: &str,
+    caller_is_private: bool,
+) -> anyhow::Result<()> {
+    if caller_is_private || !is_private(root, kb_id) {
+        return Ok(());
+    }
+    anyhow::bail!(KB_PRIVATE_REFUSAL)
+}
 
 /// Monotone. Registers `kb_id` at the caller's tier if absent, raises it to
 /// private if the caller is private, and can never lower it — the file-store
 /// twin of the `privacy_tier = CASE WHEN` fragment in `session_manager.rs`.
-pub fn raise(root: &std::path::Path, kb_id: &str, caller_is_private: bool) -> anyhow::Result<()> { … }
+pub fn raise_unlocked(
+    root: &std::path::Path,
+    kb_id: &str,
+    caller_is_private: bool,
+) -> anyhow::Result<()> { … }
+
+/// Register `kb_id` as PUBLIC **only if it has no entry**. Called by
+/// `create_base` and `import_brkb` (decision 5a): a base with no entry reads
+/// private by decision (3), so an unregistered base would lock its own creator
+/// out. Never lowers — see `register_public_never_lowers_an_already_private_base`.
+pub fn register_public_if_absent_unlocked(
+    root: &std::path::Path,
+    kb_id: &str,
+) -> anyhow::Result<()> { … }
 
 /// Drop the entry when the base is deleted, so a later base reusing the id is
 /// classified by its own creator rather than by a base that no longer exists.
-pub fn forget(root: &std::path::Path, kb_id: &str) -> anyhow::Result<()> { … }
+pub fn forget_unlocked(root: &std::path::Path, kb_id: &str) -> anyhow::Result<()> { … }
+
+/// Names no base, no page and no snippet. Constant, so a model that retries sees
+/// the same string and stops rather than looping (the same rule Task 14's
+/// `privacy_refusal` follows, and for the same reason).
+pub const KB_PRIVATE_REFUSAL: &str = "\
+This knowledge base is private: a session running an institutional or self-hosted model has \
+ingested into it, so only a private model may read or write it. This session is running on a \
+public model. Ask the user to switch this chat to a private model — Settings > Models, or the \
+model chip in the composer — and try again. Do not retry with a different knowledge base id, \
+through an export, or through a raw-source search; the boundary is the same everywhere.";
 ```
 
-Write through the same tmp-then-`rename` idiom as `manifest::save` (`manifest.rs:17-24`), and take
-`KnowledgeService::lock_root()` around every read-modify-write, which is the lock
-`set_hidden_persisted` (`service.rs:1193-1198`) already uses for the sibling sidecar.
+Write through the same tmp-then-`rename` idiom as `manifest::save` (`manifest.rs:17-24`).
 
 ⚠ **Known residual, stated rather than discovered.** `lock_root()` is in-process. Two Biorouter
 processes (the desktop app and a terminal `biorouter`) raising two different bases at the same instant
@@ -2491,18 +3400,65 @@ hazard `set_hidden_persisted`'s own doc comment already documents for `.hidden-k
 work, and closing it needs an OS advisory lock the tree does not have anywhere. Do not silently widen
 the scope to fix it; open a follow-up.
 
-(c) Call `ensure_migrated` from `KnowledgeService::new` (`service.rs:404`), so both `new_default`
-(`:411`) and every test root get it. Then **register** the tier at the two points a base comes into
-existence — `create_base` (`:447`) and `import_brkb` (`:506`) — and **forget** it at `delete_base`
-(`:657`). Registration belongs in the service rather than in the MCP server because both surfaces
-reach it: `kb_create_base` (`server.rs:357`) and `POST /knowledge/bases` (`routes/knowledge.rs:354`)
-call the same function, and a base that exists with no entry reads *private* by decision (3), which
-would lock the user out of a base they just made from the Knowledge view.
+(c) `KnowledgeService` gains the three lock-taking wrappers and calls the `_unlocked` twins from
+inside the three functions that already hold the lock:
 
-All three take `caller_is_private: bool` as a **required** parameter, so every call site is a compile
-error rather than an omission. The two HTTP callers pass `false` — the Knowledge view is the user
-typing, with no model attached — and the two MCP callers pass the meta-derived value from (f). That
-asymmetry is the same one Task 10C draws for reads, and for the same reason.
+```rust
+    /// Take the root lock and raise `kb_id` to the caller's tier.
+    ///
+    /// For callers OUTSIDE this module. Inside it — `create_base` `:447`,
+    /// `import_brkb` `:506`, `delete_base` `:657` — the lock is already held,
+    /// so those call `tier::*_unlocked` directly. Calling this from there
+    /// deadlocks (decision 5b).
+    pub fn raise_tier(&self, kb_id: &str, caller_is_private: bool) -> anyhow::Result<()> {
+        let _lock = self.lock_root()?;
+        crate::knowledge::tier::raise_unlocked(&self.root, kb_id, caller_is_private)
+    }
+
+    pub fn forget_tier(&self, kb_id: &str) -> anyhow::Result<()> {
+        let _lock = self.lock_root()?;
+        crate::knowledge::tier::forget_unlocked(&self.root, kb_id)
+    }
+
+    /// Idempotent, and cheap on the common path: it stats `.kb-tiers` BEFORE
+    /// taking the lock and returns immediately when it exists, so the ~90
+    /// `KnowledgeService::new` calls in the test suite do not each `flock`.
+    fn ensure_tiers_migrated(&self) -> anyhow::Result<()> {
+        if crate::knowledge::paths::kb_tiers_path(&self.root).exists() {
+            return Ok(());
+        }
+        if !self.root.exists() {
+            return Ok(());   // no bases yet; the first create_base registers
+        }
+        let _lock = self.lock_root()?;
+        crate::knowledge::tier::ensure_migrated_unlocked(&self.root)
+    }
+```
+
+with `new` (`:404`) calling it best-effort — `new` returns `Self`, not `Result`, so it cannot `?`:
+
+```rust
+    pub fn new(root: PathBuf) -> Self {
+        let svc = Self { root, locks: Arc::new(DashMap::new()) };
+        // Issue #56. Best-effort: `new` is infallible and a failure here must
+        // not stop the app from opening. A root that never migrates reads every
+        // base PUBLIC (the file is absent ⇒ "not migrated"), which is AR-2's
+        // accepted direction, not a new one.
+        if let Err(e) = svc.ensure_tiers_migrated() {
+            tracing::warn!("knowledge: could not migrate kb tiers: {e:#}");
+        }
+        svc
+    }
+```
+
+and, **inside the existing `let _lock = self.lock_root()?;`**, one line each:
+
+- `create_base` (after the base is on disk and committed, before `Ok(m)`):
+  `crate::knowledge::tier::register_public_if_absent_unlocked(&self.root, id)?;`
+- `import_brkb` (after `registry::register`, on `new_id`):
+  `crate::knowledge::tier::register_public_if_absent_unlocked(&self.root, &new_id)?;`
+- `delete_base` (beside the registry removal):
+  `crate::knowledge::tier::forget_unlocked(&self.root, id)?;`
 
 (d) `McpMeta` gains one optional field and one builder:
 
@@ -2519,9 +3475,12 @@ asymmetry is the same one Task 10C draws for reads, and for the same reason.
 ```
 
 with `with_capability_private(bool)` beside `with_progress_token` (`:156-159`), writing
-`biorouter-capability-tier` = `"private"` / `"public"` into the **same** `Meta` object
-`inject_into_extensions` already builds (`:161-172`) — never `params.meta`, for the wire-collision
-reason the existing comment at `:164-166` gives.
+`"private"` / `"public"` under `biorouter_mcp::knowledge::tier::CAPABILITY_TIER_META_KEY` — the
+const, **not** a second hand-typed copy of the string — into the **same** `Meta` object
+`inject_into_extensions` already builds (`:161-172`), never `params.meta`, for the wire-collision
+reason the existing comment at `:164-166` gives. The literal survives in exactly one test
+(`the_capability_tier_rides_the_same_meta_object_as_the_session_id`), which is where pinning the
+wire format is the point; everything else reads the const.
 
 (e) In `dispatch_tool_call`, at the sole `McpMeta::new(&session_id)` (`:1557`):
 
@@ -2530,8 +3489,8 @@ reason the existing comment at `:164-166` gives.
             if let Some(token) = progress_token {
                 meta = meta.with_progress_token(token);
             }
-            // Issue #56. Built-ins only — see (d). `caller_is_builtin` is
-            // computed OUTSIDE this future, because `capability_tier()` awaits
+            // Issue #56. Built-ins only — see (d). `caller_capability_for_builtin`
+            // is computed OUTSIDE this future, because `capability_tier()` awaits
             // the provider mutex and this block owns no `&self`.
             if let Some(is_private) = caller_capability_for_builtin {
                 meta = meta.with_capability_private(is_private);
@@ -2542,67 +3501,100 @@ with `let caller_capability_for_builtin = if biorouter_mcp::BUILTIN_EXTENSIONS.c
 { Some(self.capability_tier().await.is_private()) } else { None };` resolved **before** the
 `async move` block, beside the tier lookup Task 14 adds at the same seam.
 
-(f) `KnowledgeServer` reads it, mirroring `session_id_from_context` (`:222-228`):
+(f) `KnowledgeServer` reads it through the shared helper, mirroring `session_id_from_context`
+(`:222-228`) — note it *delegates* rather than re-implementing, so CP1 and CP4 cannot drift:
 
 ```rust
-const CAPABILITY_TIER_META_KEY: &str = "biorouter-capability-tier";
-
-/// The caller's capability, PUBLIC unless the meta says private.
-///
-/// Absent means one of: an older daemon, a non-built-in transport, or a direct
-/// unit-test construction. All three are "unknown", and unknown must be the
-/// restrictive answer for the reads Task 10C gates.
-fn caller_is_private(context: Option<&RequestContext<RoleServer>>) -> bool {
-    context
-        .and_then(|c| c.meta.0.get(CAPABILITY_TIER_META_KEY))
-        .and_then(|v| v.as_str())
-        == Some("private")
-}
+    fn caller_is_private(context: Option<&RequestContext<RoleServer>>) -> bool {
+        context
+            .map(|c| crate::knowledge::tier::caller_is_private(&c.meta))
+            .unwrap_or(false)
+    }
 ```
 
 - [ ] **Step 4: Run**
 
 ```bash
 cargo test -p biorouter-mcp --lib knowledge::tier
-cargo test -p biorouter-mcp --lib knowledge::          # ~122 today; assert pre + 5
+cargo test -p biorouter-mcp --lib knowledge::          # 190 today (MEASURED, Task 4b); assert 190 + 10
 cargo test -p biorouter --lib agents::mcp_client
+cargo test -p biorouter --lib agents::extension_manager
 cargo test -p biorouter-server --test knowledge_routes # ~19 today; must be unchanged
+cargo test -p biorouter-cli --lib commands::knowledge  # must be unchanged: no signature moved
 ```
 
 Expected: **PASS**. `knowledge::` is the count that matters — this task adds a module to it, and the
 per-module filter `knowledge::tier` proves the new tests are in the module the filter names rather
-than somewhere that happens to compile.
+than somewhere that happens to compile. The last two lines are the evidence for decision (5a): if
+`create_base`'s signature had changed, they would not compile.
+
+⚠ **190, not "~122".** An earlier draft carried the figure from `CLAUDE.md`, which is stale.
+[Task 4b](#task-4b-resolve-every-test-filter-against-a-real-cargo---list-docs-only) ran
+`cargo test -p biorouter-mcp --lib -- --list` and measured **190** matching `knowledge::`, across 35
+submodules (`knowledge::service::tests` alone is 38, `knowledge::store::tests` 14,
+`knowledge::server::tests` 11). A `pre + 10` assertion built on 122 would have read a **68-test
+shortfall** as a pass.
 
 - [ ] **Step 5: Gate**
 
 ```bash
 cd /Users/wgu/Desktop/BioRouter-privacy
 # The tier is not in the manifest, so it cannot ride a .brkb archive.
-grep -c "tier\|privacy" crates/biorouter-mcp/src/knowledge/types.rs ; echo "expect: 0"
+# NOT `grep -c "tier\|privacy"` — that is 8 today and can never be 0, because
+# `CredibilityTier` has owned the word "tier" in this file since the credibility
+# feature (types.rs:20, :93, + 6 in tests). Measured: the pattern below is 0 today.
+grep -cE "privacy_tier|PrivacyTier|kb_tier" crates/biorouter-mcp/src/knowledge/types.rs ; echo "expect: 0"
 grep -rn "kb_tiers_path" crates/biorouter-mcp/src/knowledge/ | grep -v "fn kb_tiers_path"
-echo "expect: only tier.rs — nothing else may open the file directly"
+echo "expect: tier.rs and service.rs::ensure_tiers_migrated only — nothing else opens the file"
 # Migration is one-shot, not a per-startup repair. (Task 38 makes the identical
-# distinction for sessions, and for the identical reason.)
-awk '/pub fn ensure_migrated/,/^}/' crates/biorouter-mcp/src/knowledge/tier.rs \
-  | grep -c "kb_tiers_path(root).exists()" ; echo "expect: 1 — the absence guard"
-# The capability key is built-ins-only.
+# distinction for sessions, and for the identical reason.) Written as "the guard
+# mentions the store path at all", because `let p = kb_tiers_path(root); if
+# p.exists()` is the natural spelling and an exact-string gate false-fails it.
+awk '/fn ensure_tiers_migrated/,/^    }/' crates/biorouter-mcp/src/knowledge/service.rs \
+  | grep -c "kb_tiers_path" ; echo "expect: 1 — the absence guard, before the lock"
+# The lock discipline: tier.rs takes no lock, and the three in-service call
+# sites use the _unlocked twins. This is the deadlock gate.
+grep -c "lock_root\|FileLockGuard" crates/biorouter-mcp/src/knowledge/tier.rs ; echo "expect: 0"
+for fn in create_base import_brkb delete_base; do
+  echo -n "$fn: "
+  awk "/pub fn $fn/,/^    }/" crates/biorouter-mcp/src/knowledge/service.rs \
+    | grep -c "tier::.*_unlocked("
+done
+echo "expect: 1 each — never raise_tier/forget_tier, which re-acquire the lock they hold"
+grep -c "pub fn raise_tier\|pub fn forget_tier" crates/biorouter-mcp/src/knowledge/service.rs
+echo "expect: 2 — the wrappers for callers outside the module"
+# The capability key is built-ins-only, and has exactly one spelling.
 awk '/let caller_capability_for_builtin/,/;$/' crates/biorouter/src/agents/extension_manager.rs \
   | grep -c "BUILTIN_EXTENSIONS" ; echo "expect: 1"
-# Registration is in the SERVICE, so both surfaces get it from one place.
-grep -c "tier::raise(" crates/biorouter-mcp/src/knowledge/service.rs ; echo "expect: 2 (create_base, import_brkb)"
-grep -c "tier::forget(" crates/biorouter-mcp/src/knowledge/service.rs ; echo "expect: 1 (delete_base)"
-grep -c "tier::raise(" crates/biorouter-mcp/src/knowledge/server.rs ; echo "expect: 0 until Task 10B"
+grep -rl '"biorouter-capability-tier"' --include='*.rs' crates/ | sort
+echo "expect: exactly 2 FILES — knowledge/tier.rs (the const) and agents/mcp_client.rs"
+echo "        (the writer + its test). A third file has spelled the key by hand,"
+echo "        which is how a barrier silently stops matching."
+# Registration is in the SERVICE, so every surface gets it from one place, and
+# create_base's ~90 callers were not touched (decision 5a).
+grep -c "register_public_if_absent_unlocked(" crates/biorouter-mcp/src/knowledge/service.rs
+echo "expect: 2 (create_base, import_brkb)"
+git diff --stat HEAD -- crates/biorouter-cli crates/biorouter/src/knowledge/soul.rs \
+  crates/biorouter-server/src/routes/reset.rs crates/biorouter-server/src/bin
+echo "expect: empty — no create_base caller moved"
 # And nothing ENFORCES anything yet: this task registers and migrates, nothing more.
-grep -rn "tier::is_private(" crates/ ; echo "expect: no output until Task 10C"
+grep -rn "tier::assert_reachable(\|assert_kb_reachable(" crates/ ; echo "expect: no output until Task 10C"
+grep -rn "tier::raise_unlocked(\|raise_tier(" --include='*.rs' crates/ \
+  | grep -v "knowledge/tier.rs\|knowledge/service.rs"
+echo "expect: no output until Task 10B"
 ```
 
-**What this catches.** Three wrong implementations. (1) Putting the tier on `Manifest` — the obvious
+**What this catches.** Four wrong implementations. (1) Putting the tier on `Manifest` — the obvious
 place, one field, no new file — which makes it travel inside `.brkb` and hands an importer authority
 over the badge; the `types.rs` zero-count is the only cheap gate for it. (2) A migration that runs on
 every startup "to pick up new bases", which silently lowers a base the day after a private session
-raised it; test 1's second `ensure_migrated` is what fails it, and no grep would. (3) A store shaped
-like `.hidden-kbs` — a list of private ids — which cannot distinguish *known public* from *unknown*,
-so a directory dropped into the knowledge root reads public; test 2 fails it.
+raised it; test 1's second `ensure_migrated_unlocked` is what fails it, and no grep would. (3) A store
+shaped like `.hidden-kbs` — a list of private ids — which cannot distinguish *known public* from
+*unknown*, so a directory dropped into the knowledge root reads public; test 2 fails it. (4) Taking
+the root lock inside `tier.rs`, which hangs the daemon on the first `kb_create_base` while every
+`tier.rs` unit test still passes, because they call the store on a bare root that no service is
+holding; `registering_a_tier_from_inside_the_root_lock_does_not_deadlock` is a *timeout*, not an
+assertion, because a deadlock does not fail — it waits.
 
 - [ ] **Step 6: Commit**
 
@@ -2616,21 +3608,33 @@ git commit -m "feat(knowledge): a per-knowledge-base privacy tier, its store and
 
 ---
 
-### Task 10B: The knowledge-base ratchet — every write a model makes stamps the caller
+### Task 10B: The knowledge-base ratchet — every write a model makes stamps the caller, at four choke points
 
 The ratchet half of the ruling: *a KB takes the tier of the most sensitive session that has ingested
-into it.* Nothing refuses anything yet; that is Task 10C.
+into it.* Nothing refuses anything yet; that is Task 10C. Both tasks hang off the **same four choke
+points** (Task 10A's ⚠), which is why they are built in this order: 10B installs the capability at
+each seam and proves it arrives, 10C then adds one line at each.
 
 **Files:**
 
 | Action | Path | Anchor (re-verified at `9558c346`) |
 |---|---|---|
-| Modify | `crates/biorouter-mcp/src/knowledge/server.rs` | the **three** content-bearing writes the service does not already cover — `kb_write_page` `:409-448`, `kb_add_raw_source` `:454-470`, `kb_append_log` `:650-661` — plus passing the caller's tier into `kb_create_base` `:356-367` and `kb_import` `:764-773`, whose registration Task 10A put in the service. ⚠ **None of these five takes a `RequestContext` today**, unlike the read tools, so each gains `context: RequestContext<RoleServer>` — an rmcp `#[tool]` signature change, and the compile error that forces the plumbing |
-| Modify | `crates/biorouter-server/src/routes/knowledge.rs` | the **three** macro routes that write with a caller-supplied model — `ingest` `:1122`, `ingest_conversation` `:1187`, `lint` `:1325` — via `build_completer` `:899-914`. (`query_kb` `:1269` reads; it gets Task 10C's barrier, not a raise) |
-| Reference | `crates/biorouter/src/knowledge/conversation_ingest.rs` | `ingest_conversation` `:184-187` (`ConversationIngestArgs` `:172-180`) — Task 11 adds its `caller_capability`; the KB raise rides the same value |
-| Reference | `crates/biorouter-server/src/routes/knowledge.rs` | the plain write routes that get **no** raise — `write_page` `:561-581` (which calls `store::write_page` directly, not a service method), `add_raw_source` `:1415`, `create_base` `:354`, `import_brkb` `:1552`, `restore_state` `:882` |
+| Modify | `crates/biorouter-mcp/src/knowledge/server.rs` | **CP1.** Replace `#[tool_handler(router = self.tool_router)]` `:776` with a hand-written `call_tool` + `list_tools` in `impl ServerHandler for KnowledgeServer` `:777`. Plus a `RequestContext` on exactly **two** tools — `kb_create_base` `:357-368` and `kb_import` `:764-773` — whose subject id is not knowable before the call |
+| Modify | `crates/biorouter-mcp/src/knowledge/macros/ingest.rs` | **CP2.** `IngestArgs` `:23`; `ingest` `:47`, whose first two statements are `svc.lock_kb` `:48` and `paths::kb_root` `:49` |
+| Modify | `crates/biorouter-mcp/src/knowledge/macros/query.rs` | **CP2.** `QueryArgs` `:23`; `query` `:46`, lock `:47`, `kb_root` `:48` |
+| Modify | `crates/biorouter-mcp/src/knowledge/macros/lint.rs` | **CP2.** `LintArgs` `:195`; `lint` `:217`, lock `:218`, `kb_root` `:219` |
+| Modify | `crates/biorouter-server/src/routes/apps.rs` | **CP3.** `handle_kb_frame` `:2474-2481` gains `caller_is_private: bool`; its three call sites `:3288`, `:3513`, `:3847` |
+| Modify | `crates/biorouter-mcp/src/agent_drafter/mod.rs` | **CP4.** `stage_full_payload` `:1390-1394` gains `caller_is_private: bool`; its sole caller `export_app` `:2790` gains a `RequestContext` (`:2739-2742` has none today) |
+| Modify | `crates/biorouter-server/src/routes/knowledge.rs` | the four macro routes pass the constructed provider's tier into the macro Args — `ingest` `:1122` (args at `:1142`), `ingest_conversation` `:1187` (args at `:1224`), `query_kb` `:1269` (args at `:1284`), `lint` `:1325` (args at `:1347`); `build_completer` `:899-914`, whose `TestModeCompleter` early return is `:903-907` |
+| Modify | `crates/biorouter/src/knowledge/conversation_ingest.rs` | `ConversationIngestArgs` `:172-180` — **this task adds `caller_capability: ProviderTier` here**, not Task 11 (see ⚠ "the value at `:205`" below); the `IngestArgs` it builds at `:205` |
+| Modify | `crates/biorouter-cli/src/commands/knowledge.rs` | `IngestArgs` `:457`, `ConversationIngestArgs` `:573`, `LintArgs` `:639`, `QueryArgs` `:718` |
+| Modify | `crates/biorouter/src/agents/knowledge_tool.rs` | `ConversationIngestArgs` `:63` (the platform tool) |
+| Modify | `crates/biorouter-server/src/bin/knowledge_ingest_probe.rs` | `IngestArgs` `:104` |
+| Modify | `crates/biorouter-mcp/tests/knowledge_macros_e2e.rs` | **the integration test `--lib` cannot see.** `IngestArgs` `:115` and `:231`, `QueryArgs` `:157`. Measured: this is the **only** file outside `crates/*/src/` that constructs any of the three macro `Args` (`grep -rn "IngestArgs {\|QueryArgs {\|LintArgs {" --include='*.rs' crates/` → 25 hits, 22 of them under `src/`). Leaving it out is what made nine consecutive task commits fail `cargo test`: every `cargo test -p biorouter-mcp` in this plan is `--lib`, so nothing between here and Task 20's `cargo test --workspace` compiles it |
+| Reference | `crates/biorouter-mcp/src/knowledge/subagent/kb_tools.rs` | `KbToolDispatch` `:22-30` — `pub kb_id: String`, fixed at construction (`ingest.rs:73`, `query.rs:75`, `lint.rs:257`). **Every** branch of `ToolDispatch::call` `:31-130` derives its path from `paths::kb_root(self.svc.root(), &self.kb_id)` `:33` or passes `&self.kb_id`, so the sub-agent cannot reach a second base and one check at the macro entry covers all five of its write tools |
+| Reference | `crates/biorouter-server/src/routes/knowledge.rs` | the plain write routes that get **no** raise — `write_page` `:561` (which calls `store::write_page` directly, not a service method), `add_raw_source` `:1415`, `create_base` `:354`, `import_brkb` `:1552`, `restore_state` `:882` |
 
-⚠ **Two exclusion lists, and neither is an oversight.**
+⚠ **Three exclusion lists, and none is an oversight.**
 
 *Not ratcheted, because no content enters:* `kb_restore_state`, `kb_begin_txn`, `kb_commit_txn`,
 `kb_abort_txn`. They move or discard content that is already in the base. Ratcheting on
@@ -2638,148 +3642,524 @@ into it.* Nothing refuses anything yet; that is Task 10C.
 transaction, a denial-of-service on the user's own knowledge base with no disclosure to justify it.
 Task 10C's barrier still covers all four, and that is the control that matters for them.
 
-*Not ratcheted, because no model is involved:* the plain `/knowledge/*` write routes. Those are the
-user typing in the Knowledge view — the same scope line Task 10C draws for reads. There is no
-service-level write choke point to hang a raise on anyway (`routes/knowledge.rs:571` calls
-`store::write_page` directly), so putting one there would mean inventing one, and it would classify a
-base by *the user's own editing* rather than by what a model saw. If a base needs privatising because
-of what the user pasted into it, that is a user action and it wants a UI control, not a silent
-ratchet — [Open question 15](#open-questions).
+*Not ratcheted, because no model is involved:* the plain `/knowledge/*` write routes, the CLI's
+direct write commands, `soul.rs`, `reset.rs`. Those are the user typing in their own app — the same
+scope line Task 10C draws for reads. There is no service-level write choke point to hang a raise on
+anyway (`routes/knowledge.rs:571` calls `store::write_page` directly), so putting one there would
+mean inventing one, and it would classify a base by *the user's own editing* rather than by what a
+model saw. If a base needs privatising because of what the user pasted into it, that is a user action
+and it wants a UI control, not a silent ratchet — [Open question 15](#open-questions).
+
+*Ratcheted even though it is called "query":* **`macros::query::query` writes.** `QueryArgs` has
+`file_as_page: bool` and the macro commits a page when it is set, but the deciding fact is harsher:
+`tool_specs()` (`kb_tools.rs:224`) hands the sub-agent `kb_write_page`, `kb_append_log` **and**
+`kb_add_raw_source` unconditionally, and the only thing between a `file_as_page: false` query and a
+write is a sentence in the system prompt (`query.rs:70-71`: *"IMPORTANT: file_as_page is FALSE for
+this call. Do NOT write any pages. Read-only."*).
+A prompt is not a control. So `query` raises like the other two. The previous draft's "`query_kb`
+reads; it gets Task 10C's barrier, not a raise" was wrong on the tree.
+
+⚠ **The value at `conversation_ingest.rs:205`, and why `ConversationIngestArgs` gains its field
+here rather than in Task 11.** Making `IngestArgs.caller_is_private` required makes `:205` — inside
+`ingest_conversation` — a compile error, and that function has no capability of its own. The previous
+draft reserved `caller_capability` for Task 11 and said nothing about what `:205` should pass in the
+meantime. The only two things that compile at that point are a hardcoded `false` and a field this
+task does not declare, and a hardcoded `false` **reproduces verbatim the failure this task's own ⚠(3)
+says it fixed**: the platform tool, the CLI and `POST /ingest-conversation` would ratchet nothing
+while `grep -c caller_is_private` reports non-zero in every file and Step 4 passes. So the field lands
+here:
+
+```rust
+    /// The capability of whoever is asking (issue #56). Added by Task 10B
+    /// because `ingest_conversation` must have something to put in
+    /// `IngestArgs.caller_is_private`; **Task 11 adds the refusal that consumes
+    /// it**, and the two are deliberately separate — this task plumbs, Task 11
+    /// gates, exactly as 10B/10C split for the KB choke points.
+    pub caller_capability: crate::privacy::ProviderTier,
+```
+
+Required and non-`Option`, so all three production constructors (`knowledge_tool.rs:63`,
+`routes/knowledge.rs:1224`, `biorouter-cli/.../knowledge.rs:573`) are a compile error — the same
+forcing function Task 11 was going to rely on, moved one task earlier. All three files are already in
+this task's Files table and its `git add`. Task 11's Step 2 therefore expects **FAIL**, not COMPILE
+ERROR, and says so.
+
+⚠ **This task changes cross-crate signatures, so `--lib` is not enough to know the tree builds.**
+`cargo test -p <pkg> --lib` compiles the lib target only; an integration test under `crates/*/tests/`
+that constructs a changed struct is invisible to it and stays invisible until the next
+`cargo test --workspace`, which is **Task 20**. That is how the previous draft left Tasks 10B through
+19 — nine consecutive commits — with a red suite that a worker could not distinguish from a genuine
+break. Step 4 therefore runs `cargo check --workspace --all-targets` **before** the per-crate filters,
+and the same line appears in Tasks 10C, 10D and 11 for the same reason. It is the cheapest thing that
+makes "each task's commit leaves the tree green" checkable rather than hoped.
 
 - [ ] **Step 1: Write the failing tests**
 
 ```rust
+// crates/biorouter-mcp/src/knowledge/server.rs, in its existing #[cfg(test)] mod tests (:805)
+
 #[tokio::test]
 async fn a_private_session_writing_one_page_ratchets_the_whole_base() {
     // THE test for the ruling, and the one that makes AR-1's cost visible in
     // CI: one page from one private chat privatises the machine-wide base.
-    let root = migrated_root_with_public_base("default");
-    let srv = knowledge_server_at(&root);
-
-    srv.kb_write_page(params(json!({ "kb_id": "default", "path": "knowledge/omop.md",
-                                     "content": "n=412 T2D patients", "commit_message": "x" })),
-                      ctx_with_capability(Private)).await.unwrap();
-
+    let (srv, root) = server_at_migrated_root(&["default"]);
+    call_tool_as(&srv, "kb_write_page",
+        json!({ "kb_id": "default", "path": "knowledge/omop.md",
+                "content": "n=412 T2D patients", "commit_message": "x" }),
+        Private).await.unwrap();
     assert!(tier::is_private(&root, "default"));
 }
 
 #[tokio::test]
 async fn a_public_session_writing_never_lowers_a_ratcheted_base() {
-    let root = migrated_root_with_public_base("default");
-    let srv = knowledge_server_at(&root);
-    tier::raise(&root, "default", true).unwrap();
-
+    let (srv, root) = server_at_migrated_root(&["default"]);
+    tier::raise_unlocked(&root, "default", true).unwrap();
     // Task 10C has not landed, so this write still SUCCEEDS. What must not
     // happen is the tier moving.
-    srv.kb_append_log(params(json!({ "kb_id": "default", "kind": "note", "summary": "hi" })),
-                      ctx_with_capability(Public)).await.unwrap();
+    call_tool_as(&srv, "kb_append_log",
+        json!({ "kb_id": "default", "kind": "manual", "summary": "hi" }),
+        Public).await.unwrap();
     assert!(tier::is_private(&root, "default"), "a public write lowered the tier");
 }
 
 #[tokio::test]
-async fn every_write_a_model_makes_ratchets_and_the_plumbing_ones_do_not() {
-    // Parameterised over the five, plus the four that must NOT. A test on
-    // kb_write_page alone passes an implementation that misses kb_add_raw_source
-    // — which is the tool the GUI ingest panel and the `ingest` macro actually
-    // call, so the whole ingest path would launder silently.
-    for probe in RATCHETING_WRITES {          // write_page, add_raw_source, append_log
-                                              // (create_base and import register in the
-                                              // service, Task 10A, and are probed here too)
-        let root = migrated_root_with_public_base("default");
-        (probe.run)(&root, Private).await.unwrap();
-        assert!(tier::is_private(&root, "default"), "{} did not ratchet", probe.name);
+async fn every_tool_that_writes_content_ratchets_and_the_plumbing_ones_do_not() {
+    // Parameterised over ALL NINETEEN tools, driven through call_tool BY NAME —
+    // which is the point of CP1: nine of them take no RequestContext, so a test
+    // that calls the `#[tool]` fn directly cannot express "as a private caller"
+    // for them at all. A test on kb_write_page alone passes an implementation
+    // that misses kb_add_raw_source, the tool the GUI ingest panel and the
+    // `ingest` macro actually call, so the whole ingest path would launder.
+    for probe in KB_TOOLS {                 // all 19, each with valid arguments
+        let (srv, root) = server_at_migrated_root(&["default"]);
+        let _ = call_tool_as(&srv, probe.name, probe.args_for("default"), Private).await;
+        assert_eq!(tier::is_private(&root, "default"), probe.ratchets,
+                   "{} ratchets={} but the store says otherwise", probe.name, probe.ratchets);
     }
-    for probe in NON_RATCHETING_WRITES {      // restore_state, begin_txn, commit_txn, abort_txn
-        let root = migrated_root_with_public_base("default");
-        (probe.run)(&root, Private).await.unwrap();
-        assert!(!tier::is_private(&root, "default"), "{} ratcheted; see the ⚠ above", probe.name);
-    }
+    // The exclusion list as data, reviewable in one place:
+    //   ratchets "default":       kb_write_page, kb_add_raw_source, kb_append_log
+    //   ratchets its OWN new id:  kb_create_base, kb_import
+    //   does not ratchet:         the other 14
 }
 
 #[tokio::test]
 async fn a_base_created_from_a_private_chat_is_born_private() {
-    let root = migrated_root_with_public_base("default");
-    let srv = knowledge_server_at(&root);
-    srv.kb_create_base(params(json!({ "id": "omop", "name": "OMOP" })),
-                       ctx_with_capability(Private)).await.unwrap();
+    let (srv, root) = server_at_migrated_root(&["default"]);
+    call_tool_as(&srv, "kb_create_base", json!({ "id": "omop", "name": "OMOP" }), Private)
+        .await.unwrap();
     assert!(tier::is_private(&root, "omop"));
     assert!(!tier::is_private(&root, "default"), "creating one base moved another");
 }
 
 #[tokio::test]
-async fn an_http_macro_run_on_a_private_model_ratchets_the_base_it_writes() {
-    // The GUI Knowledge view's own ingest. `build_completer` (:899-914) builds an
-    // arbitrary provider from a caller-supplied ModelRef; the base it writes into
-    // takes that provider's tier, exactly as an MCP write takes the session's.
-    let root = migrated_root_with_public_base("default");
-    post_ingest(&root, "default", model_ref("versa_azure", "gpt-5.5-2026-04-24")).await;
-    assert!(tier::is_private(&root, "default"));
+async fn a_public_chat_can_still_create_and_import_a_knowledge_base() {
+    // The regression the sixteen-site enumeration encoded, as a test. A public
+    // session must be able to make its own base; `assert_reachable` permits a
+    // kb id with no directory on disk (Task 10A, decision 3).
+    let (srv, root) = server_at_migrated_root(&["default"]);
+    call_tool_as(&srv, "kb_create_base", json!({ "id": "notes", "name": "Notes" }), Public)
+        .await.unwrap();
+    assert!(!tier::is_private(&root, "notes"));
+    call_tool_as(&srv, "kb_import", json!({ "src_path": brkb_fixture() }), Public)
+        .await.unwrap();
+}
+
+#[tokio::test]
+async fn an_imported_base_takes_the_importing_sessions_tier_and_never_the_archives() {
+    // `brkb::import` resolves collisions by suffixing, so an import always
+    // lands on a FRESH id — which is what makes stamping after the call safe.
+    let (srv, root) = server_at_migrated_root(&["default"]);
+    let out = call_tool_as(&srv, "kb_import", json!({ "src_path": brkb_fixture() }), Private)
+        .await.unwrap();
+    assert!(tier::is_private(&root, imported_kb_id(&out)));
 }
 ```
 
-- [ ] **Step 2: Run** → **COMPILE ERROR** on the five `#[tool]` signatures (`ctx_with_capability`
-      has nowhere to go), then **FAIL** on the ratchet assertions.
-
-- [ ] **Step 3: Implement** — one call, five sites, and the raise is the *first* statement after the
-      per-KB lock so a panic in the write cannot leave content in a base whose tier never moved:
-
 ```rust
-        let _lock = self.service.lock_kb(&p.kb_id).await.map_err(into_err)?;
-        // Issue #56, design §9.3 B4 as ruled. The base takes the tier of the
-        // most sensitive session that has ingested into it. BEFORE the write:
-        // a raise that only happens on success leaves content in a base whose
-        // tier never moved if the write panics or the process dies mid-commit,
-        // and the failure direction of an over-raise is a badge the user can
-        // see, while the failure direction of an under-raise is silent.
-        crate::knowledge::tier::raise(
-            self.service.root(),
-            &p.kb_id,
-            Self::caller_is_private(Some(&context)),
-        )
-        .map_err(into_err)?;
+// crates/biorouter-mcp/src/knowledge/macros/ingest.rs, in its #[cfg(test)] mod tests (:136)
+
+#[tokio::test]
+async fn the_ingest_macro_ratchets_before_its_sub_agent_runs() {
+    // CP2, and the reason it exists. The sub-agent writes through
+    // KbToolDispatch → store::write_page / svc.add_raw_source, which no MCP
+    // tool gate can see. This is also the test that makes Task 11's headline
+    // test reachable: `conversation_ingest::ingest_conversation` (:184) funnels
+    // into this function, as do the four HTTP macro routes, the CLI and the probe.
+    let (svc, root) = migrated_service_with_base("k");
+    let args = IngestArgs { kb_id: "k".into(), caller_is_private: true,
+                            completer: refuses_immediately(), ..fixture() };
+    let _ = ingest(&svc, args).await;      // the sub-agent may fail; the raise stands
+    assert!(tier::is_private(&root, "k"), "the raise ran after the sub-agent, or not at all");
+}
 ```
 
-For the HTTP macro routes, raise from the route handler using the **constructed provider's** tier —
-not the requested model name — because `providers::create` can hand back something else
-(`factory.rs:142-146`). `build_completer` (`:899-914`) already constructs it; return the tier
-alongside the completer rather than re-deriving it.
+```rust
+// crates/biorouter-server/src/routes/apps.rs, in its existing `mod tests`
+
+#[tokio::test]
+async fn a_br_kb_ingest_from_a_private_app_session_ratchets_the_base() {
+    // CP3. `run_kb_read` and this arm never touch KnowledgeServer, so CP1 is
+    // blind to them; `resolve_kb_grant` (:2268) is an integrity control over a
+    // manifest the DRAFTING MODEL authored, not a privacy control.
+    let (state, root) = app_state_with_kb("kbx");
+    handle_kb_frame(&bridge, &state.knowledge_service, Some(&cfg_granting("kbx", /*write*/ true)),
+                    /* caller_is_private */ true, "ingest",
+                    &json!({ "kb_id": "kbx", "text": "n=412" }), "r1").await;
+    await_kb_result(&bridge).await;
+    assert!(tier::is_private(&root, "kbx"));
+}
+```
+
+- [ ] **Step 2: Run**
+
+```bash
+cargo test -p biorouter-mcp --lib knowledge::server
+cargo test -p biorouter-mcp --lib knowledge::macros
+cargo test -p biorouter-server --lib routes::apps
+```
+
+Expected: **COMPILE ERROR** first — `IngestArgs` has no field `caller_is_private`, `handle_kb_frame`
+takes 6 arguments not 7, and the `call_tool_as` helper cannot be written until `call_tool` is
+hand-written (the generated one is reachable only through the `ServerHandler` trait, which the test
+must therefore import). Then, once those compile, **FAIL** on every ratchet assertion.
+
+- [ ] **Step 3: Implement**
+
+**CP1 — `KnowledgeServer::call_tool`.** Delete the `#[tool_handler(router = self.tool_router)]`
+attribute at `:776` and write both methods it generated. The `list_tools` body is copied verbatim
+from `rmcp-macros-0.14.0/src/tool_handler.rs:45-57`; only `call_tool` gains anything:
+
+```rust
+/// Tools whose `kb_id` argument names a base the caller must be allowed to
+/// reach. One list, one rule — so a twentieth `kb_*` tool is gated the day it
+/// is written, and opting out means editing a list this task's test enumerates.
+const KB_ID_GATED_TOOLS: &[&str] = &[
+    "kb_list_pages", "kb_read_page", "kb_get_graph", "kb_list_history",
+    "kb_search", "kb_search_raw_sources", "kb_export",
+    "kb_write_page", "kb_add_raw_source", "kb_append_log",
+    "kb_restore_state", "kb_begin_txn", "kb_commit_txn", "kb_abort_txn",
+];
+
+/// The subset that resolves an omitted `kb_id` to the session's primary
+/// (`kb_id_or_primary`, :312). For these an ABSENT id must be resolved and
+/// checked too, or "just drop the kb_id" is the bypass.
+const KB_PRIMARY_RESOLVING_TOOLS: &[&str] =
+    &["kb_list_pages", "kb_read_page", "kb_get_graph", "kb_list_history"];
+
+/// Content-bearing writes by a model: the base takes the caller's tier BEFORE
+/// the write runs.
+const KB_RATCHETING_TOOLS: &[&str] = &["kb_write_page", "kb_add_raw_source", "kb_append_log"];
+```
+
+```rust
+impl ServerHandler for KnowledgeServer {
+    fn get_info(&self) -> ServerInfo { /* unchanged */ }
+
+    async fn list_tools(
+        &self,
+        _request: Option<rmcp::model::PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<rmcp::model::ListToolsResult, ErrorData> {
+        Ok(rmcp::model::ListToolsResult {
+            tools: self.tool_router.list_all(),
+            meta: None,
+            next_cursor: None,
+        })
+    }
+
+    /// Issue #56, design §9.3 B4 as ruled. ONE seam for all nineteen `kb_*`
+    /// tools, including the nine that take no `RequestContext` and therefore
+    /// cannot learn the caller's capability inside their own body.
+    ///
+    /// This is `#[tool_handler]`'s generated body plus the gate:
+    /// `rmcp-macros-0.14.0/src/tool_handler.rs:29-37` is exactly the last two
+    /// statements. Re-check that file when bumping rmcp.
+    async fn call_tool(
+        &self,
+        request: rmcp::model::CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<rmcp::model::CallToolResult, ErrorData> {
+        let caller_private = Self::caller_is_private(Some(&context));
+        let name = request.name.to_string();
+
+        if let Some(kb_id) =
+            self.gated_kb_id(&name, request.arguments.as_ref(), Some(&context))?
+        {
+            // Task 10C adds `self.assert_kb_reachable(&kb_id, caller_private)?;`
+            // HERE, on the line above the raise.
+            if KB_RATCHETING_TOOLS.contains(&name.as_str()) {
+                // BEFORE the write: a raise that only lands on success leaves
+                // content in a base whose tier never moved if the write panics
+                // or the process dies mid-commit. The failure direction of an
+                // over-raise is a badge the user can see; the failure direction
+                // of an under-raise is silent.
+                self.service.raise_tier(&kb_id, caller_private).map_err(into_err)?;
+            }
+        }
+
+        let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
+        self.tool_router.call(tcc).await
+    }
+}
+```
+
+and, on `KnowledgeServer`:
+
+```rust
+    /// The base this call names, or `None` when it names none.
+    fn gated_kb_id(
+        &self,
+        tool: &str,
+        args: Option<&rmcp::model::JsonObject>,
+        context: Option<&RequestContext<RoleServer>>,
+    ) -> Result<Option<String>, ErrorData> {
+        if !KB_ID_GATED_TOOLS.contains(&tool) {
+            return Ok(None);
+        }
+        if let Some(id) = args
+            .and_then(|a| a.get("kb_id"))
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            return Ok(Some(id.to_string()));
+        }
+        if !KB_PRIMARY_RESOLVING_TOOLS.contains(&tool) {
+            // `kb_search` / `kb_search_raw_sources` with no kb_id fan out over
+            // the visible set and filter per base (`search_visible_bases`,
+            // :258-286) — Task 10C's fan-out test is the all-or-nothing bug
+            // this avoids. `kb_export` and the writes REQUIRE kb_id, so an
+            // absent one is the tool's own 400 and not ours to pre-empt.
+            return Ok(None);
+        }
+        // Resolve exactly as the tool will (`kb_id_or_primary`, :312), so
+        // omitting the kb_id is not the bypass. Its error case — no id and no
+        // primary — is the tool's own message and must NOT become a privacy
+        // refusal, so `None` falls through and the tool answers.
+        self.primary_kb_for_context(context)
+    }
+```
+
+**Two `#[tool]` signature changes, and exactly two.** `kb_create_base` (`:357`) and `kb_import`
+(`:764`) each gain `context: RequestContext<RoleServer>` and raise *after* their call succeeds,
+because their subject id does not exist beforehand — `kb_create_base`'s base is not on disk, and
+`kb_import`'s id is chosen by `brkb::import`'s collision loop and is only known from its return
+value. The "raise before the write" rule does not apply: a *create* that fails leaves no content at
+all, so there is nothing to strand in an under-tiered base.
+
+```rust
+        let m = self.service.create_base(&p.id, &p.name, p.color.as_deref()).map_err(into_err)?;
+        // Issue #56. AFTER: the base did not exist to be stamped before, and an
+        // entry for a base that failed to create would block the id forever.
+        self.service
+            .raise_tier(&p.id, Self::caller_is_private(Some(&context)))
+            .map_err(into_err)?;
+```
+
+The other seven context-less tools are untouched — CP1 already carries the capability for them.
+
+**CP2 — the three macros.** Each `Args` struct gains a required field:
+
+```rust
+    /// The capability of the model this macro will run (issue #56). Required,
+    /// so all four production callers are a compile error rather than an
+    /// omission. A `bool` and not `ProviderTier` for the crate-dependency
+    /// reason in Task 10A ⚠(1).
+    pub caller_is_private: bool,
+```
+
+and each entry raises immediately after its existing `lock_kb`, before anything reads or writes:
+
+```rust
+pub async fn ingest(svc: &KnowledgeService, args: IngestArgs) -> Result<IngestResult> {
+    let _lock = svc.lock_kb(&args.kb_id).await?;
+    // Issue #56. The ratchet for EVERY sub-agent macro, because `KbToolDispatch`
+    // (subagent/kb_tools.rs:22-30) is bound to this one `kb_id` and reaches
+    // `store::*` directly — there is no lower seam, and no MCP gate can see it.
+    // Before the sub-agent, not after: a run that fails halfway has already
+    // written pages. Task 10C adds `tier::assert_reachable(..)` on the line above.
+    svc.raise_tier(&args.kb_id, args.caller_is_private)?;
+    let kb_root = paths::kb_root(svc.root(), &args.kb_id);
+```
+
+Identically in `query` (`:46-48`) and `lint` (`:217-219`).
+
+`ConversationIngestArgs` (`conversation_ingest.rs:172`) gains `caller_capability: ProviderTier` per
+the ⚠ above, and `:205` becomes one line:
+
+```rust
+        IngestArgs {
+            kb_id: args.kb_id,
+            // Issue #56. The ProviderTier -> bool crossing, and the only one:
+            // `IngestArgs` lives in biorouter-mcp, which cannot name ProviderTier
+            // (Task 10A ⚠(1)). Task 11 adds the refusal that reads the same field.
+            caller_is_private: args.caller_capability.is_private(),
+```
+
+The three constructors then each pass their own: the platform tool from
+`self.provider().await.map(|p| p.tier()).unwrap_or(ProviderTier::Public)`, the HTTP route from the
+provider `build_completer` constructed, the CLI from the session's bound provider. **None of them may
+hardcode `ProviderTier::Private`** — Step 5 greps for exactly that, because it is the plausible way to
+make a caller compile and it reads as "this caller is trusted".
+
+The four HTTP macro routes then pass the **constructed provider's** tier — not the requested model
+name, because `providers::create` can hand back something else (`factory.rs:142-146`).
+`build_completer` (`:899-914`) already constructs it; return the tier alongside the completer rather
+than re-deriving it. ⚠ `build_completer` early-returns a `TestModeCompleter` at `:903-907` **before**
+any provider exists: that branch returns **`false`** (public), because a test-mode completer reaches
+no network and the fail-safe direction for a *ratchet* is not to privatise a base on a test path.
+
+**CP3 — `handle_kb_frame`.** Add `caller_is_private: bool` between `cfg` and `op`, and raise inside
+the `ingest` arm before the spawn:
+
+```rust
+        "ingest" => {
+            if !kb_write_granted(cfg, &kb_id) { /* unchanged */ }
+            // Issue #56. `resolve_kb_grant` (:2268) reads the app manifest,
+            // which the drafting model authored (`agent_drafter/mod.rs:1731`
+            // instructs it to) — an integrity control, not a privacy one.
+            if let Err(e) = knowledge.raise_tier(&kb_id, caller_is_private) {
+                emit_kb_error(ui_bridge, req_id, &e.to_string());
+                return;
+            }
+```
+
+All three call sites (`:3288`, `:3513`, `:3847`) sit in scopes that already hold `agent` (they call
+`agent.provider().await` nearby, e.g. `:3352`), so each passes
+`agent.provider().await.map(|p| p.tier()).unwrap_or(ProviderTier::Public).is_private()`
+(`Agent::provider` is `agent.rs:2511`; `Provider::tier` is Task 5). A dead or unbound provider
+resolves to **Public**, the same direction `ExtensionManager::capability_tier` takes for the same
+reason.
+
+**CP4 — `stage_full_payload`.** Add `caller_is_private: bool` as its fourth parameter and give
+`export_app` (`:2739`) a `RequestContext<RoleServer>` to source it, using the shared reader:
+`crate::knowledge::tier::caller_is_private(&context.meta)`. Task 10C adds the check; 10B only plumbs
+the value, so the diff a reviewer reads at 10C is one `if`.
 
 - [ ] **Step 4: Run**
 
 ```bash
-cargo test -p biorouter-mcp --lib knowledge::
+# FIRST, and not optional: --lib does not compile crates/*/tests/, and this task
+# changes three struct signatures that an integration test constructs.
+cargo check --workspace --all-targets
+# Pre-counts are MEASURED (Task 4b), so these assert `pre + N`, not "non-zero".
+cargo test -p biorouter-mcp --lib knowledge::   2>&1 | grep "test result:"  # 190 + 4 (server) + 1 (ingest)
+cargo test -p biorouter-mcp --lib agent_drafter:: 2>&1 | grep "test result:"  # 244, unchanged: 10B only plumbs CP4
+cargo test -p biorouter-mcp --test knowledge_macros_e2e
 cargo test -p biorouter-server --test knowledge_routes
-cargo test -p biorouter --lib knowledge::conversation_ingest
+cargo test -p biorouter-server --lib routes::apps 2>&1 | grep "test result:"  # 90 + 1
+cargo test -p biorouter --lib knowledge::conversation_ingest 2>&1 | grep "test result:"  # 2, unchanged
+cargo test -p biorouter-cli --lib commands::knowledge 2>&1 | grep "test result:"  # 9, unchanged
 ```
+
+Expected: **PASS**, and `cargo check --workspace --all-targets` clean. The CLI line is not
+decoration — it is the only crate that constructs all four Args types and never goes near an MCP
+server, so it is the evidence that the required field reached every caller rather than only the ones
+with tests. The `--test knowledge_macros_e2e` line is the one that used to be missing: it is the sole
+out-of-lib constructor of `IngestArgs`/`QueryArgs`, and without it this commit and the eight after it
+leave `cargo test` red.
 
 - [ ] **Step 5: Gate**
 
 ```bash
-# Eight raise sites in total, and the tree-wide count is the sum of three
-# per-file counts rather than one repo grep — a repo-wide number would not say
-# which surface lost its raise.
-grep -c "tier::raise(" crates/biorouter-mcp/src/knowledge/server.rs  ; echo "expect: 3 (write_page, add_raw_source, append_log)"
-grep -c "tier::raise(" crates/biorouter-mcp/src/knowledge/service.rs ; echo "expect: 2 (create_base, import_brkb — from Task 10A)"
-grep -c "tier::raise(" crates/biorouter-server/src/routes/knowledge.rs ; echo "expect: 3 (ingest, ingest-conversation, lint)"
-# The four plumbing tools have none.
-for fn in kb_restore_state kb_begin_txn kb_commit_txn kb_abort_txn; do
-  echo -n "$fn: "
-  awk "/pub async fn $fn/,/^    }/" crates/biorouter-mcp/src/knowledge/server.rs | grep -c "tier::raise"
+cd /Users/wgu/Desktop/BioRouter-privacy
+# CP1 exists, and the generated handler is gone. Both halves matter: leaving the
+# attribute in place is a duplicate-definition compile error, but leaving a
+# hand-written call_tool that forwards WITHOUT the gate compiles fine.
+grep -c "tool_handler" crates/biorouter-mcp/src/knowledge/server.rs ; echo "expect: 0 (the import too)"
+# ⚠ Assert the awk range is NON-EMPTY before reading the ordering below it.
+# `async fn call_tool` does not exist in this file today — the macro generates
+# it — so the range is 0 lines and every `grep` over it emits nothing. "No
+# output" is not "the order is right"; it is "there is no function".
+awk '/async fn call_tool/,/^    }/' crates/biorouter-mcp/src/knowledge/server.rs | wc -l
+echo "expect: > 1 (0 today, before CP1 is hand-written)"
+awk '/async fn call_tool/,/^    }/' crates/biorouter-mcp/src/knowledge/server.rs \
+  | grep -n "gated_kb_id\|raise_tier\|tool_router.call" | head -3
+# Expected, in this order: gated_kb_id, raise_tier, tool_router.call — the gate
+# runs BEFORE the router, or it is not a gate. THREE lines, not fewer.
+# Exactly two tools gained a RequestContext; the other seven did not.
+for fn in kb_create_base kb_import; do
+  echo -n "$fn: " ; awk "/pub async fn $fn/,/\) -> Result/" \
+    crates/biorouter-mcp/src/knowledge/server.rs | grep -c "RequestContext"
+done ; echo "expect: 1 each"
+for fn in kb_write_page kb_add_raw_source kb_append_log kb_restore_state \
+          kb_begin_txn kb_commit_txn kb_abort_txn kb_export; do
+  echo -n "$fn: " ; awk "/pub async fn $fn/,/\) -> Result/" \
+    crates/biorouter-mcp/src/knowledge/server.rs | grep -c "RequestContext"
 done
-echo "expect: 0 each — see the ⚠ in this task, they are excluded deliberately"
-# Nor do the plain HTTP write routes (the user typing in the Knowledge view).
-for h in write_page create_base import_brkb restore_state; do
+echo "expect: 0 each — CP1 carries the capability for them; touching these is the old design"
+# Five raise sites in total, as per-file counts rather than one repo grep — a
+# repo-wide number would not say which surface lost its raise.
+grep -c "raise_tier(" crates/biorouter-mcp/src/knowledge/server.rs
+echo "expect: 3 — CP1's ratcheting branch, plus kb_create_base and kb_import"
+grep -c "raise_tier(" crates/biorouter-mcp/src/knowledge/macros/ingest.rs \
+                      crates/biorouter-mcp/src/knowledge/macros/query.rs \
+                      crates/biorouter-mcp/src/knowledge/macros/lint.rs
+echo "expect: 1 each — CP2"
+grep -c "raise_tier(" crates/biorouter-server/src/routes/apps.rs ; echo "expect: 1 — CP3's ingest arm"
+# The raise precedes the sub-agent in all three macros. Anchored on `SubAgent`
+# rather than on a write call, because the macro's first write is inside
+# KbToolDispatch, one file over, and would not appear in this range at all.
+for f in ingest query lint; do
+  echo -n "$f: "
+  grep -n "raise_tier(\|SubAgent {" crates/biorouter-mcp/src/knowledge/macros/$f.rs | head -2
+done
+# Expected for each: raise_tier on the SMALLER line number.
+# The ratchet list holds only the three content-bearing writes.
+# ⚠ `grep -o`, never `grep -c`, over a const array. `grep -c` counts LINES, and
+# whether a Rust array occupies one line or fourteen is decided by rustfmt's
+# 100-column budget, not by the author. Measured with this repo's own hermit
+# rustfmt: `const KB_RATCHETING_TOOLS: &[&str] = &["kb_write_page",
+# "kb_add_raw_source", "kb_append_log"];` is 94 characters, so it stays on ONE
+# line and `grep -c '"kb_'` returns 1 against an `expect: 3`. Its sibling
+# KB_ID_GATED_TOOLS is over budget, rustfmt explodes it one element per line, and
+# the identical gate happens to measure 14. Two gates of the same shape landing on
+# opposite sides of a formatter's line-wrap is not a gate; count the MATCHES.
+awk '/const KB_RATCHETING_TOOLS/,/\];/' crates/biorouter-mcp/src/knowledge/server.rs \
+  | grep -oE '"kb_[a-z_]+"' | sort | tr '\n' ' '
+echo "expect exactly: \"kb_add_raw_source\" \"kb_append_log\" \"kb_write_page\""
+awk '/const KB_RATCHETING_TOOLS/,/\];/' crates/biorouter-mcp/src/knowledge/server.rs \
+  | grep -oE '"kb_[a-z_]+"' | wc -l ; echo "expect: 3"
+# Nor do the plain HTTP write routes ratchet (the user typing in the Knowledge view).
+for h in write_page create_base import_brkb restore_state add_raw_source; do
   echo -n "$h: "
-  awk "/pub async fn $h/,/^}/" crates/biorouter-server/src/routes/knowledge.rs | grep -c "tier::raise"
+  awk "/pub async fn $h/,/^}/" crates/biorouter-server/src/routes/knowledge.rs | grep -c "raise_tier"
 done
 echo "expect: 0 each"
-# The raise precedes the write in every one of the three server sites.
-for fn in kb_write_page kb_add_raw_source kb_append_log; do
-  echo -n "$fn: "
-  awk "/pub async fn $fn/,/^    }/" crates/biorouter-mcp/src/knowledge/server.rs \
-    | grep -n "tier::raise\|write_page(\|add_raw_source(\|append(" | head -2
+# The macro Args carry the capability, and every PRODUCTION caller had to be
+# edited. Enumerated per file rather than counted: the three Args types are also
+# constructed ten times inside test modules, so a tree-wide count is unstable
+# by construction and would go red the first time someone adds a macro test.
+for f in crates/biorouter-mcp/src/knowledge/macros/ingest.rs \
+         crates/biorouter-mcp/src/knowledge/macros/query.rs \
+         crates/biorouter-mcp/src/knowledge/macros/lint.rs; do
+  echo -n "$f field: " ; grep -c "pub caller_is_private: bool" "$f"
+done ; echo "expect: 1 each"
+for f in crates/biorouter-server/src/routes/knowledge.rs \
+         crates/biorouter-cli/src/commands/knowledge.rs \
+         crates/biorouter-server/src/bin/knowledge_ingest_probe.rs \
+         crates/biorouter/src/knowledge/conversation_ingest.rs \
+         crates/biorouter-server/src/routes/apps.rs \
+         crates/biorouter-mcp/src/agent_drafter/mod.rs; do
+  echo -n "$(basename $f): " ; grep -c "caller_is_private" "$f"
 done
-# Expected for each: tier::raise on the SMALLER line number.
+echo "expect: NON-ZERO in all six. Deliberately not exact numbers — 10C adds an"
+echo "  assert_reachable to the last two files, so a fixed count here would go red"
+echo "  one task later, which is the mirror-defect shape this plan keeps hitting."
+echo "A ZERO is a caller that silently kept a default: routes (3 macro Args),"
+echo "  CLI (3 macro Args), probe (1), conversation_ingest (the ProviderTier->bool"
+echo "  crossing at :205), apps.rs (CP3's param + 3 call sites), drafter (CP4's param)."
+# The ProviderTier that feeds :205 reaches all three of ITS callers, and none of
+# them hardcodes the trusting value. This is the half that used to be deferred to
+# Task 11, which is why :205 had nothing to pass.
+grep -rn "caller_capability:" --include='*.rs' crates/ | grep -v "conversation_ingest.rs"
+echo "expect: exactly 3 — agents/knowledge_tool.rs, routes/knowledge.rs, biorouter-cli/.../knowledge.rs"
+grep -rn "caller_capability: ProviderTier::Private\|caller_is_private: true" --include='*.rs' crates/*/src/
+echo "expect: no output — a hardcoded Private/true reads as 'this caller is trusted'"
+echo "  and is the one way to make a caller compile while disabling the ratchet."
+# The integration test that --lib cannot see was updated, not left to rot.
+grep -c "caller_is_private" crates/biorouter-mcp/tests/knowledge_macros_e2e.rs
+echo "expect: 3 — IngestArgs :115, QueryArgs :157, IngestArgs :231"
 # The HTTP macro routes ratchet from the CONSTRUCTED provider, not the requested name.
 awk '/async fn build_completer/,/^}/' crates/biorouter-server/src/routes/knowledge.rs \
   | grep -c "tier()" ; echo "expect: 1"
@@ -2787,24 +4167,35 @@ grep -c "model.provider" crates/biorouter-server/src/routes/knowledge.rs
 echo "expect: 1 — only the providers::create call itself; the tier is never keyed on the name"
 ```
 
-**What this catches.** Three wrong implementations. (1) Ratcheting only in `kb_write_page`, the tool
+**What this catches.** Four wrong implementations. (1) Ratcheting only in `kb_write_page`, the tool
 whose name says "write" — which misses `kb_add_raw_source`, the one the GUI ingest panel and the
-`ingest` macro actually call, so the entire GUI path launders silently. The parameterised test is the
-only thing that fails it. (2) Ratcheting on the *success* return, which the `kb_import` path makes
-observable: a 400 MB archive that fails halfway has already written pages. (3) Keying the HTTP
-ratchet on `body.model.provider` — the string the caller supplied — rather than on the instance
+`ingest` macro actually call, so the entire GUI path launders silently. The nineteen-tool
+parameterised test is the only thing that fails it. (2) Gating at the tool bodies instead of at
+`call_tool`, which cannot express the nine context-less tools at all and leaves CP2/CP3/CP4 with
+nothing — the `RequestContext` count gate above is what says "you took the old design". (3) Raising
+on the *success* return, which the `kb_import` and macro paths make observable: a 400 MB archive or a
+sub-agent that dies halfway has already written pages. (4) Keying the HTTP ratchet on
+`body.model.provider` — the string the caller supplied — rather than on the instance
 `providers::create` returned, which the `BIOROUTER_LEAD_MODEL` intercept can make different.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add crates/biorouter-mcp/src/knowledge/ crates/biorouter-server/src/routes/knowledge.rs
+git add crates/biorouter-mcp/src/knowledge/ crates/biorouter-mcp/src/agent_drafter/mod.rs \
+        crates/biorouter-mcp/tests/knowledge_macros_e2e.rs \
+        crates/biorouter-server/src/routes/knowledge.rs crates/biorouter-server/src/routes/apps.rs \
+        crates/biorouter-server/src/bin/knowledge_ingest_probe.rs \
+        crates/biorouter/src/knowledge/conversation_ingest.rs \
+        crates/biorouter/src/agents/knowledge_tool.rs \
+        crates/biorouter-cli/src/commands/knowledge.rs
+# The commit must leave the tree green. Verified here, not nine commits later.
+cargo check --workspace --all-targets
 git commit -m "feat(knowledge): ratchet a knowledge base to the tier of the sessions that ingest into it (#56)"
 ```
 
 ---
 
-### Task 10C: The knowledge-base barrier — the explicit-`kb_id` branch and its fifteen siblings
+### Task 10C: The knowledge-base barrier — one line at each of the four choke points
 
 The read half of the ruling, and the task the verifier's finding is really about: **`kb_search`'s
 explicit-`kb_id` branch bypasses the visible-set logic entirely.** `kb_search` at
@@ -2816,67 +4207,134 @@ set — that is how a hidden base (Soul) stays reachable."* Hiding is a *tidines
 sentence is correct for it. The privacy tier is not a tidiness control, and the same code path must
 now answer both questions differently.
 
+Task 10B installed the capability at all four choke points and proved it arrives. This task is
+therefore **one `if` at each**, plus the two fan-out filters that make a KB-less search degrade
+instead of failing.
+
 **Files:**
 
 | Action | Path | Anchor (re-verified at `9558c346`) |
 |---|---|---|
-| Modify | `crates/biorouter-mcp/src/knowledge/server.rs` | **reads (7):** `kb_search` `:579-606` (explicit branch `:590-601`), `kb_search_raw_sources` `:612-644` (explicit branch `:618-634`), `kb_export` `:737-758`, and the four through `kb_id_or_primary` `:312-342` — `kb_list_pages` `:373-384`, `kb_read_page` `:390-400`, `kb_get_graph` `:476-485`, `kb_list_history` `:491-503`. **writes (9):** `kb_create_base` `:357`, `kb_write_page` `:409`, `kb_add_raw_source` `:454`, `kb_restore_state` `:509`, `kb_begin_txn` `:527`, `kb_commit_txn` `:543`, `kb_abort_txn` `:562`, `kb_append_log` `:650`, `kb_import` `:764`. **the list:** `kb_list_bases` `:348-354` → `visible_bases_for_context` `:251-256` |
-| Modify | `crates/biorouter-server/src/routes/knowledge.rs` | the four macro routes only — `ingest` `:1122`, `ingest_conversation` `:1187`, `query_kb` `:1269`, `lint` `:1325`; `build_completer` `:899-914` |
+| Modify | `crates/biorouter-mcp/src/knowledge/server.rs` | **CP1.** `assert_kb_reachable` beside `gated_kb_id`; one call in `call_tool` (Task 10B). The two fan-out filters: `visible_bases_for_session` `:240-249` (retain at `:247`) and `search_visible_bases` `:258-286` (per-base loop at `:266`), both gaining `caller_private: bool`; `visible_bases_for_context` `:251-256` derives it from the context it already has. **Plus the third filter: `kb_id_or_primary` `:312-342`**, whose no-primary error (`let ids` `:323`, `ids.join(", ")` `:338`) formats `service.session_kb_ids(..)` into `"Pass kb_id explicitly (one of: …)"` — see ⚠ "the barrier must not narrate what it refuses". ⚠ Anchor any `awk` on `fn kb_id_or_primary\(` **with the paren**: the existing test `kb_id_or_primary_errors_with_the_candidate_list` `:886` also matches the bare prefix, and the two ranges concatenate to 56 lines instead of 31 |
+| Modify | `crates/biorouter-mcp/src/knowledge/macros/ingest.rs` / `query.rs` / `lint.rs` | **CP2.** one `tier::assert_reachable(svc.root(), &args.kb_id, args.caller_is_private)?;` on the line above each `raise_tier` (`ingest.rs:48`, `query.rs:47`, `lint.rs:218`) |
+| Modify | `crates/biorouter-server/src/routes/apps.rs` | **CP3.** one check in `handle_kb_frame` `:2474`, immediately after `resolve_kb_grant` returns `kb_id` and before the `match op` — so it covers `run_kb_read` `:2376` and the `ingest` arm `:2533` together |
+| Modify | `crates/biorouter-mcp/src/agent_drafter/mod.rs` | **CP4.** one check in `stage_full_payload`'s kb loop at `:1418`, before `svc.export_brkb(kb)` `:1423`; the existing export-payload test is at `:3894-3899` |
+| Reference | `crates/biorouter-mcp/src/knowledge/server.rs` | the tools deliberately **outside** `KB_ID_GATED_TOOLS`: `kb_list_bases` `:348`, `kb_create_base` `:357`, `kb_set_active` `:712`, `kb_get_active` `:725`, `kb_import` `:764` |
 
-⚠ **`kb_set_active` and `kb_get_active` are NOT gated, deliberately.** They move and report a
-*pointer*, and the pointer is a bare kb id the session already had to know to pass. Refusing there
-would break the "one axis, one pointer" repair logic in `CLAUDE.md` (a hidden primary promotes to the
-lexicographically first remaining base) for reasons that have nothing to do with privacy. A public
-session may point at a private base and will then be refused on every read.
+⚠ **Five tools are deliberately not in `KB_ID_GATED_TOOLS`, and each has a different reason.**
+
+- **`kb_set_active` / `kb_get_active`** move and report a *pointer*, and the pointer is a bare kb id
+  the session already had to know to pass. Refusing there would break the "one axis, one pointer"
+  repair logic in `CLAUDE.md` (a hidden primary promotes to the lexicographically first remaining
+  base) for reasons that have nothing to do with privacy. A public session may point at a private
+  base and will then be refused on every read.
+- **`kb_create_base` / `kb_import`** name a base that **does not exist yet**. There is nothing to
+  leak, and gating them is what banned knowledge-base creation for public sessions in the previous
+  draft. `tier::assert_reachable` would permit them anyway — a kb id with no directory on disk is
+  reachable by Task 10A decision (3) — but they are kept off the list so the list means one thing.
+- **`kb_list_bases`** must *omit*, not refuse: a single-base refusal would hide every base from a
+  public session the moment one of them is private. It goes through `visible_bases_for_context`.
+
+⚠ **The barrier must not narrate what it refuses.** `gated_kb_id` returns `Ok(None)` when a
+primary-resolving tool has neither an explicit `kb_id` nor a primary, deliberately, so the tool
+answers with its own error instead of a privacy refusal (Step 3). That error is
+`kb_id_or_primary`'s, at `server.rs:323-341`:
+
+```
+kb_id not supplied and this session has no primary knowledge base. Pass kb_id
+explicitly (one of: default, omop), …
+```
+
+built from `service.session_kb_ids(..)`, whose `session_kb_ids_unlocked` (`service.rs:1267-1274`)
+filters on `hidden` and **nothing else**. So a public chat with no primary calling
+`kb_read_page {path: …}` is handed `default, omop` — the exact list that the same task's
+`kb_list_bases_omits_a_private_base_rather_than_redacting_it` asserts must read `["default"]`. A
+barrier that refuses a read and then hands over the identifier of the thing it refused is not a
+barrier; and the id it hands over is the one argument that makes the explicit-`kb_id` branch — the
+finding this whole task exists to close — writable. So the id list in that error takes the same
+filter as `visible_bases_for_session`, and when the filter empties it the message degrades to the
+"this session has no knowledge bases" branch that already exists two lines above.
+
+**And this is a decision about existence-leakage, so it is stated rather than assumed.** DR-7 rules
+side channels — existence, counts, timing — **out of scope** for `chatrecall`, and this plan keeps
+that ruling: nothing here pads a count, equalises a latency or plants a decoy, and `create_base`'s
+pre-existing `"kb '{id}' already exists at {path}"` (`service.rs:451`) remains an existence oracle for
+a *guessed* id, unchanged and unchased ([AR-5](#ar-5--the-existence-of-a-private-knowledge-base-is-still-inferable)).
+What B2 and Task 10D close is a different thing, and the plan already ruled on it one test over: a
+knowledge base's **id and name are user-authored content** — *"a KB name is user-authored and
+routinely names a cohort or a study"* — which is why `kb_list_bases` omits rather than redacts.
+Directly enumerating that content to a public model is not a side channel; it is the content
+crossing. Refusing to be *asked* whether `omop` exists is out of scope. *Volunteering the string
+`omop`* is not.
 
 ⚠ **The `/knowledge/*` HTTP routes the GUI uses are NOT gated, and this is the load-bearing scope
 decision of the task.** DR-3 says *a public model* must never reach a private session. The Knowledge
-view is the **user**, not a model: `GET /knowledge/bases/{id}/page`, `/pages`, `/graph`, `/history`,
-`/preview`, `/export` are that user reading their own knowledge base in their own app, and a barrier
-there would lock a user out of their own notes with no model involved anywhere. The four macro routes
-**are** gated, because those run a model. If you find yourself adding a check to `get_page_body`
-(`:817`) or `list_pages` (`:517`), stop: that is a different product decision and it is
-[Open question 15](#open-questions).
+view is the **user**, not a model. The seven ungated read handlers, all verified present in
+`routes/knowledge.rs`, are `get_graph` `:466`, `list_pages` `:517`, `read_page` `:539`,
+`get_page_body` `:817`, `list_history` `:843`, `preview_state` `:862` and `export_brkb` `:1518` —
+that user reading their own knowledge base in their own app, and a barrier there would lock a user
+out of their own notes with no model involved anywhere. The four macro routes **are** gated, at CP2,
+because those run a model. If you find yourself adding a check to `get_page_body` or `list_pages`,
+stop: that is a different product decision and it is [Open question 15](#open-questions).
 
 - [ ] **Step 1: Write the failing tests**
 
 ```rust
+// crates/biorouter-mcp/src/knowledge/server.rs, in its #[cfg(test)] mod tests
+
 #[tokio::test]
 async fn the_explicit_kb_id_branch_is_not_a_way_around_the_barrier() {
     // The finding, exactly. Before this task the `kb_id`-carrying branch at
     // :590-592 searches any base on the machine, and `search_visible_bases`
     // — the only code that consults the session's set — is in the `else`.
-    let root = migrated_root_with_public_base("default");
-    tier::raise(&root, "default", true).unwrap();
+    let (srv, root) = server_at_migrated_root(&["default"]);
+    tier::raise_unlocked(&root, "default", true).unwrap();
     seed_page(&root, "default", "knowledge/omop.md", "SENTINEL-COHORT-N-412");
-    let srv = knowledge_server_at(&root);
 
-    let out = srv.kb_search(params(json!({ "kb_id": "default", "query": "cohort" })),
-                            ctx_with_capability(Public)).await.unwrap();
-    let text = text_of(&out);
+    let out = call_tool_as(&srv, "kb_search",
+        json!({ "kb_id": "default", "query": "cohort" }), Public).await;
+    let text = refusal_text(&out);
     assert!(text.contains("private"), "must say why: {text}");
     assert!(!text.contains("SENTINEL-COHORT-N-412"), "leaked a snippet: {text}");
     assert!(!text.contains("knowledge/omop.md"), "leaked a page path: {text}");
 }
 
 #[tokio::test]
-async fn no_entry_point_that_names_a_base_reaches_a_private_one_under_a_public_model() {
-    // Parameterised over all SIXTEEN. Gating kb_search alone leaves six read
-    // doors — and `kb_export` is the worst of them, because it writes the entire
-    // base to an attacker-named path on disk in one call (:744-752).
-    let root = migrated_root_with_public_base("omop");
-    tier::raise(&root, "omop", true).unwrap();
+async fn no_tool_that_names_a_base_reaches_a_private_one_under_a_public_model() {
+    // Parameterised over ALL NINETEEN, by name through call_tool — the shape
+    // CP1 makes possible and the old per-tool design could not express for the
+    // nine context-less tools. `kb_export` is the one to watch: it writes the
+    // entire base to an attacker-named path on disk in one call (:744-752).
+    let (srv, root) = server_at_migrated_root(&["omop"]);
+    tier::raise_unlocked(&root, "omop", true).unwrap();
     seed_page(&root, "omop", "knowledge/x.md", "SENTINEL-BODY");
-    let srv = knowledge_server_at(&root);
 
-    for probe in KB_ENTRY_POINTS {          // 7 reads + 9 writes, one closure each
-        let outcome = (probe.run)(&srv, "omop", Public).await;
-        assert!(outcome.is_refusal(), "{} was not refused", probe.name);
-        assert!(!outcome.text().contains("SENTINEL-BODY"), "{} leaked a body", probe.name);
-        assert_eq!(outcome.bytes_written(), 0, "{} wrote anyway", probe.name);
+    for probe in KB_TOOLS {                          // the same 19-row table as 10B
+        let out = call_tool_as(&srv, probe.name, probe.args_for("omop"), Public).await;
+        assert_eq!(out.is_err(), probe.gated, "{} gated={}", probe.name, probe.gated);
+        assert!(!rendered(&out).contains("SENTINEL-BODY"), "{} leaked a body", probe.name);
+        if probe.gated {
+            assert_eq!(bytes_written_since(&root, "omop"), 0, "{} wrote anyway", probe.name);
+        }
     }
-    for probe in KB_ENTRY_POINTS {
-        assert!((probe.run)(&srv, "omop", Private).await.is_ok(), "{} refused a private caller", probe.name);
+    for probe in KB_TOOLS {
+        assert!(call_tool_as(&srv, probe.name, probe.args_for("omop"), Private).await.is_ok(),
+                "{} refused a private caller", probe.name);
+    }
+}
+
+#[tokio::test]
+async fn omitting_the_kb_id_is_not_the_bypass() {
+    // `kb_id_or_primary` (:312) resolves an absent id to the session's primary,
+    // so a handler that only checks an EXPLICIT kb_id is bypassed by deleting
+    // one argument. Four tools take that path.
+    let (srv, root) = server_at_migrated_root(&["omop"]);
+    tier::raise_unlocked(&root, "omop", true).unwrap();
+    set_primary(&root, "sess-1", "omop");
+    for tool in ["kb_read_page", "kb_list_pages", "kb_get_graph", "kb_list_history"] {
+        let out = call_tool_as_session(&srv, tool, json!({ "path": "knowledge/x.md" }),
+                                       "sess-1", Public).await;
+        assert!(out.is_err(), "{tool} answered from the primary without a check");
     }
 }
 
@@ -2885,11 +4343,10 @@ async fn a_kb_less_search_still_serves_the_public_bases_it_can_see() {
     // The fan-out shape Task 15 gets wrong in the extension manager: a single
     // up-front refusal turns `search_visible_bases` into all-or-nothing, so one
     // private base in the session's set costs the user every other base.
-    let root = migrated_root_with_bases(&["default", "omop"]);
-    tier::raise(&root, "omop", true).unwrap();
+    let (srv, root) = server_at_migrated_root(&["default", "omop"]);
+    tier::raise_unlocked(&root, "omop", true).unwrap();
     seed_page(&root, "default", "knowledge/a.md", "public-hit cohort");
     seed_page(&root, "omop",    "knowledge/b.md", "private-hit cohort");
-    let srv = knowledge_server_at(&root);
 
     let hits = search_hits(&srv, json!({ "query": "cohort" }), Public).await;
     assert_eq!(hits.iter().map(|h| h.kb_id.as_str()).collect::<Vec<_>>(), vec!["default"]);
@@ -2902,18 +4359,73 @@ async fn kb_list_bases_omits_a_private_base_rather_than_redacting_it() {
     // and routinely names a cohort or a study. Omission also removes the
     // temptation to then pass the id explicitly, which is the very bypass this
     // task closes.
-    let root = migrated_root_with_bases(&["default", "omop"]);
-    tier::raise(&root, "omop", true).unwrap();
-    let srv = knowledge_server_at(&root);
-    let ids = base_ids(&srv, Public).await;
-    assert_eq!(ids, vec!["default"]);
+    let (srv, root) = server_at_migrated_root(&["default", "omop"]);
+    tier::raise_unlocked(&root, "omop", true).unwrap();
+    assert_eq!(base_ids(&srv, Public).await, vec!["default"]);
     assert_eq!(base_ids(&srv, Private).await, vec!["default", "omop"]);
 }
 
 #[tokio::test]
+async fn the_no_primary_error_names_only_the_bases_the_caller_may_reach() {
+    // The fall-through `gated_kb_id` deliberately leaves open (Step 3): with no
+    // explicit kb_id and no primary, the TOOL answers — and its answer used to
+    // be the full id list. Same leak class as `kb_list_bases` redacting instead
+    // of omitting, one function over, and it hands the public caller the exact
+    // argument the explicit-`kb_id` branch needs.
+    let (srv, root) = server_at_migrated_root(&["default", "omop"]);
+    tier::raise_unlocked(&root, "omop", true).unwrap();
+    clear_primary(&root, "sess-1");
+
+    let public = call_tool_as_session(&srv, "kb_read_page", json!({ "path": "knowledge/x.md" }),
+                                      "sess-1", Public).await;
+    let t = rendered(&public);
+    assert!(t.contains("default"), "the public base must still be offered: {t}");
+    assert!(!t.contains("omop"), "the no-primary error enumerated a private base: {t}");
+
+    let private = call_tool_as_session(&srv, "kb_read_page", json!({ "path": "knowledge/x.md" }),
+                                       "sess-1", Private).await;
+    assert!(rendered(&private).contains("omop"), "a private caller lost its own base");
+}
+
+#[tokio::test]
+async fn a_public_session_whose_only_base_is_private_is_told_it_has_none() {
+    // The degrade direction. Filtering the list must not leave
+    // "Pass kb_id explicitly (one of: )" — an empty parenthesis is both useless
+    // and a tell. It falls through to the branch that already exists for a
+    // session with no bases at all.
+    let (srv, root) = server_at_migrated_root(&["omop"]);
+    tier::raise_unlocked(&root, "omop", true).unwrap();
+    clear_primary(&root, "sess-1");
+    let t = rendered(&call_tool_as_session(&srv, "kb_list_pages", json!({}),
+                                           "sess-1", Public).await);
+    assert!(t.contains("no knowledge bases"), "{t}");
+    assert!(!t.contains("one of:"), "left an empty enumeration: {t}");
+}
+
+#[test]
+fn every_kb_tool_is_gated_or_listed_as_exempt() {
+    // The gate that makes a TWENTIETH tool a test failure instead of a silent
+    // hole: the router's own tool list must equal the gated list plus the five
+    // documented exemptions, with nothing unaccounted for in either direction.
+    const EXEMPT: &[&str] =
+        &["kb_list_bases", "kb_create_base", "kb_set_active", "kb_get_active", "kb_import"];
+    let mut known: Vec<&str> =
+        KB_ID_GATED_TOOLS.iter().chain(EXEMPT.iter()).copied().collect();
+    known.sort();
+    let mut actual: Vec<String> = KnowledgeServer::tool_router()
+        .list_all().into_iter().map(|t| t.name.to_string()).collect();
+    actual.sort();
+    assert_eq!(actual, known, "a kb_* tool is neither gated nor listed as exempt");
+}
+```
+
+```rust
+// crates/biorouter-server/tests/knowledge_routes.rs
+
+#[tokio::test]
 async fn a_public_model_macro_cannot_run_against_a_private_base_over_http() {
     let root = migrated_root_with_public_base("omop");
-    tier::raise(&root, "omop", true).unwrap();
+    tier::raise_unlocked(&root, "omop", true).unwrap();
     let r = post_query(&root, "omop", model_ref("anthropic", "claude-opus-4-8")).await;
     assert_eq!(r.status(), 409);
     assert!(r.text().await.contains("private"));
@@ -2922,10 +4434,55 @@ async fn a_public_model_macro_cannot_run_against_a_private_base_over_http() {
 }
 ```
 
-- [ ] **Step 2: Run** → **FAIL** on all sixteen probes and on the list test; the last test's 409 half
-      fails and its 200 half passes.
+```rust
+// crates/biorouter-server/src/routes/apps.rs, in its existing `mod tests`
 
-- [ ] **Step 3: Implement** — one helper, sixteen call sites, and the refusal is a **constant**:
+#[tokio::test]
+async fn br_kb_reads_are_refused_on_a_private_base_even_with_a_manifest_grant() {
+    // CP3, and the reason a manifest grant is not a privacy control: the app's
+    // manifest was authored by the drafting model (`agent_drafter/mod.rs:1731`),
+    // which learned the base ids from `discover_kbs` (`catalog.rs:125-141`).
+    let (state, root) = app_state_with_kb("kbx");
+    tier::raise_unlocked(&root, "kbx", true).unwrap();
+    seed_page(&root, "kbx", "knowledge/x.md", "SENTINEL-BODY");
+    handle_kb_frame(&bridge, &state.knowledge_service, Some(&cfg_granting("kbx", false)),
+                    /* caller_is_private */ false, "search",
+                    &json!({ "kb_id": "kbx", "query": "x" }), "r1").await;
+    let f = await_kb_result(&bridge).await;
+    assert!(f["error"].as_str().unwrap().contains("private"));
+    assert!(!f.to_string().contains("SENTINEL-BODY"));
+}
+```
+
+```rust
+// crates/biorouter-mcp/src/agent_drafter/mod.rs, in its #[cfg(test)] mod tests
+
+#[test]
+fn export_app_leaves_a_private_knowledge_base_out_of_the_payload() {
+    // CP4. `export_brkb` writes the WHOLE base into the payload, and `kb_ids`
+    // comes from the model-supplied `include.knowledge_bases` (:1397) — a
+    // strictly wider `kb_export` with no id gate anywhere before this task.
+    // Skip-and-note rather than hard-fail, matching `search_visible_bases`:
+    // the rest of the export is still useful and the user is told why.
+    let (root, target) = drafter_fixture_with_kbs(&["pub-kb", "priv-kb"]);
+    tier::raise_unlocked(&root, "priv-kb", true).unwrap();
+    let staged = stage_full_payload(&manifest, &target,
+                                    Some(&json!({ "knowledge_bases": ["pub-kb", "priv-kb"] })),
+                                    /* caller_is_private */ false);
+    let ids: Vec<_> = staged.knowledge_bases.iter().map(|k| k["id"].as_str().unwrap()).collect();
+    assert_eq!(ids, vec!["pub-kb"]);
+    assert!(staged.notes.iter().any(|n| n.contains("priv-kb") && n.contains("private")));
+    assert!(!target.join("payload/knowledge/priv-kb.brkb").exists());
+}
+```
+
+- [ ] **Step 2: Run** → **FAIL** on every gated probe, on the omitted-`kb_id` test, on both fan-out
+      tests, on both no-primary-error tests, on the app-socket test and on the drafter test; the HTTP
+      test's 409 half fails and its 200 half passes. `every_kb_tool_is_gated_or_listed_as_exempt`
+      passes from the start — it is a regression net, not a red test. No **compile** error anywhere:
+      Task 10B put every signature in place, which is the whole point of splitting the two tasks.
+
+- [ ] **Step 3: Implement** — one helper, four `if`s, two filters:
 
 ```rust
     /// The KB twin of `ExtensionManager::assert_extension_reachable`. `Err` is
@@ -2933,95 +4490,588 @@ async fn a_public_model_macro_cannot_run_against_a_private_base_over_http() {
     /// session's set — hiding and privacy are different questions and
     /// `kb_id_or_primary` (:312) answers only the first.
     fn assert_kb_reachable(&self, kb_id: &str, caller_private: bool) -> Result<(), ErrorData> {
-        if caller_private || !crate::knowledge::tier::is_private(self.service.root(), kb_id) {
-            return Ok(());
-        }
-        Err(ErrorData::new(ErrorCode::INVALID_REQUEST, KB_PRIVATE_REFUSAL.to_string(), None))
+        crate::knowledge::tier::assert_reachable(self.service.root(), kb_id, caller_private)
+            .map_err(|e| ErrorData::invalid_request(e.to_string(), None))
     }
 ```
 
+CP1 — one line in `call_tool`, above the raise Task 10B put there:
+
 ```rust
-/// Names no base, no page and no snippet. Constant, so a model that retries sees
-/// the same string and stops rather than looping (the same rule Task 14's
-/// `privacy_refusal` follows, and for the same reason).
-const KB_PRIVATE_REFUSAL: &str = "\
-This knowledge base is private: a session running an institutional or self-hosted model has \
-ingested into it, so only a private model may read or write it. This session is running on a \
-public model. Ask the user to switch this chat to a private model — Settings > Models, or the \
-model chip in the composer — and try again. Do not retry with a different knowledge base id, \
-through kb_export, or through a raw-source search; the boundary is the same everywhere.";
+        if let Some(kb_id) =
+            self.gated_kb_id(&name, request.arguments.as_ref(), Some(&context))?
+        {
+            self.assert_kb_reachable(&kb_id, caller_private)?;      // ← this task
+            if KB_RATCHETING_TOOLS.contains(&name.as_str()) {
+                self.service.raise_tier(&kb_id, caller_private).map_err(into_err)?;
+            }
+        }
 ```
 
-Placement rules, and each one has a wrong version that compiles:
+CP2 / CP3 / CP4 — one `tier::assert_reachable(root, kb_id, caller_is_private)` each, at the anchors
+in the Files table. CP4 turns the `Err` into a `note` and `continue`s rather than failing the export.
 
-- The seven reads and nine writes call it **immediately after the id is resolved and before any
-  filesystem read of the base**. For the four that route through `kb_id_or_primary`, that is right
-  after that call — not inside it, because `kb_id_or_primary` is also how a *write* resolves its
-  target and a shared refusal there would report a read error on a write.
-- `kb_search`'s and `kb_search_raw_sources`' explicit branches call it before `search_with_scope`;
-  their `else` branches do **not** — `search_visible_bases` filters instead (next bullet).
+The two fan-out filters, which are the only places that must **not** refuse:
+
 - `search_visible_bases` (`:258-286`) filters **inside** its per-base loop at `:266`, so a private
   base is skipped and the public ones still answer. A guard before the loop is the all-or-nothing bug
-  test 3 exists to catch.
+  test 4 exists to catch.
 - `visible_bases_for_session` (`:240-249`) gains the same filter beside its `hidden.contains` retain
   at `:247`, which is what makes `kb_list_bases` omit rather than redact.
-- The four HTTP macro routes check **before** `build_completer` runs, so an unknown model and a
-  private base produce the privacy 409 rather than a 400 about the model.
+
+Both take `caller_private: bool`; `visible_bases_for_context` (`:251-256`) derives it from the
+context it already has, so `kb_list_bases` needs no change of its own.
+
+The third filter, in `kb_id_or_primary` (`:323-341`) — the ⚠ above is why:
+
+```rust
+        let ids: Vec<String> = self
+            .service
+            .session_kb_ids(Self::session_id(context))
+            .map_err(into_err)?
+            .into_iter()
+            // Issue #56. `session_kb_ids_unlocked` (service.rs:1267) filters on
+            // `hidden` only, and this string is read by the model. Same rule as
+            // `visible_bases_for_session`: OMIT. When the filter empties the
+            // list, the existing "this session has no knowledge bases" branch
+            // below takes over — an empty `(one of: )` is both useless and a tell.
+            .filter(|id| Self::caller_is_private(context)
+                         || !crate::knowledge::tier::is_private(self.service.root(), id))
+            .collect();
+```
+
+⚠ It reads the tier **per id**, not once: `is_private` is a lookup in a file the process has
+already `stat`ed, and doing it per id is what lets the public bases survive the private one — the
+same all-or-nothing trap the fan-out tests exist to catch, in a third place.
+
+⚠ **Do not put the check inside `kb_id_or_primary` (`:312`).** It looks like the choke point and is
+not: `kb_search`, `kb_search_raw_sources`, `kb_export` and all nine writes take `kb_id` directly and
+never call it. It is also how a *write* resolves its target, so a shared refusal there would report a
+read error on a write. CP1 *calls* it — through `gated_kb_id` — rather than living inside it.
 
 - [ ] **Step 4: Run**
 
 ```bash
+cargo check --workspace --all-targets                  # see Task 10B's ⚠ on --lib
 cargo test -p biorouter-mcp --lib knowledge::
+cargo test -p biorouter-mcp --lib agent_drafter::
+cargo test -p biorouter-mcp --test knowledge_macros_e2e
 cargo test -p biorouter-server --test knowledge_routes
 cargo test -p biorouter-server --test knowledge_routes_e2e
+cargo test -p biorouter-server --lib routes::apps
 ```
+
+⚠ `knowledge_macros_e2e` is here because this task adds `tier::assert_reachable` at CP2, which that
+file's three macro runs now execute for real. They pass — every base it creates goes through
+`create_base`, which registers public (Task 10A decision 5a), and its callers pass
+`caller_is_private: false` — but "they pass" is a claim about a file no `--lib` filter compiles, so
+it is run rather than assumed.
 
 - [ ] **Step 5: Gate**
 
 ```bash
-# All sixteen, plus the definition.
+cd /Users/wgu/Desktop/BioRouter-privacy
+# FOUR choke points, one check each. The smallness is the point: if these counts
+# grow, someone re-scattered the barrier back across the tool surface.
 grep -c "assert_kb_reachable(" crates/biorouter-mcp/src/knowledge/server.rs
-echo "expect: 17 = 1 definition + 7 reads + 9 writes"
-# The two fan-out sites filter INSIDE their loop, not before it.
+echo "expect: 2 = 1 definition + 1 call, in call_tool"
+grep -c "tier::assert_reachable(" crates/biorouter-mcp/src/knowledge/macros/ingest.rs \
+        crates/biorouter-mcp/src/knowledge/macros/query.rs \
+        crates/biorouter-mcp/src/knowledge/macros/lint.rs
+echo "expect: 1 each — CP2"
+grep -c "tier::assert_reachable(" crates/biorouter-server/src/routes/apps.rs ; echo "expect: 1 — CP3"
+grep -c "tier::assert_reachable(" crates/biorouter-mcp/src/agent_drafter/mod.rs ; echo "expect: 1 — CP4"
+# The barrier runs before the router, and before the ratchet. Non-emptiness
+# first: `async fn call_tool` is macro-generated today (0 lines), and a grep over
+# an empty range prints nothing, which reads exactly like "correctly ordered".
+awk '/async fn call_tool/,/^    }/' crates/biorouter-mcp/src/knowledge/server.rs | wc -l
+echo "expect: > 1"
+awk '/async fn call_tool/,/^    }/' crates/biorouter-mcp/src/knowledge/server.rs \
+  | grep -n "assert_kb_reachable\|raise_tier\|tool_router.call" | head -3
+# Expected: THREE lines, in this order — assert_kb_reachable, raise_tier,
+# tool_router.call. Fewer than three is a missing step, not a passing gate.
+# CP4 runs before the export, not after.
+awk '/fn stage_full_payload/,/^}/' crates/biorouter-mcp/src/agent_drafter/mod.rs \
+  | grep -n "assert_reachable\|export_brkb(" | head -2
+# Expected: assert_reachable on the SMALLER line number.
+# CP3 runs before the op dispatch, so it covers reads and ingest together.
+awk '/async fn handle_kb_frame/,/^}/' crates/biorouter-server/src/routes/apps.rs \
+  | grep -n "resolve_kb_grant\|assert_reachable\|match op" | head -3
+# Expected, in this order: resolve_kb_grant, assert_reachable, match op.
+# The THREE fan-out sites filter INSIDE their loop, not before it. The third is
+# the no-primary error's id list — omission, not an enumeration of what was just
+# refused (see the ⚠ "the barrier must not narrate what it refuses").
 for fn in search_visible_bases visible_bases_for_session; do
   echo -n "$fn: "
   awk "/fn $fn/,/^    }/" crates/biorouter-mcp/src/knowledge/server.rs \
     | grep -n "for base\|retain\|tier::is_private" | head -3
 done
 # Expected: the loop/retain line BEFORE (or containing) the tier check.
-# The explicit-kb_id branch is closed — this is the finding, as a command.
-awk '/pub async fn kb_search\(/,/^    }/' crates/biorouter-mcp/src/knowledge/server.rs \
-  | grep -n "assert_kb_reachable\|search_with_scope" | head -2
-# Expected: assert_kb_reachable on the SMALLER line number.
+# ⚠ `fn kb_id_or_primary\(` WITH the paren. Measured: the bare prefix also matches
+# the existing test `kb_id_or_primary_errors_with_the_candidate_list` (:886), awk
+# restarts the range there, and the two concatenate to 56 lines — a gate reading a
+# function it is not about. Anchored, the span is 31.
+awk '/fn kb_id_or_primary\(/,/^    }/' crates/biorouter-mcp/src/knowledge/server.rs | wc -l
+echo "expect: 31 today, > 1 after — assert the range before reading it"
+awk '/fn kb_id_or_primary\(/,/^    }/' crates/biorouter-mcp/src/knowledge/server.rs \
+  | grep -c "tier::is_private" ; echo "expect: 1 — the id list is filtered, not the whole error"
+awk '/fn kb_id_or_primary\(/,/^    }/' crates/biorouter-mcp/src/knowledge/server.rs \
+  | grep -n "session_kb_ids\|is_private\|ids.is_empty\|ids.join" | head -4
+echo "Expected, in this order: session_kb_ids, is_private, ids.is_empty, ids.join —"
+echo "  the filter runs BEFORE the empty check, or an all-private session gets"
+echo "  'Pass kb_id explicitly (one of: )' instead of 'this session has none'."
+# The gated list is exactly fourteen, and the five exemptions are not in it.
+# ⚠ `grep -o | wc -l`, not `grep -c`: see Task 10B Step 5 — `grep -c` counts
+# lines, and rustfmt decides how many lines a const array occupies. This one
+# happens to explode one-element-per-line today; its sibling does not.
+awk '/const KB_ID_GATED_TOOLS/,/\];/' crates/biorouter-mcp/src/knowledge/server.rs \
+  | grep -oE '"kb_[a-z_]+"' | wc -l ; echo "expect: 14"
+awk '/const KB_ID_GATED_TOOLS/,/\];/' crates/biorouter-mcp/src/knowledge/server.rs \
+  | grep -oE '"kb_(list_bases|create_base|set_active|get_active|import)"' | wc -l ; echo "expect: 0"
+# Every tool the router knows is either gated or explicitly exempt — the test
+# that turns a twentieth tool into a failure rather than a silent hole.
+# ⚠ Assert "1 passed", not the exit code: a libtest filter that matches nothing
+# prints `0 passed` and exits 0 (see "Which test filters are validated").
+cargo test -p biorouter-mcp --lib \
+  knowledge::server::tests::every_kb_tool_is_gated_or_listed_as_exempt \
+  | grep "test result:" ; echo "expect: 1 passed; 0 failed"
+# NEW-SURFACE detector. These are the only ways to reach base CONTENT from
+# outside `knowledge/`; a fifth one appearing is precisely what CP1..CP4 cannot
+# cover by construction, so it is a gate rather than a hope. Both counts are
+# measured against the tree at 9558c346 and must not grow.
+grep -rn "store::\(list_pages\|read_page\|write_page\|search\|search_with_scope\)(" \
+  --include='*.rs' crates/ | grep -v "src/knowledge/" | sort
+echo "expect: exactly 4 — routes/apps.rs:2394 (run_kb_read, covered by CP3) and"
+echo "        routes/knowledge.rs:523, :544, :571 (the Knowledge view, ungated by decision)"
+grep -rln "\.\(export_brkb\|import_brkb\|read_page\|get_graph\|list_history\|add_raw_source\|restore_state\|preview_state\)(" \
+  --include='*.rs' crates/*/src/ | grep -v "/knowledge/" | sort
+echo "expect: exactly 4 FILES — agent_drafter/mod.rs (CP4), routes/apps.rs (CP3),"
+echo "        routes/knowledge.rs (ungated by decision), bin/knowledge_ingest_probe.rs"
+echo "        (a dev probe whose write goes through the ingest macro, CP2)"
+echo "NOTE: crates/*/src/ excludes tests/, which legitimately call the service directly"
+echo "      (knowledge_macros_e2e.rs, knowledge_revert_integration.rs, knowledge_e2e.rs)"
+echo "⚠ BOTH detectors are blind to base METADATA by construction: neither pattern"
+echo "  names list_bases or session_kb_ids, because those return ids and names"
+echo "  rather than content. That is exactly the hole the two leaks in this round"
+echo "  came through. Task 10D owns the metadata detector; run it too."
 # The pointer tools and the GUI read routes are untouched, deliberately.
 awk '/pub async fn kb_set_active/,/^    }/' crates/biorouter-mcp/src/knowledge/server.rs \
   | grep -c "assert_kb_reachable" ; echo "expect: 0"
-for h in get_page_body list_pages get_graph list_history preview_state export_brkb; do
+for h in get_graph list_pages read_page get_page_body list_history preview_state export_brkb; do
   echo -n "$h: "
-  awk "/pub async fn $h/,/^}/" crates/biorouter-server/src/routes/knowledge.rs | grep -c "tier::is_private"
+  awk "/pub async fn $h/,/^}/" crates/biorouter-server/src/routes/knowledge.rs \
+    | grep -c "tier::is_private\|assert_reachable"
 done
-echo "expect: 0 each — the Knowledge view is the user, not a model (see the ⚠ above)"
-# The refusal names nothing.
-grep -c "kb_id" <(awk '/const KB_PRIVATE_REFUSAL/,/;$/' crates/biorouter-mcp/src/knowledge/server.rs)
-echo "expect: 0"
+echo "expect: 0 each — the Knowledge view is the user, not a model (see the ⚠ above)."
+echo "All seven names verified present as top-level 'pub async fn' at :466 :517 :539"
+echo ":817 :843 :862 :1518, so this loop is not a vacuous pass over empty awk ranges."
+# The refusal is one string in one place, so CP1..CP4 cannot drift apart.
+grep -rn "KB_PRIVATE_REFUSAL" --include='*.rs' crates/ | grep -v "knowledge/tier.rs"
+echo "expect: no output — every surface reaches it through tier::assert_reachable"
 ```
 
-**What this catches.** Four wrong implementations. (1) Gating `kb_search` only — literally what the
+**What this catches.** Five wrong implementations. (1) Gating `kb_search` only — literally what the
 finding names — which leaves `kb_read_page`, `kb_list_pages`, `kb_get_graph`, `kb_list_history`,
 `kb_search_raw_sources` and `kb_export` open, and `kb_export` writes the whole base to disk in one
-call. The sixteen-probe test is the only thing that fails it. (2) Putting the check inside
-`kb_id_or_primary`, which looks like the one choke point and is not — `kb_search`,
-`kb_search_raw_sources`, `kb_export` and all nine writes take `kb_id` directly and never call it.
-(3) A single up-front guard in `search_visible_bases`, turning a KB-less search into all-or-nothing
-so one private base costs the user every other base. (4) Filtering hits *after*
-`search_with_scope` returns rather than skipping the base — which reads the private base's index off
-disk, and is the same post-filter mistake Gate D's `LIMIT` test exists to catch one crate over.
+call. The nineteen-tool test is the only thing that fails it. (2) Checking only an **explicit**
+`kb_id`, which four tools bypass by resolving the session's primary — `omitting_the_kb_id_is_not_the_bypass`
+is the only test that fails it, and it is the defect the previous draft's "sixteen call sites"
+wording made easy to write. (3) A single up-front guard in `search_visible_bases`, turning a KB-less
+search into all-or-nothing so one private base costs the user every other base. (4) Filtering hits
+*after* `search_with_scope` returns rather than skipping the base — which reads the private base's
+index off disk, and is the same post-filter mistake Gate D's `LIMIT` test exists to catch one crate
+over. (5) Gating CP1 and stopping, which leaves `run_kb_read` and `export_app` — the two surfaces
+that never touch `KnowledgeServer` — exactly as open as they are today; the per-file
+`assert_reachable` counts and the new-surface detector are what fail it. (6) Filtering every path
+that returns base *content* and none that returns a base *id*, so the refusal itself names the base
+it refused — `the_no_primary_error_names_only_the_bases_the_caller_may_reach` is the only test that
+fails it, and neither new-surface detector can see it, because both key on `store::` and on service
+content calls while this one goes through `session_kb_ids`. Task 10D closes the same class in
+`agent_drafter`.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add crates/biorouter-mcp/src/knowledge/server.rs crates/biorouter-server/src/routes/knowledge.rs
-git commit -m "feat(knowledge): refuse a public model on a private knowledge base at all sixteen entry points (#56)"
+git add crates/biorouter-mcp/src/knowledge/ crates/biorouter-mcp/src/agent_drafter/mod.rs \
+        crates/biorouter-server/src/routes/knowledge.rs crates/biorouter-server/src/routes/apps.rs
+cargo check --workspace --all-targets
+git commit -m "feat(knowledge): refuse a public model on a private knowledge base at all four choke points (#56)"
+```
+
+---
+
+### Task 10D: The metadata surface — CP5, because a barrier that names what it refused has not refused it
+
+Tasks 10B and 10C stop base **content** at four choke points. They do not stop the base's **id and
+name**, and one model-facing tool hands both over for every base on the machine with no arguments at
+all.
+
+`list_platform_catalog` (`agent_drafter/mod.rs:2626`) serialises `catalog::Catalog::discover()`
+whole; `discover_kbs` (`catalog.rs:125-141`) maps `service.list_bases()` to `{id, name}` for **every**
+base with no filter of any kind. Its own tool description instructs the model to *"Call this BEFORE
+configure_app"*, so it is not an edge case — it is the routine first call of every app-building turn.
+And `validate.rs` renders `Catalog::render_list(&catalog.kb_ids())` into three `INVALID_PARAMS`
+strings the model reads back (`:33`, `:42`, `:52`), which makes a deliberately-invalid
+`configure_app {knowledge_base: "br.kb"}` an enumeration oracle that needs no valid input at all.
+
+Neither of Task 10C's new-surface detectors sees it, and not by accident: one keys on
+`store::(list_pages|read_page|write_page|search|search_with_scope)` and the other on
+`KnowledgeService` **content** methods. `list_bases` is in neither, because it returns metadata. CP1
+does not reach it either — `agent_drafter` keeps its own `#[tool_handler]` (`:2882`) — and CP4 covers
+only `stage_full_payload`.
+
+This contradicts the plan's own ruling, one crate over: Task 10C asserts
+`kb_list_bases_omits_a_private_base_rather_than_redacting_it` *because* **"a KB name is user-authored
+and routinely names a cohort or a study"**. The same list, from the same call, through a different
+tool, cannot be public.
+
+⚠ **What is in scope here and what is not — stated, because DR-7 rules the neighbouring thing out.**
+DR-7 puts side channels (existence, counts, timing) out of scope for `chatrecall`, and this task
+keeps that ruling exactly: nothing below pads a count, equalises a latency or plants a decoy. A
+public session can still *ask* whether a given id exists and get a truthful answer —
+`create_base` bails with `"kb '{id}' already exists at {path}"` (`service.rs:451`), and this task does
+not touch it. That residual is [AR-5](#ar-5--the-existence-of-a-private-knowledge-base-is-still-inferable).
+The line is: **being asked about one guessed id is a side channel; volunteering the whole list is the
+content crossing.** A user-authored KB name is content by this plan's own rule, and the id is the one
+argument that makes the explicit-`kb_id` branch — the finding Task 10C exists to close — writable
+without guessing.
+
+**CP5 is `Catalog::discover`, and it is a real choke point, measured.** Every consumer of a knowledge
+base's metadata inside `agent_drafter` and inside the app runtime goes through it: `grep -rn
+"Catalog::discover()" --include='*.rs' crates/` returns **12** hits — **6 in production**
+(`agent_drafter/mod.rs:1090` via `persist_created_app`←`create_app`, `:2071` `configure_app`, `:2202`
+`update_app`'s manifest path, `:2511` `declare_profiles`, `:2627` `list_platform_catalog`, and
+`routes/apps.rs:772` `capability_report`), 4 in in-file test modules and 2 in
+`crates/biorouter-mcp/tests/`. Giving it a required parameter makes all six production sites a
+compile error and is a **twelve-edit** change a reviewer can read in one screen — the forcing function
+Task 10A decision (5a) rejected for `create_base` only because that one measured ~90 sites.
+
+**Files:**
+
+| Action | Path | Anchor (re-verified at `9558c346`) |
+|---|---|---|
+| Modify | `crates/biorouter-mcp/src/agent_drafter/catalog.rs` | **CP5.** `Catalog::discover()` `:69-82` (14 lines) gains `caller_is_private: bool`; `discover_kbs()` `:125-141` (17 lines) gains the filter; `kb_ids` `:102-104`, `render_list` `:116-122`, `has_kb` `:90-92` all read from the filtered vector and need no change; `mod tests` `:265`, whose construction is `:270` |
+| Modify | `crates/biorouter-mcp/src/agent_drafter/mod.rs` | the five production `Catalog::discover()` sites `:1090`, `:2071`, `:2202`, `:2511`, `:2627`; `list_platform_catalog` `:2626` (declared `:2615-2625`), `configure_app` `:2033` (`:2029`), `update_app` `:2130` (`:2126`) and `declare_profiles` `:2501` (`:2497`) each gain `context: RequestContext<RoleServer>`; `create_app` `:1975-1979` **already has one** and threads it through `create_app_inner` `:1987` into `persist_created_app` `:1072-1084`; `session_id_from_context` `:1575-1582` is the in-file precedent to mirror |
+| Modify | `crates/biorouter-server/src/routes/apps.rs` | `capability_report` `:768` gains `caller_is_private: bool`; its sole caller `configure_agent` `:1257` resolves it from the `agent` it already holds, exactly as CP3's three call sites do |
+| Modify | `crates/biorouter-mcp/tests/catalog_write_boundary.rs` | `Catalog::discover()` `:54` — an integration test `--lib` cannot compile (Task 10B ⚠) |
+| Modify | `crates/biorouter-mcp/tests/testdrive_corpus_relint.rs` | `Catalog::discover()` `:103` — same |
+| Reference | `crates/biorouter-mcp/src/agent_drafter/validate.rs` | `check_knowledge_base` `:18-58` — the three `Catalog::render_list(&catalog.kb_ids())` renderings at `:33`, `:42`, `:52` (`:78` and `:98` are the skill and extension lists, out of scope). **Unchanged**, and that is the point: filtering at CP5 fixes all three at once, because they read the catalog they are handed; the in-file test constructions are `:179`, `:250`, `:261` |
+
+⚠ **Filter the catalog, do not add a check to the validators.** The validators are the tempting
+place — they are where the string is formatted — but there are three of them for knowledge bases
+alone, plus `has_kb`, plus the report's `missing_knowledge_base`, and a private base that is *absent
+from the catalog* fixes every one of them with no second rule to keep in sync. It also produces the
+right behaviour for free: a public session that names a private base by hand gets *"knowledge base
+'omop' is not installed on this Biorouter"* — the **omission** semantics Task 10C chose for
+`kb_list_bases`, not a redaction and not a privacy refusal that would itself confirm the base exists.
+
+⚠ **`Catalog::discover` gains a `bool`, not a `ProviderTier`.** `agent_drafter` is in
+`biorouter-mcp`, which cannot depend on `biorouter` — Task 10A decision (1), the same constraint that
+made `IngestArgs` take a bool. `routes/apps.rs` (in `biorouter-server`) does the `ProviderTier → bool`
+crossing at its one call site.
+
+- [ ] **Step 1: Write the failing tests**
+
+```rust
+// crates/biorouter-mcp/src/agent_drafter/catalog.rs, in its #[cfg(test)] mod tests (:265)
+
+#[test]
+fn the_catalog_omits_a_private_knowledge_base_from_a_public_caller() {
+    // The headline. `discover_kbs` had NO filter, and the tool that returns it
+    // tells the model to call it before configure_app.
+    let root = drafter_catalog_root_with_kbs(&["default", "omop"]);
+    tier::raise_unlocked(&root, "omop", true).unwrap();
+
+    let public = Catalog::discover(/* caller_is_private */ false);
+    assert_eq!(public.kb_ids(), vec!["default"]);
+    assert!(!serde_json::to_string(&public).unwrap().contains("omop"),
+            "the id or the NAME survived serialisation");
+
+    let private = Catalog::discover(true);
+    assert_eq!(private.kb_ids(), vec!["default", "omop"]);
+}
+
+// The next two live in `validate.rs`'s own `#[cfg(test)] mod tests` (:158-159),
+// NOT in catalog.rs's (:264-265) — they call `check_knowledge_base`, and a test
+// in catalog.rs would have to reach it as `super::validate::…`. Filter:
+// `cargo test -p biorouter-mcp --lib agent_drafter::validate`.
+
+#[test]
+fn a_rejection_message_cannot_be_used_to_enumerate_private_bases() {
+    // validate.rs:33/:42/:52 render `render_list(&catalog.kb_ids())` into
+    // INVALID_PARAMS strings the model reads. `br.kb` is the exact input the
+    // 100-app test drive produced, so this is the live path, not a contrivance.
+    let root = drafter_catalog_root_with_kbs(&["default", "omop"]);
+    tier::raise_unlocked(&root, "omop", true).unwrap();
+    let public = Catalog::discover(false);
+    for probe in ["br.kb", "NOT A VALID ID", "clinvar"] {
+        let e = validate::check_knowledge_base(probe, &public).unwrap_err();
+        assert!(!e.contains("omop"), "{probe} enumerated a private base: {e}");
+        assert!(e.contains("default"), "{probe} lost the public bases too: {e}");
+    }
+}
+
+#[test]
+fn a_public_session_cannot_configure_an_app_against_a_private_base() {
+    // Omission, not refusal: the message must read "not installed", which is
+    // what a public caller can truthfully be told. A message that said
+    // "private" would confirm the base exists, which is the leak in a politer
+    // sentence.
+    let root = drafter_catalog_root_with_kbs(&["omop"]);
+    tier::raise_unlocked(&root, "omop", true).unwrap();
+    let e = validate::check_knowledge_base("omop", &Catalog::discover(false)).unwrap_err();
+    assert!(e.contains("not installed"), "{e}");
+    assert!(!e.to_lowercase().contains("private"), "{e}");
+    assert!(validate::check_knowledge_base("omop", &Catalog::discover(true)).is_ok());
+}
+```
+
+```rust
+// crates/biorouter-mcp/src/agent_drafter/mod.rs, in its #[cfg(test)] mod tests
+
+#[tokio::test]
+async fn list_platform_catalog_is_scoped_to_the_calling_sessions_capability() {
+    // Driven THROUGH the tool with a meta-carrying context, not by calling
+    // `Catalog::discover(false)` directly — otherwise the test proves the
+    // filter works and says nothing about whether the tool passes the right
+    // argument, which is the whole of the bug.
+    let (srv, root) = drafter_at_root_with_kbs(&["default", "omop"]);
+    tier::raise_unlocked(&root, "omop", true).unwrap();
+
+    let public = call_drafter_tool_as(&srv, "list_platform_catalog", json!({}), Public).await;
+    assert!(!rendered(&public).contains("omop"));
+    let private = call_drafter_tool_as(&srv, "list_platform_catalog", json!({}), Private).await;
+    assert!(rendered(&private).contains("omop"));
+}
+
+#[tokio::test]
+async fn every_drafter_tool_that_builds_a_catalog_scopes_it() {
+    // Parameterised, for the same reason 10B/10C parameterise over all
+    // nineteen kb_* tools: fixing the tool whose NAME says "catalog" leaves
+    // four validators enumerating the same list through their error strings.
+    let (srv, root) = drafter_at_root_with_kbs(&["default", "omop"]);
+    tier::raise_unlocked(&root, "omop", true).unwrap();
+    for (tool, args) in CATALOG_BUILDING_TOOLS {   // list_platform_catalog,
+        let out = call_drafter_tool_as(&srv, tool, args(), Public).await;
+        assert!(!rendered(&out).contains("omop"),  // create_app, configure_app,
+                "{tool} leaked a private base id");//  update_app, declare_profiles
+    }
+}
+```
+
+```rust
+// crates/biorouter-server/src/routes/apps.rs, in its existing `mod tests`
+
+#[tokio::test]
+async fn a_public_app_session_reports_a_private_base_as_missing_not_as_granted() {
+    // `configure_agent` calls `grant_knowledge_base` for whatever the report
+    // says is granted, which is what ARMS the app's KB tools. CP3 would refuse
+    // the reads anyway; not arming them is the honest state, and it keeps the
+    // report from telling the app's own model that a base it may not read is
+    // available.
+    let (state, root) = app_state_with_kb("omop");
+    tier::raise_unlocked(&root, "omop", true).unwrap();
+    let cfg = cfg_with_knowledge_base("omop");
+    let public = capability_report(&cfg, /* caller_is_private */ false);
+    assert_eq!(public.granted_knowledge_base, None);
+    assert_eq!(public.missing_knowledge_base.as_deref(), Some("omop"));
+    let private = capability_report(&cfg, true);
+    assert_eq!(private.granted_knowledge_base.as_deref(), Some("omop"));
+}
+```
+
+- [ ] **Step 2: Run**
+
+```bash
+cargo test -p biorouter-mcp --lib agent_drafter::catalog    # 5 today (measured, Task 4b); assert 5 + 1
+cargo test -p biorouter-mcp --lib agent_drafter::validate
+cargo test -p biorouter-mcp --lib agent_drafter::           # 244 today (measured); assert 244 + 5
+cargo test -p biorouter-server --lib routes::apps           # 90 today (measured); assert 90 + 1
+```
+
+Expected: **COMPILE ERROR** first — `Catalog::discover` takes 0 arguments, `capability_report` takes
+1, and four of the five drafter tools have no `context` to read. Then **FAIL** on every omission
+assertion.
+
+- [ ] **Step 3: Implement**
+
+(a) `catalog.rs` — CP5, three lines:
+
+```rust
+    /// Scan this install, from the point of view of a caller with this
+    /// capability (issue #56).
+    ///
+    /// `caller_is_private == false` omits every knowledge base whose tier is
+    /// private, exactly as `kb_list_bases` does (Task 10C): a KB id and name are
+    /// user-authored and routinely name a cohort or a study, so they are content
+    /// and not an existence side channel (DR-7 covers the latter and this does
+    /// not chase it — see the task's ⚠).
+    ///
+    /// A `bool` and not `ProviderTier` because `biorouter-mcp` cannot depend on
+    /// `biorouter` — Task 10A ⚠(1).
+    pub fn discover(caller_is_private: bool) -> Self {
+        Self {
+            knowledge_bases: discover_kbs(caller_is_private),
+            …unchanged…
+        }
+    }
+```
+
+```rust
+fn discover_kbs(caller_is_private: bool) -> Vec<KbEntry> {
+    let Ok(service) = crate::knowledge::service::KnowledgeService::new_default() else {
+        return Vec::new();
+    };
+    let root = service.root().to_path_buf();
+    service
+        .list_bases()
+        .map(|bases| {
+            bases
+                .into_iter()
+                // Issue #56. Per base, and BEFORE the map: a filter after the
+                // KbEntry is built is the same code with one more chance to be
+                // reordered into a post-filter on a serialised string.
+                .filter(|m| caller_is_private || !crate::knowledge::tier::is_private(&root, &m.id))
+                .map(|m| KbEntry { id: m.id, name: m.name })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+```
+
+(b) `agent_drafter/mod.rs` — the four tools that need a capability gain a `RequestContext`, using
+the in-file precedent (`session_id_from_context` `:1575`) and the shared reader:
+
+```rust
+    /// The caller's capability, from the request meta (issue #56). Delegates to
+    /// `knowledge::tier` rather than re-reading the key, so CP4 and CP5 cannot
+    /// drift from CP1 — the same reason `KnowledgeServer::caller_is_private`
+    /// delegates (Task 10A (f)).
+    fn caller_is_private(context: &RequestContext<RoleServer>) -> bool {
+        crate::knowledge::tier::caller_is_private(&context.meta)
+    }
+```
+
+`create_app` already has its `RequestContext`; thread the bool through `create_app_inner` beside the
+`session_id: Option<String>` it already threads, into `persist_created_app`. `configure_app`,
+`update_app` and `declare_profiles` each gain the parameter. Task 10B gave `export_app` one for CP4,
+so after this task **six** drafter tools carry a context and the rest do not.
+
+(c) `routes/apps.rs` — `capability_report(cfg, caller_is_private)`, resolved in `configure_agent`
+(`:1246`) from the `agent` it already holds:
+
+```rust
+    let caller_is_private = agent.provider().await.map(|p| p.tier())
+        .unwrap_or(biorouter::privacy::ProviderTier::Public).is_private();
+    let mut report = capability_report(cfg, caller_is_private);
+```
+
+the same fail-closed expression CP3's three call sites use, for the same reason.
+
+- [ ] **Step 4: Run**
+
+```bash
+cargo check --workspace --all-targets                  # see Task 10B's ⚠ on --lib
+cargo test -p biorouter-mcp --lib agent_drafter:: 2>&1 | grep "test result:"
+cargo test -p biorouter-mcp --test catalog_write_boundary
+cargo test -p biorouter-mcp --test testdrive_corpus_relint
+cargo test -p biorouter-mcp --test ui_example_apps
+cargo test -p biorouter-server --lib routes::apps 2>&1 | grep "test result:"
+```
+
+Expected: **PASS**. The two `--test` lines are the two integration files that construct a `Catalog`
+and that no `--lib` filter compiles; `ui_example_apps` is here because it drives real drafter tools
+whose signatures moved.
+
+- [ ] **Step 5: Gate**
+
+```bash
+cd /Users/wgu/Desktop/BioRouter-privacy
+# CP5 exists and is the ONLY constructor: a second discovery path is how this
+# leak comes back.
+grep -c "pub fn discover(" crates/biorouter-mcp/src/agent_drafter/catalog.rs ; echo "expect: 1"
+awk '/^fn discover_kbs\(/,/^}/' crates/biorouter-mcp/src/agent_drafter/catalog.rs | wc -l
+echo "expect: 17 today, > 1 after — assert the range before reading it"
+awk '/^fn discover_kbs\(/,/^}/' crates/biorouter-mcp/src/agent_drafter/catalog.rs \
+  | grep -n "list_bases\|tier::is_private\|KbEntry" | head -3
+# Expected, in this order: list_bases, tier::is_private, KbEntry — the filter is
+# on the manifest, before the entry is built, not on the rendered output.
+# Every production caller passes a real capability; none hardcodes the trusting one.
+grep -rn "Catalog::discover(" --include='*.rs' crates/*/src/ crates/*/tests/ | sort
+echo "expect: 12 hits — 6 production (agent_drafter/mod.rs :1090 :2071 :2202 :2511 :2627,"
+echo "  routes/apps.rs :772), 4 in-file tests (catalog.rs, validate.rs x3), 2 in crates/*/tests/"
+grep -rn "Catalog::discover(true)" --include='*.rs' crates/*/src/ ; echo "expect: no output"
+echo "  (a hardcoded 'true' is 'this caller is trusted' — the mirror of Task 10B's"
+echo "   hardcoded caller_is_private, and the only way to compile while disabling CP5)"
+# The four tools that had no context now have one, and the ones that need none did
+# not grow one. PER TOOL, never a total: a total is satisfied by the wrong four.
+# Every range below was run at 9558c346 and is non-empty with exactly ONE start
+# (spans 7-12 lines), so this loop is not a vacuous pass over empty awk ranges.
+for t in list_platform_catalog configure_app update_app declare_profiles export_app create_app; do
+  echo -n "$t: " ; awk "/name = \"$t\"/,/-> Result<CallToolResult/" \
+    crates/biorouter-mcp/src/agent_drafter/mod.rs | grep -c "RequestContext"
+done
+echo "expect: 1 each — six tools carry a context after Tasks 10B and 10D."
+echo "  Measured today: create_app 1 (it already had one), the other five 0."
+for t in list_apps read_app delete_app build_app launch_app; do
+  echo -n "$t: " ; awk "/name = \"$t\"/,/-> Result<CallToolResult/" \
+    crates/biorouter-mcp/src/agent_drafter/mod.rs | grep -c "RequestContext"
+done ; echo "expect: 0 each — a context on a tool that needs none is scope creep"
+# The key has ONE spelling, still. Task 10A pinned this at two files; CP5 must
+# reach it through the const, not by hand-typing a third copy.
+grep -rl '"biorouter-capability-tier"' --include='*.rs' crates/ | sort
+echo "expect: still exactly 2 FILES — knowledge/tier.rs and agents/mcp_client.rs"
+grep -c "knowledge::tier::caller_is_private" crates/biorouter-mcp/src/agent_drafter/mod.rs
+echo "expect: 1 — the delegating reader, not a second implementation"
+# The validators were NOT patched: filtering the catalog fixes all three at once,
+# and a check inside them is a second rule to keep in sync.
+grep -c "tier::is_private\|caller_is_private" crates/biorouter-mcp/src/agent_drafter/validate.rs
+echo "expect: 0"
+# METADATA new-surface detector — the one Task 10C's two detectors are blind to
+# by construction, and the reason this task exists. PRINT with line numbers and
+# compare against the `#[cfg(test)]` boundaries; a bare count is the fragile shape
+# this plan has already been burned by twice. Measured at 9558c346: 20 hits, of
+# which 15 are production and 5 are inside test modules
+# (biorouter-cli/src/commands/knowledge.rs `#[cfg(test)]` at :755 → :1024 :1048
+#  :1077 :1080; biorouter-server/src/routes/reset.rs at :387 → :418).
+grep -rn "\.list_bases()\|\.session_kb_ids(" --include='*.rs' crates/*/src/ \
+  | grep -v "src/knowledge/" | sort
+echo "expect: 20 hits / 15 production, every one accounted for:"
+echo "  agent_drafter/catalog.rs:130               CP5 — THIS TASK"
+echo "  biorouter/src/agents/knowledge_tool.rs:149 the id LIST — Task 11 (same class as"
+echo "                                             kb_id_or_primary, second file)"
+echo "  biorouter/src/agents/knowledge_tool.rs:134 :141  existence of a SUPPLIED id, AR-5"
+echo "  biorouter-server/routes/knowledge.rs:344   the Knowledge view — the user, ungated"
+echo "  biorouter-server/routes/reset.rs:118 :178  factory reset — the user, ungated"
+echo "  biorouter-server/routes/workflow.rs:134    workflow authoring — the user, ungated"
+echo "  biorouter-cli x7 (commands/knowledge.rs:54 :123 :214 :519, session/completion.rs:274,"
+echo "                    session/tui/mod.rs:1626 :1754)  the terminal — the user, ungated"
+echo "NOTE: the 'grep -v src/knowledge/' above also drops biorouter/src/knowledge/soul.rs:73 (the"
+echo "  user's own Soul base). That exclusion is inherited from Task 10C's detectors and"
+echo "  is deliberate; soul.rs calls only create_base/list_bases and is out of scope."
+echo "A TWENTY-FIRST hit is a new metadata surface and must be classified before it lands."
+```
+
+**What this catches.** Four wrong implementations. (1) Fixing `list_platform_catalog` only — the
+tool whose name says "catalog" — while `create_app`, `configure_app` and `update_app` keep rendering
+the same ids into rejection strings; `every_drafter_tool_that_builds_a_catalog_scopes_it` is the only
+test that fails it, and it is the exact shape of Task 10B's "ratchet `kb_write_page` and call it
+done". (2) Filtering the *serialised JSON* rather than the vector, which leaves `has_kb` true so a
+public session can still configure an app against a private base and `capability_report` still arms
+its tools. (3) Making the refusal say *"that base is private"*, which is a leak in a politer
+sentence — `a_public_session_cannot_configure_an_app_against_a_private_base` asserts the message says
+"not installed" and does **not** say "private". (4) Reading the meta key by hand in `agent_drafter`
+instead of through `knowledge::tier::caller_is_private`, which compiles, passes every drafter test,
+and silently stops matching the day the key changes; the two-file gate is what sees it.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add crates/biorouter-mcp/src/agent_drafter/ crates/biorouter-mcp/tests/catalog_write_boundary.rs \
+        crates/biorouter-mcp/tests/testdrive_corpus_relint.rs \
+        crates/biorouter-server/src/routes/apps.rs
+cargo check --workspace --all-targets
+git commit -m "feat(knowledge): scope the Agent Drafter catalog to the caller's capability (#56)"
 ```
 
 ---
@@ -3051,12 +5101,20 @@ one Task 2 exists to stop leaking. A guard in the platform tool leaves it as an 
 A **required** `caller_capability` field on `ConversationIngestArgs` makes all three a compile error,
 which is the same forcing function Gate D uses for `ChatHistorySearch::new`'s 7th parameter.
 
+⚠ **The field itself arrives in Task 10B, not here.** 10B makes `IngestArgs.caller_is_private`
+required, which makes `conversation_ingest.rs:205` — inside this very function — a compile error with
+nothing to pass; so 10B declares `caller_capability` and wires all three callers, and **this task adds
+the refusal that reads it**. The split is deliberate and matches 10B/10C: one task plumbs, the next
+gates. Practical consequence for the worker: Step 2 below expects **FAIL**, not COMPILE ERROR, and
+the "a required field makes all three a compile error" argument above is the reason 10B was the right
+place to spend it — not a description of what happens when you start this task.
+
 **Files:**
 
 | Action | Path | Anchor (re-verified at `9558c346`) |
 |---|---|---|
-| Modify | `crates/biorouter/src/knowledge/conversation_ingest.rs` | `ConversationIngestArgs` `:172-180` (7 fields today, ending `cancel`); `ingest_conversation` `:184-187`; the empty/undigestible early returns `:188-194`; `render_conversations(&args.sessions)` `:191` — the guard goes **before** it, so no transcript is rendered for a session that is about to be refused |
-| Modify | `crates/biorouter/src/agents/knowledge_tool.rs` | `handle_ingest_conversation` `:24-86`; `session_ids` parse `:32-41`; the load loop `:48-49` (`get_session(sid, true)`); the `ingest_conversation(` call at `:61` |
+| Modify | `crates/biorouter/src/knowledge/conversation_ingest.rs` | `ConversationIngestArgs` `:172-180` (7 fields today, ending `cancel`; **Task 10B adds the 8th, `caller_capability`**); `ingest_conversation` `:184-187`; the empty/undigestible early returns `:188-194`; `render_conversations(&args.sessions)` `:191` — the guard goes **before** it, so no transcript is rendered for a session that is about to be refused. Also the **new** `ConversationIngestResult` this task defines here — see Step 3 on why `refused` may not be a field on `IngestResult` |
+| Modify | `crates/biorouter/src/agents/knowledge_tool.rs` | `handle_ingest_conversation` `:24-86`; `session_ids` parse `:32-41`; the load loop `:48-49` (`get_session(sid, true)`); the `ingest_conversation(` call at `:61`. **Plus `resolve_target_kb` `:120-161`**, whose no-target error at `:156-159` formats `svc.session_kb_ids(Some(session_id))` (`:149`) into `"pass kb_id (one of: …)"` — the same leak Task 10C closes in `kb_id_or_primary`, in a second file, on the model-facing path this task owns |
 | Modify | `crates/biorouter-server/src/routes/knowledge.rs` | `ingest_conversation` `:1187-1258`; the `session_ids` load loop `:1202-1212`; the `ConversationIngestArgs` literal `:1224-1232` |
 | Modify | `crates/biorouter-cli/src/commands/knowledge.rs` | `handle_ingest_conversation` `:500`; the `ingest_conversation(` call at `:571` |
 | Reference | `crates/biorouter/src/agents/agent.rs` | dispatch `:2660`; advertisement `:3131` (`ingest_conversation_tool()`), with the surrounding comment "The conversation-ingestion tool is always available on the platform extension" |
@@ -3065,7 +5123,20 @@ which is the same forcing function Gate D uses for `ChatHistorySearch::new`'s 7t
 ⚠ **`Agent` has no `capability_tier()`** — Task 10 put that method on `ExtensionManager`, whose
 `provider` field is private. `handle_ingest_conversation` is `impl Agent` (`knowledge_tool.rs:23-24`),
 so it resolves its own capability with `self.provider().await.map(|p| p.tier()).unwrap_or(ProviderTier::Public)`
-— fail-closed to Public, and `Agent::provider()` is the accessor Task 13 has already hardened.
+— fail-closed to Public, and `Agent::provider()` is the accessor Task 13 has already hardened. The
+same value serves `resolve_target_kb`, which is called from the same function at `:44`, four lines
+earlier.
+
+⚠ **The mirror of Task 10C's B2, found by looking for it.** `resolve_target_kb`
+(`knowledge_tool.rs:120`) is `kb_id_or_primary`'s twin one crate over: an explicit `kb_id` wins
+(`:139-145`), an absent one falls back to the primary (`:146-148`), and with neither it bails with
+`svc.session_kb_ids(..).join(", ")` (`:149`, `:156-159`) — the full id list, to a model, on the
+platform tool this task exists to gate. Task 10C's fix does not reach it: that one is in
+`biorouter-mcp`'s `KnowledgeServer` and this one is in `biorouter`'s `Agent`. It takes the same
+filter and the same degrade (`:150-155`'s "this chat has none" branch already exists). Its sibling
+`"knowledge base '{id}' does not exist"` at `:141` is an existence answer about **one supplied id**
+and stays as it is — [AR-5](#ar-5--the-existence-of-a-private-knowledge-base-is-still-inferable),
+DR-7's side-channel scope, the same line Task 10D draws.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -3123,6 +5194,19 @@ async fn a_public_session_may_still_ingest_its_own_conversation() {
 }
 
 #[tokio::test]
+async fn the_no_target_error_names_only_the_bases_the_caller_may_reach() {
+    // `resolve_target_kb` (:149, :156-159) is `kb_id_or_primary`'s twin in this
+    // crate, and Task 10C's fix cannot reach it. Same rule: OMIT.
+    let agent = public_capability_agent_with_bases(&["default", "omop"]).await;
+    kb_raise("omop", true);
+    clear_primary_for(&agent.session_id());
+
+    let out = agent.handle_ingest_conversation(json!({})).await.unwrap_err().to_string();
+    assert!(out.contains("default"), "the public base must still be offered: {out}");
+    assert!(!out.contains("omop"), "the no-target error enumerated a private base: {out}");
+}
+
+#[tokio::test]
 async fn the_http_route_is_gated_by_the_same_argument_not_by_a_second_copy() {
     // D8. The route is reachable with nothing but the secret key.
     let private = private_session_with_messages("PHI cohort notes").await;
@@ -3135,12 +5219,15 @@ async fn the_http_route_is_gated_by_the_same_argument_not_by_a_second_copy() {
 }
 ```
 
-- [ ] **Step 2: Run** → **COMPILE ERROR** at all three `ConversationIngestArgs` literals (missing
-      field `caller_capability`), then **FAIL** on the refusal and ratchet assertions.
+- [ ] **Step 2: Run** → **FAIL**, not COMPILE ERROR. Task 10B already declared `caller_capability`
+      and wired all three constructors (⚠ above), so everything here compiles; what fails is the
+      refusal, the ratchet, the 409 and both metadata assertions. If you get a compile error at a
+      `ConversationIngestArgs` literal, Task 10B did not land — stop and go back.
 
 - [ ] **Step 3: Implement**
 
-(a) `ConversationIngestArgs` gains a **required, non-`Option`** field:
+(a) `ConversationIngestArgs.caller_capability` **already exists** (Task 10B). For the record, and so
+a reviewer reading this task alone knows what it is:
 
 ```rust
     /// The capability of whoever is asking. Required, and deliberately not
@@ -3168,8 +5255,34 @@ async fn the_http_route_is_gated_by_the_same_argument_not_by_a_second_copy() {
     }
 ```
 
-carrying `refused.len()` into `IngestResult` so each caller can report it, and naming **only** the
-count and the reason:
+carrying `refused.len()` out of the function in a **new type defined here**, so each caller can
+report it:
+
+```rust
+/// What an ingest of other sessions' conversations produced, plus how many were
+/// refused by the barrier above.
+///
+/// ⚠ NOT a `refused` field on `IngestResult`. That type is
+/// `crates/biorouter-mcp/src/knowledge/macros/ingest.rs:40`, in a crate this
+/// task's Files table and `git add` name no file from; it derives
+/// `Serialize`/`Deserialize` and is the payload of the SSE macro routes, so a
+/// field there is a wire change to three routes that have nothing to do with
+/// Gate G. It is also a cross-crate edit inside a task whose commit would then
+/// not build — the exact packaging defect that left nine consecutive commits red
+/// (Task 10B ⚠ on `--lib`). All three callers of `ingest_conversation` are
+/// already in this task's Files table, so changing its RETURN type is the
+/// cheaper edit and the honest one.
+pub struct ConversationIngestResult {
+    pub ingested: biorouter_mcp::knowledge::macros::ingest::IngestResult,
+    /// How many of the requested sessions the barrier refused. A count and
+    /// nothing else — §11.4 classifies a session's id, title and working
+    /// directory as content, and this product's titles are LLM-generated from
+    /// the conversation itself.
+    pub refused: usize,
+}
+```
+
+and naming **only** the count and the reason:
 
 ```rust
 /// Names no session, no title and no working directory — §11.4 classifies all
@@ -3181,22 +5294,62 @@ private model may read them. This session is running on a public model. Ask the 
 chat to a private model and try again.";
 ```
 
-(c) The three call sites each pass their own capability: the platform tool from
+(c) The three call sites **already** pass their own capability (Task 10B): the platform tool from
 `self.provider().await.map(|p| p.tier()).unwrap_or(ProviderTier::Public)`; the HTTP route from the
 provider `build_completer` constructed (the **instance**, not `body.model.provider` — `factory.rs:142-146`
-can hand back something else); the CLI from the session's bound provider.
+can hand back something else); the CLI from the session's bound provider. This task changes none of
+them; Step 5 re-asserts them anyway, because the value they pass is now load-bearing for a refusal
+rather than only for a ratchet.
 
 (d) The HTTP route maps a full refusal to **409**, not 500 — the same typed status Gate A uses
 (Task 12), for the same reason: a barrier that surfaces as an internal error teaches the caller to
 retry.
 
+(e) **`resolve_target_kb` takes the same filter Task 10C put in `kb_id_or_primary`** (⚠ above). One
+line in `knowledge_tool.rs:149`, using the capability `handle_ingest_conversation` has already
+resolved five lines earlier for (c):
+
+```rust
+    let ids: Vec<String> = svc
+        .session_kb_ids(Some(session_id))?
+        .into_iter()
+        // Issue #56. Per id, and before the `is_empty` check below, so a chat
+        // whose only base is private is told it has none rather than being
+        // handed `(one of: )`.
+        .filter(|id| caller.is_private() || !tier::is_private(svc.root(), id))
+        .collect();
+```
+
+⚠ It needs `resolve_target_kb` to take the caller's capability — a fourth parameter on a
+`pub(crate)` function with **one** production caller (`:44`) and three test callers (`:245`, `:247`,
+`:253`), all four in the same file. Measured, so nobody defers it as "a signature with callers".
+
+(f) **The `IngestArgs` this function builds at `:205` already carries the same value across the
+crate boundary** — Task 10B's `caller_is_private: args.caller_capability.is_private()`. That one line
+is what makes this task's headline test — `ingesting_your_own_private_conversation_ratchets_the_knowledge_base`
+— pass: the ratchet itself lives in `macros::ingest::ingest` (CP2), which this function funnels into,
+and *not* in any `kb_*` tool. The sub-agent that does the writing reaches `store::write_page` and
+`svc.add_raw_source` through `KbToolDispatch`, where no MCP-layer gate can see it. `ProviderTier`
+becomes a `bool` there and only there, for the crate-dependency reason in Task 10A ⚠(1). Nothing in
+this task touches it; it is stated because this task's headline test is the only place its absence
+would be visible.
+
 - [ ] **Step 4: Run**
 
 ```bash
+cargo check --workspace --all-targets                  # see Task 10B's ⚠ on --lib
 cargo test -p biorouter --lib -- agents::knowledge_tool knowledge::conversation_ingest
 cargo test -p biorouter-server --test knowledge_routes
 cargo test -p biorouter-cli --lib commands::knowledge
+cargo test -p biorouter-mcp --lib knowledge::macros::ingest   # the ratchet this test depends on
 ```
+
+`cargo check --workspace --all-targets` is here because this task changes `ingest_conversation`'s
+**return type** (`IngestResult` → `ConversationIngestResult`) and `resolve_target_kb`'s signature.
+Both are `pub`/`pub(crate)` and `--lib` alone would not tell you whether anything under
+`crates/*/tests/` names them. Measured at `9558c346`: nothing does — `grep -rn
+"ingest_conversation\|resolve_target_kb" crates/*/tests/` is empty — but the check is one command and
+the measurement is what makes it cheap to keep true.
 
 - [ ] **Step 5: Gate**
 
@@ -3211,13 +5364,37 @@ echo "expect: exactly 1 hit, in conversation_ingest.rs"
 awk '/pub async fn ingest_conversation/,/^}/' crates/biorouter/src/knowledge/conversation_ingest.rs \
   | grep -n "partition\|render_conversations" | head -2
 # Expected: partition on the SMALLER line number.
-# All three callers pass the field (a missed one would not compile, but a caller
-# that hardcodes Private compiles fine and is the real risk).
+# All three callers pass the field (a missed one would not compile since Task 10B,
+# but a caller that hardcodes Private compiles fine and is the real risk).
 grep -rn "caller_capability:" --include='*.rs' crates/ | grep -v conversation_ingest.rs
 echo "expect: 3 — and NONE of them may read 'caller_capability: ProviderTier::Private'"
 grep -rn "caller_capability: ProviderTier::Private" --include='*.rs' crates/ ; echo "expect: no output"
 # The refusal names no session.
 grep -c "session.name" crates/biorouter/src/agents/knowledge_tool.rs ; echo "expect: 0"
+# The refused COUNT does not travel as a field on a type in another crate.
+grep -c "pub struct ConversationIngestResult" crates/biorouter/src/knowledge/conversation_ingest.rs
+echo "expect: 1"
+git diff --stat HEAD -- crates/biorouter-mcp
+echo "expect: empty — this task touches no biorouter-mcp file, and a 'refused' field on"
+echo "  IngestResult (macros/ingest.rs:40) would be a wire change to three SSE routes"
+echo "  in a crate this task does not commit."
+# The metadata twin: resolve_target_kb omits, exactly as kb_id_or_primary does.
+# ⚠ `fn resolve_target_kb\(` with the paren — see Task 10C Step 5 for why the bare
+# prefix is unsafe as an awk START. Measured today: 42 lines, one start.
+awk '/fn resolve_target_kb\(/,/^}/' crates/biorouter/src/agents/knowledge_tool.rs | wc -l
+echo "expect: > 1 (42 today)"
+awk '/fn resolve_target_kb\(/,/^}/' crates/biorouter/src/agents/knowledge_tool.rs \
+  | grep -n "session_kb_ids\|is_private\|ids.is_empty\|ids.join" | head -4
+echo "Expected, in this order: session_kb_ids, is_private, ids.is_empty, ids.join."
+echo "  is_private AFTER is_empty leaves a public chat whose only base is private"
+echo "  reading 'pass kb_id (one of: )'."
+# Both id-list sites are filtered, and they are the only two.
+grep -rn "session_kb_ids(" --include='*.rs' crates/*/src/ | grep -v "src/knowledge/service.rs"
+echo "expect: 7 hits / 3 production — knowledge/server.rs:325 (Task 10C),"
+echo "  knowledge_tool.rs:149 (this task), biorouter-cli/src/commands/knowledge.rs:54"
+echo "  (the terminal, ungated by decision). The other 4 (:1024 :1048 :1077 :1080)"
+echo "  are below biorouter-cli/src/commands/knowledge.rs's #[cfg(test)] at :755 —"
+echo "  compare against the boundary, do not count."
 ```
 
 **What this catches.** Four wrong implementations. (1) The check placed before the loop, on
@@ -3228,7 +5405,11 @@ already called `kb_write_page`; the byte-equality assertion is the only thing th
 as an unguarded copy; the required field and the cross-file `grep` are what fail it. (4) The
 plausible-looking fix of hardcoding `caller_capability: ProviderTier::Private` at the HTTP or CLI
 call site to make it compile — which reads as "this caller is trusted" and is exactly wrong for the
-route that needs the check most. The last grep is the only gate that sees it.
+route that needs the check most. The last grep is the only gate that sees it. (5) Guarding the
+transcripts and leaving `resolve_target_kb` handing the same public model the id list of every base
+including the private ones — a refusal that names what it refused, and the second instance of the
+class Task 10C closes in `kb_id_or_primary`; `the_no_target_error_names_only_the_bases_the_caller_may_reach`
+is the only test that fails it.
 
 - [ ] **Step 6: Commit**
 
@@ -3237,6 +5418,7 @@ git add crates/biorouter/src/knowledge/conversation_ingest.rs \
         crates/biorouter/src/agents/knowledge_tool.rs \
         crates/biorouter-server/src/routes/knowledge.rs \
         crates/biorouter-cli/src/commands/knowledge.rs
+cargo check --workspace --all-targets
 git commit -m "fix(knowledge): refuse cross-session ingest of a private conversation, in the shared function (#56)"
 ```
 
@@ -3520,11 +5702,13 @@ cd ui/desktop && npx vitest run ModelAndProviderContext 2>&1 | tail -5
 ⚠ A vitest filter that matches nothing **fails alone and passes in company** — one live term hides
 any number of dead ones. State the expected **file and test counts** in the PR and check both.
 
-⚠ **`cargo test -p biorouter-server --lib routes::agent` prints `0 passed` and exits 0 today**:
-`crates/biorouter-server/src/routes/agent.rs` has **no `#[cfg(test)] mod tests`**. Ten of the
-route modules have one, so the filter shape is right and the module is simply empty. This task
-creates it. Assert a count, never "no failures" — a zero here after Step 3 means the route tests
-landed in a different file.
+⚠ **`cargo test -p biorouter-server --lib routes::agent` does NOT print `0 passed` today — it
+prints `8 passed`.** `routes/agent.rs` has two `#[cfg(test)]` blocks, `mod working_dir_lock_tests`
+(`:1279`) and `mod knowledge_selection_tests` (`:1380`), neither of them named `tests`, and the
+module-path filter picks up both. A previous version of this note said the module was empty, which
+is the direction that hides a no-op: a worker told to expect zero reads `8 passed` as "my tests
+landed" when in fact none of them did. **Record the pre-count with the identical command before
+Step 1 and assert `post == 8 + N`** for the N tests Step 1 writes. Never "assert a non-zero count".
 
 - [ ] **Step 5: Gate**
 
@@ -3536,10 +5720,28 @@ awk '/pub async fn update_provider/,/^    }/' crates/biorouter/src/agents/agent.
 # Expected: bind_provider_if_allowed on the SMALLER line number.
 # The route no longer collapses every error to 500.
 grep -c "privacy_barrier" crates/biorouter-server/src/routes/agent.rs ; echo "expect: >= 1"
-grep -c '"409"' ui/desktop/openapi.json ; echo "expect: >= 1"
+# The 409 is on THIS operation. ⚠ `grep -c '"409"' openapi.json` is VACUOUS —
+# it is 6 today (update_working_dir, interrupt, reply, reset_app_data,
+# create_schedule, edit_message all declare one), so it is green before and
+# after. Assert the response on the operation that gains it, by parsing:
+python3 -c "
+import json,sys
+d=json.load(open('ui/desktop/openapi.json'))
+op=d['paths']['/agent/update_provider']['post']
+assert op['operationId']=='update_agent_provider', op['operationId']
+codes=sorted(op['responses'])
+print('update_agent_provider responses:', codes)
+assert '409' in codes, 'the typed privacy 409 is not on the operation'
+ref=json.dumps(op['responses']['409'])
+assert 'PrivacyBarrierBody' in ref, ('409 has no typed body: '+ref)
+print('OK — typed 409 on update_agent_provider')"
+# expect: responses ['200','400','401','409','424','500'] and 'OK'. Today the
+# list is ['200','400','401','424','500'] and the assert fires.
+# ...and the generated client actually carries it, or (d) has nothing to catch.
+grep -c "PrivacyBarrierBody" ui/desktop/src/api/types.gen.ts ; echo "expect: >= 1 (0 today)"
 # The client throws.
 awk '/const changeModel/,/^  \);/' ui/desktop/src/components/ModelAndProviderContext.tsx \
-  | grep -c "throwOnError" ; echo "expect: 2 (updateAgentProvider AND setConfigProvider)"
+  | grep -c "throwOnError" ; echo "expect: 2 (updateAgentProvider AND setConfigProvider); 1 today"
 ```
 
 **What this catches.** The wrong implementation adds the check to `Agent::update_provider` as an
@@ -3767,9 +5969,19 @@ reply-prologue edit shows up as a reordering.
 
 ```bash
 # The seam. The gate must sit between the elicitation return and restore_goal.
-awk 'NR>=3258 && NR<=3400' crates/biorouter/src/agents/agent.rs \
+# ⚠ SYMBOL-anchored, not NR-anchored. The first version read
+# `awk 'NR>=3258 && NR<=3400'`, which violates this plan's own rule ("the named
+# SYMBOL is the anchor, never the line number") in the one file it warns about
+# most — and this task's own Step 3 inserts ~15 lines INTO that window, so the
+# fixed end at 3400 walks off the end of the prologue as the edit lands.
+awk '/pub async fn reply\(/,/self\.restore_goal\(/' crates/biorouter/src/agents/agent.rs \
   | grep -n "ElicitationResponse\|bind_allowed\|restore_goal"
 # Expected order: ElicitationResponse ... bind_allowed ... restore_goal.
+# Measured today (no #56 code): 2 lines — ElicitationResponse at rel 23 and
+# restore_goal at rel 71, i.e. a 71-line prologue. A run that prints ONE line is
+# a range that did not terminate (check `self.restore_goal(` still occurs);
+# a run that prints bind_allowed AFTER restore_goal is the seam bug this exists
+# to catch.
 # The refusal is a yield, never an Err out of reply. PRINT the lines rather than
 # counting them: the count depends on how the implementation spells the guard,
 # and a number that goes stale the first time someone merges two lines is the
@@ -3794,8 +6006,13 @@ awk '/pub async fn reply\(/,/^    }/' crates/biorouter/src/agents/agent.rs \
 # The one new `floor` crossing, and Task 7's audit updated in the SAME commit.
 awk '/pub async fn reply\(/,/^    }/' crates/biorouter/src/agents/agent.rs \
   | grep -c "privacy::floor(" ; echo "expect: 1"
-cargo test -p biorouter --lib privacy::tests::floor_is_crossed_only_where_a_capability_establishes_a_classification
-# Expected: PASS with agent.rs uncommented in EXPECTED. A failure here naming
+cargo test -p biorouter --lib \
+  privacy::tests::floor_is_crossed_only_where_a_capability_establishes_a_classification \
+  | grep "test result:" ; echo "expect: 1 passed; 0 failed"
+# ⚠ "Expected: PASS" is not a gate for a NAMED filter. A libtest filter that
+# resolves to nothing prints `0 passed` and EXITS 0 — so a typo in the test name,
+# or a test that Task 7 nested under a different module than `privacy::tests`,
+# reads exactly like success. Assert the printed count. A failure here naming
 # agent.rs means the constant was not bumped in this commit.
 ```
 
@@ -4013,20 +6230,67 @@ cargo test -p biorouter-server --lib routes::agent
 # There is exactly ONE production call into an MCP client, and it is inside
 # dispatch_tool_call. This is what makes the choke-point claim checkable rather
 # than asserted, and it fails the day someone adds a second path.
-grep -rn "\.call_tool(" --include='*.rs' crates/ | grep -v "^crates/biorouter/src/agents/extension_manager.rs:15"
-echo "expect: only #[cfg(test)] hits (skills_extension.rs tests from :798, code_execution_extension.rs tests from :2115)"
+#
+# ⚠ The filter is an EXACT line, not a prefix. The first version excluded
+# `^crates/biorouter/src/agents/extension_manager.rs:15`, which is a prefix match
+# on the line NUMBER: it swallows :15, :150-:159 and all of :1500-:1599 in a
+# 3206-line file — i.e. it would hide a brand-new `.call_tool(` added anywhere in
+# that hundred-line window, which is the window `dispatch_tool_call` lives in.
+grep -rn "\.call_tool(" --include='*.rs' crates/ \
+  | grep -v "^crates/biorouter/src/agents/extension_manager.rs:1562:"
+echo "expect: exactly 9 lines, in FOUR files, ALL of them tests — measured at 9558c346:"
+echo "  crates/biorouter/src/agents/skills_extension.rs        :1229 :1306 :1326 :1345"
+echo "     (inside #[cfg(test)] which begins at :798)"
+echo "  crates/biorouter/src/agents/code_execution_extension.rs :2140 :2177 :2247"
+echo "     (inside #[cfg(test)] which begins at :2115)"
+echo "  crates/biorouter-mcp/tests/preview_fixture_dump.rs      :53"
+echo "  crates/biorouter-mcp/tests/agent_drafter_registered.rs  :72"
+echo "The first version named only two of the four files, so the two integration"
+echo "files under tests/ read as unexplained hits and invite a worker to 'fix' them."
+echo "A tenth line, or any line whose path is under a crate's src/ and not in one"
+echo "of the two #[cfg(test)] spans above, is a new bypass — read the diff."
 # The gate reads the RESOLVED RECORD, not the tool-name string. Asserted as two
 # anchored patterns, positive and negative, rather than as a count over an awk
 # range: the range `/pub async fn dispatch_tool_call/,/SecretGuard/` is 67 lines
 # and spans the prefix-strip at :1471-1481, so `grep -c prefixed_name` over it
 # returns 3 TODAY, before a line of #56 exists. That gate could never pass and
 # never measured what its comment said.
-grep -c "\.get(&client_name)" crates/biorouter/src/agents/extension_manager.rs ; echo "expect: >= 1"
+# ⚠ `grep -c "\.get(&client_name)" ; expect: >= 1` was VACUOUS: it is already 1
+# today, at :1483 (`self.extensions.lock().await.get(&client_name)`, the
+# pre-existing is_tool_available check), so it was green before a line of #56
+# existed. Assert that the PRIVACY LOOKUP is the thing keyed on client_name,
+# scoped to the function, and pair it with the zero-count on the wrong key.
+awk '/pub async fn dispatch_tool_call/,/^    }/' crates/biorouter/src/agents/extension_manager.rs \
+  | grep -nE "privacy_refusal\(|capability_tier\(" 
+echo "expect: at least one line, and EVERY one of them BELOW rel 23, where"
+echo "  'let (client_name, client) = self.get_client_for_tool(..)' binds. A refusal"
+echo "  computed above that line has no resolved record to read."
+awk '/pub async fn dispatch_tool_call/,/^    }/' crates/biorouter/src/agents/extension_manager.rs \
+  | grep -c "get(&client_name)" ; echo "expect: 2 — the pre-existing is_tool_available lookup at"
+echo "  rel 46, plus this task's tier lookup. A 1 means the tier came from somewhere else."
 grep -cE "privacy_refusal\(&(prefixed_name|tool_name)|classify_extension\(&(prefixed_name|tool_name)" \
   crates/biorouter/src/agents/extension_manager.rs
 echo "expect: 0 — the tier is never resolved from the tool-name string"
-# Gate C is not an inspector.
-grep -rn "PrivacyInspector" crates/ ; echo "expect: no output"
+# Gate C is not an inspector. ⚠ `grep -rn "PrivacyInspector"` is VACUOUS: it is
+# a name this plan invented, it is 0 today, and it is 0 under every wrong
+# implementation too — a worker who genuinely writes Gate C as an inspector will
+# call it something else. Assert on the TRAIT instead, whose impl set is a
+# closed, measured list; a new impl under any name trips it.
+diff <(grep -rl "impl ToolInspector for" --include='*.rs' crates/ | sort) <(cat <<'EOF'
+crates/biorouter/src/hooks/inspector.rs
+crates/biorouter/src/permission/managed_inspector.rs
+crates/biorouter/src/permission/permission_inspector.rs
+crates/biorouter/src/security/security_inspector.rs
+crates/biorouter/src/security/sensitive_ops.rs
+crates/biorouter/src/tool_monitor.rs
+crates/biorouter/tests/tool_inspection_manager_tests.rs
+EOF
+) && echo "OK: no new ToolInspector — Gate C is a branch in dispatch_tool_call, not a plugin"
+# expect: no diff output, then "OK". Measured at 9558c346: exactly these 7 files
+# (8 impls; tool_inspection_manager_tests.rs has two mocks). Registration is the
+# other half — nothing this feature adds may reach the inspector manager:
+grep -rn "add_inspector(\|register_inspector(" --include='*.rs' crates/ | grep -ci "privacy"
+echo "expect: 0"
 # The ratchet is at permit time, so it sits ABOVE the `let fut = async move` at :1544.
 awk '/pub async fn dispatch_tool_call/,/^    }/' crates/biorouter/src/agents/extension_manager.rs \
   | grep -n "raise_session_privacy\|let fut = async move" | head -2
@@ -4144,13 +6408,49 @@ grep -c "assert_extension_reachable(" crates/biorouter/src/agents/extension_mana
 echo "expect: 9 = 1 definition + 8 call sites (read_resource_tool, read_resource,"
 echo "         get_ui_resources, list_resources_from_extension, list_resources,"
 echo "         list_prompts_from_extension, list_prompts, get_prompt)"
-# The three fan-out sites guard INSIDE their loop, not before it.
-for fn in read_resource_tool get_ui_resources list_prompts; do
+# ...and one hit per function, so the count above cannot be reached by putting
+# two guards in one place and none in another.
+#
+# ⚠ TWO anchoring traps, both measured, both of which made the first version of
+# this loop unreadable. (a) `/pub async fn list_prompts/` without the paren also
+# matches `list_prompts_from_extension` (:1578); awk then re-triggers and
+# concatenates BOTH functions into one 75-line range instead of list_prompts'
+# real 46. Same for `read_resource` vs `read_resource_tool`. (b) dropping `pub `
+# is worse: the trait stubs inside `#[cfg(test)]` (:1885 :1893 :1949 :1957 :1985
+# :1993 :2029 :2037) are bare `async fn`, so `/async fn read_resource\(/` spans
+# 170 lines across three definitions. Only `pub async fn <name>(` is one
+# function — measured spans: 72, 36, 33, 61, 29, 46, 18.
+for fn in read_resource_tool read_resource get_ui_resources list_resources \
+          list_prompts_from_extension list_prompts get_prompt; do
   echo -n "$fn: "
-  awk "/pub async fn $fn/,/^    }/" crates/biorouter/src/agents/extension_manager.rs \
-    | grep -n "for \|FuturesUnordered\|assert_extension_reachable" | head -3
+  awk "/pub async fn $fn\(/,/^    }/" crates/biorouter/src/agents/extension_manager.rs \
+    | grep -c "assert_extension_reachable("
 done
-# Expected for each: the loop/FuturesUnordered line BEFORE assert_extension_reachable.
+# `list_resources_from_extension` is the one private helper (`async fn`, :1337,
+# 38 lines) and its name is unique, so it takes the un-prefixed pattern:
+echo -n "list_resources_from_extension: "
+awk '/async fn list_resources_from_extension\(/,/^    }/' \
+  crates/biorouter/src/agents/extension_manager.rs | grep -c "assert_extension_reachable("
+echo "expect: 1 each, eight times — and 1+8 = the 9 above."
+# The three fan-out sites guard INSIDE their loop, not before it. Each fan-out
+# has ONE loop header and it is matched by name, because a bare `for ` also
+# matches inner loops and prose: read_resource_tool's first `for ` is
+# `for content in read_result.contents` at rel 17 — inside the EXPLICIT-name
+# branch, not the fan-out — and its rel 26 is a COMMENT containing "for the
+# resource". A `| head -3` over `for \|FuturesUnordered\|assert_...` therefore
+# printed rel 17, 26, 34 and never reached the guard at all: uninterpretable,
+# green or red at random.
+echo -n "read_resource_tool: "
+awk '/pub async fn read_resource_tool\(/,/^    }/' crates/biorouter/src/agents/extension_manager.rs \
+  | grep -n "for extension_name in extension_names\|assert_extension_reachable"
+echo -n "get_ui_resources: "
+awk '/pub async fn get_ui_resources\(/,/^    }/' crates/biorouter/src/agents/extension_manager.rs \
+  | grep -n "for (extension_name, client) in\|assert_extension_reachable"
+echo -n "list_prompts: "
+awk '/pub async fn list_prompts\(/,/^    }/' crates/biorouter/src/agents/extension_manager.rs \
+  | grep -n "FuturesUnordered::new()\|assert_extension_reachable"
+# Expected for each: exactly TWO lines, the loop header on the SMALLER one.
+# All three loop headers verified present today at :1226, :1314 and :1612.
 ```
 
 **What this catches.** Naming only `dispatch_tool_call` leaves eight live doors, of which
@@ -4769,14 +7069,35 @@ cargo test -p biorouter-mcp --lib memory
 - [ ] **Step 5: Gate**
 
 ```bash
-# One helper, three sites — and no site builds a provider around it.
-grep -rn "assert_alt_provider_allowed(" --include='*.rs' crates/ | grep -v "privacy/alt_provider.rs" | wc -l
-echo "expect: 3"
-for f in crates/biorouter-cli/src/session/mod.rs crates/biorouter/src/hooks/mod.rs \
-         crates/biorouter/src/agents/knowledge_tool.rs; do
-  echo -n "$f: "; grep -c "assert_alt_provider_allowed" "$f"
-done
-echo "expect: 1 each"
+# One helper, three sites — and no site builds a provider around it. PRINT the
+# hit list and read the FILES: `| wc -l ; expect: 3` cannot distinguish three
+# production sites from one production site plus two calls inside a test module
+# in the same file, and every Rust test in this repo lives in the file it tests.
+grep -rn "assert_alt_provider_allowed(" --include='*.rs' crates/ | grep -v "privacy/alt_provider.rs"
+echo "expect: the three files below and NO fourth. 0 hits today."
+# ...and each one is in the production path, not only in that file's tests. The
+# three function names come from this task's own Files table and every range was
+# run against the tree: get_reasoner :2264 (32 lines), resolve_prompt_provider
+# :690 (37 lines), build_model_ref_completer :183 (11 lines).
+# ⚠ get_reasoner and build_model_ref_completer are TOP-LEVEL fns and close with
+# `^}`; resolve_prompt_provider is a method and closes with `^    }`. Using
+# `/^    }/` on get_reasoner terminates the range at its first `    } else {`
+# (line 2273) after ten lines — before the `create(&provider, …)` call the gate
+# is about — and reports a confident 0.
+echo -n "cli get_reasoner:            "
+awk '/^async fn get_reasoner/,/^}/' crates/biorouter-cli/src/session/mod.rs \
+  | grep -c "assert_alt_provider_allowed"
+echo -n "hooks resolve_prompt_provider:"
+awk '/async fn resolve_prompt_provider/,/^    }/' crates/biorouter/src/hooks/mod.rs \
+  | grep -c "assert_alt_provider_allowed"
+echo -n "kb build_model_ref_completer: "
+awk '/async fn build_model_ref_completer/,/^}/' crates/biorouter/src/agents/knowledge_tool.rs \
+  | grep -c "assert_alt_provider_allowed"
+echo "expect: 1 each. ⚠ If a range prints 0, first check it is NON-EMPTY (pipe to"
+echo "  wc -l instead): an awk START that never matches yields no output, and"
+echo "  grep -c over no output is 0 — a silent pass. All three STARTs are"
+echo "  verified present at 9558c346; if Step 3 puts the call in a different"
+echo "  function, change the pattern here rather than deleting the check."
 # The KB-keyed check lives in Task 10C, not here — a copy in this file is a
 # second taxonomy for the same question.
 grep -c "assert_alt_provider_allowed" crates/biorouter-server/src/routes/knowledge.rs ; echo "expect: 0"
@@ -4831,13 +7152,22 @@ cargo test -p biorouter --test conversation_writeback_freshness
 cargo test -p biorouter --test conversation_writeback_stress
 cargo test -p biorouter-server --test knowledge_routes
 cargo test -p biorouter-server --test knowledge_routes_e2e
-cargo test -p biorouter-mcp --test mcp_integration_test
+# ⚠ `-p biorouter-mcp` is WRONG here and cargo hard-errors
+# ("no test target named `mcp_integration_test` in default-run packages").
+# The file is crates/biorouter/tests/mcp_integration_test.rs — verified.
+cargo test -p biorouter --test mcp_integration_test
 cargo test -p biorouter-mcp --lib knowledge::
+# Tasks 10B and 10D change struct signatures that these three construct, and no
+# `--lib` filter compiles any of them. If any of the three fails here, one of the
+# nine commits between 10B and 19 shipped a tree that does not build (O13).
+cargo test -p biorouter-mcp --test knowledge_macros_e2e
+cargo test -p biorouter-mcp --test catalog_write_boundary
+cargo test -p biorouter-mcp --test testdrive_corpus_relint
 ```
 
 Task 13 edits `Agent::reply`'s prologue, which is where a reordering shows up in
-`conversation_writeback_freshness`'s three #59 ordering tests. Tasks 10A–10C touch every knowledge
-entry point, which is what the last two targets cover.
+`conversation_writeback_freshness`'s three #59 ordering tests. Tasks 10A–10D touch every knowledge
+entry point, which is what the last five targets cover.
 
 - [ ] **Step 3: Every gate is where it is supposed to be, and nowhere else**
 
@@ -4860,18 +7190,66 @@ grep -c "allowed_extension_keys" crates/biorouter/src/agents/extension_manager.r
 # Gate D is in both builders.
 grep -c "s.privacy_tier = 'public'" crates/biorouter/src/session/chat_history_search.rs ; echo "expect: 2"
 # No privacy check is expressed as an inspector, and none returns Err from inspect.
-grep -rn "PrivacyInspector\|privacy.*impl ToolInspector" crates/ ; echo "expect: no output"
-# O12 — the knowledge-base barrier, all sixteen entry points plus the definition,
-# and the ratchet across its three surfaces (3 MCP writes + 2 service
-# registrations + 3 HTTP macro routes = 8).
-grep -c "assert_kb_reachable(" crates/biorouter-mcp/src/knowledge/server.rs ; echo "expect: 17"
-grep -c "tier::raise(" crates/biorouter-mcp/src/knowledge/server.rs ; echo "expect: 3"
-grep -c "tier::raise(" crates/biorouter-mcp/src/knowledge/service.rs ; echo "expect: 2"
-grep -c "tier::raise(" crates/biorouter-server/src/routes/knowledge.rs ; echo "expect: 3"
-# Only tier.rs opens the store, and the tier never reached the manifest.
+# ⚠ NOT `grep -rn "PrivacyInspector"` — that name is this plan's invention, is 0
+# today and is 0 under every wrong implementation, so it was green both ways.
+# Assert the trait's impl set is unchanged, exactly as Task 14 Step 5 does.
+diff <(grep -rl "impl ToolInspector for" --include='*.rs' crates/ | sort) <(cat <<'EOF'
+crates/biorouter/src/hooks/inspector.rs
+crates/biorouter/src/permission/managed_inspector.rs
+crates/biorouter/src/permission/permission_inspector.rs
+crates/biorouter/src/security/security_inspector.rs
+crates/biorouter/src/security/sensitive_ops.rs
+crates/biorouter/src/tool_monitor.rs
+crates/biorouter/tests/tool_inspection_manager_tests.rs
+EOF
+) && echo "OK: no privacy control was written as an inspector"
+# O12 — the knowledge-base barrier at its FIVE choke points (Task 10A's ⚠), and
+# the ratchet at five sites. These are counts of choke points, not of tool call
+# sites: if they grow, someone re-scattered the control back across the tools.
+grep -c "assert_kb_reachable(" crates/biorouter-mcp/src/knowledge/server.rs
+echo "expect: 2 — 1 definition + 1 call in call_tool (CP1)"
+grep -c "tier::assert_reachable(" crates/biorouter-mcp/src/knowledge/macros/ingest.rs \
+        crates/biorouter-mcp/src/knowledge/macros/query.rs \
+        crates/biorouter-mcp/src/knowledge/macros/lint.rs ; echo "expect: 1 each (CP2)"
+grep -c "tier::assert_reachable(" crates/biorouter-server/src/routes/apps.rs ; echo "expect: 1 (CP3)"
+grep -c "tier::assert_reachable(" crates/biorouter-mcp/src/agent_drafter/mod.rs ; echo "expect: 1 (CP4)"
+grep -c "raise_tier(" crates/biorouter-mcp/src/knowledge/server.rs ; echo "expect: 3"
+grep -c "raise_tier(" crates/biorouter-mcp/src/knowledge/macros/ingest.rs \
+                      crates/biorouter-mcp/src/knowledge/macros/query.rs \
+                      crates/biorouter-mcp/src/knowledge/macros/lint.rs ; echo "expect: 1 each"
+grep -c "raise_tier(" crates/biorouter-server/src/routes/apps.rs ; echo "expect: 1"
+# The generated tool handler is gone, which is what makes CP1 exist at all.
+grep -c "tool_handler" crates/biorouter-mcp/src/knowledge/server.rs ; echo "expect: 0"
+# CP5 — the metadata choke point (Task 10D), which the two content detectors below
+# are blind to by construction. One constructor, and the drafter reads the meta
+# key through the shared const rather than a third hand-typed copy.
+grep -c "pub fn discover(" crates/biorouter-mcp/src/agent_drafter/catalog.rs ; echo "expect: 1 (CP5)"
+grep -rn "Catalog::discover(true)" --include='*.rs' crates/*/src/ ; echo "expect: no output"
+grep -rl '"biorouter-capability-tier"' --include='*.rs' crates/ | wc -l
+echo "expect: 2 FILES — knowledge/tier.rs and agents/mcp_client.rs (Task 10A, held by 10D)"
+# No new way to reach base content appeared outside `knowledge/`. 4 today:
+# routes/apps.rs:2394 (CP3) + routes/knowledge.rs:523/:544/:571 (ungated user routes).
+grep -rn "store::\(list_pages\|read_page\|write_page\|search\|search_with_scope\)(" \
+  --include='*.rs' crates/ | grep -v "src/knowledge/" | wc -l
+echo "expect: 4 — see Task 10C Step 5 for the enumeration"
+# ...and no new way to reach base METADATA. 20 hits / 15 production at 9558c346;
+# a twenty-first is a new surface and must be classified. This is the detector the
+# fourth adversarial round showed was missing — both content detectors above pass
+# a tree in which `list_platform_catalog` hands every base id to a public model.
+grep -rn "\.list_bases()\|\.session_kb_ids(" --include='*.rs' crates/*/src/ \
+  | grep -v "src/knowledge/" | wc -l
+echo "expect: 20 — see Task 10D Step 5 for the enumeration and the 5 test-module hits"
+# The two id-list error messages omit rather than enumerate (Tasks 10C, 11).
+awk '/fn kb_id_or_primary\(/,/^    }/' crates/biorouter-mcp/src/knowledge/server.rs \
+  | grep -c "tier::is_private" ; echo "expect: 1"
+awk '/fn resolve_target_kb\(/,/^}/' crates/biorouter/src/agents/knowledge_tool.rs \
+  | grep -c "is_private" ; echo "expect: 1"
+# Only tier.rs (and the service's migration guard) opens the store, and the tier
+# never reached the manifest. NOT `grep -c "tier\|privacy"` on types.rs: that is
+# 8 today and unsatisfiable — `CredibilityTier` lives there.
 grep -rn "kb_tiers_path" crates/biorouter-mcp/src/knowledge/ | grep -v "fn kb_tiers_path"
-echo "expect: only tier.rs"
-grep -c "tier\|privacy" crates/biorouter-mcp/src/knowledge/types.rs ; echo "expect: 0"
+echo "expect: tier.rs and service.rs::ensure_tiers_migrated only"
+grep -cE "privacy_tier|PrivacyTier|kb_tier" crates/biorouter-mcp/src/knowledge/types.rs ; echo "expect: 0"
 # Gate G is one guard in the shared function, not three copies in three callers.
 grep -rn "visible_to" --include='*.rs' crates/biorouter/src/knowledge/ \
   crates/biorouter/src/agents/knowledge_tool.rs crates/biorouter-cli/src/commands/knowledge.rs \
@@ -4936,6 +7314,21 @@ curl -s -X POST http://127.0.0.1:3000/agent/call_tool -H 'X-Secret-Key: test' \
 # Expected: the KB refusal text. NOT a hit list, and NOT an empty result set —
 # an empty result set is what a wrong implementation that filters hits AFTER
 # reading the index returns, and it is indistinguishable from "no matches".
+```
+
+- [ ] **Step 4b: Re-run Task 4b's filter audit with a shrunk deferred set**
+
+```bash
+# Nine of Task 4b's twelve deferred filters were created by Tasks 4-19, so only
+# three may still be deferred here. Re-run Task 4b Steps 1 and 5 with:
+#   DEFERRED='privacy::visibility|privacy::declassify|every_copy_path_carries_the_tier_and_the_provider'
+# Expect: 0 MISSING, 3 DEFER, and OK with a non-zero count for all nine of
+# privacy, privacy::tests, privacy::extensions, privacy::refusal,
+# privacy::alt_provider, providers::tier_tests, knowledge::tier,
+# agents::chatrecall_extension and session::chat_history_search.
+# A DEFER on any of those nine means the module landed under a different path
+# from the one this plan filters on — the BR-71 defect, caught here rather than
+# at the release gate, where forty tasks of gates have already quoted it.
 ```
 
 - [ ] **Step 5: Adversarial review of the phase diff, every finding addressed**
@@ -5064,9 +7457,17 @@ pub fn requires_first_crossing_approval(c: ProviderTier, t: SessionClassificatio
 cargo test -p biorouter --lib privacy::visibility 2>&1 | tail -3
 # Expected: "3 passed". A filter that names a nested module by the wrong path
 # prints "0 passed" and EXITS 0 — the count is the gate, not the exit code.
-# Nobody re-derives the matrix.
-grep -rn --include='*.rs' "privacy_tier.*==.*Private" crates/ | grep -v "privacy/" | grep -v _test
-echo "expect: no output — every consumer calls may_read/may_write/appears_in_list"
+# Nobody re-derives the matrix. ⚠ `grep -v _test` filters the PATH, and almost
+# every Rust test in this repo lives in a `#[cfg(test)] mod` INSIDE the file it
+# tests — so it excludes nothing that matters and will not exclude a legitimate
+# assertion written inside, say, session_manager.rs's own test module. PRINT the
+# hits and read them rather than demanding silence: the gate is "no PRODUCTION
+# consumer re-derives the matrix", which a path filter cannot express.
+grep -rn --include='*.rs' "privacy_tier *== *\(SessionClassification::\)\?Private" crates/ \
+  | grep -v "^crates/biorouter/src/privacy/"
+echo "expect: no output. If a line IS printed, it must be inside a #[cfg(test)]"
+echo "  module AND must be asserting a stored value, not deciding an access —"
+echo "  every consumer calls may_read/may_write/appears_in_list. Measured today: 0."
 ```
 
 **What this catches.** The matrix inlined as `if session.privacy_tier == Private && caller == Public`
@@ -5098,7 +7499,7 @@ three hand-rolled builders into one shared helper is a better trade and closes t
 | Action | Path | Anchor (re-verified at `9558c346`) |
 |---|---|---|
 | Modify | `crates/biorouter/src/session/session_manager.rs` | `copy_session` `:4710-4741` (`create_session` `:4718-4724`, builder `:4726-4733`, `replace_conversation` `:4736`); `diverge_session_for_edit` `:4743-4773`; `diverge_session` `:4776-4841` (**the primary GUI diverge, and it does NOT call `copy_session`** — `create_session` `:4816-4822`, builder `:4824-4836`, `replace_conversation` `:4838`); `import_session` `:4668-4707` (builder `:4683-4700`, `replace_conversation` `:4703`); the two builder setters this helper must use correctly — `provider_name(impl Into<String>)` `:972-975` and `model_config(ModelConfig)` `:977-980`, **both taking values, not `Option`s** |
-| Reference | `crates/biorouter-server/src/routes/session.rs` | `POST /sessions/{id}/diverge` at `:1029`. ⚠ **`routes/session.rs` has no `#[cfg(test)] mod tests` today**, so Step 4's `cargo test -p biorouter-server --lib routes::session` prints `0 passed` and exits 0 before this task; it creates the module |
+| Reference | `crates/biorouter-server/src/routes/session.rs` | `POST /sessions/{id}/diverge` at `:1029`. ⚠ **`routes/session.rs` already has 20 tests** in two `#[cfg(test)]` blocks — `mod diverge_tests` (`:1038`, 11) and `mod edit_message_tests` (`:1417`, 9). Neither is named `tests`, and the module-path filter picks up both, so Step 4's `cargo test -p biorouter-server --lib routes::session` prints **`20 passed`** before this task, not `0 passed`. A previous version of this row said the module was empty. **Record the pre-count and assert `pre + N`** — `mod diverge_tests` is also exactly where this task's route test belongs |
 | Reference | `crates/biorouter/src/session/session_manager.rs` | `diverge_session_at` `:1562` — checked, and it is a thin wrapper onto the same storage `diverge_session` at `:4776`, so the three-path coverage below really is complete. Say so, or the next reviewer re-derives it |
 
 - [ ] **Step 1: Write the failing tests — one per path, and one that enumerates**
@@ -5223,7 +7624,12 @@ grep -c "provider_name_opt" crates/biorouter/src/session/session_manager.rs ; ec
 awk '/async fn import_session/,/^    }/' crates/biorouter/src/session/session_manager.rs \
   | grep -c "SessionClassification::Private.max" ; echo "expect: 1"
 # And a behavioural cross-check no grep gives you: the GUI diverge route.
-cargo test -p biorouter --lib -- every_copy_path_carries_the_tier_and_the_provider 2>&1 | tail -3
+# ⚠ `| tail -3` with no stated number is not a gate. This filter names ONE test
+# and nothing else; if the name is misspelled, or Step 1 nested it somewhere the
+# filter does not reach, libtest prints `0 passed` and EXITS 0 — the BR-71
+# defect this plan exists to avoid. Assert the count.
+cargo test -p biorouter --lib -- every_copy_path_carries_the_tier_and_the_provider \
+  | grep "test result:" ; echo "expect: 1 passed; 0 failed"
 ```
 
 **What this catches.** A test on `copy_session` alone — the only path the design's §9.3 B1 originally
@@ -5415,8 +7821,12 @@ awk '/async fn apply_settings_overrides/,/^}/' crates/biorouter/src/agents/subag
 # bumped in the SAME commit.
 awk '/async fn apply_settings_overrides/,/^}/' crates/biorouter/src/agents/subagent_tool.rs \
   | grep -c "privacy::floor(" ; echo "expect: 1"
-cargo test -p biorouter --lib privacy::tests::floor_is_crossed_only_where_a_capability_establishes_a_classification
-# Expected: PASS with BOTH lines of EXPECTED uncommented. A failure naming
+cargo test -p biorouter --lib \
+  privacy::tests::floor_is_crossed_only_where_a_capability_establishes_a_classification \
+  | grep "test result:" ; echo "expect: 1 passed; 0 failed"
+# ⚠ Assert the printed count, not "PASS": a named filter that resolves to
+# nothing prints `0 passed` and exits 0 (see "Which test filters are validated").
+# Expected with BOTH lines of EXPECTED uncommented. A failure naming
 # subagent_tool.rs with count 2 means the extension retain used `floor` instead
 # of the shared refusal predicate — read the comment in Step 3 (c) before
 # "fixing" the constant.
@@ -5528,7 +7938,11 @@ with the stable event name `app_route_restore_refused`. Do **not** silently disc
 (c) **Replace `provider_class`** with the shared tier. `LOCAL_PROVIDERS`/`INSTITUTIONAL_PROVIDERS`
 and the substring tests go; `provider_allowed_for_app` (`:2114`) and `resolve_route` (`:2123`) call
 `Provider::tier()` on the constructed instance. Add the four `versa_*`/`aws_bedrock` rows to the
-existing table at `:6447` rather than writing a new one.
+existing table at `:6447` rather than writing a new one — **and rename that test
+`provider_class_table` → `provider_tier_table` in the same edit.** The name is not cosmetic: it is
+what the gate below asserts on, because `grep -c "fn provider_class"` cannot distinguish a surviving
+`fn provider_class` from a surviving `fn provider_class_table`, and a test still called
+`provider_class_table` is the tell that the taxonomy was patched rather than replaced.
 
 (d) **`configure_worker_provider`**: read the main agent's provider before the global fallback, and
 extend the §3.7 admission check (which today inspects only an explicit pin) to cover the fallback.
@@ -5551,14 +7965,23 @@ node scripts/agent-drafter/ui-control-harness.mjs
 - [ ] **Step 5: Gate**
 
 ```bash
-# The inverted classifier is gone, not patched.
-grep -c "LOCAL_PROVIDERS\|INSTITUTIONAL_PROVIDERS" crates/biorouter-server/src/routes/apps.rs ; echo "expect: 0"
-grep -c "fn provider_class" crates/biorouter-server/src/routes/apps.rs ; echo "expect: 0"
+# The inverted classifier is gone, not patched. ⚠ THE TEST MUST BE RENAMED TOO.
+# `grep -c "fn provider_class"` is 2 today — the fn at :2089 AND the test
+# `provider_class_table` at :6447 — so "expect: 0" means the test becomes
+# `provider_tier_table`. The first version of this gate paired that zero-count
+# with an awk alternation that still BLESSED `fn provider_class_table`; the two
+# lines contradicted each other and one of them was always red. There is one
+# name now, in both places.
+grep -c "LOCAL_PROVIDERS\|INSTITUTIONAL_PROVIDERS" crates/biorouter-server/src/routes/apps.rs
+echo "expect: 0 (4 today)"
+grep -n "fn provider_class" crates/biorouter-server/src/routes/apps.rs
+echo "expect: no output (2 today: the fn :2089 and the test :6447 — BOTH are renamed)"
+grep -c "fn provider_tier_table" crates/biorouter-server/src/routes/apps.rs ; echo "expect: 1"
 # The table exercises the names that made the inversion green.
-awk '/fn provider_class_table|fn provider_tier_table/,/^        }/' crates/biorouter-server/src/routes/apps.rs \
-  | grep -c "versa_azure\|versa_bedrock\|aws_bedrock" ; echo "expect: >= 3"
+awk '/fn provider_tier_table/,/^        }/' crates/biorouter-server/src/routes/apps.rs \
+  | grep -c "versa_azure\|versa_bedrock\|aws_bedrock" ; echo "expect: >= 3 (1 today, aws_bedrock only)"
 # The restore no longer discards its error.
-grep -c "let _ = agent.update_provider" crates/biorouter-server/src/routes/apps.rs ; echo "expect: 0"
+grep -c "let _ = agent.update_provider" crates/biorouter-server/src/routes/apps.rs ; echo "expect: 0 (2 today)"
 ```
 
 **What this catches.** For (c), a fix that adds `"versa_azure"` to `INSTITUTIONAL_PROVIDERS` — which
@@ -5587,7 +8010,11 @@ cargo test -p biorouter --lib -- \
   every_copy_path_carries_the_tier_and_the_provider \
   an_import_with_no_tier_is_private_and_one_with_a_tier_is_only_raised_by_it \
   the_spawn_matrix_holds \
-  a_refused_spawn_leaves_no_orphan_row
+  a_refused_spawn_leaves_no_orphan_row \
+  | grep "test result:" ; echo "expect: 4 passed; 0 failed"
+# ⚠ The count is the gate. libtest ORs these four names and prints `0 passed`,
+# exit 0, if ALL FOUR are misspelled — and `3 passed` if one is. Neither reads
+# as a failure. This is the single shape that hid BR-71's most expensive defect.
 cargo test -p biorouter --test subagent_delegation
 ```
 
@@ -5672,18 +8099,44 @@ appears only in `RING_GROUNDS` (`:83`). Which also means the app's own `Badge` d
   assert(`${theme}: privacy dot on tab`,     '--text-default', '--background-default', 3.0, scope);
 ```
 
-and — the higher-value change, which would have caught the design's spec on its own — add
-`--background-medium` to `TEXT_GROUNDS`, the ground `biorouter-list-row`, `SessionItem` and
-`ExtensionItem` all paint on hover.
+and — the higher-value change, which would have caught the design's spec on its own — start auditing
+`--background-medium`, the ground `biorouter-list-row`, `SessionItem` and `ExtensionItem` all paint
+on hover, and which `check-contrast.mjs` looks at today only for the focus ring:
 
-⚠ **`RING_GROUNDS` must lose its own copy in the same edit.** It is
-`const RING_GROUNDS = [...TEXT_GROUNDS, '--background-medium'];` (`:83`), so moving
-`--background-medium` into `TEXT_GROUNDS` without changing that line lists it **twice** and silently
-adds six duplicate ring assertions. Change it to `const RING_GROUNDS = [...TEXT_GROUNDS];`.
+```js
+  // The row-hover ground (design.md's `biorouter-list-row`). Issue #56 needs it
+  // because both privacy pills sit on rows that paint it, and nothing has ever
+  // asserted a text ratio against it.
+  //
+  // ⚠ Two tokens, NOT the TEXT_GROUNDS triple. `--text-subtle` on
+  // `--background-medium` is sub-AA in three of the six scopes — parchment:dark
+  // 3.75, alma-mater:light 4.45, alma-mater:dark 4.28 (measured with this
+  // script's own resolver; see the D4 table above). Those three are a
+  // PRE-EXISTING theme gap, not something #56 introduces: the app already
+  // paints subtle text on hover rows and CI has never looked. Adding
+  // `--background-medium` to TEXT_GROUNDS would therefore turn this task red on
+  // arrival with only a theme edit to fix it, which Step 5 forbids. Audit the
+  // two tokens this feature actually uses, and leave the third to the a11y
+  // backlog that owns it.
+  for (const t of ['--text-default', '--text-muted']) {
+    assert(`${theme}: ${t.slice(2)} on --background-medium`, t, '--background-medium', 4.5, scope);
+  }
+```
 
-**The arithmetic, so the expected total is derived rather than guessed:** 252 today, `+18` from the
-new text ground (3 text tokens × 6 family×mode scopes), `+24` from the four badge assertions
-(× 6 scopes), `+0` from rings once the duplicate is removed → **294**.
+⚠ **`RING_GROUNDS` stays exactly as it is.** It is
+`const RING_GROUNDS = [...TEXT_GROUNDS, '--background-medium'];` (`:83`). Because
+`--background-medium` does **not** move into `TEXT_GROUNDS`, there is no duplicate to remove and no
+ring assertion changes. (An earlier version of this task moved the ground and then had to strip
+`RING_GROUNDS`' copy to avoid six duplicate ring assertions; that whole manoeuvre is gone with the
+move.) Do not "tidy" line 83.
+
+**The arithmetic, so the expected total is derived rather than guessed:** 252 today, `+12` from the
+new hover-ground block (2 text tokens × 6 family×mode scopes), `+24` from the four badge assertions
+(× 6 scopes), `+0` from rings → **288**.
+
+Verify the 252 decomposes as you expect before trusting the delta: per scope the script runs
+15 (TEXT_GROUNDS 5 × 3 tokens) + 6 (RING_GROUNDS) + 2 (accent) + 8 (4 statuses × 2) + 2 (borders)
++ 3 (code ground) + 3 (focus) + 3 (sidebar icon) = **42**, and 42 × 6 scopes = 252.
 
 ```tsx
 // PrivacyBadge.test.tsx
@@ -5749,19 +8202,28 @@ cd ui/desktop && node scripts/check-contrast.mjs && npm run themes -- --check
 npx vitest run PrivacyBadge 2>&1 | tail -5
 ```
 
-Expected: `OK — all 294 contrast assertions pass` (252 + 18 + 24 + 0, per the arithmetic above),
-`OK — generated artifacts are current (3 themes)`, and **1 file / 2 tests**. If the printed total is
-**300**, `RING_GROUNDS` still carries its duplicate; if it is **270**, the four badge assertions
-landed outside the per-scope loop and ran once instead of six times.
+Expected: `OK — all 288 contrast assertions pass` (252 + 12 + 24 + 0, per the arithmetic above),
+`OK — generated artifacts are current (3 themes)`, and **1 file / 2 tests**. Read a wrong total
+rather than "fixing" the theme: **294** means `--background-medium` went into `TEXT_GROUNDS` after
+all — the run then shows `3 FAIL` on `--text-subtle` and exits 1, and the only way to green is a
+theme edit Step 5 forbids; **276** means the hover-ground block landed outside the per-scope loop
+and ran once instead of six times; **264** means the four badge assertions did.
 
 - [ ] **Step 5: Gate**
 
 ```bash
 cd ui/desktop
 # The assertion count is the tell that the new checks actually ran.
-node scripts/check-contrast.mjs | tail -1 ; echo "expect: OK — all 294 contrast assertions pass"
+node scripts/check-contrast.mjs | tail -1 ; echo "expect: OK — all 288 contrast assertions pass"
+# RING_GROUNDS is UNTOUCHED. `--background-medium` never moved into TEXT_GROUNDS,
+# so there is no duplicate — and a worker who removes this line anyway silently
+# deletes six ring assertions.
 grep -c "RING_GROUNDS = \[...TEXT_GROUNDS, '--background-medium'\]" scripts/check-contrast.mjs
-echo "expect: 0 — the duplicate ground was removed, not left to inflate the count"
+echo "expect: 1 — unchanged from today"
+# The three sub-AA pairs stayed OUT of the audit, deliberately and by name. If
+# this is non-zero the run is red for a reason this task cannot fix.
+grep -c "text-subtle.*--background-medium\|'--text-subtle', '--background-medium'" scripts/check-contrast.mjs
+echo "expect: 0 — see the ⚠ in Step 1; parchment:dark 3.75, alma:light 4.45, alma:dark 4.28"
 # Zero theme work: no generator run, no new token.
 npm run themes -- --check && git diff --stat themes/ src/styles/themes.generated.ts
 echo "expect: OK, and an empty diffstat"
@@ -5787,8 +8249,20 @@ comment in `src/styles/search.css:2` that says the token does not exist. A gate 
 **What this catches.** A worker copying §14.1 verbatim ships a `var(--text-standard)` label that
 resolves to nothing and inherits whatever colour it lands on, and a Public pill that is invisible in
 parchment:dark. Neither produces an error, neither fails a screenshot review at a glance, and both
-pass the current 252 assertions. The `--background-medium` addition is what turns the whole class of
-gap into a CI failure for every future chip, not just this one.
+pass the current 252 assertions. The `--background-medium` block is what turns that class of gap
+into a CI failure for every future chip on a hover row, not just this one.
+
+**What it deliberately does NOT catch, and why the number is 288 rather than 294.** An earlier
+version of this task added `--background-medium` to `TEXT_GROUNDS` wholesale, which audits three
+tokens rather than two and totals 294. Three of those eighteen assertions **fail**:
+`--text-subtle` on `--background-medium` measures 3.75 (parchment:dark), 4.45 (alma-mater:light) and
+4.28 (alma-mater:dark) — the same three numbers this task's own D4 table already prints, from the
+same resolver. So the gate demanded `all 294 pass` from a run that exits 1 with `3 FAIL`, while
+Step 5 forbade the only available fix ("Zero theme work … an empty diffstat"). It was unreachable by
+construction, and it was quoted in three places. The pair is a **pre-existing** a11y gap — the app
+paints subtle text on hover rows today and CI has never asserted it — so it belongs to the theme
+backlog, not to #56. [Open question 16](#open-questions) carries it. Do not close it here by
+lowering a threshold: an assertion with a fudged floor is worse than an absent one.
 
 - [ ] **Step 6: Commit**
 
@@ -5993,12 +8467,23 @@ cd ui/desktop
 grep -cE "Local Models|Institutional Models|Commercial Models" src/components/settings/providers/ProviderGrid.tsx
 echo "expect: 0"
 grep -c "section.label" src/components/knowledge/IngestPanel/IngestModelPicker.tsx ; echo "expect: 1 (still consumed — the relabel is in providerOrdering.ts)"
-# Settings did not grow a fake focused-session concept.
-grep -c "sessionId" src/components/settings/extensions/ExtensionsSection.tsx ; echo "expect: 0"
-grep -c "sessionId" src/components/bottom_menu/BottomMenuExtensionSelection.tsx ; echo "expect: >= 2"
+# Settings did not grow a fake focused-session concept. The zero-count is the
+# real half and it is 0 today, so it is a genuine tripwire.
+grep -c "sessionId" src/components/settings/extensions/ExtensionsSection.tsx ; echo "expect: 0 (0 today)"
+# ⚠ `grep -c "sessionId" BottomMenuExtensionSelection.tsx ; expect: >= 2` was
+# VACUOUS: that file already threads a session id 17 times, so it was green
+# before and after. What this task adds there is the *tier-aware disabled row*,
+# so assert THAT — anchored on the prop the component must now receive and on
+# the reason string the test asserts.
+grep -c "capabilityTier\|privacyTier" src/components/bottom_menu/BottomMenuExtensionSelection.tsx
+echo "expect: >= 1 (0 today)"
+grep -ci "public model" src/components/bottom_menu/BottomMenuExtensionSelection.tsx
+echo "expect: >= 1 (0 today) — the visible reason, matching Step 1's /public model/i"
+grep -c "aria-disabled" src/components/bottom_menu/BottomMenuExtensionSelection.tsx
+echo "expect: >= 1 (0 today) — visible-but-disabled, never removed from the list"
 # The chip has no pill.
-grep -c "PrivacyBadge" src/components/settings/models/bottom_bar/ModelsBottomBar.tsx ; echo "expect: 1"
-grep -c "dense" src/components/settings/models/bottom_bar/ModelsBottomBar.tsx ; echo "expect: >= 1"
+grep -c "PrivacyBadge" src/components/settings/models/bottom_bar/ModelsBottomBar.tsx ; echo "expect: 1 (0 today)"
+grep -c "dense" src/components/settings/models/bottom_bar/ModelsBottomBar.tsx ; echo "expect: >= 1 (0 today)"
 ```
 
 **What this catches.** The obvious edit — changing the three `label` strings at
@@ -6302,21 +8787,38 @@ cd ui/desktop && npx vitest run SettingsView PrivacyPanel 2>&1 | tail -5
 cd ui/desktop
 grep -c 'data-testid="settings-.*-tab"' src/components/settings/SettingsView.tsx ; echo "expect: 4 (3 today)"
 cd .. 
-# One auditable line, read inside the gate. THREE production sites — and the
-# `-v` filter must exclude this task's own test, which calls the function inside
-# an assert!() and is not a gate site. Enumerate the files rather than counting
-# a repo-wide grep: the first version of this gate said "exactly 3" against a
-# pattern that also matched Test 1's `assert!(privacy_enforcement_enabled(), ..)`,
-# so a correct implementation returned 4 and read red.
+# One auditable line, read inside the gate. THREE production sites, and the
+# filter must exclude this task's own tests, which call the function inside
+# assertions and are not gate sites.
+#
+# ⚠ The `-v` filter has been wrong twice, the same way both times. Version one
+# counted a repo-wide grep and Test 1's `assert!(privacy_enforcement_enabled(),…)`
+# made a correct implementation read 4. Version two added
+# `grep -v "assert!(privacy_enforcement_enabled"` — which does NOT match
+# `assert!(!privacy_enforcement_enabled(…)`, the off-case assertion an opt-out
+# test suite certainly needs, so a correct implementation reads 4 again. Filter
+# by ROLE (production files) rather than by assertion spelling, which is the
+# only form that does not have to guess how the test is written:
 grep -rn "privacy_enforcement_enabled()" --include='*.rs' crates/ \
-  | grep -v "fn privacy_enforcement_enabled" \
-  | grep -v "assert!(privacy_enforcement_enabled"
+  | grep -v "^crates/biorouter/src/privacy/mod.rs:"
 # expect: exactly 3 lines, all in crates/biorouter/src/agents/extension_manager.rs —
 #   dispatch_tool_call (Gate C), assert_extension_reachable (Gate C's siblings),
 #   allowed_extension_keys (Gate E).
+# The definition AND every test that exercises it live in privacy/mod.rs, so
+# excluding that one file leaves exactly the enforcement sites. If a fourth line
+# appears from any other file, a gate acquired an opt-out it must not have.
 grep -rln "privacy_enforcement_enabled()" --include='*.rs' crates/ | sort
 # expect: privacy/mod.rs (the definition + this task's test) and
 #         agents/extension_manager.rs (the three gate sites). Nothing else.
+# ...and one per gate, anchored on the enclosing function, so "three lines in one
+# file" cannot be satisfied by three calls in one place. This is the assertion
+# that survives however the tests end up being written.
+for fn in dispatch_tool_call assert_extension_reachable allowed_extension_keys; do
+  echo -n "$fn: "
+  awk "/async fn $fn\(|fn $fn\(/,/^    }/" crates/biorouter/src/agents/extension_manager.rs \
+    | grep -c "privacy_enforcement_enabled()"
+done
+echo "expect: 1 each"
 # DR-9 scoping, as a command: the opt-out is Gate C's, so it must NOT appear in
 # any other gate's file — including the knowledge-base barrier, which is a
 # session-content control like Gate D and is deliberately not opt-outable.
@@ -6410,10 +8912,18 @@ running the same graded confirmation at the terminal; (d) the workflow load-time
 - [ ] **Step 5: Gate**
 
 ```bash
-# The escape hatch is not type-filtered.
+# The escape hatch is not type-filtered. ⚠ Check the range is NON-EMPTY first:
+# `declassify_command` does not exist today, so the awk range is 0 lines and
+# `grep -c` on nothing is 0 — a PASS, before the function is written and again
+# if the worker names it anything else.
+awk '/fn declassify_command/,/^}/' crates/biorouter-cli/src/commands/session.rs | wc -l
+echo "expect: > 1 (0 today — the fn does not exist yet). A 0 here makes the next"
+echo "  line vacuous, so read this one first."
 awk '/fn declassify_command/,/^}/' crates/biorouter-cli/src/commands/session.rs | grep -c "SessionType"
 echo "expect: 0 — it works by id"
-# And History did not gain a system-sessions filter.
+# And History did not gain a system-sessions filter. (0 today AND 0 under a
+# correct implementation — this one is a genuine tripwire, not a measurement:
+# the wrong implementation is the only thing that makes it non-zero.)
 grep -rn "System sessions\|include_hidden" ui/desktop/src/components/sessions/ ; echo "expect: no output"
 ```
 
@@ -6439,17 +8949,21 @@ cargo test --workspace --no-fail-fast 2>&1 | tail -20
 cargo fmt --check && ./scripts/clippy-lint.sh
 just generate-openapi && git diff --exit-code ui/desktop/openapi.json
 cd ui/desktop && npx tsc --noEmit && npm run lint:check && npm run test:run 2>&1 | tail -8
-node scripts/check-contrast.mjs | tail -1     # expect: OK — all 294 contrast assertions pass
+node scripts/check-contrast.mjs | tail -1     # expect: OK — all 288 contrast assertions pass
 npm run themes -- --check                     # expect: OK — generated artifacts are current (3 themes)
 ```
 
-⚠ **294, not 274.** Task 26 derives the total twice and both derivations agree: 252 measured on
-`main` today, `+18` from adding `--background-medium` to `TEXT_GROUNDS` (3 text tokens × 6
-family×mode scopes), `+24` from the four new badge assertions (× 6 scopes), `+0` from rings once
-`RING_GROUNDS` loses its now-duplicate copy of `--background-medium`. The first version of this plan
-said **274** here — a phase gate quoting a number its own Task 26 contradicts, which a worker meeting
-it reads as "the phase failed". If the printed total is **300**, `RING_GROUNDS` still carries the
-duplicate; if it is **270**, the four badge assertions landed outside the per-scope loop.
+⚠ **288 — and it must match Task 26's Step 4 exactly, because two of the three numbers this plan has
+quoted here were wrong.** 252 measured on `main` today (42 assertions × 6 family×mode scopes),
+`+12` from Task 26's hover-ground block (2 text tokens × 6 scopes), `+24` from the four new badge
+assertions (× 6 scopes), `+0` from rings — `RING_GROUNDS` is untouched, because
+`--background-medium` never moves into `TEXT_GROUNDS`. The first version said **274**, a number its
+own Task 26 contradicted. The second said **294**, which is the total for a variant that puts
+`--background-medium` into `TEXT_GROUNDS` — and that run does not print `OK` at all: three of its
+eighteen new assertions fail AA (`--text-subtle`, measured 3.75 / 4.45 / 4.28) and it exits 1. Both
+versions read to a worker as "the phase failed" when the phase had succeeded. If the printed total
+is **294**, the ground moved after all; if **276** or **264**, one of the two new blocks landed
+outside the per-scope loop and ran once instead of six times.
 
 - [ ] **Step 2: Live GUI verification over CDP — the four surfaces, in a sandbox**
 
@@ -6520,29 +9034,100 @@ failures is new behaviour for this script, not an extension of existing behaviou
 
 | Action | Path | Anchor (re-verified at `9558c346`) |
 |---|---|---|
-| Modify | `landing/scripts/build-registry.mjs` | the `data-license` idiom to copy at `:102`; `slugFromUrl` `:33-36`; emitted object `:107-118` (skills at `:130`/`:135`); registry literal `:155-160` (`version: 1` at `:156`) |
+| Modify | `landing/scripts/build-registry.mjs` | the `data-license` idiom to copy at `:102`; `slugFromUrl` `:33-36`; emitted object `:107-118` (skills at `:130`/`:135`); registry literal `:155-160` (`version: 1` at `:156`); **the two hardcoded paths this task must parameterise** — `readFileSync(join(ROOT,'baam.html'))` `:20` and `writeFileSync(join(ROOT,'registry.json'), out)` `:163` |
+| **Create** | `landing/scripts/fixtures/invalid-privacy.html` | new — one `ext-card` with `data-privacy="maybe"` |
+| **Create** | `landing/scripts/fixtures/private-no-name.html` | new — one `ext-card` with `data-privacy="private"` and no `data-extension-name` |
+| **Create** | `landing/scripts/fixtures/clinical-unannotated.html` | new — one `ext-card` whose `ext-desc` says "de-identified clinical records" and which carries no `data-privacy` attribute at all |
+| **Create** | `landing/scripts/fixtures/happy.html` | new — two well-formed `ext-card`s, one public one private-with-name |
 | Modify | `landing/registry.json` | version 1 → 2; 37 extensions, 129 skills |
 | Modify | `crates/biorouter/src/privacy/registry_private.rs` | now a generator output |
 | Modify | `ui/desktop/src/components/baam/registry.fallback.json` | verified in sync at 37/129, by luck — joins the generator's outputs |
 | Modify | `ui/desktop/src/components/baam/registry.ts` | `RegistryExtension` `:8-19` |
 
-- [ ] **Step 1: Write the failing tests — three fixture runs, each expecting a non-zero exit**
+⚠ **Each fixture needs the wrapper the parser requires, not just a card.** `pickCards` is called on
+the output of `sliceById('extensions-section')` (`:96`), which walks `<div>` depth from
+`id="extensions-section"`. A fixture that is a bare `<div class="ext-card">` yields an **empty**
+scope, zero cards, zero validations and **exit 0** — a fixture that silently proves nothing. Wrap
+every fixture in `<div id="extensions-section"> … </div>`, and confirm each one parses by checking
+the generator's own stdout line ("`N extensions`") on the happy fixture before relying on the
+three failing ones.
+
+⚠ **`--input` needs `--out` beside it, or the gate destroys `landing/registry.json`.** The script
+writes its output unconditionally (`:163`). Running it against a two-card fixture would overwrite the
+real 37-extension registry with two entries, and the next gate in this very task
+(`json.load(open('landing/registry.json'))`) would then compare the const against the wreckage. Add
+both flags in Step 3; a fixture run must write to a temp path or to nothing.
+
+- [ ] **Step 1: Write the failing tests — four fixture runs, and the failures must be VALIDATION failures**
 
 ```bash
-# landing/scripts/build-registry.test.mjs (or a shell fixture harness)
-node build-registry.mjs --input fixtures/invalid-privacy.html      # data-privacy="maybe"
-echo "expect: exit != 0"
-node build-registry.mjs --input fixtures/private-no-name.html      # private, no data-extension-name
-echo "expect: exit != 0"
-node build-registry.mjs --input fixtures/clinical-unannotated.html # description says "patient records", no data-privacy at all
-echo "expect: exit != 0"
-node build-registry.mjs --input fixtures/happy.html                # exit 0, 37 extensions
-echo "expect: exit 0"
+cd /Users/wgu/Desktop/BioRouter-privacy
+for f in invalid-privacy private-no-name clinical-unannotated; do
+  out=$(node landing/scripts/build-registry.mjs \
+          --input landing/scripts/fixtures/$f.html --out /dev/null 2>&1)
+  code=$?
+  echo "$f exit=$code"
+  echo "$out" | grep -q "data-privacy\|data-extension-name" \
+    && echo "  ...and it named the rule" || echo "  ...WRONG: not a validation failure"
+done
+node landing/scripts/build-registry.mjs \
+  --input landing/scripts/fixtures/happy.html --out /tmp/happy-registry.json
+echo "happy exit=$?"   # expect 0, and stdout says "2 extensions"
 ```
 
-- [ ] **Step 2: Run** → all four exit **0** today. The first three are the failures.
+**expect:** `exit=1` for the three, each followed by "and it named the rule"; `exit=0` for happy.
 
-- [ ] **Step 3: Implement** — beside the `data-license` idiom at `:102`:
+⚠ **The stdout check is the whole gate, not decoration.** A bare "exit != 0" passes on *any* error:
+an unrecognised flag, a missing fixture file, a path resolved against the wrong base, a
+`ReferenceError`. All four of those are what a half-finished implementation actually produces, and
+all four would have read green. Asserting that the message names the rule that fired is what makes
+the run evidence.
+
+- [ ] **Step 2: Run** → **all four fail today, but not in the way the gate wants.**
+`build-registry.mjs` has **no argv handling of any kind**: it ignores `--input`/`--out`, reads the
+real `landing/baam.html`, writes the real `landing/registry.json`, and exits **0**. So today the
+three failure cases print `exit=0` (red, correctly) — and the fourth, `happy`, prints `exit=0` too
+while having read the wrong file entirely and clobbered the registry. Restore
+`landing/registry.json` with `git checkout` after this step.
+
+- [ ] **Step 3: Implement** — three pieces, in this order. The first two do not exist at all today.
+
+**(a) argv, and the failure mode.** Replace the two hardcoded paths (`:20`, `:163`) and add the
+`fail` helper the validations call — the script has no `throw` and no `process.exit(1)` anywhere, so
+`fail` is not "an existing idiom to reuse", it is new:
+
+```js
+// --- argv, so the validations can be exercised against fixtures -------------
+// Both flags are needed. `--input` alone still WRITES to landing/registry.json,
+// so a fixture run would overwrite the real 37-extension catalog with the
+// fixture's two entries.
+const argv = process.argv.slice(2);
+const flag = (name, fallback) => {
+  const i = argv.indexOf(name);
+  return i === -1 ? fallback : argv[i + 1];
+};
+const INPUT = flag('--input', join(ROOT, 'baam.html'));
+const OUTPUT = flag('--out', join(ROOT, 'registry.json'));
+const html = readFileSync(INPUT, 'utf8');
+
+// Collect every violation and report them together, then exit non-zero. One
+// `throw` per violation would hide the second and third problems behind the
+// first, which is how a publisher ends up fixing this file three times.
+const violations = [];
+const fail = (msg) => violations.push(msg);
+```
+
+and, immediately before the `writeFileSync` at `:163`:
+
+```js
+if (violations.length) {
+  for (const v of violations) console.error(`registry: ${v}`);
+  console.error(`registry: ${violations.length} validation failure(s); nothing written`);
+  process.exit(1);
+}
+```
+
+**(b) the three validations**, beside the `data-license` idiom at `:102`:
 
 ```js
   const privacy = first(/data-privacy="([^"]+)"/, card) || 'public';
@@ -6561,8 +9146,17 @@ echo "expect: exit 0"
   }
   // Forces the medcp/msbaseagent revisit AT PUBLISH TIME rather than relying on
   // someone remembering: the private badge is granted by publishing to BAAM.
-  if (!/data-privacy=/.test(card) && CLINICAL_KEYWORDS.some(k => description.toLowerCase().includes(k))) {
-    fail(`${id}: description matches "${k}" but the card declares no data-privacy`);
+  if (!/data-privacy=/.test(card)) {
+    // ⚠ `.some(k => …)` scopes `k` to the callback, so the message cannot name
+    // the keyword from outside it. `.find` binds the match where the message
+    // can see it — an earlier draft wrote `fail(`… "${k}" …`)` after a `.some`,
+    // which is a ReferenceError under ESM strict mode: the script would exit
+    // non-zero with a stack trace, and a gate that only checked "exit != 0"
+    // would have read that as the rule firing.
+    const hit = CLINICAL_KEYWORDS.find((k) => description.toLowerCase().includes(k));
+    if (hit) {
+      fail(`${id}: description matches "${hit}" but the card declares no data-privacy`);
+    }
   }
 ```
 
@@ -6570,6 +9164,10 @@ with `CLINICAL_KEYWORDS = ['patient', 'clinical record', 'ehr', 'phi', 'medical 
 both keys in the emitted object at `:107-118`, `version: 2` at `:156`, and two further outputs:
 `crates/biorouter/src/privacy/registry_private.rs` and
 `ui/desktop/src/components/baam/registry.fallback.json`.
+
+**(c) the four fixtures**, each wrapped in `<div id="extensions-section"> … </div>` (see the ⚠
+above). Keep them minimal — one or two `ext-card`s — so a reviewer can see the single attribute each
+one is about.
 
 `RegistryExtension` gains `extension_name?: string` and `privacy?: 'private' | 'public'`, **both
 optional** so an old cached document still parses.
@@ -6586,15 +9184,38 @@ cargo test -p biorouter --lib privacy::extensions
 - [ ] **Step 5: Gate**
 
 ```bash
-# The three hard failures exist and fire.
+# The four fixtures exist. Without this line the loop below "passes" on a
+# missing-file ENOENT, which is the shape the first version of this gate had.
+ls landing/scripts/fixtures/{invalid-privacy,private-no-name,clinical-unannotated,happy}.html
+echo "expect: four paths, no 'No such file'"
+# The three hard failures exist and fire — AS VALIDATIONS, not as crashes.
+# `--out /dev/null` is mandatory: without it every run below rewrites the real
+# landing/registry.json, which the python check further down then reads.
 for f in invalid-privacy private-no-name clinical-unannotated; do
-  node landing/scripts/build-registry.mjs --input landing/scripts/fixtures/$f.html >/dev/null 2>&1
-  echo "$f exit=$?"   # expect: non-zero for all three
+  out=$(node landing/scripts/build-registry.mjs \
+          --input landing/scripts/fixtures/$f.html --out /dev/null 2>&1)
+  code=$?
+  printf '%s exit=%s ' "$f" "$code"
+  echo "$out" | grep -q "^registry: .*\(data-privacy\|data-extension-name\)" \
+    && echo "OK (named the rule)" \
+    || { echo "BROKEN — not a validation failure:"; echo "$out" | head -3; }
 done
+# expect: exit=1 and "OK (named the rule)" three times. An exit=1 WITHOUT the
+# message is a crash — a bad flag, an ENOENT, a ReferenceError — and is exactly
+# what a half-finished implementation produces.
+# And the happy fixture still parses, so the three failures above are not simply
+# "the parser found no cards at all".
+node landing/scripts/build-registry.mjs \
+  --input landing/scripts/fixtures/happy.html --out /tmp/happy-registry.json
+echo "expect: exit 0 and a line reading 'registry.json written: 2 extensions, 0 skills'"
+# The real catalog was NOT touched by any of the above.
+git diff --quiet -- landing/registry.json && echo "OK: registry.json untouched" || \
+  echo "BROKEN: a fixture run wrote over the real catalog — --out is not wired"
 # The generated const and the registry agree.
 python3 -c "
 import json,re
 r=json.load(open('landing/registry.json'))
+assert r['version']==2, r['version']
 want=sorted(e['extension_name'] for e in r['extensions'] if e.get('privacy')=='private')
 src=open('crates/biorouter/src/privacy/registry_private.rs').read()
 got=sorted(re.findall(r'\"([^\"]+)\"', src.split('PRIVATE_EXTENSIONS')[1]))
@@ -6607,6 +9228,14 @@ natural test and which passes an implementation where the three `fail()` calls a
 (wrong regex, wrong variable, `||` where `&&` was meant). The three fixture runs are the gate, and
 they are the whole reason the clinical-keyword rule is worth having: it is the mechanism that forces
 the medcp/msbaseagent revisit at publish time.
+
+⚠ **And it catches the state the first version of this gate was in, which was worse than no gate.**
+That version ran `node … --input landing/scripts/fixtures/$f.html >/dev/null 2>&1` and asserted only
+"non-zero". Measured: `build-registry.mjs` has no argv handling, `landing/scripts/fixtures/` does not
+exist, and Task 33's Files table created neither — so *any* error satisfied it. A worker who never
+wrote a fixture, never wired `--input`, and never added a single validation would see three
+`exit=1`s from three ENOENTs and record the gate as passed. The `ls`, the message grep and the
+`git diff --quiet` are the three lines that make it evidence.
 
 - [ ] **Step 6: Commit**
 
@@ -6666,9 +9295,24 @@ theme-generator precedent CLAUDE.md blesses (`npm run themes -- --check` inside 
 - [ ] **Step 5: Gate**
 
 ```bash
-grep -c "check-privacy-registry\|check-consistency" Justfile ; echo "expect: >= 2 (the recipe + its call from check-everything)"
-grep -c "check-consistency\|check-privacy" .github/workflows/deploy-landing.yml ; echo "expect: >= 1"
-# The desync test from Step 1, run as a gate.
+# ⚠ NOT one OR'd count. `grep -c "A\|B" ; expect: >= 2` is satisfied by TWO hits
+# of B and zero of A — i.e. by a recipe that exists and is never called, or by a
+# call to a recipe that does not exist. Both halves get their own assertion, and
+# both are 0 today so both baselines are real.
+grep -c "^check-privacy-registry:" Justfile ; echo "expect: 1 — the recipe exists (0 today)"
+awk '/^check-everything:/,/^$/' Justfile | grep -c "check-privacy-registry"
+echo "expect: 1 — and check-everything actually calls it (0 today)"
+grep -c "check-privacy-registry\|check-consistency" .github/workflows/deploy-landing.yml
+echo "expect: >= 1 — the deploy runs it too (0 today; the workflow runs ZERO checks)"
+# The desync test from Step 1, run as a gate — the only one that proves WIRING
+# rather than existence:
+sed -i.bak 's/"ucsfomopagent"//' crates/biorouter/src/privacy/registry_private.rs
+just check-everything >/dev/null 2>&1 ; echo "desync exit=$?  # expect: non-zero"
+mv crates/biorouter/src/privacy/registry_private.rs.bak crates/biorouter/src/privacy/registry_private.rs
+git diff --quiet -- crates/biorouter/src/privacy/registry_private.rs && echo "OK: restored"
+# Note the `--`: without it git reads the path as a possible revision and dies
+# with "ambiguous argument" whenever the file is untracked, which is a non-zero
+# exit that looks like "the desync survived".
 ```
 
 **What this catches.** A gate written as "add a line to the existing landing check step" is
@@ -6822,13 +9466,26 @@ the doc** so a later reviewer does not "fix" it.
 - [ ] **Step 5: Gate**
 
 ```bash
-grep -c "Privacy" landing/docs.html ; echo "expect: >= 1"
-grep -c "check-docs-privacy" landing/scripts/check-consistency.mjs ; echo "expect: 1"
-# The desync test from Step 1, run as a gate.
+# ⚠ Anchor inside the TABLE, not the page. `grep -c "Privacy" docs.html` is 0
+# today so the baseline is honest, but the word could land anywhere — a nav
+# item, a footer link, a sentence — and still score >= 1 with the column
+# missing. Assert the header cell and the six data cells instead.
+awk '/Extension agents in the marketplace/,/<\/table>/' landing/docs.html \
+  | grep -c "<th>Privacy</th>" ; echo "expect: 1 — the column header"
+awk '/Extension agents in the marketplace/,/<\/table>/' landing/docs.html \
+  | grep -cE ">(Private|Public)<" ; echo "expect: 6 — one per agent row"
+grep -c "check-docs-privacy" landing/scripts/check-consistency.mjs ; echo "expect: 1 (0 today)"
+# The desync test from Step 1, run as a gate — existence is not wiring.
+sed -i.bak 's|<td>Private</td>|<td>Public</td>|' landing/docs.html
+just check-everything >/dev/null 2>&1 ; echo "desync exit=$?  # expect: non-zero"
+mv landing/docs.html.bak landing/docs.html
+git diff --quiet -- landing/docs.html && echo "OK: restored"
 ```
 
 **What this catches.** The table drifting the day badges ship on BAAM — the failure that has no
-detector today because nothing generates it and nothing reads it.
+detector today because nothing generates it and nothing reads it. And the version of this task that
+adds `check-docs-privacy.mjs`, never calls it from `check-consistency.mjs`, and passes a gate that
+only asked whether the word "Privacy" appears somewhere in a 1500-line HTML file.
 
 - [ ] **Step 6: Commit**
 
@@ -6855,10 +9512,21 @@ show it nowhere.
 |---|---|---|
 | Modify | `ui/desktop/src/main.ts` | `REGISTRY_URL` `:2832`; `ipcMain.handle('registry:fetch', …)` `:2855-2866` |
 | Modify | `ui/desktop/src/components/baam/registry.ts` | `RegistryExtension` `:8-19`; `loadRegistry` `:50` |
+| **Create** | `ui/desktop/src/components/baam/registry.test.ts` | new — **`registry.ts` has no test file today**, and the first three tests below have nowhere to live. `BrowseExtensionsModal.test.tsx` is the only test file in `components/baam/` |
 | Modify | `ui/desktop/src/components/baam/BrowseExtensionsModal.tsx` | `live` consumption `:23`/`:32`/`:35`/`:100` |
 | Modify | `ui/desktop/src/components/BrxtInstallModal.tsx` | the config write `:152-161` — records **no provenance whatsoever** |
+| **Create** | `ui/desktop/src/components/BrxtInstallModal.test.tsx` | new — verified absent; the fourth test below `render`s this component and has nowhere else to go |
 
-- [ ] **Step 1: Write the failing tests**
+⚠ **The file path is load-bearing, and its absence is what made this task's gate vacuous.** The
+gate ran `npx vitest run registry -t "downgrade is never honoured"`. Measured: `registry` matches
+three unrelated suites — `src/terminalSessionRegistry.test.ts`, `components/chatGroups/newTabRegistry.test.ts`
+and `components/chatGroups/closeActiveTabRegistry.test.ts` — so vitest finds files (no "no test files
+found" bail), the `-t` filter then skips all 28 of their tests, and the run prints
+`3 skipped / 28 skipped` and **exits 0**, having executed none of the four tests it exists to
+protect. That gate is the only thing standing between a compromised `registry.json` and
+`ucsfomopagent` losing its private badge on every machine that fetches it.
+
+- [ ] **Step 1: Write the failing tests** — in `src/components/baam/registry.test.ts`
 
 ```tsx
 it('a downgrade is never honoured for an entry the compiled set names', async () => {
@@ -6903,23 +9571,53 @@ extension *named* `ucsfomopagent` inherits the private badge (fail-closed, fine)
 private extension renamed locally becomes public — already the accepted direction under R11(ii), and
 unavoidable because the install records no provenance at all.
 
-- [ ] **Step 4: Run** → `cd ui/desktop && npx vitest run registry BrowseExtensionsModal BrxtInstallModal`.
+- [ ] **Step 4: Run** — name the FILES, never the bare word `registry`:
+
+```bash
+cd ui/desktop && npx vitest run \
+  src/components/baam/registry.test.ts \
+  src/components/baam/BrowseExtensionsModal.test.tsx \
+  src/components/BrxtInstallModal.test.tsx 2>&1 | tail -6
+```
+
+Expected: `3 test files`, with `registry.test.ts` reporting **3 passed** and
+`BrxtInstallModal.test.tsx` **1 passed**. A run that reports `3 skipped` has matched suite *paths*
+and filtered out every test; a run that reports `2 test files` means one of the two new files was
+never created.
 
 - [ ] **Step 5: Gate**
 
 ```bash
 cd ui/desktop
-grep -c "AbortController" src/main.ts ; echo "expect: >= 1"
+grep -c "AbortController" src/main.ts ; echo "expect: >= 1 (0 today)"
 # The union rule is a function, not four inline ORs.
-grep -rn "effectivePrivacy" src/components/baam/ | wc -l ; echo "expect: >= 2 (definition + consumers)"
-# A live fetch can never lower a compiled-in badge.
-npx vitest run registry -t "downgrade is never honoured" 2>&1 | tail -3
+grep -rn "effectivePrivacy" src/components/baam/ | wc -l ; echo "expect: >= 2 (definition + consumers; 0 today)"
+# A live fetch can never lower a compiled-in badge. ⚠ The FILE PATH, not the
+# word `registry`: as a name filter, `registry` matches three unrelated suites
+# (terminalSessionRegistry, newTabRegistry, closeActiveTabRegistry), `-t` then
+# skips all 28 of their tests, and the run prints green having executed ZERO of
+# this task's four. Verified by running it against the tree.
+test -f src/components/baam/registry.test.ts || echo "MISSING: the test file was never created"
+npx vitest run src/components/baam/registry.test.ts \
+  -t "a downgrade is never honoured" 2>&1 | tail -4
+echo "expect: '1 passed' — NOT '1 skipped', and NOT '0 passed'. A skip here is"
+echo "  a filter that did not match; the -t string must be a substring of the"
+echo "  it(...) title exactly as written in Step 1."
+# ...and the other two in that file actually run too, so a single live term
+# cannot hide them.
+npx vitest run src/components/baam/registry.test.ts 2>&1 | tail -4
+echo "expect: 1 test file, 3 passed"
+test -f src/components/BrxtInstallModal.test.tsx || echo "MISSING: the fourth test has no file"
+npx vitest run src/components/BrxtInstallModal.test.tsx 2>&1 | tail -4
+echo "expect: 1 test file, 1 passed"
 ```
 
 **What this catches.** The natural implementation — trusting the live document — which lets a
 compromised or merely stale `registry.json` **remove** a private badge from `ucsfomopagent` on every
 machine that fetches it. The union rule is one line and the first test is the only thing that
-enforces it.
+enforces it. And, before that, it catches the state this gate was in: a vitest invocation that
+reported success while running none of the four tests, because the file they belong in did not exist
+and no Files-table row created it.
 
 - [ ] **Step 6: Commit**
 
@@ -6934,7 +9632,7 @@ git commit -m "feat(marketplace): last-good registry with a timeout, and a union
 
 ### Task 38: The backfill, and the day-one notice with computed counts
 
-⚠ **The backfill runs ONCE, from the numbered migration arm — never from `reconcile_privacy_schema`.**
+⚠ **The backfill runs ONCE, from the numbered migration arm — never from `ensure_privacy_schema`.**
 The reconcile helper runs on **every startup**, and a repeated `WHERE provider_name IN (…)` would
 **re-privatise a session the user has just declassified**, because `declassify_session` deliberately
 leaves `provider_name` untouched (§12.6). That is a silent one-way regression of the one user-only
@@ -7052,6 +9750,17 @@ cd ui/desktop && npx vitest run FirstRunPrivacyNotice 2>&1 | tail -4
 - [ ] **Step 5: Gate**
 
 ```bash
+# Both awk ranges must be NON-EMPTY before their counts mean anything: an awk
+# START that never matches yields no output, and `grep -c` on nothing is 0 —
+# which is a PASS for the first check and reads as "the backfill is correctly
+# absent from the reconcile helper" while proving nothing at all.
+awk '/async fn ensure_privacy_schema/,/^    }/' crates/biorouter/src/session/session_manager.rs | wc -l
+echo "expect: > 1 — if this is 0, the helper is named something else and the"
+echo "  zero-count below is vacuous. The name is ensure_privacy_schema (Task 6);"
+echo "  earlier prose in this plan called it reconcile_privacy_schema and a"
+echo "  worker who followed THAT would produce exactly this vacuous pass."
+awk '/^            17 => \{/,/^            \}/' crates/biorouter/src/session/session_manager.rs | wc -l
+echo "expect: > 1 — the arm exists at 12-space indentation, like arms 10..16"
 # The backfill is in the numbered arm and NOT in the reconcile helper.
 awk '/async fn ensure_privacy_schema/,/^    }/' crates/biorouter/src/session/session_manager.rs \
   | grep -c "UPDATE sessions" ; echo "expect: 0"
@@ -7064,7 +9773,7 @@ sqlite3 /tmp/p6-a.db "select count(*) from sessions where privacy_tier='private'
 # Record it. Then declassify one row by hand, run again, and assert it stayed public.
 ```
 
-**What this catches.** Putting the backfill in `reconcile_privacy_schema` — which is the obvious way
+**What this catches.** Putting the backfill in `ensure_privacy_schema` — which is the obvious way
 to dodge the migration-number problem (O10) and which silently reverses the user's one irreversible
 action on the next app start. The paired `awk` counts are the gate, and the first test is the
 behavioural proof. Separately, quoting the raw `sessions` count in the notice overstates what the
@@ -7111,8 +9820,15 @@ for f in docs/security/privacy-tiers.md docs/security/privacy-tiers-execution-pl
   grep -q "^## Related documentation" "$f" || echo "MISSING closer: $f"
 done
 echo "expect: no output"
-# Every new doc is indexed. docs/ is the ONLY documentation folder.
-grep -c "privacy-tiers" docs/security/README.md ; echo "expect: 3"
+# Every new doc is indexed, and each ROW is checked separately. `grep -c
+# "privacy-tiers"` is a substring count: it is 2 today (the design row :26 and
+# the plan row :27), and the migration doc's row would make it 3 — but so would
+# a second mention of an existing doc anywhere on the page, which is not the
+# same thing at all.
+for d in privacy-tiers.md privacy-tiers-execution-plan.md privacy-tiers-migration.md; do
+  echo -n "$d: " ; grep -c "]($d)" docs/security/README.md
+done
+echo "expect: 1 each — three distinct index rows (today: 1, 1, 0)"
 git status --porcelain | grep -E "^\?\?.*\.md$" | grep -v "^?? docs/" ; echo "expect: no output"
 ```
 
@@ -7152,28 +9868,71 @@ cargo test -p biorouter --test conversation_writeback_stress
 cargo test -p biorouter-server --test knowledge_routes
 cargo test -p biorouter-server --test knowledge_routes_e2e
 cargo test -p biorouter-server --test llamacpp_routes
-cargo test -p biorouter-mcp --test mcp_integration_test
+# ⚠ `-p biorouter-mcp` is WRONG here and cargo hard-errors
+# ("no test target named `mcp_integration_test` in default-run packages").
+# The file is crates/biorouter/tests/mcp_integration_test.rs — verified.
+cargo test -p biorouter --test mcp_integration_test
 cargo test -p biorouter-mcp --lib knowledge::
 cargo test -p biorouter-server --lib routes::apps
 node scripts/agent-drafter/ui-control-harness.mjs
 ```
 
-⚠ Four of the `--lib` filters used across this plan resolve to modules that had **no tests before
-the task that owns them** — `agents::chatrecall_extension`, `session::chat_history_search`,
-`routes::agent`, `routes::session`. At the release gate they must all report a non-zero count. A
-`0 passed` here is not "nothing to run"; it is a suite that did not land where the filter looks. See
-[Which test filters are validated, and which are not](#which-test-filters-are-validated-and-which-are-not).
+⚠ **Two** of the `--lib` filters used across this plan resolve to modules that had **no tests at all**
+before the task that owns them — `agents::chatrecall_extension` and `session::chat_history_search`,
+both measured at zero `#[cfg(test)]` blocks. For those two, a non-zero count at the release gate is
+the assertion: a `0 passed` is not "nothing to run", it is a suite that did not land where the filter
+looks.
+
+⚠ **The other two are NOT zero, and "assert non-zero" is worthless for them.**
+`routes::agent` reports **8 passed** on `main` and `routes::session` reports **20 passed**, from four
+pre-existing `#[cfg(test)]` blocks that are not named `tests`. A release gate that only demands
+"non-zero" from those two is satisfied by a tree in which #56 added no route tests whatsoever. Run
+them and compare against the recorded baselines:
+
+```bash
+cargo test -p biorouter-server --lib routes::agent   2>&1 | grep "test result:"
+echo "expect: strictly MORE than 8 passed  (8 is the untouched baseline)"
+cargo test -p biorouter-server --lib routes::session 2>&1 | grep "test result:"
+echo "expect: strictly MORE than 20 passed (20 is the untouched baseline)"
+cargo test -p biorouter --lib agents::chatrecall_extension 2>&1 | grep "test result:"
+echo "expect: non-zero (0 is the untouched baseline)"
+cargo test -p biorouter --lib session::chat_history_search 2>&1 | grep "test result:"
+echo "expect: non-zero (0 is the untouched baseline)"
+```
+
+- [ ] **Step 2b: Task 4b's filter audit, with an EMPTY deferred set**
+
+```bash
+# Every module this plan creates now exists, so nothing may be deferred. Re-run
+# Task 4b Steps 1 and 5 with:
+#   DEFERRED=''            # nothing is allowed to be missing at the release gate
+# Expect: 0 MISSING and 0 DEFER across all 42 (package, filter) pairs.
+# A single DEFER here means a filter this plan has been quoting for forty tasks
+# names a module that never came to exist — a gate that has been printing
+# `0 passed` and exiting 0 the whole time. That is BR-71's most expensive defect,
+# and this line is the last place it can be caught.
+```
+
+See [Which test filters are validated, and which are not](#which-test-filters-are-validated-and-which-are-not)
+and [Task 4b](#task-4b-resolve-every-test-filter-against-a-real-cargo---list-docs-only).
 
 - [ ] **Step 3: The twelve invariants, as commands**
 
 ```bash
 cd /Users/wgu/Desktop/BioRouter-privacy
-# O5 — the ratchet fires in exactly two places, neither of them the bind.
-grep -rn "raise_privacy(" --include='*.rs' crates/ | grep -v session_manager.rs | wc -l ; echo "expect: 2"
+# O5 — the ratchet fires in exactly two places, neither of them the bind. PRINT,
+# do not `wc -l`: a bare 2 is also produced by two calls in agent.rs and none in
+# extension_manager.rs, which is Gate C's ratchet silently missing. (Task 20
+# Step 3 prints; this copy counted. Same invariant, two strengths.)
+grep -rn "raise_privacy(" --include='*.rs' crates/ | grep -v session_manager.rs
+echo "expect: exactly 2 lines — one in agents/agent.rs (Gate B) and one in"
+echo "        agents/extension_manager.rs (Gate C). Read the paths, not the count."
 # O7 — one production path into an MCP client (see Task 20 Step 3 for the full
 # hit list and why a `grep -vc "cfg(test)"` cannot express this).
-grep -c "\.call_tool(" crates/biorouter/src/agents/extension_manager.rs ; echo "expect: 1"
-grep -rn "\.call_tool(" --include='*.rs' crates/ | wc -l ; echo "expect: 10 — any increase is a new bypass, read the diff"
+grep -c "\.call_tool(" crates/biorouter/src/agents/extension_manager.rs ; echo "expect: 1 (1 today)"
+grep -rn "\.call_tool(" --include='*.rs' crates/ | wc -l
+echo "expect: 10 — the SAME 10 as at 9558c346, so this is a no-growth tripwire"
+echo "        rather than a measurement of #56. Any increase is a new bypass."
 # O6 — nothing above filter_tools consults a tier.
 awk '/async fn get_all_tools_cached/,/^    }/' crates/biorouter/src/agents/extension_manager.rs \
   | grep -c "capability_tier\|allowed_extension_keys" ; echo "expect: 0"
@@ -7183,24 +9942,65 @@ grep -rn --include='*.rs' "privacy_tier *= *'public'" crates/ | grep -v "DEFAULT
 # Gate D is in both builders; Gate C has all nine entry points.
 grep -c "s.privacy_tier = 'public'" crates/biorouter/src/session/chat_history_search.rs ; echo "expect: 2"
 grep -c "assert_extension_reachable(" crates/biorouter/src/agents/extension_manager.rs ; echo "expect: 9"
-# O12 — the knowledge-base barrier and its ratchet.
-grep -c "assert_kb_reachable(" crates/biorouter-mcp/src/knowledge/server.rs ; echo "expect: 17"
-grep -c "tier::raise(" crates/biorouter-mcp/src/knowledge/server.rs ; echo "expect: 3"
-grep -c "tier::raise(" crates/biorouter-mcp/src/knowledge/service.rs ; echo "expect: 2"
-grep -c "tier::raise(" crates/biorouter-server/src/routes/knowledge.rs ; echo "expect: 3"
+# O12 — the knowledge-base barrier at its five choke points, and its ratchet.
+grep -c "assert_kb_reachable(" crates/biorouter-mcp/src/knowledge/server.rs ; echo "expect: 2 (CP1)"
+grep -c "tier::assert_reachable(" crates/biorouter-mcp/src/knowledge/macros/ingest.rs \
+        crates/biorouter-mcp/src/knowledge/macros/query.rs \
+        crates/biorouter-mcp/src/knowledge/macros/lint.rs ; echo "expect: 1 each (CP2)"
+grep -c "tier::assert_reachable(" crates/biorouter-server/src/routes/apps.rs ; echo "expect: 1 (CP3)"
+grep -c "tier::assert_reachable(" crates/biorouter-mcp/src/agent_drafter/mod.rs ; echo "expect: 1 (CP4)"
+grep -c "pub fn discover(" crates/biorouter-mcp/src/agent_drafter/catalog.rs ; echo "expect: 1 (CP5)"
+grep -rn "Catalog::discover(true)" --include='*.rs' crates/*/src/ ; echo "expect: no output (CP5)"
+grep -c "tool_handler" crates/biorouter-mcp/src/knowledge/server.rs ; echo "expect: 0 — CP1 is hand-written"
+grep -c "raise_tier(" crates/biorouter-mcp/src/knowledge/server.rs ; echo "expect: 3"
+grep -c "raise_tier(" crates/biorouter-server/src/routes/apps.rs ; echo "expect: 1"
+cargo test -p biorouter-mcp --lib \
+  knowledge::server::tests::every_kb_tool_is_gated_or_listed_as_exempt \
+  | grep "test result:" ; echo "expect: 1 passed; 0 failed"
 grep -rn "kb_tiers_path" crates/biorouter-mcp/src/knowledge/ | grep -v "fn kb_tiers_path"
-echo "expect: only tier.rs — one reader and one writer of the store"
+echo "expect: tier.rs and service.rs::ensure_tiers_migrated only"
+grep -rn "store::\(list_pages\|read_page\|write_page\|search\|search_with_scope\)(" \
+  --include='*.rs' crates/ | grep -v "src/knowledge/" | wc -l
+echo "expect: 4 — a FIFTH is a new CONTENT surface; see Task 10C Step 5"
+# ...and the METADATA tripwire, which the two content detectors cannot express.
+# 20 at 9558c346; a twenty-first is a new way to hand a model a base id or name.
+grep -rn "\.list_bases()\|\.session_kb_ids(" --include='*.rs' crates/*/src/ \
+  | grep -v "src/knowledge/" | wc -l
+echo "expect: 20 — see Task 10D Step 5 for the 15 production / 5 test-module split"
+# The two id-list error messages omit rather than enumerate (Tasks 10C, 11).
+awk '/fn kb_id_or_primary\(/,/^    }/' crates/biorouter-mcp/src/knowledge/server.rs \
+  | grep -c "tier::is_private" ; echo "expect: 1"
+awk '/fn resolve_target_kb\(/,/^}/' crates/biorouter/src/agents/knowledge_tool.rs \
+  | grep -c "is_private" ; echo "expect: 1"
 # Gate G is one guard in the shared function, covering all three of its callers.
-grep -rn "caller_capability:" --include='*.rs' crates/ | grep -v conversation_ingest.rs | wc -l
-echo "expect: 3 — the platform tool, the HTTP route, the CLI"
+# PRINT: `| wc -l` cannot tell "three callers pass it" from "one caller passes it
+# and two tests construct the struct", and this repo's tests live in the same
+# files as the code they test.
+grep -rn "caller_capability:" --include='*.rs' crates/ | grep -v conversation_ingest.rs
+echo "expect: 3 lines, one each in agents/knowledge_tool.rs (the platform tool),"
+echo "        biorouter-server/src/routes/knowledge.rs (the HTTP route) and"
+echo "        biorouter-cli/src/commands/knowledge.rs (the CLI). Read the paths."
 grep -rn "caller_capability: ProviderTier::Private" --include='*.rs' crates/ ; echo "expect: no output"
 # floor() is crossed at exactly its two intended callers, and the audit test
 # names them rather than counting — see Task 7 for why a count could not work.
-cargo test -p biorouter --lib privacy::tests::floor_is_crossed_only_where_a_capability_establishes_a_classification
+cargo test -p biorouter --lib \
+  privacy::tests::floor_is_crossed_only_where_a_capability_establishes_a_classification \
+  | grep "test result:" ; echo "expect: 1 passed; 0 failed (never just 'PASS' — 0 passed exits 0)"
 # The registry const and registry.json agree, through the wired check.
 just check-privacy-registry
-# No privacy control is an inspector, and none returns Err.
-grep -rn "PrivacyInspector" crates/ ; echo "expect: no output"
+# No privacy control is an inspector. ⚠ NOT `grep -rn "PrivacyInspector"`: 0
+# today, 0 under every wrong implementation, green both ways. The trait's impl
+# set is the checkable form.
+diff <(grep -rl "impl ToolInspector for" --include='*.rs' crates/ | sort) <(cat <<'EOF'
+crates/biorouter/src/hooks/inspector.rs
+crates/biorouter/src/permission/managed_inspector.rs
+crates/biorouter/src/permission/permission_inspector.rs
+crates/biorouter/src/security/security_inspector.rs
+crates/biorouter/src/security/sensitive_ops.rs
+crates/biorouter/src/tool_monitor.rs
+crates/biorouter/tests/tool_inspection_manager_tests.rs
+EOF
+) && echo "OK: the impl set is exactly what it was at 9558c346"
 # The badges are mounted — the same 13-file enumeration as Task 32 Step 3.
 cd ui/desktop && grep -rl "PrivacyBadge" src/components | sort
 echo "expect: the 13 files listed in Task 32 Step 3, no more and no fewer"
@@ -7223,7 +10023,7 @@ evidence — never silently dropped.** Re-review after substantial fixes.
 
 Update `docs/security/privacy-tiers.md`'s `**Status:**` to `Current — implemented`, close issue #56
 with a summary naming the five gates the design did not have (G, F1, F2, H, and the knowledge-base
-barrier of Tasks 10A–10C) and the eight departures, and open follow-up issues for every unresolved
+barrier of Tasks 10A–10D) and the eight departures, and open follow-up issues for every unresolved
 item in [Open questions](#open-questions).
 
 The closing summary must also **name the accepted costs out loud** — AR-1 (a knowledge base one
@@ -7253,7 +10053,7 @@ the implementation is wrong.
 | **DR-10** | **Fail directions differ by kind, deliberately.** Migration backfill → fail **open** (public). Runtime read of a missing/unparseable column → fail **closed** (private, with `error!`). Import with no tier → fail **closed**. Unknown provider → **Public** (fail-*safe*: less privileged). Unlisted extension → **Public** (fail-open, DR-6). Any gate's lookup failing → refuse, encoded inside `Ok(..)`, never as `Err`. |
 | **DR-11** | **`medcp` stays callable by a public model**, and that is the accepted cost of DR-6. It is enabled on the operator's machine with `CLINICAL_RECORDS_*` against a clinical MSSQL backend. The reasoning: a hand-installed extension is the user's own choice, and medcp is a *connector* rather than a data source. **The badge is a statement about provenance, not about the data behind the connector.** |
 | **DR-12** | **`spokeagent` is public.** SPOKE holds no patient data; its passcode gates the service, not private content. |
-| **DR-13** | **A knowledge base ratchets on ingest**, resolving the either/or design §9.3 B4 refused to defer. A KB takes the tier of the most sensitive session that has ingested into it, and a public-capability session may not read *or write* a private KB. The alternative — declare KBs a designed public sink and warn at ingest — was **rejected**. Two costs come with it and were accepted, not overlooked: a KB one private session touched is unreadable from every public chat including the user's own ordinary work, and existing KBs migrate **public** even if a private session fed them. Both are written out in [Accepted risks](#accepted-risks) (AR-1, AR-2); there is no KB declassification path in v1. Tasks 10A–10C. |
+| **DR-13** | **A knowledge base ratchets on ingest**, resolving the either/or design §9.3 B4 refused to defer. A KB takes the tier of the most sensitive session that has ingested into it, and a public-capability session may not read *or write* a private KB. The alternative — declare KBs a designed public sink and warn at ingest — was **rejected**. Two costs come with it and were accepted, not overlooked: a KB one private session touched is unreadable from every public chat including the user's own ordinary work, and existing KBs migrate **public** even if a private session fed them. Both are written out in [Accepted risks](#accepted-risks) (AR-1, AR-2); there is no KB declassification path in v1. A third cost — the *existence* of a private base stays inferable from a guessed id, DR-7's side-channel scope applied consistently — is [AR-5](#ar-5--the-existence-of-a-private-knowledge-base-is-still-inferable). Tasks 10A–10D. |
 
 ---
 
@@ -7262,8 +10062,8 @@ the implementation is wrong.
 The design's eleven, unchanged in substance and re-stated with what this plan does in the meantime.
 **Question 1 is the one place the design reads a requirement in spirit rather than letter and still
 needs an operator ruling.** The design's twelfth open item — §9.3 B4's knowledge-base either/or — is
-**no longer open**: the operator ruled *ratchet*, and it is implemented in Tasks 10A–10C with its
-costs recorded in [Accepted risks](#accepted-risks).
+**no longer open**: the operator ruled *ratchet*, and it is implemented in Tasks 10A–10D with its
+costs recorded in [Accepted risks](#accepted-risks) (AR-1, AR-2 and AR-5).
 
 | # | Question | What this plan does while it is open |
 |---|---|---|
@@ -7279,9 +10079,9 @@ costs recorded in [Accepted risks](#accepted-risks).
 | **10** | **`ActiveWorkItem.title` is cross-session content and predates all of this** — derived from a subagent's task prompt and surfaced process-wide with a session id. The visibility rule is applied to it, but it is exposed only via `GET /active_work` for the GUI (the model-facing `subagent_status` is session-scoped), so it may deserve its own fix rather than riding this one. | Task 21 provides `appears_in_list`; wiring `/active_work` to it is a follow-up. |
 | **11** | **`POST /agent/call_tool` remains inspector-free.** This design is correct either way because the barrier is in the extension manager, but the route is a standing hazard for every *future* inspector-based control, including BR-71's. | Task 14 fixes its error mapping so a refusal reaches the caller as text rather than a bare 500, and Task 20's gate exercises it explicitly. The route itself is unchanged. |
 
-Four more this plan surfaced. Twelve and thirteen need a ruling before the phase that touches them;
-fourteen and fifteen are follow-ups whose *residual* is already accepted (AR-3, AR-1) and whose
-*fix* is not scheduled.
+Five more this plan surfaced. Twelve and thirteen need a ruling before the phase that touches them;
+fourteen, fifteen and sixteen are follow-ups whose *residual* is already accepted (AR-3, AR-1, and —
+for sixteen — a pre-existing theme gap this feature neither creates nor is scoped to fix).
 
 | # | Question | Blocks |
 |---|---|---|
@@ -7289,6 +10089,7 @@ fourteen and fifteen are follow-ups whose *residual* is already accepted (AR-3, 
 | **13** | **Does `medcp`'s continued reachability need a first-run notice, or is the badge enough?** §13.5 specifies a one-time notice naming any **enabled** extension that is Public and declares clinical-looking credentials. On the operator's machine that names exactly one extension, `medcp`, and nothing else changes. | Task 38's notice copy. Hard-code that expectation into its test fixture. |
 | **14** | **How does `memory`'s local store get a tier?** AR-3: `compose_instructions` (`memory/mod.rs:277`) inlines local memories in full (`:310-322`) into every session opened in that directory, including one on a public model, and Task 19 ships only a disclosure. The design's §9.3 B3 names the fix — "classify memory entries and filter `retrieve_all` by the session's capability tier at init" — but the on-disk format carries no provenance (`:387-388` writes a `# {tags}` line and bare lines; `:414-418` reads them back keyed by the *tag string*), and `compose_instructions` runs once at `MemoryServer::new` (`:108`) rather than per turn, so a naive capability filter there freezes across a mid-session model swap — the O6 hazard. A real fix needs per-entry provenance **and** a per-turn recompute. | Nothing in this plan. Open it as a follow-up issue at Task 40 Step 6. |
 | **15** | **Does a knowledge base need a declassification path, and does the barrier belong on the GUI's own read routes?** Two halves of the same scope question. (a) AR-1: a session can be declassified (Task 29, user-only, graded, audited) and a KB cannot, so a user who ratchets their only base by accident has no in-product exit. (b) Task 10C gates the four `/knowledge/*` **macro** routes (they run a model) and deliberately leaves the GUI's read routes alone (the Knowledge view is the user, not a model) — a defensible line, but it means the *app* shows a private base that the *agent* in the next tab cannot read, and nobody has decided whether that asymmetry should be visible in the UI. | Nothing in this plan; both are follow-ups. (a) is the one a user will hit first. |
+| **16** | **`--text-subtle` on `--background-medium` is sub-AA in three of the six family×mode scopes, and #56 is not the right owner of the fix.** Measured with `ui/desktop/scripts/lib/theme-tokens.mjs`: parchment:dark **3.75**, alma-mater:light **4.45**, alma-mater:dark **4.28**, against a 4.5 floor. `--background-medium` is the row-hover ground that `biorouter-list-row`, `SessionItem` and `ExtensionItem` all paint, so this affects every subtle label on a hovered row **today** — it is a pre-existing gap, not something the privacy badge introduces, and `check-contrast.mjs` has never asserted it. Task 26 therefore audits only `--text-default` and `--text-muted` on that ground (the two the badge actually uses) and the total is **288**, not 294. Auditing the third token as well makes the run exit 1 with three failures whose only fix is a theme-token edit — precisely the "Zero theme work" Task 26 Step 5 forbids, and a scope the privacy feature has no business taking. | Nothing in this plan. Open it as a theme/a11y follow-up at Task 40 Step 6, alongside the deferred findings from the 2026-07 theme redesign. Do **not** close it by lowering the threshold in `check-contrast.mjs`. |
 
 ---
 
@@ -7296,7 +10097,7 @@ fourteen and fifteen are follow-ups whose *residual* is already accepted (AR-3, 
 
 - [Privacy tiers](privacy-tiers.md) — the design this plan executes, and the specification each task is reviewed against.
 - [Data privacy and patient data](data-privacy-and-phi.md) — the provider guidance this system enforces mechanically.
-- [Secret storage](secret-storage.md) — the credential model Task 2's daemon-credential scrub touches.
+- [Secret storage](secret-storage.md) — the credential model §9.3 A1 turns on; Task 2 pins the strip that closed it and records which of its three fixes are still open.
 - [BR-71 execution plan](../agent-loop/designs/br71-execution-plan.md) — the plan this one must land ahead of, and whose Task 1 collides with Task 6's migration.
 - [Subagents](../agent-loop/subagents.md) — the inheritance behaviour Task 23 gates.
 - [Tool routing](../agent-loop/tool-routing.md) — the chatrecall/workspace split Gate D sits inside.
