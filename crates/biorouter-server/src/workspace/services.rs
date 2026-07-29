@@ -319,7 +319,8 @@ mod tests {
     ///   `Some(vec![])` exercises the same code path with an empty set.
 
     #[tokio::test]
-    async fn start_session_creates_a_user_session_and_rejects_unknown_extensions() {
+    async fn start_session_creates_a_user_session_in_the_requested_dir_and_rejects_unknown_extensions(
+    ) {
         let state = crate::state::AppState::new().await.unwrap();
         let services = ServerWorkspaceServices::new(state.clone());
         let temp = tempfile::TempDir::new().unwrap();
@@ -338,7 +339,7 @@ mod tests {
         let sid = services
             .start_session(
                 temp.path().to_path_buf(),
-                None,
+                Some(Vec::new()),
                 Vec::new(),
                 KbPrimaryChoice::Auto,
             )
@@ -349,9 +350,28 @@ mod tests {
             .get_session(&sid, false)
             .await
             .unwrap();
+        assert_eq!(session.session_type, SessionType::User);
+        // #44 conformance: the REQUESTED working directory is the session's,
+        // set at creation. Without this assertion an implementation that
+        // ignored `working_dir` entirely — and started every workspace session
+        // in the daemon's cwd — passed the gate.
         assert_eq!(
-            session.session_type,
-            biorouter::session::session_manager::SessionType::User
+            session.working_dir.canonicalize().unwrap(),
+            temp.path().canonicalize().unwrap()
+        );
+        // The extension set the caller asked for is what was persisted.
+        let persisted = biorouter::session::EnabledExtensionsState::from_extension_data(
+            &session.extension_data,
+        )
+        .expect("start_session persists an extension state");
+        assert!(
+            persisted.extensions.is_empty(),
+            "asked for no extensions, got {:?}",
+            persisted
+                .extensions
+                .iter()
+                .map(|e| e.name().to_string())
+                .collect::<Vec<_>>()
         );
     }
 
