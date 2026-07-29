@@ -1544,7 +1544,15 @@ mod tests {
         );
     }
 
+    /// `parallel`, not `serial`: this test READS the process-global services
+    /// slot (it asserts the headless answers — no GUI, nothing running, no KB
+    /// selection), so it must never overlap a test that has overridden it.
+    /// `serial_test`'s `parallel(key)` says exactly that — run freely alongside
+    /// anything else, but never alongside `serial(workspace_services)`. Until a
+    /// stand-in with `gui_attached() == true` existed, every override in this
+    /// binary happened to answer `false` here and the overlap was invisible.
     #[tokio::test]
+    #[serial_test::parallel(workspace_services)]
     async fn workspace_list_reports_headless_and_sessions() {
         let c = client();
         let parent = c
@@ -2486,5 +2494,615 @@ mod tests {
         crate::workspace_services::clear_test_override();
         // steer with no running turn is always an error (mirrors /interrupt 409).
         assert_eq!(result.is_error, Some(true));
+    }
+
+    // ---------------------------------------------------------------------
+    // Handler-level tests, against a daemon stand-in that publishes the same
+    // bus lifecycle the real turn runner does.
+    //
+    // The three tests above are real but not DISCRIMINATING: `note` never
+    // reaches the daemon at all, and the no-daemon test only pins that a steer
+    // without services fails somehow. Everything the tool actually promises —
+    // that a steer lands in the running turn's queue and is refused when that
+    // queue has closed, that a turn is framed/stamped/announced, that
+    // `wait:"final_message"` returns THIS turn's answer, that the fan-out cap
+    // bounds turns rather than tool calls — lives below, because each of those
+    // needs a controllable `WorkspaceServices` and a controllable event stream.
+    // Without them a stubbed-out `mode:"turn"` and the unguarded
+    // `queue_soft_interrupt_with_provenance` both pass the suite.
+    // ---------------------------------------------------------------------
+
+    use crate::session_events::SessionBusEvent;
+    use crate::workspace_services::{
+        KbPrimaryChoice, KbSelectionView, WorkspaceServices, WorkspaceTurnLease,
+    };
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
+
+    /// A daemon stand-in that can be told what to answer AND publishes the bus
+    /// lifecycle the real runner publishes (`workspace/turn.rs`): the events a
+    /// previous turn emits inside the hydration window, then this turn's
+    /// `TurnStarted { turn_id }`, then whatever this turn emits.
+    #[derive(Default)]
+    struct FakeServices {
+        gui: bool,
+        /// Sessions `is_turn_active` reports busy.
+        active: Mutex<std::collections::HashSet<String>>,
+        /// Published to the target BEFORE the new turn's start — i.e. attributed
+        /// to whatever was running when the caller asked.
+        preamble: Mutex<Vec<SessionBusEvent>>,
+        /// Published after it. Empty leaves the turn running.
+        epilogue: Mutex<Vec<SessionBusEvent>>,
+        /// Every accepted turn: (session id, turn id, the injected message).
+        started: Mutex<Vec<(String, String, crate::conversation::message::Message)>>,
+        /// Every `gui_command` frame.
+        frames: Mutex<Vec<serde_json::Value>>,
+        turn_seq: AtomicUsize,
+    }
+
+    impl FakeServices {
+        fn with_gui(gui: bool) -> Self {
+            Self {
+                gui,
+                ..Default::default()
+            }
+        }
+        fn busy(self, session_id: &str) -> Self {
+            self.active.lock().unwrap().insert(session_id.to_string());
+            self
+        }
+        fn preamble(self, events: Vec<SessionBusEvent>) -> Self {
+            *self.preamble.lock().unwrap() = events;
+            self
+        }
+        fn epilogue(self, events: Vec<SessionBusEvent>) -> Self {
+            *self.epilogue.lock().unwrap() = events;
+            self
+        }
+        fn install(self) -> std::sync::Arc<Self> {
+            let me = std::sync::Arc::new(self);
+            crate::workspace_services::set_for_tests(Some(me.clone()));
+            me
+        }
+        /// End a turn the way the runner does: publish the terminal, then drop
+        /// the lock (never the other way round).
+        fn finish(&self, session_id: &str) {
+            crate::session_events::publish(
+                session_id,
+                SessionBusEvent::TurnFinished {
+                    reason: "stop".into(),
+                    token_state: None,
+                },
+            );
+            self.active.lock().unwrap().remove(session_id);
+        }
+        fn notify_frames(&self) -> Vec<serde_json::Value> {
+            self.frames
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|f| f["cmd"] == "notify")
+                .cloned()
+                .collect()
+        }
+    }
+
+    struct FakeLease;
+    impl WorkspaceTurnLease for FakeLease {
+        fn turn_id(&self) -> &str {
+            "turn-lease"
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl WorkspaceServices for FakeServices {
+        fn gui_attached(&self) -> bool {
+            self.gui
+        }
+        fn layout_snapshot(&self) -> Option<serde_json::Value> {
+            None
+        }
+        fn is_turn_active(&self, session_id: &str) -> bool {
+            self.active.lock().unwrap().contains(session_id)
+        }
+        fn cancel_turn(&self, _session_id: &str) -> Option<String> {
+            None
+        }
+        fn begin_turn(
+            &self,
+            _session_id: &str,
+            _cancel: tokio_util::sync::CancellationToken,
+        ) -> Result<Box<dyn WorkspaceTurnLease>, String> {
+            Ok(Box::new(FakeLease))
+        }
+        async fn stop_agent(&self, _session_id: &str) -> Result<(), String> {
+            Ok(())
+        }
+        async fn start_detached_turn(
+            &self,
+            session_id: &str,
+            message: crate::conversation::message::Message,
+        ) -> Result<String, String> {
+            let turn_id = format!("turn-{}", self.turn_seq.fetch_add(1, Ordering::SeqCst) + 1);
+            // The hydration window: the real service awaits the target's
+            // provider and extension restore here, BEFORE it takes the turn
+            // lock, so a turn that was already in flight can end in the middle
+            // of this call.
+            for event in self.preamble.lock().unwrap().iter().cloned() {
+                crate::session_events::publish(session_id, event);
+            }
+            self.active.lock().unwrap().insert(session_id.to_string());
+            crate::session_events::publish(
+                session_id,
+                SessionBusEvent::TurnStarted {
+                    turn_id: turn_id.clone(),
+                },
+            );
+            for event in self.epilogue.lock().unwrap().iter().cloned() {
+                crate::session_events::publish(session_id, event);
+            }
+            self.started
+                .lock()
+                .unwrap()
+                .push((session_id.to_string(), turn_id.clone(), message));
+            Ok(turn_id)
+        }
+        async fn start_session(
+            &self,
+            _working_dir: std::path::PathBuf,
+            _extensions: Option<Vec<String>>,
+            _knowledge_bases: Vec<String>,
+            _primary: KbPrimaryChoice,
+        ) -> Result<String, String> {
+            Ok("s-new".into())
+        }
+        fn set_knowledge_bases(
+            &self,
+            _session_id: &str,
+            _kbs: &[String],
+            _primary: KbPrimaryChoice,
+        ) -> Result<KbSelectionView, String> {
+            Ok(KbSelectionView::default())
+        }
+        fn knowledge_selection(&self, _session_id: &str) -> KbSelectionView {
+            KbSelectionView::default()
+        }
+        async fn gui_command(
+            &self,
+            frame: serde_json::Value,
+            _wait_result: bool,
+        ) -> Result<serde_json::Value, String> {
+            self.frames.lock().unwrap().push(frame);
+            Ok(serde_json::json!({ "ok": true }))
+        }
+    }
+
+    /// A caller id no other test in this binary shares. The fan-out counters and
+    /// the `AgentManager` LRU are both process-global.
+    fn unique_id(prefix: &str) -> String {
+        static SEQ: AtomicUsize = AtomicUsize::new(0);
+        format!("{prefix}-{}", SEQ.fetch_add(1, Ordering::SeqCst))
+    }
+
+    /// Call `workspace_send_prompt` as `caller`.
+    async fn send_prompt(
+        c: &WorkspaceClient,
+        caller: &str,
+        args: serde_json::Value,
+    ) -> CallToolResult {
+        let args: rmcp::model::JsonObject = serde_json::from_value(args).unwrap();
+        c.call_tool(
+            "workspace_send_prompt",
+            Some(args),
+            crate::agents::mcp_client::McpMeta::new(caller.to_string()),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap()
+    }
+
+    fn text_of(result: &CallToolResult) -> String {
+        result
+            .content
+            .iter()
+            .filter_map(|c| c.as_text().map(|t| t.text.clone()))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn assistant_says(text: &str) -> SessionBusEvent {
+        SessionBusEvent::Agent(crate::agents::AgentEvent::Message(
+            crate::conversation::message::Message::assistant().with_text(text),
+        ))
+    }
+
+    fn turn_finished(reason: &str) -> SessionBusEvent {
+        SessionBusEvent::TurnFinished {
+            reason: reason.into(),
+            token_state: None,
+        }
+    }
+
+    /// `wait:"final_message"` must return the answer of the turn IT started.
+    ///
+    /// The subscription is necessarily older than the turn (it is opened before
+    /// `start_detached_turn`, because a ring only exists once someone has
+    /// subscribed), and the daemon hydrates the target before it takes the turn
+    /// lock. A turn already in flight can therefore publish its own final
+    /// message and its `TurnFinished` into our stream during that window — and a
+    /// wait loop that accepts the first terminal it sees hands the caller the
+    /// PREVIOUS conversation's answer, labelled as this one's, with nothing in
+    /// the text to reveal the substitution.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn wait_returns_this_turns_answer_not_one_that_landed_before_it_started() {
+        let services = FakeServices::with_gui(true)
+            .preamble(vec![
+                assistant_says("PREVIOUS TURN ANSWER"),
+                turn_finished("previous"),
+            ])
+            .epilogue(vec![
+                assistant_says("THIS TURN ANSWER"),
+                turn_finished("stop"),
+            ])
+            .install();
+        let c = client();
+        let caller = unique_id("caller");
+        let target = unique_id("target");
+
+        let result = send_prompt(
+            &c,
+            &caller,
+            serde_json::json!({
+                "session_id": target, "text": "go", "mode": "turn",
+                "wait": "final_message", "timeout_s": 5
+            }),
+        )
+        .await;
+        crate::workspace_services::clear_test_override();
+
+        assert_ne!(result.is_error, Some(true), "got: {}", text_of(&result));
+        let text = text_of(&result);
+        assert!(
+            text.contains("THIS TURN ANSWER"),
+            "the wait must return the started turn's answer; got: {text}"
+        );
+        assert!(
+            !text.contains("PREVIOUS TURN ANSWER"),
+            "an answer that landed before this turn started is somebody else's; got: {text}"
+        );
+        // …and the terminal it reported is this turn's, not the previous one's.
+        assert!(text.contains("(stop)"), "got: {text}");
+        assert!(!text.contains("(previous)"), "got: {text}");
+        // The started turn id is named, so the caller can correlate.
+        assert!(
+            text.contains(&services.started.lock().unwrap()[0].1),
+            "got: {text}"
+        );
+    }
+
+    /// §5's cap counts TURNS IN FLIGHT, not tool calls in progress.
+    ///
+    /// A `wait:"none"` injection returns while its turn runs on, so a cap whose
+    /// guard is bound to the calling stack frame releases the slot the instant
+    /// the tool answers and bounds nothing: the fifth, fiftieth and five
+    /// hundredth detached turn are all accepted under a cap of four. The
+    /// release half is asserted too — a cap that never releases would pass the
+    /// refusal assertion alone while permanently wedging the caller.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial_test::serial(workspace_services)]
+    async fn a_fire_and_forget_injection_holds_its_slot_until_the_turn_ends() {
+        let services = FakeServices::with_gui(true).install();
+        let c = client();
+        let caller = unique_id("fanout-caller");
+        let cap = WorkspaceClient::injected_turn_cap();
+
+        let mut targets = Vec::new();
+        for i in 0..cap {
+            let target = unique_id("fanout-target");
+            let result = send_prompt(
+                &c,
+                &caller,
+                serde_json::json!({ "session_id": target, "text": "go", "mode": "turn" }),
+            )
+            .await;
+            assert_ne!(
+                result.is_error,
+                Some(true),
+                "injection {i} of {cap} must fit under the cap; got: {}",
+                text_of(&result)
+            );
+            targets.push(target);
+        }
+
+        // Every one of those turns is STILL RUNNING (no terminal published), so
+        // the next injection is over budget — even though every one of the calls
+        // that started them has long since returned.
+        let over = send_prompt(
+            &c,
+            &caller,
+            serde_json::json!({
+                "session_id": unique_id("fanout-target"), "text": "go", "mode": "turn"
+            }),
+        )
+        .await;
+        assert_eq!(
+            over.is_error,
+            Some(true),
+            "the {}th detached turn must be refused; got: {}",
+            cap + 1,
+            text_of(&over)
+        );
+        assert!(
+            text_of(&over).contains("in flight"),
+            "got: {}",
+            text_of(&over)
+        );
+
+        // Ending one turn frees exactly one slot. (Held forever would be a
+        // different bug with the same green assertion above.)
+        services.finish(&targets[0]);
+        let mut accepted = None;
+        for _ in 0..100 {
+            let result = send_prompt(
+                &c,
+                &caller,
+                serde_json::json!({
+                    "session_id": unique_id("fanout-target"), "text": "go", "mode": "turn"
+                }),
+            )
+            .await;
+            if result.is_error != Some(true) {
+                accepted = Some(result);
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        crate::workspace_services::clear_test_override();
+        assert!(
+            accepted.is_some(),
+            "the slot of a finished turn must be released"
+        );
+    }
+
+    /// `mode:"turn"` delivers a FRAMED, provenance-stamped message and says so
+    /// in the GUI.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn a_turn_injects_a_framed_stamped_message_and_announces_itself() {
+        use crate::conversation::message::ProvenanceKind;
+        let services = FakeServices::with_gui(true).install();
+        let c = client();
+        let caller = c
+            .context
+            .session_manager
+            .create_session(
+                std::env::temp_dir(),
+                "planner".into(),
+                crate::session::session_manager::SessionType::User,
+            )
+            .await
+            .unwrap();
+        let target = unique_id("turn-target");
+
+        let result = send_prompt(
+            &c,
+            &caller.id,
+            serde_json::json!({ "session_id": target, "text": "use the log scale", "mode": "turn" }),
+        )
+        .await;
+        crate::workspace_services::clear_test_override();
+        assert_ne!(result.is_error, Some(true), "got: {}", text_of(&result));
+
+        let started = services.started.lock().unwrap();
+        assert_eq!(started.len(), 1, "exactly one turn was started");
+        let (session_id, turn_id, message) = &started[0];
+        assert_eq!(session_id, &target);
+        assert!(
+            text_of(&result).contains(turn_id),
+            "the caller is told the turn id"
+        );
+
+        let body: String = message
+            .content
+            .iter()
+            .filter_map(|c| c.as_text())
+            .collect::<Vec<_>>()
+            .join("");
+        assert!(body.contains("untrusted=\"true\""), "got: {body}");
+        assert!(
+            body.contains("planner"),
+            "the frame names the source: {body}"
+        );
+        assert!(body.contains("use the log scale"), "got: {body}");
+        let p = message
+            .metadata
+            .provenance
+            .as_ref()
+            .expect("provenance stamped");
+        assert_eq!(p.kind, ProvenanceKind::AgentInjection);
+        assert_eq!(p.from_session_id.as_deref(), Some(caller.id.as_str()));
+
+        // Decision 2: never silent in the GUI.
+        let frames = services.notify_frames();
+        assert_eq!(frames.len(), 1, "one toast; got {frames:?}");
+        assert_eq!(frames[0]["session_id"], serde_json::json!(target));
+        let msg = frames[0]["message"].as_str().unwrap();
+        assert!(
+            msg.contains("planner") && msg.contains("started a turn"),
+            "got: {msg}"
+        );
+    }
+
+    /// Decision 4, both branches: with no GUI attached, a target whose mode
+    /// cannot be read is refused, and one whose live agent is in a
+    /// non-prompting mode is not.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn without_a_gui_a_turn_is_refused_unless_the_target_agent_cannot_prompt() {
+        let services = FakeServices::with_gui(false).install();
+        let c = client();
+        let caller = unique_id("caller");
+        let unknown = unique_id("no-agent-target");
+
+        let refused = send_prompt(
+            &c,
+            &caller,
+            serde_json::json!({ "session_id": unknown, "text": "go", "mode": "turn" }),
+        )
+        .await;
+        assert_eq!(refused.is_error, Some(true), "got: {}", text_of(&refused));
+        assert!(
+            text_of(&refused).contains("refusing to start a turn"),
+            "got: {}",
+            text_of(&refused)
+        );
+        assert!(
+            services.started.lock().unwrap().is_empty(),
+            "a refused turn must not have been started"
+        );
+
+        // The mirror: a LIVE agent whose own mode cannot raise a confirmation.
+        let live = unique_id("live-agent-target");
+        let manager = crate::execution::manager::AgentManager::instance()
+            .await
+            .expect("agent manager");
+        let agent = manager
+            .get_or_create_agent(live.clone())
+            .await
+            .expect("agent");
+        assert!(
+            !mode_requires_approval(agent.config.biorouter_mode),
+            "this test needs a non-prompting default mode; got {:?}",
+            agent.config.biorouter_mode
+        );
+        let allowed = send_prompt(
+            &c,
+            &caller,
+            serde_json::json!({ "session_id": live, "text": "go", "mode": "turn" }),
+        )
+        .await;
+        crate::workspace_services::clear_test_override();
+        assert_ne!(allowed.is_error, Some(true), "got: {}", text_of(&allowed));
+        assert_eq!(services.started.lock().unwrap().len(), 1);
+    }
+
+    /// A steer reaches the RUNNING turn's queue, unframed and stamped, and is
+    /// announced.
+    ///
+    /// Unframed is decision c: the drain loop frames the
+    /// `Some(AgentInjection)` arm itself, so framing here would double-wrap.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn a_steer_lands_in_the_running_turns_queue_stamped_and_unframed() {
+        use crate::agents::agent::TurnId;
+        use crate::conversation::message::ProvenanceKind;
+        let target = unique_id("steer-target");
+        let services = FakeServices::with_gui(true).busy(&target).install();
+        let c = client();
+        let caller = c
+            .context
+            .session_manager
+            .create_session(
+                std::env::temp_dir(),
+                "planner".into(),
+                crate::session::session_manager::SessionType::User,
+            )
+            .await
+            .unwrap();
+
+        let manager = crate::execution::manager::AgentManager::instance()
+            .await
+            .expect("agent manager");
+        let agent = manager
+            .get_or_create_agent(target.clone())
+            .await
+            .expect("agent");
+        agent.open_for_turn(TurnId::new("agent-turn-live"));
+
+        let result = send_prompt(
+            &c,
+            &caller.id,
+            serde_json::json!({ "session_id": target, "text": "use Python instead", "mode": "steer" }),
+        )
+        .await;
+        crate::workspace_services::clear_test_override();
+        assert_ne!(result.is_error, Some(true), "got: {}", text_of(&result));
+        assert!(
+            text_of(&result).contains("agent-turn-live"),
+            "the caller is told which turn took it; got: {}",
+            text_of(&result)
+        );
+
+        let queued = agent.drain_soft_interrupts();
+        assert_eq!(
+            queued.len(),
+            1,
+            "the steer must be in the live turn's queue"
+        );
+        assert_eq!(
+            queued[0].text, "use Python instead",
+            "the RAW text is queued — the drain loop frames it, so framing here \
+             would wrap it twice"
+        );
+        let p = queued[0].provenance.as_ref().expect("stamped");
+        assert_eq!(p.kind, ProvenanceKind::AgentInjection);
+        assert_eq!(p.from_session_name.as_deref(), Some("planner"));
+
+        let frames = services.notify_frames();
+        assert_eq!(frames.len(), 1, "one toast; got {frames:?}");
+        assert!(
+            frames[0]["message"].as_str().unwrap().contains("steered"),
+            "got {frames:?}"
+        );
+    }
+
+    /// #69: the server's turn lock and the agent's interrupt queue can disagree,
+    /// and only the queue is authoritative.
+    ///
+    /// `is_turn_active` is still true here — the lock is released *after* the
+    /// loop stops accepting — but the loop has already closed. The unguarded
+    /// `queue_soft_interrupt_with_provenance` returns `()`, so it would push
+    /// into the closed queue and report "queued" for a steer that this turn will
+    /// never consume and the *next* turn would be ambushed by.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn a_steer_into_a_closed_queue_is_refused_not_deferred() {
+        use crate::agents::agent::{Drained, TurnId};
+        let target = unique_id("closed-steer-target");
+        let _services = FakeServices::with_gui(true).busy(&target).install();
+        let c = client();
+        let caller = unique_id("caller");
+
+        let manager = crate::execution::manager::AgentManager::instance()
+            .await
+            .expect("agent manager");
+        let agent = manager
+            .get_or_create_agent(target.clone())
+            .await
+            .expect("agent");
+        agent.open_for_turn(TurnId::new("agent-turn-closing"));
+        // The loop reaches its exit with nothing queued and closes atomically.
+        assert!(matches!(agent.close_and_drain(), Drained::Empty));
+
+        let result = send_prompt(
+            &c,
+            &caller,
+            serde_json::json!({ "session_id": target, "text": "too late", "mode": "steer" }),
+        )
+        .await;
+        crate::workspace_services::clear_test_override();
+
+        assert_eq!(result.is_error, Some(true), "got: {}", text_of(&result));
+        assert!(
+            text_of(&result).contains("steer refused"),
+            "got: {}",
+            text_of(&result)
+        );
+        assert!(
+            !agent.has_soft_interrupts(),
+            "a refused steer must not be sitting in the queue waiting to ambush \
+             the next turn"
+        );
     }
 }
