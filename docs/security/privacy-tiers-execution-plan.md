@@ -3974,6 +3974,72 @@ async fn an_imported_base_takes_the_importing_sessions_tier_and_never_the_archiv
 ```
 
 ```rust
+// crates/biorouter-server/tests/knowledge_routes.rs — the CALLER PROVENANCE
+// MATRIX for the four HTTP macro routes.
+
+#[tokio::test]
+async fn each_macro_route_ratchets_from_the_provider_it_constructed_both_ways() {
+    // The gate a `grep -c caller_is_private` cannot be: every route reports
+    // NON-ZERO whether it passes the right value, a hardcoded `true`, or a
+    // hardcoded `false`. Both rows, per route — the PUBLIC row is the one the
+    // previous gate could not fail, and under-ratcheting is the direction that
+    // launders (a private transcript into a base that stays public).
+    for (route, args) in MACRO_ROUTES {          // ingest, ingest-conversation,
+        for caller_is_private in [true, false] { //   query, lint
+            let root = migrated_root_with_public_base("kb");
+            let model = if caller_is_private { private_model_ref() } else { public_model_ref() };
+            post_macro(&root, route, "kb", args(), model).await;
+            assert_eq!(tier::is_private(&root, "kb"), caller_is_private,
+                       "{route} with a {} model", if caller_is_private {"private"} else {"public"});
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_macro_route_ratchets_from_the_CONSTRUCTED_provider_not_the_requested_name() {
+    // The other half of provenance, and the reason `build_completer` returns the
+    // tier alongside the completer: `providers::create` can hand back something
+    // else (`factory.rs:142-146`), and BIOROUTER_LEAD_MODEL is the live intercept.
+    let root = migrated_root_with_public_base("kb");
+    let _guard = lead_model_intercept_to(private_model_ref());
+    post_macro(&root, "ingest", "kb", ingest_args(), public_model_ref()).await;
+    assert!(tier::is_private(&root, "kb"),
+            "the ratchet keyed on body.model.provider, not on the instance");
+}
+```
+
+```rust
+// crates/biorouter/src/agents/knowledge_tool.rs, in its #[cfg(test)] mod tests
+
+#[tokio::test]
+async fn the_platform_ingest_tool_ratchets_from_the_agents_own_provider_both_ways() {
+    // Production caller #1 of ConversationIngestArgs. Same two rows.
+    for caller_is_private in [true, false] {
+        let agent = agent_with_messages_on(if caller_is_private { private_provider() }
+                                           else { public_provider() }, "notes").await;
+        let root = agent.kb_root();
+        agent.handle_ingest_conversation(json!({ "kb_id": "default" })).await.unwrap();
+        assert_eq!(tier::is_private(&root, "default"), caller_is_private);
+    }
+}
+```
+
+⚠ **Which production callers get a behavioural row, and which do not — stated, not implied.** Seven
+production callers carry the capability after this task. Six are reachable from a test harness and
+every one of them gets both rows: the four HTTP macro routes (above), the platform tool (above), CP1
+(`every_tool_that_writes_content_ratchets_and_the_plumbing_ones_do_not`, which drives all nineteen
+tools as `Private` and the ratchet-list assertion pins the `Public` direction), CP3
+(`a_br_kb_ingest_from_a_private_app_session_ratchets_the_base` plus the mid-turn pair), and CP4
+(Task 10C's export test). The two that no harness in this repo reaches are the **CLI**
+(`biorouter-cli/src/commands/knowledge.rs`, whose 9 `--lib` tests do not construct a provider) and
+the **probe binary** (`bin/knowledge_ingest_probe.rs`, which is not a test target at all). For those
+two the gate is structural — Step 5 (i) forbids a literal in either direction and (ii) prints the
+expression for a reviewer to trace to the session's bound provider — and that is a **weaker** gate,
+so it is written down here rather than left to be discovered. It is also the smaller risk: both are
+the user at a terminal, where the capability is the session's own provider and there is no second
+agent to source it from by mistake.
+
+```rust
 // crates/biorouter-mcp/src/knowledge/macros/ingest.rs, in its #[cfg(test)] mod tests (:136)
 
 #[tokio::test]
@@ -4433,14 +4499,42 @@ echo "  one task later, which is the mirror-defect shape this plan keeps hitting
 echo "A ZERO is a caller that silently kept a default: routes (3 macro Args),"
 echo "  CLI (3 macro Args), probe (1), conversation_ingest (the ProviderTier->bool"
 echo "  crossing at :205), apps.rs (CP3's param + 3 call sites), drafter (CP4's param)."
-# The ProviderTier that feeds :205 reaches all three of ITS callers, and none of
-# them hardcodes the trusting value. This is the half that used to be deferred to
-# Task 11, which is why :205 had nothing to pass.
+echo "⚠ NON-ZERO IS NOT ENOUGH, and on its own it is not a gate: a file that passes"
+echo "  a hardcoded literal, or a value read from the WRONG agent, counts just the"
+echo "  same. The two blocks below are what make it one."
+# (i) NO LITERAL, IN EITHER DIRECTION. The previous version of this gate forbade
+# only the trusting value (`Private` / `true`), which leaves the mirror wide
+# open: a caller hardcoded to `Public` / `false` compiles, reports NON-ZERO in
+# the count above, ratchets NOTHING for a private session, and passes every
+# public-caller test in this plan. Under-ratcheting is the direction that
+# launders — a private transcript lands in a base that stays public — so it is
+# the one that must not be reachable by the easy edit.
+grep -rn "caller_is_private: *\(true\|false\)\|caller_capability: *ProviderTier::\(Private\|Public\)" \
+  --include='*.rs' crates/*/src/ crates/*/bin/ 2>/dev/null
+echo "expect: exactly ONE hit — routes/knowledge.rs's build_completer TestModeCompleter"
+echo "  branch (:903-907), which returns public BEFORE any provider exists and is"
+echo "  documented in Step 3. Every other production caller must pass an EXPRESSION."
+echo "  (`unwrap_or(ProviderTier::Public)` is not matched and must not be: it is the"
+echo "   fail-closed tail of a provider read, not a hardcoded caller.)"
+# (ii) …and the expression is a provider read. Per file, printed, so a value
+# sourced from a DIFFERENT agent than the one whose turn this is shows up as the
+# wrong receiver rather than as a passing count (see CP3's three-site table).
+for f in crates/biorouter-server/src/routes/knowledge.rs \
+         crates/biorouter-cli/src/commands/knowledge.rs \
+         crates/biorouter-server/src/bin/knowledge_ingest_probe.rs \
+         crates/biorouter/src/agents/knowledge_tool.rs \
+         crates/biorouter-server/src/routes/apps.rs \
+         crates/biorouter-mcp/src/agent_drafter/mod.rs; do
+  echo "--- $(basename $f)"
+  grep -n "caller_is_private\|caller_capability" "$f" | grep -v "^\s*//"
+done
+echo "expect: every value traceable to a `.tier()` on a constructed provider, or to"
+echo "  `knowledge::tier::caller_is_private(&context.meta)` (CP1/CP4). Read the"
+echo "  RECEIVER, not just the method: `agent` vs `turn_agent` is the CP3 defect and"
+echo "  no count distinguishes them."
+# The ProviderTier that feeds :205 reaches all three of ITS callers.
 grep -rn "caller_capability:" --include='*.rs' crates/ | grep -v "conversation_ingest.rs"
 echo "expect: exactly 3 — agents/knowledge_tool.rs, routes/knowledge.rs, biorouter-cli/.../knowledge.rs"
-grep -rn "caller_capability: ProviderTier::Private\|caller_is_private: true" --include='*.rs' crates/*/src/
-echo "expect: no output — a hardcoded Private/true reads as 'this caller is trusted'"
-echo "  and is the one way to make a caller compile while disabling the ratchet."
 # The integration test that --lib cannot see was updated, not left to rot.
 grep -c "caller_is_private" crates/biorouter-mcp/tests/knowledge_macros_e2e.rs
 echo "expect: 3 — IngestArgs :115, QueryArgs :157, IngestArgs :231"
@@ -4461,7 +4555,17 @@ on the *success* return, which the `kb_import` and macro paths make observable: 
 sub-agent that dies halfway has already written pages. (4) Keying the HTTP ratchet on
 `body.model.provider` — the string the caller supplied — rather than on the instance
 `providers::create` returned, which the `BIOROUTER_LEAD_MODEL` intercept can make different.
-(5) Passing `agent` at all three CP3 call sites, which is the shape the previous draft prescribed
+(5) Hardcoding the **public** value at a caller to make it compile — `caller_is_private: false`,
+`caller_capability: ProviderTier::Public`. It is the mirror of (the previously gated) hardcoded
+`Private`, it is the direction that **launders** rather than over-classifies, and until this round
+every gate in this task passed it: `grep -c caller_is_private` reports NON-ZERO, every
+public-caller test still passes, and only a *private* caller's ratchet silently stops happening.
+Step 5 (i) now forbids the literal in both directions with exactly one named exemption, and the
+per-caller matrices are what fail it behaviourally.
+**This gate rejects: `IngestArgs { caller_is_private: false, .. }` in `routes/knowledge.rs`** — a
+one-word edit that compiles, keeps `POST /knowledge/bases/{id}/ingest` working, and stops every
+private HTTP ingest from ratcheting.
+(6) Passing `agent` at all three CP3 call sites, which is the shape the previous draft prescribed
 in one sentence. It compiles, type-checks and passes every single-agent app test, because `agent`
 and `turn_agent` are both `Arc<Agent>` and both in scope at `:3847`; what it does is attribute a
 **worker's** mid-turn KB access to the main agent, in both directions —
@@ -5919,6 +6023,37 @@ async fn the_http_route_is_gated_by_the_same_argument_not_by_a_second_copy() {
     assert!(!r.text().await.contains("PHI cohort notes"));
     assert_eq!(kb_bytes("default").await, before);
 }
+
+#[tokio::test]
+async fn each_caller_of_the_guard_is_exercised_in_BOTH_directions() {
+    // The row every test above is missing, and the one a caller hardcoded to
+    // ProviderTier::PUBLIC passes all of them without: the same call, from a
+    // PRIVATE caller, must SUCCEED. Without it, "refuse the public caller" is
+    // satisfied by "refuse everyone", which is what a hardcoded Public produces
+    // — and it is not a loud failure, because the feature merely stops working
+    // for the sessions that need it and nothing in this task asserts otherwise.
+    //
+    // Both production callers a harness reaches, both rows. (The CLI is the
+    // third and is covered structurally — see Task 10B's ⚠ on which callers get
+    // a behavioural row.)
+    let private = private_session_with_messages("PHI cohort notes").await;
+
+    // (a) the HTTP route
+    let r = post_ingest_conversation("default", &[&private.id], private_model_ref()).await;
+    assert_eq!(r.status(), 200, "a private model was refused its own private chat");
+    assert!(kb_tier_is_private("default"));
+
+    // (b) the platform tool
+    let public_caller = public_capability_agent().await;
+    assert!(public_caller
+        .handle_ingest_conversation(json!({ "session_ids": [private.id], "kb_id": "default" }))
+        .await.unwrap().contains("private"));
+    let private_caller = private_capability_agent().await;
+    assert!(!private_caller
+        .handle_ingest_conversation(json!({ "session_ids": [private.id], "kb_id": "default" }))
+        .await.unwrap().contains("private"),
+        "a private model was refused its own private chat through the platform tool");
+}
 ```
 
 - [ ] **Step 2: Run** → **FAIL**, not COMPILE ERROR. Task 10B already declared `caller_capability`
@@ -6069,8 +6204,13 @@ awk '/pub async fn ingest_conversation/,/^}/' crates/biorouter/src/knowledge/con
 # All three callers pass the field (a missed one would not compile since Task 10B,
 # but a caller that hardcodes Private compiles fine and is the real risk).
 grep -rn "caller_capability:" --include='*.rs' crates/ | grep -v conversation_ingest.rs
-echo "expect: 3 — and NONE of them may read 'caller_capability: ProviderTier::Private'"
-grep -rn "caller_capability: ProviderTier::Private" --include='*.rs' crates/ ; echo "expect: no output"
+echo "expect: 3 — and NONE of them may hardcode a ProviderTier, in EITHER direction"
+grep -rn "caller_capability: *ProviderTier::\(Private\|Public\)" --include='*.rs' crates/*/src/
+echo "expect: no output. `Private` reads as 'this caller is trusted'; `Public` is the"
+echo "  mirror and is WORSE here, because it turns the guard into 'refuse everyone' —"
+echo "  which passes every refusal test in Step 1 and quietly breaks the feature for"
+echo "  the private sessions it exists to serve. Task 10B Step 5 (i) forbids the same"
+echo "  literal in the same two directions for the bool half."
 # The refusal names no session.
 grep -c "session.name" crates/biorouter/src/agents/knowledge_tool.rs ; echo "expect: 0"
 # The refused COUNT does not travel as a field on a type in another crate.
@@ -6105,9 +6245,14 @@ array; the `partition` shape makes that shape unwritable. (2) A refusal that ret
 already called `kb_write_page`; the byte-equality assertion is the only thing that fails it.
 (3) Guarding the platform tool and calling it done — leaving `POST /knowledge/bases/{id}/ingest-conversation`
 as an unguarded copy; the required field and the cross-file `grep` are what fail it. (4) The
-plausible-looking fix of hardcoding `caller_capability: ProviderTier::Private` at the HTTP or CLI
-call site to make it compile — which reads as "this caller is trusted" and is exactly wrong for the
-route that needs the check most. The last grep is the only gate that sees it. (5) Guarding the
+plausible-looking fix of hardcoding a `ProviderTier` at the HTTP or CLI call site to make it
+compile. `Private` reads as "this caller is trusted" and is exactly wrong for the route that needs
+the check most. **This gate also rejects its mirror, `caller_capability: ProviderTier::Public`,**
+which every test in Step 1 passed before this round: the guard then refuses *everyone*, so the
+public-caller assertions all still hold and the only observable effect is that a private session can
+no longer ingest its own chats — a feature quietly ceasing to work for exactly the users it was
+built for. `each_caller_of_the_guard_is_exercised_in_BOTH_directions` is the test that fails it, and
+the two-direction grep is the gate. (5) Guarding the
 transcripts and leaving `resolve_target_kb` handing the same public model the id list of every base
 including the private ones — a refusal that names what it refused, and the second instance of the
 class Task 10C closes in `kb_id_or_primary`; `the_no_target_error_names_only_the_bases_the_caller_may_reach`
