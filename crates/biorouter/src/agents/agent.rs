@@ -6576,6 +6576,48 @@ mod tests {
         Ok(())
     }
 
+    /// BR-71 §5: registration ORDER, not merely presence.
+    ///
+    /// The confirmation card picks the text it shows with
+    /// `inspection_results.iter().find(|r| r.tool_request_id == request.id)`
+    /// and then reads the `RequireApproval(Some(msg))` payload off **that one
+    /// result** (`agents/tool_execution.rs`, the `security_message` binding) —
+    /// so the FIRST inspector to report on a request owns the explanation the
+    /// user reads. `PermissionInspector` reports on *every* request it is given
+    /// (`permission/permission_inspector.rs`, pass 1 pushes one result per
+    /// request), and in Auto mode that result is a payload-less `Allow`.
+    ///
+    /// Registered after it, this inspector would still force the prompt — the
+    /// merge in `apply_inspection_results_to_permissions` is escalation-only —
+    /// but the "🔒 An agent is changing another conversation's capabilities"
+    /// explanation would be silently dropped, leaving a bare, unexplained
+    /// confirmation. That is the whole deliverable of §5 reduced to a shrug.
+    ///
+    /// Nothing else can catch it: every test in `agents::workspace_inspector`
+    /// calls the inspector directly, and `security::sensitive_ops` never builds
+    /// a `ToolInspectionManager` at all.
+    #[tokio::test]
+    async fn test_workspace_mutation_inspector_precedes_the_permission_inspector() {
+        let agent = Agent::new();
+        let names = agent.tool_inspection_manager.inspector_names();
+
+        let workspace = names
+            .iter()
+            .position(|n| *n == "workspace_mutation")
+            .expect("workspace mutation inspector must be registered");
+        let permission = names
+            .iter()
+            .position(|n| *n == "permission")
+            .expect("permission inspector must be registered");
+
+        assert!(
+            workspace < permission,
+            "workspace_mutation must be registered BEFORE permission, or its \
+             approval message loses the first-result-wins selection in \
+             tool_execution.rs and the user sees an unexplained prompt; got {names:?}"
+        );
+    }
+
     /// BR-71: the soft-interrupt queue carries each injection's origin from the
     /// producer (a workspace steer, the subagent tab) through to the turn loop
     /// that drains it. Exercises the REAL queue on a real `Agent` — the same
