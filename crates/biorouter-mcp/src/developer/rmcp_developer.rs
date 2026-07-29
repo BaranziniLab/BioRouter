@@ -347,6 +347,12 @@ pub struct DeveloperServer {
     /// shell falls back to `BIOROUTER_WORKING_DIR` / the process cwd. Set at
     /// construction from the session so the tool follows the GUI folder picker.
     working_dir: Option<PathBuf>,
+    /// The directory `working_dir` denoted when it was bound, with symlinks
+    /// resolved — the jail's identity, as opposed to its name (#68). `None`
+    /// when no working directory is bound, or when it could not be resolved at
+    /// bind time (it did not exist yet), in which case there is nothing to
+    /// compare against and the path alone remains the boundary.
+    canonical_working_dir: Option<PathBuf>,
 }
 
 #[tool_handler(router = self.tool_router)]
@@ -760,6 +766,7 @@ impl DeveloperServer {
             extend_path_with_shell: false,
             bash_env_file: None,
             working_dir: None,
+            canonical_working_dir: None,
         }
     }
 
@@ -788,9 +795,16 @@ impl DeveloperServer {
     /// manager's dispatch boundary already builds a guard rooted at the resolved
     /// session directory for every tool call. It should not be the only one that
     /// gets the root right.
+    /// The canonical directory is pinned here too (#68). A jail base is a
+    /// directory, not a string: `Path::is_dir` follows symlinks, so replacing
+    /// the bound path with a link to somewhere wider answers every existence
+    /// check while silently moving the boundary. Recording what the path
+    /// resolved to when it was sanctioned lets [`Self::effective_cwd`] notice
+    /// that it no longer denotes the same directory.
     pub fn with_working_dir(mut self, dir: PathBuf) -> Self {
         self.file_history = Arc::new(FileHistory::persistent(&dir));
         self.secret_guard = SecretGuard::for_dir(&dir);
+        self.canonical_working_dir = std::fs::canonicalize(&dir).ok();
         self.working_dir = Some(dir);
         self
     }
@@ -1916,6 +1930,7 @@ impl DeveloperServer {
     fn effective_cwd(&self) -> Result<PathBuf, ErrorData> {
         if let Some(base) = self.sanctioned_base() {
             if base.is_dir() {
+                self.verify_pinned_base(&base)?;
                 return Ok(base);
             }
             return Err(ErrorData::new(
@@ -1945,6 +1960,55 @@ impl DeveloperServer {
                 None,
             )
         })
+    }
+
+    /// Require a bound base to still denote the directory it named when it was
+    /// bound (#68).
+    ///
+    /// The existence check above answers "is there a directory here?", and
+    /// `Path::is_dir` follows symlinks — so deleting the session directory and
+    /// putting a symlink to its own parent in its place passes it, and the
+    /// canonicalization the jail performs a moment later then resolves the base
+    /// to the parent. Every sibling the jail refused becomes reachable without
+    /// the sanctioned path ever changing. A jail base is the directory, not the
+    /// string that names it, so the pinned identity is what is enforced;
+    /// re-pointing the path is refused exactly like deleting it.
+    ///
+    /// Only a base bound through [`Self::with_working_dir`] is pinned. A base
+    /// read from `BIOROUTER_WORKING_DIR` is re-read from the environment on
+    /// every call and has no bind moment to pin.
+    fn verify_pinned_base(&self, base: &Path) -> Result<(), ErrorData> {
+        let Some(pinned) = self.canonical_working_dir.as_ref() else {
+            return Ok(());
+        };
+        let now = std::fs::canonicalize(base).map_err(|e| {
+            ErrorData::new(
+                ErrorCode::INTERNAL_ERROR,
+                format!(
+                    "The working directory `{}` could not be resolved ({e}), so file paths \
+                     cannot be resolved against it.",
+                    base.display()
+                ),
+                None,
+            )
+        })?;
+        if &now != pinned {
+            return Err(ErrorData::new(
+                ErrorCode::INTERNAL_ERROR,
+                format!(
+                    "The working directory `{}` no longer refers to the directory it was \
+                     bound to (`{}`); it now resolves to `{}`. File access stays confined \
+                     to the directory this session was given and is not re-rooted \
+                     elsewhere: restore it, or start a session in that directory, and \
+                     retry.",
+                    base.display(),
+                    pinned.display(),
+                    now.display()
+                ),
+                None,
+            ));
+        }
+        Ok(())
     }
 
     fn resolve_path(&self, path_str: &str) -> Result<PathBuf, ErrorData> {
@@ -2702,6 +2766,38 @@ mod tests {
             "the session directory's .biorouterignore must be honoured once the server \
              is bound to it"
         );
+    }
+
+    /// #68: pinning the canonical base must not reject a base that is *itself*
+    /// reached through a symlink and simply stays put. Every macOS temp
+    /// directory is one (`/var/…` → `/private/var/…`), and so is many a user's
+    /// project directory, so a pin that compared the bound path against its own
+    /// resolved form would refuse ordinary work on this platform.
+    #[test]
+    fn editor_jail_accepts_a_stable_symlinked_base() {
+        let real = tempfile::tempdir().unwrap();
+        let real_path = std::fs::canonicalize(real.path()).unwrap();
+        let link_root = tempfile::tempdir().unwrap();
+        let link = std::fs::canonicalize(link_root.path())
+            .unwrap()
+            .join("link");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&real_path, &link).unwrap();
+        #[cfg(windows)]
+        if std::os::windows::fs::symlink_dir(&real_path, &link).is_err() {
+            return; // creating symlinks needs a privilege we may not have
+        }
+
+        // Bound by its symlinked name, exactly as a folder picker would hand it
+        // over — and never re-pointed.
+        let server = DeveloperServer::new().with_working_dir(link.clone());
+        let inside = link.join("notes.txt");
+        server
+            .resolve_path_jailed(inside.to_str().unwrap(), false)
+            .expect("a stable symlinked base must keep resolving its own files");
+        server
+            .resolve_path_jailed("notes.txt", false)
+            .expect("and relative paths against it");
     }
 
     /// #68: the second base substitution, the one #64 left standing. When the
