@@ -7623,8 +7623,18 @@ existing test uses, e.g. `agents/tool_errors.rs:763`.)
 
 - [ ] **Step 2: Run to verify failure**
 
-Run: `cargo test -p biorouter --lib agents::workspace_extension agents::extension`
+Run: `cargo test -p biorouter --lib -- agents::workspace_extension:: agents::extension::tests:: resolves_every_bundled_extension_to_its_owning_registry`
 Expected: COMPILE ERROR.
+
+(The `--` is required: `cargo test` takes ONE positional `TESTNAME`, so two
+filters make it exit with `unexpected argument 'agents::extension'` **before it
+compiles anything** — a broken gate that can never observe the compile error it
+asks for. The filters are also narrowed from the bare prefix `agents::extension`,
+which additionally matches `agents::extension_malware_check` and
+`agents::extension_manager` and pulls ~48 unrelated malware/network tests into a
+gate about a registry entry. What Task 12 actually needs to see is: the new
+module's tests, `extension.rs`'s test module (the `len() == 6` count), and the
+`/ext:` registry-resolution test the new `EXTENSION_NAME` must not break.)
 
 - [ ] **Step 3: Implement the skeleton**
 
@@ -8086,17 +8096,46 @@ Then in `extension.rs`, add the registry entry (after the `chatrecall` insert, w
 
 with `use super::workspace_extension;` mirroring the existing imports.
 
+**As built, three things differ from the skeleton above** (each forced by the real
+tree, and each carried by a test):
+
+1. `EXTENSION_NAME` is `"Workspace"`, not `"Workspace Control"`. The platform
+   spawn path resolves the def by `normalize(config.name)`, and `"Workspace
+   Control"` normalizes to `workspacecontrol`, which is not the registry key —
+   `/ext:workspace` would fail exactly as issue #48 did. The design's display
+   name is preserved in a second constant, `EXTENSION_TITLE`, which is what MCP's
+   `Implementation.title` carries; `server_info.name` keeps the identifier. Do not
+   collapse them back into one string in either direction.
+2. The placeholder `call_tool` arms are the `PENDING_TOOLS` table plus one
+   fallthrough, not one literal arm per tool — see Step 4.
+3. `pub mod workspace_extension;` sits in sorted position (before
+   `workspace_inspector`), not beside `chatrecall_extension`. rustfmt's
+   `reorder_modules` sorts each contiguous `mod` group, so the requested placement
+   does not survive `cargo fmt`, and the move strands whatever comment preceded
+   the vacated line on the wrong module.
+
 - [ ] **Step 4: Run tests**
 
-Run: `BIOROUTER_PATH_ROOT=$(mktemp -d) cargo test -p biorouter --lib agents::workspace_extension agents::extension`
-Expected: PASS — four workspace_extension tests (advertisement, headless listing,
-paging, parent/subagent filters) plus the updated
-`PLATFORM_EXTENSIONS.len() == 6` count test. (The fifth — the default-scope
-registered child — is deliberately in **Task 33**; see the note at the end of Step 1.)
+Run: `BIOROUTER_PATH_ROOT=$(mktemp -d) cargo test -p biorouter --lib -- agents::workspace_extension:: agents::extension::tests:: resolves_every_bundled_extension_to_its_owning_registry`
+(see Step 2 for why the `--` and the narrowed filters are not optional)
+Expected: PASS — six workspace_extension tests (advertisement, the
+advertised-vs-placeholder surface invariant, the name/title split, headless
+listing, paging, parent/subagent filters) plus the updated
+`PLATFORM_EXTENSIONS.len() == 6` count test and the `/ext:` registry-resolution
+test. (The seventh workspace_extension test — the default-scope registered
+child — is deliberately in **Task 33**; see the note at the end of Step 1.)
 This is genuinely reachable because the
 advertisement test asserts *membership* of the one tool this task registers; the single
 exact-surface assertion in the plan lives in **Task 24**, the last task that changes
 `get_tools()`.
+
+Membership alone, though, does not stop a *premature* tool being advertised, so
+this task also carries a `PENDING_TOOLS` table (the placeholder `call_tool` arms,
+as data) and asserts that the advertised set and the pending set are disjoint and
+together cover every `workspace_*` name `INSTRUCTIONS` mentions. **Tasks 13-17
+and 24 must delete a tool's `PENDING_TOOLS` row in the same commit that adds it to
+`get_tools()`** — that is what keeps the invariant true across the phase without
+any task needing an exact-surface assertion.
 
 `BIOROUTER_PATH_ROOT` is not optional: `handle_list` calls
 `AgentManager::instance()`, whose first initialization reads `Paths::data_dir()` and
