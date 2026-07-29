@@ -137,6 +137,28 @@ struct WorkspaceListParams {
     limit: Option<u32>,
 }
 
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct WorkspaceReadParams {
+    session_id: String,
+    /// "transcript" (default) | "tool_calls" | "summary" | "spawn_context".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    view: Option<String>,
+    /// Only the last N messages (transcript/tool_calls views).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last: Option<usize>,
+    /// Start from the message with this durable msg_uid (BR-45 identity;
+    /// design §4.1 `range: { from_msg_uid }`). Combines with `last` (uid slice
+    /// first, then tail).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    from_msg_uid: Option<String>,
+    /// Cap on returned characters (default 20000, max 200000). Oversized
+    /// results above the BR-7 blob threshold are externalized by the caller's
+    /// own persist path — see the note in the handler — never silently
+    /// truncated at a raised cap.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_chars: Option<usize>,
+}
+
 /// The tools [`INSTRUCTIONS`] names whose handler is still a placeholder, each
 /// with the task that lands it.
 ///
@@ -150,7 +172,6 @@ struct WorkspaceListParams {
 /// dispatch arm is shadowed by nothing and the surface test fails — and adds it
 /// to `get_tools()` in the same commit.
 const PENDING_TOOLS: &[(&str, &str)] = &[
-    ("workspace_read_conversation", "Task 13"),
     ("workspace_send_prompt", "Task 14"),
     ("workspace_set_tools", "Task 15"),
     ("workspace_close", "Task 16"),
@@ -213,7 +234,15 @@ impl WorkspaceClient {
                 serde_json::to_value(schema_for!(WorkspaceListParams)).unwrap(),
                 true,
             ),
-            // Tasks 13-17 and 19/24 append: workspace_read_conversation,
+            Self::tool(
+                "workspace_read_conversation",
+                "Structured read of any conversation. view: transcript (prose), \
+                 tool_calls (exactly what its agent did), summary (head/tail), \
+                 spawn_context (how a subagent was started). Refuses hidden sessions.",
+                serde_json::to_value(schema_for!(WorkspaceReadParams)).unwrap(),
+                true,
+            ),
+            // Tasks 14-17 and 19/24 append:
             // workspace_send_prompt, workspace_set_tools, workspace_close,
             // workspace_watch, workspace_open, and `subagent` (advertised only;
             // the spawn dispatch lives in agent.rs — see Task 19).
@@ -417,6 +446,196 @@ impl WorkspaceClient {
             serde_json::to_string_pretty(&payload).unwrap(),
         )])
     }
+
+    async fn handle_read_conversation(
+        &self,
+        caller_session_id: &str,
+        arguments: Option<JsonObject>,
+    ) -> Result<Vec<Content>, String> {
+        let args: WorkspaceReadParams = parse_args(arguments)?;
+        let view = args.view.as_deref().unwrap_or("transcript");
+        let max_chars = args.max_chars.unwrap_or(20_000).min(200_000);
+
+        let session = self
+            .context
+            .session_manager
+            .get_session(&args.session_id, true)
+            .await
+            .map_err(|e| format!("failed to load session: {e}"))?;
+
+        // §5 "no covert reads": Hidden sessions honor the same visibility rules
+        // as the session list. The read itself is auditable — it IS a tool call
+        // in the caller's transcript.
+        if session.session_type == crate::session::session_manager::SessionType::Hidden {
+            return Err("this session is hidden and cannot be read".to_string());
+        }
+        tracing::info!(
+            caller = caller_session_id,
+            target = %args.session_id,
+            view,
+            "workspace cross-session read"
+        );
+
+        let messages: Vec<_> = session
+            .conversation
+            .as_ref()
+            .map(|c| c.messages().to_vec())
+            .unwrap_or_default();
+        // BR-45 range: slice from the named msg_uid (message ids ARE the durable
+        // uids — #41 add_message_adopting_uid), then apply `last` as a tail.
+        let from_start = match &args.from_msg_uid {
+            Some(uid) => messages
+                .iter()
+                .position(|m| m.id.as_deref() == Some(uid.as_str()))
+                .ok_or_else(|| format!("no message with msg_uid '{uid}' in this session"))?,
+            None => 0,
+        };
+        let ranged = &messages[from_start..];
+        let tail = |n: Option<usize>| -> &[crate::conversation::message::Message] {
+            match n {
+                Some(n) if n < ranged.len() => &ranged[ranged.len() - n..],
+                _ => ranged,
+            }
+        };
+
+        let body = match view {
+            "tool_calls" => project_tool_calls(tail(args.last)),
+            "summary" => project_summary(&session, &messages),
+            "spawn_context" => project_spawn_context(&messages)
+                .ok_or("this session has no recorded spawn context")?,
+            _ => project_transcript(tail(args.last)),
+        };
+
+        // Oversized-result handling (§4.1 "session-blob mechanism, never silent
+        // truncation"): this tool RESULT is persisted into the CALLER's session,
+        // where BR-7's externalization (`message_blobs::externalize`; the
+        // threshold is `DEFAULT_BLOB_THRESHOLD_BYTES` in message_blobs.rs)
+        // stores payloads above the blob threshold as session blobs readable via
+        // platform__read_session_blob — so a raised max_chars round-trips intact
+        // instead of bloating context. The tool-level cap is model-facing
+        // pagination; when it clips, the marker names the narrowing controls
+        // rather than dropping data silently.
+        let clipped = if body.chars().count() > max_chars {
+            let cut: String = body.chars().take(max_chars).collect();
+            format!(
+                "{cut}\n… [clipped at {max_chars} chars — narrow with `last` or \
+                 `from_msg_uid`, or raise `max_chars` (up to 200000; oversized \
+                 results are stored as a session blob, not lost)]"
+            )
+        } else {
+            body
+        };
+        Ok(vec![Content::text(format!(
+            "Session {} ({}, {:?})\n\n{}",
+            session.id, session.name, session.session_type, clipped
+        ))])
+    }
+}
+
+fn parse_args<T: serde::de::DeserializeOwned>(arguments: Option<JsonObject>) -> Result<T, String> {
+    let args = arguments.ok_or("Missing arguments")?;
+    serde_json::from_value(serde_json::Value::Object(args))
+        .map_err(|e| format!("invalid arguments: {e}"))
+}
+
+/// The `tool_calls` projection (§4.1): ToolRequest/ToolResponse pairs only,
+/// correlated by their shared id — "what did that agent actually do".
+fn project_tool_calls(messages: &[crate::conversation::message::Message]) -> String {
+    use crate::conversation::message::MessageContent;
+    let mut out = String::new();
+    for message in messages {
+        for content in &message.content {
+            match content {
+                MessageContent::ToolRequest(req) => {
+                    out.push_str(&format!("→ [{}] {}\n", req.id, req.to_readable_string()));
+                }
+                MessageContent::ToolResponse(resp) => {
+                    let digest = match &resp.tool_result {
+                        Ok(result) => {
+                            let text: String = result
+                                .content
+                                .iter()
+                                .filter_map(|c| c.as_text().map(|t| t.text.clone()))
+                                .collect::<Vec<_>>()
+                                .join(" ");
+                            let short: String = text.chars().take(400).collect();
+                            format!("ok: {short}")
+                        }
+                        Err(e) => format!("error: {e}"),
+                    };
+                    out.push_str(&format!("← [{}] {digest}\n", resp.id));
+                }
+                _ => {}
+            }
+        }
+    }
+    if out.is_empty() {
+        "No tool calls in range.".to_string()
+    } else {
+        out
+    }
+}
+
+fn project_transcript(messages: &[crate::conversation::message::Message]) -> String {
+    use crate::conversation::message::MessageContent;
+    let mut out = String::new();
+    for message in messages {
+        // Tab-invisible bookkeeping rows (agent_only) are skipped; tool
+        // payloads collapse to one-line stubs (§4.1).
+        if !message.metadata.user_visible {
+            continue;
+        }
+        out.push_str(&format!("[{:?}] ", message.role));
+        if let Some(p) = &message.metadata.provenance {
+            out.push_str(&format!("(injected: {:?}) ", p.kind));
+        }
+        for content in &message.content {
+            match content {
+                MessageContent::ToolRequest(req) => {
+                    out.push_str(&format!("<tool call: {}>", req.to_readable_string()));
+                }
+                MessageContent::ToolResponse(resp) => {
+                    out.push_str(&format!("<tool result: {}>", resp.id));
+                }
+                other => {
+                    if let Some(text) = other.as_text() {
+                        out.push_str(text);
+                    }
+                }
+            }
+        }
+        out.push('\n');
+    }
+    out
+}
+
+fn project_summary(
+    session: &crate::session::Session,
+    messages: &[crate::conversation::message::Message],
+) -> String {
+    // chatrecall-load parity (§3.2): head 3 + tail 3, via the same data.
+    let head = project_transcript(&messages[..messages.len().min(3)]);
+    let tail_start = messages.len().saturating_sub(3).max(messages.len().min(3));
+    let tail = project_transcript(&messages[tail_start..]);
+    format!(
+        "Working dir: {}\nMessages: {}\n\n--- First ---\n{head}\n--- Last ---\n{tail}",
+        session.working_dir.display(),
+        messages.len()
+    )
+}
+
+fn project_spawn_context(messages: &[crate::conversation::message::Message]) -> Option<String> {
+    use crate::conversation::message::ProvenanceKind;
+    messages.iter().find_map(|m| {
+        let p = m.metadata.provenance.as_ref()?;
+        (p.kind == ProvenanceKind::SpawnContext).then(|| {
+            m.content
+                .iter()
+                .filter_map(|c| c.as_text())
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+    })
 }
 
 /// Find `session_id` inside a layout echo (§4.3 `workspace_echo.layout`).
@@ -464,6 +683,7 @@ impl McpClientTrait for WorkspaceClient {
         let caller = &meta.session_id;
         let content = match name {
             "workspace_list" => self.handle_list(caller, arguments).await,
+            "workspace_read_conversation" => self.handle_read_conversation(caller, arguments).await,
             // BR-71 decision 22: the spawn tool is advertised here but
             // dispatched by the agent loop (it needs the parent's TaskConfig).
             // Reachable only if that interception is ever removed.
@@ -893,6 +1113,147 @@ mod tests {
                 &stray.id,
                 &masquerade.id
             ])
+        );
+    }
+
+    #[tokio::test]
+    async fn read_conversation_projects_tool_calls_and_refuses_hidden() {
+        use crate::conversation::message::{Message, MessageProvenance, ProvenanceKind};
+        let c = client();
+        let sm = c.context.session_manager.clone();
+
+        let hidden = sm
+            .create_session(
+                std::env::temp_dir(),
+                "h".into(),
+                crate::session::session_manager::SessionType::Hidden,
+            )
+            .await
+            .unwrap();
+        let open = sm
+            .create_session(
+                std::env::temp_dir(),
+                "o".into(),
+                crate::session::session_manager::SessionType::User,
+            )
+            .await
+            .unwrap();
+
+        // Seed: a user message, a tool request, and a spawn-context record.
+        let mut m1 = Message::user().with_text("please compute");
+        sm.add_message_adopting_uid(&open.id, &mut m1)
+            .await
+            .unwrap();
+        // CallToolRequestParams derives NO Default — spell all four fields.
+        // The citation is the DEPENDENCY's file, not this repo's:
+        // ~/.cargo/registry/.../rmcp-0.14.0/src/model.rs:1887-1902 (derive
+        // :1887, `pub struct CallToolRequestParams` :1890, fields
+        // meta/name/arguments/task :1892-1901, `}` :1902). Re-verified
+        // 2026-07-28 against the pinned `rmcp = "0.14.0"` (Cargo.toml:18):
+        // the derive list is `Debug, Serialize, Deserialize, Clone, PartialEq`
+        // — still no `Default`. Do NOT resolve this against
+        // `crates/biorouter/src/model.rs`, which is 908 lines and unrelated.
+        let mut m2 = Message::assistant().with_tool_request(
+            "call-1",
+            Ok(rmcp::model::CallToolRequestParams {
+                meta: None,
+                name: "shell".into(),
+                arguments: Some(
+                    serde_json::json!({"command": "ls"})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                ),
+                task: None,
+            }),
+        );
+        sm.add_message_adopting_uid(&open.id, &mut m2)
+            .await
+            .unwrap();
+        let mut spawn = Message::user()
+            .with_text("SPAWN CONTEXT …")
+            .with_provenance(MessageProvenance {
+                kind: ProvenanceKind::SpawnContext,
+                from_session_id: None,
+                from_session_name: None,
+            });
+        spawn.metadata.agent_visible = false;
+        sm.add_message_adopting_uid(&open.id, &mut spawn)
+            .await
+            .unwrap();
+
+        let call = |view: &str, sid: &str| {
+            let args: rmcp::model::JsonObject =
+                serde_json::from_value(serde_json::json!({ "session_id": sid, "view": view }))
+                    .unwrap();
+            (args,)
+        };
+
+        // Hidden sessions are refused (§5 "no covert reads").
+        let (args,) = call("transcript", &hidden.id);
+        let refused = c
+            .call_tool(
+                "workspace_read_conversation",
+                Some(args),
+                test_meta(),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(refused.is_error, Some(true));
+
+        // tool_calls view names the tool, not the prose.
+        let (args,) = call("tool_calls", &open.id);
+        let tc = c
+            .call_tool(
+                "workspace_read_conversation",
+                Some(args),
+                test_meta(),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let text = tc.content[0].as_text().unwrap().text.clone();
+        assert!(text.contains("shell"));
+        assert!(!text.contains("please compute"));
+
+        // spawn_context view returns the provenance-marked record.
+        let (args,) = call("spawn_context", &open.id);
+        let sc = c
+            .call_tool(
+                "workspace_read_conversation",
+                Some(args),
+                test_meta(),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(sc.content[0]
+            .as_text()
+            .unwrap()
+            .text
+            .contains("SPAWN CONTEXT"));
+
+        // BR-45 range: from_msg_uid slices the transcript from that message on.
+        // m2's uid was adopted by add_message_adopting_uid (#41).
+        let uid = m2.id.clone().expect("adopted uid");
+        let args: rmcp::model::JsonObject = serde_json::from_value(serde_json::json!({
+            "session_id": open.id, "view": "transcript", "from_msg_uid": uid
+        }))
+        .unwrap();
+        let ranged = c
+            .call_tool(
+                "workspace_read_conversation",
+                Some(args),
+                test_meta(),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let rtext = ranged.content[0].as_text().unwrap().text.clone();
+        assert!(
+            !rtext.contains("please compute"),
+            "messages before the uid are excluded"
         );
     }
 }
