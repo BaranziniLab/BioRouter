@@ -6638,9 +6638,15 @@ Add the four cases the widened policy is for, to the same test module:
 
 - [ ] **Step 4: Run tests**
 
-Run: `cargo test -p biorouter --lib -- agents::workspace_inspector tool_inspection`
+Run: `cargo test -p biorouter --lib -- agents::workspace_inspector tool_inspection \
+      agents::agent::tests::test_workspace_mutation`
 Expected: PASS (the new `workspace_inspector` tests; the existing `tool_inspection`
 tests unchanged).
+
+The third filter is not redundant: the ordering test lives at
+`agents::agent::tests::test_workspace_mutation_inspector_precedes_the_permission_inspector`,
+which contains neither of the first two substrings, so a two-filter gate silently
+skips the one assertion that can see the registration order.
 
 **Note the `--`.** `cargo test` takes at most ONE positional `TESTNAME`
 (`cargo test [OPTIONS] [TESTNAME] [-- [ARGS]...]`), so the two-filter form without it
