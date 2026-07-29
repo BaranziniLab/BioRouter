@@ -357,6 +357,17 @@ three of DR-14's four roots sit under `$HOME`, which is routinely the working di
 Auto mode, the mode agents run in. Each of the four is gated by an ordering assertion in Task 14A or
 14B rather than by a test that could pass either way.
 
+**A fifth and a sixth, in the same shape, found in the round that added Task 10D.** A capability read
+must also run **after** the bind that decides it. `configure_agent` (`routes/apps.rs`) computes
+`capability_report(cfg)` at `:1257` and binds the manifest's own provider at `:1259`, so the natural
+place to add the read — where the report already is — reads the provider the session held *before*
+the app's model was applied: global-private/manifest-public hands a public model the private catalog,
+global-public/manifest-private strips a private model of its own bases. The call moves below
+`configure_main_provider`. And `configure_worker_agent` `:1553-1561` has the ordering right and the
+check missing: it binds the worker's provider and then grants `cfg.knowledge_base` with no report at
+all. Both are gated by `awk` ordering assertions in Task 10D Step 5 — a count of capability reads
+cannot see either, because in both defects the read is present and correct and merely early.
+
 ---
 
 ## Departures from the design
@@ -5254,7 +5265,7 @@ Task 10A decision (5a) rejected for `create_base` only because that one measured
 |---|---|---|
 | Modify | `crates/biorouter-mcp/src/agent_drafter/catalog.rs` | **CP5.** `Catalog::discover()` `:69-82` (14 lines) gains `caller_is_private: bool`; `discover_kbs()` `:125-141` (17 lines) gains the filter; `kb_ids` `:102-104`, `render_list` `:116-122`, `has_kb` `:90-92` all read from the filtered vector and need no change; `mod tests` `:265`, whose construction is `:270` |
 | Modify | `crates/biorouter-mcp/src/agent_drafter/mod.rs` | the five production `Catalog::discover()` sites `:1090`, `:2071`, `:2202`, `:2511`, `:2627`; `list_platform_catalog` `:2626` (declared `:2615-2625`), `configure_app` `:2033` (`:2029`), `update_app` `:2130` (`:2126`) and `declare_profiles` `:2501` (`:2497`) each gain `context: RequestContext<RoleServer>`; `create_app` `:1975-1979` **already has one** and threads it through `create_app_inner` `:1987` into `persist_created_app` `:1072-1084`; `session_id_from_context` `:1575-1582` is the in-file precedent to mirror |
-| Modify | `crates/biorouter-server/src/routes/apps.rs` | `capability_report` `:768` gains `caller_is_private: bool`; its sole caller `configure_agent` `:1257` resolves it from the `agent` it already holds, exactly as CP3's three call sites do |
+| Modify | `crates/biorouter-server/src/routes/apps.rs` | `capability_report` `:768-806` gains `caller_is_private: bool`; its sole caller `configure_agent` calls it at `:1257` — **and that call MOVES**, to below `configure_main_provider` `:1259` and `warn_invalid_model_routes` `:1260`. See the ⚠ "the report must be computed from the provider actually bound". Also `configure_worker_agent` `:1544-1564`, whose KB grant `:1561` runs with no report at all |
 | Modify | `crates/biorouter-mcp/tests/catalog_write_boundary.rs` | `Catalog::discover()` `:54` — an integration test `--lib` cannot compile (Task 10B ⚠) |
 | Modify | `crates/biorouter-mcp/tests/testdrive_corpus_relint.rs` | `Catalog::discover()` `:103` — same |
 | Reference | `crates/biorouter-mcp/src/agent_drafter/validate.rs` | `check_knowledge_base` `:18-58` — the three `Catalog::render_list(&catalog.kb_ids())` renderings at `:33`, `:42`, `:52` (`:78` and `:98` are the skill and extension lists, out of scope). **Unchanged**, and that is the point: filtering at CP5 fixes all three at once, because they read the catalog they are handed; the in-file test constructions are `:179`, `:250`, `:261` |
@@ -5266,6 +5277,73 @@ from the catalog* fixes every one of them with no second rule to keep in sync. I
 right behaviour for free: a public session that names a private base by hand gets *"knowledge base
 'omop' is not installed on this Biorouter"* — the **omission** semantics Task 10C chose for
 `kb_list_bases`, not a redaction and not a privacy refusal that would itself confirm the base exists.
+
+⚠ **The report must be computed from the provider actually bound, so the call moves.** Today
+`configure_agent` computes `let mut report = capability_report(cfg);` at `:1257` and *then* calls
+`configure_main_provider(agent, session_id, manifest, cfg)` at `:1259`. Adding the capability read at
+the existing position — which is what the previous draft said to do — reads the provider the session
+was holding **before** the manifest's own `model` was bound, and an app's manifest routinely names a
+different one (`configure_main_provider` `:809-855`: `cfg.model` → `create_provider` →
+`agent.update_provider`, falling back to the global provider at `:834-854` when that fails). Both
+inversions are wrong and both are silent:
+
+| Global provider | Manifest `model` | Report computed at `:1257` | Consequence |
+|---|---|---|---|
+| private | public | **private** | the app's public model is handed the private catalog, and `configure_agent` `grant_knowledge_base`s a private base to it at `:1276` — arming its KB tools |
+| public | private | **public** | the app's private model loses every private base for the whole session, for no reason the user can see |
+
+So: bind first, then report. Move the `capability_report` call to **below** `configure_main_provider`
+and `warn_invalid_model_routes`; nothing between the two positions reads `report` (measured — the
+first consumer is `configure_main_extensions(agent, manifest, cfg, &report)` at `:1262`), so this is
+a two-line move and not a restructuring:
+
+```rust
+    configure_main_provider(agent, session_id, manifest, cfg).await;
+    warn_invalid_model_routes(manifest, cfg).await;
+
+    // Issue #56. AFTER the bind, never before: `capability_report` used to run
+    // above `configure_main_provider`, so it read whatever provider the session
+    // held before the manifest's `model` was applied. Reading the provider the
+    // agent ACTUALLY ended up with is also the only value that survives
+    // `configure_main_provider`'s fallbacks (:830-855) and Gate A refusing the
+    // manifest's provider on a private session (Task 12) — the same rule Task
+    // 10B applies to the HTTP macro routes: the constructed instance, never the
+    // requested name.
+    let caller_is_private = agent
+        .provider()
+        .await
+        .map(|p| p.tier())
+        .unwrap_or(biorouter::privacy::ProviderTier::Public)
+        .is_private();
+    let mut report = capability_report(cfg, caller_is_private);
+```
+
+⚠ **The worker path grants a base with no report at all, and it is the same defect one function
+over.** `configure_worker_agent` (`:1544`) calls `configure_worker_provider` (`:1553`) and then
+`grant_knowledge_base(&state.knowledge_service, session_id, kb)` (`:1561`) straight from
+`cfg.knowledge_base`, with no `capability_report` between them. `grant_knowledge_base` is
+`include_kb(.., PrimaryUpdate::Set(kb))` (`:1234-1244`), so it **un-hides the base in that worker's
+session and makes it the primary** — meaning a public worker profile that names a private base gets
+that base pinned as its KB-less write target. Task 10C refuses the reads and Task 10B stamps the
+writes, so this is not a content crossing; it is the same "arming a tool for a grant that cannot be
+satisfied" the report's own comment (`:769-771`) exists to prevent, plus a moved pointer. Ordering
+is already right here (provider at `:1553`, grant at `:1561`) — the fix is one `if` before the grant,
+using the same expression, and it is in this task because it is the same read of the same value:
+
+```rust
+    if let Some(kb) = cfg.knowledge_base.as_ref() {
+        // Issue #56. The worker's OWN capability — `configure_worker_provider`
+        // ran four lines up and may have bound a different tier than the main
+        // agent's. A base this profile may not read is not granted, for the
+        // reason at :769-771: never arm a tool for a grant that cannot be
+        // satisfied.
+        let worker_is_private = agent.provider().await.map(|p| p.tier())
+            .unwrap_or(biorouter::privacy::ProviderTier::Public).is_private();
+        if !Catalog::discover(worker_is_private).has_kb(kb) {
+            warn!(app = %manifest.id, profile = %profile_name, kb = %kb,
+                  "profile names a knowledge base that is not available to it");
+        } else if let Err(e) = grant_knowledge_base(&state.knowledge_service, session_id, kb) {
+```
 
 ⚠ **`Catalog::discover` gains a `bool`, not a `ProviderTier`.** `agent_drafter` is in
 `biorouter-mcp`, which cannot depend on `biorouter` — Task 10A decision (1), the same constraint that
@@ -5365,20 +5443,55 @@ async fn every_drafter_tool_that_builds_a_catalog_scopes_it() {
 // crates/biorouter-server/src/routes/apps.rs, in its existing `mod tests`
 
 #[tokio::test]
-async fn a_public_app_session_reports_a_private_base_as_missing_not_as_granted() {
-    // `configure_agent` calls `grant_knowledge_base` for whatever the report
-    // says is granted, which is what ARMS the app's KB tools. CP3 would refuse
-    // the reads anyway; not arming them is the honest state, and it keeps the
-    // report from telling the app's own model that a base it may not read is
-    // available.
+async fn the_app_capability_report_follows_the_MANIFESTS_provider_not_the_global_one() {
+    // Driven through `configure_agent`, never by calling `capability_report`
+    // directly — a direct call proves the parameter works and says nothing
+    // about WHERE it is read, which is the whole of the bug. `capability_report`
+    // ran at :1257 and `configure_main_provider` at :1259, so the report saw the
+    // provider the session held BEFORE the manifest's `model` was bound.
+    //
+    // Both inversions, because each is silent on its own and a fix that hardcodes
+    // either literal passes one of them.
     let (state, root) = app_state_with_kb("omop");
     tier::raise_unlocked(&root, "omop", true).unwrap();
-    let cfg = cfg_with_knowledge_base("omop");
-    let public = capability_report(&cfg, /* caller_is_private */ false);
-    assert_eq!(public.granted_knowledge_base, None);
-    assert_eq!(public.missing_knowledge_base.as_deref(), Some("omop"));
-    let private = capability_report(&cfg, true);
-    assert_eq!(private.granted_knowledge_base.as_deref(), Some("omop"));
+
+    // Global PRIVATE, manifest PUBLIC → the app runs public and must NOT get it.
+    let agent = agent_bound_to(private_provider()).await;
+    let report = configure_agent(&agent, &state, "app:x:c1",
+                                 &manifest_with(public_model(), kb("omop")),
+                                 &bridge, false).await;
+    assert_eq!(report.granted_knowledge_base, None,
+               "a public manifest model received the private catalog");
+    assert_eq!(report.missing_knowledge_base.as_deref(), Some("omop"));
+    // And the grant really did not happen — the report is only a claim.
+    assert!(!session_kb_ids(&root, "app:x:c1").contains(&"omop".to_string()));
+
+    // Global PUBLIC, manifest PRIVATE → the app runs private and must get it.
+    let agent = agent_bound_to(public_provider()).await;
+    let report = configure_agent(&agent, &state, "app:x:c2",
+                                 &manifest_with(private_model(), kb("omop")),
+                                 &bridge, false).await;
+    assert_eq!(report.granted_knowledge_base.as_deref(), Some("omop"),
+               "a private manifest model wrongly lost its own base");
+}
+
+#[tokio::test]
+async fn a_public_worker_profile_is_not_granted_a_private_base() {
+    // `configure_worker_agent` (:1544) grants `cfg.knowledge_base` at :1561 with
+    // no report between it and `configure_worker_provider` (:1553), and
+    // `grant_knowledge_base` is `include_kb(.., PrimaryUpdate::Set(kb))` — so
+    // the base is un-hidden in that worker's session AND made its KB-less write
+    // target. Main private, worker public: the worker must not receive it.
+    let (state, root) = app_state_with_kb("omop");
+    tier::raise_unlocked(&root, "omop", true).unwrap();
+    let app = configure_app_with_worker(&state, "analyst",
+                                        /* main */ private_model(),
+                                        /* worker */ public_model(), kb("omop")).await;
+    assert!(!session_kb_ids(&root, &app.worker_session_id("analyst"))
+                .contains(&"omop".to_string()));
+    assert_ne!(stored_primary(&root, &app.worker_session_id("analyst")).as_deref(), Some("omop"));
+    // The main agent, which IS private, keeps it.
+    assert!(session_kb_ids(&root, &app.main_session_id()).contains(&"omop".to_string()));
 }
 ```
 
@@ -5388,7 +5501,7 @@ async fn a_public_app_session_reports_a_private_base_as_missing_not_as_granted()
 cargo test -p biorouter-mcp --lib agent_drafter::catalog    # 5 today (measured, Task 4b); assert 5 + 1
 cargo test -p biorouter-mcp --lib agent_drafter::validate
 cargo test -p biorouter-mcp --lib agent_drafter::           # 244 today (measured); assert 244 + 5
-cargo test -p biorouter-server --lib routes::apps           # 90 today (measured); assert 90 + 1
+cargo test -p biorouter-server --lib routes::apps           # 90 today (measured); assert 90 + 2
 ```
 
 Expected: **COMPILE ERROR** first — `Catalog::discover` takes 0 arguments, `capability_report` takes
@@ -5460,15 +5573,10 @@ the in-file precedent (`session_id_from_context` `:1575`) and the shared reader:
 so after this task **six** drafter tools carry a context and the rest do not.
 
 (c) `routes/apps.rs` — `capability_report(cfg, caller_is_private)`, resolved in `configure_agent`
-(`:1246`) from the `agent` it already holds:
-
-```rust
-    let caller_is_private = agent.provider().await.map(|p| p.tier())
-        .unwrap_or(biorouter::privacy::ProviderTier::Public).is_private();
-    let mut report = capability_report(cfg, caller_is_private);
-```
-
-the same fail-closed expression CP3's three call sites use, for the same reason.
+from the `agent` it already holds, **at its new position below `configure_main_provider`** — the code
+and the reason are in the ⚠ "the report must be computed from the provider actually bound" above,
+together with the one `if` `configure_worker_agent` needs before its own grant. Same fail-closed
+expression as CP3's three call sites, for the same reason.
 
 - [ ] **Step 4: Run**
 
@@ -5529,6 +5637,25 @@ echo "expect: 1 — the delegating reader, not a second implementation"
 # and a check inside them is a second rule to keep in sync.
 grep -c "tier::is_private\|caller_is_private" crates/biorouter-mcp/src/agent_drafter/validate.rs
 echo "expect: 0"
+# The report is computed AFTER the manifest provider is bound. This is an
+# ordering gate and it is the whole of the fix: the capability read is correct in
+# isolation and wrong at :1257, and no per-file count can see the difference.
+awk '/async fn configure_agent/,/^}/' crates/biorouter-server/src/routes/apps.rs | wc -l
+echo "expect: > 1 (about 100 today) — assert the range before reading it"
+awk '/async fn configure_agent/,/^}/' crates/biorouter-server/src/routes/apps.rs \
+  | grep -n "configure_main_provider\|agent.provider()\|capability_report(\|configure_main_extensions" \
+  | head -4
+echo "Expected, in this order: configure_main_provider, agent.provider(),"
+echo "  capability_report, configure_main_extensions. capability_report on a"
+echo "  SMALLER line number than configure_main_provider is the defect — it reads"
+echo "  the provider the session held before the manifest's model was applied."
+# The worker's grant is gated by the WORKER's capability, and it is the worker's
+# own provider that is read (configure_worker_provider runs four lines above it).
+awk '/async fn configure_worker_agent/,/^}/' crates/biorouter-server/src/routes/apps.rs \
+  | grep -n "configure_worker_provider\|agent.provider()\|has_kb\|grant_knowledge_base" | head -4
+echo "Expected, in this order: configure_worker_provider, agent.provider(), has_kb,"
+echo "  grant_knowledge_base. A missing has_kb line is a public worker profile"
+echo "  being pinned to a private base as its KB-less write target."
 # METADATA new-surface detector — the one Task 10C's two detectors are blind to
 # by construction, and the reason this task exists. PRINT with line numbers and
 # compare against the `#[cfg(test)]` boundaries; a bare count is the fragile shape
@@ -5564,7 +5691,15 @@ its tools. (3) Making the refusal say *"that base is private"*, which is a leak 
 sentence — `a_public_session_cannot_configure_an_app_against_a_private_base` asserts the message says
 "not installed" and does **not** say "private". (4) Reading the meta key by hand in `agent_drafter`
 instead of through `knowledge::tier::caller_is_private`, which compiles, passes every drafter test,
-and silently stops matching the day the key changes; the two-file gate is what sees it.
+and silently stops matching the day the key changes; the two-file gate is what sees it. (5) Adding
+the capability read at `capability_report`'s **existing** position (`:1257`), which is above
+`configure_main_provider` (`:1259`) — so a global-private install serves a public manifest model the
+private catalog and grants it the base, and a global-public install strips a private manifest model
+of its own. The read is correct in isolation and wrong two lines early; only the `configure_agent`
+ordering gate and `the_app_capability_report_follows_the_MANIFESTS_provider_not_the_global_one` see
+it, and only because that test goes through `configure_agent` — a direct `capability_report(&cfg,
+false)` passes against the defect. (6) Fixing the main agent and leaving `configure_worker_agent`'s
+grant (`:1561`) ungated, which pins a private base as a public worker profile's KB-less write target.
 
 - [ ] **Step 6: Commit**
 
