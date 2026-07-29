@@ -2611,6 +2611,70 @@ mod tests {
         );
     }
 
+    /// #68: the second base substitution, the one #64 left standing. When the
+    /// session directory is a *subdirectory* of `BIOROUTER_WORKING_DIR`, deleting
+    /// it used to hand the jail to the env base — widening it to the parent, so a
+    /// sibling file the jail refused a moment earlier became reachable.
+    ///
+    /// Both values are app-sanctioned, so this is not an escape to an arbitrary
+    /// path; it is still a base *substitution*, and the base is the one value
+    /// bounding every path these tools may touch. The jail now requires the
+    /// directory it was actually given, and refuses instead of moving.
+    #[test]
+    #[serial]
+    fn editor_jail_is_not_widened_to_the_env_base_when_session_dir_disappears() {
+        let saved_env = std::env::var("BIOROUTER_WORKING_DIR").ok();
+        let saved_cwd = std::env::current_dir().ok();
+
+        // The env base is the *parent*; the session works in a subdirectory of
+        // it. This is the shape that widens: the two do not vanish together.
+        let env_base = tempfile::tempdir().unwrap();
+        let env_path = std::fs::canonicalize(env_base.path()).unwrap();
+        std::env::set_var("BIOROUTER_WORKING_DIR", &env_path);
+
+        let session_path = env_path.join("session");
+        std::fs::create_dir(&session_path).unwrap();
+        let server = DeveloperServer::new().with_working_dir(session_path.clone());
+
+        // A real file inside the env base but outside the session jail.
+        let probe = env_path.join("sibling.txt");
+        std::fs::write(&probe, "not for the tools").unwrap();
+        let probe_str = probe.to_str().unwrap().to_string();
+        assert!(
+            server.resolve_path_jailed(&probe_str, false).is_err(),
+            "sanity: a sibling of the session dir must be refused while it exists"
+        );
+
+        // The session subdirectory disappears; the env base survives.
+        std::fs::remove_dir_all(&session_path).unwrap();
+        assert!(env_path.is_dir(), "the env base must still exist");
+
+        let outcome = server.resolve_path_jailed(&probe_str, false);
+
+        if let Some(dir) = saved_cwd {
+            let _ = std::env::set_current_dir(dir);
+        }
+        match saved_env {
+            Some(v) => std::env::set_var("BIOROUTER_WORKING_DIR", v),
+            None => std::env::remove_var("BIOROUTER_WORKING_DIR"),
+        }
+
+        let err = outcome.expect_err(
+            "a path outside the session dir must stay refused after the session dir \
+             disappears — the jail must not widen to BIOROUTER_WORKING_DIR",
+        );
+        assert!(
+            err.message.contains("no longer exists"),
+            "the refusal must name the real reason, got: {}",
+            err.message
+        );
+        assert!(
+            err.message.contains(&session_path.display().to_string()),
+            "and must name the directory that vanished, got: {}",
+            err.message
+        );
+    }
+
     /// #64: `effective_cwd` used to `expect()` the process working directory, so
     /// in `biorouter session` — where the process cwd *is* the session cwd —
     /// deleting the directory you started in panicked the whole process on the
