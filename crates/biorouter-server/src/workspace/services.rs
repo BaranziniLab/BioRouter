@@ -293,7 +293,30 @@ impl biorouter::workspace_services::WorkspaceTurnLease for ServerTurnLease {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use biorouter::session::session_manager::SessionType;
     use biorouter::workspace_services::WorkspaceServices;
+
+    /// NOTE — what these tests share with the rest of this crate's unit tests,
+    /// and what they deliberately do not.
+    ///
+    /// * `AppState::new()` opens the **REAL user session database** (through
+    ///   `AgentManager::instance()` → `SessionManager::instance()`, both
+    ///   process-global `OnceCell`s with no path seam). `workspace/turn.rs`,
+    ///   `routes/session.rs`, `routes/session_events.rs` and `state.rs` all
+    ///   carry the same warning: these tests create rows in the developer's own
+    ///   history. Keep session names unique and never assert on row counts.
+    ///   Relocating that would mean setting `BIOROUTER_PATH_ROOT` before the
+    ///   process starts, which no test can do for a binary it is already
+    ///   running inside — it is a crate-wide change, not a Task 9 one.
+    /// * **Extensions are always passed explicitly**, never `None`. `None`
+    ///   means "the developer's own enabled extension set", and loading it
+    ///   walks `merge_environments` → `Config::get_secret` → the macOS
+    ///   Keychain, which on an unsigned test binary blocks on an interactive
+    ///   authorization dialog no test run can answer. That is not a
+    ///   hypothetical: `cargo test -p biorouter-server --lib workspace::services`
+    ///   hung there indefinitely (`SecKeychainFindGenericPassword` under
+    ///   `Agent::load_extensions_from_session`) until this rule was applied.
+    ///   `Some(vec![])` exercises the same code path with an empty set.
 
     #[tokio::test]
     async fn start_session_creates_a_user_session_and_rejects_unknown_extensions() {
@@ -367,48 +390,71 @@ mod tests {
     }
 
     /// A turn injected into a session with NO live agent must run against that
-    /// session's persisted provider and extensions, not against a bare agent.
-    /// Without the hydration in `start_detached_turn` this fails with
-    /// "Provider not set" — `AgentManager::default_provider` is never set in the
-    /// daemon, so the agent `get_agent` mints for a cold session has none. That
-    /// is every session the user has not opened this run, i.e. exactly the
-    /// population `workspace_send_prompt mode:"turn"` exists to reach.
+    /// session's persisted provider, not against the bare agent `get_agent`
+    /// mints for a session nobody has opened this run — the population
+    /// `workspace_send_prompt mode:"turn"` exists to reach.
+    ///
+    /// # How this test can fail, and why the obvious version cannot
+    ///
+    /// `start_turn` **spawns** the turn and returns `Ok(turn_id)` immediately
+    /// (`turn.rs`), so a turn that dies on its first step with "Provider not
+    /// set" is not visible in `start_detached_turn`'s return value at all. The
+    /// first version of this test asserted `!err.contains("Provider not set")`
+    /// only `if let Some(err)` — with the hydration deleted there is no error,
+    /// so the assertion was skipped and the test passed on a missing feature.
+    ///
+    /// This version pins a provider that CANNOT be constructed and requires the
+    /// resulting error. That error can only come from
+    /// `restore_provider_from_session`, so it is positive evidence that the
+    /// session row was read and its provider restored *before* the turn was
+    /// started. Delete the hydration and this test fails with "expected the
+    /// cold session's persisted provider to be restored".
     #[tokio::test]
-    async fn a_turn_injected_into_a_cold_session_hydrates_it_first() {
+    async fn a_turn_injected_into_a_cold_session_hydrates_it_from_its_session_row() {
         let state = crate::state::AppState::new().await.unwrap();
         let services = ServerWorkspaceServices::new(state.clone());
         let temp = tempfile::TempDir::new().unwrap();
 
-        let sid = services
-            .start_session(
+        // Cold BY CONSTRUCTION. An earlier version built the session through
+        // `start_session` and then evicted the agent its eager load had created
+        // — a race with a spawned task whose result had to be discarded to keep
+        // the test green, which is not proof of eviction and not proof of a cold
+        // session. Never entering the registry is the same state, reached
+        // deterministically.
+        let session = state
+            .session_manager()
+            .create_session(
                 temp.path().to_path_buf(),
-                None,
-                Vec::new(),
-                KbPrimaryChoice::Auto,
+                "br71 workspace cold hydration".to_string(),
+                SessionType::User,
             )
             .await
             .unwrap();
-        // Evict any agent `start_session`'s eager load created, so the next
-        // resolution is a genuine cold start. Best-effort on purpose:
-        // `AgentManager::remove_session` errors with "Session … not found" when
-        // nothing is cached, and the eager load is a spawned task that may not
-        // have reached `get_agent` yet — in which case the session is already
-        // cold, which is exactly the state this line is trying to reach.
-        // `restart_agent_internal` (routes/agent.rs) discards it the same way.
-        let _ = state.agent_manager.remove_session(&sid).await;
+        assert!(
+            !state.agent_manager.has_session(&session.id).await,
+            "the session must start with no cached agent for this test to mean anything"
+        );
+
+        state
+            .session_manager()
+            .update(&session.id)
+            .provider_name("br71-no-such-provider")
+            .model_config(biorouter::model::ModelConfig::new("br71-no-such-model").unwrap())
+            .apply()
+            .await
+            .unwrap();
 
         let err = services
-            .start_detached_turn(&sid, Message::user().with_text("hello"))
+            .start_detached_turn(&session.id, Message::user().with_text("hello"))
             .await
-            .err();
-        // The turn may still fail for want of a configured provider on this
-        // machine — but it must NOT fail with the bare-agent symptom, which is
-        // what a missing hydration produces.
-        if let Some(err) = err {
-            assert!(
-                !err.contains("Provider not set"),
-                "start_detached_turn must hydrate the target from its session row: {err}"
-            );
-        }
+            .unwrap_err();
+        assert!(
+            err.contains("br71-no-such-provider"),
+            "expected the cold session's persisted provider to be restored before the turn \
+             started, got: {err}"
+        );
+        // And the failure happened before any turn was started, so nothing
+        // acquired the session's turn slot and leaked it.
+        assert!(!state.is_turn_active(&session.id));
     }
 }
