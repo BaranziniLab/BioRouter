@@ -1251,6 +1251,67 @@ impl SessionManager {
         SessionUpdateBuilder::new(self, id.to_string())
     }
 
+    /// Read ONE key out of a session's `extension_data`, without the
+    /// `COUNT(*)` over `messages` and the metadata deserialization
+    /// [`Self::get_session`] pays for. A cleared key (persisted as JSON `null`,
+    /// which is how `goal.rs` erases a resolved goal) reads as absent, matching
+    /// `RunState::load_from`.
+    ///
+    /// Returns `Ok(None)` both when the session does not exist and when it has
+    /// no value under that key — callers that need to tell those apart should
+    /// ask for the session.
+    pub async fn get_extension_state(
+        &self,
+        session_id: &str,
+        extension: &str,
+        version: &str,
+    ) -> Result<Option<serde_json::Value>> {
+        self.storage
+            .get_extension_state(session_id, extension, version)
+            .await
+    }
+
+    /// Atomically read-modify-write ONE key of a session's `extension_data`.
+    ///
+    /// `extension_data` is a single JSON column shared by every per-session
+    /// extension (`goal.v0`, `run_state.*`, `todo.v0`, `workspace_skills.v1`).
+    /// The older writer shape — `get_session` → mutate the whole
+    /// [`ExtensionData`] → `update(id).extension_data(..)` — reads and writes in
+    /// two separate statements, so two overlapping writers each serialize a
+    /// stale snapshot of the WHOLE object and the later commit silently erases
+    /// the earlier one, even when they touched different keys. Tool calls do
+    /// overlap (the agent loop drives them through `select_all`), so this is
+    /// reachable, not theoretical.
+    ///
+    /// Here the read and the write happen inside one transaction that OPENS
+    /// WITH A WRITE — the same load-bearing trick as
+    /// `replace_conversation_inner`: a deferred WAL transaction that reads
+    /// first pins a read snapshot and gets an immediate `SQLITE_BUSY_SNAPSHOT`
+    /// on upgrade (the busy handler is not consulted for a snapshot upgrade),
+    /// whereas taking the single per-file write lock up front makes any SELECT
+    /// that follows read true latest-committed state and makes a concurrent
+    /// writer wait on the busy timeout instead. Writers are therefore fully
+    /// serialized and no merge basis can be stale — no CAS/retry needed.
+    ///
+    /// `mutate` sees the currently persisted value (`None` when absent or
+    /// cleared) and returns the value to store. Returns the stored value, or
+    /// `Ok(None)` if no such session exists (nothing is written, and no row is
+    /// created). A `mutate` error rolls the transaction back.
+    pub async fn update_extension_state<F>(
+        &self,
+        session_id: &str,
+        extension: &str,
+        version: &str,
+        mutate: F,
+    ) -> Result<Option<serde_json::Value>>
+    where
+        F: FnOnce(Option<&serde_json::Value>) -> Result<serde_json::Value> + Send,
+    {
+        self.storage
+            .update_extension_state(session_id, extension, version, mutate)
+            .await
+    }
+
     /// Set the session's working directory **only if the chat is still empty**
     /// (#44), as one atomic conditional `UPDATE`: the emptiness check is the
     /// statement's own `WHERE NOT EXISTS (…messages…)` clause, so a first
@@ -3109,6 +3170,109 @@ impl SessionStorage {
         } else {
             Ok(WorkingDirUpdate::SessionNotFound)
         }
+    }
+
+    /// See [`SessionManager::get_extension_state`].
+    async fn get_extension_state(
+        &self,
+        session_id: &str,
+        extension: &str,
+        version: &str,
+    ) -> Result<Option<serde_json::Value>> {
+        let pool = self.pool().await?;
+        let Some(raw) = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT extension_data FROM sessions WHERE id = ?",
+        )
+        .bind(session_id)
+        .fetch_optional(pool)
+        .await?
+        .flatten() else {
+            return Ok(None);
+        };
+        let data = Self::parse_extension_data(&raw)?;
+        Ok(data
+            .get_extension_state(extension, version)
+            .filter(|v| !v.is_null())
+            .cloned())
+    }
+
+    /// See [`SessionManager::update_extension_state`] — including why the first
+    /// statement of the transaction must be a write.
+    async fn update_extension_state<F>(
+        &self,
+        session_id: &str,
+        extension: &str,
+        version: &str,
+        mutate: F,
+    ) -> Result<Option<serde_json::Value>>
+    where
+        F: FnOnce(Option<&serde_json::Value>) -> Result<serde_json::Value> + Send,
+    {
+        let pool = self.pool().await?;
+        let mut tx = pool.begin().await?;
+
+        // LOAD-BEARING FIRST STATEMENT, AND IT MUST BE A WRITE. DO NOT REORDER.
+        // See `replace_conversation_inner` for the measurement behind this: a
+        // deferred WAL transaction that reads first cannot upgrade to a writer
+        // without an immediate `SQLITE_BUSY_SNAPSHOT`, and the busy timeout does
+        // not apply. Taking the write lock up front makes the SELECT below read
+        // latest-committed state, which is what makes the merge sound.
+        //
+        // It also keeps `updated_at` moving, exactly as the
+        // `update(id).extension_data(..)` path this replaces did.
+        let touched = sqlx::query("UPDATE sessions SET updated_at = datetime('now') WHERE id = ?")
+            .bind(session_id)
+            .execute(&mut *tx)
+            .await?;
+        if touched.rows_affected() == 0 {
+            tx.rollback().await?;
+            return Ok(None);
+        }
+
+        let raw = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT extension_data FROM sessions WHERE id = ?",
+        )
+        .bind(session_id)
+        .fetch_one(&mut *tx)
+        .await?
+        .unwrap_or_else(|| "{}".to_string());
+        let mut data = match Self::parse_extension_data(&raw) {
+            Ok(data) => data,
+            Err(e) => {
+                tx.rollback().await?;
+                return Err(e);
+            }
+        };
+
+        let current = data
+            .get_extension_state(extension, version)
+            .filter(|v| !v.is_null())
+            .cloned();
+        let next = match mutate(current.as_ref()) {
+            Ok(next) => next,
+            Err(e) => {
+                tx.rollback().await?;
+                return Err(e);
+            }
+        };
+        data.set_extension_state(extension, version, next.clone());
+
+        sqlx::query("UPDATE sessions SET extension_data = ? WHERE id = ?")
+            .bind(serde_json::to_string(&data)?)
+            .bind(session_id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(Some(next))
+    }
+
+    /// Strict, unlike the tolerant `unwrap_or_default()` in `Session::from_row`.
+    /// A read-modify-write of one key rewrites the WHOLE column, so silently
+    /// treating an unparseable blob as empty would erase every other
+    /// extension's state; refusing to write is the only safe answer.
+    fn parse_extension_data(raw: &str) -> Result<ExtensionData> {
+        serde_json::from_str(raw)
+            .map_err(|e| anyhow::anyhow!("session extension_data is not a JSON object: {e}"))
     }
 
     #[allow(clippy::too_many_lines)]
@@ -5849,6 +6013,181 @@ mod tests {
 
             let reloaded = sm.get_session(&session.id, false).await.unwrap();
             assert_eq!(reloaded.working_dir, PathBuf::from("/tmp/new"));
+        }
+    }
+
+    /// BR-71: `extension_data` is ONE JSON column shared by every per-session
+    /// extension (`goal.v0`, `run_state.*`, `todo.v0`, `workspace_skills.v1`).
+    /// The pre-existing writer pattern — `get_session` → mutate the whole
+    /// `ExtensionData` → `update().extension_data(..)` — reads and writes in
+    /// two separate statements, so two overlapping writers each serialize a
+    /// stale snapshot of the WHOLE object and the later commit silently erases
+    /// the earlier one, even when they touched different keys.
+    ///
+    /// `update_extension_state` closes that by doing the read-modify-write of a
+    /// SINGLE key inside one transaction that opens with a write (the same
+    /// load-bearing trick as `replace_conversation_inner`: a deferred WAL
+    /// transaction that reads first pins a snapshot and gets an immediate
+    /// `SQLITE_BUSY_SNAPSHOT` on upgrade, bypassing the busy timeout).
+    mod extension_state_atomicity {
+        use super::*;
+
+        const KEY: &str = "workspace_skills";
+        const VER: &str = "v1";
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn concurrent_updates_of_one_key_never_lose_a_write() {
+            let store = TempDir::new().unwrap();
+            let sm = Arc::new(SessionManager::new(store.path().to_path_buf()));
+            let session = sm
+                .create_session(store.path().into(), "s".into(), SessionType::User)
+                .await
+                .unwrap();
+
+            let mut tasks = Vec::new();
+            for i in 0..8 {
+                let sm = Arc::clone(&sm);
+                let id = session.id.clone();
+                tasks.push(tokio::spawn(async move {
+                    sm.update_extension_state(&id, KEY, VER, move |current| {
+                        let mut names: Vec<String> = current
+                            .and_then(|v| serde_json::from_value(v.clone()).ok())
+                            .unwrap_or_default();
+                        names.push(format!("skill-{i}"));
+                        Ok(serde_json::to_value(names)?)
+                    })
+                    .await
+                    .unwrap()
+                }));
+            }
+            for task in tasks {
+                task.await.unwrap();
+            }
+
+            let stored = sm
+                .get_extension_state(&session.id, KEY, VER)
+                .await
+                .unwrap()
+                .expect("state persisted");
+            let names: Vec<String> = serde_json::from_value(stored).unwrap();
+            assert_eq!(
+                names.len(),
+                8,
+                "every concurrent append must survive; got {names:?}"
+            );
+        }
+
+        /// The blast radius of the stale-snapshot write: a skill grant must not
+        /// erase a goal, a todo list, or a paused approval that a concurrent
+        /// turn wrote to a DIFFERENT key of the same column.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn a_concurrent_write_to_another_key_is_not_erased() {
+            let store = TempDir::new().unwrap();
+            let sm = Arc::new(SessionManager::new(store.path().to_path_buf()));
+            let session = sm
+                .create_session(store.path().into(), "s".into(), SessionType::User)
+                .await
+                .unwrap();
+
+            let skills = {
+                let sm = Arc::clone(&sm);
+                let id = session.id.clone();
+                tokio::spawn(async move {
+                    sm.update_extension_state(&id, KEY, VER, |_| {
+                        Ok(serde_json::json!({"add": ["single-cell"]}))
+                    })
+                    .await
+                })
+            };
+            let goal = {
+                let sm = Arc::clone(&sm);
+                let id = session.id.clone();
+                tokio::spawn(async move {
+                    sm.update_extension_state(&id, "goal", "v0", |_| {
+                        Ok(serde_json::json!({"text": "finish BR-71"}))
+                    })
+                    .await
+                })
+            };
+            skills.await.unwrap().unwrap();
+            goal.await.unwrap().unwrap();
+
+            let reread = sm.get_session(&session.id, false).await.unwrap();
+            assert_eq!(
+                reread
+                    .extension_data
+                    .get_extension_state(KEY, VER)
+                    .and_then(|v| v["add"][0].as_str()),
+                Some("single-cell"),
+            );
+            assert_eq!(
+                reread
+                    .extension_data
+                    .get_extension_state("goal", "v0")
+                    .and_then(|v| v["text"].as_str()),
+                Some("finish BR-71"),
+                "a concurrent write to another extension's key must survive"
+            );
+        }
+
+        /// The persisted value is the basis for the next merge — not a
+        /// process-local cache. A reader opened after the writer's process
+        /// would have exited sees the committed value.
+        #[tokio::test]
+        async fn the_merge_basis_is_the_persisted_value_not_an_in_memory_one() {
+            let store = TempDir::new().unwrap();
+            let id = {
+                let sm = SessionManager::new(store.path().to_path_buf());
+                let session = sm
+                    .create_session(store.path().into(), "s".into(), SessionType::User)
+                    .await
+                    .unwrap();
+                sm.update_extension_state(&session.id, KEY, VER, |current| {
+                    assert!(current.is_none(), "nothing persisted yet");
+                    Ok(serde_json::json!({"add": ["proteomics"]}))
+                })
+                .await
+                .unwrap();
+                sm.close().await;
+                session.id
+            };
+
+            // A cold manager over the same directory: no shared in-process state.
+            let cold = SessionManager::new(store.path().to_path_buf());
+            let seen = std::sync::Arc::new(std::sync::Mutex::new(None));
+            let sink = std::sync::Arc::clone(&seen);
+            cold.update_extension_state(&id, KEY, VER, move |current| {
+                *sink.lock().unwrap() = current.cloned();
+                Ok(serde_json::json!({"add": ["proteomics", "single-cell"]}))
+            })
+            .await
+            .unwrap();
+            assert_eq!(
+                seen.lock()
+                    .unwrap()
+                    .as_ref()
+                    .and_then(|v| v["add"][0].as_str()),
+                Some("proteomics"),
+                "the mutator must see the persisted value, not an empty default"
+            );
+        }
+
+        #[tokio::test]
+        async fn a_missing_session_reports_not_found_instead_of_creating_one() {
+            let store = TempDir::new().unwrap();
+            let sm = SessionManager::new(store.path().to_path_buf());
+            let outcome = sm
+                .update_extension_state("no-such-session", KEY, VER, |_| {
+                    Ok(serde_json::json!({"add": []}))
+                })
+                .await
+                .unwrap();
+            assert!(outcome.is_none(), "no row to update");
+            assert!(sm
+                .get_extension_state("no-such-session", KEY, VER)
+                .await
+                .unwrap()
+                .is_none());
         }
     }
 
