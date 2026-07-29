@@ -1895,6 +1895,22 @@ impl DeveloperServer {
     /// folder picked) from "the intended base has disappeared". An empty env var
     /// counts as unset, since the desktop app writes `''` when no folder is
     /// selected.
+    ///
+    /// **The separation depends on the spawner, and one caller does not hold up
+    /// its end.** For an out-of-process extension both signals come from the
+    /// parent, and `prepare_child_environment`
+    /// (`biorouter/src/agents/extension_manager.rs`) sets the child's
+    /// `current_dir` *and* `BIOROUTER_WORKING_DIR` only when the session
+    /// directory still exists. A child spawned after that directory vanished is
+    /// told nothing, so `None` here is indistinguishable from "no folder was
+    /// ever picked" and the tools adopt the inherited process cwd — the
+    /// daemon's, typically far wider. Nothing on this side can tell the two
+    /// apart: refusing whenever no base is named would break every legitimate
+    /// standalone `biorouter mcp developer`, where the inherited cwd *is* the
+    /// base the spawner chose. The fix belongs where the information is:
+    /// export the explicit session path unconditionally and set `current_dir`
+    /// only when it exists. This side already handles that correctly — a
+    /// sanctioned base that does not exist is refused, never substituted.
     fn sanctioned_base(&self) -> Option<PathBuf> {
         Self::sanctioned_base_of(self.working_dir.as_deref())
     }
