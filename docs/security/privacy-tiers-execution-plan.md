@@ -3745,7 +3745,7 @@ each seam and proves it arrives, 10C then adds one line at each.
 | Modify | `crates/biorouter-mcp/src/knowledge/macros/ingest.rs` | **CP2.** `IngestArgs` `:23`; `ingest` `:47`, whose first two statements are `svc.lock_kb` `:48` and `paths::kb_root` `:49` |
 | Modify | `crates/biorouter-mcp/src/knowledge/macros/query.rs` | **CP2.** `QueryArgs` `:23`; `query` `:46`, lock `:47`, `kb_root` `:48` |
 | Modify | `crates/biorouter-mcp/src/knowledge/macros/lint.rs` | **CP2.** `LintArgs` `:195`; `lint` `:217`, lock `:218`, `kb_root` `:219` |
-| Modify | `crates/biorouter-server/src/routes/apps.rs` | **CP3.** `handle_kb_frame` `:2474-2481` gains `caller_is_private: bool`; its three call sites `:3288`, `:3513`, `:3847` |
+| Modify | `crates/biorouter-server/src/routes/apps.rs` | **CP3.** `handle_kb_frame` `:2474-2481` gains `caller_is_private: bool`; its three call sites `:3288`, `:3513`, `:3847` — ⚠ **they do not all source it from the same agent**: `:3288` (the between-turns dispatch loop) and `:3513` (the queued/stray arm, which `continue`s at `:3522` before any turn starts) are the main agent's; `:3847` is inside the **turn** loop, after `turn_agent` is resolved at `:3541-3585`, and must use that. See the ⚠ "the mid-turn call has two agents in scope" below |
 | Modify | `crates/biorouter-mcp/src/agent_drafter/mod.rs` | **CP4.** `stage_full_payload` `:1390-1394` gains `caller_is_private: bool`; its sole caller `export_app` `:2790` gains a `RequestContext` (`:2739-2742` has none today) |
 | Modify | `crates/biorouter-server/src/routes/knowledge.rs` | the four macro routes pass the constructed provider's tier into the macro Args — `ingest` `:1122` (args at `:1142`), `ingest_conversation` `:1187` (args at `:1224`), `query_kb` `:1269` (args at `:1284`), `lint` `:1325` (args at `:1347`); `build_completer` `:899-914`, whose `TestModeCompleter` early return is `:903-907` |
 | Modify | `crates/biorouter/src/knowledge/conversation_ingest.rs` | `ConversationIngestArgs` `:172-180` — **this task adds `caller_capability: ProviderTier` here**, not Task 11 (see ⚠ "the value at `:205`" below); the `IngestArgs` it builds at `:205` |
@@ -3929,6 +3929,50 @@ async fn a_br_kb_ingest_from_a_private_app_session_ratchets_the_base() {
                     &json!({ "kb_id": "kbx", "text": "n=412" }), "r1").await;
     await_kb_result(&bridge).await;
     assert!(tier::is_private(&root, "kbx"));
+}
+
+#[tokio::test]
+async fn a_mid_turn_br_kb_ingest_ratchets_from_the_TURN_agent_not_the_main_one() {
+    // CP3's third call site (:3847), and the reason it is not `agent`. Driven
+    // through the SOCKET, because the defect is which value the route reads —
+    // calling `handle_kb_frame(.., true, ..)` directly would prove the parameter
+    // works and say nothing about the bug.
+    //
+    // Public main + PRIVATE worker. The frame arrives while the worker's turn is
+    // running, so the ingest is the worker's and the base must end private. Read
+    // from `agent`, it ends public and a private worker has just laundered its
+    // own output into a base every public chat can read.
+    let app = app_with_worker_profile("analyst", /* main */ Public, /* worker */ Private).await;
+    tier::raise_unlocked(&app.kb_root, "kbx", false).unwrap();
+    app.start_turn_on_profile("analyst").await;             // turn_agent = the worker
+    app.send_kb_frame_mid_turn("ingest", json!({ "kb_id": "kbx", "text": "n=412" })).await;
+    await_kb_result(&app.bridge).await;
+    assert!(tier::is_private(&app.kb_root, "kbx"),
+            "the mid-turn ingest was attributed to the main agent");
+
+    // And the mirror, which the same wrong line also breaks: PRIVATE main +
+    // public worker must NOT ratchet a base to private on the worker's behalf.
+    // Stated as a ratchet assertion here; Task 10C asserts the read half, which
+    // is where this direction actually leaks.
+    let app = app_with_worker_profile("analyst", /* main */ Private, /* worker */ Public).await;
+    tier::raise_unlocked(&app.kb_root, "kby", false).unwrap();
+    app.start_turn_on_profile("analyst").await;
+    app.send_kb_frame_mid_turn("ingest", json!({ "kb_id": "kby", "text": "public note" })).await;
+    await_kb_result(&app.bridge).await;
+    assert!(!tier::is_private(&app.kb_root, "kby"),
+            "a public worker's ingest was stamped with the main agent's private tier");
+}
+
+#[tokio::test]
+async fn the_two_between_turn_kb_frames_still_read_the_main_agent() {
+    // The over-correction: "use turn_agent" applied to all three sites. `:3288`
+    // and `:3513` run where no turn exists — `:3513` `continue`s at `:3522`,
+    // BEFORE turn_agent is resolved at `:3541` — so there is nothing else to
+    // read, and a between-turns ingest is the main agent's by definition.
+    let app = app_with_worker_profile("analyst", /* main */ Private, /* worker */ Public).await;
+    app.send_kb_frame_between_turns("ingest", json!({ "kb_id": "kbz", "text": "n=7" })).await;
+    await_kb_result(&app.bridge).await;
+    assert!(tier::is_private(&app.kb_root, "kbz"));
 }
 ```
 
@@ -4146,12 +4190,37 @@ the `ingest` arm before the spawn:
             }
 ```
 
-All three call sites (`:3288`, `:3513`, `:3847`) sit in scopes that already hold `agent` (they call
-`agent.provider().await` nearby, e.g. `:3352`), so each passes
-`agent.provider().await.map(|p| p.tier()).unwrap_or(ProviderTier::Public).is_private()`
+⚠ **The mid-turn call has two agents in scope, and the wrong one compiles.** All three sites can
+reach `agent` — the app's **main** agent — and two of them should. The third must not:
+
+| Site | Where | Whose capability |
+|---|---|---|
+| `:3288` | the between-turns dispatch loop | `agent` — no turn is running, so there is no other agent |
+| `:3513` | the queued/stray `ClientFrame::Kb` arm, which `continue`s at `:3522` | `agent` — it returns to the top of the loop **before** `turn_agent` is resolved at `:3541` |
+| `:3847` | the **mid-turn** reader, inside the turn loop | **`turn_agent`** — resolved at `:3541-3585`, and `(h.agent.clone(), h.session_id.clone())` at `:3584` when the turn names a worker profile |
+
+A worker really can be on a different provider: `configure_worker_provider` (`:1480-1503`) builds one
+from the profile's own `cfg.model` and calls `agent.update_provider` on the worker's own session, and
+`configure_worker_agent` (`:1556-1564`) grants that profile its own knowledge base. So
+`turn_agent.provider()` and `agent.provider()` are genuinely different objects with genuinely
+different tiers, and both are in scope at `:3847` — which is why passing `agent` there compiles,
+type-checks, passes every single-agent test, and is wrong in **both** directions: a private main
+agent laundering a **public** worker's ingest into a private base (10B), and a public main agent
+letting a private worker's read of a private base be refused, or its ingest fail to ratchet (10C).
+The precedent for reading `turn_agent` at exactly this depth is four cases down the same `match`:
+`handle_action_required` takes `&turn_agent` at `:3944` under the comment *"Uses THIS turn's
+agent/session (main or worker)"* (`:3939`). `turn_agent` is an owned `Arc`, so a second shared borrow
+inside the loop costs nothing.
+
+Each site therefore passes
+`<that site's agent>.provider().await.map(|p| p.tier()).unwrap_or(ProviderTier::Public).is_private()`
 (`Agent::provider` is `agent.rs:2511`; `Provider::tier` is Task 5). A dead or unbound provider
 resolves to **Public**, the same direction `ExtensionManager::capability_tier` takes for the same
 reason.
+
+⚠ `ClientFrame::ModelStatus` sits beside every one of the three and reports `agent` at all three
+(`:3299`, `:3525`, `:3858`). Leave it alone — it is the *app's* status card, not a capability
+decision — but do not read it as the local convention for which agent to use.
 
 **CP4 — `stage_full_payload`.** Add `caller_is_private: bool` as its fourth parameter and give
 `export_app` (`:2739`) a `RequestContext<RoleServer>` to source it, using the shared reader:
@@ -4219,6 +4288,23 @@ grep -c "raise_tier(" crates/biorouter-mcp/src/knowledge/macros/ingest.rs \
                       crates/biorouter-mcp/src/knowledge/macros/lint.rs
 echo "expect: 1 each — CP2"
 grep -c "raise_tier(" crates/biorouter-server/src/routes/apps.rs ; echo "expect: 1 — CP3's ingest arm"
+# CP3's THREE call sites do not all read the same agent, and the wrong one
+# compiles because both are in scope at the mid-turn site. Print each call's
+# capability expression with its line number and compare against :3541, where
+# `turn_agent` is resolved: the two BEFORE it are the main agent's, the one
+# AFTER it is the turn's. A total ("3 sites pass a capability") is satisfied by
+# three copies of the wrong expression.
+grep -n "handle_kb_frame(" crates/biorouter-server/src/routes/apps.rs \
+  | grep -v "async fn handle_kb_frame"
+echo "expect: 3 call sites — two below :3541 (the turn_agent binding) and one above it"
+grep -n "turn_agent.provider()\|agent.provider()" crates/biorouter-server/src/routes/apps.rs
+echo "expect: the CP3 expression at the MID-TURN site (~:3847) reads turn_agent;"
+echo "  the two between-turns ones read agent. A `turn_agent.provider()` with a"
+echo "  line number BELOW :3541 does not compile (it is not yet bound), so the"
+echo "  only wrong implementation this can miss is 'agent everywhere' — which is"
+echo "  exactly what the grep shows: zero turn_agent.provider() hits."
+grep -c "turn_agent.provider()" crates/biorouter-server/src/routes/apps.rs
+echo "expect: 1 — zero means the mid-turn site was attributed to the main agent"
 # The raise precedes the sub-agent in all three macros. Anchored on `SubAgent`
 # rather than on a write call, because the macro's first write is inside
 # KbToolDispatch, one file over, and would not appear in this range at all.
@@ -4299,6 +4385,12 @@ on the *success* return, which the `kb_import` and macro paths make observable: 
 sub-agent that dies halfway has already written pages. (4) Keying the HTTP ratchet on
 `body.model.provider` — the string the caller supplied — rather than on the instance
 `providers::create` returned, which the `BIOROUTER_LEAD_MODEL` intercept can make different.
+(5) Passing `agent` at all three CP3 call sites, which is the shape the previous draft prescribed
+in one sentence. It compiles, type-checks and passes every single-agent app test, because `agent`
+and `turn_agent` are both `Arc<Agent>` and both in scope at `:3847`; what it does is attribute a
+**worker's** mid-turn KB access to the main agent, in both directions —
+`a_mid_turn_br_kb_ingest_ratchets_from_the_TURN_agent_not_the_main_one` fails it, and the
+`turn_agent.provider()` count is the grep that names it.
 
 - [ ] **Step 6: Commit**
 
@@ -4640,6 +4732,35 @@ async fn br_kb_reads_are_refused_on_a_private_base_even_with_a_manifest_grant() 
     let f = await_kb_result(&bridge).await;
     assert!(f["error"].as_str().unwrap().contains("private"));
     assert!(!f.to_string().contains("SENTINEL-BODY"));
+}
+
+#[tokio::test]
+async fn a_mid_turn_br_kb_read_is_refused_for_a_public_WORKER_under_a_private_main() {
+    // The read half of Task 10B's `..._ratchets_from_the_TURN_agent_not_the_main_one`,
+    // and the direction that actually leaks. Private main + public worker: the
+    // base is private, the frame arrives while the WORKER's turn is running, and
+    // reading `agent` (:3541's `else` branch is the main agent; :3584 is the
+    // worker) evaluates the worker's read as private and hands it the body.
+    let app = app_with_worker_profile("analyst", /* main */ Private, /* worker */ Public).await;
+    tier::raise_unlocked(&app.kb_root, "kbx", true).unwrap();
+    seed_page(&app.kb_root, "kbx", "knowledge/x.md", "SENTINEL-BODY");
+    app.start_turn_on_profile("analyst").await;
+    app.send_kb_frame_mid_turn("search", json!({ "kb_id": "kbx", "query": "x" })).await;
+    let f = await_kb_result(&app.bridge).await;
+    assert!(f["error"].as_str().unwrap().contains("private"),
+            "a public worker read a private base mid-turn: {f}");
+    assert!(!f.to_string().contains("SENTINEL-BODY"));
+
+    // Public main + private worker: the worker may read its own private base.
+    // A fix that hardcoded `false` at :3847 would pass the assertion above and
+    // fail this one — which is why both directions are here.
+    let app = app_with_worker_profile("analyst", /* main */ Public, /* worker */ Private).await;
+    tier::raise_unlocked(&app.kb_root, "kbx", true).unwrap();
+    seed_page(&app.kb_root, "kbx", "knowledge/x.md", "SENTINEL-BODY");
+    app.start_turn_on_profile("analyst").await;
+    app.send_kb_frame_mid_turn("search", json!({ "kb_id": "kbx", "query": "x" })).await;
+    let f = await_kb_result(&app.bridge).await;
+    assert!(f["error"].is_null(), "a private worker was refused its own base: {f}");
 }
 ```
 
