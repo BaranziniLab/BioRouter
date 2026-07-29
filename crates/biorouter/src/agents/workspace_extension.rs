@@ -22,8 +22,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
 
-/// The display name, which **must** normalize to this extension's
-/// `PLATFORM_EXTENSIONS` registry key (`"workspace"`).
+/// The machine **identifier**, which **must** normalize to this extension's
+/// `PLATFORM_EXTENSIONS` registry key (`"workspace"`). The human-readable label
+/// is [`EXTENSION_TITLE`] — the two are deliberately separate.
 ///
 /// `normalize` (`extension_manager.rs:159`) strips whitespace and lowercases,
 /// and two already-landed pieces of the system depend on the result:
@@ -39,10 +40,19 @@ use tokio_util::sync::CancellationToken;
 ///   `workspace__workspace_set_tools`.
 ///
 /// The design's longer label "Workspace Control" therefore cannot be the *name*
-/// (it normalizes to `workspacecontrol`); it lives in the registry description
-/// and in the `description` field of the `ExtensionConfig::Platform` the GUI
-/// writes.
+/// (it normalizes to `workspacecontrol`); it is carried by [`EXTENSION_TITLE`].
 pub static EXTENSION_NAME: &str = "Workspace";
+
+/// The human-readable label, exactly as the design of record specifies it
+/// (`docs/agent-loop/designs/agent-workspace-control.md` §4.1: "display name
+/// **Workspace Control**").
+///
+/// This is what MCP's `Implementation.title` carries — the field whose whole
+/// purpose is "a human-readable name, for UI, when `name` is a programmatic
+/// identifier". Deriving it from [`EXTENSION_NAME`] instead would silently
+/// downgrade the specified display name to the normalization-constrained
+/// identifier, which is the one thing the identifier may not also be.
+pub static EXTENSION_TITLE: &str = "Workspace Control";
 
 /// §6 draft instruction block, kept within the ~2.5k-char injection budget
 /// (`apply_injection_budget`, prompt_manager.rs:361-408). Tuned in Task 42.
@@ -149,7 +159,7 @@ impl WorkspaceClient {
             },
             server_info: Implementation {
                 name: EXTENSION_NAME.to_string(),
-                title: Some(EXTENSION_NAME.to_string()),
+                title: Some(EXTENSION_TITLE.to_string()),
                 version: "1.0.0".to_string(),
                 icons: None,
                 website_url: None,
@@ -483,6 +493,30 @@ mod tests {
 
     fn test_meta() -> crate::agents::mcp_client::McpMeta {
         crate::agents::mcp_client::McpMeta::new("caller")
+    }
+
+    /// The machine identifier and the human label are two different strings and
+    /// must stay that way.
+    ///
+    /// `EXTENSION_NAME` is an IDENTIFIER: it is normalized into the
+    /// `PLATFORM_EXTENSIONS` key by the platform spawn path
+    /// (`extension_manager.rs`, `normalize(config.name)`) and into the advertised
+    /// tool prefix `workspace__…`. `EXTENSION_TITLE` is the DISPLAY name the
+    /// design of record specifies (agent-workspace-control.md §4.1, "display
+    /// name **Workspace Control**") and is what the MCP `Implementation.title`
+    /// carries. Collapsing the two — either way round — breaks one of them:
+    /// "Workspace Control" normalizes to `workspacecontrol`, and "Workspace"
+    /// is not the design's label.
+    // `client()` builds a `SessionManager`, whose sqlx pool requires a Tokio
+    // context even though nothing here awaits.
+    #[tokio::test]
+    async fn machine_name_normalizes_to_the_key_and_title_is_the_design_label() {
+        assert_eq!(crate::agents::normalize(EXTENSION_NAME), "workspace");
+        assert_eq!(EXTENSION_TITLE, "Workspace Control");
+        let c = client();
+        let info = c.get_info().unwrap();
+        assert_eq!(info.server_info.name, EXTENSION_NAME);
+        assert_eq!(info.server_info.title.as_deref(), Some(EXTENSION_TITLE));
     }
 
     /// This task registers exactly ONE tool; Tasks 13-17 append the rest.
