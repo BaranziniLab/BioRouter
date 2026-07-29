@@ -130,7 +130,9 @@ impl SecretGuard {
         // Degrade to an empty matcher on a malformed ignore file rather than
         // panicking on the dispatch path.
         let ignore = builder.build().unwrap_or_else(|_| Gitignore::empty());
-        let machine_wide = machine_builder.build().unwrap_or_else(|_| Gitignore::empty());
+        let machine_wide = machine_builder
+            .build()
+            .unwrap_or_else(|_| Gitignore::empty());
         Self {
             ignore,
             machine_wide,
