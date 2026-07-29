@@ -74,6 +74,7 @@ pub mod turn_guard;
 pub mod types;
 pub mod vault_refs;
 // BR-71 §5: the always-confirm hook for cross-session capability changes.
+pub mod workspace_extension;
 pub mod workspace_inspector;
 pub mod workspace_summary;
 
