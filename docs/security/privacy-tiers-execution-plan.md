@@ -2,11 +2,14 @@
 
 > **What this is.** The task-by-task execution plan for the privacy-tier capability system
 > designed in [`privacy-tiers.md`](privacy-tiers.md) ([issue #56](https://github.com/BaranziniLab/biorouter/issues/56)):
-> forty tasks in seven phases, each with a Files table, a failing test, complete implementation
-> code, a run step, a gate that fails a plausible wrong implementation, and one commit.
+> forty-three tasks in seven phases — forty numbered, plus **10A, 10B and 10C**, the knowledge-base
+> tier the operator ruled on after the first adversarial review — each with a Files table, a failing
+> test, complete implementation code, a run step, a gate that fails a plausible wrong implementation,
+> and one commit.
 > **Status:** Proposed — ready to execute. The design's rulings are settled (see
-> [Decisions of record](#decisions-of-record)); thirteen questions remain open (see
-> [Open questions](#open-questions)) — the design's eleven plus two this plan surfaced — and none
+> [Decisions of record](#decisions-of-record)); the costs the operator knowingly accepted are in
+> [Accepted risks](#accepted-risks); fifteen questions remain open (see
+> [Open questions](#open-questions)) — the design's eleven plus four this plan surfaced — and none
 > of them blocks Phase 0–3.
 > **Audience:** the engineer or agent implementing issue #56, and the reviewer of its PRs.
 
@@ -14,6 +17,19 @@
 > work task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. Work in the worktree
 > `/Users/wgu/Desktop/BioRouter-privacy` on branch `feat/privacy-tiers` (forked from `main` at
 > `9558c346`). **Never implement on `main`.**
+
+> **Revision note (second adversarial round).** An adversarial verifier read the first version of
+> this plan and returned "another round". Every finding it raised is fixed here: the knowledge-base
+> laundering path is now Tasks 10A–10C under an explicit operator ruling (§[Accepted risks](#accepted-risks));
+> the `floor` caller-audit test was rewritten (it could not pass at any point, and two later phase
+> gates ran it); six gates whose expected count would have failed a *correct* implementation were
+> recomputed or replaced with anchored patterns; one vacuous gate (`awk 'NR==247'`) was re-anchored
+> to a symbol; the contrast total is **294** in both places that quote it; and the hand-traced type
+> errors S1–S9 are corrected. Two further defects this pass found on its own are also fixed: the
+> `privacy::` test count in Task 7's gate was 4 where the code produces 5, and
+> `POST /knowledge/bases/{id}/ingest-conversation` is a **third** fully-open cross-session read that
+> the first version's Gate G did not cover. See
+> [Which test filters are validated, and which are not](#which-test-filters-are-validated-and-which-are-not).
 
 **Goal.** Two lattices, one column pair, five gates plus four the design did not name. A session's
 **capability** (what it may *do*) is the least-privileged model bound to it; its **classification**
@@ -32,7 +48,20 @@ collected in [Departures from the design](#departures-from-the-design).
 **Every Rust anchor in `privacy-tiers.md` is stale.** The design was verified against `main` at
 `708390d8`; this worktree forked at `9558c346`. The three files the design cites most moved by
 +150 to +720 lines. Every anchor in *this* document was re-verified by reading the code in this
-worktree at `9558c346` on 2026-07-28, and every Files table below says so.
+worktree at `9558c346` on 2026-07-28, and every Files table below says so. The design itself now
+carries a banner saying its anchors are historical; Task 1 Step 2 replaces its §20 anchor list with
+a pointer to the drift table below.
+
+**Confirmed still valid at `main` = `89c1f026`** (2026-07-28, one day after the fork). `main` moved
+four commits past the fork point, and `git diff --stat 9558c346 89c1f026` touches exactly six files,
+all of them in the Developer MCP server: `crates/biorouter-mcp/src/developer/rmcp_developer.rs`,
+`crates/biorouter-mcp/src/secret_guard.rs`, and four new `crates/biorouter-mcp/tests/developer_*.rs`
+files (issues #64, #67, #68 — the file-tool jail). **No file this plan anchors into changed**:
+`crates/biorouter/src/**`, `crates/biorouter-server/src/**`, `crates/biorouter-mcp/src/knowledge/**`,
+`crates/biorouter-mcp/src/memory/**`, `crates/biorouter-mcp/src/developer/shell.rs`,
+`crates/biorouter-sandbox/src/**`, `ui/desktop/**` and `landing/**` are byte-identical between the
+two commits. Re-run that `git diff --stat` before starting; if it now names a file this plan
+anchors into, re-verify that file's anchors before trusting them.
 
 **The named SYMBOL is the anchor, never the line number.** Knowing the size of the drift is what
 keeps a near miss from reading as a hit — the expensive failures in BR-71's history were all near
@@ -88,7 +117,7 @@ Anchors that **check out unchanged**: `Extension` struct's six fields (`extensio
 
 ## Non-negotiable orderings
 
-BR-71 names five; this plan has eleven, and each one has a failure mode behind it.
+BR-71 names five; this plan has twelve, and each one has a failure mode behind it.
 
 **O1 — The types precede the column, and the column precedes every gate.**
 Nothing can consult a tier that does not exist. Task 4 (types) → Task 6 (columns) → any gate.
@@ -142,7 +171,16 @@ spawned future.
 caller-supplied `session_ids` array, loads each with `get_session(sid, true)`, and writes the full
 transcripts into a machine-wide knowledge base. The design says LOAD is "the only fully-open
 cross-session read in the product today"; that is false, and the second one is worse because its
-sink is readable by every other session.
+sink is readable by every other session. A **third** copy of the second, discovered in the second
+review round, is `POST /knowledge/bases/{id}/ingest-conversation` (`routes/knowledge.rs:1187-1258`);
+Task 11 closes all three at once by guarding the function they share (departure D8).
+
+⚠ **The second read's gate cannot ship before its sink has a tier**, so O12's three tasks sit between
+the two: the phase opens with Task 10 (LOAD), then Tasks 10A–10C (the sink), then Task 11 (ingest).
+That is not a weakening of O8. Closing the *read* while leaving the *sink* an unclassified
+machine-wide tree fixes the narrower half and leaves the laundering path open — which is exactly what
+the first version of this plan did, and what the operator's ruling reverses. Task 11's own second
+test asserts the ratchet, so it is unwritable before Task 10B exists.
 
 **O9 — `sessions.parent_session_id` precedes any lineage rule.**
 It does not exist on `main`: `grep -rn "parent_session_id" --include='*.rs' crates/` returns only
@@ -166,11 +204,24 @@ directions.
 Enforcement runs off the compiled-in const, so the website blocks nothing. It is sequenced last
 because its `--check` gate needs the generated Rust file to exist, not because anything waits on it.
 
+**O12 — The knowledge-base tier store precedes the KB ratchet, which precedes the KB read barrier,
+and all three precede Gate G.**
+Task 10A (store + caller-capability channel + migration) → Task 10B (the ratchet on every write) →
+Task 10C (the read barrier) → Task 11 (Gate G). Reversing 10B and 10C ships a barrier that refuses
+nothing, because on a freshly-migrated machine **every** KB is public until a private session writes
+to one — so a read gate landing first is green everywhere and proves nothing, and its own tests have
+to fabricate a tier the tree cannot yet produce. And Task 11's second test asserts the ratchet, so it
+cannot be written before 10B exists. Nothing here depends on `sessions.privacy_tier`: a KB's tier
+lives in its own machine-local store (`<knowledge-root>/.kb-tiers`), because
+`crates/biorouter-mcp` **cannot depend on `crates/biorouter`** — the dependency runs the other way
+(`extension_manager.rs:1512` uses `biorouter_mcp::secret_guard`), which is the same constraint that
+made the knowledge macros take a `Box<dyn Completer>` instead of a `Provider`.
+
 ---
 
 ## Departures from the design
 
-Six, each forced by a measurement.
+Eight, each forced by a measurement.
 
 | # | Design says | This plan does | Why |
 |---|---|---|---|
@@ -180,6 +231,8 @@ Six, each forced by a measurement.
 | D4 | §14.1: Private pill = `--background-muted` fill + `--text-standard` label; Public pill = 1 px `--border-subtle` hairline + `--text-subtle` label | Private = `bg-background-muted text-text-default`; Public = `bg-background-muted text-text-muted` | `--text-standard` **does not exist** (`grep -rn "var(--text-standard)" ui/desktop/src` → 0; the only textual hit is a comment in `search.css:2` saying so). And no border token in the system reaches 3:1 on a pill's real ground: measured with the repo's own `ui/desktop/scripts/lib/theme-tokens.mjs`, `--border-subtle` vs `--background-muted` is **1.00–1.24** across all six family×mode scopes (parchment:dark is exactly 1.00 — identical colours). An outline pill is not expressible here. Full measurements in Task 26. |
 | D5 | §15.1: "added by the same `ALTER TABLE sessions ADD COLUMN` arm BR-71 Task 1 uses" | Shape-guarded arm 17 **plus** an unconditional `reconcile_privacy_schema` | O10. |
 | D6 | §18.4: the prompt-hook provider check is "v1 emits a load-time warning; the hard skip is v1.1" | Hard refusal in v1, in the same task as the CLI plan-mode refusal | The Stop hook's payload is `crate::agents::goal::transcript_tail(&conversation)` (`agent.rs:5495-5496`) — a real transcript excerpt — shipped to an arbitrary endpoint resolved by `HooksManager::resolve_prompt_provider` (`hooks/mod.rs:690`) and sent by `run_prompt_hook` (`hooks/prompt_runner.rs:57`). It is structurally identical to P6 and carries the same content. |
+| D7 | §9.3 B4: "Ratchet a KB's classification on ingest … **or** state plainly that KBs are a designed public sink" | Ratchets (operator ruling), **and** enumerates the read side rather than stating it abstractly: seven explicit-`kb_id` entry points, not just `kb_search` | The design says "a public-capability session may not read a private KB" without naming where that is enforced. `kb_id_or_primary`'s own doc comment (`knowledge/server.rs:308-311`) says "An explicit `kb_id` always wins and is **never filtered** against the session's set", and four tools route through it (`kb_list_pages` `:379`, `kb_read_page` `:396`, `kb_get_graph` `:482`, `kb_list_history` `:497`) on top of `kb_search`'s own branch at `:590-592`, `kb_search_raw_sources`' at `:618-619` and `kb_export` at `:743`. Gating only `kb_search` leaves six live doors, which is the Task 15 failure mode one module over. |
+| D8 | §9.3 B4 and the first version of this plan put the cross-session ingest guard in `Agent::handle_ingest_conversation` | Puts it in `biorouter::knowledge::conversation_ingest::ingest_conversation` as a **required** `caller_capability` argument | Measured: `grep -rn "conversation_ingest::ingest_conversation\|ingest_conversation(" --include='*.rs' crates/` returns **three** production callers, not one — `agents/knowledge_tool.rs:61` (the platform tool), `biorouter-server/src/routes/knowledge.rs:1233` (`POST /knowledge/bases/{id}/ingest-conversation`, whose `session_ids` array at `:1192-1212` is caller-supplied and loaded with `get_session(sid, true)` at `:1203`) and `biorouter-cli/src/commands/knowledge.rs:571`. A guard in the platform tool leaves the HTTP route — reachable with nothing but the secret key — as an unguarded copy of the same primitive. A required parameter makes all three a compile error. |
 
 ---
 
@@ -189,17 +242,151 @@ New files this plan creates, in the order they appear:
 
 ```
 crates/biorouter/src/privacy/mod.rs                    Task 4  — the two enums + floor()
+crates/biorouter/src/providers/tier_tests.rs           Task 5  — `#[cfg(test)] mod tier_tests;`
 crates/biorouter/src/privacy/registry_private.rs       Task 8  — @generated from landing/
 crates/biorouter/src/privacy/extensions.rs             Task 8  — classify_extension(name)
-crates/biorouter/src/privacy/refusal.rs                Task 14 — the pure refusal builders
-crates/biorouter/src/privacy/visibility.rs             Task 24 — the §7 matrix as one predicate
+crates/biorouter-mcp/src/knowledge/tier.rs             Task 10A — the KB tier store + migration
+crates/biorouter/src/privacy/refusal.rs                Task 12 — PrivacyRefusal; Tasks 13/14/23 add to it
+crates/biorouter/src/privacy/alt_provider.rs           Task 19 — assert_alt_provider_allowed
+crates/biorouter/src/privacy/visibility.rs             Task 21 — the §7 matrix as one predicate
 crates/biorouter/src/privacy/declassify.rs             Task 29 — UserConfirmation + declassify()
 ui/desktop/src/components/ui/PrivacyBadge.tsx          Task 26
 ui/desktop/src/components/ui/DangerousConfirmDialog.tsx Task 29
+ui/desktop/src/components/sessions/DeclassifySessionDialog.tsx Task 29
 ui/desktop/src/components/settings/privacy/PrivacyPanel.tsx Task 30
+ui/desktop/src/components/privacy/FirstRunPrivacyNotice.tsx Task 38
 landing/scripts/check-docs-privacy.mjs                 Task 36
-docs/security/privacy-tiers-migration.md               Task 39
+docs/security/privacy-tiers-migration.md               Task 38
 ```
+
+⚠ Two of these moved after the first adversarial round and the old placement is a **compile error**,
+not a style preference. `privacy/refusal.rs` is created by **Task 12**, not Task 14: Task 12's own
+implementation returns `PrivacyRefusal::PublicModelOnPrivateSession`, Task 13's calls
+`privacy::refusal::turn_refusal(row)`, and both run *before* Task 14. Each later task adds to the
+module and says which item it adds. `privacy/visibility.rs` is Task **21**, not 24 — Task 21 is the
+task that creates it. `privacy/alt_provider.rs` (Task 19) and the three UI files were missing from
+this list entirely.
+
+---
+
+## Accepted risks
+
+The costs below were put to the operator, and the operator accepted them. They are recorded here in
+plain language because each one is a way a *correct* implementation of this plan still loses
+something a user might expect to have. **Do not treat any of them as a bug report**; each is a
+ruling. What is *not* on this list is a defect.
+
+### AR-1 — A knowledge base that one private session touched becomes unreadable from every public chat, including the user's own ordinary work
+
+The ruling (Tasks 10A–10C): **a knowledge base takes the tier of the most sensitive session that has
+ingested into it, and a public-capability session may not read a private KB.** The alternative the
+design offered — declare KBs a designed public sink and warn at ingest — was rejected.
+
+The cost, stated plainly:
+
+- A knowledge base is **machine-wide** (`knowledge_root()` = `in_config_dir("knowledge")`,
+  `knowledge/paths.rs:43-45`) and there is exactly one default base on most installs. The moment a
+  single Versa-backed chat writes one page into it, that base is private — and every subsequent chat
+  on a commercial model gets a refusal from `kb_search`, `kb_read_page`, `kb_list_pages`,
+  `kb_get_graph`, `kb_list_history`, `kb_search_raw_sources` and `kb_export`, **including for
+  material that had nothing to do with the private work**. The KB does not un-ratchet. There is no
+  per-page tier and there will not be one in v1: pages are markdown in a git tree, and per-page
+  classification is a storage redesign.
+- The repair is the same one every other private surface offers — switch the chat to a private model
+  — and it is discoverable, because the refusal string names it. It is still a real loss of
+  ergonomics for a user whose default model is commercial and whose knowledge base has one private
+  page in it.
+- **There is no declassification path for a KB in v1.** Sessions get one (Task 29, user-only, graded,
+  audited). A KB does not, and the CLI escape hatch (Task 31) does not cover KBs either. A user who
+  ratchets their only knowledge base by accident has no in-product exit short of `kb_export` →
+  `kb_import` into a fresh id from a public chat, which Task 10A explicitly does **not** launder
+  (an import stamps the importing session's tier and cannot lower an existing one). Follow-up, and
+  [Open question 15](#open-questions) records it.
+
+### AR-2 — Every knowledge base that exists today starts **public** at migration, even if a private session fed it
+
+`.kb-tiers` does not exist before Task 10A, and the tree keeps no record of which session wrote which
+page — the git author is `Biorouter`, not a session id. So the migration writes `public` for every
+existing base. This is the same fail-**open** direction DR-10 mandates for the session backfill and
+for the same reason: a fail-closed migration would privatise the user's only knowledge base on first
+launch, with no declassification path (AR-1) to get it back.
+
+The residual: **a KB that a private OMOP session ingested into last week is readable by a public
+model after the upgrade, and stays readable until the next private ingest ratchets it.** There is no
+content scan and there will not be one. The first-run notice (Task 38) says this in one sentence.
+
+### AR-3 — `memory`'s **local** store is not gated, and a private session's note reaches every session opened in that directory
+
+Found by Task 1's Correction 3 and left open. `compose_instructions`
+(`crates/biorouter-mcp/src/memory/mod.rs:277`) inlines local memories **in full** at `:310-322` under
+`LOCAL_SECTION_HEADER`, into the system prompt of every session whose working directory holds that
+`.biorouter/memory`. Task 19 refuses the **global** write from a private-capability session; it does
+nothing about the local one, and Gate F2 (Task 18) cannot help because it filters by *extension*
+tier and `memory` is Public.
+
+Why it is not closed in v1: the design's own §9.3 B3 offers two fixes, and the one that would cover
+this ("classify memory entries and filter `retrieve_all` by the session's capability tier at init")
+needs provenance on each stored memory. The on-disk format is a `# {tags}` line followed by bare
+lines (`memory/mod.rs:387-388`, read back at `:414-418`, keyed by the **tag string**, not the
+category), and `compose_instructions` runs once at `MemoryServer::new` (`:108`) rather than per turn —
+so a capability-aware filter there would also freeze across a mid-session model swap, which is
+exactly the O6 hazard Gate E exists to avoid. Task 19 ships the cheap half instead: a private-capability
+local write says out loud, in the tool result, that the note will be readable by any session opened
+in that directory. [Open question 14](#open-questions) carries the real fix.
+
+### AR-4 — `medcp` stays callable by a public model
+
+Unchanged from DR-11. Listed here so the accepted-cost list is complete rather than split across two
+tables.
+
+---
+
+## Which test filters are validated, and which are not
+
+The adversarial verifier could not run a single `cargo test` filter — the `privacy::` modules do not
+exist yet, so `cargo test -- --list` cannot resolve them even after a build — and named this "the
+single biggest hole in my own coverage", because BR-71's most expensive defect was *a filter that
+names a nested module by the wrong path, prints `0 passed`, and exits 0*. This section closes as much
+of that hole as is closable before any code exists.
+
+**How each filter was checked.** For every `cargo test` line in this plan, the module path it implies
+was resolved against the tree: for an existing module, that the file exists at the path the filter
+spells **and** that it contains a `#[cfg(test)] mod tests`; for a module this plan creates, that the
+task's Files table puts the file where the filter's path implies.
+
+**Four filters name a module that has no test module today, so they print `0 passed` and exit 0 until
+the task that owns them lands.** This is not a defect in the filter — it is the reason each of those
+tasks must state a *pre-count of zero* and assert the exact post-count:
+
+| Filter | Module today | Task |
+|---|---|---|
+| `cargo test -p biorouter --lib agents::chatrecall_extension` | `chatrecall_extension.rs` has **no** `mod tests` | 10, 17 |
+| `cargo test -p biorouter --lib session::chat_history_search` | `chat_history_search.rs` has **no** `mod tests` | 17 |
+| `cargo test -p biorouter-server --lib routes::agent` | `routes/agent.rs` has **no** `mod tests` | 12, 14 |
+| `cargo test -p biorouter-server --lib routes::session` | `routes/session.rs` has **no** `mod tests` | 22, 29 |
+
+Ten of the twelve `crates/biorouter-server/src/routes/*.rs` files with tests were checked; `apps.rs`
+and `config_management.rs` (the two this plan filters on besides the four above) both have one.
+
+**Two syntax rules, both verified analytically.**
+`cargo test --lib A B` is a hard error (`unexpected argument 'B' found`) — cargo takes exactly one
+`TESTNAME` positional, so multiple filters must go after `--`, where libtest ORs them. And a libtest
+filter that matches nothing prints `0 passed` and **exits 0**, which is why every gate in this plan
+asserts a *count*, never an exit code.
+
+⚠ **`cargo test -p <pkg> --lib <MODULE> -- name1 name2` does not do what it looks like.** Cargo passes
+its own `TESTNAME` positional to libtest as *another* OR'd filter, so the module runs in full and the
+names after `--` add nothing. Task 6 Step 2 carried this shape and has been corrected to drop the
+positional. If you want exactly N named tests, pass **only** names after `--`.
+
+**What remains unvalidated, and why.** Nothing here was *executed*. The filters were resolved
+statically against file paths and `mod tests` presence, which catches the BR-71 defect class (a path
+that resolves to nothing) but not two others: (a) a test that exists under a *different* nesting than
+its file suggests — e.g. a helper `mod` inside `mod tests` — and (b) an expected pass-count that is
+right for the module today and wrong after another task adds tests to the same module. Every gate in
+this plan that quotes a pass count is therefore paired with either a named-test filter or a
+pre/post delta the task records itself. **The first worker to run `cargo test -- --list` should paste
+the real module paths into a PR comment**; that is the only thing that closes (a) completely.
 
 ---
 
@@ -213,13 +400,21 @@ that describes code deleted before this branch was cut.
 
 `privacy-tiers.md` is the specification every later task is reviewed against. Three of its claims
 are false in this worktree and a reviewer who checks them will — correctly — conclude the plan was
-written from the design rather than from the code.
+written from the design rather than from the code. A fourth section, §9.3 B4, forces a choice the
+design refuses to defer, and the operator has since ruled on it; the ruling belongs in the design,
+not only in this plan.
 
 **Files:**
 
 | Action | Path | Anchor (re-verified at `9558c346`) |
 |---|---|---|
-| Modify | `docs/security/privacy-tiers.md` | §2.3 item 2 (`:72-75`), §9.3 A1 (`:660-690`), §9.3 B3 (`:713-722`), §11.4 table (`:999-1006`), §15.1 (`:1482-1488`), §16 table (`:1585-1593`), §20 anchor list (`:1809-1837`) |
+| Modify | `docs/security/privacy-tiers.md` | §2.3 item 2 (`:88-91`), §9.3 A1 (`:676-706`), §9.3 B3 (`:729-738`), §9.3 B4 (`:740-749`), §11.4 table (`:1015-1022`), §15.1 (`:1498-1504`), §16 table (`:1601-1609`), §20 anchor list (`:1825-1853`) |
+
+⚠ The **historical-anchors banner** on the design's header block already landed with this plan's
+revision commit — do not add a second one. Task 1 still owns §20's anchor list. The banner is 16
+lines, so **every anchor into `privacy-tiers.md` shifted by +16** when it landed; the row above is
+the post-banner set, re-verified on 2026-07-28. (Anchors into *code* are unaffected — the banner is
+in a docs file.)
 
 - [ ] **Step 1: Verify each correction against the tree**
 
@@ -245,11 +440,24 @@ grep -c "env_clear" crates/biorouter/src/agents/extension_manager.rs ; echo "exp
 grep -n "GLOBAL_INDEX_HEADER" crates/biorouter-mcp/src/memory/mod.rs
 # expect: :89 (the const) and :~302 (its use in compose_instructions)
 
-# 5. ingest_conversation is a second fully-open cross-session read.
+# 5. ingest_conversation is a second fully-open cross-session read — and there are
+#    THREE callers of the shared function, not one.
 grep -n "session_ids" crates/biorouter/src/agents/knowledge_tool.rs | head -3
 # expect: :32-41, the caller-supplied array
+grep -rn "conversation_ingest::ingest_conversation\|ingest_conversation(" --include='*.rs' crates/ \
+  | grep -v "^crates/biorouter/src/knowledge/conversation_ingest.rs"
+# expect: knowledge_tool.rs:61 (the platform tool), routes/knowledge.rs:1233 (the HTTP
+# SSE route, whose session_ids array at :1192-1212 is caller-supplied), and
+# biorouter-cli/src/commands/knowledge.rs:571 — plus the two declaration lines.
 
-# 6. Re-measure the day-one counts on the live DB (aggregate only, no message text).
+# 6. The KB read side really does bypass the visible set (design B4, Correction 6).
+grep -n "kb_root(self.service.root()" crates/biorouter-mcp/src/knowledge/server.rs
+# expect: kb_search :591, kb_search_raw_sources :619, and the mutating tools
+sed -n '308,311p' crates/biorouter-mcp/src/knowledge/server.rs
+# expect: the doc comment "An explicit `kb_id` always wins and is never filtered
+# against the session's set — that is how a hidden base (Soul) stays reachable."
+
+# 7. Re-measure the day-one counts on the live DB (aggregate only, no message text).
 sqlite3 ~/.local/share/biorouter/sessions/sessions.db "
   SELECT session_type,
          SUM(provider_name IN ('versa_azure','versa_bedrock','llamacpp','ollama')) AS would_private,
@@ -259,7 +467,7 @@ sqlite3 ~/.local/share/biorouter/sessions/sessions.db "
   FROM sessions GROUP BY session_type;"
 ```
 
-- [ ] **Step 2: Apply the six corrections**
+- [ ] **Step 2: Apply the seven corrections**
 
 **Correction 1 — §2.3 item 2 and §19 item 1: LOAD is not the only fully-open cross-session read.**
 Replace "This is the only fully-open cross-session read in the product today." with:
@@ -318,7 +526,25 @@ with `configure_shell_command (crates/biorouter-mcp/src/developer/shell.rs:330-3
 
 **Correction 5 — §15.1 migration numbering.** Replace with the O10 text above.
 
-**Correction 6 — §16 counts, re-measured.** Replace the table with Step 1's output and add:
+**Correction 6 — §9.3 B4's forced choice has been ruled on. Record the ruling.** Replace the closing
+sentence ("Ratchet a KB's classification on ingest … or state plainly that KBs are a designed public
+sink and warn at ingest. 'Follow-on' is too weak…") with:
+
+> **Ruled (operator, second review round): ratchet.** A knowledge base takes the tier of the most
+> sensitive session that has ingested into it, and a public-capability session may not read a private
+> KB. The read side is enforced at the seven entry points that accept an explicit `kb_id` and
+> therefore bypass the visible-set logic — `kb_search` (`knowledge/server.rs:590-592`),
+> `kb_search_raw_sources` (`:618-619`), `kb_export` (`:743`), and the four that route through
+> `kb_id_or_primary`, whose doc comment states the bypass outright ("An explicit `kb_id` always wins
+> and is never filtered against the session's set", `:308-311`): `kb_list_pages` (`:379`),
+> `kb_read_page` (`:396`), `kb_get_graph` (`:482`) and `kb_list_history` (`:497`). The tier lives in
+> a machine-local sidecar beside `.active-kb` and `.hidden-kbs`, not in `manifest.yaml`, because the
+> manifest travels inside the `.brkb` archive and an imported tier would be attacker-supplied.
+> Existing knowledge bases migrate **public** (fail-open, DR-10), and there is no KB
+> declassification path in v1. Both costs are accepted and recorded in the execution plan's
+> [Accepted risks](privacy-tiers-execution-plan.md#accepted-risks) (AR-1, AR-2).
+
+**Correction 7 — §16 counts, re-measured.** Replace the table with Step 1's output and add:
 
 > Re-measured on 2026-07-28, one day after the design was written. The **NULL-provider** bucket for
 > `user` sessions moved from 29 to **343** — an order of magnitude — so the fail-open residual is
@@ -332,6 +558,8 @@ with `configure_shell_command (crates/biorouter-mcp/src/developer/shell.rs:330-3
 Finally, replace §20's anchor list with a pointer to this plan's drift table, and add one line:
 "Every anchor below was verified at `708390d8` and has since moved; see
 [the execution plan's drift table](privacy-tiers-execution-plan.md#read-this-before-you-chase-a-line-number)."
+The header banner that says the same thing to a reader who never reaches §20 already landed with this
+plan's revision commit — leave it alone.
 
 - [ ] **Step 3: Gate — the design no longer asserts anything the tree contradicts**
 
@@ -347,6 +575,19 @@ grep -c "appended to the server instructions" docs/security/privacy-tiers.md ; e
 grep -c "GLOBAL_INDEX_HEADER" docs/security/privacy-tiers.md ; echo "expect: 1"
 # The second open read is named.
 grep -c "platform__ingest_conversation" docs/security/privacy-tiers.md ; echo "expect: >= 1"
+# B4's either/or is resolved, not restated. ⚠ Match a phrase that is ON ONE LINE
+# in the source: the sentence "…or state plainly that KBs are a designed public
+# sink…" is hard-wrapped mid-phrase at `:747-748`, so grepping the whole sentence
+# returns 0 both before AND after the edit — a gate that passes vacuously, which
+# is the exact defect this revision exists to remove. Measured today: 1.
+grep -c '"Follow-on" is too weak' docs/security/privacy-tiers.md ; echo "expect: 0 (it is 1 today)"
+grep -c "Ruled (operator, second review round): ratchet" docs/security/privacy-tiers.md ; echo "expect: 1"
+# The two anchor warnings are both present: the header banner (which a reader hits
+# first) and the §20 pointer (which a reader who goes looking for the list hits).
+head -20 docs/security/privacy-tiers.md | grep -c "Every line anchor in this document is historical"
+echo "expect: 1 — the banner, in the header block, before §1"
+grep -c "the execution plan's drift table" docs/security/privacy-tiers.md
+echo "expect: 2 — the banner (already landed) and §20's replacement text (this task)"
 ```
 
 **What this catches.** A worker who "corrects the design" by adding a footnote rather than deleting
@@ -466,15 +707,31 @@ assert the post-task count is exactly `pre + 1`.
 grep -c "scrub_daemon_env(all_envs)" crates/biorouter/src/agents/extension_manager.rs ; echo "expect: 1"
 # ...and the unscrubbed form is gone.
 grep -c "\.envs(all_envs)" crates/biorouter/src/agents/extension_manager.rs ; echo "expect: 0"
-# The key list is not duplicated.
-grep -c "BIOROUTER_SERVER__SECRET_KEY" crates/biorouter/src/agents/extension_manager.rs ; echo "expect: 1 (the test only)"
+# The key list is not duplicated — asserted on the HELPER, not on the file.
+awk '/fn scrub_daemon_env/,/^}/' crates/biorouter/src/agents/extension_manager.rs \
+  | grep -c "BIOROUTER_" ; echo "expect: 0 — the helper names no key; it delegates to the predicate"
+awk '/fn scrub_daemon_env/,/^}/' crates/biorouter/src/agents/extension_manager.rs \
+  | grep -c "is_daemon_private_env_key" ; echo "expect: 1"
+# And the file-wide count, which exists only to catch a key literal that escaped
+# the helper into the spawn itself.
+grep -c "BIOROUTER_SERVER__SECRET_KEY" crates/biorouter/src/agents/extension_manager.rs
+echo "expect: 2 — both in Step 1's test (the env.insert and the assert!), and nowhere else"
 ```
+
+⚠ **`expect: 1 (the test only)` was wrong** and would have failed a correct implementation: Step 1's
+test names the key **twice**, once in `env.insert(..)` and once in
+`assert!(!scrubbed.contains_key(..))`. Counting occurrences of a literal in a whole file is exactly
+the fragile shape this plan warns about elsewhere; the two `awk` gates above are the ones that
+actually express "the key list is not duplicated", because they are scoped to the helper. Keep the
+file-wide count as a tripwire, not as the gate, and update its expected number if you add or remove
+an assertion in the test.
 
 **What this catches.** The wrong implementation writes `.env_remove("BIOROUTER_SERVER__SECRET_KEY")`
 on the `Command`, which (a) misses `BIOROUTER_ACP_WS_TOKEN` and every future key and (b) leaves a
-second copy of the key list that will drift from `biorouter-sandbox`'s. The third grep is what
-catches it: an inline key list puts a second literal in this file. A test asserting only "the secret
-is absent" passes the `.env_remove` version.
+second copy of the key list that will drift from `biorouter-sandbox`'s. The two helper-scoped `awk`
+gates are what catch it: an inline key list puts a `BIOROUTER_` literal inside `scrub_daemon_env`,
+and delegating to the shared predicate is the only way to score 0/1. A test asserting only "the
+secret is absent" passes the `.env_remove` version.
 
 - [ ] **Step 6: Commit**
 
@@ -658,6 +915,22 @@ impl SessionClassification {
     pub const PUBLIC_SQL: &'static str = "public";
     pub const PRIVATE_SQL: &'static str = "private";
 
+    /// Named constructor for `#[serde(default = "…")]`, which takes a **path to
+    /// a function**, not a variant. Task 6's `Session::privacy_tier` field uses
+    /// `#[serde(default = "SessionClassification::public")]`; without this the
+    /// struct does not compile (`expected function, found variant`).
+    ///
+    /// Serde's default is the *deserialization* fallback for a JSON document
+    /// with no `privacy_tier` — an exported/imported session file, not a
+    /// database row. Public is right here and Private is right for the DB read,
+    /// and they differ on purpose: Task 22's `import_session` never trusts the
+    /// deserialized value as authority to be public (it raises to Private and
+    /// only ever raises), while `from_stored` below fails closed because a
+    /// missing *column* is a projection bug rather than an absent field.
+    pub fn public() -> Self {
+        Self::Public
+    }
+
     pub fn as_sql(self) -> &'static str {
         match self {
             Self::Public => Self::PUBLIC_SQL,
@@ -726,7 +999,10 @@ Register the module in `crates/biorouter/src/lib.rs`: `pub mod privacy;`.
 cargo test -p biorouter --lib privacy
 ```
 
-Expected: **PASS**, 2 tests.
+Expected: **PASS**, 2 tests **at this point in the step order**. Step 5 adds a third in the same
+`mod tests`, so **this task ends at 3**, and Task 7 — which adds two more to the same module — ends
+at 5. Every later gate that quotes a `privacy::` count derives from that ladder; do not read "2" as
+the task's final number.
 
 - [ ] **Step 5: Gate**
 
@@ -781,13 +1057,16 @@ git commit -m "feat(privacy): add ProviderTier and SessionClassification, the tw
 | Modify | `crates/biorouter/src/providers/versa_bedrock.rs` | `VERSA_BEDROCK_DEFAULT_ENDPOINT` at `:55` = `https://unified-api.ucsf.edu/general/awsai` |
 | Modify | `crates/biorouter/src/providers/ollama.rs` | `get_name` at `:163-165` returns the instance `name` field (`:37-43`); `from_env` reads `OLLAMA_HOST` at `:46-50`; `from_custom_config` at `:85-110` |
 | Modify | `crates/biorouter/src/providers/llamacpp.rs` | `LLAMACPP_EXTERNAL_HOST` → `external_base` at `:296-297`, `:341-351` |
+| Create | `crates/biorouter/src/providers/tier_tests.rs` | new; declared in `providers/mod.rs` as `#[cfg(test)] mod tier_tests;` — **not** `include!`, or the filter `providers::tier_tests` resolves to nothing and prints `0 passed` |
 | Reference | `crates/biorouter/src/providers/azure.rs` | `AZURE_OPENAI_ENDPOINT` default is **the UCSF gateway** at `:204` — do not name-key |
 | Reference | `crates/biorouter/src/providers/factory.rs` | `create` at `:139`; the `BIOROUTER_LEAD_MODEL` intercept at `:142-146`, **before** the registry lookup |
+| Reference | `crates/biorouter/src/config/declarative_providers.rs` | ⚠ **`config/`, not `providers/`.** `register_declarative_provider` at `:285-313`, registering by `config.name` after the built-ins — so a user-authored JSON file named `versa_azure` **overwrites** the real registry entry (`config/provider_registry.rs:122` is a plain `self.entries.insert(config.name.clone(), ..)`). This is the bypass Step 1's third and fourth tests exist to close |
 
 - [ ] **Step 1: Write the failing test**
 
 ```rust
-// crates/biorouter/src/providers/tier_tests.rs, included from mod.rs under cfg(test)
+// crates/biorouter/src/providers/tier_tests.rs
+// Declared in providers/mod.rs as: #[cfg(test)] mod tier_tests;
 #[test]
 fn the_private_set_is_the_four_the_operator_named() {
     use crate::privacy::ProviderTier::{Private, Public};
@@ -823,8 +1102,10 @@ fn a_self_hosted_provider_pointed_off_the_machine_is_not_private() {
     // Open question 5 rates this ergonomics. It is a live bypass: config.yaml
     // is agent-writable (§9.3 C1 concedes SecretGuard cannot stop `shell`
     // writing it), and a declarative provider file whose engine is Ollama
-    // yields an OllamaProvider with an arbitrary base_url
-    // (declarative_providers.rs:285-313 -> provider_registry.rs:122-136).
+    // yields an OllamaProvider with an arbitrary base_url. See the two
+    // `declarative_providers` rows in this task's Files table for the anchors —
+    // they are NOT repeated here, because a line number inside a code comment
+    // is a citation no gate can check and no reviewer re-verifies.
     // Anyone who can write one JSON file would otherwise mint a Private-tier
     // provider pointing anywhere.
     assert_eq!(tier_for_self_hosted_base("http://localhost:11434"), Private);
@@ -879,15 +1160,16 @@ In `providers/base.rs`, add the ninth `ProviderMetadata` field and the trait met
     ///
     /// DEFAULT = Public. Fail-safe: a provider module that forgets this gets
     /// less reach, never more — and a custom declarative provider that shadows
-    /// a built-in name (`declarative_providers.rs:285-313` registers by
-    /// `config.name`, after the built-ins, so a JSON file named `versa_azure`
-    /// overwrites the real entry) loses a badge rather than forging one.
+    /// a built-in name (see `crates/biorouter/src/config/declarative_providers.rs`,
+    /// which registers by `config.name` after the built-ins, so a JSON file named
+    /// `versa_azure` overwrites the real entry) loses a badge rather than forging
+    /// one.
     fn tier(&self) -> crate::privacy::ProviderTier {
         crate::privacy::ProviderTier::Public
     }
 ```
 
-Then four `impl Provider` overrides, each computed **at construction** from the resolved endpoint,
+Then **five** `impl Provider` overrides, each computed **at construction** from the resolved endpoint,
 never from a name and never from a model id (`us.anthropic.claude-opus-4-8` appears in both
 `BEDROCK_KNOWN_MODELS` and `VERSA_BEDROCK_KNOWN_MODELS`):
 
@@ -966,9 +1248,24 @@ grep -rn 'PRIVATE_PROVIDERS' crates/biorouter/src/providers/ | grep -v '_test' ;
 # The two renderer Sets are gone, and nothing reintroduces them.
 grep -c "new Set(\['versa_azure'" ui/desktop/src/components/settings/providers/providerOrdering.ts ; echo "expect: 0"
 grep -c "new Set(\['llamacpp'" ui/desktop/src/components/settings/providers/providerOrdering.ts ; echo "expect: 0"
-# Exactly five tier() implementations: the trait default plus four overrides.
-grep -rn "fn tier(&self)" crates/biorouter/src/providers/ | grep -v '_test' | wc -l ; echo "expect: 5"
+# Six tier() implementations, and the gate ENUMERATES them rather than counting:
+# one trait default plus five overrides. A bare count invites "fixing" a
+# mismatch by deleting an override, which is the one direction that leaks.
+grep -rln "fn tier(&self)" crates/biorouter/src/providers/ | sort
+# expect exactly these six, no more and no fewer:
+#   crates/biorouter/src/providers/base.rs          (the trait default = Public)
+#   crates/biorouter/src/providers/lead_worker.rs   (least of its two halves)
+#   crates/biorouter/src/providers/llamacpp.rs      (loopback-only)
+#   crates/biorouter/src/providers/ollama.rs        (loopback-only)
+#   crates/biorouter/src/providers/versa_azure.rs   (UCSF-gateway-host-only)
+#   crates/biorouter/src/providers/versa_bedrock.rs (UCSF-gateway-host-only)
+grep -rn "fn tier(&self)" crates/biorouter/src/providers/ | wc -l ; echo "expect: 6"
 ```
+
+⚠ **`expect: 5` was wrong** in the first version of this plan and would have failed a correct
+implementation: the trait default in `base.rs` matches `fn tier(&self)` too, so one default plus five
+overrides is **6**. Verified 0 in the tree today, so there is no pre-existing offset absorbing the
+difference. The file enumeration above is the real gate; the count is the tripwire.
 
 **What this catches.** Two wrong implementations at once. (1) A `PRIVATE_PROVIDERS: &[&str]` lookup
 on `get_name()` — the obvious reading of "the list that already exists, moved from the renderer to
@@ -988,6 +1285,12 @@ git add crates/biorouter/src/providers/ ui/desktop/src/components/settings/provi
         ui/desktop/openapi.json ui/desktop/src/api
 git commit -m "feat(providers): Provider::tier() computed from the resolved endpoint (#56)"
 ```
+
+⚠ `crates/biorouter/src/providers/` has **no `mod tests` in `mod.rs`**, but twenty of its submodules
+have one, so `cargo test -p biorouter --lib providers` in Step 4 does run something today. Record the
+pre-count before Step 3 and assert `pre + 4` after; a `0 passed` from
+`cargo test -p biorouter --lib providers::tier_tests` means the new file was `include!`d instead of
+declared as a module.
 
 ---
 
@@ -1108,7 +1411,7 @@ async fn the_reconcile_adds_the_columns_even_when_the_version_says_it_already_ra
 - [ ] **Step 2: Run**
 
 ```bash
-cargo test -p biorouter --lib session::session_manager -- \
+cargo test -p biorouter --lib -- \
   a_fresh_database_defaults_every_session_public \
   the_ratchet_raises_and_no_caller_can_lower_it \
   every_projection_that_builds_a_session_reads_the_column \
@@ -1117,6 +1420,11 @@ cargo test -p biorouter --lib session::session_manager -- \
 
 ⚠ Note the `--`: `cargo test --lib A B` is a hard error (`unexpected argument 'B' found`), not two
 filters. Multiple filters go after `--`, where libtest ORs them.
+
+⚠ And note the **absence** of a module positional. `cargo test --lib session::session_manager -- a b c`
+does not run "these tests inside that module" — cargo hands its own `TESTNAME` positional to libtest
+as *another* OR'd filter, so the whole `session::session_manager` module runs and the four names add
+nothing. This step wants exactly four tests, so it passes only names.
 
 Expected: **COMPILE ERROR** — `no field privacy_tier on Session`, `no method raise_privacy on
 SessionUpdateBuilder`.
@@ -1379,25 +1687,94 @@ Small, and it is what keeps the two lattices from quietly merging over the next 
 
 ```rust
 #[test]
-fn floor_has_exactly_two_callers_in_the_tree() {
+fn floor_is_crossed_only_where_a_capability_establishes_a_classification() {
     // The two lattices are independent by construction; `floor` is the only
-    // crossing. Two legitimate callers exist: Gate B's ratchet (agent.rs) and
-    // the spawn stamp (subagent_tool.rs). A third is a design change, not a
-    // refactor, and must be argued in a PR rather than appearing.
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
-    let mut callers = vec![];
-    for entry in walkdir::WalkDir::new(root).into_iter().filter_map(Result::ok) {
+    // crossing. This test is what keeps that true over the next thirty tasks.
+    //
+    // It asserts the exact (file, count) SET, not a total. Three reasons, each
+    // learned from the first version of this test, which could not pass at any
+    // point in this plan:
+    //
+    //  (a) A total is defeated by an UNRELATED symbol. The first version
+    //      matched `line.contains("floor(")`, which already matches
+    //      `session_manager.rs:688`'s `let lo = pos.floor() as usize;` — an f64
+    //      method with nothing to do with this module. Its "baseline 0" was
+    //      really 1 before a single line of #56 existed. Matching only the
+    //      QUALIFIED path `privacy::floor(` cannot see a float method, ever.
+    //  (b) A total is defeated by the plan's OWN later additions, silently: a
+    //      task that adds two crossings where the number says one still passes
+    //      if another task removed one. A set names the file.
+    //  (c) The failure message has to be actionable. `assert_eq!` on a Vec of
+    //      (file, count) prints exactly which file changed.
+    //
+    // The qualified-path rule needs a second assertion to hold: nobody may
+    // `use` the bare name, or rule (a) is evaded by an import.
+    //
+    // EXPECTED grows twice, and each growth is one uncommented line in the diff
+    // that causes it — Task 13 (Gate B's ratchet) and Task 23 (the spawn stamp).
+    // A test written to accept `<= 2` would let a third crossing appear
+    // unnoticed, which is the entire point of having this test.
+    const EXPECTED: &[(&str, usize)] = &[
+        // ("crates/biorouter/src/agents/agent.rs", 1),          // uncomment in Task 13
+        // ("crates/biorouter/src/agents/subagent_tool.rs", 1),  // uncomment in Task 23
+    ];
+
+    // CARGO_MANIFEST_DIR is <workspace>/crates/biorouter; go up twice.
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let mut calls: std::collections::BTreeMap<String, usize> = Default::default();
+    let mut imports: Vec<String> = vec![];
+    for entry in walkdir::WalkDir::new(root.join("crates"))
+        .into_iter()
+        .filter_map(Result::ok)
+    {
         let p = entry.path();
-        if p.extension().and_then(|e| e.to_str()) != Some("rs") { continue; }
-        if p.ends_with("privacy/mod.rs") { continue; }
+        if p.extension().and_then(|e| e.to_str()) != Some("rs") {
+            continue;
+        }
+        let rel = p
+            .strip_prefix(&root)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
+        if rel.ends_with("privacy/mod.rs") {
+            continue; // the definition, and the induction test below, live here
+        }
         let src = std::fs::read_to_string(p).unwrap_or_default();
         for (i, line) in src.lines().enumerate() {
-            if line.contains("floor(") && !line.trim_start().starts_with("//") {
-                callers.push(format!("{}:{}", p.display(), i + 1));
+            let code = line.trim_start();
+            if code.starts_with("//") {
+                continue;
+            }
+            if code.contains("privacy::floor(") {
+                *calls.entry(rel.clone()).or_default() += 1;
+            }
+            if code.contains("use crate::privacy::floor")
+                || (code.contains("privacy::{") && code.contains("floor"))
+            {
+                imports.push(format!("{rel}:{}", i + 1));
             }
         }
     }
-    assert_eq!(callers.len(), 2, "unexpected `floor` callers: {callers:#?}");
+    assert!(
+        imports.is_empty(),
+        "`floor` must be called through its qualified `privacy::floor(..)` path so this \
+         audit can see it — do not import the bare name: {imports:#?}"
+    );
+    let found: Vec<(String, usize)> = calls.into_iter().collect();
+    let want: Vec<(String, usize)> = EXPECTED
+        .iter()
+        .map(|(f, n)| ((*f).to_string(), *n))
+        .collect();
+    assert_eq!(
+        found, want,
+        "the set of `floor` callers changed. A new crossing between the capability and \
+         classification lattices is a design change, not a refactor: argue it in the PR."
+    );
 }
 
 #[test]
@@ -1423,11 +1800,21 @@ fn capability_never_falls_below_classification_for_any_legal_sequence() {
 }
 ```
 
-- [ ] **Step 2: Run** → **FAIL** (the expected count is a moving target by design: **0** here, **1**
-      after Task 13 adds Gate B's ratchet, **2** after Task 23 adds the spawn stamp. Assert `0` in
-      this commit and bump the constant in Tasks 13 and 23, so each increment is visible in the diff
-      that causes it. A test written to accept `<= 2` would let a third crossing appear unnoticed,
-      which is the entire point of the test.)
+- [ ] **Step 2: Run** → **COMPILE ERROR** if `walkdir` is not yet a dev-dependency; otherwise
+      **PASS** with an empty `EXPECTED`, which is the correct state at this task. Confirm the
+      emptiness is *earned* rather than accidental by temporarily writing
+      `let _ = crate::privacy::floor(ProviderTier::Public);` into `agents/agent.rs`, re-running
+      (it must **FAIL**, naming `crates/biorouter/src/agents/agent.rs`), then reverting. Do this
+      once, here; it is the only thing that proves the matcher works before there is anything to
+      match, and it takes thirty seconds.
+
+⚠ **The `EXPECTED` set is a moving target by design**, and the moves are owned by later tasks: `[]`
+here, `+agent.rs` in Task 13 Step 3 (Gate B's ratchet), `+subagent_tool.rs` in Task 23 Step 3 (the
+spawn stamp). Each task uncomments exactly one line of `EXPECTED` **in the same commit that adds the
+crossing**, so the increment is visible in the diff that causes it. Tasks 16 and 23 deliberately do
+**not** add crossings: comparing a caller's capability with an *extension's* tier is a
+`ProviderTier`↔`ProviderTier` question, and it goes through `privacy::refusal::privacy_refusal(..)`,
+not through `floor`.
 
 - [ ] **Step 3: Implement** — no production code. Add `walkdir` to `[dev-dependencies]` if absent.
 
@@ -1437,14 +1824,21 @@ fn capability_never_falls_below_classification_for_any_legal_sequence() {
 
 ```bash
 cargo test -p biorouter --lib privacy:: 2>&1 | tail -3
-# Expected: "test result: ok. 4 passed" — the count is the gate. A filter that
+# Expected: "test result: ok. 5 passed" — the count is the gate. A filter that
 # names a nested module by the wrong path prints "0 passed" and EXITS 0.
+#
+# The 5 is derived, not guessed: Task 4 Step 1 wrote two tests and Task 4 Step 5
+# added a third to the same `mod tests`; this task adds two more. Task 8 then
+# creates `privacy::extensions`, which this same filter also matches, so from
+# Task 8 onward quote a per-module count instead of this one.
 ```
 
 **What this catches.** The refactor that adds a `From<ProviderTier> for SessionClassification` and
 sprinkles `.into()` at four sites — which compiles, passes every gate test, and reintroduces exactly
-the confusion the two-type split exists to prevent. The caller-count test fails it; no grep in a
-later task would.
+the confusion the two-type split exists to prevent. The caller-set test fails it and names the files;
+no grep in a later task would. It also catches the subtler version of the same mistake: reaching for
+`floor` to answer a question that is not "what classification does this capability establish?" —
+which is how the first version of this plan ended up with four crossings where it claimed two.
 
 - [ ] **Step 6: Commit**
 
@@ -1670,9 +2064,12 @@ grep -rn --include='*.rs' "visible_to(" crates/ | grep -v "privacy/mod.rs" ; ech
 
 # Phase 2 — the gates
 
-Eleven tasks. The design names five gates; this phase ships **nine**, because adversarial review of
-the tree found four live paths the five do not cover (Tasks 11, 18 and 19). Order inside the phase
-is O8 (the two fully-open reads first), then O3/O4 (bind, then turn), then the extension gates.
+Fourteen tasks — eleven numbered plus **10A, 10B and 10C**. The design names five gates; this phase
+ships **ten**, because adversarial review of the tree found five live paths the five do not cover
+(Tasks 11, 18 and 19) and the second review round added the knowledge-base barrier under an operator
+ruling (Tasks 10A–10C; see [Accepted risks](#accepted-risks)). Order inside the phase is O8 (the two
+fully-open reads first), then O12 (the KB tier, its ratchet, its barrier), then O3/O4 (bind, then
+turn), then the extension gates.
 
 ### Task 10: The chatrecall LOAD guard, and `ExtensionManager::capability_tier()`
 
@@ -1780,14 +2177,24 @@ In `chatrecall_extension.rs`, between `get_session` (`:92`) and the header `form
                         None => crate::privacy::ProviderTier::Public,
                     };
                     if !crate::privacy::visible_to(caller, loaded_session.privacy_tier) {
-                        return Ok(vec![Content::text(
-                            crate::privacy::refusal::chatrecall_load_refusal(),
-                        )]);
+                        return Ok(vec![Content::text(CHATRECALL_LOAD_REFUSAL)]);
                     }
 ```
 
-with the refusal a **constant** string that names no target (Task 14 moves it into
-`privacy/refusal.rs`; until then inline it and move it in Task 14's diff):
+⚠ **The refusal is a file-local `const` in this task, not a call into `privacy::refusal`.**
+`crates/biorouter/src/privacy/refusal.rs` does not exist until Task 12, which is three tasks away —
+`crate::privacy::refusal::chatrecall_load_refusal()` here is an `unresolved module` compile error,
+and Step 2 already expects a *different* compile error, so it would be indistinguishable from the
+intended one. Declare it beside `handle_chatrecall`:
+
+```rust
+/// Moved into `crates/biorouter/src/privacy/refusal.rs` by Task 13, which is
+/// the first task that has that module. Constant on purpose: a model that sees
+/// a different string on retry concludes the refusal is transient and loops.
+const CHATRECALL_LOAD_REFUSAL: &str = "…the text below…";
+```
+
+with the refusal a **constant** string that names no target:
 
 > This chat history is private: it was created under a model hosted inside the institution, so only
 > a private model may read it. This session is running on a public model. Ask the user to switch
@@ -1801,7 +2208,10 @@ with the refusal a **constant** string that names no target (Task 14 moves it in
 cargo test -p biorouter --lib agents::chatrecall_extension
 ```
 
-Expected: **PASS**, 3 new tests. Record and assert the exact delta.
+Expected: **PASS**, 3 new tests. ⚠ **The pre-count is zero**: `chatrecall_extension.rs` has **no
+`#[cfg(test)] mod tests` today**, so this filter prints `0 passed` and exits 0 before Step 1 — which
+is the BR-71 defect shape, and here it is the *correct* baseline rather than a broken filter. This
+task creates the module. Assert `3 passed`, not "no failures".
 
 - [ ] **Step 5: Gate**
 
@@ -1830,7 +2240,793 @@ git commit -m "fix(chatrecall): refuse LOAD of a private session before any of i
 
 ---
 
-### Task 11: Gate G — `platform__ingest_conversation`
+### Task 10A: The knowledge-base tier — the store, the caller-capability channel, and the migration
+
+**The operator has ruled.** Design §9.3 B4 forces a choice — ratchet a KB's classification on ingest,
+or declare KBs a designed public sink — and refuses to allow deferral. The ruling is **ratchet**:
+*a knowledge base takes the tier of the most sensitive session that has ingested into it, and a
+public-capability session may not read a private KB.* The costs are real, were put to the operator,
+and were accepted; they are written out in [Accepted risks](#accepted-risks) AR-1 and AR-2. Read them
+before starting, because the first bug report after this ships will be one of them.
+
+**Why every one of the nine gates misses this today.** Gate C sees public→public (`knowledge` is a
+built-in, `crates/biorouter-mcp/src/lib.rs:126`, ⇒ Public by DR-6). Gate E lists the `kb_*` tools
+legitimately. Gate D never touches `chat_history_search.rs`. Gate G (Task 11) checks *other sessions'
+ids*, and a session ingesting **its own** transcript is not that. The sink is machine-wide
+(`knowledge_root()` = `in_config_dir("knowledge")`, `knowledge/paths.rs:43-45`; `kb_root` is a bare
+path join at `:47-49`), and `kb_id_or_primary`'s own doc comment says an explicit `kb_id` "always
+wins and is **never filtered** against the session's set" (`knowledge/server.rs:308-311`). So: a
+private session writes its OMOP notes into `default`, and the next chat on Claude reads them back
+with `kb_search`. That is the whole laundering path, and it needs no bug.
+
+This task adds the tier and nothing enforces it — the same Phase-1-style separation O1 uses, for the
+same reason: Task 10C is then one branch over an already-tested lookup.
+
+**Files:**
+
+| Action | Path | Anchor (re-verified at `9558c346`) |
+|---|---|---|
+| Create | `crates/biorouter-mcp/src/knowledge/tier.rs` | new |
+| Modify | `crates/biorouter-mcp/src/knowledge/mod.rs` | the `pub mod` list |
+| Modify | `crates/biorouter-mcp/src/knowledge/paths.rs` | add `kb_tiers_path` beside `primary_kb_path` `:62-64`, `primary_kb_sessions_dir` `:69-71`, `hidden_kbs_path` `:73-75`, `hidden_kb_sessions_dir` `:77-79`; `knowledge_root` `:43-45`; `kb_root` `:47-49`; `validate_kb_id` `:3-20` |
+| Modify | `crates/biorouter-mcp/src/knowledge/service.rs` | `KnowledgeService::new` `:404`, `new_default` `:411`, `root()` `:415`; `create_base` `:447`; `import_brkb` `:506`; `list_bases` `:523`; `delete_base` `:657`; `lock_root()` — the existing root-level lock the hidden-list setters take (`set_hidden_persisted` `:1193-1198`) |
+| Modify | `crates/biorouter-mcp/src/knowledge/server.rs` | `SESSION_ID_META_KEY` `:18`; `session_id_from_context` `:222-224`; `session_id` `:226-228`; `KnowledgeServer::new` `:214` |
+| Modify | `crates/biorouter/src/agents/mcp_client.rs` | `McpMeta` `:136-144` (two fields today), `McpMeta::new` `:146-152`, `with_progress_token` `:156-159`, `inject_into_extensions` `:161-172` |
+| Modify | `crates/biorouter/src/agents/extension_manager.rs` | the sole production `McpMeta::new(&session_id)` at `:1557`, inside `dispatch_tool_call`'s spawned future (`:1544-1570`) |
+| Reference | `crates/biorouter-mcp/src/knowledge/manifest.rs` | `save` `:17-24` — the tmp-then-`rename` idiom to copy; and the reason the tier does **not** go in `Manifest` (`types.rs:58-66`): the manifest travels inside the `.brkb` archive |
+
+⚠ **Four design decisions, each with a reason a reviewer will otherwise ask about.**
+
+1. **A `bool`, not a third enum.** `crates/biorouter-mcp` **cannot** depend on `crates/biorouter` —
+   the dependency runs the other way (`extension_manager.rs:1512` uses
+   `biorouter_mcp::secret_guard`), which is the same constraint that made the knowledge macros take
+   a `Box<dyn Completer>` instead of a `Provider`. So `ProviderTier` is not nameable here. The
+   choices are a duplicate enum that must be kept in sync by discipline, or one boolean named
+   `caller_is_private`. This plan takes the boolean, and the precedent is in this plan already:
+   Task 12's `bind_provider_if_allowed(.., incoming_is_private: bool)`. Because `floor(Private) =
+   Private` and `floor(Public) = Public`, the boolean *is* the crossing — which is why Task 7's
+   `floor` caller set does not grow here.
+2. **A sidecar, not `manifest.yaml`.** The manifest is inside the KB's git tree and is carried by
+   `export_brkb`/`import_brkb` (`service.rs:495`/`:506`), so a tier stored there is
+   **attacker-supplied on import** — the exact shape Task 22 refuses for session imports. The
+   sidecar sits beside `.active-kb` and `.hidden-kbs`, which are already machine-local, already
+   outside every KB's repo, and already excluded from the archive.
+3. **Fail directions, and they differ on purpose** (DR-10's pattern, one module over). Migration →
+   **public** (fail open; AR-2). A kb id with no entry in an *existing* store → **private** (fail
+   closed: a directory that appeared without going through `create_base` or `import_brkb` has
+   unknown provenance). An absent capability meta key → the caller is **Public** (fail closed for
+   reads, which is what Task 10C consumes it for).
+4. **The capability meta key goes to built-in servers only.** `McpMeta::new` already ships the
+   session id to *every* MCP server including third-party stdio ones; the capability tier
+   deliberately does not follow that precedent, because "this user is on an institutional model" is
+   a fact about the user's configuration and a third-party server has no business learning it. The
+   injection is conditioned on `biorouter_mcp::BUILTIN_EXTENSIONS` membership
+   (`crates/biorouter-mcp/src/lib.rs:96`, 7 entries).
+
+- [ ] **Step 1: Write the failing tests**
+
+```rust
+// crates/biorouter-mcp/src/knowledge/tier.rs, in its own #[cfg(test)] mod tests
+
+#[test]
+fn an_unmigrated_root_migrates_every_existing_base_to_public_exactly_once() {
+    // AR-2, made executable. The tree keeps no record of which session wrote
+    // which page — the git author is "Biorouter", not a session id — so there
+    // is nothing to reason from and the migration fails OPEN, like the session
+    // backfill (DR-10). It must run ONCE: a startup-repeating "add any base
+    // missing from the file as public" would un-ratchet a base the day after a
+    // private session raised it, which is Task 38's bug in a different store.
+    let root = tempdir_with_bases(&["default", "omop"]);
+    assert!(!tiers_file_exists(&root));
+
+    ensure_migrated(&root).unwrap();
+    assert_eq!(tier_of(&root, "default"), Public);
+    assert_eq!(tier_of(&root, "omop"), Public);
+
+    raise(&root, "omop", /* caller_is_private */ true).unwrap();
+    ensure_migrated(&root).unwrap();                 // second launch
+    assert_eq!(tier_of(&root, "omop"), Private, "the migration re-ran and lowered a tier");
+}
+
+#[test]
+fn a_base_that_never_went_through_create_or_import_reads_private() {
+    // Fail-closed, and it is the difference between "known public" and
+    // "unknown". A store that listed only the private ids could not tell them
+    // apart, which is why the file is a map and not a list like `.hidden-kbs`.
+    let root = tempdir_with_bases(&["default"]);
+    ensure_migrated(&root).unwrap();
+    std::fs::create_dir_all(root.join("dropped-in-by-hand")).unwrap();
+    assert_eq!(tier_of(&root, "dropped-in-by-hand"), Private);
+    assert_eq!(tier_of(&root, "default"), Public);
+}
+
+#[test]
+fn raise_is_monotone_and_registers_an_absent_base_at_the_callers_tier() {
+    let root = tempdir_with_bases(&[]);
+    ensure_migrated(&root).unwrap();
+
+    raise(&root, "fresh", false).unwrap();           // created from a public chat
+    assert_eq!(tier_of(&root, "fresh"), Public);
+    raise(&root, "fresh", true).unwrap();            // a private chat writes to it
+    assert_eq!(tier_of(&root, "fresh"), Private);
+    raise(&root, "fresh", false).unwrap();           // and a public chat writes again
+    assert_eq!(tier_of(&root, "fresh"), Private, "a public write lowered the tier");
+
+    raise(&root, "born-private", true).unwrap();
+    assert_eq!(tier_of(&root, "born-private"), Private);
+}
+
+#[test]
+fn deleting_a_base_forgets_its_tier_so_the_id_can_be_reused() {
+    // Otherwise `kb_create_base("omop")` from a public chat, after a private
+    // `omop` was deleted, silently inherits Private and the user cannot see why.
+    let root = tempdir_with_bases(&["omop"]);
+    ensure_migrated(&root).unwrap();
+    raise(&root, "omop", true).unwrap();
+    forget(&root, "omop").unwrap();
+    raise(&root, "omop", false).unwrap();
+    assert_eq!(tier_of(&root, "omop"), Public);
+}
+
+#[test]
+fn the_store_is_written_atomically_and_never_leaves_a_tmp_file() {
+    // manifest.rs:17-24's idiom. A torn write here reads as "no entry", which
+    // fails CLOSED and locks the user out of their own knowledge base.
+    let root = tempdir_with_bases(&["default"]);
+    ensure_migrated(&root).unwrap();
+    raise(&root, "default", true).unwrap();
+    let names: Vec<_> = std::fs::read_dir(&root).unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().to_string()).collect();
+    assert!(names.iter().any(|n| n == ".kb-tiers"));
+    assert!(!names.iter().any(|n| n.ends_with(".tmp")));
+}
+```
+
+```rust
+// crates/biorouter/src/agents/mcp_client.rs, in its existing #[cfg(test)] mod tests
+
+#[test]
+fn the_capability_tier_rides_the_same_meta_object_as_the_session_id() {
+    let meta = McpMeta::new("sess-1").with_capability_private(true);
+    let ext = meta.inject_into_extensions(Extensions::default());
+    let m = ext.get::<Meta>().unwrap();
+    assert_eq!(m.0.get("biorouter-session-id").and_then(|v| v.as_str()), Some("sess-1"));
+    assert_eq!(m.0.get("biorouter-capability-tier").and_then(|v| v.as_str()), Some("private"));
+}
+
+#[tokio::test]
+async fn a_third_party_extension_never_learns_the_capability_tier() {
+    // Decision 4. The session id already goes everywhere; this does not.
+    let em = manager_with(stdio_ext("some-third-party"), builtin_ext("knowledge")).await;
+    bind_private_provider(&em).await;
+    assert_eq!(meta_seen_by(&em, "some-third-party__ping").await
+                   .get("biorouter-capability-tier"), None);
+    assert_eq!(meta_seen_by(&em, "knowledge__kb_list_bases").await
+                   .get("biorouter-capability-tier").and_then(|v| v.as_str()), Some("private"));
+}
+```
+
+- [ ] **Step 2: Run**
+
+```bash
+cargo test -p biorouter-mcp --lib knowledge::tier
+cargo test -p biorouter --lib agents::mcp_client
+```
+
+Expected: **COMPILE ERROR** — `unresolved module tier`, and `no method with_capability_private`.
+
+- [ ] **Step 3: Implement**
+
+(a) `paths.rs`, beside the other four sidecar helpers:
+
+```rust
+/// Returns `<knowledge-root>/.kb-tiers` — the machine-local map of kb id →
+/// privacy tier (issue #56).
+///
+/// Deliberately a sibling of `.active-kb` and `.hidden-kbs` rather than a field
+/// in each base's `manifest.yaml`: the manifest is inside the base's git tree
+/// and travels inside the `.brkb` archive, so a tier stored there would be
+/// supplied by whoever authored the archive. This file never leaves the machine.
+pub fn kb_tiers_path(root: &std::path::Path) -> std::path::PathBuf {
+    root.join(".kb-tiers")
+}
+```
+
+(b) `tier.rs` — the whole store, ~90 lines, no I/O outside `root`:
+
+```rust
+//! The knowledge-base privacy tier (issue #56, design §9.3 B4).
+//!
+//! A knowledge base takes the tier of the most sensitive session that has
+//! ingested into it. This module owns the store and the monotone raise; Task 10B
+//! calls `raise` from every content-bearing write and Task 10C reads `is_private`
+//! at every entry point that names a base.
+//!
+//! A `bool` rather than an enum because `biorouter-mcp` cannot depend on
+//! `biorouter`, where `ProviderTier` lives — see the task's decision (1).
+//! `caller_is_private == true` is exactly `floor(Private) == Private`.
+
+const SCHEMA: u32 = 1;
+
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+struct Store {
+    schema: u32,
+    /// kb id -> "public" | "private". An id ABSENT from a store that exists is
+    /// unknown provenance and reads PRIVATE; the whole file being absent means
+    /// the migration has not run yet.
+    bases: std::collections::BTreeMap<String, String>,
+}
+
+/// One-time migration. Every base that exists when this first runs becomes
+/// PUBLIC (fail-open, DR-10 and AR-2). Guarded by the file's absence, exactly
+/// as `ensure_privacy_schema` is guarded by `table_has_column`: re-running it on
+/// every startup would re-add a base whose entry a later `forget` removed, and
+/// would race the ratchet.
+pub fn ensure_migrated(root: &std::path::Path) -> anyhow::Result<()> { … }
+
+/// PRIVATE unless the store says otherwise. Fail-closed on: no entry, an
+/// unparseable file, an unreadable file. Each of those logs at `error!` and
+/// paints the base with a badge the user will report on day one — the same
+/// trade `SessionClassification::from_stored` makes for the same reason.
+pub fn is_private(root: &std::path::Path, kb_id: &str) -> bool { … }
+
+/// Monotone. Registers `kb_id` at the caller's tier if absent, raises it to
+/// private if the caller is private, and can never lower it — the file-store
+/// twin of the `privacy_tier = CASE WHEN` fragment in `session_manager.rs`.
+pub fn raise(root: &std::path::Path, kb_id: &str, caller_is_private: bool) -> anyhow::Result<()> { … }
+
+/// Drop the entry when the base is deleted, so a later base reusing the id is
+/// classified by its own creator rather than by a base that no longer exists.
+pub fn forget(root: &std::path::Path, kb_id: &str) -> anyhow::Result<()> { … }
+```
+
+Write through the same tmp-then-`rename` idiom as `manifest::save` (`manifest.rs:17-24`), and take
+`KnowledgeService::lock_root()` around every read-modify-write, which is the lock
+`set_hidden_persisted` (`service.rs:1193-1198`) already uses for the sibling sidecar.
+
+⚠ **Known residual, stated rather than discovered.** `lock_root()` is in-process. Two Biorouter
+processes (the desktop app and a terminal `biorouter`) raising two different bases at the same instant
+can still lose one edit, and the lost edit could be a *raise*. This is the same read-modify-write
+hazard `set_hidden_persisted`'s own doc comment already documents for `.hidden-kbs`, it predates this
+work, and closing it needs an OS advisory lock the tree does not have anywhere. Do not silently widen
+the scope to fix it; open a follow-up.
+
+(c) Call `ensure_migrated` from `KnowledgeService::new` (`service.rs:404`), so both `new_default`
+(`:411`) and every test root get it. Then **register** the tier at the two points a base comes into
+existence — `create_base` (`:447`) and `import_brkb` (`:506`) — and **forget** it at `delete_base`
+(`:657`). Registration belongs in the service rather than in the MCP server because both surfaces
+reach it: `kb_create_base` (`server.rs:357`) and `POST /knowledge/bases` (`routes/knowledge.rs:354`)
+call the same function, and a base that exists with no entry reads *private* by decision (3), which
+would lock the user out of a base they just made from the Knowledge view.
+
+All three take `caller_is_private: bool` as a **required** parameter, so every call site is a compile
+error rather than an omission. The two HTTP callers pass `false` — the Knowledge view is the user
+typing, with no model attached — and the two MCP callers pass the meta-derived value from (f). That
+asymmetry is the same one Task 10C draws for reads, and for the same reason.
+
+(d) `McpMeta` gains one optional field and one builder:
+
+```rust
+    /// Whether the model bound to this session is private (issue #56).
+    ///
+    /// `None` for every extension that is not a Biorouter built-in: the session
+    /// id already goes to third-party MCP servers, and this deliberately does
+    /// not follow that precedent — "this user is on an institutional model" is a
+    /// fact about their configuration, not something a third-party server needs.
+    /// A built-in receiving `None` reads it as PUBLIC, which is the safe
+    /// direction for every gate that consumes it.
+    pub capability_private: Option<bool>,
+```
+
+with `with_capability_private(bool)` beside `with_progress_token` (`:156-159`), writing
+`biorouter-capability-tier` = `"private"` / `"public"` into the **same** `Meta` object
+`inject_into_extensions` already builds (`:161-172`) — never `params.meta`, for the wire-collision
+reason the existing comment at `:164-166` gives.
+
+(e) In `dispatch_tool_call`, at the sole `McpMeta::new(&session_id)` (`:1557`):
+
+```rust
+            let mut meta = McpMeta::new(&session_id);
+            if let Some(token) = progress_token {
+                meta = meta.with_progress_token(token);
+            }
+            // Issue #56. Built-ins only — see (d). `caller_is_builtin` is
+            // computed OUTSIDE this future, because `capability_tier()` awaits
+            // the provider mutex and this block owns no `&self`.
+            if let Some(is_private) = caller_capability_for_builtin {
+                meta = meta.with_capability_private(is_private);
+            }
+```
+
+with `let caller_capability_for_builtin = if biorouter_mcp::BUILTIN_EXTENSIONS.contains_key(client_name.as_str())
+{ Some(self.capability_tier().await.is_private()) } else { None };` resolved **before** the
+`async move` block, beside the tier lookup Task 14 adds at the same seam.
+
+(f) `KnowledgeServer` reads it, mirroring `session_id_from_context` (`:222-228`):
+
+```rust
+const CAPABILITY_TIER_META_KEY: &str = "biorouter-capability-tier";
+
+/// The caller's capability, PUBLIC unless the meta says private.
+///
+/// Absent means one of: an older daemon, a non-built-in transport, or a direct
+/// unit-test construction. All three are "unknown", and unknown must be the
+/// restrictive answer for the reads Task 10C gates.
+fn caller_is_private(context: Option<&RequestContext<RoleServer>>) -> bool {
+    context
+        .and_then(|c| c.meta.0.get(CAPABILITY_TIER_META_KEY))
+        .and_then(|v| v.as_str())
+        == Some("private")
+}
+```
+
+- [ ] **Step 4: Run**
+
+```bash
+cargo test -p biorouter-mcp --lib knowledge::tier
+cargo test -p biorouter-mcp --lib knowledge::          # ~122 today; assert pre + 5
+cargo test -p biorouter --lib agents::mcp_client
+cargo test -p biorouter-server --test knowledge_routes # ~19 today; must be unchanged
+```
+
+Expected: **PASS**. `knowledge::` is the count that matters — this task adds a module to it, and the
+per-module filter `knowledge::tier` proves the new tests are in the module the filter names rather
+than somewhere that happens to compile.
+
+- [ ] **Step 5: Gate**
+
+```bash
+cd /Users/wgu/Desktop/BioRouter-privacy
+# The tier is not in the manifest, so it cannot ride a .brkb archive.
+grep -c "tier\|privacy" crates/biorouter-mcp/src/knowledge/types.rs ; echo "expect: 0"
+grep -rn "kb_tiers_path" crates/biorouter-mcp/src/knowledge/ | grep -v "fn kb_tiers_path"
+echo "expect: only tier.rs — nothing else may open the file directly"
+# Migration is one-shot, not a per-startup repair. (Task 38 makes the identical
+# distinction for sessions, and for the identical reason.)
+awk '/pub fn ensure_migrated/,/^}/' crates/biorouter-mcp/src/knowledge/tier.rs \
+  | grep -c "kb_tiers_path(root).exists()" ; echo "expect: 1 — the absence guard"
+# The capability key is built-ins-only.
+awk '/let caller_capability_for_builtin/,/;$/' crates/biorouter/src/agents/extension_manager.rs \
+  | grep -c "BUILTIN_EXTENSIONS" ; echo "expect: 1"
+# Registration is in the SERVICE, so both surfaces get it from one place.
+grep -c "tier::raise(" crates/biorouter-mcp/src/knowledge/service.rs ; echo "expect: 2 (create_base, import_brkb)"
+grep -c "tier::forget(" crates/biorouter-mcp/src/knowledge/service.rs ; echo "expect: 1 (delete_base)"
+grep -c "tier::raise(" crates/biorouter-mcp/src/knowledge/server.rs ; echo "expect: 0 until Task 10B"
+# And nothing ENFORCES anything yet: this task registers and migrates, nothing more.
+grep -rn "tier::is_private(" crates/ ; echo "expect: no output until Task 10C"
+```
+
+**What this catches.** Three wrong implementations. (1) Putting the tier on `Manifest` — the obvious
+place, one field, no new file — which makes it travel inside `.brkb` and hands an importer authority
+over the badge; the `types.rs` zero-count is the only cheap gate for it. (2) A migration that runs on
+every startup "to pick up new bases", which silently lowers a base the day after a private session
+raised it; test 1's second `ensure_migrated` is what fails it, and no grep would. (3) A store shaped
+like `.hidden-kbs` — a list of private ids — which cannot distinguish *known public* from *unknown*,
+so a directory dropped into the knowledge root reads public; test 2 fails it.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add crates/biorouter-mcp/src/knowledge/tier.rs crates/biorouter-mcp/src/knowledge/mod.rs \
+        crates/biorouter-mcp/src/knowledge/paths.rs crates/biorouter-mcp/src/knowledge/service.rs \
+        crates/biorouter-mcp/src/knowledge/server.rs crates/biorouter/src/agents/mcp_client.rs \
+        crates/biorouter/src/agents/extension_manager.rs
+git commit -m "feat(knowledge): a per-knowledge-base privacy tier, its store and its migration (#56)"
+```
+
+---
+
+### Task 10B: The knowledge-base ratchet — every write a model makes stamps the caller
+
+The ratchet half of the ruling: *a KB takes the tier of the most sensitive session that has ingested
+into it.* Nothing refuses anything yet; that is Task 10C.
+
+**Files:**
+
+| Action | Path | Anchor (re-verified at `9558c346`) |
+|---|---|---|
+| Modify | `crates/biorouter-mcp/src/knowledge/server.rs` | the **three** content-bearing writes the service does not already cover — `kb_write_page` `:409-448`, `kb_add_raw_source` `:454-470`, `kb_append_log` `:650-661` — plus passing the caller's tier into `kb_create_base` `:356-367` and `kb_import` `:764-773`, whose registration Task 10A put in the service. ⚠ **None of these five takes a `RequestContext` today**, unlike the read tools, so each gains `context: RequestContext<RoleServer>` — an rmcp `#[tool]` signature change, and the compile error that forces the plumbing |
+| Modify | `crates/biorouter-server/src/routes/knowledge.rs` | the **three** macro routes that write with a caller-supplied model — `ingest` `:1122`, `ingest_conversation` `:1187`, `lint` `:1325` — via `build_completer` `:899-914`. (`query_kb` `:1269` reads; it gets Task 10C's barrier, not a raise) |
+| Reference | `crates/biorouter/src/knowledge/conversation_ingest.rs` | `ingest_conversation` `:184-187` (`ConversationIngestArgs` `:172-180`) — Task 11 adds its `caller_capability`; the KB raise rides the same value |
+| Reference | `crates/biorouter-server/src/routes/knowledge.rs` | the plain write routes that get **no** raise — `write_page` `:561-581` (which calls `store::write_page` directly, not a service method), `add_raw_source` `:1415`, `create_base` `:354`, `import_brkb` `:1552`, `restore_state` `:882` |
+
+⚠ **Two exclusion lists, and neither is an oversight.**
+
+*Not ratcheted, because no content enters:* `kb_restore_state`, `kb_begin_txn`, `kb_commit_txn`,
+`kb_abort_txn`. They move or discard content that is already in the base. Ratcheting on
+`kb_abort_txn` — a *discard* — would let a session privatise a base by opening and abandoning a
+transaction, a denial-of-service on the user's own knowledge base with no disclosure to justify it.
+Task 10C's barrier still covers all four, and that is the control that matters for them.
+
+*Not ratcheted, because no model is involved:* the plain `/knowledge/*` write routes. Those are the
+user typing in the Knowledge view — the same scope line Task 10C draws for reads. There is no
+service-level write choke point to hang a raise on anyway (`routes/knowledge.rs:571` calls
+`store::write_page` directly), so putting one there would mean inventing one, and it would classify a
+base by *the user's own editing* rather than by what a model saw. If a base needs privatising because
+of what the user pasted into it, that is a user action and it wants a UI control, not a silent
+ratchet — [Open question 15](#open-questions).
+
+- [ ] **Step 1: Write the failing tests**
+
+```rust
+#[tokio::test]
+async fn a_private_session_writing_one_page_ratchets_the_whole_base() {
+    // THE test for the ruling, and the one that makes AR-1's cost visible in
+    // CI: one page from one private chat privatises the machine-wide base.
+    let root = migrated_root_with_public_base("default");
+    let srv = knowledge_server_at(&root);
+
+    srv.kb_write_page(params(json!({ "kb_id": "default", "path": "knowledge/omop.md",
+                                     "content": "n=412 T2D patients", "commit_message": "x" })),
+                      ctx_with_capability(Private)).await.unwrap();
+
+    assert!(tier::is_private(&root, "default"));
+}
+
+#[tokio::test]
+async fn a_public_session_writing_never_lowers_a_ratcheted_base() {
+    let root = migrated_root_with_public_base("default");
+    let srv = knowledge_server_at(&root);
+    tier::raise(&root, "default", true).unwrap();
+
+    // Task 10C has not landed, so this write still SUCCEEDS. What must not
+    // happen is the tier moving.
+    srv.kb_append_log(params(json!({ "kb_id": "default", "kind": "note", "summary": "hi" })),
+                      ctx_with_capability(Public)).await.unwrap();
+    assert!(tier::is_private(&root, "default"), "a public write lowered the tier");
+}
+
+#[tokio::test]
+async fn every_write_a_model_makes_ratchets_and_the_plumbing_ones_do_not() {
+    // Parameterised over the five, plus the four that must NOT. A test on
+    // kb_write_page alone passes an implementation that misses kb_add_raw_source
+    // — which is the tool the GUI ingest panel and the `ingest` macro actually
+    // call, so the whole ingest path would launder silently.
+    for probe in RATCHETING_WRITES {          // write_page, add_raw_source, append_log
+                                              // (create_base and import register in the
+                                              // service, Task 10A, and are probed here too)
+        let root = migrated_root_with_public_base("default");
+        (probe.run)(&root, Private).await.unwrap();
+        assert!(tier::is_private(&root, "default"), "{} did not ratchet", probe.name);
+    }
+    for probe in NON_RATCHETING_WRITES {      // restore_state, begin_txn, commit_txn, abort_txn
+        let root = migrated_root_with_public_base("default");
+        (probe.run)(&root, Private).await.unwrap();
+        assert!(!tier::is_private(&root, "default"), "{} ratcheted; see the ⚠ above", probe.name);
+    }
+}
+
+#[tokio::test]
+async fn a_base_created_from_a_private_chat_is_born_private() {
+    let root = migrated_root_with_public_base("default");
+    let srv = knowledge_server_at(&root);
+    srv.kb_create_base(params(json!({ "id": "omop", "name": "OMOP" })),
+                       ctx_with_capability(Private)).await.unwrap();
+    assert!(tier::is_private(&root, "omop"));
+    assert!(!tier::is_private(&root, "default"), "creating one base moved another");
+}
+
+#[tokio::test]
+async fn an_http_macro_run_on_a_private_model_ratchets_the_base_it_writes() {
+    // The GUI Knowledge view's own ingest. `build_completer` (:899-914) builds an
+    // arbitrary provider from a caller-supplied ModelRef; the base it writes into
+    // takes that provider's tier, exactly as an MCP write takes the session's.
+    let root = migrated_root_with_public_base("default");
+    post_ingest(&root, "default", model_ref("versa_azure", "gpt-5.5-2026-04-24")).await;
+    assert!(tier::is_private(&root, "default"));
+}
+```
+
+- [ ] **Step 2: Run** → **COMPILE ERROR** on the five `#[tool]` signatures (`ctx_with_capability`
+      has nowhere to go), then **FAIL** on the ratchet assertions.
+
+- [ ] **Step 3: Implement** — one call, five sites, and the raise is the *first* statement after the
+      per-KB lock so a panic in the write cannot leave content in a base whose tier never moved:
+
+```rust
+        let _lock = self.service.lock_kb(&p.kb_id).await.map_err(into_err)?;
+        // Issue #56, design §9.3 B4 as ruled. The base takes the tier of the
+        // most sensitive session that has ingested into it. BEFORE the write:
+        // a raise that only happens on success leaves content in a base whose
+        // tier never moved if the write panics or the process dies mid-commit,
+        // and the failure direction of an over-raise is a badge the user can
+        // see, while the failure direction of an under-raise is silent.
+        crate::knowledge::tier::raise(
+            self.service.root(),
+            &p.kb_id,
+            Self::caller_is_private(Some(&context)),
+        )
+        .map_err(into_err)?;
+```
+
+For the HTTP macro routes, raise from the route handler using the **constructed provider's** tier —
+not the requested model name — because `providers::create` can hand back something else
+(`factory.rs:142-146`). `build_completer` (`:899-914`) already constructs it; return the tier
+alongside the completer rather than re-deriving it.
+
+- [ ] **Step 4: Run**
+
+```bash
+cargo test -p biorouter-mcp --lib knowledge::
+cargo test -p biorouter-server --test knowledge_routes
+cargo test -p biorouter --lib knowledge::conversation_ingest
+```
+
+- [ ] **Step 5: Gate**
+
+```bash
+# Eight raise sites in total, and the tree-wide count is the sum of three
+# per-file counts rather than one repo grep — a repo-wide number would not say
+# which surface lost its raise.
+grep -c "tier::raise(" crates/biorouter-mcp/src/knowledge/server.rs  ; echo "expect: 3 (write_page, add_raw_source, append_log)"
+grep -c "tier::raise(" crates/biorouter-mcp/src/knowledge/service.rs ; echo "expect: 2 (create_base, import_brkb — from Task 10A)"
+grep -c "tier::raise(" crates/biorouter-server/src/routes/knowledge.rs ; echo "expect: 3 (ingest, ingest-conversation, lint)"
+# The four plumbing tools have none.
+for fn in kb_restore_state kb_begin_txn kb_commit_txn kb_abort_txn; do
+  echo -n "$fn: "
+  awk "/pub async fn $fn/,/^    }/" crates/biorouter-mcp/src/knowledge/server.rs | grep -c "tier::raise"
+done
+echo "expect: 0 each — see the ⚠ in this task, they are excluded deliberately"
+# Nor do the plain HTTP write routes (the user typing in the Knowledge view).
+for h in write_page create_base import_brkb restore_state; do
+  echo -n "$h: "
+  awk "/pub async fn $h/,/^}/" crates/biorouter-server/src/routes/knowledge.rs | grep -c "tier::raise"
+done
+echo "expect: 0 each"
+# The raise precedes the write in every one of the three server sites.
+for fn in kb_write_page kb_add_raw_source kb_append_log; do
+  echo -n "$fn: "
+  awk "/pub async fn $fn/,/^    }/" crates/biorouter-mcp/src/knowledge/server.rs \
+    | grep -n "tier::raise\|write_page(\|add_raw_source(\|append(" | head -2
+done
+# Expected for each: tier::raise on the SMALLER line number.
+# The HTTP macro routes ratchet from the CONSTRUCTED provider, not the requested name.
+awk '/async fn build_completer/,/^}/' crates/biorouter-server/src/routes/knowledge.rs \
+  | grep -c "tier()" ; echo "expect: 1"
+grep -c "model.provider" crates/biorouter-server/src/routes/knowledge.rs
+echo "expect: 1 — only the providers::create call itself; the tier is never keyed on the name"
+```
+
+**What this catches.** Three wrong implementations. (1) Ratcheting only in `kb_write_page`, the tool
+whose name says "write" — which misses `kb_add_raw_source`, the one the GUI ingest panel and the
+`ingest` macro actually call, so the entire GUI path launders silently. The parameterised test is the
+only thing that fails it. (2) Ratcheting on the *success* return, which the `kb_import` path makes
+observable: a 400 MB archive that fails halfway has already written pages. (3) Keying the HTTP
+ratchet on `body.model.provider` — the string the caller supplied — rather than on the instance
+`providers::create` returned, which the `BIOROUTER_LEAD_MODEL` intercept can make different.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add crates/biorouter-mcp/src/knowledge/ crates/biorouter-server/src/routes/knowledge.rs
+git commit -m "feat(knowledge): ratchet a knowledge base to the tier of the sessions that ingest into it (#56)"
+```
+
+---
+
+### Task 10C: The knowledge-base barrier — the explicit-`kb_id` branch and its fifteen siblings
+
+The read half of the ruling, and the task the verifier's finding is really about: **`kb_search`'s
+explicit-`kb_id` branch bypasses the visible-set logic entirely.** `kb_search` at
+`knowledge/server.rs:590-592` joins `kb_root(self.service.root(), &kb_id)` directly and searches it;
+only the `else` at `:602-604` goes through `search_visible_bases` (`:258-286`). Six more read paths
+do the same thing, four of them through `kb_id_or_primary`, whose doc comment (`:308-311`) states the
+bypass as a feature: *"An explicit `kb_id` always wins and is never filtered against the session's
+set — that is how a hidden base (Soul) stays reachable."* Hiding is a *tidiness* control and that
+sentence is correct for it. The privacy tier is not a tidiness control, and the same code path must
+now answer both questions differently.
+
+**Files:**
+
+| Action | Path | Anchor (re-verified at `9558c346`) |
+|---|---|---|
+| Modify | `crates/biorouter-mcp/src/knowledge/server.rs` | **reads (7):** `kb_search` `:579-606` (explicit branch `:590-601`), `kb_search_raw_sources` `:612-644` (explicit branch `:618-634`), `kb_export` `:737-758`, and the four through `kb_id_or_primary` `:312-342` — `kb_list_pages` `:373-384`, `kb_read_page` `:390-400`, `kb_get_graph` `:476-485`, `kb_list_history` `:491-503`. **writes (9):** `kb_create_base` `:357`, `kb_write_page` `:409`, `kb_add_raw_source` `:454`, `kb_restore_state` `:509`, `kb_begin_txn` `:527`, `kb_commit_txn` `:543`, `kb_abort_txn` `:562`, `kb_append_log` `:650`, `kb_import` `:764`. **the list:** `kb_list_bases` `:348-354` → `visible_bases_for_context` `:251-256` |
+| Modify | `crates/biorouter-server/src/routes/knowledge.rs` | the four macro routes only — `ingest` `:1122`, `ingest_conversation` `:1187`, `query_kb` `:1269`, `lint` `:1325`; `build_completer` `:899-914` |
+
+⚠ **`kb_set_active` and `kb_get_active` are NOT gated, deliberately.** They move and report a
+*pointer*, and the pointer is a bare kb id the session already had to know to pass. Refusing there
+would break the "one axis, one pointer" repair logic in `CLAUDE.md` (a hidden primary promotes to the
+lexicographically first remaining base) for reasons that have nothing to do with privacy. A public
+session may point at a private base and will then be refused on every read.
+
+⚠ **The `/knowledge/*` HTTP routes the GUI uses are NOT gated, and this is the load-bearing scope
+decision of the task.** DR-3 says *a public model* must never reach a private session. The Knowledge
+view is the **user**, not a model: `GET /knowledge/bases/{id}/page`, `/pages`, `/graph`, `/history`,
+`/preview`, `/export` are that user reading their own knowledge base in their own app, and a barrier
+there would lock a user out of their own notes with no model involved anywhere. The four macro routes
+**are** gated, because those run a model. If you find yourself adding a check to `get_page_body`
+(`:817`) or `list_pages` (`:517`), stop: that is a different product decision and it is
+[Open question 15](#open-questions).
+
+- [ ] **Step 1: Write the failing tests**
+
+```rust
+#[tokio::test]
+async fn the_explicit_kb_id_branch_is_not_a_way_around_the_barrier() {
+    // The finding, exactly. Before this task the `kb_id`-carrying branch at
+    // :590-592 searches any base on the machine, and `search_visible_bases`
+    // — the only code that consults the session's set — is in the `else`.
+    let root = migrated_root_with_public_base("default");
+    tier::raise(&root, "default", true).unwrap();
+    seed_page(&root, "default", "knowledge/omop.md", "SENTINEL-COHORT-N-412");
+    let srv = knowledge_server_at(&root);
+
+    let out = srv.kb_search(params(json!({ "kb_id": "default", "query": "cohort" })),
+                            ctx_with_capability(Public)).await.unwrap();
+    let text = text_of(&out);
+    assert!(text.contains("private"), "must say why: {text}");
+    assert!(!text.contains("SENTINEL-COHORT-N-412"), "leaked a snippet: {text}");
+    assert!(!text.contains("knowledge/omop.md"), "leaked a page path: {text}");
+}
+
+#[tokio::test]
+async fn no_entry_point_that_names_a_base_reaches_a_private_one_under_a_public_model() {
+    // Parameterised over all SIXTEEN. Gating kb_search alone leaves six read
+    // doors — and `kb_export` is the worst of them, because it writes the entire
+    // base to an attacker-named path on disk in one call (:744-752).
+    let root = migrated_root_with_public_base("omop");
+    tier::raise(&root, "omop", true).unwrap();
+    seed_page(&root, "omop", "knowledge/x.md", "SENTINEL-BODY");
+    let srv = knowledge_server_at(&root);
+
+    for probe in KB_ENTRY_POINTS {          // 7 reads + 9 writes, one closure each
+        let outcome = (probe.run)(&srv, "omop", Public).await;
+        assert!(outcome.is_refusal(), "{} was not refused", probe.name);
+        assert!(!outcome.text().contains("SENTINEL-BODY"), "{} leaked a body", probe.name);
+        assert_eq!(outcome.bytes_written(), 0, "{} wrote anyway", probe.name);
+    }
+    for probe in KB_ENTRY_POINTS {
+        assert!((probe.run)(&srv, "omop", Private).await.is_ok(), "{} refused a private caller", probe.name);
+    }
+}
+
+#[tokio::test]
+async fn a_kb_less_search_still_serves_the_public_bases_it_can_see() {
+    // The fan-out shape Task 15 gets wrong in the extension manager: a single
+    // up-front refusal turns `search_visible_bases` into all-or-nothing, so one
+    // private base in the session's set costs the user every other base.
+    let root = migrated_root_with_bases(&["default", "omop"]);
+    tier::raise(&root, "omop", true).unwrap();
+    seed_page(&root, "default", "knowledge/a.md", "public-hit cohort");
+    seed_page(&root, "omop",    "knowledge/b.md", "private-hit cohort");
+    let srv = knowledge_server_at(&root);
+
+    let hits = search_hits(&srv, json!({ "query": "cohort" }), Public).await;
+    assert_eq!(hits.iter().map(|h| h.kb_id.as_str()).collect::<Vec<_>>(), vec!["default"]);
+    assert!(!text_of_hits(&hits).contains("private-hit"));
+}
+
+#[tokio::test]
+async fn kb_list_bases_omits_a_private_base_rather_than_redacting_it() {
+    // The §7 `appears_in_list` rule, one module over: a KB name is user-authored
+    // and routinely names a cohort or a study. Omission also removes the
+    // temptation to then pass the id explicitly, which is the very bypass this
+    // task closes.
+    let root = migrated_root_with_bases(&["default", "omop"]);
+    tier::raise(&root, "omop", true).unwrap();
+    let srv = knowledge_server_at(&root);
+    let ids = base_ids(&srv, Public).await;
+    assert_eq!(ids, vec!["default"]);
+    assert_eq!(base_ids(&srv, Private).await, vec!["default", "omop"]);
+}
+
+#[tokio::test]
+async fn a_public_model_macro_cannot_run_against_a_private_base_over_http() {
+    let root = migrated_root_with_public_base("omop");
+    tier::raise(&root, "omop", true).unwrap();
+    let r = post_query(&root, "omop", model_ref("anthropic", "claude-opus-4-8")).await;
+    assert_eq!(r.status(), 409);
+    assert!(r.text().await.contains("private"));
+    // And the GUI's own read routes are untouched: the user is not a model.
+    assert_eq!(get_page_body(&root, "omop", "knowledge/x.md").await.status(), 200);
+}
+```
+
+- [ ] **Step 2: Run** → **FAIL** on all sixteen probes and on the list test; the last test's 409 half
+      fails and its 200 half passes.
+
+- [ ] **Step 3: Implement** — one helper, sixteen call sites, and the refusal is a **constant**:
+
+```rust
+    /// The KB twin of `ExtensionManager::assert_extension_reachable`. `Err` is
+    /// the refusal; `Ok(())` permits. Reads the base's stored tier, never the
+    /// session's set — hiding and privacy are different questions and
+    /// `kb_id_or_primary` (:312) answers only the first.
+    fn assert_kb_reachable(&self, kb_id: &str, caller_private: bool) -> Result<(), ErrorData> {
+        if caller_private || !crate::knowledge::tier::is_private(self.service.root(), kb_id) {
+            return Ok(());
+        }
+        Err(ErrorData::new(ErrorCode::INVALID_REQUEST, KB_PRIVATE_REFUSAL.to_string(), None))
+    }
+```
+
+```rust
+/// Names no base, no page and no snippet. Constant, so a model that retries sees
+/// the same string and stops rather than looping (the same rule Task 14's
+/// `privacy_refusal` follows, and for the same reason).
+const KB_PRIVATE_REFUSAL: &str = "\
+This knowledge base is private: a session running an institutional or self-hosted model has \
+ingested into it, so only a private model may read or write it. This session is running on a \
+public model. Ask the user to switch this chat to a private model — Settings > Models, or the \
+model chip in the composer — and try again. Do not retry with a different knowledge base id, \
+through kb_export, or through a raw-source search; the boundary is the same everywhere.";
+```
+
+Placement rules, and each one has a wrong version that compiles:
+
+- The seven reads and nine writes call it **immediately after the id is resolved and before any
+  filesystem read of the base**. For the four that route through `kb_id_or_primary`, that is right
+  after that call — not inside it, because `kb_id_or_primary` is also how a *write* resolves its
+  target and a shared refusal there would report a read error on a write.
+- `kb_search`'s and `kb_search_raw_sources`' explicit branches call it before `search_with_scope`;
+  their `else` branches do **not** — `search_visible_bases` filters instead (next bullet).
+- `search_visible_bases` (`:258-286`) filters **inside** its per-base loop at `:266`, so a private
+  base is skipped and the public ones still answer. A guard before the loop is the all-or-nothing bug
+  test 3 exists to catch.
+- `visible_bases_for_session` (`:240-249`) gains the same filter beside its `hidden.contains` retain
+  at `:247`, which is what makes `kb_list_bases` omit rather than redact.
+- The four HTTP macro routes check **before** `build_completer` runs, so an unknown model and a
+  private base produce the privacy 409 rather than a 400 about the model.
+
+- [ ] **Step 4: Run**
+
+```bash
+cargo test -p biorouter-mcp --lib knowledge::
+cargo test -p biorouter-server --test knowledge_routes
+cargo test -p biorouter-server --test knowledge_routes_e2e
+```
+
+- [ ] **Step 5: Gate**
+
+```bash
+# All sixteen, plus the definition.
+grep -c "assert_kb_reachable(" crates/biorouter-mcp/src/knowledge/server.rs
+echo "expect: 17 = 1 definition + 7 reads + 9 writes"
+# The two fan-out sites filter INSIDE their loop, not before it.
+for fn in search_visible_bases visible_bases_for_session; do
+  echo -n "$fn: "
+  awk "/fn $fn/,/^    }/" crates/biorouter-mcp/src/knowledge/server.rs \
+    | grep -n "for base\|retain\|tier::is_private" | head -3
+done
+# Expected: the loop/retain line BEFORE (or containing) the tier check.
+# The explicit-kb_id branch is closed — this is the finding, as a command.
+awk '/pub async fn kb_search\(/,/^    }/' crates/biorouter-mcp/src/knowledge/server.rs \
+  | grep -n "assert_kb_reachable\|search_with_scope" | head -2
+# Expected: assert_kb_reachable on the SMALLER line number.
+# The pointer tools and the GUI read routes are untouched, deliberately.
+awk '/pub async fn kb_set_active/,/^    }/' crates/biorouter-mcp/src/knowledge/server.rs \
+  | grep -c "assert_kb_reachable" ; echo "expect: 0"
+for h in get_page_body list_pages get_graph list_history preview_state export_brkb; do
+  echo -n "$h: "
+  awk "/pub async fn $h/,/^}/" crates/biorouter-server/src/routes/knowledge.rs | grep -c "tier::is_private"
+done
+echo "expect: 0 each — the Knowledge view is the user, not a model (see the ⚠ above)"
+# The refusal names nothing.
+grep -c "kb_id" <(awk '/const KB_PRIVATE_REFUSAL/,/;$/' crates/biorouter-mcp/src/knowledge/server.rs)
+echo "expect: 0"
+```
+
+**What this catches.** Four wrong implementations. (1) Gating `kb_search` only — literally what the
+finding names — which leaves `kb_read_page`, `kb_list_pages`, `kb_get_graph`, `kb_list_history`,
+`kb_search_raw_sources` and `kb_export` open, and `kb_export` writes the whole base to disk in one
+call. The sixteen-probe test is the only thing that fails it. (2) Putting the check inside
+`kb_id_or_primary`, which looks like the one choke point and is not — `kb_search`,
+`kb_search_raw_sources`, `kb_export` and all nine writes take `kb_id` directly and never call it.
+(3) A single up-front guard in `search_visible_bases`, turning a KB-less search into all-or-nothing
+so one private base costs the user every other base. (4) Filtering hits *after*
+`search_with_scope` returns rather than skipping the base — which reads the private base's index off
+disk, and is the same post-filter mistake Gate D's `LIMIT` test exists to catch one crate over.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add crates/biorouter-mcp/src/knowledge/server.rs crates/biorouter-server/src/routes/knowledge.rs
+git commit -m "feat(knowledge): refuse a public model on a private knowledge base at all sixteen entry points (#56)"
+```
+
+---
+
+### Task 11: Gate G — cross-session conversation ingest
 
 The second fully-open cross-session read, and the design does not name it. Gates C, D and E all miss
 it by construction: it is dispatched at `agent.rs:2660`, **before** the extension-manager
@@ -1838,15 +3034,40 @@ fall-through at `:2769`; it is not an MCP tool, so `filter_tools` cannot hide it
 touches `chat_history_search.rs`. Its sink is worse than its source — a knowledge base is a
 machine-wide tree (`knowledge_root()` = `in_config_dir("knowledge")`) that any session may name.
 
+⚠ **Departure D8: the guard goes in the shared function, not in the platform tool.** Measured:
+`grep -rn "conversation_ingest::ingest_conversation\|ingest_conversation(" --include='*.rs' crates/`
+returns **three** production callers of
+`biorouter::knowledge::conversation_ingest::ingest_conversation`, not one:
+
+| # | Caller | What it supplies |
+|---|---|---|
+| 1 | `crates/biorouter/src/agents/knowledge_tool.rs:61` | the platform tool `platform__ingest_conversation`, whose `session_ids` array (`:32-41`) is model-supplied |
+| 2 | `crates/biorouter-server/src/routes/knowledge.rs:1233` | `POST /knowledge/bases/{id}/ingest-conversation`, whose `session_ids` array is **caller-supplied** (`:1192-1197`) and loaded with `get_session(sid, true)` at `:1203`, with the model also caller-supplied (`build_completer` at `:1214`) |
+| 3 | `crates/biorouter-cli/src/commands/knowledge.rs:571` | `biorouter knowledge ingest-conversation`, at a terminal |
+
+The first version of this plan guarded only (1). (2) is the same primitive behind nothing but the
+secret key — the credential §9.3 A1 calls reachable from any developer-enabled agent shell, and the
+one Task 2 exists to stop leaking. A guard in the platform tool leaves it as an unguarded copy.
+A **required** `caller_capability` field on `ConversationIngestArgs` makes all three a compile error,
+which is the same forcing function Gate D uses for `ChatHistorySearch::new`'s 7th parameter.
+
 **Files:**
 
 | Action | Path | Anchor (re-verified at `9558c346`) |
 |---|---|---|
-| Modify | `crates/biorouter/src/agents/knowledge_tool.rs` | `handle_ingest_conversation` `:24-86`; `session_ids` parse `:32-41`; the load loop `:48-49` (`get_session(sid, true)`) |
+| Modify | `crates/biorouter/src/knowledge/conversation_ingest.rs` | `ConversationIngestArgs` `:172-180` (7 fields today, ending `cancel`); `ingest_conversation` `:184-187`; the empty/undigestible early returns `:188-194`; `render_conversations(&args.sessions)` `:191` — the guard goes **before** it, so no transcript is rendered for a session that is about to be refused |
+| Modify | `crates/biorouter/src/agents/knowledge_tool.rs` | `handle_ingest_conversation` `:24-86`; `session_ids` parse `:32-41`; the load loop `:48-49` (`get_session(sid, true)`); the `ingest_conversation(` call at `:61` |
+| Modify | `crates/biorouter-server/src/routes/knowledge.rs` | `ingest_conversation` `:1187-1258`; the `session_ids` load loop `:1202-1212`; the `ConversationIngestArgs` literal `:1224-1232` |
+| Modify | `crates/biorouter-cli/src/commands/knowledge.rs` | `handle_ingest_conversation` `:500`; the `ingest_conversation(` call at `:571` |
 | Reference | `crates/biorouter/src/agents/agent.rs` | dispatch `:2660`; advertisement `:3131` (`ingest_conversation_tool()`), with the surrounding comment "The conversation-ingestion tool is always available on the platform extension" |
 | Reference | `crates/biorouter/src/agents/platform_tools.rs` | `PLATFORM_INGEST_CONVERSATION_TOOL_NAME` `:5`; `ingest_conversation_tool()` `:51`; the description telling the model to "Pass `session_ids`" at `:63-65` |
 
-- [ ] **Step 1: Write the failing test**
+⚠ **`Agent` has no `capability_tier()`** — Task 10 put that method on `ExtensionManager`, whose
+`provider` field is private. `handle_ingest_conversation` is `impl Agent` (`knowledge_tool.rs:23-24`),
+so it resolves its own capability with `self.provider().await.map(|p| p.tier()).unwrap_or(ProviderTier::Public)`
+— fail-closed to Public, and `Agent::provider()` is the accessor Task 13 has already hardened.
+
+- [ ] **Step 1: Write the failing tests**
 
 ```rust
 #[tokio::test]
@@ -1868,77 +3089,155 @@ async fn ingesting_another_sessions_conversation_obeys_the_barrier() {
 }
 
 #[tokio::test]
-async fn ingesting_your_own_conversation_is_unaffected() {
-    // The default (no `session_ids`) is the current session, which is the
-    // overwhelmingly common call and must not regress.
+async fn ingesting_your_own_private_conversation_ratchets_the_knowledge_base() {
+    // ⚠ REPLACES `ingesting_your_own_conversation_is_unaffected`, which asserted
+    // the hole stays open. The default (no `session_ids`) is the current
+    // session, and that call is the overwhelmingly common one — it must keep
+    // working. What it must NOT do is drop a private transcript into a
+    // machine-wide tree that a public chat can read back, which is the whole of
+    // design §9.3 B4 and the operator's ruling (Tasks 10A-10C, AR-1).
     let agent = private_capability_agent_with_messages("my own notes").await;
+    assert!(!kb_tier_is_private("default"), "fixture precondition");
+
+    let out = agent.handle_ingest_conversation(json!({ "kb_id": "default" })).await.unwrap();
+    assert!(out.contains("1 session"), "the common call must not regress: {out}");
+
+    // The base now carries the tier of the session that fed it.
+    assert!(kb_tier_is_private("default"), "a private transcript landed in a public base");
+    // And the laundering path is closed end to end, which is the assertion the
+    // first version of this test made impossible.
+    let public_reader = public_capability_agent().await;
+    let hits = public_reader.kb_search(json!({ "kb_id": "default", "query": "notes" })).await;
+    assert!(hits.unwrap_text().contains("private"));
+    assert!(!hits.unwrap_text().contains("my own notes"));
+}
+
+#[tokio::test]
+async fn a_public_session_may_still_ingest_its_own_conversation() {
+    // The other half of "must not regress": the ratchet is `max`, not `set`, so
+    // a public chat ingesting itself leaves a public base public.
+    let agent = public_capability_agent_with_messages("weekly notes").await;
     let out = agent.handle_ingest_conversation(json!({ "kb_id": "default" })).await.unwrap();
     assert!(out.contains("1 session"), "{out}");
+    assert!(!kb_tier_is_private("default"));
+}
+
+#[tokio::test]
+async fn the_http_route_is_gated_by_the_same_argument_not_by_a_second_copy() {
+    // D8. The route is reachable with nothing but the secret key.
+    let private = private_session_with_messages("PHI cohort notes").await;
+    let before = kb_bytes("default").await;
+    let r = post_ingest_conversation("default", &[&private.id],
+                                     model_ref("anthropic", "claude-opus-4-8")).await;
+    assert_eq!(r.status(), 409);
+    assert!(!r.text().await.contains("PHI cohort notes"));
+    assert_eq!(kb_bytes("default").await, before);
 }
 ```
 
-- [ ] **Step 2: Run** → **FAIL** (the first test's refusal assertion; today the call succeeds and
-      the KB grows).
+- [ ] **Step 2: Run** → **COMPILE ERROR** at all three `ConversationIngestArgs` literals (missing
+      field `caller_capability`), then **FAIL** on the refusal and ratchet assertions.
 
-- [ ] **Step 3: Implement** — inside the load loop at `:48-49`, per id:
+- [ ] **Step 3: Implement**
+
+(a) `ConversationIngestArgs` gains a **required, non-`Option`** field:
 
 ```rust
-        for sid in &session_ids {
-            match self.config.session_manager.get_session(sid, true).await {
-                Ok(session) => {
-                    // Issue #56 Gate G. This tool is dispatched at agent.rs:2660,
-                    // BEFORE the extension-manager fall-through at :2769, so Gate
-                    // C never sees it; it is not an MCP tool, so Gate E cannot
-                    // hide it; and it never touches chat_history_search.rs, so
-                    // Gate D never sees it. Without this check it is a one-call
-                    // private -> public laundering primitive, because a KB is a
-                    // machine-wide tree any session may name (design §9.3 B4).
-                    let caller = self.capability_tier().await;
-                    if !crate::privacy::visible_to(caller, session.privacy_tier) {
-                        refused.push(sid.clone());
-                        continue;
-                    }
-                    …existing ingest…
+    /// The capability of whoever is asking. Required, and deliberately not
+    /// `Option`: this struct has three production constructors (the platform
+    /// tool, `POST /knowledge/bases/{id}/ingest-conversation`, and the CLI), and
+    /// the first version of this plan guarded only the first. A required field
+    /// makes a missed caller a compile error rather than a silent second copy of
+    /// a one-call private -> public laundering primitive.
+    pub caller_capability: crate::privacy::ProviderTier,
 ```
 
-and report the refusal in the tool result, naming **only** the count and the reason:
+(b) In `ingest_conversation`, **before** `render_conversations` at `:191`:
 
 ```rust
-    if !refused.is_empty() {
-        out.push_str(&format!(
-            "\n\n{} of the requested chats could not be ingested: they are private, and this \
-             session is running on a public model. Only a private model may read them. Ask the \
-             user to switch this chat to a private model and try again.",
-            refused.len()
-        ));
+    // Issue #56 Gate G. Per session, not once: `sessions` is a caller-supplied
+    // LIST, and a single up-front check on the first element admits the rest.
+    // Placed before `render_conversations` so no refused transcript is ever
+    // rendered into a buffer, even one that is then dropped.
+    let (allowed, refused): (Vec<_>, Vec<_>) = args
+        .sessions
+        .into_iter()
+        .partition(|s| crate::privacy::visible_to(args.caller_capability, s.privacy_tier));
+    if allowed.is_empty() && !refused.is_empty() {
+        anyhow::bail!("{}", REFUSED_ALL_PRIVATE);
     }
 ```
 
-- [ ] **Step 4: Run** → `cargo test -p biorouter --lib agents::knowledge_tool` → **PASS**.
+carrying `refused.len()` into `IngestResult` so each caller can report it, and naming **only** the
+count and the reason:
+
+```rust
+/// Names no session, no title and no working directory — §11.4 classifies all
+/// three as content, and a session title in this product is LLM-generated from
+/// the conversation itself.
+const REFUSED_ALL_PRIVATE: &str = "\
+Those chats are private: they were created under a model hosted inside the institution, so only a \
+private model may read them. This session is running on a public model. Ask the user to switch this \
+chat to a private model and try again.";
+```
+
+(c) The three call sites each pass their own capability: the platform tool from
+`self.provider().await.map(|p| p.tier()).unwrap_or(ProviderTier::Public)`; the HTTP route from the
+provider `build_completer` constructed (the **instance**, not `body.model.provider` — `factory.rs:142-146`
+can hand back something else); the CLI from the session's bound provider.
+
+(d) The HTTP route maps a full refusal to **409**, not 500 — the same typed status Gate A uses
+(Task 12), for the same reason: a barrier that surfaces as an internal error teaches the caller to
+retry.
+
+- [ ] **Step 4: Run**
+
+```bash
+cargo test -p biorouter --lib -- agents::knowledge_tool knowledge::conversation_ingest
+cargo test -p biorouter-server --test knowledge_routes
+cargo test -p biorouter-cli --lib commands::knowledge
+```
 
 - [ ] **Step 5: Gate**
 
 ```bash
-# The check is inside the per-id loop, not once at the top: `session_ids` is an
-# ARRAY, and a single up-front check on the first element admits the rest.
-grep -c "visible_to" crates/biorouter/src/agents/knowledge_tool.rs ; echo "expect: 1"
-awk '/for sid in &session_ids/,/^    }/' crates/biorouter/src/agents/knowledge_tool.rs | grep -c "visible_to"
-echo "expect: 1 — inside the loop"
+# ONE guard, in the shared function — not three copies in three callers.
+grep -rn "visible_to" --include='*.rs' crates/biorouter/src/knowledge/conversation_ingest.rs \
+  crates/biorouter/src/agents/knowledge_tool.rs \
+  crates/biorouter-server/src/routes/knowledge.rs \
+  crates/biorouter-cli/src/commands/knowledge.rs
+echo "expect: exactly 1 hit, in conversation_ingest.rs"
+# The partition precedes the render, so nothing refused is ever rendered.
+awk '/pub async fn ingest_conversation/,/^}/' crates/biorouter/src/knowledge/conversation_ingest.rs \
+  | grep -n "partition\|render_conversations" | head -2
+# Expected: partition on the SMALLER line number.
+# All three callers pass the field (a missed one would not compile, but a caller
+# that hardcodes Private compiles fine and is the real risk).
+grep -rn "caller_capability:" --include='*.rs' crates/ | grep -v conversation_ingest.rs
+echo "expect: 3 — and NONE of them may read 'caller_capability: ProviderTier::Private'"
+grep -rn "caller_capability: ProviderTier::Private" --include='*.rs' crates/ ; echo "expect: no output"
 # The refusal names no session.
 grep -c "session.name" crates/biorouter/src/agents/knowledge_tool.rs ; echo "expect: 0"
 ```
 
-**What this catches.** Two wrong implementations. (1) The check placed before the loop, on
+**What this catches.** Four wrong implementations. (1) The check placed before the loop, on
 `session_ids[0]` or on the current session — which admits every other element of a caller-supplied
-array. The paired `awk` gate is what distinguishes it from the correct placement; a plain
-`grep -c visible_to` returns 1 for both. (2) A refusal that returns an error but has already called
-`kb_write_page`; the byte-equality assertion in Step 1 is the only thing that fails it.
+array; the `partition` shape makes that shape unwritable. (2) A refusal that returns an error but has
+already called `kb_write_page`; the byte-equality assertion is the only thing that fails it.
+(3) Guarding the platform tool and calling it done — leaving `POST /knowledge/bases/{id}/ingest-conversation`
+as an unguarded copy; the required field and the cross-file `grep` are what fail it. (4) The
+plausible-looking fix of hardcoding `caller_capability: ProviderTier::Private` at the HTTP or CLI
+call site to make it compile — which reads as "this caller is trusted" and is exactly wrong for the
+route that needs the check most. The last grep is the only gate that sees it.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add crates/biorouter/src/agents/knowledge_tool.rs
-git commit -m "fix(knowledge): refuse cross-session ingest of a private conversation (#56)"
+git add crates/biorouter/src/knowledge/conversation_ingest.rs \
+        crates/biorouter/src/agents/knowledge_tool.rs \
+        crates/biorouter-server/src/routes/knowledge.rs \
+        crates/biorouter-cli/src/commands/knowledge.rs
+git commit -m "fix(knowledge): refuse cross-session ingest of a private conversation, in the shared function (#56)"
 ```
 
 ---
@@ -1954,6 +3253,7 @@ toast at `:307-310` claims success — while the session is still bound to the p
 
 | Action | Path | Anchor (re-verified at `9558c346`) |
 |---|---|---|
+| Create | `crates/biorouter/src/privacy/refusal.rs` | new — `PrivacyRefusal`. ⚠ **Task 12 creates it, not Task 14**: Tasks 12 and 13 both reference the module |
 | Modify | `crates/biorouter/src/agents/agent.rs` | `update_provider` `:5655-5675` — swap at `:5663-5664`, persist at `:5666-5674`, the tree's **only** `.provider_name(` call at `:5670` |
 | Modify | `crates/biorouter/src/session/session_manager.rs` | a new conditional-UPDATE method beside `apply_update` (`add_update!` block `:3126-3132`) |
 | Modify | `crates/biorouter-server/src/routes/agent.rs` | `update_provider` handler `:713-729` (500-only mapping at `:725`); its `responses(..)` block; route registration `:1270` |
@@ -2038,14 +3338,22 @@ it('does not report success when the session bind is refused', async () => {
     ///
     /// The predicate is in the `WHERE`, not in Rust, so a concurrent ratchet
     /// cannot interleave into "private session, public provider bound".
-    /// `rows_affected == 0` is the refusal.
+    ///
+    /// ⚠ `rows_affected == 0` is NOT the refusal on its own: a nonexistent
+    /// `session_id` produces exactly the same zero, so returning
+    /// `Ok(Refused)` there would surface a stale or mistyped id as a 409
+    /// privacy refusal instead of a 404 — and would make Step 1's first test
+    /// pass for the wrong reason against a stale fixture id, which is the one
+    /// way that test can lie. Distinguish the two with a single follow-up read
+    /// in the zero case; it costs one query on a path that is already an error.
     async fn bind_provider_if_allowed(
         &self,
         session_id: &str,
         provider_name: &str,
         model_config_json: &str,
         incoming_is_private: bool,
-    ) -> Result<bool> {
+    ) -> Result<BindOutcome> {
+        let pool = self.pool().await?;
         let res = sqlx::query(
             r#"
             UPDATE sessions
@@ -2058,10 +3366,45 @@ it('does not report success when the session bind is refused', async () => {
         .bind(model_config_json)
         .bind(session_id)
         .bind(i64::from(incoming_is_private))
-        .execute(self.pool().await?)
+        .execute(pool)
         .await?;
-        Ok(res.rows_affected() > 0)
+        if res.rows_affected() > 0 {
+            return Ok(BindOutcome::Bound);
+        }
+        // Zero rows: either the row is private and the provider is public, or
+        // there is no such row at all.
+        let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM sessions WHERE id = ?)")
+            .bind(session_id)
+            .fetch_one(pool)
+            .await?;
+        Ok(if exists {
+            BindOutcome::RefusedByPrivacy
+        } else {
+            BindOutcome::NoSuchSession
+        })
     }
+
+/// Three outcomes, because two of them are indistinguishable by `rows_affected`
+/// and they map to different HTTP statuses (409 vs 404).
+pub enum BindOutcome {
+    Bound,
+    RefusedByPrivacy,
+    NoSuchSession,
+}
+```
+
+and add to Step 1 the test that pins the distinction, because it is the one a `bool` return silently
+gets wrong:
+
+```rust
+#[tokio::test]
+async fn a_nonexistent_session_is_not_reported_as_a_privacy_refusal() {
+    let (agent, _s) = agent_on(private_provider()).await;
+    let err = agent.update_provider(public_provider(), "no-such-session-id").await.unwrap_err();
+    assert!(err.downcast_ref::<PrivacyRefusal>().is_none(),
+            "a bad id surfaced as a privacy refusal: {err}");
+    assert_eq!(post_update_provider("no-such-session-id").await.status(), 404);
+}
 ```
 
 (b) `Agent::update_provider` — persist **first**, swap second, inverting today's order:
@@ -2081,19 +3424,24 @@ it('does not report success when the session bind is refused', async () => {
         // refused model. The invariant this establishes is one sentence — the
         // provider bound to a private session is always private — and it is
         // what lets every later reader trust `sessions.provider_name`.
-        let bound = self
+        match self
             .config
             .session_manager
             .bind_provider_if_allowed(session_id, &provider_name, &model_config, tier.is_private())
             .await
-            .context("Failed to persist provider config to session")?;
-
-        if !bound {
-            return Err(PrivacyRefusal::PublicModelOnPrivateSession {
-                session_id: session_id.to_string(),
-                provider: provider_name,
+            .context("Failed to persist provider config to session")?
+        {
+            BindOutcome::Bound => {}
+            BindOutcome::RefusedByPrivacy => {
+                return Err(PrivacyRefusal::PublicModelOnPrivateSession {
+                    session_id: session_id.to_string(),
+                    provider: provider_name,
+                }
+                .into());
             }
-            .into());
+            BindOutcome::NoSuchSession => {
+                return Err(anyhow!("No such session: {session_id}"));
+            }
         }
 
         let mut current_provider = self.provider.lock().await;
@@ -2101,6 +3449,19 @@ it('does not report success when the session bind is refused', async () => {
         Ok(())
     }
 ```
+
+(b′) **`crates/biorouter/src/privacy/refusal.rs` is created here, by Task 12** — not by Task 14, as
+the first version of this plan said. Task 12's own code returns `PrivacyRefusal`, and Task 13's calls
+`privacy::refusal::turn_refusal(row)`; both run before Task 14, so a module that first appears in
+Task 14 is an `unresolved module` compile error in two earlier tasks. Each later task adds one item
+and says which:
+
+| Task | Adds to `privacy/refusal.rs` |
+|---|---|
+| **12** (here) | the `PrivacyRefusal` error enum with `PublicModelOnPrivateSession { session_id, provider }`, its `session_classification()` / `provider_tier()` accessors for the typed 409, and `std::error::Error` so `anyhow`'s `downcast_ref` works |
+| **13** | `turn_refusal(&Session) -> String`, and moves Task 10's file-local `CHATRECALL_LOAD_REFUSAL` here as `chatrecall_load_refusal()` |
+| **14** | `privacy_refusal(extension, extension_tier, caller_tier) -> Option<ErrorData>` |
+| **23** | the `PrivateChildOfPublicParent { requested }` variant and its `PrivacyRefusal::spawn_upgrade(tier)` constructor |
 
 ⚠ `bind_provider_if_allowed` replaces the builder for this one write, so the `.provider_name(..)`
 call at `:5670` disappears — and with it the tree's only use of that setter. Leave the setter in
@@ -2159,6 +3520,12 @@ cd ui/desktop && npx vitest run ModelAndProviderContext 2>&1 | tail -5
 ⚠ A vitest filter that matches nothing **fails alone and passes in company** — one live term hides
 any number of dead ones. State the expected **file and test counts** in the PR and check both.
 
+⚠ **`cargo test -p biorouter-server --lib routes::agent` prints `0 passed` and exits 0 today**:
+`crates/biorouter-server/src/routes/agent.rs` has **no `#[cfg(test)] mod tests`**. Ten of the
+route modules have one, so the filter shape is right and the module is simply empty. This task
+creates it. Assert a count, never "no failures" — a zero here after Step 3 means the route tests
+landed in a different file.
+
 - [ ] **Step 5: Gate**
 
 ```bash
@@ -2185,7 +3552,8 @@ the shipped bug exactly: a refusal rendered as a green success toast.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add crates/biorouter/src/agents/agent.rs crates/biorouter/src/session/session_manager.rs \
+git add crates/biorouter/src/privacy/refusal.rs crates/biorouter/src/agents/agent.rs \
+        crates/biorouter/src/session/session_manager.rs \
         crates/biorouter-server/src/routes/agent.rs ui/desktop/openapi.json ui/desktop/src/api \
         ui/desktop/src/components/ModelAndProviderContext.tsx
 git commit -m "feat(privacy): Gate A - refuse a public model on a private session, with a typed 409 (#56)"
@@ -2375,6 +3743,14 @@ Gate B' in `Agent::provider()` (`:2511-2516`), which already returns
 ⚠ `cached_classification` **initialises to `Private`**, not `Public`. It is read before the first
 `reply` on a rehydrated agent, and the safe default there is the restrictive one.
 
+⚠ **Two module edits ride this commit.** (1) `privacy/refusal.rs` (created in Task 12) gains
+`turn_refusal(&Session) -> String` and takes ownership of Task 10's file-local
+`CHATRECALL_LOAD_REFUSAL`, re-exported as `chatrecall_load_refusal()`; delete the `const` from
+`chatrecall_extension.rs` in the same diff so there is never a second copy of a refusal string.
+(2) Task 7's `EXPECTED` constant in `privacy/mod.rs` gains its first uncommented line,
+`("crates/biorouter/src/agents/agent.rs", 1)` — **in this commit**, because this is the commit that
+adds the crossing.
+
 - [ ] **Step 4: Run**
 
 ```bash
@@ -2394,15 +3770,40 @@ reply-prologue edit shows up as a reordering.
 awk 'NR>=3258 && NR<=3400' crates/biorouter/src/agents/agent.rs \
   | grep -n "ElicitationResponse\|bind_allowed\|restore_goal"
 # Expected order: ElicitationResponse ... bind_allowed ... restore_goal.
-# The refusal is a yield, never an Err out of reply.
+# The refusal is a yield, never an Err out of reply. PRINT the lines rather than
+# counting them: the count depends on how the implementation spells the guard,
+# and a number that goes stale the first time someone merges two lines is the
+# defect class this gate is supposed to catch, not commit.
 awk '/pub async fn reply\(/,/^    }/' crates/biorouter/src/agents/agent.rs \
-  | grep -c "privacy_refusal" ; echo "expect: 3 (declare, set, yield)"
+  | grep -n "privacy_refusal"
+# Expected: FOUR lines, in this order and with these roles —
+#   1. `let mut privacy_refusal: Option<String> = None;`   (declare)
+#   2. `privacy_refusal = Some(crate::privacy::refusal::turn_refusal(row))`  (set)
+#   3. `if privacy_refusal.is_none() {`                    (the ratchet's guard)
+#   4. `if let Some(text) = privacy_refusal {`             (the yield)
+# The load-bearing assertion is (4)'s neighbourhood, so check it directly:
+awk '/if let Some\(text\) = privacy_refusal/,/^            }/' crates/biorouter/src/agents/agent.rs \
+  | grep -c "yield AgentEvent::Message" ; echo "expect: 1 — a yield, not a return Err"
+awk '/pub async fn reply\(/,/^    }/' crates/biorouter/src/agents/agent.rs \
+  | grep -c "return Err(PrivacyRefusal" ; echo "expect: 0 — that is a 500 from /reply"
 # The ratchet is on the turn, not the bind.
 awk '/pub async fn update_provider/,/^    }/' crates/biorouter/src/agents/agent.rs \
   | grep -c "raise_privacy" ; echo "expect: 0"
 awk '/pub async fn reply\(/,/^    }/' crates/biorouter/src/agents/agent.rs \
   | grep -c "raise_privacy" ; echo "expect: 1"
+# The one new `floor` crossing, and Task 7's audit updated in the SAME commit.
+awk '/pub async fn reply\(/,/^    }/' crates/biorouter/src/agents/agent.rs \
+  | grep -c "privacy::floor(" ; echo "expect: 1"
+cargo test -p biorouter --lib privacy::tests::floor_is_crossed_only_where_a_capability_establishes_a_classification
+# Expected: PASS with agent.rs uncommented in EXPECTED. A failure here naming
+# agent.rs means the constant was not bumped in this commit.
 ```
+
+⚠ **`expect: 3 (declare, set, yield)` was wrong** in the first version of this plan and would have
+failed a correct implementation: Step 3's own code has **four** occurrences, because the ratchet is
+guarded by `if privacy_refusal.is_none()`. This is the reason the gate now prints and describes
+rather than counting — a hand-computed occurrence count inside a plan goes stale the first time
+anyone edits the implementation, and the worker's instinct on a red gate is to change the code.
 
 **What this catches.** Four wrong implementations, one per test. (1) A refuse-only Gate B, which
 bricks every rehydrated session on a machine measured at 57% private — test 1. (2) A gate at the
@@ -2428,8 +3829,9 @@ git commit -m "feat(privacy): Gate B - repair-first turn barrier, the ratchet, a
 | Action | Path | Anchor (re-verified at `9558c346`) |
 |---|---|---|
 | Modify | `crates/biorouter/src/agents/extension_manager.rs` | `dispatch_tool_call` `:1438`; `get_client_for_tool` resolution `:1461-1470`; prefix strip `:1471-1481`; `is_tool_available` `:1483-1494`; the BR-23 SecretGuard block `:1496-1522` with its choke-point comment at `:1499-1502` |
-| Create | `crates/biorouter/src/privacy/refusal.rs` | new — the pure builders, moved here from Task 10 |
+| Modify | `crates/biorouter/src/privacy/refusal.rs` | **created by Task 12**, not here; this task adds `privacy_refusal(..)` beside the `PrivacyRefusal` enum and Task 13's `turn_refusal` |
 | Modify | `crates/biorouter-server/src/routes/agent.rs` | `call_tool` `:1140-1176`, dispatch `:1160-1163`, and its `.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)` |
+| Reference | `crates/biorouter/src/agents/extension_manager.rs` | `ExtensionManager::new` `:620-623` takes `session_manager: Arc<SessionManager>` and stores it at `:628` — which is what makes the permit-time ratchet below need no new plumbing |
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2559,14 +3961,35 @@ block beginning at `:1496`:
         }
 ```
 
-and, on the **success** return of the dispatch (so a failed call does not ratchet), the second
-trigger of O5:
+and, immediately after the refusal check — at **permit time**, before the future is built — the
+second trigger of O5:
 
 ```rust
+        // Issue #56, O5's second trigger. At PERMIT time, not on the tool's
+        // result, and that is forced by the shape of this function rather than
+        // chosen: `dispatch_tool_call` returns `Ok(ToolCallResult { result:
+        // Box::new(fut.boxed()) })` at :1572-1575 BEFORE the tool has run, and
+        // the `async move` at :1544 captures owned values only — it cannot hold
+        // `&self`, so there is no `self` at the point the call succeeds.
+        //
+        // Permit-time is also the right direction. "The model was allowed to
+        // ask a private extension a question" is the disclosure; whether the
+        // extension answered is not the user's protection. Ratcheting on
+        // success would leave a failed OMOP query — which still carried the
+        // session's cohort definition to the connector — unrecorded.
+        //
+        // `self.context.session_manager` is the Arc `ExtensionManager::new`
+        // takes at :620-623 and stores at :628, so this needs no new plumbing.
         if ext_tier.is_private() {
             self.raise_session_privacy(session_id, &format!("mcp:{client_name}")).await;
         }
 ```
+
+⚠ **The first version of this plan said "on the success return of the dispatch (so a failed call does
+not ratchet)". That is not implementable here** and the claim was false about the code. If a future
+reviewer wants ratchet-on-success, it needs a cloned `Arc<SessionManager>` moved into the `async move`
+block and a raise after the `.await` at `:1562` — write that trade down before doing it, because it
+also moves the raise off the thread that holds the permit.
 
 `privacy_enforcement_enabled()` reads the opt-out **inside** the gate, not through an
 `is_enabled()` wrapper, following the `SensitiveOpsInspector` pattern, so a mid-session change is
@@ -2592,11 +4015,22 @@ cargo test -p biorouter-server --lib routes::agent
 # than asserted, and it fails the day someone adds a second path.
 grep -rn "\.call_tool(" --include='*.rs' crates/ | grep -v "^crates/biorouter/src/agents/extension_manager.rs:15"
 echo "expect: only #[cfg(test)] hits (skills_extension.rs tests from :798, code_execution_extension.rs tests from :2115)"
-# The gate reads the record, not the string.
-awk '/pub async fn dispatch_tool_call/,/SecretGuard/' crates/biorouter/src/agents/extension_manager.rs \
-  | grep -c "prefixed_name" ; echo "expect: 0 in the privacy block"
+# The gate reads the RESOLVED RECORD, not the tool-name string. Asserted as two
+# anchored patterns, positive and negative, rather than as a count over an awk
+# range: the range `/pub async fn dispatch_tool_call/,/SecretGuard/` is 67 lines
+# and spans the prefix-strip at :1471-1481, so `grep -c prefixed_name` over it
+# returns 3 TODAY, before a line of #56 exists. That gate could never pass and
+# never measured what its comment said.
+grep -c "\.get(&client_name)" crates/biorouter/src/agents/extension_manager.rs ; echo "expect: >= 1"
+grep -cE "privacy_refusal\(&(prefixed_name|tool_name)|classify_extension\(&(prefixed_name|tool_name)" \
+  crates/biorouter/src/agents/extension_manager.rs
+echo "expect: 0 — the tier is never resolved from the tool-name string"
 # Gate C is not an inspector.
 grep -rn "PrivacyInspector" crates/ ; echo "expect: no output"
+# The ratchet is at permit time, so it sits ABOVE the `let fut = async move` at :1544.
+awk '/pub async fn dispatch_tool_call/,/^    }/' crates/biorouter/src/agents/extension_manager.rs \
+  | grep -n "raise_session_privacy\|let fut = async move" | head -2
+# Expected: raise_session_privacy on the SMALLER line number.
 ```
 
 **What this catches.** The wrong implementation puts the check in `Agent::dispatch_tool_call`
@@ -2611,9 +4045,13 @@ The second wrong implementation keys on the tool-name prefix rather than the res
 
 ```bash
 git add crates/biorouter/src/privacy/refusal.rs crates/biorouter/src/agents/extension_manager.rs \
-        crates/biorouter/src/agents/chatrecall_extension.rs crates/biorouter-server/src/routes/agent.rs
+        crates/biorouter-server/src/routes/agent.rs
 git commit -m "feat(privacy): Gate C - refuse a private extension under a public model at the dispatch choke point (#56)"
 ```
+
+⚠ `chatrecall_extension.rs` was in this `git add` in the first version because Task 10's refusal
+constant was supposed to move here. It moves in **Task 13** instead (see that task's second ⚠), so it
+is not part of this commit.
 
 ---
 
@@ -2821,6 +4259,19 @@ key from **one** resolver:
 
 ```rust
     /// The extension keys the currently-bound model may see.
+    ///
+    /// The predicate is Gate C's, verbatim — `privacy_refusal(..).is_none()` —
+    /// and NOT `visible_to(caller, floor(ext.tier))`. Two reasons, and the
+    /// second is the load-bearing one:
+    ///
+    ///  * Comparing a caller's capability with an extension's tier is a
+    ///    ProviderTier-to-ProviderTier question. `floor` crosses a CAPABILITY
+    ///    into a CLASSIFICATION, which is a different question; reaching for it
+    ///    here is how the first version of this plan ended up with four
+    ///    crossings where its own audit test asserted two.
+    ///  * Gate C (dispatch) and Gate E (discovery) must agree on every input, or
+    ///    a tool is hidden by one and dispatched by the other. Sharing one
+    ///    function is the only way to guarantee that; sharing a *rule* is not.
     async fn allowed_extension_keys(&self) -> Vec<String> {
         let caller = self.capability_tier().await;
         let enforce = privacy_enforcement_enabled();
@@ -2828,11 +4279,19 @@ key from **one** resolver:
             .lock()
             .await
             .iter()
-            .filter(|(_, e)| !enforce || crate::privacy::visible_to(caller, floor_ext(e.tier)))
+            .filter(|(k, e)| {
+                !enforce
+                    || crate::privacy::refusal::privacy_refusal(k, e.tier, caller).is_none()
+            })
             .map(|(k, _)| k.clone())
             .collect()
     }
 ```
+
+⚠ **`floor_ext` does not exist** — not in this plan, not in the tree, and it appeared exactly once,
+in the first version of this code block. It was an invented name for the crossing above, and writing
+it as `floor(..)` instead would have added a third and fourth `floor` caller that Task 7's audit test
+does not expect. Use the shared refusal predicate.
 
 and in `filter_tools`, replace the `split("__")` prefix derivation at `:1036` with
 `Self::resolve_extension_key(allowed, tool.name.as_ref())`, dropping any tool whose key does not
@@ -2975,6 +4434,13 @@ cargo test -p biorouter --lib -- session::chat_history_search agents::chatrecall
 cargo test -p biorouter --lib session::session_manager
 ```
 
+⚠ **Both filters in the first command have a pre-count of zero.** Neither
+`crates/biorouter/src/session/chat_history_search.rs` nor
+`crates/biorouter/src/agents/chatrecall_extension.rs` has a `#[cfg(test)] mod tests` on `main`;
+Task 10 creates the second one. So `0 passed, exits 0` is the correct baseline here and a
+**meaningless** pass afterwards. Assert `3` new tests in `chat_history_search` and the exact
+`chatrecall_extension` delta, and paste both numbers into the PR.
+
 - [ ] **Step 5: Gate**
 
 ```bash
@@ -3101,10 +4567,22 @@ cargo test -p biorouter --lib -- agents::extension_manager_extension agents::ext
 # check_enable_allowed still has exactly ONE production call site (so the
 # compile error was fixed there rather than the parameter defaulted away).
 grep -n "check_enable_allowed(" crates/biorouter/src/agents/extension_manager_extension.rs
-# expect: 9 lines total = 1 definition (:97) + 1 production call site (:247)
-#         + 4 pre-existing tests (:538, :548, :570, :576) + 3 new test calls.
-# The load-bearing one is :247: it must pass a real caller tier, not a literal.
-awk 'NR==247' crates/biorouter/src/agents/extension_manager_extension.rs | grep -c "ProviderTier::"
+# expect: 9 lines total = 1 definition (:97) + 1 production call site (inside
+#         manage_extensions_impl, :247 today) + 4 pre-existing tests (:538,
+#         :548, :570, :576) + 3 new test calls.
+# The load-bearing one is the production call site: it must pass a RESOLVED
+# tier, not a literal. Anchored on the ENCLOSING FUNCTION, never on a line
+# number — this task's own implementation inserts a ~13-line match arm into
+# `check_enable_allowed` (:97-125), which is ABOVE :247, so `awk 'NR==247'`
+# reads unrelated code after the edit and passes vacuously. That is the
+# "assertion true for all inputs" pattern, and it was in the first version of
+# this gate.
+awk '/async fn manage_extensions_impl/,/^    }/' \
+  crates/biorouter/src/agents/extension_manager_extension.rs \
+  | grep -c "check_enable_allowed(" ; echo "expect: 1"
+awk '/async fn manage_extensions_impl/,/^    }/' \
+  crates/biorouter/src/agents/extension_manager_extension.rs \
+  | grep "check_enable_allowed(" | grep -c "ProviderTier::"
 echo "expect: 0 — the call site passes a resolved tier, not a hardcoded one"
 grep -c "caller: ProviderTier" crates/biorouter/src/agents/extension_manager_extension.rs ; echo "expect: 1"
 # The instructions filter is on get_extensions_info, not somewhere downstream.
@@ -3129,10 +4607,18 @@ git commit -m "feat(privacy): Gate F - refuse enabling a private extension and h
 
 ---
 
-### Task 19: Gate H — the four alternate-provider construction sites, and memory's global write
+### Task 19: Gate H — the three alternate-provider construction sites, and memory's global write
 
-Four verified paths hand session content to a provider the session row never records, none of which
-touches `Agent::update_provider` or `Agent::reply`. Gates A–F are all blind to them.
+Three verified paths hand a **session's** content to a provider the session row never records, none
+of which touches `Agent::update_provider` or `Agent::reply`. Gates A–F are all blind to them.
+
+⚠ **The fourth site the first version of this plan listed — `routes/knowledge.rs:910` — moved to
+Task 10C, and it had to.** `assert_alt_provider_allowed` compares a provider's tier with a
+**`SessionClassification`**, and `build_completer` (`:899-914`) has no session: `POST
+/knowledge/bases/{id}/ingest`, `/query` and `/lint` carry a KB id and a `ModelRef` and nothing else.
+The check that belongs there is the KB-keyed one, which is what Task 10C installs. The one macro
+route that *does* have sessions, `/ingest-conversation`, is Task 11's. Listing it here was a latent
+type error, not just a misfiling.
 
 **Files:**
 
@@ -3144,8 +4630,8 @@ touches `Agent::update_provider` or `Agent::reply`. Gates A–F are all blind to
 | Reference | `crates/biorouter/src/hooks/prompt_runner.rs` | `run_prompt_hook` `:45-58`, `complete_fast` at `:57` |
 | Reference | `crates/biorouter/src/agents/agent.rs` | the Stop hook's payload — `transcript_tail(&conversation)` at `:5495-5496` |
 | Modify | `crates/biorouter/src/agents/knowledge_tool.rs` | `build_model_ref_completer` `:183-193`; `should_use_knowledge_default_model` `:179-181` |
-| Modify | `crates/biorouter-server/src/routes/knowledge.rs` | `:910` — the HTTP macro path |
-| Modify | `crates/biorouter-mcp/src/memory/mod.rs` | `remember_memory` `:484`; `is_global` field `:30`; the #58 doc comment `:245-273` |
+| Modify | `crates/biorouter-mcp/src/memory/mod.rs` | `remember_memory` `:491-540` (the `is_global` disclosure copy it already emits at `:523-548` is the precedent to extend); `is_global` field `:30`; `tags` `:26-28`; `remember` `:374`/`:387-388`; `retrieve_all` `:346`; `compose_instructions` `:277` with `GLOBAL_INDEX_HEADER` `:89-94` (emitted `:302-307`) and `LOCAL_SECTION_HEADER` `:97` (bodies inlined **in full** `:310-322`); the #58 doc comment `:245-273` |
+| ~~Modify~~ | ~~`crates/biorouter-server/src/routes/knowledge.rs:910`~~ | **moved to Task 10C** — see the ⚠ above |
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -3195,23 +4681,56 @@ async fn a_private_session_may_not_write_a_global_memory() {
     assert!(remember_memory_as(ProviderTier::Private, json!({
         "category": "cohorts", "data": "n=412", "is_global": false })).await.is_ok());
 }
+
+#[tokio::test]
+async fn a_private_local_memory_write_says_who_will_be_able_to_read_it() {
+    // AR-3, the half that is affordable in v1. The LOCAL store is NOT gated:
+    // `compose_instructions` (mod.rs:277) inlines local memories in full at
+    // :310-322 into the system prompt of every session opened in that directory,
+    // including one on a public model. Gate F2 cannot help — it filters by
+    // EXTENSION tier and `memory` is Public.
+    //
+    // Closing it properly needs provenance per stored memory, and the on-disk
+    // format is a `# {tags}` line plus bare lines (:387-388, read back at
+    // :414-418 keyed by the TAG STRING, not the category), while
+    // `compose_instructions` runs once at MemoryServer::new (:108) rather than
+    // per turn — so a capability-aware filter there would also freeze across a
+    // mid-session model swap, which is the exact O6 hazard Gate E exists to
+    // avoid. Open question 14 carries the real fix.
+    //
+    // What v1 ships is the disclosure, extending the copy `remember_memory`
+    // already emits for `is_global` (:523-548): the model is told, in the
+    // transcript the user can read, who will be able to read this note.
+    let out = remember_memory_as(ProviderTier::Private, json!({
+        "category": "cohorts", "data": "n=412", "is_global": false })).await.unwrap();
+    assert!(out.contains("any session opened in this directory"), "{out}");
+    assert!(out.contains("including one on a public model"), "{out}");
+
+    // And the public-capability write keeps the shorter, existing copy.
+    let pubout = remember_memory_as(ProviderTier::Public, json!({
+        "category": "notes", "data": "x", "is_global": false })).await.unwrap();
+    assert!(!pubout.contains("including one on a public model"), "{pubout}");
+}
 ```
 
-- [ ] **Step 2: Run** → all four **FAIL**.
+- [ ] **Step 2: Run** → all five **FAIL**.
 
-- [ ] **Step 3: Implement** — one helper, four call sites:
+- [ ] **Step 3: Implement** — one helper, three call sites:
 
 ```rust
 // crates/biorouter/src/privacy/alt_provider.rs
 
 /// Refuse to hand a session's content to a provider that is not the one bound
-/// to it. Four production paths build such a provider and none of them passes
+/// to it. Three production paths build such a provider and none of them passes
 /// `Agent::update_provider` or `Agent::reply`, so none of Gates A-F sees them:
 ///
 /// 1. CLI plan mode — `get_reasoner` (`biorouter-cli/src/session/mod.rs:2264`)
 /// 2. Prompt hooks   — `resolve_prompt_provider` (`hooks/mod.rs:690`)
 /// 3. Knowledge default model — `build_model_ref_completer` (`knowledge_tool.rs:183`)
-/// 4. HTTP knowledge macros   — `routes/knowledge.rs:910`
+///
+/// A fourth site, the HTTP knowledge macros (`routes/knowledge.rs:899-914`), is
+/// NOT here: it has a knowledge-base id and no session, so the predicate it
+/// needs is the KB-keyed one in Task 10C, not this session-keyed one.
 pub fn assert_alt_provider_allowed(
     what: &str,
     provider: &dyn Provider,
@@ -3229,8 +4748,15 @@ pub fn assert_alt_provider_allowed(
 }
 ```
 
-and, for memory, a refusal on `remember_memory` when `is_global == true` and the caller's capability
-is Private, wired through the same `PlatformExtensionContext`/`capability_tier()` route Task 10 built.
+and, for memory, two changes in `remember_memory` (`:491-540`), wired through the same
+`PlatformExtensionContext`/`capability_tier()` route Task 10 built: a **refusal** when
+`is_global == true` and the caller's capability is Private, and — for `is_global == false` from a
+private-capability caller — a **disclosure sentence appended to the existing result copy** at
+`:523-548`, which already exists precisely to tell the user which store a note landed in:
+
+> Stored memory locally in category: `{category}`. Local memories stay in this project's
+> `.biorouter/memory` and are read by **any session opened in this directory, including one on a
+> public model** — this chat is private, that directory is not.
 
 - [ ] **Step 4: Run**
 
@@ -3238,34 +4764,48 @@ is Private, wired through the same `PlatformExtensionContext`/`capability_tier()
 cargo test -p biorouter --lib -- privacy::alt_provider hooks agents::knowledge_tool
 cargo test -p biorouter-cli --lib session
 cargo test -p biorouter-mcp --lib memory
-cargo test -p biorouter-server --test knowledge_routes
 ```
 
 - [ ] **Step 5: Gate**
 
 ```bash
-# One helper, four sites — and no site builds a provider around it.
+# One helper, three sites — and no site builds a provider around it.
 grep -rn "assert_alt_provider_allowed(" --include='*.rs' crates/ | grep -v "privacy/alt_provider.rs" | wc -l
-echo "expect: 4"
+echo "expect: 3"
 for f in crates/biorouter-cli/src/session/mod.rs crates/biorouter/src/hooks/mod.rs \
-         crates/biorouter/src/agents/knowledge_tool.rs crates/biorouter-server/src/routes/knowledge.rs; do
+         crates/biorouter/src/agents/knowledge_tool.rs; do
   echo -n "$f: "; grep -c "assert_alt_provider_allowed" "$f"
 done
 echo "expect: 1 each"
+# The KB-keyed check lives in Task 10C, not here — a copy in this file is a
+# second taxonomy for the same question.
+grep -c "assert_alt_provider_allowed" crates/biorouter-server/src/routes/knowledge.rs ; echo "expect: 0"
+# The local-memory disclosure is on the result the transcript shows, not a log line.
+awk '/pub async fn remember_memory/,/^    }/' crates/biorouter-mcp/src/memory/mod.rs \
+  | grep -c "including one on a public model" ; echo "expect: 1"
+awk '/pub async fn remember_memory/,/^    }/' crates/biorouter-mcp/src/memory/mod.rs \
+  | grep -c "tracing::warn\|tracing::info" ; echo "expect: 0 — the user reads the transcript, not the log"
 ```
 
 **What this catches.** The wrong implementation fixes the CLI plan-mode path — the one the design
-names as P6 — and treats the other three as follow-ups, which is what §18.4 currently invites. The
+names as P6 — and treats the other two as follow-ups, which is what §18.4 currently invites. The
 per-file count is what makes the omission visible; a repo-wide `grep -c` returning 1 would read as
 "the helper exists". Prompt hooks in particular carry `transcript_tail`, i.e. real transcript text,
-to an endpoint chosen by an agent-writable config file.
+to an endpoint chosen by an agent-writable config file. For memory, it catches the version that logs
+the local-store disclosure at `warn!` — where the model, which is the thing being steered, never sees
+it, and neither does the user.
+
+**What this deliberately does NOT close: AR-3.** The local memory *store* is still ungated, and
+`compose_instructions` still inlines it in full into every session in that directory. This task ships
+the disclosure and Open question 14 carries the fix. Do not let the disclosure read, in review or in
+the release notes, as though the channel were closed.
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add crates/biorouter/src/privacy/alt_provider.rs crates/biorouter-cli/src/session/mod.rs \
         crates/biorouter/src/hooks/mod.rs crates/biorouter/src/agents/knowledge_tool.rs \
-        crates/biorouter-server/src/routes/knowledge.rs crates/biorouter-mcp/src/memory/mod.rs
+        crates/biorouter-mcp/src/memory/mod.rs
 git commit -m "feat(privacy): Gate H - refuse alternate-provider paths and global memory writes from private sessions (#56)"
 ```
 
@@ -3290,11 +4830,14 @@ cargo test -p biorouter --test soft_interrupt_agent_loop
 cargo test -p biorouter --test conversation_writeback_freshness
 cargo test -p biorouter --test conversation_writeback_stress
 cargo test -p biorouter-server --test knowledge_routes
+cargo test -p biorouter-server --test knowledge_routes_e2e
 cargo test -p biorouter-mcp --test mcp_integration_test
+cargo test -p biorouter-mcp --lib knowledge::
 ```
 
 Task 13 edits `Agent::reply`'s prologue, which is where a reordering shows up in
-`conversation_writeback_freshness`'s three #59 ordering tests.
+`conversation_writeback_freshness`'s three #59 ordering tests. Tasks 10A–10C touch every knowledge
+entry point, which is what the last two targets cover.
 
 - [ ] **Step 3: Every gate is where it is supposed to be, and nowhere else**
 
@@ -3318,6 +4861,22 @@ grep -c "allowed_extension_keys" crates/biorouter/src/agents/extension_manager.r
 grep -c "s.privacy_tier = 'public'" crates/biorouter/src/session/chat_history_search.rs ; echo "expect: 2"
 # No privacy check is expressed as an inspector, and none returns Err from inspect.
 grep -rn "PrivacyInspector\|privacy.*impl ToolInspector" crates/ ; echo "expect: no output"
+# O12 — the knowledge-base barrier, all sixteen entry points plus the definition,
+# and the ratchet across its three surfaces (3 MCP writes + 2 service
+# registrations + 3 HTTP macro routes = 8).
+grep -c "assert_kb_reachable(" crates/biorouter-mcp/src/knowledge/server.rs ; echo "expect: 17"
+grep -c "tier::raise(" crates/biorouter-mcp/src/knowledge/server.rs ; echo "expect: 3"
+grep -c "tier::raise(" crates/biorouter-mcp/src/knowledge/service.rs ; echo "expect: 2"
+grep -c "tier::raise(" crates/biorouter-server/src/routes/knowledge.rs ; echo "expect: 3"
+# Only tier.rs opens the store, and the tier never reached the manifest.
+grep -rn "kb_tiers_path" crates/biorouter-mcp/src/knowledge/ | grep -v "fn kb_tiers_path"
+echo "expect: only tier.rs"
+grep -c "tier\|privacy" crates/biorouter-mcp/src/knowledge/types.rs ; echo "expect: 0"
+# Gate G is one guard in the shared function, not three copies in three callers.
+grep -rn "visible_to" --include='*.rs' crates/biorouter/src/knowledge/ \
+  crates/biorouter/src/agents/knowledge_tool.rs crates/biorouter-cli/src/commands/knowledge.rs \
+  crates/biorouter-server/src/routes/knowledge.rs
+echo "expect: exactly 1 hit, in conversation_ingest.rs"
 ```
 
 - [ ] **Step 4: Headless end-to-end, with a real private extension (manual, once)**
@@ -3360,6 +4919,23 @@ curl -s -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:3000/agent/upd
   -H 'X-Secret-Key: test' -H 'Content-Type: application/json' \
   -d "{\"session_id\":\"$SID\",\"provider\":\"anthropic\",\"model\":\"claude-opus-4-8\"}"
 # Expected: 409
+
+# 5. The knowledge base ratcheted with the session, and a public chat cannot
+#    read it back. This is the laundering path (AR-1), end to end, by hand.
+cat "$XDG_CONFIG_HOME/biorouter/knowledge/.kb-tiers"
+# Expected: the base the private session wrote to now reads "private".
+SID2=$(curl -s -X POST http://127.0.0.1:3000/agent/start -H 'X-Secret-Key: test' \
+       -H 'Content-Type: application/json' -d '{"working_dir":"/tmp"}' \
+       | python3 -c 'import json,sys;print(json.load(sys.stdin)["id"])')
+curl -s -X POST http://127.0.0.1:3000/agent/update_provider -H 'X-Secret-Key: test' \
+  -H 'Content-Type: application/json' -d "{\"session_id\":\"$SID2\",\"provider\":\"anthropic\",\"model\":\"claude-opus-4-8\"}"
+curl -s -X POST http://127.0.0.1:3000/agent/call_tool -H 'X-Secret-Key: test' \
+  -H 'Content-Type: application/json' \
+  -d "{\"session_id\":\"$SID2\",\"name\":\"knowledge__kb_search\",\"arguments\":{\"kb_id\":\"default\",\"query\":\"cohort\"}}" \
+  | python3 -m json.tool
+# Expected: the KB refusal text. NOT a hit list, and NOT an empty result set —
+# an empty result set is what a wrong implementation that filters hits AFTER
+# reading the index returns, and it is indistinguishable from "no matches".
 ```
 
 - [ ] **Step 5: Adversarial review of the phase diff, every finding addressed**
@@ -3521,8 +5097,9 @@ three hand-rolled builders into one shared helper is a better trade and closes t
 
 | Action | Path | Anchor (re-verified at `9558c346`) |
 |---|---|---|
-| Modify | `crates/biorouter/src/session/session_manager.rs` | `copy_session` `:4710-4741` (`create_session` `:4718-4724`, builder `:4726-4733`, `replace_conversation` `:4736`); `diverge_session_for_edit` `:4743-4773`; `diverge_session` `:4776-4841` (**the primary GUI diverge, and it does NOT call `copy_session`** — `create_session` `:4816-4822`, builder `:4824-4836`, `replace_conversation` `:4838`); `import_session` `:4668-4707` (builder `:4683-4700`, `replace_conversation` `:4703`) |
-| Reference | `crates/biorouter-server/src/routes/session.rs` | `POST /sessions/{id}/diverge` at `:1029` |
+| Modify | `crates/biorouter/src/session/session_manager.rs` | `copy_session` `:4710-4741` (`create_session` `:4718-4724`, builder `:4726-4733`, `replace_conversation` `:4736`); `diverge_session_for_edit` `:4743-4773`; `diverge_session` `:4776-4841` (**the primary GUI diverge, and it does NOT call `copy_session`** — `create_session` `:4816-4822`, builder `:4824-4836`, `replace_conversation` `:4838`); `import_session` `:4668-4707` (builder `:4683-4700`, `replace_conversation` `:4703`); the two builder setters this helper must use correctly — `provider_name(impl Into<String>)` `:972-975` and `model_config(ModelConfig)` `:977-980`, **both taking values, not `Option`s** |
+| Reference | `crates/biorouter-server/src/routes/session.rs` | `POST /sessions/{id}/diverge` at `:1029`. ⚠ **`routes/session.rs` has no `#[cfg(test)] mod tests` today**, so Step 4's `cargo test -p biorouter-server --lib routes::session` prints `0 passed` and exits 0 before this task; it creates the module |
+| Reference | `crates/biorouter/src/session/session_manager.rs` | `diverge_session_at` `:1562` — checked, and it is a thin wrapper onto the same storage `diverge_session` at `:4776`, so the three-path coverage below really is complete. Say so, or the next reviewer re-derives it |
 
 - [ ] **Step 1: Write the failing tests — one per path, and one that enumerates**
 
@@ -3591,17 +5168,28 @@ fn no_copy_path_hand_rolls_its_own_builder_any_more() {
         let new_session = self
             .create_session(source.working_dir.clone(), new_name, source.session_type)
             .await?;
-        session_manager
+        let mut update = session_manager
             .update(&new_session.id)
             .extension_data(source.extension_data.clone())
             .schedule_id(source.schedule_id.clone())
             .workflow(source.workflow.clone())
             .user_workflow_values(source.user_workflow_values.clone())
-            .provider_name_opt(source.provider_name.clone())
-            .model_config(source.model_config.clone())
-            .raise_privacy(source.privacy_tier, reason)
-            .apply()
-            .await?;
+            .raise_privacy(source.privacy_tier, reason);
+        // ⚠ The two provider setters take VALUES, not Options:
+        // `provider_name(impl Into<String>)` (session_manager.rs:972-975) and
+        // `model_config(ModelConfig)` (:977-980) — each wraps its argument as
+        // `Some(Some(v))`, because `Option<Option<T>>` is how this builder
+        // distinguishes "leave alone" from "set to NULL". There is no
+        // `provider_name_opt`, and passing `source.model_config.clone()`
+        // straight in is a type error. A source with no provider must leave the
+        // child's column untouched rather than writing NULL over the default.
+        if let Some(name) = source.provider_name.clone() {
+            update = update.provider_name(name);
+        }
+        if let Some(cfg) = source.model_config.clone() {
+            update = update.model_config(cfg);
+        }
+        update.apply().await?;
         self.get_session(&new_session.id, false).await
     }
 ```
@@ -3629,6 +5217,8 @@ cargo test -p biorouter-server --lib routes::session
 # One carry-over, three users.
 grep -c "create_derived_session" crates/biorouter/src/session/session_manager.rs
 echo "expect: 4 (1 definition + 3 call sites)"
+# The setter that does not exist stayed non-existent.
+grep -c "provider_name_opt" crates/biorouter/src/session/session_manager.rs ; echo "expect: 0"
 # The imported tier can only raise.
 awk '/async fn import_session/,/^    }/' crates/biorouter/src/session/session_manager.rs \
   | grep -c "SessionClassification::Private.max" ; echo "expect: 1"
@@ -3752,12 +5342,45 @@ async fn a_public_child_does_not_inherit_its_parents_private_extensions() {
         if !child_tier.is_private() && parent_cap.is_private() {
             task_config.requires_downgrade_confirmation = true;             // R4 permits; disclose
         }
+        // The ONE crossing this task adds: the child's CAPABILITY establishes
+        // the CLASSIFICATION its row is born with. Task 7's EXPECTED gains
+        // ("crates/biorouter/src/agents/subagent_tool.rs", 1) in this commit.
         task_config.privacy_tier = crate::privacy::floor(child_tier);
         // The tier filter the name-only narrowing at :788-791 does not do.
+        //
+        // NOT `visible_to(child_tier, floor(classify_extension(..)))`: both
+        // sides of that comparison are ProviderTiers, so `floor` has no business
+        // in it, and writing it that way would add a SECOND crossing here — which
+        // is how the first version of this plan got to four `floor` callers while
+        // its own audit test asserted two. Use Gate C's predicate, which is also
+        // what Gate E uses (Task 16), so all three agree by construction.
         task_config.extensions.retain(|e| {
-            crate::privacy::visible_to(child_tier,
-                crate::privacy::floor(crate::privacy::classify_extension(&e.name())))
+            crate::privacy::refusal::privacy_refusal(
+                &e.name(),
+                crate::privacy::classify_extension(&e.name()),
+                child_tier,
+            )
+            .is_none()
         });
+```
+
+and, in `privacy/refusal.rs` (created by Task 12), the variant and constructor this task is the first
+to need — **`PrivacyRefusal::spawn_upgrade` is defined here, and nowhere before**:
+
+```rust
+    /// R4: a public-capability session may never gain private reach, not even
+    /// through a child it spawns. `requested` is the child's tier, never the
+    /// parent's, so the message can say what was asked for without naming the
+    /// parent's provider.
+    PrivateChildOfPublicParent { requested: ProviderTier },
+```
+
+```rust
+impl PrivacyRefusal {
+    pub fn spawn_upgrade(requested: ProviderTier) -> Self {
+        Self::PrivateChildOfPublicParent { requested }
+    }
+}
 ```
 
 (d) **`create_subagent_session`** takes the tier and stamps it in the same statement, with reason
@@ -3788,8 +5411,17 @@ grep -n "overridden_task_config\|create_subagent_session" crates/biorouter/src/a
 # The extension narrowing is by tier as well as by name.
 awk '/async fn apply_settings_overrides/,/^}/' crates/biorouter/src/agents/subagent_tool.rs \
   | grep -c "classify_extension" ; echo "expect: 1"
-# floor() now has its two legitimate callers (Task 7's audit test).
-cargo test -p biorouter --lib privacy::tests::floor_has_exactly_two_callers_in_the_tree
+# This task adds exactly ONE floor crossing, not two, and Task 7's EXPECTED is
+# bumped in the SAME commit.
+awk '/async fn apply_settings_overrides/,/^}/' crates/biorouter/src/agents/subagent_tool.rs \
+  | grep -c "privacy::floor(" ; echo "expect: 1"
+cargo test -p biorouter --lib privacy::tests::floor_is_crossed_only_where_a_capability_establishes_a_classification
+# Expected: PASS with BOTH lines of EXPECTED uncommented. A failure naming
+# subagent_tool.rs with count 2 means the extension retain used `floor` instead
+# of the shared refusal predicate — read the comment in Step 3 (c) before
+# "fixing" the constant.
+# And the spawn refusal is a real variant, not an invented constructor.
+grep -c "PrivateChildOfPublicParent" crates/biorouter/src/privacy/refusal.rs ; echo "expect: >= 2 (variant + constructor)"
 ```
 
 **What this catches.** Stamping the tier in `create_subagent_session`'s INSERT without reordering —
@@ -3800,7 +5432,8 @@ thing that fails it, and the ordering grep is what makes the fix visible in revi
 - [ ] **Step 6: Commit**
 
 ```bash
-git add crates/biorouter/src/agents/subagent_tool.rs crates/biorouter/src/agents/subagent_task_config.rs
+git add crates/biorouter/src/agents/subagent_tool.rs crates/biorouter/src/agents/subagent_task_config.rs \
+        crates/biorouter/src/privacy/refusal.rs crates/biorouter/src/privacy/mod.rs
 git commit -m "feat(privacy): spawn inheritance - resolve the tier before the row, filter private extensions (#56)"
 ```
 
@@ -4597,6 +6230,12 @@ have meant more. The reasoning to give the user: turning off the tool gate decid
 call*; turning off the session barrier would retroactively expose data already gathered under a
 private badge, and that decision has its own deliberate flow (R9).
 
+⚠ **The knowledge-base barrier (Task 10C) is NOT under the opt-out**, and Step 5's gate asserts it.
+A KB carries session *contents* — the same category as Gate D's chat history, not the same as Gate
+C's tool permissions — and AR-1 records that it has no declassification path, so an opt-out there
+would be a one-way door with no way back. If the operator later widens R7 (open question 3), widening
+it to the KB needs its own ruling and a KB declassification path first.
+
 - [ ] **Step 1: Write the failing tests**
 
 ```rust
@@ -4663,9 +6302,29 @@ cd ui/desktop && npx vitest run SettingsView PrivacyPanel 2>&1 | tail -5
 cd ui/desktop
 grep -c 'data-testid="settings-.*-tab"' src/components/settings/SettingsView.tsx ; echo "expect: 4 (3 today)"
 cd .. 
-# One auditable line, read inside the gate.
-grep -rn "privacy_enforcement_enabled()" --include='*.rs' crates/ | grep -v "fn privacy_enforcement_enabled"
-echo "expect: exactly 3 — dispatch_tool_call, assert_extension_reachable, allowed_extension_keys"
+# One auditable line, read inside the gate. THREE production sites — and the
+# `-v` filter must exclude this task's own test, which calls the function inside
+# an assert!() and is not a gate site. Enumerate the files rather than counting
+# a repo-wide grep: the first version of this gate said "exactly 3" against a
+# pattern that also matched Test 1's `assert!(privacy_enforcement_enabled(), ..)`,
+# so a correct implementation returned 4 and read red.
+grep -rn "privacy_enforcement_enabled()" --include='*.rs' crates/ \
+  | grep -v "fn privacy_enforcement_enabled" \
+  | grep -v "assert!(privacy_enforcement_enabled"
+# expect: exactly 3 lines, all in crates/biorouter/src/agents/extension_manager.rs —
+#   dispatch_tool_call (Gate C), assert_extension_reachable (Gate C's siblings),
+#   allowed_extension_keys (Gate E).
+grep -rln "privacy_enforcement_enabled()" --include='*.rs' crates/ | sort
+# expect: privacy/mod.rs (the definition + this task's test) and
+#         agents/extension_manager.rs (the three gate sites). Nothing else.
+# DR-9 scoping, as a command: the opt-out is Gate C's, so it must NOT appear in
+# any other gate's file — including the knowledge-base barrier, which is a
+# session-content control like Gate D and is deliberately not opt-outable.
+for f in crates/biorouter/src/agents/agent.rs crates/biorouter/src/session/chat_history_search.rs \
+         crates/biorouter-mcp/src/knowledge/server.rs crates/biorouter/src/agents/subagent_tool.rs; do
+  echo -n "$f: "; grep -c "privacy_enforcement_enabled" "$f"
+done
+echo "expect: 0 each"
 # The opt-out never reaches Config::get_param.
 awk '/fn privacy_enforcement_enabled/,/^}/' crates/biorouter/src/privacy/mod.rs | grep -c "get_param"
 echo "expect: 0"
@@ -4780,9 +6439,17 @@ cargo test --workspace --no-fail-fast 2>&1 | tail -20
 cargo fmt --check && ./scripts/clippy-lint.sh
 just generate-openapi && git diff --exit-code ui/desktop/openapi.json
 cd ui/desktop && npx tsc --noEmit && npm run lint:check && npm run test:run 2>&1 | tail -8
-node scripts/check-contrast.mjs | tail -1     # expect: OK — all 274 contrast assertions pass
+node scripts/check-contrast.mjs | tail -1     # expect: OK — all 294 contrast assertions pass
 npm run themes -- --check                     # expect: OK — generated artifacts are current (3 themes)
 ```
+
+⚠ **294, not 274.** Task 26 derives the total twice and both derivations agree: 252 measured on
+`main` today, `+18` from adding `--background-medium` to `TEXT_GROUNDS` (3 text tokens × 6
+family×mode scopes), `+24` from the four new badge assertions (× 6 scopes), `+0` from rings once
+`RING_GROUNDS` loses its now-duplicate copy of `--background-medium`. The first version of this plan
+said **274** here — a phase gate quoting a number its own Task 26 contradicts, which a worker meeting
+it reads as "the phase failed". If the printed total is **300**, `RING_GROUNDS` still carries the
+duplicate; if it is **270**, the four badge assertions landed outside the per-scope loop.
 
 - [ ] **Step 2: Live GUI verification over CDP — the four surfaces, in a sandbox**
 
@@ -5483,6 +7150,7 @@ cargo test -p biorouter --test soft_interrupt_agent_loop
 cargo test -p biorouter --test conversation_writeback_freshness
 cargo test -p biorouter --test conversation_writeback_stress
 cargo test -p biorouter-server --test knowledge_routes
+cargo test -p biorouter-server --test knowledge_routes_e2e
 cargo test -p biorouter-server --test llamacpp_routes
 cargo test -p biorouter-mcp --test mcp_integration_test
 cargo test -p biorouter-mcp --lib knowledge::
@@ -5490,7 +7158,13 @@ cargo test -p biorouter-server --lib routes::apps
 node scripts/agent-drafter/ui-control-harness.mjs
 ```
 
-- [ ] **Step 3: The eleven invariants, as commands**
+⚠ Four of the `--lib` filters used across this plan resolve to modules that had **no tests before
+the task that owns them** — `agents::chatrecall_extension`, `session::chat_history_search`,
+`routes::agent`, `routes::session`. At the release gate they must all report a non-zero count. A
+`0 passed` here is not "nothing to run"; it is a suite that did not land where the filter looks. See
+[Which test filters are validated, and which are not](#which-test-filters-are-validated-and-which-are-not).
+
+- [ ] **Step 3: The twelve invariants, as commands**
 
 ```bash
 cd /Users/wgu/Desktop/BioRouter-privacy
@@ -5509,8 +7183,20 @@ grep -rn --include='*.rs' "privacy_tier *= *'public'" crates/ | grep -v "DEFAULT
 # Gate D is in both builders; Gate C has all nine entry points.
 grep -c "s.privacy_tier = 'public'" crates/biorouter/src/session/chat_history_search.rs ; echo "expect: 2"
 grep -c "assert_extension_reachable(" crates/biorouter/src/agents/extension_manager.rs ; echo "expect: 9"
-# floor() has exactly two callers.
-cargo test -p biorouter --lib privacy::tests::floor_has_exactly_two_callers_in_the_tree
+# O12 — the knowledge-base barrier and its ratchet.
+grep -c "assert_kb_reachable(" crates/biorouter-mcp/src/knowledge/server.rs ; echo "expect: 17"
+grep -c "tier::raise(" crates/biorouter-mcp/src/knowledge/server.rs ; echo "expect: 3"
+grep -c "tier::raise(" crates/biorouter-mcp/src/knowledge/service.rs ; echo "expect: 2"
+grep -c "tier::raise(" crates/biorouter-server/src/routes/knowledge.rs ; echo "expect: 3"
+grep -rn "kb_tiers_path" crates/biorouter-mcp/src/knowledge/ | grep -v "fn kb_tiers_path"
+echo "expect: only tier.rs — one reader and one writer of the store"
+# Gate G is one guard in the shared function, covering all three of its callers.
+grep -rn "caller_capability:" --include='*.rs' crates/ | grep -v conversation_ingest.rs | wc -l
+echo "expect: 3 — the platform tool, the HTTP route, the CLI"
+grep -rn "caller_capability: ProviderTier::Private" --include='*.rs' crates/ ; echo "expect: no output"
+# floor() is crossed at exactly its two intended callers, and the audit test
+# names them rather than counting — see Task 7 for why a count could not work.
+cargo test -p biorouter --lib privacy::tests::floor_is_crossed_only_where_a_capability_establishes_a_classification
 # The registry const and registry.json agree, through the wired check.
 just check-privacy-registry
 # No privacy control is an inspector, and none returns Err.
@@ -5536,8 +7222,15 @@ evidence — never silently dropped.** Re-review after substantial fixes.
 - [ ] **Step 6: Close the loop**
 
 Update `docs/security/privacy-tiers.md`'s `**Status:**` to `Current — implemented`, close issue #56
-with a summary naming the four gates the design did not have (G, F1, F2, H) and the six departures,
-and open follow-up issues for every unresolved item in [Open questions](#open-questions).
+with a summary naming the five gates the design did not have (G, F1, F2, H, and the knowledge-base
+barrier of Tasks 10A–10C) and the eight departures, and open follow-up issues for every unresolved
+item in [Open questions](#open-questions).
+
+The closing summary must also **name the accepted costs out loud** — AR-1 (a knowledge base one
+private session touched is unreadable from every public chat, with no declassification path), AR-2
+(existing knowledge bases migrate public even if a private session fed them) and AR-3 (local memory
+is ungated). They are rulings, not omissions, but an issue that closes without stating them leaves
+the next reader to rediscover them as bugs. See [Accepted risks](#accepted-risks).
 
 ---
 
@@ -5560,6 +7253,7 @@ the implementation is wrong.
 | **DR-10** | **Fail directions differ by kind, deliberately.** Migration backfill → fail **open** (public). Runtime read of a missing/unparseable column → fail **closed** (private, with `error!`). Import with no tier → fail **closed**. Unknown provider → **Public** (fail-*safe*: less privileged). Unlisted extension → **Public** (fail-open, DR-6). Any gate's lookup failing → refuse, encoded inside `Ok(..)`, never as `Err`. |
 | **DR-11** | **`medcp` stays callable by a public model**, and that is the accepted cost of DR-6. It is enabled on the operator's machine with `CLINICAL_RECORDS_*` against a clinical MSSQL backend. The reasoning: a hand-installed extension is the user's own choice, and medcp is a *connector* rather than a data source. **The badge is a statement about provenance, not about the data behind the connector.** |
 | **DR-12** | **`spokeagent` is public.** SPOKE holds no patient data; its passcode gates the service, not private content. |
+| **DR-13** | **A knowledge base ratchets on ingest**, resolving the either/or design §9.3 B4 refused to defer. A KB takes the tier of the most sensitive session that has ingested into it, and a public-capability session may not read *or write* a private KB. The alternative — declare KBs a designed public sink and warn at ingest — was **rejected**. Two costs come with it and were accepted, not overlooked: a KB one private session touched is unreadable from every public chat including the user's own ordinary work, and existing KBs migrate **public** even if a private session fed them. Both are written out in [Accepted risks](#accepted-risks) (AR-1, AR-2); there is no KB declassification path in v1. Tasks 10A–10C. |
 
 ---
 
@@ -5567,7 +7261,9 @@ the implementation is wrong.
 
 The design's eleven, unchanged in substance and re-stated with what this plan does in the meantime.
 **Question 1 is the one place the design reads a requirement in spirit rather than letter and still
-needs an operator ruling.**
+needs an operator ruling.** The design's twelfth open item — §9.3 B4's knowledge-base either/or — is
+**no longer open**: the operator ruled *ratchet*, and it is implemented in Tasks 10A–10C with its
+costs recorded in [Accepted risks](#accepted-risks).
 
 | # | Question | What this plan does while it is open |
 |---|---|---|
@@ -5583,12 +7279,16 @@ needs an operator ruling.**
 | **10** | **`ActiveWorkItem.title` is cross-session content and predates all of this** — derived from a subagent's task prompt and surfaced process-wide with a session id. The visibility rule is applied to it, but it is exposed only via `GET /active_work` for the GUI (the model-facing `subagent_status` is session-scoped), so it may deserve its own fix rather than riding this one. | Task 21 provides `appears_in_list`; wiring `/active_work` to it is a follow-up. |
 | **11** | **`POST /agent/call_tool` remains inspector-free.** This design is correct either way because the barrier is in the extension manager, but the route is a standing hazard for every *future* inspector-based control, including BR-71's. | Task 14 fixes its error mapping so a refusal reaches the caller as text rather than a bare 500, and Task 20's gate exercises it explicitly. The route itself is unchanged. |
 
-Two more this plan surfaced, both needing a ruling before the phase that touches them:
+Four more this plan surfaced. Twelve and thirteen need a ruling before the phase that touches them;
+fourteen and fifteen are follow-ups whose *residual* is already accepted (AR-3, AR-1) and whose
+*fix* is not scheduled.
 
 | # | Question | Blocks |
 |---|---|---|
 | **12** | **Does `ensure_privacy_schema` co-landing with BR-71 need a merge-order decision?** Both branches add `parent_session_id`; both would take migration 17. The shape-guarded arm plus the unconditional reconcile makes either order safe **in the database**, but the two diffs conflict textually in `session_manager.rs`. Resolution guidance: take either side — the columns are identical — and keep the **shape-guarded** form. | Task 6, and BR-71 Task 1. |
 | **13** | **Does `medcp`'s continued reachability need a first-run notice, or is the badge enough?** §13.5 specifies a one-time notice naming any **enabled** extension that is Public and declares clinical-looking credentials. On the operator's machine that names exactly one extension, `medcp`, and nothing else changes. | Task 38's notice copy. Hard-code that expectation into its test fixture. |
+| **14** | **How does `memory`'s local store get a tier?** AR-3: `compose_instructions` (`memory/mod.rs:277`) inlines local memories in full (`:310-322`) into every session opened in that directory, including one on a public model, and Task 19 ships only a disclosure. The design's §9.3 B3 names the fix — "classify memory entries and filter `retrieve_all` by the session's capability tier at init" — but the on-disk format carries no provenance (`:387-388` writes a `# {tags}` line and bare lines; `:414-418` reads them back keyed by the *tag string*), and `compose_instructions` runs once at `MemoryServer::new` (`:108`) rather than per turn, so a naive capability filter there freezes across a mid-session model swap — the O6 hazard. A real fix needs per-entry provenance **and** a per-turn recompute. | Nothing in this plan. Open it as a follow-up issue at Task 40 Step 6. |
+| **15** | **Does a knowledge base need a declassification path, and does the barrier belong on the GUI's own read routes?** Two halves of the same scope question. (a) AR-1: a session can be declassified (Task 29, user-only, graded, audited) and a KB cannot, so a user who ratchets their only base by accident has no in-product exit. (b) Task 10C gates the four `/knowledge/*` **macro** routes (they run a model) and deliberately leaves the GUI's read routes alone (the Knowledge view is the user, not a model) — a defensible line, but it means the *app* shows a private base that the *agent* in the next tab cannot read, and nobody has decided whether that asymmetry should be visible in the UI. | Nothing in this plan; both are follow-ups. (a) is the one a user will hit first. |
 
 ---
 
@@ -5600,5 +7300,6 @@ Two more this plan surfaced, both needing a ruling before the phase that touches
 - [BR-71 execution plan](../agent-loop/designs/br71-execution-plan.md) — the plan this one must land ahead of, and whose Task 1 collides with Task 6's migration.
 - [Subagents](../agent-loop/subagents.md) — the inheritance behaviour Task 23 gates.
 - [Tool routing](../agent-loop/tool-routing.md) — the chatrecall/workspace split Gate D sits inside.
+- [Multi-KB implementation plan](../knowledge-base/multi-kb-implementation-plan.md) — the "one axis, one pointer" visible-set model whose explicit-`kb_id` escape hatch Tasks 10A–10C now qualify.
 - [Launching the dev GUI](../desktop-ui/launching-the-dev-gui.md) — required reading before any GUI verification step.
 - [Documentation style](../contributing/documentation-style.md) and [documentation organization](../organization.md) — both binding on Task 39.
