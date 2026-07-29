@@ -313,6 +313,203 @@ pub async fn run_turn(
     supervise_turn(session_id, turn_guard, turn).await;
 }
 
+/// Belt-and-braces sweep of a session's broadcast ring, which
+/// `broadcast::channel` allocates in full (1024 slots) at creation. Held by
+/// [`run_turn_body`] for the whole turn, so the sweep runs on every exit path
+/// including an unwind.
+///
+/// Read the comment this replaces carefully if you are tempted to lean on this
+/// guard: it claimed the registry was an insert-and-never-remove map and that
+/// this sweep was what stopped the leak. That has not been true since `publish`
+/// became a pure lookup that never inserts and `Subscription::drop` took
+/// ownership of the reclaim — every ring in the registry now belongs to some
+/// observer, and the last observer to leave frees it.
+/// `session_events::release_if_idle` is still public *for* this call and says
+/// so, so the sweep stays; but it is a second line of defence, not the
+/// mechanism, and a reader who believes otherwise will draw the wrong
+/// conclusion about who owns a ring.
+struct BusRelease(String);
+
+impl Drop for BusRelease {
+    fn drop(&mut self) {
+        let session_id = std::mem::take(&mut self.0);
+        // Only when a runtime is still around: the guard can also unwind
+        // during runtime teardown, where there is nothing to spawn onto.
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            biorouter::session_events::release_if_idle(&session_id);
+            return;
+        };
+        handle.spawn(async move {
+            // Grace period, deliberately: at the instant `run_turn` returns,
+            // the `/reply` SSE consumer is still holding its `Receiver` to
+            // read the terminal frame, so an immediate call would always
+            // find `receiver_count() > 0` and free nothing — and the entry
+            // would then live forever for a session that never runs another
+            // turn. 30 s also keeps a rapid back-and-forth from churning
+            // one allocation per turn.
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            biorouter::session_events::release_if_idle(&session_id);
+        });
+    }
+}
+
+/// Everything [`run_turn_body`] resolves out of the store before it can ask the
+/// provider for a single token. Produced by [`prepare_turn`].
+struct TurnSetup {
+    agent: Arc<biorouter::agents::Agent>,
+    session_config: SessionConfig,
+    /// The turn's accumulator, already seeded and already carrying
+    /// `user_message` as its last entry.
+    all_messages: Conversation,
+}
+
+/// The setup phase: resolve the session's agent, read the session, build its
+/// `SessionConfig`, and seed the accumulator.
+///
+/// `None` means the turn is over and **this function has already published its
+/// single terminal `TurnError`** — the caller returns without publishing
+/// anything else. Split out of [`run_turn_body`] to keep that function under the
+/// repo's 100-line ceiling; it is a phase boundary the code already had, not a
+/// line-count slice, and every publish/return pair moved across it verbatim.
+async fn prepare_turn(
+    state: &Arc<AppState>,
+    session_id: &str,
+    user_message: &Message,
+    reasoning_effort: Option<biorouter::agents::ReasoningEffort>,
+    conversation_so_far: Option<Conversation>,
+) -> Option<TurnSetup> {
+    let agent = match state.get_agent(session_id.to_string()).await {
+        Ok(agent) => agent,
+        Err(e) => {
+            tracing::error!("turn: failed to get session agent: {e}");
+            publish_turn_error(
+                session_id,
+                format!("Failed to get session agent: {e}"),
+                "agent_unavailable",
+                TurnErrorScope::Session,
+                true,
+                None,
+            );
+            return None;
+        }
+    };
+    let session = match state.session_manager().get_session(session_id, true).await {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!("turn: failed to read session: {e}");
+            publish_turn_error(
+                session_id,
+                format!("Failed to read session: {e}"),
+                "session_unavailable",
+                TurnErrorScope::Session,
+                true,
+                None,
+            );
+            return None;
+        }
+    };
+
+    let session_config = SessionConfig {
+        id: session_id.to_string(),
+        schedule_id: session.schedule_id.clone(),
+        max_turns: None,
+        max_tool_calls: None,
+        budget: None,
+        retry_config: None,
+        // `ReasoningEffort` is `Copy`, so this is a plain move-out-of-a-copy;
+        // the field types on both sides are `Option<ReasoningEffort>`.
+        reasoning_effort,
+    };
+
+    // Seed the accumulator. NO STORAGE WRITE HAPPENS HERE — see [`run_turn`]'s
+    // stated non-goal 1, and `TurnExtras.conversation_so_far`'s doc.
+    //
+    // `Some(_)` is the conversation `/reply` already validated and stored via
+    // `apply_client_writeback` before spawning this task; `None` is every other
+    // caller, which starts from the session's own history. The trailing push is
+    // load-bearing and must not be dropped: without it
+    // `emit_completion_metrics`' fallback `message_count` is off by one and
+    // `track_tool_telemetry`'s lookup base differs by a message.
+    let mut all_messages =
+        conversation_so_far.unwrap_or_else(|| session.conversation.clone().unwrap_or_default());
+    all_messages.push(user_message.clone());
+
+    Some(TurnSetup {
+        agent,
+        session_config,
+        all_messages,
+    })
+}
+
+/// Best-effort LLM session rename — always spawned, unlike a tail on the lazy
+/// reply stream which an early `break` in [`drive_stream`] would skip, leaving
+/// the session stuck on "New Session".
+fn spawn_session_rename(agent: &Arc<biorouter::agents::Agent>, session_id: &str) {
+    let agent_for_rename = agent.clone();
+    let session_id_for_rename = session_id.to_string();
+    tokio::spawn(async move {
+        agent_for_rename
+            .maybe_rename_session(&session_id_for_rename)
+            .await;
+    });
+}
+
+/// The teardown phase: session-completion telemetry, the authoritative
+/// end-of-turn token read, and — for a turn that did not already publish a
+/// terminal error — the `TurnFinished` frame.
+///
+/// `cancel_token` rather than a precomputed flag, deliberately: the exit-type
+/// label and the finish reason are two **separate** reads of the token, at the
+/// two points the pre-split code read it (before and after the metrics await).
+/// Collapsing them into one read would change what a turn cancelled inside
+/// `emit_completion_metrics` reports.
+async fn finish_turn(
+    state: &Arc<AppState>,
+    session_id: &str,
+    session_type: &'static str,
+    terminal_error: bool,
+    cancel_token: &CancellationToken,
+    turn_started: std::time::Instant,
+    fallback_message_count: usize,
+) {
+    let exit_type = if terminal_error {
+        "error"
+    } else if cancel_token.is_cancelled() {
+        "cancelled"
+    } else {
+        "normal"
+    };
+    emit_completion_metrics(
+        state,
+        session_id,
+        session_type,
+        exit_type,
+        turn_started.elapsed(),
+        fallback_message_count,
+    )
+    .await;
+
+    // BR-52: one authoritative read at the end of the turn — the single point
+    // where a client's token readout is reconciled with the store, so nothing
+    // written outside this turn (a background eager compaction, a concurrent
+    // scheduled run) can leave the UI on a stale count.
+    let final_token_state = get_token_state(state.session_manager(), session_id).await;
+
+    if !terminal_error {
+        session_events::publish(
+            session_id,
+            SessionBusEvent::TurnFinished {
+                reason: if cancel_token.is_cancelled() {
+                    "cancelled".into()
+                } else {
+                    "stop".into()
+                },
+                token_state: Some(final_token_state),
+            },
+        );
+    }
+}
+
 async fn run_turn_body(
     state: Arc<AppState>,
     request: TurnRequest,
@@ -329,42 +526,6 @@ async fn run_turn_body(
     // Defer scheduled background jobs while a turn is in flight.
     let _interactive_turn = biorouter::scheduler::interactive_turn_guard();
 
-    // Belt-and-braces sweep of this session's broadcast ring, which
-    // `broadcast::channel` allocates in full (1024 slots) at creation.
-    //
-    // Read the comment this replaces carefully if you are tempted to lean on
-    // this guard: it claimed the registry was an insert-and-never-remove map
-    // and that this sweep was what stopped the leak. That has not been true
-    // since `publish` became a pure lookup that never inserts and
-    // `Subscription::drop` took ownership of the reclaim — every ring in the
-    // registry now belongs to some observer, and the last observer to leave
-    // frees it. `session_events::release_if_idle` is still public *for* this
-    // call and says so, so the sweep stays; but it is a second line of defence,
-    // not the mechanism, and a reader who believes otherwise will draw the
-    // wrong conclusion about who owns a ring.
-    struct BusRelease(String);
-    impl Drop for BusRelease {
-        fn drop(&mut self) {
-            let session_id = std::mem::take(&mut self.0);
-            // Only when a runtime is still around: the guard can also unwind
-            // during runtime teardown, where there is nothing to spawn onto.
-            let Ok(handle) = tokio::runtime::Handle::try_current() else {
-                biorouter::session_events::release_if_idle(&session_id);
-                return;
-            };
-            handle.spawn(async move {
-                // Grace period, deliberately: at the instant `run_turn` returns,
-                // the `/reply` SSE consumer is still holding its `Receiver` to
-                // read the terminal frame, so an immediate call would always
-                // find `receiver_count() > 0` and free nothing — and the entry
-                // would then live forever for a session that never runs another
-                // turn. 30 s also keeps a rapid back-and-forth from churning
-                // one allocation per turn.
-                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-                biorouter::session_events::release_if_idle(&session_id);
-            });
-        }
-    }
     let _bus_release = BusRelease(session_id.clone());
 
     let _active_work = extras.register_active_work.then(|| {
@@ -387,73 +548,29 @@ async fn run_turn_body(
     // exactly one `TurnError` or one `TurnFinished`, never both and never two —
     // and the one exit path that cannot publish anything, a panic, is covered
     // by `supervise_turn`, which publishes `internal_error` while this session's
-    // turn guard is still held.
+    // turn guard is still held. The two phases split out of this function,
+    // [`prepare_turn`] and [`finish_turn`], each own their share of that
+    // guarantee and nothing else publishes a terminal on this path.
     //
-    // `provider_kind` is a parameter, not a hardcoded `None`: it is one of the
-    // three fields the desktop's rate-limit/retry/compaction recovery reads, and
-    // the classifier below is the only thing in the process that produces it.
-    let publish_error = |message: String,
-                         code: &str,
-                         scope: TurnErrorScope,
-                         retryable: bool,
-                         provider_kind: Option<String>| {
-        publish_turn_error(&session_id, message, code, scope, retryable, provider_kind);
+    // Every terminal goes through [`publish_turn_error`], whose `provider_kind`
+    // is a parameter rather than a hardcoded `None`: it is one of the three
+    // fields the desktop's rate-limit/retry/compaction recovery reads, and
+    // `classify_abort` is the only thing in the process that produces it.
+    let Some(TurnSetup {
+        agent,
+        session_config,
+        mut all_messages,
+    }) = prepare_turn(
+        &state,
+        &session_id,
+        &user_message,
+        extras.reasoning_effort,
+        extras.conversation_so_far,
+    )
+    .await
+    else {
+        return;
     };
-
-    let agent = match state.get_agent(session_id.clone()).await {
-        Ok(agent) => agent,
-        Err(e) => {
-            tracing::error!("turn: failed to get session agent: {e}");
-            publish_error(
-                format!("Failed to get session agent: {e}"),
-                "agent_unavailable",
-                TurnErrorScope::Session,
-                true,
-                None,
-            );
-            return;
-        }
-    };
-    let session = match state.session_manager().get_session(&session_id, true).await {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::error!("turn: failed to read session: {e}");
-            publish_error(
-                format!("Failed to read session: {e}"),
-                "session_unavailable",
-                TurnErrorScope::Session,
-                true,
-                None,
-            );
-            return;
-        }
-    };
-
-    let session_config = SessionConfig {
-        id: session_id.clone(),
-        schedule_id: session.schedule_id.clone(),
-        max_turns: None,
-        max_tool_calls: None,
-        budget: None,
-        retry_config: None,
-        // `ReasoningEffort` is `Copy`, so this is a plain move-out-of-a-copy;
-        // the field types on both sides are `Option<ReasoningEffort>`.
-        reasoning_effort: extras.reasoning_effort,
-    };
-
-    // Seed the accumulator. NO STORAGE WRITE HAPPENS HERE — see the stated
-    // non-goal above, and `TurnExtras.conversation_so_far`'s doc.
-    //
-    // `Some(_)` is the conversation `/reply` already validated and stored via
-    // `apply_client_writeback` before spawning this task; `None` is every other
-    // caller, which starts from the session's own history. The trailing push is
-    // load-bearing and must not be dropped: without it
-    // `emit_completion_metrics`' fallback `message_count` is off by one and
-    // `track_tool_telemetry`'s lookup base differs by a message.
-    let mut all_messages = extras
-        .conversation_so_far
-        .unwrap_or_else(|| session.conversation.clone().unwrap_or_default());
-    all_messages.push(user_message.clone());
 
     let mut stream = match agent
         .reply(user_message, session_config, Some(cancel_token.clone()))
@@ -462,7 +579,8 @@ async fn run_turn_body(
         Ok(stream) => stream,
         Err(e) => {
             tracing::error!("turn: failed to start reply stream: {e:?}");
-            publish_error(
+            publish_turn_error(
+                &session_id,
                 e.to_string(),
                 "inference_start_failed",
                 TurnErrorScope::Inference,
@@ -476,61 +594,25 @@ async fn run_turn_body(
     let terminal_error =
         drive_stream(&session_id, &mut stream, &cancel_token, &mut all_messages).await;
 
-    // Best-effort LLM session rename — always runs, unlike a tail on the lazy
-    // reply stream which an early `break` above would skip, leaving the session
-    // stuck on "New Session".
-    {
-        let agent_for_rename = agent.clone();
-        let session_id_for_rename = session_id.clone();
-        tokio::spawn(async move {
-            agent_for_rename
-                .maybe_rename_session(&session_id_for_rename)
-                .await;
-        });
-    }
+    spawn_session_rename(&agent, &session_id);
 
-    let exit_type = if terminal_error {
-        "error"
-    } else if cancel_token.is_cancelled() {
-        "cancelled"
-    } else {
-        "normal"
-    };
-    emit_completion_metrics(
+    finish_turn(
         &state,
         &session_id,
         extras.kind.session_type(),
-        exit_type,
-        turn_started.elapsed(),
+        terminal_error,
+        &cancel_token,
+        turn_started,
         all_messages.len(),
     )
     .await;
-
-    // BR-52: one authoritative read at the end of the turn — the single point
-    // where a client's token readout is reconciled with the store, so nothing
-    // written outside this turn (a background eager compaction, a concurrent
-    // scheduled run) can leave the UI on a stale count.
-    let final_token_state = get_token_state(state.session_manager(), &session_id).await;
-
-    if !terminal_error {
-        session_events::publish(
-            &session_id,
-            SessionBusEvent::TurnFinished {
-                reason: if cancel_token.is_cancelled() {
-                    "cancelled".into()
-                } else {
-                    "stop".into()
-                },
-                token_state: Some(final_token_state),
-            },
-        );
-    }
 }
 
 /// Publish one `TurnError` frame for `session_id`.
 ///
-/// A free function rather than only a closure inside [`run_turn`] because
-/// [`drive_stream`] publishes terminals too, and the two must produce the same
+/// A free function rather than a closure inside any one phase, because all four
+/// of them — [`prepare_turn`], [`run_turn_body`], [`drive_stream`] and
+/// [`supervise_turn`] — publish terminals, and they must all produce the same
 /// envelope: `scope`, `retryable` and `provider_kind` are exactly the three
 /// fields the desktop's rate-limit / retry / compaction recovery keys off, and
 /// nothing else in the process emits them.
