@@ -12,7 +12,7 @@
 
 ## 1. Summary
 
-Two independent lattices, one column, one predicate, five gates.
+Two independent lattices, one column, one predicate, five gates **and one sandbox**.
 
 - **Capability** — what a session may *do* — is the **least** privileged model currently bound to
   it. A mixed lead/worker configuration therefore has public reach, because its transcript already
@@ -22,6 +22,12 @@ Two independent lattices, one column, one predicate, five gates.
 
 A public model must never reach a private session — not once, not read-only, not indirectly. The
 converse is unrestricted: a private model may read anything.
+
+The five gates sit on *tool calls*, which is not where the boundary ends. A public-capability
+session also holds tools that run arbitrary commands and read arbitrary paths, and the private
+material is ordinary files on disk. So a sixth control, **on by default**, hides four directories
+from those tools for the duration of a public-capability session (§9.5), and one **master toggle**
+turns the whole feature — gates, ratchet and sandbox — off for a user who does not want it (§10.6).
 
 The system is not expressible with what exists today. `provider_class` in
 `crates/biorouter-server/src/routes/apps.rs:2089` is the only thing in the tree that resembles it,
@@ -99,7 +105,7 @@ Each verified by reading the code, each fixed as a by-product of this design:
 | R4 | A private session may spawn public children; a public session may never gain private reach. |
 | R5 | Children inherit the parent's model and lead/worker mode unless the user says otherwise. |
 | R6 | Lineage decides write access: sessions the caller spawned get full control, everything else is read-only. |
-| R7 | A global opt-out exists, off by default. |
+| R7 | A global opt-out exists, off by default. It is a **master** switch: with it off there is no gate, no ratchet and no sandbox anywhere (§10.6). |
 | R8 | A public model must never reach a private session. |
 | R9 | Only the user can deprivatise a session, from history settings, with a warning. Nothing automatic, nothing agent-invocable. |
 | R10 | Badges are visible everywhere — models, sessions, MCP servers. |
@@ -693,11 +699,32 @@ declassify to a one-shot capability token minted by the renderer, not to `X-Secr
 every message of every session, no JSON parsing needed, because `messages_fts` is a **contentful**
 FTS5 table (DDL comment at `session_manager.rs:33-47` says exactly why). `DEFAULT_SECRET_PATTERNS`
 (`secret_guard.rs:33-45`) covers `**/.env`, `**/secrets.*`, keys and `**/.aws/credentials` — no
-session DB. Add `**/sessions.db*` and the Biorouter data directory. **Correction to the reviewer's
-version of this finding:** the DB is under `Paths::data_dir()`, i.e.
-`~/.local/share/biorouter/sessions/sessions.db` on this machine — *not* `~/.config/biorouter/`,
-which holds only `config.yaml` and friends. A pattern written against `.config` would not match.
-State the limit honestly (see C1): this raises the cost, it does not close the read.
+session DB. **Correction to the reviewer's version of this finding:** the DB is under
+`Paths::data_dir()`, i.e. `~/.local/share/biorouter/sessions/sessions.db` on this machine — *not*
+`~/.config/biorouter/`, which holds only `config.yaml` and friends. A pattern written against
+`.config` would not match.
+
+**This is bigger than `sessions.db`, and the fix is not a SecretGuard pattern.** The same reasoning
+reaches the knowledge tree, the global memory store and the Agent Drafter apps: all are files, all
+are readable by any tool that can run a command or open a path, and none of the five gates is on
+that path. `developer__shell` executes an arbitrary command (`rmcp_developer.rs:1307`) and is
+explicitly *not* jailed by the file tools' containment base (`:1950`); the OS sandbox that could
+confine it defaults to **off** (`shell_sandbox/mod.rs:244`);
+`computercontroller__automation_script` writes and executes a model-supplied script
+(`computercontroller/mod.rs:833`). **So a public-capability model does not need to defeat any gate
+in §9.1 — it can read the private material directly.**
+
+Adding `**/sessions.db*` and the data directory to `DEFAULT_SECRET_PATTERNS` was this design's first
+answer and is **rejected**, for two reasons that only appear on measurement. That list is an
+always-on floor applied to *every* session, so it would hide the user's own chat history and
+knowledge base from a **private** session too — a cost nothing in R1–R14 asks for. And it would not
+close the read in any case: `candidate_is_denied` (`secret_guard.rs:278-292`) is lexical and
+existence-gated, so a computed path or a shell expression walks past it. Stated honestly, it raises
+the cost and does not close the read.
+
+**The answer is §9.5** — a read-deny sandbox on the tools, conditioned on the session's capability.
+Adding the patterns anyway remains worthwhile as defence in depth for the credential half, but it is
+not the control.
 
 **B1 — three copy paths, not one.** `copy_session` (`:4138-4168`) is called only by
 `diverge_session_for_edit`. The **primary GUI diverge** is `diverge_session` (`:4204-4265`), which
@@ -787,6 +814,78 @@ output; a private parent's public child reading back up (VIS is evaluated on the
 capability); `workspace_read_conversation` on an ancestor (lineage widens *write*, never *read*);
 `chatrecall` SEARCH after Gate D; a stale registry copy downgrading an extension (the union rule
 holds).
+
+---
+
+### 9.5 The sixth control — a read-deny sandbox for public capability, on by default
+
+**Ruling.** When a session's capability is **public**, the tools that spawn a process or resolve a
+caller-supplied path run under an OS sandbox that **denies reads** of BioRouter's own private data
+roots. Private-capability sessions are unaffected: this is not a general jail and must not become
+one. Everything outside those roots stays readable and writable, so ordinary work is untouched.
+
+**The four roots**, and nothing else:
+
+| Root | Resolved by | Why |
+|---|---|---|
+| `<data>/sessions` | `Paths::data_dir()` + `SESSIONS_FOLDER` | `sessions.db` and its FTS mirror — §9.3 A2 |
+| `<config>/knowledge` | `knowledge::paths::knowledge_root()` | the tree the KB barrier gates |
+| `<config>/memory` | `memory::global_memory_dir()` | the global store §9.3 B3 is about |
+| `<config>/agent_drafter` | `agent_drafter::default_root()` | app source, `.vault/`, **and app ids** |
+
+Note the two different directories: the session store is under `data_dir`, the other three under
+`config_dir`. A deny list written against one prefix misses three of the four.
+
+**The surfaces it covers:** `developer__shell` and its background jobs, `developer`'s file tools,
+`computercontroller__automation_script` and `computer_control`, and any future tool that spawns a
+process or reads an arbitrary path. The shell surfaces get a kernel answer; the in-process file
+tools get a check where the path is resolved, because they never spawn anything for a kernel to
+confine.
+
+**What each platform can express**, measured against `crates/biorouter-sandbox` rather than assumed:
+
+- **macOS (Seatbelt) — yes, directly.** SBPL is last-match-wins, so a `(deny file-read* (subpath …))`
+  appended *after* the base profile's `(allow file-read*)` subtracts the subtree. Effectively free.
+- **Linux (bubblewrap) — yes, directly.** `--tmpfs <root>` after `--ro-bind / /` overmounts the
+  directory with an empty tmpfs in the child's own mount namespace: a real subtraction, no
+  enumeration, no race. Requires `bwrap` installed and unprivileged user namespaces enabled, so the
+  capability must be a **live probe**, not a `PATH` check.
+- **Linux (Landlock) — no, and not because of this host.** A Landlock ruleset is a set of *grants*
+  with no deny rule and no way to subtract a subpath from a broader grant; the implementation
+  deliberately leaves read accesses unhandled so reads stay open. Expressing a deny means granting
+  the *complement* — every sibling of every ancestor of every deny root, re-enumerated per command —
+  and anything created in one of those ancestors after the ruleset is built becomes unreadable for
+  that command's lifetime. Declined; a control whose failure mode is "the file I just wrote cannot
+  be read back" is a control that gets switched off.
+- **Windows — no.** There is no unprivileged, general-purpose confinement that can wrap an arbitrary
+  developer command without breaking it; the sandbox module's own header works through the five
+  candidates and why each fails.
+
+**The fail direction is closed.** A public-capability session on a host where the read-deny cannot
+be established does **not** get an unsandboxed arbitrary-execution tool. Those specific tools are
+refused, with a deterministic error that names the state, the reason, and the two ways out — switch
+this chat to a private model, or turn privacy tiers off for this machine (§10.6) — and forecloses
+the retry. On Linux the message names a third fix for the machine itself (`install bubblewrap`).
+The refused tools are **not** hidden from the model's tool list: hiding them makes a model invent
+workarounds, while a refusal that forecloses the retry makes it stop.
+
+**The costs, stated rather than discovered.** On Windows, and on Linux without bubblewrap, a
+public-capability chat loses the shell — which for a commercial model on a Windows laptop is the
+common configuration, and is a large part of why R7's opt-out is a master switch. A
+public-capability chat also cannot read its own history through the `biorouter` CLI (that reads the
+session store), nor `cat` its own drafted app's source (that is the fourth root). All three are the
+control working as specified.
+
+**The second-order path stays closed by a different mechanism.** A sandboxed child cannot open
+`sessions.db`, but the daemon's HTTP API is another read path: `GET /sessions/{id}/export` returns a
+transcript to anyone holding `BIOROUTER_SERVER__SECRET_KEY`. That secret is stripped from every
+child spawned on an agent's behalf — `strip_daemon_private_env`, the fix for §9.3 A1, applied last
+in each command builder — while `BIOROUTER_PORT` is deliberately kept. So a sandboxed child knows
+where the daemon is and cannot authenticate to it. One residual: `GET /apps/{id}` and
+`GET /apps/{id}/agent` are deliberately unauthenticated, and the served page carries the app's
+socket token, so a client that already knows an **app id** can drive that app's agent. Denying the
+Agent Drafter root removes the only on-disk source of app ids and `GET /apps` still requires the
+secret; authenticating the app socket against a shell is a separate change (open question).
 
 ---
 
@@ -918,14 +1017,34 @@ framed, both verified and both in the design's favour:
 Cost: one hand-maintained pattern list — the one hand-maintained list this design otherwise avoids.
 Hence v2, opt-in, and never a correction to the ruling.
 
-### 10.6 The opt-out (R7)
+### 10.6 The opt-out (R7) — one master toggle
 
-Global, explicit, off by default: `BIOROUTER_PRIVACY_MCP_ENFORCEMENT` (default `on`), **scoped to
-Gate C only**. R7's own wording carries the "by default"; R3/R4/R6/R13 are stated without one. The
-reasoning to give the user: turning off the tool gate decides *what a model may call*; turning off
-the session barrier would retroactively expose data already gathered under a private badge, and
-that decision has its own deliberate flow (R9). Flagged as open question 3 in case the operator
-meant more.
+Global, explicit, on by default: `BIOROUTER_PRIVACY_TIERS` (default `on`), and it is a **master**
+switch over the whole feature. With it off there is no bind gate, no turn gate, no dispatch gate, no
+discovery filter, no `chatrecall` filter, no knowledge-base barrier, no spawn matrix, no
+classification ratchet and **no read-deny sandbox** (§9.5). Nothing is refused and nothing is
+sandboxed.
+
+**An earlier draft of this section scoped the opt-out to Gate C** — turning off the tool gate
+decides what a model may *call*, whereas turning off the session barrier retroactively exposes data
+gathered under a private badge — and flagged the scope as open question 3. The operator has ruled
+the other way, reading their own words ("opt out of the **entire** protection layer") literally. The
+narrower key is retired rather than kept alongside the master one: two switches whose scopes nest
+are two things a user must reason about at the moment they are least able to.
+
+**What it does *not* do.** It does not drop the columns, the stamps already written, or the audit
+rows, so turning it back on resumes enforcement over the history that existed when it was turned
+off. And it does not hide the badges: they keep rendering, restyled and suffixed *— enforcement
+off*, beside a persistent strip. Hiding them makes an unprotected machine indistinguishable from a
+machine with nothing private on it, at exactly the moment the distinction matters; leaving them
+unchanged makes a pill reading plain **Private** a false statement the user acts on.
+
+**The one-way cost, which the confirmation must state.** With the toggle off the ratchet does not
+run, so a session that handled private material during that window stays stamped `public` for ever:
+there is no content scan, no provenance on the messages, and `privacy_tier` is monotone, so
+re-enabling cannot go back and mark it. The alternative — keep ratcheting while the guardrails are
+off — was rejected because it silently privatises sessions the user believes are unprotected, and
+they would first learn of it as a refusal weeks later.
 
 Three hardening measures, because the failure mode is an agent disabling its own protection:
 (1) read it bypassing `Config::get_param`'s env branch, straight from the loaded values map, so no
@@ -934,6 +1053,10 @@ must come from Settings → Privacy with its confirmation; (3) hold the authorit
 memory from startup — **not** SecretGuard, which cannot enforce this (§9.3 C1). Check *inside* the
 gate rather than in an `is_enabled()`, following the `SensitiveOpsInspector` pattern, so a
 mid-session change is honoured and the opt-out is one auditable line rather than an absent gate.
+
+Because it is now one predicate read by every gate, the test that matters is a **matrix**: each gate
+asserted in both toggle positions. A master toggle wired to three gates out of ten passes every
+textual check and is the failure this design is most likely to ship.
 
 ---
 
@@ -1431,19 +1554,27 @@ than omitting them. Omission is what produces "the OMOP tool is broken".
 
 ### 14.6 The opt-out surface, and warned-rather-than-walled
 
-**Settings → Privacy**, one switch, off by default:
+**Settings → Privacy**, one switch, **on** by default:
 
-> **Private extension protection** — On
-> Private extensions (UCSFOMOPAgent, CDWAgent) can only be called by private models. Turn this off
-> to let any model call any extension.
-> Turning this off does **not** change how private chats work: a public model still can't read a
-> private chat.
+> **Privacy tiers** — On
+> Chats on private models (Versa, or a local model) stay private: a public model can't read them,
+> can't call a private extension, and can't reach your knowledge bases through the shell.
 
-Turning it off requires typing `DISABLE PROTECTION` and shows: *"These extensions connect to UCSF
-clinical systems. With this off, commercial models hosted outside UCSF may query them and receive
-patient data in their responses. This applies to every conversation on this machine."* While off, a
-persistent amber strip sits in the settings sidebar and each private extension's badge reads
-**"Private — protection disabled"**.
+Turning it off requires typing `DISABLE PRIVACY TIERS` and shows all four sentences — the third and
+fourth are the ones a user cannot reconstruct for themselves, and are why this is a typed
+confirmation rather than a switch:
+
+> This turns off **every** privacy guardrail on this machine, for every conversation.
+> Commercial models will be able to call UCSF clinical extensions, read private chat history, read
+> and write your knowledge bases, and read your saved chats, memories and Biorouter apps straight
+> off the disk through the shell.
+> **While it is off, Biorouter stops recording which conversations touched private material.**
+> Turning it back on will protect what is already marked private — but it cannot go back and mark
+> anything that happened while it was off.
+
+While off, a persistent amber strip sits in the settings sidebar and **every** privacy badge in the
+app renders muted with the suffix **"— enforcement off"** — on the session list, the model chip and
+the extension rows, not only in Settings.
 
 `POST /config/set_provider` and the `/config/upsert` paths used by `ProviderGuard.tsx` and the
 onboarding cards change the *default for future sessions*, not any existing one. Those surfaces show
@@ -1641,9 +1772,10 @@ Gate C, i.e. not the part annoying them. They file a bug instead.
    from `~/.config/biorouter/config.yaml` and, with `allow_project_hooks`, from
    `.biorouter/hooks.yaml` in the working directory, both writable by an agent with `text_editor`.
    An operator wanting zero risk makes it a `Deny`.
-3. **Does the R7 opt-out really stop at Gate C?** The operator wrote "opt out of the **entire**
-   protection layer", but R3/R4/R6/R13 are stated as invariants without a "by default". Scoping it
-   to the MCP gate is a materially different design from scoping it to everything.
+3. ~~**Does the R7 opt-out really stop at Gate C?**~~ **RULED — it stops nowhere.**
+   `BIOROUTER_PRIVACY_TIERS=off` disables every gate, the ratchet and the read-deny sandbox
+   (§10.6). The cost is that nothing is recorded while it is off and re-enabling does not
+   reclassify the gap; the typed confirmation states it.
 4. **Is the first cross-tier write approval remembered per (caller, target) or per call?**
    Per-pair-per-session-lifetime was chosen because a confirmation on every steer of a public worker
    is miserable and would be clicked through.
