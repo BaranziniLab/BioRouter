@@ -190,12 +190,14 @@ pub(crate) fn set_tools_confirmation_reason(args: &JsonObject) -> Option<String>
 ///
 /// Both `add_shape_risk` and `persisted_extension_names` read
 /// `Config::global()`, i.e. the developer's or the operator's real
-/// `config.yaml`. Left inline, that would make which branch a test exercises a
-/// property of the machine it runs on: on a default install every extension
-/// resolves to [`AddShapeRisk::Opaque`] and the operator-authored set is empty,
-/// so the structural checks and the operator-authored check are *never*
-/// evaluated, and breaking either one keeps the suite green. Hoisting the two
-/// reads to the single production caller above lets the tests cover every
+/// `config.yaml`. Left inline, which branch a test reaches becomes a property
+/// of the machine it runs on — the extensions the tests name resolve to
+/// [`AddShapeRisk::Opaque`] here and the operator-authored set is empty, so
+/// both the structural risk check and the operator-authored check were dead
+/// code under test. Measured, not assumed: collapsing `ProcessSpawning` and
+/// `NetworkEgress` into the name list AND deleting the operator-authored branch
+/// outright left all nine of this module's original tests green. Hoisting the
+/// two reads to the single production caller above lets the tests cover every
 /// branch on every machine, without a test ever reading — let alone writing —
 /// the user's config.
 ///
