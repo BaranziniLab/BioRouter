@@ -93,6 +93,42 @@
 > other three); and that Landlock cannot express a read-deny at all, so on Linux the control needs
 > `bubblewrap` (Open question 17).
 
+> **Revision note (sixth round — three surfaces, and six gates that could not fail).** The same
+> reviewer returned three HIGH findings and a table of six gates that pass a plausible wrong
+> implementation. All nine are fixed here.
+>
+> The three surfaces are each a *right value read in the wrong place*, which is why no count-based
+> gate saw any of them. **`kb_get_active` takes no arguments and returned the whole selection** —
+> every visible base id, plus the primary pointer — so one call enumerated what `kb_list_bases`
+> omits four functions away; the plan had exempted it on a premise (*"the caller already knows the
+> id"*) that is false for a no-argument tool, and its completeness test named it as exempt, which is
+> to say blessed it. **CP3's mid-turn call site** (`routes/apps.rs:3847`) sits after `turn_agent` is
+> bound at `:3541`, so sending all three call sites to `agent` attributes a **worker's** KB access
+> to the main agent — wrong in both directions, and it compiles because both agents are in scope.
+> **CP5's capability read** was placed at `capability_report`'s existing position, two lines above
+> `configure_main_provider`, so it reads the provider the session held *before* the app's own model
+> was bound. Fixes: filter the pointer tools' **view** (never the store — `repair_decision` writes
+> `next_ids.first()`, so filtering the store would re-point the user's primary as a side effect of a
+> read); read `turn_agent` at the one site that has one; and move the report below the bind. Design
+> amended once, as B4.1, because a `null` pointer is user-visible.
+>
+> The six gates share one failure: **each could be satisfied without the behaviour being right.**
+> Task 4b's deferral was keyed on a filter *name*, so `-p biorouter-mcp --lib privacy::refusal` — a
+> filter that will never name a test — was reported DEFER; it is now keyed on the `(package, filter)`
+> pair, with every deferred row evidenced. Tasks 10B/11 forbade only the *trusting* literal, so
+> hardcoding `Public`/`false` under-ratcheted and passed; both directions are now forbidden and each
+> production caller has a behavioural private/public matrix. Task 10C's completeness test *was* its
+> exemption list; the exemptions now carry the test that pins them, and a universal
+> "volunteers nothing" property covers the twentieth. Task 10D's metadata detector excluded
+> `src/knowledge/`, i.e. the module the leak was in; it is two sweeps now, with `.selection(` in the
+> pattern, plus a register of every metadata-returning **tool**. Task 10A required only that the tier
+> not travel — leaving export-private → import-public copying a whole private base in two permitted
+> calls; closed with a raise-only provenance marker and a model-export destination inside deny root
+> #2, with AR-8 for what remains. And Task 12's race ran 200 unconstrained spawns on a
+> `current_thread` runtime under a conditional assertion that was **false for a correct
+> implementation**; it is now two forced interleavings behind `#[cfg(test)]` seams, plus a
+> multi-threaded fuzz loop that must prove it raced.
+
 > **Revision note (fourth round — the barrier's edges, and the first real `cargo` run).** A verifier
 > re-derived the four choke points independently and could not break them on content: it read
 > `rmcp-macros-0.14.0/src/tool_handler.rs` and confirmed the hand-written `call_tool` body is
@@ -1476,7 +1512,7 @@ git commit -m "feat(privacy): add ProviderTier and SessionClassification, the tw
 
 ---
 
-### Task 4b: Resolve every test filter against a real `--list` (docs only)
+### Task 4b: Resolve every test filter against a real `cargo --list` (docs only)
 
 **This is the task that closes the plan's largest unclosed risk, and it costs one command.**
 
