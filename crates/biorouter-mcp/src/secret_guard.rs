@@ -737,6 +737,31 @@ mod tests {
         );
     }
 
+    /// The other half of the scoping: "outside the project" is a question about
+    /// the directory, not about how the path spells it. A file reached through
+    /// a symlink that lands inside the project is inside the project, and the
+    /// project's own rules still cover it — otherwise scoping the patterns
+    /// would have handed anyone a way to read a protected file by naming it
+    /// through a link.
+    #[test]
+    #[cfg(unix)]
+    fn project_patterns_survive_a_symlinked_route_into_the_project() {
+        let project = tempdir().unwrap();
+        let elsewhere = tempdir().unwrap();
+        fs::write(project.path().join(".biorouterignore"), "notes.txt\n").unwrap();
+        fs::write(project.path().join("notes.txt"), "project notes").unwrap();
+
+        // A path outside the root textually, inside it in fact.
+        let link = elsewhere.path().join("link");
+        std::os::unix::fs::symlink(project.path(), &link).unwrap();
+
+        let g = guard_at(project.path());
+        assert!(
+            g.is_denied(&link.join("notes.txt")),
+            "a protected project file became readable by naming it through a symlink"
+        );
+    }
+
     /// The same scoping through the argument scanner, which is what the
     /// extension-manager dispatch boundary actually calls.
     #[test]

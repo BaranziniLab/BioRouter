@@ -806,6 +806,7 @@ impl DeveloperServer {
     /// manager's dispatch boundary already builds a guard rooted at the resolved
     /// session directory for every tool call. It should not be the only one that
     /// gets the root right.
+    ///
     /// The canonical directory is pinned here too (#68). A jail base is a
     /// directory, not a string: `Path::is_dir` follows symlinks, so replacing
     /// the bound path with a link to somewhere wider answers every existence
