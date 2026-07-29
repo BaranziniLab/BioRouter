@@ -806,8 +806,18 @@ impl DeveloperServer {
     /// dir if it still exists, else `BIOROUTER_WORKING_DIR` if it exists, else
     /// `None` (inherit the process cwd). A candidate that has vanished (deleted
     /// after selection, or a stale session row) is logged and skipped instead of
-    /// jamming every shell command with an opaque spawn error. Shared by the
-    /// shell and the text_editor jail so both agree on where "here" is.
+    /// jamming every shell command with an opaque spawn error.
+    ///
+    /// **This is the shell's helper alone** (#68). It once backed the
+    /// `text_editor` jail too, on the reasoning that both should agree on where
+    /// "here" is — but the two questions have different risk profiles. This one
+    /// answers *where a command runs*, which grants no file access, so walking
+    /// down to the next candidate costs nothing. The jail base answers *what the
+    /// file tools may touch*; substituting a candidate there moves a security
+    /// boundary, and when the session dir sat inside `BIOROUTER_WORKING_DIR` it
+    /// moved it outward. The jail resolves its own base in
+    /// [`Self::effective_cwd`] and refuses rather than falling through. Do not
+    /// re-point it here.
     fn session_cwd_or_fallback(&self) -> Option<PathBuf> {
         if let Some(dir) = &self.working_dir {
             if dir.is_dir() {
@@ -1872,27 +1882,27 @@ impl DeveloperServer {
     /// Note the deliberate asymmetry with [`Self::session_cwd_or_fallback`],
     /// which the shell uses: *where a command runs* may fall back, because the
     /// shell is not jailed by this base at all and a fallback grants nothing.
-    /// *What the file tools may touch* may not.
+    /// *What the file tools may touch* may not. That asymmetry is why this
+    /// resolves the base itself rather than calling the shell's helper — see
+    /// #68 below.
     ///
-    /// ONE MOVE REMAINS, and it is not hypothetical. This calls
-    /// `session_cwd_or_fallback` first, which — when the session directory is
-    /// gone but `BIOROUTER_WORKING_DIR` still exists — returns the env
-    /// directory. If the session was working in a *subdirectory* of the env
-    /// base, deleting that subdirectory widens the jail up to the parent, and a
-    /// sibling file that was refused a moment earlier becomes writable
-    /// (measured, not inferred). It is narrow: the desktop app sets both to the
-    /// same value (`ui/desktop/src/main.ts`), where the two vanish together and
-    /// nothing widens. It is left as-is because #64 chose which substitutions to
-    /// forbid and this one is onto an app-sanctioned base, which is that issue's
-    /// option 2 — but "the jail base is never guessed" above means *never
-    /// guessed from the process cwd*, not *never moved*. Closing it means
-    /// requiring `self.working_dir` itself to exist, which is a deliberate call
-    /// for a person, not a sweep.
+    /// **The base is the one the caller was actually given** (#68). This reads
+    /// [`Self::sanctioned_base`] and requires *that* directory to exist; it does
+    /// not walk the shell's candidate list. Sharing that list left one live
+    /// substitution behind #64's: when `working_dir` vanished but
+    /// `BIOROUTER_WORKING_DIR` survived, the jail moved to the env directory.
+    /// Both are values the application sanctioned, so it was never an escape to
+    /// an arbitrary path — but a session working in a *subdirectory* of the env
+    /// base had its jail widened to the parent when that subdirectory was
+    /// deleted, and a sibling file refused a moment earlier became writable
+    /// (measured, not inferred). "Sanctioned somewhere" is not the property that
+    /// matters; "the base this jail was built from" is. A wider directory the
+    /// app also blessed is still a different directory.
     fn effective_cwd(&self) -> Result<PathBuf, ErrorData> {
-        if let Some(dir) = self.session_cwd_or_fallback() {
-            return Ok(dir);
-        }
-        if let Some(gone) = self.sanctioned_base() {
+        if let Some(base) = self.sanctioned_base() {
+            if base.is_dir() {
+                return Ok(base);
+            }
             return Err(ErrorData::new(
                 ErrorCode::INTERNAL_ERROR,
                 format!(
@@ -1900,7 +1910,7 @@ impl DeveloperServer {
                      resolved. File access stays confined to that directory and is not \
                      re-rooted elsewhere: recreate it, or start a session in a directory \
                      that exists, and retry.",
-                    gone.display()
+                    base.display()
                 ),
                 None,
             ));
