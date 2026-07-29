@@ -600,6 +600,30 @@ says" and "the toggle secretly keeps a ledger", the operator's ruling picks the 
 sentence before the switch flips, and the persistent strip repeats it while the toggle is off. A
 user who accepts that sentence has accepted AR-7.
 
+### AR-8 — A private model with a shell can still carry a knowledge base out of the deny root
+
+Task 10A decision (2) closes the archive-laundering path in the two directions that matter: an
+imported base takes `max(archive marker, importer)` so a `.brkb` can only ever over-classify itself,
+and a **model's** export of a private base is written into `<knowledge-root>/exports/`, inside DR-14
+deny root #2, where a public-capability session cannot read it.
+
+What is left is the *private* side. A private-capability model holds the shell (DR-14 denies reads
+to public capability only), so it can `cp` its own base's archive — or the base's markdown, or
+`sessions.db` — anywhere it likes, and a public chat opened afterwards may read whatever it left
+outside the four roots.
+
+**This is not a hole this design can close, and pretending otherwise would be the more dangerous
+claim.** The tier system's promise is about what a **public-capability model** can reach. A
+private-capability model is, by construction, trusted with the private material — it is being *sent*
+that material on every turn. Constraining what it may then write would mean a write-side sandbox
+(an egress control), which is a different feature with a different threat model, and one this
+design's §9 does not attempt for any of the four roots.
+
+The user-facing consequence, stated plainly: **a private chat can be told to copy your notes
+somewhere a public chat can read them, and it will.** The controls that bear on it are the ones
+already in the product — approval mode for shell commands, `.biorouterignore`, and the fact that a
+private chat is running the user's own institutional model on the user's own machine.
+
 ---
 
 ## Which test filters are validated, and which are not
@@ -3189,6 +3213,8 @@ stated plainly so no one discovers them later:
 | Modify | `crates/biorouter/src/agents/mcp_client.rs` | `McpMeta` `:136-144` (two fields today), `McpMeta::new` `:146-152`, `with_progress_token` `:156-159`, `inject_into_extensions` `:161-172` |
 | Modify | `crates/biorouter/src/agents/extension_manager.rs` | the sole production `McpMeta::new(&session_id)` at `:1557`, inside `dispatch_tool_call`'s spawned future (`:1544-1570`) |
 | Reference | `crates/biorouter-mcp/src/knowledge/manifest.rs` | `save` `:17-24` — the tmp-then-`rename` idiom to copy; and the reason the tier does **not** go in `Manifest` (`types.rs:58-66`): the manifest travels inside the `.brkb` archive |
+| Modify | `crates/biorouter-mcp/src/knowledge/brkb.rs` | decision (2)(a). `export` `:8-19` writes the `<kb_id>/.brkb-provenance` entry into the `ZipWriter` after `walk` `:16` and before `zip.finish()` `:17`; `import` `:68-128` reads it, **skips it** in the extraction loop `:98-114`, and returns it beside the id. ⚠ It must sit INSIDE the single top-level directory — `:80-87` bails on anything else. `import`'s signature changes, and its two callers are `service.rs:509` and this task's tests |
+| Modify | `crates/biorouter-mcp/src/knowledge/service.rs` (second row) | decision (2)(a). `export_brkb` `:494-504` and `import_brkb` `:506-520`, whose `raise` on `new_id` is `marker \|\| importer_is_private` — a **max**, never the marker alone |
 | Reference | `crates/biorouter-mcp/src/knowledge/brkb.rs` | `import`'s collision loop — `while knowledge_root.join(&id).exists() { suffix += 1; id = format!("{original_id}-{suffix}"); }` — means an import **never** overwrites an existing base; it always lands on a fresh id. That is what makes Task 10B's "stamp after the import" safe |
 
 ⚠ **Five design decisions, each with a reason a reviewer will otherwise ask about.**
@@ -3202,11 +3228,56 @@ stated plainly so no one discovers them later:
    Task 12's `bind_provider_if_allowed(.., incoming_is_private: bool)`. Because `floor(Private) =
    Private` and `floor(Public) = Public`, the boolean *is* the crossing — which is why Task 7's
    `floor` caller set does not grow here.
-2. **A sidecar, not `manifest.yaml`.** The manifest is inside the KB's git tree and is carried by
-   `export_brkb`/`import_brkb` (`service.rs:495`/`:506`), so a tier stored there is
-   **attacker-supplied on import** — the exact shape Task 22 refuses for session imports. The
-   sidecar sits beside `.active-kb` and `.hidden-kbs`, which are already machine-local, already
-   outside every KB's repo, and already excluded from the archive.
+2. **A sidecar, not `manifest.yaml` — *and* a raise-only provenance marker inside the archive,
+   because the sidecar alone leaves a two-call laundering path.** The manifest is inside the KB's git
+   tree and is carried by `export_brkb`/`import_brkb` (`service.rs:494`/`:506`), so a tier stored
+   there is **attacker-supplied on import** — the exact shape Task 22 refuses for session imports.
+   The sidecar sits beside `.active-kb` and `.hidden-kbs`, which are already machine-local, already
+   outside every KB's repo, and already excluded from the archive. That much stands.
+
+   But "the tier does not travel" was mistaken for the whole answer, and it is not. Because it does
+   not travel, an imported base takes the *importer's* tier (Task 10B) — so **export from a private
+   chat, import into a public one, and every page of a private base is now in a public base**. Two
+   tool calls, no gate crossed: `kb_export` is permitted to the private caller because the base is
+   its own, and `kb_import` is permitted to the public caller because the id it creates does not
+   exist yet (decision 3). The user's own Knowledge-view export reaches the same state without a
+   model involved at all. Task 10B's import test (as first written,
+   `an_imported_base_takes_the_importing_sessions_tier_and_never_the_archives`) exercised only a
+   **private** importer, so it asserts the safe half of exactly this rule and
+   passes.
+
+   Two changes close it, and they are deliberately different in kind:
+
+   *(a) A raise-only marker in the archive.* `brkb::export` writes one extra zip entry,
+   `<kb_id>/.brkb-provenance`, straight into the `ZipWriter` after `walk` (`brkb.rs:16-17`) — never
+   onto disk, so the KB's git tree does not gain a file. It must live **inside** the single
+   top-level directory: `import` (`:70-87`) bails unless there is exactly one, so a sibling entry
+   breaks every archive. `import` reads it, skips it during extraction, and returns it alongside the
+   new id; `import_brkb` then raises the new base to `max(marker, importer)`.
+
+   **This dissolves decision (2)'s objection rather than contradicting it.** "Attacker-supplied" is
+   only dangerous when the supplied value can *lower*. A marker that is read as a **floor** — the
+   imported base is private if *either* the archive or the importer says so — gives a hostile
+   archive exactly one power: to over-classify itself. An absent or malformed marker means
+   "unknown", which is the importer's tier and is today's behaviour, so a foreign `.brkb` is
+   unaffected.
+
+   *(b) A model's export of a private base lands where the public capability cannot read it.*
+   (a) is not a barrier on its own: anyone who can rewrite the archive can delete the entry, and the
+   file sits outside all four DR-14 roots, so a public model with the shell can read it directly —
+   a `.brkb` is a zip, and `unzip -p` needs no Biorouter at all. So `kb_export` called by a **model**
+   for a **private** base ignores a `dest_path` outside the knowledge tree and writes into
+   `<knowledge-root>/exports/`, returning that path. That directory is inside DR-14 deny root #2
+   (`<config>/knowledge`), so the artifact is invisible to a public-capability session by the same
+   kernel deny that hides the base it came from. The **user's** export — `GET /knowledge/.../export`
+   and the CLI — is untouched and may write anywhere: the user is not a model, which is the same
+   scope line Task 10C draws for the seven read routes.
+
+   What remains after both is written down rather than closed: a **private**-capability model that
+   also holds the shell can copy the artifact out of the deny root. That is not new and not
+   specific to archives — a private model with a shell can copy the whole knowledge tree — and this
+   design constrains what the *public* model can reach. Recorded as
+   [AR-8](#ar-8--a-private-model-with-a-shell-can-still-carry-a-knowledge-base-out-of-the-deny-root).
 3. **Three fail directions, and they differ on purpose** (DR-10's pattern, one module over).
    *Migration* → **public** (fail open; AR-2). *A kb id with no entry, in a store that exists, for a
    directory that does exist on disk* → **private** (fail closed: a base that appeared without
@@ -3354,6 +3425,69 @@ fn the_store_is_written_atomically_and_never_leaves_a_tmp_file() {
         .map(|e| e.unwrap().file_name().to_string_lossy().to_string()).collect();
     assert!(names.iter().any(|n| n == ".kb-tiers"));
     assert!(!names.iter().any(|n| n.ends_with(".tmp")));
+}
+
+#[test]
+fn a_private_export_cannot_be_laundered_by_importing_it_into_a_public_chat() {
+    // The two-call bypass, end to end and in the ONE direction the previous
+    // tests never ran: export PRIVATE, import PUBLIC. Before decision (2)'s
+    // marker the imported base takes the importer's tier and every page of a
+    // private base is readable by a public model, with no gate crossed —
+    // `kb_export` is permitted (the base is the private caller's own) and
+    // `kb_import` is permitted (the id it creates does not exist yet).
+    let root = tempdir_with_bases(&["omop"]);
+    ensure_migrated_unlocked(&root).unwrap();
+    raise_unlocked(&root, "omop", true).unwrap();
+    seed_page(&root, "omop", "knowledge/x.md", "SENTINEL-COHORT-N-412");
+
+    let bytes = export_brkb_with_provenance(&root, "omop");     // private base
+    let new_id = import_brkb_as(&root, &bytes, /* importer_is_private */ false);
+
+    assert_ne!(new_id, "omop", "the collision loop must land on a fresh id");
+    assert!(is_private(&root, &new_id),
+            "a private base was laundered into a public one by export/import");
+    // And the content really did arrive — otherwise the assertion above is
+    // satisfied by an import that failed.
+    assert!(page_body(&root, &new_id, "knowledge/x.md").contains("SENTINEL-COHORT-N-412"));
+}
+
+#[test]
+fn the_provenance_marker_can_only_raise_and_a_foreign_archive_is_unaffected() {
+    // Decision (2)'s whole safety argument, as three rows. The marker is
+    // attacker-supplied by construction — it rides inside the zip — and is safe
+    // ONLY because it is read as a floor.
+    let root = tempdir_with_bases(&[]);
+    ensure_migrated_unlocked(&root).unwrap();
+
+    // (a) marker private + importer public  -> private   (the laundering case)
+    assert!(is_private(&root, &import_brkb_as(&root, &archive("a", Some(true)), false)));
+    // (b) marker PUBLIC + importer private  -> private   (a hostile archive
+    //     claiming "public" cannot lower the importing session's own tier)
+    assert!(is_private(&root, &import_brkb_as(&root, &archive("b", Some(false)), true)));
+    // (c) NO marker (a foreign .brkb, or one written before this task) +
+    //     importer public -> public: unknown means the importer's tier, which
+    //     is today's behaviour and must not regress into "everything imported
+    //     is private", a state with no declassification path (AR-1).
+    assert!(!is_private(&root, &import_brkb_as(&root, &archive("c", None), false)));
+    // (d) a malformed marker is read as absent, not as private — same reason.
+    assert!(!is_private(&root, &import_brkb_as(&root, &archive_with_raw_marker("d", "yes"), false)));
+}
+
+#[test]
+fn the_marker_rides_in_the_archive_and_never_lands_on_disk() {
+    // It is written straight into the ZipWriter after `walk` (brkb.rs:16-17),
+    // so the KB's git tree does not gain an untracked file — and it goes INSIDE
+    // the single top-level directory, because `import` (:70-87) bails unless
+    // there is exactly one and a sibling entry would break every archive.
+    let root = tempdir_with_bases(&["omop"]);
+    ensure_migrated_unlocked(&root).unwrap();
+    raise_unlocked(&root, "omop", true).unwrap();
+    let bytes = export_brkb_with_provenance(&root, "omop");
+    assert!(zip_names(&bytes).contains(&"omop/.brkb-provenance".to_string()));
+    assert!(!root.join("omop/.brkb-provenance").exists(), "the marker was written to disk");
+    // …and it is not extracted back out into the imported base either.
+    let new_id = import_brkb_as(&root, &bytes, false);
+    assert!(!root.join(&new_id).join(".brkb-provenance").exists());
 }
 
 #[test]
@@ -3714,7 +3848,7 @@ with `let caller_capability_for_builtin = if biorouter_mcp::BUILTIN_EXTENSIONS.c
 
 ```bash
 cargo test -p biorouter-mcp --lib knowledge::tier
-cargo test -p biorouter-mcp --lib knowledge::          # 190 today (MEASURED, Task 4b); assert 190 + 10
+cargo test -p biorouter-mcp --lib knowledge::          # 190 today (MEASURED, Task 4b); assert 190 + 13
 cargo test -p biorouter --lib agents::mcp_client
 cargo test -p biorouter --lib agents::extension_manager
 cargo test -p biorouter-server --test knowledge_routes # ~19 today; must be unchanged
@@ -3731,17 +3865,49 @@ than somewhere that happens to compile. The last two lines are the evidence for 
 `cargo test -p biorouter-mcp --lib -- --list` and measured **190** matching `knowledge::`, across 35
 submodules (`knowledge::service::tests` alone is 38, `knowledge::store::tests` 14,
 `knowledge::server::tests` 11). A `pre + 10` assertion built on 122 would have read a **68-test
-shortfall** as a pass.
+shortfall** as a pass. The `+ 13` is 10 for the tier store and its two service tests, plus the
+three archive-provenance tests decision (2) added.
 
 - [ ] **Step 5: Gate**
 
 ```bash
 cd /Users/wgu/Desktop/BioRouter-privacy
-# The tier is not in the manifest, so it cannot ride a .brkb archive.
-# NOT `grep -c "tier\|privacy"` — that is 8 today and can never be 0, because
-# `CredibilityTier` has owned the word "tier" in this file since the credibility
-# feature (types.rs:20, :93, + 6 in tests). Measured: the pattern below is 0 today.
+# The tier is not in the manifest, so it cannot ride a .brkb archive as an
+# authority. NOT `grep -c "tier\|privacy"` — that is 8 today and can never be 0,
+# because `CredibilityTier` has owned the word "tier" in this file since the
+# credibility feature (types.rs:20, :93, + 6 in tests). Measured: 0 today.
 grep -cE "privacy_tier|PrivacyTier|kb_tier" crates/biorouter-mcp/src/knowledge/types.rs ; echo "expect: 0"
+# …and the thing that DOES ride the archive is read as a FLOOR, never as a
+# value. This is the gate for decision (2)'s safety argument, and the previous
+# version of it — "the tier does not travel" alone — is what left export-private
+# / import-public open while passing.
+grep -c "\.brkb-provenance" crates/biorouter-mcp/src/knowledge/brkb.rs ; echo "expect: 2 — written by export, read by import"
+awk '/pub fn export</,/^}/' crates/biorouter-mcp/src/knowledge/brkb.rs \
+  | grep -n "walk(\|brkb-provenance\|zip.finish" | head -3
+echo "Expected, in this order: walk, .brkb-provenance, zip.finish — the entry is"
+echo "  written into the ZipWriter, AFTER the disk walk and before finish, so it"
+echo "  never exists as a file in the KB's git tree."
+awk '/pub fn import</,/^}/' crates/biorouter-mcp/src/knowledge/brkb.rs \
+  | grep -c "brkb-provenance" ; echo "expect: >= 2 — read it, and SKIP it when extracting"
+# The raise is a max, in the service, on the new id. A plain `raise_unlocked(..,
+# marker)` would LOWER a private importer's base to a public archive's claim.
+awk '/pub fn import_brkb/,/^    }/' crates/biorouter-mcp/src/knowledge/service.rs \
+  | grep -n "brkb::import\|register\|raise" | head -3
+echo "Expected: brkb::import, register, then the raise — and the raise argument"
+echo "  must be a disjunction of the marker and the importer, never the marker alone."
+grep -n "provenance.*||\|||.*provenance" crates/biorouter-mcp/src/knowledge/service.rs
+echo "expect: 1 — `marker || importer_is_private`. A bare `marker` is the (b) row of"
+echo "  the_provenance_marker_can_only_raise_and_a_foreign_archive_is_unaffected."
+# A MODEL's export of a private base cannot be aimed outside the deny root.
+awk '/pub async fn kb_export/,/^    }/' crates/biorouter-mcp/src/knowledge/server.rs \
+  | grep -n "is_private\|dest_path\|exports" | head -4
+echo "Expected: the tier check BEFORE dest_path is honoured. The user's own export"
+echo "  routes are untouched — assert that too, or the Knowledge view loses a feature:"
+for h in export_brkb; do
+  echo -n "routes/knowledge.rs $h: "
+  awk "/pub async fn $h/,/^}/" crates/biorouter-server/src/routes/knowledge.rs | grep -c "exports"
+done
+echo "expect: 0 — the user is not a model (Task 10C's scope decision, same line)"
 grep -rn "kb_tiers_path" crates/biorouter-mcp/src/knowledge/ | grep -v "fn kb_tiers_path"
 echo "expect: tier.rs and service.rs::ensure_tiers_migrated only — nothing else opens the file"
 # Migration is one-shot, not a per-startup repair. (Task 38 makes the identical
@@ -3782,9 +3948,21 @@ grep -rn "tier::raise_unlocked(\|raise_tier(" --include='*.rs' crates/ \
 echo "expect: no output until Task 10B"
 ```
 
-**What this catches.** Four wrong implementations. (1) Putting the tier on `Manifest` — the obvious
+**What this catches.** Five wrong implementations. (1) Putting the tier on `Manifest` — the obvious
 place, one field, no new file — which makes it travel inside `.brkb` and hands an importer authority
-over the badge; the `types.rs` zero-count is the only cheap gate for it. (2) A migration that runs on
+over the badge; the `types.rs` zero-count is the only cheap gate for it. (1b) Stopping there.
+**This gate rejects: an implementation in which the tier does not travel and nothing else changes** —
+which is what "a sidecar, not `manifest.yaml`" alone produces, and which leaves export-from-private
+→ import-into-public copying every page of a private base into a public one in two permitted tool
+calls. `a_private_export_cannot_be_laundered_by_importing_it_into_a_public_chat` is the only test
+that fails it; Task 10B's import test as first written ran the
+**private**-importer direction only and passed against the defect; it is now
+`an_imported_base_takes_the_importing_sessions_tier_OR_THE_ARCHIVES_FLOOR` and carries both. It also rejects the two
+plausible over-corrections, both in
+`the_provenance_marker_can_only_raise_and_a_foreign_archive_is_unaffected`: reading the marker as a
+*value* rather than a floor (row (b) — a hostile archive claiming "public" then lowers a private
+importer's base), and treating an absent marker as private (row (c) — every foreign `.brkb` on the
+internet imports private, into a state AR-1 says has no declassification path). (2) A migration that runs on
 every startup "to pick up new bases", which silently lowers a base the day after a private session
 raised it; test 1's second `ensure_migrated_unlocked` is what fails it, and no grep would. (3) A store
 shaped like `.hidden-kbs` — a list of private ids — which cannot distinguish *known public* from
@@ -3963,13 +4141,25 @@ async fn a_public_chat_can_still_create_and_import_a_knowledge_base() {
 }
 
 #[tokio::test]
-async fn an_imported_base_takes_the_importing_sessions_tier_and_never_the_archives() {
+async fn an_imported_base_takes_the_importing_sessions_tier_OR_THE_ARCHIVES_FLOOR() {
     // `brkb::import` resolves collisions by suffixing, so an import always
     // lands on a FRESH id — which is what makes stamping after the call safe.
     let (srv, root) = server_at_migrated_root(&["default"]);
     let out = call_tool_as(&srv, "kb_import", json!({ "src_path": brkb_fixture() }), Private)
         .await.unwrap();
     assert!(tier::is_private(&root, imported_kb_id(&out)));
+
+    // ⚠ The line above is the SAFE direction and, on its own, it is what let
+    // export-private / import-public through a whole review round: a private
+    // importer privatising what it imports proves nothing about a public one.
+    // The unsafe direction is Task 10A's
+    // `a_private_export_cannot_be_laundered_by_importing_it_into_a_public_chat`;
+    // this is its tool-level twin, so the bypass is closed at the surface a
+    // model actually calls and not only in the store.
+    let out = call_tool_as(&srv, "kb_import",
+                           json!({ "src_path": private_brkb_fixture() }), Public).await.unwrap();
+    assert!(tier::is_private(&root, imported_kb_id(&out)),
+            "a public chat imported a private base's archive and got a public base");
 }
 ```
 
