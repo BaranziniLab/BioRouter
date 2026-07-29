@@ -625,6 +625,72 @@ mod tests {
         );
     }
 
+    /// #68 regression: a project's own `.biorouterignore` is scoped to that
+    /// project. Once the guard is re-rooted onto the session working directory,
+    /// its patterns are matched against *every* candidate — including absolute
+    /// paths outside the project, which Auto mode deliberately lets through the
+    /// containment jail. A bare gitignore pattern matches a basename anywhere,
+    /// so an unrelated file that merely shares a name with something the project
+    /// ignores was refused as "restricted by .biorouterignore".
+    ///
+    /// The floor (and the global ignore file) still apply everywhere: they are
+    /// machine-wide statements about what is a secret, not project-local ones.
+    #[test]
+    fn project_patterns_stop_at_the_project_root() {
+        let project = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        fs::write(project.path().join(".biorouterignore"), "notes.txt\n").unwrap();
+        fs::write(project.path().join("notes.txt"), "project notes").unwrap();
+        fs::write(outside.path().join("notes.txt"), "someone else's notes").unwrap();
+        fs::write(outside.path().join(".env"), "SECRET=1").unwrap();
+
+        let g = guard_at(project.path());
+
+        // Inside the project the pattern is in force, by absolute and relative path.
+        assert!(g.is_denied(&project.path().join("notes.txt")));
+        assert!(g.is_denied(Path::new("notes.txt")));
+
+        // Outside it, the project's pattern says nothing.
+        assert!(
+            !g.is_denied(&outside.path().join("notes.txt")),
+            "a project pattern denied an unrelated file outside the project"
+        );
+
+        // But the built-in floor is not project-scoped.
+        assert!(
+            g.is_denied(&outside.path().join(".env")),
+            "the built-in secret floor must keep applying outside the project"
+        );
+    }
+
+    /// The same scoping through the argument scanner, which is what the
+    /// extension-manager dispatch boundary actually calls.
+    #[test]
+    fn find_denied_path_scopes_project_patterns_too() {
+        let project = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        fs::write(project.path().join(".biorouterignore"), "notes.txt\n").unwrap();
+        fs::write(project.path().join("notes.txt"), "project notes").unwrap();
+        let stranger = outside.path().join("notes.txt");
+        fs::write(&stranger, "someone else's notes").unwrap();
+
+        let g = guard_at(project.path());
+        assert_eq!(
+            g.find_denied_path(json!({ "path": "notes.txt" }).as_object().unwrap()),
+            Some("notes.txt".to_string()),
+            "the project's own file must still be blocked"
+        );
+        assert_eq!(
+            g.find_denied_path(
+                json!({ "path": stranger.to_string_lossy() })
+                    .as_object()
+                    .unwrap()
+            ),
+            None,
+            "a project pattern blocked an unrelated file outside the project"
+        );
+    }
+
     #[test]
     fn negation_can_reopen_a_specific_file() {
         let dir = tempdir().unwrap();
