@@ -6638,12 +6638,23 @@ Add the four cases the widened policy is for, to the same test module:
 
 - [ ] **Step 4: Run tests**
 
-Run: `cargo test -p biorouter --lib agents::workspace_inspector tool_inspection`
-Expected: PASS (9 new tests; the existing `tool_inspection` tests unchanged).
+Run: `cargo test -p biorouter --lib -- agents::workspace_inspector tool_inspection`
+Expected: PASS (the new `workspace_inspector` tests; the existing `tool_inspection`
+tests unchanged).
+
+**Note the `--`.** `cargo test` takes at most ONE positional `TESTNAME`
+(`cargo test [OPTIONS] [TESTNAME] [-- [ARGS]...]`), so the two-filter form without it
+dies before compiling anything with `error: unexpected argument 'tool_inspection'
+found` — which reads exactly like a green run to a skimming eye, because cargo prints
+no test output at all. Multiple filters are a **libtest** feature, so they belong after
+the `--`. Verified 2026-07-28.
 
 Run: `cargo test -p biorouter --lib security::sensitive_ops`
-Expected: PASS — the precedent inspector is untouched; this asserts the registration did
-not disturb inspector ordering.
+Expected: PASS — the precedent inspector is untouched. Note what this does **not**
+check: it cannot see inspector ordering at all (it never builds a
+`ToolInspectionManager`). The ordering guarantee is pinned by
+`test_workspace_mutation_inspector_precedes_the_permission_inspector` in `agent.rs`
+instead — see Step 3.
 
 - [ ] **Step 5: Commit**
 
