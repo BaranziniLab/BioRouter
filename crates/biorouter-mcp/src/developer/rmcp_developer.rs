@@ -774,8 +774,23 @@ impl DeveloperServer {
     /// Once the working directory is known, the `undo_edit` history is persisted
     /// to disk keyed by that directory (BR-44), so undo survives a developer
     /// server restart. Any prior history for this directory is reloaded here.
+    ///
+    /// The `SecretGuard` is re-rooted here too (#68). `new()` has to root it at
+    /// the process cwd because that is all it knows, but every real caller
+    /// constructs and *then* binds a working directory — so leaving the guard
+    /// where `new()` put it meant the deny set was read relative to a directory
+    /// this server was never bound to, and the project's own `.biorouterignore`
+    /// was never read at all (measured, not inferred). The guard is a security
+    /// root, so it tracks the same base [`Self::effective_cwd`] jails to rather
+    /// than whichever directory the process happened to start in.
+    ///
+    /// This is defence in depth, not the only enforcement: the extension
+    /// manager's dispatch boundary already builds a guard rooted at the resolved
+    /// session directory for every tool call. It should not be the only one that
+    /// gets the root right.
     pub fn with_working_dir(mut self, dir: PathBuf) -> Self {
         self.file_history = Arc::new(FileHistory::persistent(&dir));
+        self.secret_guard = SecretGuard::for_dir(&dir);
         self.working_dir = Some(dir);
         self
     }
@@ -2618,6 +2633,43 @@ mod tests {
             err.message.contains("no longer exists"),
             "the refusal must name the real reason, got: {}",
             err.message
+        );
+    }
+
+    /// #68, the related shape: the `SecretGuard` backing `.biorouterignore` is
+    /// rooted at construction, before `with_working_dir` is called — so it used
+    /// to keep the *process* cwd as its root for the whole session, and a
+    /// project's own `.biorouterignore` was never read. Measured with this test
+    /// against the pre-fix code: the file was readable through `text_editor`.
+    ///
+    /// Deliberately touches neither the process cwd nor the environment: the
+    /// rule names a file no ambient ignore source mentions, so the assertion can
+    /// only pass if the guard is rooted at the session directory.
+    #[test]
+    fn secret_guard_is_rerooted_onto_the_session_working_directory() {
+        let session = tempfile::tempdir().unwrap();
+        // A name matching none of DEFAULT_SECRET_PATTERNS, so only the project's
+        // own ignore file can deny it.
+        std::fs::write(
+            session.path().join(".biorouterignore"),
+            "proprietary-notes.md\n",
+        )
+        .unwrap();
+        let denied = session.path().join("proprietary-notes.md");
+        std::fs::write(&denied, "internal").unwrap();
+
+        let unbound = DeveloperServer::new();
+        assert!(
+            !unbound.is_ignored(&denied),
+            "sanity: with no session dir bound, the project's ignore file is not this \
+             server's to read — otherwise the test proves nothing"
+        );
+
+        let server = DeveloperServer::new().with_working_dir(session.path().to_path_buf());
+        assert!(
+            server.is_ignored(&denied),
+            "the session directory's .biorouterignore must be honoured once the server \
+             is bound to it"
         );
     }
 
