@@ -76,8 +76,18 @@ fn key_is_pathlike(key: &str) -> bool {
 /// A reusable secret/credential access guard rooted at a working directory.
 #[derive(Clone)]
 pub struct SecretGuard {
+    /// Everything: the built-in floor, the global ignore file, and the
+    /// project's own `.biorouterignore`. Authoritative for paths inside `root`.
     ignore: Gitignore,
+    /// The floor and the global ignore file only — the statements that are
+    /// about *this machine*, not about one project. Authoritative for paths
+    /// outside `root`.
+    machine_wide: Gitignore,
     root: PathBuf,
+    /// `root` with symlinks resolved, so containment can be decided for a path
+    /// that names the same directory by a different route (on macOS every
+    /// `/var/…` temp dir is really `/private/var/…`). Falls back to `root`.
+    canonical_root: PathBuf,
 }
 
 impl SecretGuard {
@@ -99,21 +109,35 @@ impl SecretGuard {
     /// list outside tests.
     fn build(cwd: &Path, sources: &[PathBuf]) -> Self {
         let mut builder = GitignoreBuilder::new(cwd);
+        let mut machine_builder = GitignoreBuilder::new(cwd);
 
         for pat in DEFAULT_SECRET_PATTERNS {
             let _ = builder.add_line(None, pat);
+            let _ = machine_builder.add_line(None, pat);
         }
 
+        let project_local = cwd.join(".biorouterignore");
         for source in sources {
             let _ = builder.add(source);
+            // The project's own ignore file is the one statement that is scoped
+            // to the project; everything else here (the floor, the global
+            // `<config>/.biorouterignore`) is machine-wide.
+            if source != &project_local {
+                let _ = machine_builder.add(source);
+            }
         }
 
         // Degrade to an empty matcher on a malformed ignore file rather than
         // panicking on the dispatch path.
         let ignore = builder.build().unwrap_or_else(|_| Gitignore::empty());
+        let machine_wide = machine_builder
+            .build()
+            .unwrap_or_else(|_| Gitignore::empty());
         Self {
             ignore,
+            machine_wide,
             root: cwd.to_path_buf(),
+            canonical_root: std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf()),
         }
     }
 
@@ -182,10 +206,60 @@ impl SecretGuard {
         &self.ignore
     }
 
-    /// True when `path` matches a deny pattern. IO-free (treats the path as a
-    /// file), so it is cheap to call per-token before touching the filesystem.
+    /// True when `path` matches a deny pattern.
+    ///
+    /// **A project's patterns apply only inside that project.** The built-in
+    /// floor and the global `<config>/.biorouterignore` are statements about
+    /// this machine and apply to every path; `<root>/.biorouterignore` is a
+    /// statement about one directory tree. Applying the latter everywhere made
+    /// an unrelated file that merely shares a basename with a project rule
+    /// unreadable — gitignore patterns without a slash match at any depth, and
+    /// the guard is consulted for absolute paths outside the root (Auto mode
+    /// resolves those past the containment jail on purpose).
+    ///
+    /// Normally IO-free, so it stays cheap to call per token: the containment
+    /// question is only asked when the project's patterns actually change the
+    /// verdict, and only reaches the filesystem when the path is not already a
+    /// textual descendant of the root.
     pub fn is_denied(&self, path: &Path) -> bool {
-        self.ignore.matched(path, false).is_ignore()
+        let everything = self.ignore.matched(path, false).is_ignore();
+        let machine_wide = self.machine_wide.matched(path, false).is_ignore();
+        if everything == machine_wide {
+            // The project's own file did not move the needle either way.
+            return everything;
+        }
+        if self.is_inside_root(path) {
+            // Inside the project the project has the last word — it may add a
+            // rule, and it may negate one of the floor's with `!path`.
+            everything
+        } else {
+            machine_wide
+        }
+    }
+
+    /// Whether `path` names something inside this guard's root. A relative path
+    /// is by construction relative to the root (that is how the matcher and
+    /// [`Self::candidate_is_denied`] treat it).
+    fn is_inside_root(&self, path: &Path) -> bool {
+        if path.is_relative() {
+            return true;
+        }
+        if path.starts_with(&self.root) || path.starts_with(&self.canonical_root) {
+            return true;
+        }
+        // Only now pay for IO: a path can still be inside the project by a
+        // different route (a symlinked ancestor). Canonicalize the deepest
+        // ancestor that exists — the tail below it cannot contain links.
+        let mut ancestor = path;
+        loop {
+            if let Ok(real) = ancestor.canonicalize() {
+                return real.starts_with(&self.canonical_root);
+            }
+            match ancestor.parent() {
+                Some(parent) => ancestor = parent,
+                None => return false,
+            }
+        }
     }
 
     /// Scan a tool call's arguments for a reference to a denied (secret) file
@@ -622,6 +696,97 @@ mod tests {
         assert_eq!(
             cached.find_denied_path(args.as_object().unwrap()),
             Some(".env".to_string())
+        );
+    }
+
+    /// #68 regression: a project's own `.biorouterignore` is scoped to that
+    /// project. Once the guard is re-rooted onto the session working directory,
+    /// its patterns are matched against *every* candidate — including absolute
+    /// paths outside the project, which Auto mode deliberately lets through the
+    /// containment jail. A bare gitignore pattern matches a basename anywhere,
+    /// so an unrelated file that merely shares a name with something the project
+    /// ignores was refused as "restricted by .biorouterignore".
+    ///
+    /// The floor (and the global ignore file) still apply everywhere: they are
+    /// machine-wide statements about what is a secret, not project-local ones.
+    #[test]
+    fn project_patterns_stop_at_the_project_root() {
+        let project = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        fs::write(project.path().join(".biorouterignore"), "notes.txt\n").unwrap();
+        fs::write(project.path().join("notes.txt"), "project notes").unwrap();
+        fs::write(outside.path().join("notes.txt"), "someone else's notes").unwrap();
+        fs::write(outside.path().join(".env"), "SECRET=1").unwrap();
+
+        let g = guard_at(project.path());
+
+        // Inside the project the pattern is in force, by absolute and relative path.
+        assert!(g.is_denied(&project.path().join("notes.txt")));
+        assert!(g.is_denied(Path::new("notes.txt")));
+
+        // Outside it, the project's pattern says nothing.
+        assert!(
+            !g.is_denied(&outside.path().join("notes.txt")),
+            "a project pattern denied an unrelated file outside the project"
+        );
+
+        // But the built-in floor is not project-scoped.
+        assert!(
+            g.is_denied(&outside.path().join(".env")),
+            "the built-in secret floor must keep applying outside the project"
+        );
+    }
+
+    /// The other half of the scoping: "outside the project" is a question about
+    /// the directory, not about how the path spells it. A file reached through
+    /// a symlink that lands inside the project is inside the project, and the
+    /// project's own rules still cover it — otherwise scoping the patterns
+    /// would have handed anyone a way to read a protected file by naming it
+    /// through a link.
+    #[test]
+    #[cfg(unix)]
+    fn project_patterns_survive_a_symlinked_route_into_the_project() {
+        let project = tempdir().unwrap();
+        let elsewhere = tempdir().unwrap();
+        fs::write(project.path().join(".biorouterignore"), "notes.txt\n").unwrap();
+        fs::write(project.path().join("notes.txt"), "project notes").unwrap();
+
+        // A path outside the root textually, inside it in fact.
+        let link = elsewhere.path().join("link");
+        std::os::unix::fs::symlink(project.path(), &link).unwrap();
+
+        let g = guard_at(project.path());
+        assert!(
+            g.is_denied(&link.join("notes.txt")),
+            "a protected project file became readable by naming it through a symlink"
+        );
+    }
+
+    /// The same scoping through the argument scanner, which is what the
+    /// extension-manager dispatch boundary actually calls.
+    #[test]
+    fn find_denied_path_scopes_project_patterns_too() {
+        let project = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        fs::write(project.path().join(".biorouterignore"), "notes.txt\n").unwrap();
+        fs::write(project.path().join("notes.txt"), "project notes").unwrap();
+        let stranger = outside.path().join("notes.txt");
+        fs::write(&stranger, "someone else's notes").unwrap();
+
+        let g = guard_at(project.path());
+        assert_eq!(
+            g.find_denied_path(json!({ "path": "notes.txt" }).as_object().unwrap()),
+            Some("notes.txt".to_string()),
+            "the project's own file must still be blocked"
+        );
+        assert_eq!(
+            g.find_denied_path(
+                json!({ "path": stranger.to_string_lossy() })
+                    .as_object()
+                    .unwrap()
+            ),
+            None,
+            "a project pattern blocked an unrelated file outside the project"
         );
     }
 

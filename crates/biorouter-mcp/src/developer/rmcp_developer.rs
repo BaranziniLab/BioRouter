@@ -347,6 +347,12 @@ pub struct DeveloperServer {
     /// shell falls back to `BIOROUTER_WORKING_DIR` / the process cwd. Set at
     /// construction from the session so the tool follows the GUI folder picker.
     working_dir: Option<PathBuf>,
+    /// The directory `working_dir` denoted when it was bound, with symlinks
+    /// resolved — the jail's identity, as opposed to its name (#68). `None`
+    /// when no working directory is bound, or when it could not be resolved at
+    /// bind time (it did not exist yet), in which case there is nothing to
+    /// compare against and the path alone remains the boundary.
+    canonical_working_dir: Option<PathBuf>,
 }
 
 #[tool_handler(router = self.tool_router)]
@@ -741,9 +747,20 @@ impl Default for DeveloperServer {
 #[tool_router(router = tool_router)]
 impl DeveloperServer {
     pub fn new() -> Self {
-        // Build the shared secret/ignore guard (BR-23) rooted at the cwd.
-        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        let secret_guard = SecretGuard::for_dir(&cwd);
+        // Build the shared secret/ignore guard (BR-23) rooted where the file
+        // tools will actually work (#68).
+        //
+        // `with_working_dir` re-roots it for the in-process builtin, but the
+        // out-of-process server — `biorouter mcp developer` and `biorouterd mcp
+        // developer` — never calls it: that child is told its base through
+        // `BIOROUTER_WORKING_DIR`. Rooting the guard at the process cwd there
+        // left the guard and the jail pointing at two different directories,
+        // and the ignore file of the directory the tools were working in was
+        // never read (measured, not inferred). Both now consult the one
+        // resolution routine, so they cannot disagree.
+        let base = Self::sanctioned_base_of(None)
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+        let secret_guard = SecretGuard::for_dir(&base);
 
         // Initialize editor model for AI-powered code editing
         let editor_model = create_editor_model();
@@ -760,6 +777,7 @@ impl DeveloperServer {
             extend_path_with_shell: false,
             bash_env_file: None,
             working_dir: None,
+            canonical_working_dir: None,
         }
     }
 
@@ -774,8 +792,31 @@ impl DeveloperServer {
     /// Once the working directory is known, the `undo_edit` history is persisted
     /// to disk keyed by that directory (BR-44), so undo survives a developer
     /// server restart. Any prior history for this directory is reloaded here.
+    ///
+    /// The `SecretGuard` is re-rooted here too (#68). `new()` has to root it at
+    /// the process cwd because that is all it knows, but every real caller
+    /// constructs and *then* binds a working directory — so leaving the guard
+    /// where `new()` put it meant the deny set was read relative to a directory
+    /// this server was never bound to, and the project's own `.biorouterignore`
+    /// was never read at all (measured, not inferred). The guard is a security
+    /// root, so it tracks the same base [`Self::effective_cwd`] jails to rather
+    /// than whichever directory the process happened to start in.
+    ///
+    /// This is defence in depth, not the only enforcement: the extension
+    /// manager's dispatch boundary already builds a guard rooted at the resolved
+    /// session directory for every tool call. It should not be the only one that
+    /// gets the root right.
+    ///
+    /// The canonical directory is pinned here too (#68). A jail base is a
+    /// directory, not a string: `Path::is_dir` follows symlinks, so replacing
+    /// the bound path with a link to somewhere wider answers every existence
+    /// check while silently moving the boundary. Recording what the path
+    /// resolved to when it was sanctioned lets [`Self::effective_cwd`] notice
+    /// that it no longer denotes the same directory.
     pub fn with_working_dir(mut self, dir: PathBuf) -> Self {
         self.file_history = Arc::new(FileHistory::persistent(&dir));
+        self.secret_guard = SecretGuard::for_dir(&dir);
+        self.canonical_working_dir = std::fs::canonicalize(&dir).ok();
         self.working_dir = Some(dir);
         self
     }
@@ -806,8 +847,18 @@ impl DeveloperServer {
     /// dir if it still exists, else `BIOROUTER_WORKING_DIR` if it exists, else
     /// `None` (inherit the process cwd). A candidate that has vanished (deleted
     /// after selection, or a stale session row) is logged and skipped instead of
-    /// jamming every shell command with an opaque spawn error. Shared by the
-    /// shell and the text_editor jail so both agree on where "here" is.
+    /// jamming every shell command with an opaque spawn error.
+    ///
+    /// **This is the shell's helper alone** (#68). It once backed the
+    /// `text_editor` jail too, on the reasoning that both should agree on where
+    /// "here" is — but the two questions have different risk profiles. This one
+    /// answers *where a command runs*, which grants no file access, so walking
+    /// down to the next candidate costs nothing. The jail base answers *what the
+    /// file tools may touch*; substituting a candidate there moves a security
+    /// boundary, and when the session dir sat inside `BIOROUTER_WORKING_DIR` it
+    /// moved it outward. The jail resolves its own base in
+    /// [`Self::effective_cwd`] and refuses rather than falling through. Do not
+    /// re-point it here.
     fn session_cwd_or_fallback(&self) -> Option<PathBuf> {
         if let Some(dir) = &self.working_dir {
             if dir.is_dir() {
@@ -1845,8 +1896,35 @@ impl DeveloperServer {
     /// folder picked) from "the intended base has disappeared". An empty env var
     /// counts as unset, since the desktop app writes `''` when no folder is
     /// selected.
+    ///
+    /// **The separation depends on the spawner, and one caller does not hold up
+    /// its end.** For an out-of-process extension both signals come from the
+    /// parent, and `prepare_child_environment`
+    /// (`biorouter/src/agents/extension_manager.rs`) sets the child's
+    /// `current_dir` *and* `BIOROUTER_WORKING_DIR` only when the session
+    /// directory still exists. A child spawned after that directory vanished is
+    /// told nothing, so `None` here is indistinguishable from "no folder was
+    /// ever picked" and the tools adopt the inherited process cwd — the
+    /// daemon's, typically far wider. Nothing on this side can tell the two
+    /// apart: refusing whenever no base is named would break every legitimate
+    /// standalone `biorouter mcp developer`, where the inherited cwd *is* the
+    /// base the spawner chose. The fix belongs where the information is:
+    /// export the explicit session path unconditionally and set `current_dir`
+    /// only when it exists. This side already handles that correctly — a
+    /// sanctioned base that does not exist is refused, never substituted.
     fn sanctioned_base(&self) -> Option<PathBuf> {
-        self.working_dir.clone().or_else(|| {
+        Self::sanctioned_base_of(self.working_dir.as_deref())
+    }
+
+    /// [`Self::sanctioned_base`] without a server, so construction can resolve
+    /// the same base the file tools will later jail to (#68).
+    ///
+    /// This is the single place the rule lives. `new()` roots the `SecretGuard`
+    /// through it before any working directory is bound; `effective_cwd` reads
+    /// it on every call. Two copies of the rule is what let the guard sit at
+    /// the process cwd while the jail followed `BIOROUTER_WORKING_DIR`.
+    fn sanctioned_base_of(working_dir: Option<&Path>) -> Option<PathBuf> {
+        working_dir.map(Path::to_path_buf).or_else(|| {
             std::env::var("BIOROUTER_WORKING_DIR")
                 .ok()
                 .filter(|s| !s.trim().is_empty())
@@ -1872,27 +1950,28 @@ impl DeveloperServer {
     /// Note the deliberate asymmetry with [`Self::session_cwd_or_fallback`],
     /// which the shell uses: *where a command runs* may fall back, because the
     /// shell is not jailed by this base at all and a fallback grants nothing.
-    /// *What the file tools may touch* may not.
+    /// *What the file tools may touch* may not. That asymmetry is why this
+    /// resolves the base itself rather than calling the shell's helper — see
+    /// #68 below.
     ///
-    /// ONE MOVE REMAINS, and it is not hypothetical. This calls
-    /// `session_cwd_or_fallback` first, which — when the session directory is
-    /// gone but `BIOROUTER_WORKING_DIR` still exists — returns the env
-    /// directory. If the session was working in a *subdirectory* of the env
-    /// base, deleting that subdirectory widens the jail up to the parent, and a
-    /// sibling file that was refused a moment earlier becomes writable
-    /// (measured, not inferred). It is narrow: the desktop app sets both to the
-    /// same value (`ui/desktop/src/main.ts`), where the two vanish together and
-    /// nothing widens. It is left as-is because #64 chose which substitutions to
-    /// forbid and this one is onto an app-sanctioned base, which is that issue's
-    /// option 2 — but "the jail base is never guessed" above means *never
-    /// guessed from the process cwd*, not *never moved*. Closing it means
-    /// requiring `self.working_dir` itself to exist, which is a deliberate call
-    /// for a person, not a sweep.
+    /// **The base is the one the caller was actually given** (#68). This reads
+    /// [`Self::sanctioned_base`] and requires *that* directory to exist; it does
+    /// not walk the shell's candidate list. Sharing that list left one live
+    /// substitution behind #64's: when `working_dir` vanished but
+    /// `BIOROUTER_WORKING_DIR` survived, the jail moved to the env directory.
+    /// Both are values the application sanctioned, so it was never an escape to
+    /// an arbitrary path — but a session working in a *subdirectory* of the env
+    /// base had its jail widened to the parent when that subdirectory was
+    /// deleted, and a sibling file refused a moment earlier became writable
+    /// (measured, not inferred). "Sanctioned somewhere" is not the property that
+    /// matters; "the base this jail was built from" is. A wider directory the
+    /// app also blessed is still a different directory.
     fn effective_cwd(&self) -> Result<PathBuf, ErrorData> {
-        if let Some(dir) = self.session_cwd_or_fallback() {
-            return Ok(dir);
-        }
-        if let Some(gone) = self.sanctioned_base() {
+        if let Some(base) = self.sanctioned_base() {
+            if base.is_dir() {
+                self.verify_pinned_base(&base)?;
+                return Ok(base);
+            }
             return Err(ErrorData::new(
                 ErrorCode::INTERNAL_ERROR,
                 format!(
@@ -1900,7 +1979,7 @@ impl DeveloperServer {
                      resolved. File access stays confined to that directory and is not \
                      re-rooted elsewhere: recreate it, or start a session in a directory \
                      that exists, and retry.",
-                    gone.display()
+                    base.display()
                 ),
                 None,
             ));
@@ -1920,6 +1999,55 @@ impl DeveloperServer {
                 None,
             )
         })
+    }
+
+    /// Require a bound base to still denote the directory it named when it was
+    /// bound (#68).
+    ///
+    /// The existence check above answers "is there a directory here?", and
+    /// `Path::is_dir` follows symlinks — so deleting the session directory and
+    /// putting a symlink to its own parent in its place passes it, and the
+    /// canonicalization the jail performs a moment later then resolves the base
+    /// to the parent. Every sibling the jail refused becomes reachable without
+    /// the sanctioned path ever changing. A jail base is the directory, not the
+    /// string that names it, so the pinned identity is what is enforced;
+    /// re-pointing the path is refused exactly like deleting it.
+    ///
+    /// Only a base bound through [`Self::with_working_dir`] is pinned. A base
+    /// read from `BIOROUTER_WORKING_DIR` is re-read from the environment on
+    /// every call and has no bind moment to pin.
+    fn verify_pinned_base(&self, base: &Path) -> Result<(), ErrorData> {
+        let Some(pinned) = self.canonical_working_dir.as_ref() else {
+            return Ok(());
+        };
+        let now = std::fs::canonicalize(base).map_err(|e| {
+            ErrorData::new(
+                ErrorCode::INTERNAL_ERROR,
+                format!(
+                    "The working directory `{}` could not be resolved ({e}), so file paths \
+                     cannot be resolved against it.",
+                    base.display()
+                ),
+                None,
+            )
+        })?;
+        if &now != pinned {
+            return Err(ErrorData::new(
+                ErrorCode::INTERNAL_ERROR,
+                format!(
+                    "The working directory `{}` no longer refers to the directory it was \
+                     bound to (`{}`); it now resolves to `{}`. File access stays confined \
+                     to the directory this session was given and is not re-rooted \
+                     elsewhere: restore it, or start a session in that directory, and \
+                     retry.",
+                    base.display(),
+                    pinned.display(),
+                    now.display()
+                ),
+                None,
+            ));
+        }
+        Ok(())
     }
 
     fn resolve_path(&self, path_str: &str) -> Result<PathBuf, ErrorData> {
@@ -2233,6 +2361,40 @@ mod tests {
 
     fn create_test_server() -> DeveloperServer {
         DeveloperServer::new()
+    }
+
+    /// Enters a directory for the duration of a `#[serial]` test and puts the
+    /// process back where it was on drop.
+    ///
+    /// The tests below run in a temporary directory and let the `TempDir` drop
+    /// at the end — which deletes the directory the **process** is standing in
+    /// and leaves everything that runs afterwards with no valid working
+    /// directory. `std::env::current_dir()` then fails for reasons that have
+    /// nothing to do with the code under test, which is precisely why #64's
+    /// panic was so easy to reproduce in this file: the condition it needed was
+    /// already lying around, left by an earlier test.
+    ///
+    /// Restoration has to be on `Drop`, not a line at the end of the test: a
+    /// failing assertion unwinds past that line, so exactly the runs that most
+    /// need a clean process are the ones that leak. Declaring the guard *after*
+    /// the `TempDir` also gets the teardown order right — locals drop in reverse,
+    /// so the cwd is restored before the directory is removed.
+    struct CwdGuard(Option<PathBuf>);
+
+    impl CwdGuard {
+        fn enter(dir: impl AsRef<Path>) -> Self {
+            let previous = std::env::current_dir().ok();
+            std::env::set_current_dir(dir).unwrap();
+            CwdGuard(previous)
+        }
+    }
+
+    impl Drop for CwdGuard {
+        fn drop(&mut self) {
+            if let Some(dir) = self.0.take() {
+                let _ = std::env::set_current_dir(dir);
+            }
+        }
     }
 
     /// #2: the shell runs in the session working directory, an absolute
@@ -2568,12 +2730,11 @@ mod tests {
     fn editor_jail_is_not_widened_when_session_dir_disappears() {
         let saved_env = std::env::var("BIOROUTER_WORKING_DIR").ok();
         std::env::remove_var("BIOROUTER_WORKING_DIR");
-        let saved_cwd = std::env::current_dir().ok();
 
         // The process sits in `outside`; the session is jailed to `session`.
         let outside = tempfile::tempdir().unwrap();
         let outside_path = std::fs::canonicalize(outside.path()).unwrap();
-        std::env::set_current_dir(&outside_path).unwrap();
+        let _cwd = CwdGuard::enter(&outside_path);
 
         let session = tempfile::tempdir().unwrap();
         let server = DeveloperServer::new().with_working_dir(session.path().to_path_buf());
@@ -2593,9 +2754,7 @@ mod tests {
 
         let outcome = server.resolve_path_jailed(&probe_str, false);
 
-        if let Some(dir) = saved_cwd {
-            let _ = std::env::set_current_dir(dir);
-        }
+        // The cwd is `CwdGuard`'s job now; only the env var is restored by hand.
         if let Some(v) = saved_env {
             std::env::set_var("BIOROUTER_WORKING_DIR", v);
         }
@@ -2611,6 +2770,137 @@ mod tests {
         );
     }
 
+    /// #68, the related shape: the `SecretGuard` backing `.biorouterignore` is
+    /// rooted at construction, before `with_working_dir` is called — so it used
+    /// to keep the *process* cwd as its root for the whole session, and a
+    /// project's own `.biorouterignore` was never read. Measured with this test
+    /// against the pre-fix code: the file was readable through `text_editor`.
+    ///
+    /// Deliberately touches neither the process cwd nor the environment: the
+    /// rule names a file no ambient ignore source mentions, so the assertion can
+    /// only pass if the guard is rooted at the session directory.
+    #[test]
+    fn secret_guard_is_rerooted_onto_the_session_working_directory() {
+        let session = tempfile::tempdir().unwrap();
+        // A name matching none of DEFAULT_SECRET_PATTERNS, so only the project's
+        // own ignore file can deny it.
+        std::fs::write(
+            session.path().join(".biorouterignore"),
+            "proprietary-notes.md\n",
+        )
+        .unwrap();
+        let denied = session.path().join("proprietary-notes.md");
+        std::fs::write(&denied, "internal").unwrap();
+
+        let unbound = DeveloperServer::new();
+        assert!(
+            !unbound.is_ignored(&denied),
+            "sanity: with no session dir bound, the project's ignore file is not this \
+             server's to read — otherwise the test proves nothing"
+        );
+
+        let server = DeveloperServer::new().with_working_dir(session.path().to_path_buf());
+        assert!(
+            server.is_ignored(&denied),
+            "the session directory's .biorouterignore must be honoured once the server \
+             is bound to it"
+        );
+    }
+
+    /// #68: pinning the canonical base must not reject a base that is *itself*
+    /// reached through a symlink and simply stays put. Every macOS temp
+    /// directory is one (`/var/…` → `/private/var/…`), and so is many a user's
+    /// project directory, so a pin that compared the bound path against its own
+    /// resolved form would refuse ordinary work on this platform.
+    #[test]
+    fn editor_jail_accepts_a_stable_symlinked_base() {
+        let real = tempfile::tempdir().unwrap();
+        let real_path = std::fs::canonicalize(real.path()).unwrap();
+        let link_root = tempfile::tempdir().unwrap();
+        let link = std::fs::canonicalize(link_root.path())
+            .unwrap()
+            .join("link");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&real_path, &link).unwrap();
+        #[cfg(windows)]
+        if std::os::windows::fs::symlink_dir(&real_path, &link).is_err() {
+            return; // creating symlinks needs a privilege we may not have
+        }
+
+        // Bound by its symlinked name, exactly as a folder picker would hand it
+        // over — and never re-pointed.
+        let server = DeveloperServer::new().with_working_dir(link.clone());
+        let inside = link.join("notes.txt");
+        server
+            .resolve_path_jailed(inside.to_str().unwrap(), false)
+            .expect("a stable symlinked base must keep resolving its own files");
+        server
+            .resolve_path_jailed("notes.txt", false)
+            .expect("and relative paths against it");
+    }
+
+    /// #68: the second base substitution, the one #64 left standing. When the
+    /// session directory is a *subdirectory* of `BIOROUTER_WORKING_DIR`, deleting
+    /// it used to hand the jail to the env base — widening it to the parent, so a
+    /// sibling file the jail refused a moment earlier became reachable.
+    ///
+    /// Both values are app-sanctioned, so this is not an escape to an arbitrary
+    /// path; it is still a base *substitution*, and the base is the one value
+    /// bounding every path these tools may touch. The jail now requires the
+    /// directory it was actually given, and refuses instead of moving.
+    #[test]
+    #[serial]
+    fn editor_jail_is_not_widened_to_the_env_base_when_session_dir_disappears() {
+        let saved_env = std::env::var("BIOROUTER_WORKING_DIR").ok();
+
+        // The env base is the *parent*; the session works in a subdirectory of
+        // it. This is the shape that widens: the two do not vanish together.
+        let env_base = tempfile::tempdir().unwrap();
+        let env_path = std::fs::canonicalize(env_base.path()).unwrap();
+        std::env::set_var("BIOROUTER_WORKING_DIR", &env_path);
+
+        let session_path = env_path.join("session");
+        std::fs::create_dir(&session_path).unwrap();
+        let server = DeveloperServer::new().with_working_dir(session_path.clone());
+
+        // A real file inside the env base but outside the session jail.
+        let probe = env_path.join("sibling.txt");
+        std::fs::write(&probe, "not for the tools").unwrap();
+        let probe_str = probe.to_str().unwrap().to_string();
+        assert!(
+            server.resolve_path_jailed(&probe_str, false).is_err(),
+            "sanity: a sibling of the session dir must be refused while it exists"
+        );
+
+        // The session subdirectory disappears; the env base survives.
+        std::fs::remove_dir_all(&session_path).unwrap();
+        assert!(env_path.is_dir(), "the env base must still exist");
+
+        let outcome = server.resolve_path_jailed(&probe_str, false);
+
+        // This test never moves the process cwd, so only the env var needs
+        // restoring before the assertions can unwind.
+        match saved_env {
+            Some(v) => std::env::set_var("BIOROUTER_WORKING_DIR", v),
+            None => std::env::remove_var("BIOROUTER_WORKING_DIR"),
+        }
+
+        let err = outcome.expect_err(
+            "a path outside the session dir must stay refused after the session dir \
+             disappears — the jail must not widen to BIOROUTER_WORKING_DIR",
+        );
+        assert!(
+            err.message.contains("no longer exists"),
+            "the refusal must name the real reason, got: {}",
+            err.message
+        );
+        assert!(
+            err.message.contains(&session_path.display().to_string()),
+            "and must name the directory that vanished, got: {}",
+            err.message
+        );
+    }
+
     /// #64: `effective_cwd` used to `expect()` the process working directory, so
     /// in `biorouter session` — where the process cwd *is* the session cwd —
     /// deleting the directory you started in panicked the whole process on the
@@ -2620,23 +2910,20 @@ mod tests {
     fn resolve_path_errors_instead_of_panicking_when_process_cwd_is_gone() {
         let saved_env = std::env::var("BIOROUTER_WORKING_DIR").ok();
         std::env::remove_var("BIOROUTER_WORKING_DIR");
-        let saved_cwd = std::env::current_dir().ok();
 
         // No session working directory: the process cwd is the intended base.
+        // This test is the one that genuinely *wants* the process standing on a
+        // deleted directory, so `CwdGuard` earning its keep here — restoring on
+        // unwind, not at a line the assertions jump over — is the whole point.
         let server = DeveloperServer::new();
         let tmp = tempfile::tempdir().unwrap();
-        std::env::set_current_dir(tmp.path()).unwrap();
+        let _cwd = CwdGuard::enter(tmp.path());
         drop(tmp);
 
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             server.resolve_path_jailed("scratch.txt", false)
         }));
 
-        // Put the process back on a real directory *before* asserting, so a
-        // failure here cannot strand the rest of the suite without a cwd.
-        if let Some(dir) = saved_cwd {
-            let _ = std::env::set_current_dir(dir);
-        }
         if let Some(v) = saved_env {
             std::env::set_var("BIOROUTER_WORKING_DIR", v);
         }
@@ -2830,7 +3117,7 @@ mod tests {
     #[serial]
     async fn test_text_editor_size_limits() {
         let temp_dir = tempfile::tempdir().unwrap();
-        std::env::set_current_dir(&temp_dir).unwrap();
+        let _cwd = CwdGuard::enter(temp_dir.path());
         let server = create_test_server();
 
         // Test file size limit
@@ -2894,7 +3181,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let file_path = temp_dir.path().join("test.txt");
         let file_path_str = file_path.to_str().unwrap();
-        std::env::set_current_dir(&temp_dir).unwrap();
+        let _cwd = CwdGuard::enter(temp_dir.path());
 
         let server = create_test_server();
 
@@ -2948,7 +3235,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let file_path = temp_dir.path().join("doc.txt");
         let file_path_str = file_path.to_str().unwrap().to_string();
-        std::env::set_current_dir(&temp_dir).unwrap();
+        let _cwd = CwdGuard::enter(temp_dir.path());
         let server = create_test_server();
 
         let write = |text: &str| {
@@ -2994,7 +3281,7 @@ mod tests {
     #[serial]
     async fn test_shell_redirect_snapshot_enables_undo() {
         let temp_dir = tempfile::tempdir().unwrap();
-        std::env::set_current_dir(&temp_dir).unwrap();
+        let _cwd = CwdGuard::enter(temp_dir.path());
         let out = temp_dir.path().join("out.txt");
         std::fs::write(&out, "before\n").unwrap();
         let server = create_test_server();
@@ -3014,7 +3301,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let file_path = temp_dir.path().join("test.txt");
         let file_path_str = file_path.to_str().unwrap();
-        std::env::set_current_dir(&temp_dir).unwrap();
+        let _cwd = CwdGuard::enter(temp_dir.path());
 
         let server = create_test_server();
 
@@ -3073,7 +3360,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let file_path = temp_dir.path().join("test.txt");
         let file_path_str = file_path.to_str().unwrap();
-        std::env::set_current_dir(&temp_dir).unwrap();
+        let _cwd = CwdGuard::enter(temp_dir.path());
 
         let server = create_test_server();
 
@@ -3141,7 +3428,7 @@ mod tests {
     #[serial]
     async fn test_biorouter_ignore_basic_patterns() {
         let temp_dir = tempfile::tempdir().unwrap();
-        std::env::set_current_dir(&temp_dir).unwrap();
+        let _cwd = CwdGuard::enter(temp_dir.path());
 
         // Create .biorouterignore file with patterns
         fs::write(".biorouterignore", "secret.txt\n*.env").unwrap();
@@ -3181,7 +3468,7 @@ mod tests {
     #[serial]
     async fn test_text_editor_respects_ignore_patterns() {
         let temp_dir = tempfile::tempdir().unwrap();
-        std::env::set_current_dir(&temp_dir).unwrap();
+        let _cwd = CwdGuard::enter(temp_dir.path());
 
         // Create .biorouterignore file
         fs::write(".biorouterignore", "secret.txt").unwrap();
@@ -3233,7 +3520,7 @@ mod tests {
     fn test_shell_respects_ignore_patterns() {
         run_shell_test(|| async {
             let temp_dir = tempfile::tempdir().unwrap();
-            std::env::set_current_dir(&temp_dir).unwrap();
+            let _cwd = CwdGuard::enter(temp_dir.path());
 
             let server = create_test_server();
             let running_service = serve_directly(server.clone(), create_test_transport(), None);
@@ -3301,7 +3588,7 @@ mod tests {
     #[serial]
     async fn test_text_editor_descriptions() {
         let temp_dir = tempfile::tempdir().unwrap();
-        std::env::set_current_dir(&temp_dir).unwrap();
+        let _cwd = CwdGuard::enter(temp_dir.path());
 
         // Test without editor API configured (should be the case in tests due to cfg!(test))
         let server = create_test_server();
@@ -3326,7 +3613,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let file_path = temp_dir.path().join("test.txt");
         let file_path_str = file_path.to_str().unwrap();
-        std::env::set_current_dir(&temp_dir).unwrap();
+        let _cwd = CwdGuard::enter(temp_dir.path());
 
         let server = create_test_server();
 
@@ -3388,7 +3675,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let file_path = temp_dir.path().join("test.txt");
         let file_path_str = file_path.to_str().unwrap();
-        std::env::set_current_dir(&temp_dir).unwrap();
+        let _cwd = CwdGuard::enter(temp_dir.path());
 
         let server = create_test_server();
 
@@ -3448,7 +3735,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let file_path = temp_dir.path().join("test.txt");
         let file_path_str = file_path.to_str().unwrap();
-        std::env::set_current_dir(&temp_dir).unwrap();
+        let _cwd = CwdGuard::enter(temp_dir.path());
 
         let server = create_test_server();
 
@@ -3492,7 +3779,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let file_path = temp_dir.path().join("test.txt");
         let file_path_str = file_path.to_str().unwrap();
-        std::env::set_current_dir(&temp_dir).unwrap();
+        let _cwd = CwdGuard::enter(temp_dir.path());
 
         let server = create_test_server();
 
@@ -3552,7 +3839,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let file_path = temp_dir.path().join("test.txt");
         let file_path_str = file_path.to_str().unwrap();
-        std::env::set_current_dir(&temp_dir).unwrap();
+        let _cwd = CwdGuard::enter(temp_dir.path());
 
         let server = create_test_server();
 
@@ -3614,7 +3901,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let file_path = temp_dir.path().join("test.txt");
         let file_path_str = file_path.to_str().unwrap();
-        std::env::set_current_dir(&temp_dir).unwrap();
+        let _cwd = CwdGuard::enter(temp_dir.path());
 
         let server = create_test_server();
 
@@ -3674,7 +3961,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let file_path = temp_dir.path().join("test.txt");
         let file_path_str = file_path.to_str().unwrap();
-        std::env::set_current_dir(&temp_dir).unwrap();
+        let _cwd = CwdGuard::enter(temp_dir.path());
 
         let server = create_test_server();
 
@@ -3734,7 +4021,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let file_path = temp_dir.path().join("test.txt");
         let file_path_str = file_path.to_str().unwrap();
-        std::env::set_current_dir(&temp_dir).unwrap();
+        let _cwd = CwdGuard::enter(temp_dir.path());
 
         let server = create_test_server();
 
@@ -3779,7 +4066,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let file_path = temp_dir.path().join("test.txt");
         let file_path_str = file_path.to_str().unwrap();
-        std::env::set_current_dir(&temp_dir).unwrap();
+        let _cwd = CwdGuard::enter(temp_dir.path());
 
         let server = create_test_server();
 
@@ -3840,7 +4127,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let file_path = temp_dir.path().join("test.txt");
         let file_path_str = file_path.to_str().unwrap();
-        std::env::set_current_dir(&temp_dir).unwrap();
+        let _cwd = CwdGuard::enter(temp_dir.path());
 
         let server = create_test_server();
 
@@ -3908,7 +4195,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let file_path = temp_dir.path().join("nonexistent.txt");
         let file_path_str = file_path.to_str().unwrap();
-        std::env::set_current_dir(&temp_dir).unwrap();
+        let _cwd = CwdGuard::enter(temp_dir.path());
 
         let server = create_test_server();
 
@@ -3938,7 +4225,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let file_path = temp_dir.path().join("large_file.txt");
         let file_path_str = file_path.to_str().unwrap();
-        std::env::set_current_dir(&temp_dir).unwrap();
+        let _cwd = CwdGuard::enter(temp_dir.path());
 
         let server = create_test_server();
 
@@ -4040,7 +4327,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let file_path = temp_dir.path().join("file_2000.txt");
         let file_path_str = file_path.to_str().unwrap();
-        std::env::set_current_dir(&temp_dir).unwrap();
+        let _cwd = CwdGuard::enter(temp_dir.path());
 
         let server = create_test_server();
 
@@ -4101,7 +4388,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let file_path = temp_dir.path().join("small_file.txt");
         let file_path_str = file_path.to_str().unwrap();
-        std::env::set_current_dir(&temp_dir).unwrap();
+        let _cwd = CwdGuard::enter(temp_dir.path());
 
         let server = create_test_server();
 
@@ -4163,7 +4450,7 @@ mod tests {
         let temp_path = temp_dir.path();
 
         // Set the current directory before creating the server
-        std::env::set_current_dir(temp_path).unwrap();
+        let _cwd = CwdGuard::enter(temp_path);
 
         // Create some test files and directories
         fs::create_dir(temp_path.join("subdir1")).unwrap();
@@ -4222,7 +4509,7 @@ mod tests {
         let temp_path = temp_dir.path();
 
         // Set the current directory before creating the server
-        std::env::set_current_dir(temp_path).unwrap();
+        let _cwd = CwdGuard::enter(temp_path);
 
         // Create more than 50 files to test the limit
         for i in 0..60 {
@@ -4278,7 +4565,7 @@ mod tests {
         let temp_path = temp_dir.path();
 
         // Set the current directory before creating the server
-        std::env::set_current_dir(temp_path).unwrap();
+        let _cwd = CwdGuard::enter(temp_path);
 
         let server = create_test_server();
 
@@ -4525,7 +4812,7 @@ mod tests {
     #[serial]
     async fn test_process_shell_output_short() {
         let dir = TempDir::new().unwrap();
-        std::env::set_current_dir(dir.path()).unwrap();
+        let _cwd = CwdGuard::enter(dir.path());
 
         let server = create_test_server();
 
@@ -4542,7 +4829,7 @@ mod tests {
     #[serial]
     async fn test_process_shell_output_empty() {
         let dir = TempDir::new().unwrap();
-        std::env::set_current_dir(dir.path()).unwrap();
+        let _cwd = CwdGuard::enter(dir.path());
 
         let server = create_test_server();
 
@@ -4560,7 +4847,7 @@ mod tests {
     fn test_shell_output_without_trailing_newline() {
         run_shell_test(|| async {
             let temp_dir = tempfile::tempdir().unwrap();
-            std::env::set_current_dir(&temp_dir).unwrap();
+            let _cwd = CwdGuard::enter(temp_dir.path());
 
             let server = create_test_server();
             let running_service = serve_directly(server.clone(), create_test_transport(), None);
@@ -4622,7 +4909,7 @@ mod tests {
     #[serial]
     async fn test_shell_output_handling_logic() {
         let temp_dir = tempfile::tempdir().unwrap();
-        std::env::set_current_dir(&temp_dir).unwrap();
+        let _cwd = CwdGuard::enter(temp_dir.path());
 
         let server = create_test_server();
 
@@ -4656,7 +4943,7 @@ mod tests {
     #[serial]
     async fn test_default_patterns_when_no_ignore_files() {
         let temp_dir = tempfile::tempdir().unwrap();
-        std::env::set_current_dir(&temp_dir).unwrap();
+        let _cwd = CwdGuard::enter(temp_dir.path());
 
         // Don't create any ignore files
         let server = create_test_server();
@@ -4684,7 +4971,7 @@ mod tests {
     #[serial]
     fn test_resolve_path_absolute() {
         let temp_dir = tempfile::tempdir().unwrap();
-        std::env::set_current_dir(&temp_dir).unwrap();
+        let _cwd = CwdGuard::enter(temp_dir.path());
 
         let server = create_test_server();
         let absolute_path = temp_dir.path().join("test.txt");
@@ -4698,7 +4985,7 @@ mod tests {
     #[serial]
     async fn test_resolve_path_relative() {
         let temp_dir = tempfile::tempdir().unwrap();
-        std::env::set_current_dir(&temp_dir).unwrap();
+        let _cwd = CwdGuard::enter(temp_dir.path());
 
         let server = create_test_server();
         let relative_path = "subdir/test.txt";
@@ -4712,7 +4999,7 @@ mod tests {
     #[serial]
     async fn test_text_editor_with_absolute_path() {
         let temp_dir = tempfile::tempdir().unwrap();
-        std::env::set_current_dir(&temp_dir).unwrap();
+        let _cwd = CwdGuard::enter(temp_dir.path());
 
         let server = create_test_server();
         let absolute_path = temp_dir.path().join("absolute_test.txt");
@@ -4740,7 +5027,7 @@ mod tests {
     #[serial]
     async fn test_text_editor_with_relative_path() {
         let temp_dir = tempfile::tempdir().unwrap();
-        std::env::set_current_dir(&temp_dir).unwrap();
+        let _cwd = CwdGuard::enter(temp_dir.path());
 
         let server = create_test_server();
         let relative_path = "relative_test.txt";
