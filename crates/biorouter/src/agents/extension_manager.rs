@@ -363,7 +363,10 @@ pub fn get_parameter_names(tool: &Tool) -> Vec<String> {
 /// daemon-private variables from a child no matter who put them there.
 ///
 /// The working directory is resolved here too (explicit argument first, then
-/// `BIOROUTER_WORKING_DIR`).
+/// `BIOROUTER_WORKING_DIR`). A resolved base is always *named* to the child;
+/// only the child's cwd is conditional on that base still existing. See the
+/// comment on the branch below — collapsing the two back into one condition is
+/// issue #68's jail-widening defect.
 fn prepare_child_environment(command: &mut Command, working_dir: Option<&PathBuf>) {
     if let Ok(path) = SearchPaths::builder().path() {
         command.env("PATH", path);
@@ -377,15 +380,27 @@ fn prepare_child_environment(command: &mut Command, working_dir: Option<&PathBuf
     });
 
     if let Some(ref dir) = effective_working_dir {
+        // ALWAYS name the base, even when it has vanished (issue #68 / F1). The
+        // two signals are deliberately no longer under one condition: a child
+        // that is told nothing does not fail safe, it falls back to its
+        // inherited environment and the daemon's process cwd — `/` under the
+        // packaged desktop app — and roots its file jail there, so a session
+        // whose directory was deleted mid-conversation gets a *wider* jail than
+        // one whose directory still exists. Naming a missing base is what lets
+        // `DeveloperServer` refuse the call instead of re-rooting it elsewhere.
+        command.env("BIOROUTER_WORKING_DIR", dir);
+
         if dir.exists() && dir.is_dir() {
             tracing::info!("Setting MCP process working directory: {:?}", dir);
             command.current_dir(dir);
-            // Also set BIOROUTER_WORKING_DIR env var for the child process
-            command.env("BIOROUTER_WORKING_DIR", dir);
         } else {
+            // Only the *cwd* stays conditional: `current_dir` on a path that
+            // does not exist is a spawn failure, which would take the extension
+            // down entirely and leave the child-side fallback unreachable.
             tracing::warn!(
-                "Working directory doesn't exist or isn't a directory: {:?}",
-                dir
+                working_dir = %dir.display(),
+                "extension working directory does not exist or is not a directory; \
+                 spawning without a cwd and letting the child refuse against this base"
             );
         }
     } else {
@@ -655,6 +670,11 @@ impl ExtensionManager {
     /// Resolve the working directory for an extension.
     /// Prefers the session working directory (set via `set_working_dir`), and
     /// falls back to the process cwd when it is not available (e.g. the CLI).
+    ///
+    /// Deliberately **not** existence-checked: a session directory that has been
+    /// deleted is still this session's base, and dropping it here would send the
+    /// child no base at all — issue #68's jail widening. Existence is decided
+    /// once, at the spawn, by [`prepare_child_environment`].
     async fn resolve_working_dir(&self) -> PathBuf {
         if let Some(dir) = self.working_dir.lock().await.clone() {
             return dir;
@@ -3202,5 +3222,99 @@ mod tests {
                  regression.\nchild env:\n{child_env}"
             );
         }
+    }
+
+    // ---- issue #68 / F1: the parent half of the jail-widening defect ---------
+
+    /// The value of `BIOROUTER_WORKING_DIR` the child actually received, read
+    /// out of a **real spawned process** rather than off the `Command` builder.
+    /// Reading the builder would prove only that a field was set; the defect is
+    /// about what crosses the process boundary, so the probe crosses it.
+    #[cfg(unix)]
+    async fn child_working_dir_env(command: &mut Command) -> Option<String> {
+        let out = command.output().await.expect("extension child must spawn");
+        assert!(
+            out.status.success(),
+            "probe child failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .find_map(|line| line.strip_prefix("BIOROUTER_WORKING_DIR="))
+            .map(str::to_owned)
+    }
+
+    /// Issue #68 / F1: an out-of-process extension spawned **after** its session
+    /// directory has vanished must still be told what that directory was.
+    ///
+    /// This constructs the real condition rather than simulating it: a real
+    /// directory is created, really deleted, and a real child is really spawned
+    /// through the real [`prepare_child_environment`] — the same call
+    /// `child_process_client` makes for every stdio extension.
+    ///
+    /// Before the fix, `current_dir` and `BIOROUTER_WORKING_DIR` were both set
+    /// inside one `dir.exists() && dir.is_dir()` guard, so a vanished directory
+    /// sent the child **neither** signal. `DeveloperServer::new()` then adopted
+    /// the inherited environment and the daemon's process cwd — `/` under the
+    /// packaged desktop app — and rooted its file jail there, widening it to the
+    /// whole filesystem. Naming the base unconditionally is what lets the child
+    /// refuse instead of re-rooting; the cwd stays conditional because a
+    /// nonexistent `current_dir` is a spawn failure.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_vanished_working_dir_is_still_named_to_the_extension_child() {
+        let scratch = tempdir().expect("temp dir");
+        let vanished = scratch.path().to_path_buf();
+        drop(scratch);
+        assert!(
+            !vanished.exists(),
+            "the directory under test must really be gone"
+        );
+
+        let mut command = Command::new("printenv");
+        prepare_child_environment(&mut command, Some(&vanished));
+
+        // The other half of the fix: a directory that does not exist must NOT
+        // become the child's cwd — that is a spawn error, and it is what makes
+        // the child's own fallback unreachable.
+        assert_eq!(
+            command.as_std().get_current_dir(),
+            None,
+            "a vanished directory must not be handed to the child as its cwd"
+        );
+
+        assert_eq!(
+            child_working_dir_env(&mut command).await.as_deref(),
+            Some(vanished.to_string_lossy().as_ref()),
+            "issue #68: an extension spawned after its session directory vanished \
+             received no BIOROUTER_WORKING_DIR, so it adopts the daemon's cwd \
+             (`/` under the packaged app) and widens its file jail to the whole \
+             filesystem instead of refusing"
+        );
+    }
+
+    /// The other direction, so the conditional-cwd half cannot be "fixed" by
+    /// dropping `current_dir` altogether: a directory that still exists is both
+    /// named to the child and made its working directory, and the child really
+    /// runs there.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_existing_working_dir_still_becomes_the_extension_child_cwd() {
+        let scratch = tempdir().expect("temp dir");
+        let dir = scratch.path().to_path_buf();
+
+        let mut command = Command::new("sh");
+        command.args(["-c", "printf ran > ./marker; printenv"]);
+        prepare_child_environment(&mut command, Some(&dir));
+
+        assert_eq!(command.as_std().get_current_dir(), Some(dir.as_path()));
+        assert_eq!(
+            child_working_dir_env(&mut command).await.as_deref(),
+            Some(dir.to_string_lossy().as_ref())
+        );
+        assert!(
+            dir.join("marker").exists(),
+            "the child's relative write landed outside its session directory"
+        );
     }
 }
