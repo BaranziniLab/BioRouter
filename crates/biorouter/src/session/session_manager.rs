@@ -10939,6 +10939,26 @@ mod tests {
             .await
             .unwrap();
 
+        let mut child_message = Message::user().with_text("make the child listable");
+        manager
+            .add_message_adopting_uid(&child.id, &mut child_message)
+            .await
+            .unwrap();
+
+        let listed = manager
+            .list_sessions_by_types(&[SessionType::SubAgent])
+            .await
+            .unwrap();
+        let listed_child = listed
+            .iter()
+            .find(|session| session.id == child.id)
+            .expect("child is returned by the full-session listing");
+        assert_eq!(
+            listed_child.parent_session_id.as_deref(),
+            Some(parent.id.as_str()),
+            "the tolerant row reader must not hide a missing SELECT column"
+        );
+
         let reread = manager.get_session(&child.id, false).await.unwrap();
         assert_eq!(reread.parent_session_id, Some(parent.id));
     }

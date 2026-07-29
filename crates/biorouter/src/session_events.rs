@@ -151,9 +151,9 @@ fn bus() -> std::sync::MutexGuard<'static, HashMap<String, broadcast::Sender<Ses
 ///   guards removal, an entry's absence provably means the session has no
 ///   receiver — a fact the rest of the module relies on.
 ///
-/// Returns a [`Subscription`], which derefs to the underlying
-/// `broadcast::Receiver` and reclaims the ring when it is dropped. See that
-/// type for why the reclaim is not left to the caller.
+/// Returns a [`Subscription`], which exposes the receiver operations needed by
+/// consumers and reclaims the ring when it is dropped. See that type for why
+/// the reclaim is not left to the caller.
 #[must_use = "dropping the subscription immediately unsubscribes"]
 pub fn subscribe(session_id: &str) -> Subscription {
     let rx = bus()
@@ -181,8 +181,10 @@ pub fn subscribe(session_id: &str) -> Subscription {
 /// route, so "the route remembers to call `release_if_idle` on stream drop" is
 /// not a good enough contract: the type enforces it.
 ///
-/// Deref, not a wrapper API, so `sub.recv().await` and every other
-/// `broadcast::Receiver` method work unchanged.
+/// The underlying receiver is deliberately not exposed: methods such as
+/// `broadcast::Receiver::resubscribe` return a bare receiver whose final drop
+/// cannot reclaim the registry entry. Every receiver derived from this one
+/// therefore stays wrapped in `Subscription`.
 #[derive(Debug)]
 pub struct Subscription {
     session_id: String,
@@ -199,19 +201,33 @@ impl Subscription {
     pub fn session_id(&self) -> &str {
         &self.session_id
     }
-}
 
-impl std::ops::Deref for Subscription {
-    type Target = broadcast::Receiver<SessionBusEvent>;
-
-    fn deref(&self) -> &Self::Target {
-        self.rx.as_ref().expect("receiver is only taken in Drop")
+    pub async fn recv(&mut self) -> Result<SessionBusEvent, broadcast::error::RecvError> {
+        self.rx
+            .as_mut()
+            .expect("receiver is only taken in Drop")
+            .recv()
+            .await
     }
-}
 
-impl std::ops::DerefMut for Subscription {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.rx.as_mut().expect("receiver is only taken in Drop")
+    pub fn try_recv(&mut self) -> Result<SessionBusEvent, broadcast::error::TryRecvError> {
+        self.rx
+            .as_mut()
+            .expect("receiver is only taken in Drop")
+            .try_recv()
+    }
+
+    #[must_use = "dropping the resubscribed receiver immediately unsubscribes"]
+    pub fn resubscribe(&self) -> Self {
+        Self {
+            session_id: self.session_id.clone(),
+            rx: Some(
+                self.rx
+                    .as_ref()
+                    .expect("receiver is only taken in Drop")
+                    .resubscribe(),
+            ),
+        }
     }
 }
 
@@ -495,6 +511,26 @@ mod tests {
         assert!(
             !is_tracked("observer-only"),
             "dropping the subscription must reclaim the ring on its own"
+        );
+    }
+
+    #[test]
+    fn a_resubscribed_receiver_cannot_escape_ring_reclamation() {
+        let key = "observer-resubscribe";
+        assert!(!is_tracked(key), "precondition: nothing else uses this key");
+
+        let first = subscribe(key);
+        let second = first.resubscribe();
+        drop(first);
+        assert!(
+            is_tracked(key),
+            "the second observer still needs the registry's sender"
+        );
+
+        drop(second);
+        assert!(
+            !is_tracked(key),
+            "the last derived receiver must reclaim the ring"
         );
     }
 

@@ -36,7 +36,7 @@ use biorouter::agents::{AgentEvent, SessionConfig};
 use biorouter::conversation::message::Message;
 use biorouter::conversation::Conversation;
 use biorouter::session_events::{self, SessionBusEvent};
-use futures::StreamExt;
+use futures::{FutureExt, StreamExt};
 use tokio_util::sync::CancellationToken;
 
 use crate::routes::reply::{get_token_state, track_tool_telemetry, TurnErrorScope};
@@ -199,9 +199,8 @@ pub struct StartedTurn {
 /// spawned task really can get there first. Returning the subscription removes
 /// the window instead of documenting it.
 ///
-/// Callers that spawn [`run_turn`] themselves take on both obligations:
-/// subscribe before spawning, not after, and supervise the `JoinHandle` (see
-/// [`spawn_supervised`]).
+/// Callers that spawn [`run_turn`] themselves must subscribe before spawning,
+/// not after. Panic supervision is part of `run_turn` itself.
 pub async fn start_turn(
     state: Arc<AppState>,
     request: TurnRequest,
@@ -222,51 +221,47 @@ pub async fn start_turn(
     // Before the spawn, never after it.
     let events = session_events::subscribe(&request.session_id);
 
-    let session_id = request.session_id.clone();
-    spawn_supervised(
-        session_id,
-        run_turn(state, request, turn_guard, cancel_token),
-    );
+    tokio::spawn(run_turn(state, request, turn_guard, cancel_token));
     Ok(StartedTurn { turn_id, events })
 }
 
-/// Spawn a turn and publish a terminal event on its behalf if it dies without
-/// one.
+/// Run a turn and publish a terminal event on its behalf if it dies without one.
 ///
-/// `run_turn` publishes `TurnStarted` before any fallible work, and
-/// `tokio::spawn` captures a panic into a `JoinHandle`. Drop that handle and a
-/// turn that panics anywhere afterwards publishes a start and then nothing,
+/// `run_turn_body` publishes `TurnStarted` before any fallible work. Let a panic
+/// escape its task and a turn that panics anywhere afterwards publishes a start
+/// and then nothing,
 /// forever — "one terminal event per turn, always" becomes zero, and every
 /// observer (Task 7's watcher, Task 14's `wait:"final_message"`) blocks on a
 /// frame that never comes.
 ///
-/// `/reply` has had this backstop since BR-33: its own supervisor task turns a
-/// `JoinError` into `internal_error` / `TurnErrorScope::Internal`. A *detached*
-/// turn has no handler to do that for it, so the runner carries its own — which
-/// is why this is a named function and not two lines inlined into
-/// [`start_turn`]: a panicking future is the only way to test it.
+/// The turn guard is deliberately owned outside the future being caught. If the
+/// guard unwound with `turn`, another turn could acquire the session and publish
+/// `TurnStarted` before this function published the old turn's `TurnError`.
+/// Terminal events do not carry a turn id, so that interleaving is
+/// indistinguishable from the new turn failing.
 ///
-/// Only fires on `JoinError`, so a turn that ended cleanly is not given a
-/// second terminal. A turn that panics *after* publishing its own terminal
-/// still gets this one — two frames rather than none, matching `/reply` and the
-/// safer direction for a consumer that is blocked waiting.
-fn spawn_supervised<F>(session_id: String, turn: F)
+/// A turn that panics *after* publishing its own terminal still gets this one —
+/// two frames rather than none, matching `/reply` and the safer direction for a
+/// consumer that is blocked waiting.
+async fn supervise_turn<F>(session_id: String, _turn_guard: crate::state::TurnGuard, turn: F)
 where
-    F: std::future::Future<Output = ()> + Send + 'static,
+    F: std::future::Future<Output = ()> + Send,
 {
-    tokio::spawn(async move {
-        if let Err(join_error) = tokio::spawn(turn).await {
-            tracing::error!("turn: task terminated unexpectedly: {join_error}");
-            publish_turn_error(
-                &session_id,
-                "The model turn ended unexpectedly. Please retry.".to_string(),
-                "internal_error",
-                TurnErrorScope::Internal,
-                true,
-                None,
-            );
-        }
-    });
+    if std::panic::AssertUnwindSafe(turn)
+        .catch_unwind()
+        .await
+        .is_err()
+    {
+        tracing::error!("turn: task terminated unexpectedly");
+        publish_turn_error(
+            &session_id,
+            "The model turn ended unexpectedly. Please retry.".to_string(),
+            "internal_error",
+            TurnErrorScope::Internal,
+            true,
+            None,
+        );
+    }
 }
 
 /// The turn body. Split out of `start_turn` so Task 8 can also call it with a
@@ -303,6 +298,27 @@ pub async fn run_turn(
     turn_guard: crate::state::TurnGuard,
     cancel_token: CancellationToken,
 ) {
+    let session_id = request.session_id.clone();
+    if turn_guard.session_id() != session_id {
+        tracing::error!(
+            request_session_id = %session_id,
+            guard_session_id = %turn_guard.session_id(),
+            "turn: refusing to run with another session's guard"
+        );
+        return;
+    }
+
+    let turn_id = turn_guard.turn_id().to_string();
+    let turn = run_turn_body(state, request, turn_id, cancel_token);
+    supervise_turn(session_id, turn_guard, turn).await;
+}
+
+async fn run_turn_body(
+    state: Arc<AppState>,
+    request: TurnRequest,
+    turn_id: String,
+    cancel_token: CancellationToken,
+) {
     let TurnRequest {
         session_id,
         user_message,
@@ -310,22 +326,6 @@ pub async fn run_turn(
     } = request;
     let turn_started = std::time::Instant::now();
 
-    // The guard must be the one taken for THIS session. `run_turn` receives the
-    // request and the guard as separate arguments and Tasks 8 and 14 both
-    // acquire the guard themselves, so a mismatch is a plain argument mix-up
-    // that would otherwise run an unguarded turn on one session while holding
-    // another's lock. Nothing recovers from that at runtime, so it is a
-    // `debug_assert`: caught in tests and in dev builds, free in release.
-    debug_assert_eq!(
-        turn_guard.session_id(),
-        session_id,
-        "run_turn was handed another session's turn guard"
-    );
-
-    // Holds the per-session turn lock for the turn's lifetime; dropped
-    // (releasing the session) when this future ends — the same RAII discipline
-    // the pre-BR-71 /reply task used.
-    let _turn_guard = turn_guard;
     // Defer scheduled background jobs while a turn is in flight.
     let _interactive_turn = biorouter::scheduler::interactive_turn_guard();
 
@@ -381,18 +381,13 @@ pub async fn run_turn(
         )
     });
 
-    session_events::publish(
-        &session_id,
-        SessionBusEvent::TurnStarted {
-            turn_id: _turn_guard.turn_id().to_string(),
-        },
-    );
+    session_events::publish(&session_id, SessionBusEvent::TurnStarted { turn_id });
 
     // One terminal event per turn, always. Every exit path below publishes
     // exactly one `TurnError` or one `TurnFinished`, never both and never two —
     // and the one exit path that cannot publish anything, a panic, is covered
-    // by `spawn_supervised`, which publishes `internal_error` on the turn's
-    // behalf when the task's `JoinHandle` comes back `Err`.
+    // by `supervise_turn`, which publishes `internal_error` while this session's
+    // turn guard is still held.
     //
     // `provider_kind` is a parameter, not a hardcoded `None`: it is one of the
     // three fields the desktop's rate-limit/retry/compaction recovery reads, and
@@ -1061,6 +1056,41 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn drive_stream_preserves_message_before_persisted_ids_order() {
+        use biorouter::agents::PersistedMessage;
+
+        let sid = "br71-drive-stream-persist-order";
+        let message_id = "br71-persisted-message";
+        let mut rx = session_events::subscribe(sid);
+        let mut all = Conversation::new_unvalidated(Vec::new());
+        let message = Message::assistant()
+            .with_text("durable answer")
+            .with_id(message_id);
+        let mut stream = futures::stream::iter(vec![
+            Ok(AgentEvent::Message(message)),
+            Ok(AgentEvent::MessagesPersisted(vec![PersistedMessage {
+                id: message_id.to_string(),
+                user_visible: true,
+            }])),
+        ]);
+
+        let terminal_error =
+            drive_stream(sid, &mut stream, &CancellationToken::new(), &mut all).await;
+        assert!(!terminal_error);
+
+        let seen = drain(&mut rx).await;
+        assert_eq!(seen.len(), 2, "both producer events must reach the bus");
+        let SessionBusEvent::Agent(AgentEvent::Message(message)) = &seen[0] else {
+            panic!("message body must be published first: {seen:?}");
+        };
+        assert_eq!(message.id.as_deref(), Some(message_id));
+        let SessionBusEvent::Agent(AgentEvent::MessagesPersisted(persisted)) = &seen[1] else {
+            panic!("persisted-id accounting must follow the body: {seen:?}");
+        };
+        assert_eq!(persisted[0].id, message_id);
+    }
+
     /// A turn that dies without publishing a terminal still gets one.
     ///
     /// `run_turn` publishes `TurnStarted` before any fallible work, and
@@ -1076,12 +1106,42 @@ mod tests {
     /// no handler to supervise it, so the runner has to carry its own.
     #[tokio::test]
     async fn a_turn_that_panics_still_publishes_a_terminal_event() {
-        let sid = "br71-supervised-panic";
-        let mut rx = session_events::subscribe(sid);
+        struct AcquireSuccessorOnDrop {
+            state: Arc<crate::state::AppState>,
+            session_id: String,
+            acquired: Arc<std::sync::atomic::AtomicBool>,
+        }
 
-        spawn_supervised(sid.to_string(), async {
+        impl Drop for AcquireSuccessorOnDrop {
+            fn drop(&mut self) {
+                if self
+                    .state
+                    .try_begin_turn_idempotent(&self.session_id, CancellationToken::new(), None)
+                    .is_ok()
+                {
+                    self.acquired
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
+                }
+            }
+        }
+
+        let state = crate::state::AppState::new().await.unwrap();
+        let sid = "br71-supervised-panic".to_string();
+        let mut rx = session_events::subscribe(&sid);
+        let guard = state
+            .try_begin_turn_idempotent(&sid, CancellationToken::new(), None)
+            .expect("session is idle");
+        let successor_acquired = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let probe = AcquireSuccessorOnDrop {
+            state: state.clone(),
+            session_id: sid.clone(),
+            acquired: successor_acquired.clone(),
+        };
+
+        let handle = tokio::spawn(supervise_turn(sid.clone(), guard, async move {
+            let _probe = probe;
             panic!("br71: deliberate panic, this backtrace is expected");
-        });
+        }));
 
         let ev = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
             .await
@@ -1099,28 +1159,74 @@ mod tests {
         assert_eq!(code, "internal_error");
         assert_eq!(scope, TurnErrorScope::Internal.wire_value());
         assert!(retryable, "the client may retry a turn that fell over");
+        handle.await.unwrap();
+        assert!(
+            !successor_acquired.load(std::sync::atomic::Ordering::SeqCst),
+            "the session guard must survive the panicking body's unwind"
+        );
+        assert!(
+            !state.is_turn_active(&sid),
+            "the guard is released after the supervisor publishes the terminal"
+        );
     }
 
     /// A turn that ends normally must NOT also get the supervisor's terminal —
     /// otherwise every turn would publish two.
     #[tokio::test]
     async fn a_turn_that_ends_cleanly_gets_no_extra_terminal() {
-        let sid = "br71-supervised-clean";
-        let mut rx = session_events::subscribe(sid);
+        let state = crate::state::AppState::new().await.unwrap();
+        let sid = "br71-supervised-clean".to_string();
+        let mut rx = session_events::subscribe(&sid);
+        let guard = state
+            .try_begin_turn_idempotent(&sid, CancellationToken::new(), None)
+            .expect("session is idle");
+        let publish_session_id = sid.clone();
 
-        spawn_supervised(sid.to_string(), async {
+        supervise_turn(sid, guard, async move {
             session_events::publish(
-                "br71-supervised-clean",
+                &publish_session_id,
                 SessionBusEvent::TurnFinished {
                     reason: "stop".into(),
                     token_state: None,
                 },
             );
-        });
+        })
+        .await;
 
         let seen = drain(&mut rx).await;
         assert_eq!(seen.len(), 1, "the supervisor must stay quiet: {seen:?}");
         assert!(matches!(seen[0], SessionBusEvent::TurnFinished { .. }));
+    }
+
+    #[tokio::test]
+    async fn run_turn_refuses_a_guard_for_another_session_in_all_builds() {
+        let state = crate::state::AppState::new().await.unwrap();
+        let first_sid = "br71-guard-owner".to_string();
+        let second_sid = "br71-guard-mismatch".to_string();
+        let mut second_events = session_events::subscribe(&second_sid);
+        let guard = state
+            .try_begin_turn_idempotent(&first_sid, CancellationToken::new(), None)
+            .expect("first session is idle");
+
+        run_turn(
+            state.clone(),
+            TurnRequest::new(
+                second_sid.clone(),
+                Message::user().with_text("must not run"),
+            ),
+            guard,
+            CancellationToken::new(),
+        )
+        .await;
+
+        assert!(!state.is_turn_active(&first_sid));
+        assert!(!state.is_turn_active(&second_sid));
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), second_events.recv(),)
+                .await
+                .is_err(),
+            "the unguarded session must not publish a turn lifecycle"
+        );
     }
 
     /// `start_turn` must hand back a subscription it opened itself, not leave
