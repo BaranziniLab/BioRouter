@@ -137,6 +137,27 @@ struct WorkspaceListParams {
     limit: Option<u32>,
 }
 
+/// The tools [`INSTRUCTIONS`] names whose handler is still a placeholder, each
+/// with the task that lands it.
+///
+/// A data table rather than one match arm per tool so the invariant is
+/// *checkable*: `get_tools()` must advertise none of these (a tool the model can
+/// see but not use is worse than one it cannot see), and every `workspace_*` name
+/// in the instruction block must be either advertised or listed here. Both are
+/// asserted in `advertises_no_tool_whose_handler_is_still_a_placeholder`.
+///
+/// The task that implements a tool deletes its row here — it must, or its own
+/// dispatch arm is shadowed by nothing and the surface test fails — and adds it
+/// to `get_tools()` in the same commit.
+const PENDING_TOOLS: &[(&str, &str)] = &[
+    ("workspace_read_conversation", "Task 13"),
+    ("workspace_send_prompt", "Task 14"),
+    ("workspace_set_tools", "Task 15"),
+    ("workspace_close", "Task 16"),
+    ("workspace_watch", "Task 17"),
+    ("workspace_open", "Task 24"),
+];
+
 pub struct WorkspaceClient {
     info: InitializeResult,
     pub(crate) context: PlatformExtensionContext,
@@ -443,19 +464,16 @@ impl McpClientTrait for WorkspaceClient {
         let caller = &meta.session_id;
         let content = match name {
             "workspace_list" => self.handle_list(caller, arguments).await,
-            "workspace_read_conversation" => Err("not implemented until Task 13".to_string()),
-            "workspace_send_prompt" => Err("not implemented until Task 14".to_string()),
-            "workspace_set_tools" => Err("not implemented until Task 15".to_string()),
-            "workspace_close" => Err("not implemented until Task 16".to_string()),
-            "workspace_watch" => Err("not implemented until Task 17".to_string()),
-            "workspace_open" => Err("not implemented until Task 24".to_string()),
             // BR-71 decision 22: the spawn tool is advertised here but
             // dispatched by the agent loop (it needs the parent's TaskConfig).
             // Reachable only if that interception is ever removed.
             crate::agents::subagent_tool::SUBAGENT_TOOL_NAME => {
                 Err("`subagent` is dispatched by the agent loop, not by this extension".to_string())
             }
-            _ => Err(format!("Unknown tool: {name}")),
+            _ => match PENDING_TOOLS.iter().find(|(tool, _)| *tool == name) {
+                Some((_, task)) => Err(format!("not implemented until {task}")),
+                None => Err(format!("Unknown tool: {name}")),
+            },
         };
         match content {
             Ok(content) => Ok(CallToolResult::success(content)),
@@ -495,6 +513,51 @@ mod tests {
         crate::agents::mcp_client::McpMeta::new("caller")
     }
 
+    /// Call `workspace_list` and return the parsed payload.
+    ///
+    /// Every assertion below reads this rather than substring-matching the
+    /// pretty-printed text: `text.contains("\"extensions\"")` is satisfied by an
+    /// empty array, by the field appearing on the wrong object, and by the word
+    /// turning up anywhere at all in a session name — so it pins nothing.
+    async fn list(c: &WorkspaceClient, args: serde_json::Value) -> serde_json::Value {
+        let args: rmcp::model::JsonObject = serde_json::from_value(args).unwrap();
+        let result = c
+            .call_tool(
+                "workspace_list",
+                Some(args),
+                test_meta(),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let text = result.content[0].as_text().unwrap().text.clone();
+        serde_json::from_str(&text).unwrap_or_else(|e| panic!("not JSON ({e}): {text}"))
+    }
+
+    /// The returned session ids, sorted so the assertion does not depend on the
+    /// store's row order.
+    fn sorted_ids(payload: &serde_json::Value) -> Vec<String> {
+        let mut ids: Vec<String> = payload["sessions"]
+            .as_array()
+            .expect("sessions is an array")
+            .iter()
+            .map(|r| {
+                r["session_id"]
+                    .as_str()
+                    .expect("row has a string id")
+                    .to_string()
+            })
+            .collect();
+        ids.sort();
+        ids
+    }
+
+    fn sorted<S: AsRef<str>>(ids: Vec<S>) -> Vec<String> {
+        let mut ids: Vec<String> = ids.into_iter().map(|s| s.as_ref().to_string()).collect();
+        ids.sort();
+        ids
+    }
+
     /// The machine identifier and the human label are two different strings and
     /// must stay that way.
     ///
@@ -517,6 +580,64 @@ mod tests {
         let info = c.get_info().unwrap();
         assert_eq!(info.server_info.name, EXTENSION_NAME);
         assert_eq!(info.server_info.title.as_deref(), Some(EXTENSION_TITLE));
+    }
+
+    /// The advertised surface and the placeholder surface must be disjoint, and
+    /// together they must cover every tool [`INSTRUCTIONS`] names.
+    ///
+    /// This is the discriminating half of the surface check that
+    /// `advertises_workspace_list_with_instructions` deliberately cannot be: that
+    /// test asserts MEMBERSHIP (`contains`) because Tasks 13-17 each append one
+    /// tool and re-run it expecting PASS, so a whole-vector equality there would
+    /// be a fail-again-six-times gate (the plan puts its one exact-surface
+    /// assertion in Task 24, the last task that changes `get_tools()`). But
+    /// membership alone lets a premature tool — one whose handler still answers
+    /// "not implemented until Task N" — be advertised without any test noticing,
+    /// which is exactly the failure the phase-gate rule exists to prevent.
+    ///
+    /// The invariant below closes that hole without ever going stale: a task that
+    /// implements a tool deletes its [`PENDING_TOOLS`] row (it must, or its own
+    /// dispatch is unreachable) and adds it to `get_tools()`, and the two halves
+    /// stay disjoint and complete by construction.
+    #[tokio::test]
+    async fn advertises_no_tool_whose_handler_is_still_a_placeholder() {
+        let c = client();
+        let advertised: Vec<String> = c
+            .list_tools(None, CancellationToken::new())
+            .await
+            .unwrap()
+            .tools
+            .iter()
+            .map(|t| t.name.to_string())
+            .collect();
+
+        for (pending, task) in PENDING_TOOLS {
+            assert!(
+                !advertised.contains(&pending.to_string()),
+                "{pending} is advertised but its handler answers \
+                 'not implemented until {task}'"
+            );
+        }
+
+        // Every `workspace_*` tool the instruction block tells the model about is
+        // either live or explicitly pending — never a name nothing handles.
+        let mentioned: std::collections::BTreeSet<String> = INSTRUCTIONS
+            .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
+            .filter(|tok| tok.starts_with("workspace_"))
+            .map(|tok| tok.to_string())
+            .collect();
+        assert!(
+            mentioned.contains("workspace_list"),
+            "the token scan found nothing; got: {mentioned:?}"
+        );
+        for name in &mentioned {
+            assert!(
+                advertised.contains(name)
+                    || PENDING_TOOLS.iter().any(|(pending, _)| pending == name),
+                "the instructions name {name}, which is neither advertised nor \
+                 listed in PENDING_TOOLS"
+            );
+        }
     }
 
     /// This task registers exactly ONE tool; Tasks 13-17 append the rest.
@@ -572,29 +693,70 @@ mod tests {
             .await
             .unwrap();
 
-        let args: rmcp::model::JsonObject =
-            serde_json::from_value(serde_json::json!({ "scope": "all" })).unwrap();
-        let result = c
-            .call_tool(
-                "workspace_list",
-                Some(args),
-                crate::agents::mcp_client::McpMeta::new("caller"),
-                CancellationToken::new(),
-            )
-            .await
-            .unwrap();
-        let text = result.content[0].as_text().unwrap().text.clone();
-        assert!(text.contains(&parent.id));
-        assert!(text.contains("\"gui_attached\": false"));
-        // §4.1: per-session enabled extensions + KBs are part of the row.
-        assert!(text.contains("\"extensions\""));
-        assert!(text.contains("\"knowledge_bases\""));
+        let v = list(&c, serde_json::json!({ "scope": "all" })).await;
+
+        // Envelope: no GUI is attached in a unit test, and the paging metadata
+        // (decision 17) is always present and honest, not merely present.
+        assert_eq!(v["gui_attached"], serde_json::json!(false));
+        assert_eq!(v["scope"], serde_json::json!("all"));
+        assert_eq!(v["offset"], serde_json::json!(0));
+        assert_eq!(v["returned"], serde_json::json!(1));
+        assert_eq!(v["total_matching"], serde_json::json!(1));
+        assert_eq!(v["has_more"], serde_json::json!(false));
+        assert_eq!(sorted_ids(&v), vec![parent.id.clone()]);
+
+        let row = &v["sessions"][0];
+        assert_eq!(row["session_id"], serde_json::json!(parent.id));
+        assert_eq!(row["name"], serde_json::json!("listed"));
+        assert_eq!(row["session_type"], serde_json::json!("user"));
+        assert_eq!(row["running"], serde_json::json!(false));
+        assert_eq!(row["parent_session_id"], serde_json::Value::Null);
+        assert!(
+            !row["working_dir"].as_str().unwrap().is_empty(),
+            "row: {row}"
+        );
+        // No GUI, so no tab placement — `null`, not a fabricated object.
+        assert_eq!(row["gui"], serde_json::Value::Null);
+
+        // §4.1: per-session enabled extensions. This session has no
+        // session-specific extension state, so the row must carry the global
+        // config — the same fallback `GET /sessions/{id}/extensions` performs.
+        // Asserting the VALUE (not just the key) is what distinguishes the real
+        // read from an empty placeholder array.
+        //
+        // Compared as a sorted set: the exact NAMES are the contract, their
+        // order is an artifact of the config file's key order.
+        let expected_extensions = sorted(
+            crate::config::get_enabled_extensions()
+                .iter()
+                .map(|e| e.name())
+                .collect::<Vec<String>>(),
+        );
+        assert!(
+            !expected_extensions.is_empty(),
+            "the fallback is empty, so this assertion would pin nothing"
+        );
+        let got_extensions = sorted(
+            row["extensions"]
+                .as_array()
+                .expect("extensions is an array")
+                .iter()
+                .map(|n| n.as_str().expect("extension names are strings").to_string())
+                .collect::<Vec<String>>(),
+        );
+        assert_eq!(got_extensions, expected_extensions);
+
+        // Headless: no workspace services, so no knowledge selection.
+        assert_eq!(row["knowledge_bases"], serde_json::json!([]));
         // Post-#45: the write target is reported alongside the set. Without it a
-        // model can set a primary and never read it back.
-        assert!(text.contains("\"primary_kb\""));
-        // Decision 17: paging metadata is always present.
-        assert!(text.contains("\"has_more\""));
-        assert!(text.contains("\"total_matching\""));
+        // model can set a primary and never read it back. `null` is the correct
+        // value here and is a DIFFERENT state from the key being absent, so the
+        // presence check is separate from the value check.
+        assert!(
+            row.get("primary_kb").is_some(),
+            "primary_kb is a required row field; row: {row}"
+        );
+        assert_eq!(row["primary_kb"], serde_json::Value::Null);
     }
 
     /// Decision 17: the page window is honoured and reported.
@@ -612,101 +774,125 @@ mod tests {
                 .await
                 .unwrap();
         }
-        let call = |offset: u32, limit: u32| {
-            let args: rmcp::model::JsonObject = serde_json::from_value(serde_json::json!({
-                "scope": "all", "offset": offset, "limit": limit
-            }))
-            .unwrap();
-            args
-        };
-        let first = c
-            .call_tool(
-                "workspace_list",
-                Some(call(0, 2)),
-                test_meta(),
-                CancellationToken::new(),
-            )
-            .await
-            .unwrap();
-        let text = first.content[0].as_text().unwrap().text.clone();
-        assert!(text.contains("\"returned\": 2"), "got: {text}");
-        assert!(text.contains("\"has_more\": true"));
+        let page = |offset: u32, limit: u32| serde_json::json!({ "scope": "all", "offset": offset, "limit": limit });
+        let first = list(&c, page(0, 2)).await;
+        assert_eq!(first["returned"], serde_json::json!(2));
+        assert_eq!(first["offset"], serde_json::json!(0));
+        // `total_matching` counts every matching row, not just the page — that is
+        // the whole point of decision 17.
+        assert_eq!(first["total_matching"], serde_json::json!(5));
+        assert_eq!(first["has_more"], serde_json::json!(true));
 
-        let second = c
-            .call_tool(
-                "workspace_list",
-                Some(call(2, 2)),
-                test_meta(),
-                CancellationToken::new(),
-            )
-            .await
-            .unwrap();
-        let second_text = second.content[0].as_text().unwrap().text.clone();
-        assert!(second_text.contains("\"offset\": 2"));
-        // The two pages must not overlap.
-        for id in ["paged-0", "paged-1"] {
-            if text.contains(id) {
-                assert!(!second_text.contains(id), "{id} appeared on both pages");
-            }
-        }
+        let second = list(&c, page(2, 2)).await;
+        assert_eq!(second["offset"], serde_json::json!(2));
+        assert_eq!(second["returned"], serde_json::json!(2));
+        assert_eq!(second["has_more"], serde_json::json!(true));
+
+        let last = list(&c, page(4, 2)).await;
+        assert_eq!(last["returned"], serde_json::json!(1));
+        assert_eq!(last["has_more"], serde_json::json!(false));
+
+        // The three pages must partition the five sessions: no overlap, no gap.
+        let mut walked: Vec<String> = sorted_ids(&first);
+        walked.extend(sorted_ids(&second));
+        walked.extend(sorted_ids(&last));
+        let unique: std::collections::BTreeSet<&String> = walked.iter().collect();
+        assert_eq!(unique.len(), 5, "pages overlap or drop rows: {walked:?}");
+        assert_eq!(sorted_ids(&list(&c, page(0, 200)).await), sorted(walked));
     }
 
     /// Decision 23: the `subagent_status` list mode, re-expressed.
+    ///
+    /// The fixture carries a DISTRACTOR for each filter, so the two are
+    /// independently pinned. With only one parent and its one subagent, ignoring
+    /// `parent_session_id` (→ every subagent) and ignoring `only_subagents` (→
+    /// every child of that parent) both still yield the one expected row, and the
+    /// test passes on an implementation that applies neither filter. Here:
+    ///
+    /// * `stray` is a subagent of a DIFFERENT parent — only `parent_session_id`
+    ///   excludes it;
+    /// * `masquerade` is a non-subagent child of the SAME parent — only
+    ///   `only_subagents` excludes it.
     #[tokio::test]
     async fn workspace_list_filters_by_parent_and_by_subagent_type() {
         let c = client();
         let sm = c.context.session_manager.clone();
-        let parent = sm
-            .create_session(
-                std::env::temp_dir(),
-                "p".into(),
-                crate::session::session_manager::SessionType::User,
-            )
-            .await
-            .unwrap();
-        let child = sm
-            .create_session(
-                std::env::temp_dir(),
-                "c".into(),
-                crate::session::session_manager::SessionType::SubAgent,
-            )
-            .await
-            .unwrap();
-        sm.update(&child.id)
-            .parent_session_id(Some(parent.id.clone()))
-            .apply()
-            .await
-            .unwrap();
+        let new = |name: &'static str, kind| {
+            let sm = sm.clone();
+            async move {
+                sm.create_session(std::env::temp_dir(), name.into(), kind)
+                    .await
+                    .unwrap()
+            }
+        };
+        use crate::session::session_manager::SessionType;
+        let parent = new("p", SessionType::User).await;
+        let other_parent = new("other-p", SessionType::User).await;
+        let child = new("c", SessionType::SubAgent).await;
+        let stray = new("stray", SessionType::SubAgent).await;
+        let masquerade = new("masquerade", SessionType::User).await;
+        for (id, parent_id) in [
+            (&child.id, &parent.id),
+            (&stray.id, &other_parent.id),
+            (&masquerade.id, &parent.id),
+        ] {
+            sm.update(id)
+                .parent_session_id(Some(parent_id.clone()))
+                .apply()
+                .await
+                .unwrap();
+        }
 
-        let args: rmcp::model::JsonObject = serde_json::from_value(serde_json::json!({
-            "scope": "all", "parent_session_id": parent.id, "only_subagents": true
-        }))
-        .unwrap();
-        let result = c
-            .call_tool(
-                "workspace_list",
-                Some(args),
-                test_meta(),
-                CancellationToken::new(),
-            )
-            .await
-            .unwrap();
-        let text = result.content[0].as_text().unwrap().text.clone();
         // Assert on the ROW SET, not on substrings. Every child row carries
-        // `"parent_session_id": "<parent id>"` (see Step 3's `rows.push`), so a
-        // naive `assert!(!text.contains(&parent.id))` is false by construction —
-        // the parent's id is present as a FIELD of the matched child.
-        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
-        let ids: Vec<&str> = v["sessions"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|r| r["session_id"].as_str().unwrap())
-            .collect();
+        // `"parent_session_id": "<parent id>"`, so a naive
+        // `assert!(!text.contains(&parent.id))` is false by construction — the
+        // parent's id is present as a FIELD of the matched child.
+        let both = list(
+            &c,
+            serde_json::json!({
+                "scope": "all", "parent_session_id": parent.id, "only_subagents": true
+            }),
+        )
+        .await;
         assert_eq!(
-            ids,
-            vec![child.id.as_str()],
-            "the parent is not its own subagent"
+            sorted_ids(&both),
+            sorted(vec![&child.id]),
+            "the parent is not its own subagent, and neither are the distractors"
+        );
+        assert_eq!(both["total_matching"], serde_json::json!(1));
+
+        // `parent_session_id` alone: both children of `parent`, whatever their
+        // type — so dropping `only_subagents` is observable.
+        let by_parent = list(
+            &c,
+            serde_json::json!({ "scope": "all", "parent_session_id": parent.id }),
+        )
+        .await;
+        assert_eq!(
+            sorted_ids(&by_parent),
+            sorted(vec![&child.id, &masquerade.id])
+        );
+
+        // `only_subagents` alone: every subagent in the workspace, whoever spawned
+        // it — so dropping `parent_session_id` is observable.
+        let by_type = list(
+            &c,
+            serde_json::json!({ "scope": "all", "only_subagents": true }),
+        )
+        .await;
+        assert_eq!(sorted_ids(&by_type), sorted(vec![&child.id, &stray.id]));
+
+        // And unfiltered: all five, so neither filter is silently always-on.
+        let all = list(&c, serde_json::json!({ "scope": "all" })).await;
+        assert_eq!(
+            sorted_ids(&all),
+            sorted(vec![
+                &parent.id,
+                &other_parent.id,
+                &child.id,
+                &stray.id,
+                &masquerade.id
+            ])
         );
     }
 }
