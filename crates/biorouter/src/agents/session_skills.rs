@@ -10,14 +10,32 @@
 //! The override is stored where every other per-session extension state lives:
 //! `Session.extension_data` under `("workspace_skills", "v1")` — the
 //! `set_extension_state` precedent of `agents/goal.rs` and
-//! `guardrails/run_state.rs`. A process-wide cache keyed by session id keeps
-//! the read path (called for every `listSkills`/`searchSkills`/`loadSkill`)
-//! off the database.
+//! `guardrails/run_state.rs`.
+//!
+//! **The session row is the only copy.** An earlier draft kept a process-wide
+//! `HashMap<session_id, override>` in front of it, hydrated once per session.
+//! That is unsound in three ways, each of which this module now avoids by
+//! construction:
+//!
+//! * Session ids are display ids allocated as `YYYYMMDD_<max+1>` and are handed
+//!   back after a delete or a `/reset` History, so a cache keyed by the id
+//!   follows that id into an unrelated new conversation — the previous
+//!   occupant's grants with it.
+//! * A cached read cannot distinguish "no override" from "could not read it",
+//!   so a transient failure or a corrupt value is cached permanently as a
+//!   grant of everything the session had revoked. Both reads here fail CLOSED
+//!   instead, returning an error the caller must handle.
+//! * A merge based on the cache rather than on the persisted value silently
+//!   drops whatever another writer committed in between.
+//!
+//! Reading the row costs one indexed `SELECT` of a single column
+//! ([`SessionManager::get_extension_state`]) on a path that runs a handful of
+//! times per turn — three skill tools, called deliberately by the model — not
+//! a hot loop.
 
-use std::collections::{HashMap, HashSet};
-use std::sync::{LazyLock, Mutex};
+use std::collections::HashSet;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use crate::session::SessionManager;
 
@@ -52,129 +70,97 @@ impl SessionSkillOverride {
     pub fn is_empty(&self) -> bool {
         self.add.is_empty() && self.remove.is_empty()
     }
+
+    fn merge(mut self, add_skills: &[String], remove_skills: &[String]) -> Self {
+        for name in remove_skills {
+            self.add.retain(|s| s != name);
+            if !self.remove.iter().any(|s| s == name) {
+                self.remove.push(name.clone());
+            }
+        }
+        for name in add_skills {
+            self.remove.retain(|s| s != name);
+            if !self.add.iter().any(|s| s == name) {
+                self.add.push(name.clone());
+            }
+        }
+        self
+    }
 }
 
-static OVERRIDES: LazyLock<Mutex<HashMap<String, SessionSkillOverride>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-
-fn lock() -> std::sync::MutexGuard<'static, HashMap<String, SessionSkillOverride>> {
-    OVERRIDES
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+fn decode(value: serde_json::Value) -> Result<SessionSkillOverride> {
+    serde_json::from_value(value).context(
+        "this session's persisted skill override (workspace_skills/v1) is unreadable; \
+         refusing to fall back to the machine-wide skill set, which would restore \
+         skills this conversation revoked",
+    )
 }
 
-/// This session's override. Cheap and infallible — an unknown session is simply
-/// "no deviation", which is the correct answer for every session that has never
-/// been touched by `workspace_set_tools`.
-pub fn for_session(session_id: &str) -> SessionSkillOverride {
-    lock().get(session_id).cloned().unwrap_or_default()
+/// This session's persisted override, read from the session row.
+///
+/// Fails CLOSED: a read error or a corrupt value is an `Err`, never a silent
+/// [`SessionSkillOverride::default()`]. A session that has simply never been
+/// touched by `workspace_set_tools` yields the default, which is correct.
+pub async fn for_session(
+    session_manager: &SessionManager,
+    session_id: &str,
+) -> Result<SessionSkillOverride> {
+    match session_manager
+        .get_extension_state(session_id, STATE_KEY, STATE_VERSION)
+        .await
+        .with_context(|| format!("reading session skill override for {session_id}"))?
+    {
+        Some(value) => decode(value),
+        None => Ok(SessionSkillOverride::default()),
+    }
 }
 
 /// Merge `add_skills` / `remove_skills` into the session's override and persist
 /// it. Idempotent; a name appearing in both lists ends up in `add` only, which
 /// matches [`SessionSkillOverride::is_disabled`]'s precedence.
+///
+/// The read-merge-write happens inside one transaction
+/// ([`SessionManager::update_extension_state`]), so a concurrent grant — or a
+/// concurrent write to any OTHER key of the same `extension_data` column, such
+/// as a goal or a todo list — cannot be lost. A corrupt persisted value aborts
+/// the transaction rather than being overwritten.
 pub async fn apply(
     session_manager: &SessionManager,
     session_id: &str,
     add_skills: &[String],
     remove_skills: &[String],
 ) -> Result<SessionSkillOverride> {
-    let mut current = for_session(session_id);
-
-    for name in remove_skills {
-        current.add.retain(|s| s != name);
-        if !current.remove.iter().any(|s| s == name) {
-            current.remove.push(name.clone());
-        }
-    }
-    for name in add_skills {
-        current.remove.retain(|s| s != name);
-        if !current.add.iter().any(|s| s == name) {
-            current.add.push(name.clone());
-        }
-    }
-
-    let session = session_manager.get_session(session_id, false).await?;
-    let mut extension_data = session.extension_data.clone();
-    extension_data.set_extension_state(STATE_KEY, STATE_VERSION, serde_json::to_value(&current)?);
-    session_manager
-        .update(session_id)
-        .extension_data(extension_data)
-        .apply()
-        .await?;
-
-    lock().insert(session_id.to_string(), current.clone());
-    Ok(current)
-}
-
-/// Load a session's persisted override into the cache. Called once per session
-/// by the skills extension the first time it learns its session id, so the
-/// override survives a daemon restart. Best-effort: a read failure leaves the
-/// session with no deviation, which is the pre-BR-71 behaviour.
-pub async fn hydrate(session_manager: &SessionManager, session_id: &str) {
-    if lock().contains_key(session_id) {
-        return;
-    }
-    let loaded = match session_manager.get_session(session_id, false).await {
-        Ok(session) => session
-            .extension_data
-            .get_extension_state(STATE_KEY, STATE_VERSION)
-            .cloned()
-            .and_then(|v| serde_json::from_value::<SessionSkillOverride>(v).ok())
-            .unwrap_or_default(),
-        Err(e) => {
-            tracing::debug!("session skill override hydrate failed for {session_id}: {e}");
-            SessionSkillOverride::default()
-        }
-    };
-    lock().entry(session_id.to_string()).or_insert(loaded);
-}
-
-#[cfg(test)]
-pub(crate) fn forget_for_tests(session_id: &str) {
-    lock().remove(session_id);
-}
-
-/// Test-only: a session whose id is unique **within this test binary**.
-///
-/// `SessionStorage::create_session` allocates ids as `YYYYMMDD_N` where `N` is
-/// counted *per sessions database*, so every test that opens its own `TempDir`
-/// database is handed `…_1`. This module's cache is process-wide and keyed by
-/// session id, so two such tests silently share — and clobber — one entry
-/// (and one test's `forget_for_tests` erases the other's). Burning `slot`
-/// throwaway ids first hands each caller a distinct id, so the tests stay
-/// parallel and independent without a global test lock.
-#[cfg(test)]
-pub(crate) async fn unique_test_session(
-    session_manager: &SessionManager,
-    working_dir: std::path::PathBuf,
-    name: &str,
-    slot: usize,
-) -> crate::session::Session {
-    let mut session = None;
-    for i in 0..=slot {
-        let label = if i == slot {
-            name.to_string()
-        } else {
-            format!("{name}-id-filler-{i}")
-        };
-        session = Some(
-            session_manager
-                .create_session(
-                    working_dir.clone(),
-                    label,
-                    crate::session::SessionType::User,
-                )
-                .await
-                .expect("create test session"),
-        );
-    }
-    session.expect("slot loop always creates at least one session")
+    let add = add_skills.to_vec();
+    let remove = remove_skills.to_vec();
+    let stored = session_manager
+        .update_extension_state(session_id, STATE_KEY, STATE_VERSION, move |current| {
+            let base = match current {
+                Some(value) => decode(value.clone())?,
+                None => SessionSkillOverride::default(),
+            };
+            Ok(serde_json::to_value(base.merge(&add, &remove))?)
+        })
+        .await?
+        .with_context(|| format!("session '{session_id}' not found"))?;
+    decode(stored)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn manager_and_session(temp: &tempfile::TempDir, name: &str) -> (SessionManager, String) {
+        let sm = SessionManager::new(temp.path().to_path_buf());
+        let session = sm
+            .create_session(
+                temp.path().to_path_buf(),
+                name.to_string(),
+                crate::session::SessionType::User,
+            )
+            .await
+            .unwrap();
+        (sm, session.id)
+    }
 
     #[test]
     fn overrides_compose_add_over_remove_over_machine_wide() {
@@ -213,17 +199,11 @@ mod tests {
     #[tokio::test]
     async fn apply_persists_to_extension_data_and_never_touches_the_machine_file() {
         let temp = tempfile::TempDir::new().unwrap();
-        let sm = std::sync::Arc::new(crate::session::SessionManager::new(
-            temp.path().to_path_buf(),
-        ));
-        // Slot 0 — see `unique_test_session`: the cache is process-wide and
-        // keyed by session id, and per-database id allocation would otherwise
-        // hand every test in this binary the same `YYYYMMDD_1`.
-        let session = unique_test_session(&sm, temp.path().to_path_buf(), "skills", 0).await;
+        let (sm, id) = manager_and_session(&temp, "skills").await;
 
         apply(
             &sm,
-            &session.id,
+            &id,
             &["single-cell".to_string()],
             &["ralph".to_string()],
         )
@@ -231,7 +211,7 @@ mod tests {
         .unwrap();
 
         // Persisted in the session row, under the documented key.
-        let reread = sm.get_session(&session.id, false).await.unwrap();
+        let reread = sm.get_session(&id, false).await.unwrap();
         let stored = reread
             .extension_data
             .get_extension_state(STATE_KEY, STATE_VERSION)
@@ -239,31 +219,107 @@ mod tests {
         assert_eq!(stored["add"][0], "single-cell");
         assert_eq!(stored["remove"][0], "ralph");
 
-        // And readable through the cache without another DB hit.
-        let live = for_session(&session.id);
+        // And readable back through the documented reader.
+        let live = for_session(&sm, &id).await.unwrap();
         assert!(live.add.contains(&"single-cell".to_string()));
         assert!(live.remove.contains(&"ralph".to_string()));
     }
 
+    /// The session row IS the state — there is no process-wide cache to warm,
+    /// so a cold process (here: a fresh manager over the same directory, after
+    /// the writer's pool is closed) reads the override with no hydration step.
+    /// This is also what makes a reused session id safe: ids are handed out as
+    /// `YYYYMMDD_<max+1>` and come back after a delete or a History reset, and
+    /// a cached override keyed by that id would follow the id into an unrelated
+    /// new conversation.
     #[tokio::test]
-    async fn hydrate_restores_the_override_after_a_process_restart() {
+    async fn the_override_survives_a_process_restart() {
         let temp = tempfile::TempDir::new().unwrap();
-        let sm = std::sync::Arc::new(crate::session::SessionManager::new(
-            temp.path().to_path_buf(),
-        ));
-        // Slot 1 — a distinct id from the test above, so its `forget_for_tests`
-        // below cannot erase that test's cache entry.
-        let session = unique_test_session(&sm, temp.path().to_path_buf(), "skills-2", 1).await;
-        apply(&sm, &session.id, &["proteomics".to_string()], &[])
+        let id = {
+            let (sm, id) = manager_and_session(&temp, "skills-2").await;
+            apply(&sm, &id, &["proteomics".to_string()], &[])
+                .await
+                .unwrap();
+            sm.close().await;
+            id
+        };
+
+        let cold = SessionManager::new(temp.path().to_path_buf());
+        assert!(for_session(&cold, &id)
+            .await
+            .unwrap()
+            .add
+            .contains(&"proteomics".to_string()));
+    }
+
+    /// A recreated session that inherits a previously-used id must start with
+    /// no override. (With a process-wide cache keyed by the display id this is
+    /// exactly the leak: session 1 is granted a skill, History is reset, and
+    /// the next unrelated conversation is handed the same id — and the grant.)
+    #[tokio::test]
+    async fn a_reused_session_id_does_not_inherit_the_previous_occupants_override() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let (sm, id) = manager_and_session(&temp, "first-occupant").await;
+        apply(&sm, &id, &["single-cell".to_string()], &[])
             .await
             .unwrap();
 
-        // Simulate a cold process: drop the cache entry, then hydrate.
-        forget_for_tests(&session.id);
-        assert!(for_session(&session.id).add.is_empty());
-        hydrate(&sm, &session.id).await;
-        assert!(for_session(&session.id)
-            .add
-            .contains(&"proteomics".to_string()));
+        // What `/reset` History does: empty `sessions`, then create afresh.
+        sm.clear_all_sessions().await.unwrap();
+        let recreated = sm
+            .create_session(
+                temp.path().to_path_buf(),
+                "second-occupant".to_string(),
+                crate::session::SessionType::User,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            recreated.id, id,
+            "the id allocator hands the id straight back"
+        );
+
+        assert_eq!(
+            for_session(&sm, &recreated.id).await.unwrap(),
+            SessionSkillOverride::default(),
+            "a new conversation must not inherit a deleted one's skill grants"
+        );
+    }
+
+    /// Fail CLOSED, and never destroy what you cannot read: a corrupt override
+    /// is refused by both the reader and the writer rather than silently reset
+    /// to "no deviation" (which would restore every skill the session revoked).
+    #[tokio::test]
+    async fn a_corrupt_override_is_refused_by_both_the_reader_and_the_writer() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let (sm, id) = manager_and_session(&temp, "skills-corrupt").await;
+        sm.update_extension_state(&id, STATE_KEY, STATE_VERSION, |_| {
+            Ok(serde_json::json!("not an override"))
+        })
+        .await
+        .unwrap();
+
+        assert!(for_session(&sm, &id).await.is_err());
+        assert!(apply(&sm, &id, &["single-cell".to_string()], &[])
+            .await
+            .is_err());
+        // ...and the unreadable value is still there, not overwritten.
+        assert_eq!(
+            sm.get_extension_state(&id, STATE_KEY, STATE_VERSION)
+                .await
+                .unwrap(),
+            Some(serde_json::json!("not an override"))
+        );
+    }
+
+    #[tokio::test]
+    async fn applying_to_a_missing_session_is_an_error_not_a_silent_grant() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let sm = SessionManager::new(temp.path().to_path_buf());
+        assert!(
+            apply(&sm, "no-such-session", &["single-cell".to_string()], &[])
+                .await
+                .is_err()
+        );
     }
 }
