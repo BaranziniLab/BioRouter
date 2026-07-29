@@ -215,6 +215,15 @@ struct WorkspaceSetToolsParams {
     primary_knowledge_base: Option<String>,
 }
 
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct WorkspaceCloseParams {
+    session_id: String,
+    /// "tab": GUI-only, session and any running turn survive. "turn": cancel
+    /// the in-flight turn (idempotent). "agent": cancel + evict the agent; the
+    /// session record remains.
+    scope: String,
+}
+
 /// The tools [`INSTRUCTIONS`] names whose handler is still a placeholder, each
 /// with the task that lands it.
 ///
@@ -228,7 +237,6 @@ struct WorkspaceSetToolsParams {
 /// dispatch arm is shadowed by nothing and the surface test fails — and adds it
 /// to `get_tools()` in the same commit.
 const PENDING_TOOLS: &[(&str, &str)] = &[
-    ("workspace_close", "Task 16"),
     ("workspace_watch", "Task 17"),
     ("workspace_open", "Task 24"),
 ];
@@ -314,8 +322,17 @@ impl WorkspaceClient {
                 serde_json::to_value(schema_for!(WorkspaceSetToolsParams)).unwrap(),
                 false,
             ),
-            // Tasks 16-17 and 19/24 append:
-            // workspace_close, workspace_watch, workspace_open, and `subagent`
+            Self::tool(
+                "workspace_close",
+                "Close down a conversation at one of three scopes. tab: close its \
+                 GUI tab only — the session and any running turn survive. turn: \
+                 cancel the turn it is running (idempotent; not an error when idle). \
+                 agent: cancel and evict its agent; the session record is kept.",
+                serde_json::to_value(schema_for!(WorkspaceCloseParams)).unwrap(),
+                false,
+            ),
+            // Tasks 17 and 19/24 append:
+            // workspace_watch, workspace_open, and `subagent`
             // (advertised only; the spawn dispatch lives in agent.rs — see
             // Task 19).
         ]
@@ -1316,6 +1333,75 @@ impl WorkspaceClient {
             applied.join(", ")
         ))])
     }
+
+    /// `workspace_close` — the three scopes of "stop", smallest blast radius
+    /// first (§4.1).
+    ///
+    /// The §5 autonomous-mode toasts go through [`Self::notify_target`], which
+    /// Task 14 already defined for `workspace_send_prompt`'s `turn`/`steer`
+    /// announcements — there is deliberately only one copy.
+    async fn handle_close(
+        &self,
+        caller_session_id: &str,
+        arguments: Option<JsonObject>,
+    ) -> Result<Vec<Content>, String> {
+        let args: WorkspaceCloseParams = parse_args(arguments)?;
+        let services = workspace_services::get();
+
+        match args.scope.as_str() {
+            "tab" => match services {
+                Some(s) if s.gui_attached() => {
+                    s.gui_command(
+                        json!({ "type": "workspace", "cmd": "close_tab", "session_id": args.session_id }),
+                        false,
+                    )
+                    .await?;
+                    Ok(vec![Content::text(format!(
+                        "Tab for session {} closed (session survives).",
+                        args.session_id
+                    ))])
+                }
+                _ => Ok(vec![Content::text(
+                    "No GUI attached — nothing to close at tab scope (gui_attached: false)."
+                        .to_string(),
+                )]),
+            },
+            "turn" => {
+                let services = services.ok_or("scope:\"turn\" requires the BioRouter daemon")?;
+                match services.cancel_turn(&args.session_id) {
+                    Some(turn_id) => {
+                        self.notify_target(
+                            &args.session_id,
+                            format!("Turn cancelled by another agent ({caller_session_id})."),
+                        )
+                        .await;
+                        Ok(vec![Content::text(format!(
+                            "Cancelled turn {turn_id} on session {}.",
+                            args.session_id
+                        ))])
+                    }
+                    None => Ok(vec![Content::text(format!(
+                        "Session {} had no turn in flight (nothing to cancel).",
+                        args.session_id
+                    ))]),
+                }
+            }
+            "agent" => {
+                let services = services.ok_or("scope:\"agent\" requires the BioRouter daemon")?;
+                services.stop_agent(&args.session_id).await?;
+                self.notify_target(
+                    &args.session_id,
+                    format!("Agent stopped by another agent ({caller_session_id})."),
+                )
+                .await;
+                Ok(vec![Content::text(format!(
+                    "Agent for session {} stopped and evicted (session record kept).",
+                    args.session_id
+                ))])
+            }
+            other => Err(format!("unknown scope '{other}' (tab | turn | agent)")),
+        }
+    }
 }
 
 /// True in every permission mode that can ACTUALLY raise a tool confirmation.
@@ -1674,6 +1760,7 @@ impl McpClientTrait for WorkspaceClient {
             "workspace_read_conversation" => self.handle_read_conversation(caller, arguments).await,
             "workspace_send_prompt" => self.handle_send_prompt(caller, arguments).await,
             "workspace_set_tools" => self.handle_set_tools(caller, arguments).await,
+            "workspace_close" => self.handle_close(caller, arguments).await,
             // BR-71 decision 22: the spawn tool is advertised here but
             // dispatched by the agent loop (it needs the parent's TaskConfig).
             // Reachable only if that interception is ever removed.
@@ -3634,5 +3721,117 @@ mod tests {
         .await;
         let text = text_of(&result);
         assert!(text.contains("+skill:single-cell"), "got: {text}");
+    }
+
+    // ---- Task 16: workspace_close --------------------------------------
+
+    /// Runs WITH a daemon stand-in installed, and says so explicitly. This is
+    /// not decoration: `scope:"turn"` starts with
+    /// `services.ok_or("scope:\"turn\" requires the BioRouter daemon")?`, so
+    /// without an override the first assertion below sees `is_error == Some(true)`
+    /// and fails. The override is process-global, hence `#[serial]`; the
+    /// `workspace_services` key is shared with every other test in the crate
+    /// that pins the daemon state.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn close_turn_is_idempotent_and_close_tab_reports_headless() {
+        crate::workspace_services::set_for_tests(Some(std::sync::Arc::new(
+            crate::workspace_services::NullServices,
+        )));
+
+        let c = client();
+        let sm = c.context.session_manager.clone();
+        let target = sm
+            .create_session(
+                std::env::temp_dir(),
+                "t".into(),
+                crate::session::session_manager::SessionType::User,
+            )
+            .await
+            .unwrap();
+
+        // scope:"turn" with nothing running: success with cancelled=false
+        // semantics (never an error — mirrors POST /agent/cancel).
+        // `NullServices::cancel_turn` returns None, which is that path.
+        let args: rmcp::model::JsonObject = serde_json::from_value(serde_json::json!({
+            "session_id": target.id, "scope": "turn"
+        }))
+        .unwrap();
+        let result = c
+            .call_tool(
+                "workspace_close",
+                Some(args),
+                test_meta(),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_ne!(result.is_error, Some(true));
+        assert!(result.content[0]
+            .as_text()
+            .unwrap()
+            .text
+            .contains("no turn"));
+
+        // scope:"tab" with no GUI attached (`NullServices::gui_attached()` is
+        // false): not an error — session-level no-op, says so.
+        let args: rmcp::model::JsonObject = serde_json::from_value(serde_json::json!({
+            "session_id": target.id, "scope": "tab"
+        }))
+        .unwrap();
+        let result = c
+            .call_tool(
+                "workspace_close",
+                Some(args),
+                test_meta(),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_ne!(result.is_error, Some(true));
+        assert!(result.content[0]
+            .as_text()
+            .unwrap()
+            .text
+            .to_lowercase()
+            .contains("no gui"));
+
+        crate::workspace_services::clear_test_override();
+    }
+
+    /// The other world: NO daemon at all. `scope:"turn"` must fail loudly rather
+    /// than pretend it cancelled something.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn close_turn_without_a_daemon_says_so() {
+        crate::workspace_services::set_for_tests(None);
+
+        let c = client();
+        let sm = c.context.session_manager.clone();
+        let target = sm
+            .create_session(
+                std::env::temp_dir(),
+                "t2".into(),
+                crate::session::session_manager::SessionType::User,
+            )
+            .await
+            .unwrap();
+        let args: rmcp::model::JsonObject = serde_json::from_value(serde_json::json!({
+            "session_id": target.id, "scope": "turn"
+        }))
+        .unwrap();
+        let result = c
+            .call_tool(
+                "workspace_close",
+                Some(args),
+                test_meta(),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(true));
+        assert!(result.content[0].as_text().unwrap().text.contains("daemon"));
+
+        crate::workspace_services::clear_test_override();
     }
 }
