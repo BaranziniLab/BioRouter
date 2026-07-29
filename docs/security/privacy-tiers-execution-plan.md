@@ -3140,7 +3140,7 @@ choke points cover everything" (they do not — they cover everything they were 
 
 | Surface | Covered by | How complete, honestly |
 |---|---|---|
-| All 19 `kb_*` MCP tools, and the 20th | **CP1** | **Complete by construction.** `call_tool` receives the `RequestContext` for every tool regardless of the tool's own signature. `every_kb_tool_is_gated_or_listed_as_exempt` (10C) turns a new tool into a test failure. |
+| All 19 `kb_*` MCP tools, and the 20th | **CP1** | **Complete by construction.** `call_tool` receives the `RequestContext` for every tool regardless of the tool's own signature. `every_kb_tool_is_gated_or_exempt_for_a_pinned_reason` (10C) turns a new tool into a test failure, and `no_exempt_tool_volunteers_a_private_bases_id_to_a_public_caller` covers the metadata half of a new EXEMPT one. |
 | The three macros' sub-agent (`KbToolDispatch`, 7 tools) | **CP2** | **Complete by construction.** The dispatch is bound to one `kb_id` field at construction (`kb_tools.rs:22-30`) and every arm derives from it, so a new sub-agent tool is covered the day it is written. Note **7**, not the 5 an earlier pass listed — `kb_classify_source` `:122` and `kb_list_pages` `:42` are also there. |
 | The 4 HTTP macro routes, `conversation_ingest` + its 3 callers, `bin/knowledge_ingest_probe.rs` | **CP2** | Complete *today*, and a required `caller_is_private` makes a new caller a compile error. A new macro that does not funnel through `ingest`/`query`/`lint` would not be covered. |
 | The app socket: `run_kb_read` + the `ingest` arm | **CP3** | Complete for the socket, because `handle_kb_frame` is the single funnel its three call sites share. |
@@ -4863,20 +4863,89 @@ async fn a_private_target_and_a_nonexistent_one_are_indistinguishable_to_kb_set_
     assert_eq!(stored_primary(&root, "sess-1"), Some("omop".to_string()));
 }
 
+/// A tool that is not in `KB_ID_GATED_TOOLS`, why, and **the test that pins the
+/// behaviour that exemption claims**. The third field is the whole point: the
+/// previous version of this table was five bare strings, and a bare string is a
+/// claim with nothing behind it — which is how `kb_get_active`, a no-argument
+/// tool that returned every visible base id, sat on this list being described as
+/// "the caller already knows the pointer".
+struct ExemptTool {
+    name: &'static str,
+    why: &'static str,
+    pinned_by: &'static str,
+}
+
+const EXEMPT: &[ExemptTool] = &[
+    ExemptTool { name: "kb_list_bases",
+        why: "omits rather than refuses; a single-base refusal would hide every base",
+        pinned_by: "kb_list_bases_omits_a_private_base_rather_than_redacting_it" },
+    ExemptTool { name: "kb_get_active",
+        why: "reports the selection; filters the VIEW — ids omitted, pointer null",
+        pinned_by: "kb_get_active_does_not_enumerate_a_private_base_or_point_at_one" },
+    ExemptTool { name: "kb_set_active",
+        why: "moves the pointer; a private target is NOT A MEMBER, not 'private'",
+        pinned_by: "a_private_target_and_a_nonexistent_one_are_indistinguishable_to_kb_set_active" },
+    ExemptTool { name: "kb_create_base",
+        why: "names a base that does not exist yet — nothing to leak (Task 10A (3))",
+        pinned_by: "a_public_chat_can_still_create_and_import_a_knowledge_base" },
+    ExemptTool { name: "kb_import",
+        why: "same; the id is chosen by brkb::import's collision loop",
+        pinned_by: "a_public_chat_can_still_create_and_import_a_knowledge_base" },
+];
+
 #[test]
-fn every_kb_tool_is_gated_or_listed_as_exempt() {
-    // The gate that makes a TWENTIETH tool a test failure instead of a silent
-    // hole: the router's own tool list must equal the gated list plus the five
-    // documented exemptions, with nothing unaccounted for in either direction.
-    const EXEMPT: &[&str] =
-        &["kb_list_bases", "kb_create_base", "kb_set_active", "kb_get_active", "kb_import"];
-    let mut known: Vec<&str> =
-        KB_ID_GATED_TOOLS.iter().chain(EXEMPT.iter()).copied().collect();
+fn every_kb_tool_is_gated_or_exempt_for_a_pinned_reason() {
+    // The partition, unchanged: the router's own tool list must equal the gated
+    // list plus the exemptions, nothing unaccounted for in either direction, so
+    // a TWENTIETH tool is a test failure rather than a silent hole.
+    let mut known: Vec<&str> = KB_ID_GATED_TOOLS
+        .iter().copied().chain(EXEMPT.iter().map(|e| e.name)).collect();
     known.sort();
     let mut actual: Vec<String> = KnowledgeServer::tool_router()
         .list_all().into_iter().map(|t| t.name.to_string()).collect();
     actual.sort();
     assert_eq!(actual, known, "a kb_* tool is neither gated nor listed as exempt");
+    // …and no exemption may be a bare assertion. Step 5 greps every `pinned_by`
+    // for a real `fn` in this file; here we only pin that the field is filled,
+    // because Rust has no way to name a test function from another test.
+    for e in EXEMPT {
+        assert!(!e.why.is_empty() && e.pinned_by.starts_with(|c: char| c.is_alphabetic()),
+                "{} is exempt with no reason and no pinning test", e.name);
+    }
+}
+
+#[tokio::test]
+async fn no_exempt_tool_volunteers_a_private_bases_id_to_a_public_caller() {
+    // The rule that REPLACES the blanket exemption, and the one that would have
+    // caught `kb_get_active` before it shipped. `KB_ID_GATED_TOOLS` decides who
+    // takes the CONTENT barrier and says nothing about METADATA; listing the
+    // non-gated tools and stopping is not a completeness test, it is a
+    // permission slip. This is universal over the exempt set, so a twentieth
+    // exempt tool is covered the day it is written.
+    //
+    // ⚠ Every probe's arguments name ONLY the public base. That is the
+    // volunteering/being-asked line this plan draws for AR-5 and DR-7: echoing
+    // back an id the caller supplied is not a leak (`kb_set_active {kb_id:
+    // "omop"}` must say so by name), whereas producing that id from arguments
+    // that never mentioned it is the content crossing.
+    let (srv, root) = server_at_migrated_root(&["default", "omop-cohort-412"]);
+    tier::raise_unlocked(&root, "omop-cohort-412", true).unwrap();
+    set_primary(&root, "sess-1", "omop-cohort-412");   // the pointer names it
+
+    for e in EXEMPT {
+        let out = call_tool_as_session(&srv, e.name, args_naming_only_default(e.name),
+                                       "sess-1", Public).await;
+        let text = rendered(&out);
+        assert!(!text.contains("omop-cohort-412"),
+                "{} volunteered a private base id to a public caller: {text}", e.name);
+        assert!(!text.contains("OMOP Cohort"),   // the NAME, which is user-authored
+                "{} volunteered a private base name: {text}", e.name);
+    }
+
+    // The same loop as a PRIVATE caller must still see it, or "no leak" is
+    // satisfied by "the tools return nothing".
+    let out = call_tool_as_session(&srv, "kb_get_active", json!({}), "sess-1", Private).await;
+    assert!(rendered(&out).contains("omop-cohort-412"));
 }
 ```
 
@@ -4969,8 +5038,10 @@ fn export_app_leaves_a_private_knowledge_base_out_of_the_payload() {
 - [ ] **Step 2: Run** → **FAIL** on every gated probe, on the omitted-`kb_id` test, on both fan-out
       tests, on both no-primary-error tests, on **both pointer-tool tests**, on the app-socket test
       and on the drafter test; the HTTP test's 409 half fails and its 200 half passes.
-      `every_kb_tool_is_gated_or_listed_as_exempt` passes from the start — it is a regression net,
-      not a red test. No **compile** error anywhere: Task 10B put every signature in place, which is
+      `every_kb_tool_is_gated_or_exempt_for_a_pinned_reason` passes from the start — it is a
+      regression net, not a red test — while
+      `no_exempt_tool_volunteers_a_private_bases_id_to_a_public_caller` **fails**, on
+      `kb_get_active` and on `kb_list_bases`. No **compile** error anywhere: Task 10B put every signature in place, which is
       the whole point of splitting the two tasks. ⚠ The one exception is inside this task's own Step
       3: the moment `selection_value` / `set_primary_json` / `selection_json` take
       `caller_private`, the four existing call sites in
@@ -5279,7 +5350,25 @@ awk '/const KB_ID_GATED_TOOLS/,/\];/' crates/biorouter-mcp/src/knowledge/server.
 # ⚠ Assert "1 passed", not the exit code: a libtest filter that matches nothing
 # prints `0 passed` and exits 0 (see "Which test filters are validated").
 cargo test -p biorouter-mcp --lib \
-  knowledge::server::tests::every_kb_tool_is_gated_or_listed_as_exempt \
+  knowledge::server::tests::every_kb_tool_is_gated_or_exempt_for_a_pinned_reason \
+  | grep "test result:" ; echo "expect: 1 passed; 0 failed"
+# EVERY exemption names a test that EXISTS. A `pinned_by` string is compiled but
+# never resolved — Rust cannot name a test function from another test — so the
+# one thing that stops it being decorative is this grep. An exemption whose
+# pinning test does not exist is the blanket exemption back, wearing a field name.
+awk '/const EXEMPT: &\[ExemptTool\]/,/^\];/' crates/biorouter-mcp/src/knowledge/server.rs \
+  | grep -oE 'pinned_by: "[a-z_]+"' | sed -E 's/.*"(.*)"/\1/' | sort -u \
+  | while read -r t; do
+      echo -n "$t: "
+      grep -rc "fn $t\b" crates/biorouter-mcp/src/knowledge/server.rs
+    done
+echo "expect: 1 each — a 0 means an exemption cites a test nobody wrote"
+awk '/const EXEMPT: &\[ExemptTool\]/,/^\];/' crates/biorouter-mcp/src/knowledge/server.rs \
+  | grep -c "name:" ; echo "expect: 5 — and each has a why and a pinned_by beside it"
+# The universal metadata property runs, and it is the one that fails a leaking
+# TWENTIETH exempt tool without anyone having to think of it.
+cargo test -p biorouter-mcp --lib \
+  knowledge::server::tests::no_exempt_tool_volunteers_a_private_bases_id_to_a_public_caller \
   | grep "test result:" ; echo "expect: 1 passed; 0 failed"
 # NEW-SURFACE detector. These are the only ways to reach base CONTENT from
 # outside `knowledge/`; a fifth one appearing is precisely what CP1..CP4 cannot
@@ -5370,6 +5459,19 @@ one call enumerates every visible base including the private ones and names the 
 `kb_get_active_does_not_enumerate_a_private_base_or_point_at_one` is the only test that fails it,
 and its *store* assertion is the only thing that fails the plausible half-fix of filtering inside
 `service::selection`, which produces identical JSON while re-pointing the user's primary on disk.
+(8) **The completeness test blessing the hole.** Its previous form was
+`const EXEMPT: &[&str] = &["kb_list_bases", "kb_create_base", "kb_set_active", "kb_get_active",
+"kb_import"]` — five bare strings and an equality assertion, so it passed *because* the leaking
+tools were named in it, and it would go on passing for a twentieth exempt tool that leaked in a new
+way. **This gate rejects: adding a `kb_*` tool to `EXEMPT` to make the partition pass.** The
+exemption now carries the test that pins the behaviour it claims, Step 5 greps every `pinned_by` for
+a real `fn` (a `pinned_by` string is compiled and never resolved — Rust cannot name a test from
+another test — so without that grep the field is decoration), and
+`no_exempt_tool_volunteers_a_private_bases_id_to_a_public_caller` drives every exempt tool with
+arguments that name **only** the public base and fails on any output containing the private base's
+id or name. Arguments that name only the public base are what make it a rule about *volunteering*
+rather than *echoing*, which is the AR-5/DR-7 line: `kb_set_active {kb_id: "omop"}` may say "omop"
+back, because the caller supplied it; `kb_get_active {}` may not.
 
 - [ ] **Step 6: Commit**
 
@@ -12447,7 +12549,10 @@ grep -c "tool_handler" crates/biorouter-mcp/src/knowledge/server.rs ; echo "expe
 grep -c "raise_tier(" crates/biorouter-mcp/src/knowledge/server.rs ; echo "expect: 3"
 grep -c "raise_tier(" crates/biorouter-server/src/routes/apps.rs ; echo "expect: 1"
 cargo test -p biorouter-mcp --lib \
-  knowledge::server::tests::every_kb_tool_is_gated_or_listed_as_exempt \
+  knowledge::server::tests::every_kb_tool_is_gated_or_exempt_for_a_pinned_reason \
+  | grep "test result:" ; echo "expect: 1 passed; 0 failed"
+cargo test -p biorouter-mcp --lib \
+  knowledge::server::tests::no_exempt_tool_volunteers_a_private_bases_id_to_a_public_caller \
   | grep "test result:" ; echo "expect: 1 passed; 0 failed"
 grep -rn "kb_tiers_path" crates/biorouter-mcp/src/knowledge/ | grep -v "fn kb_tiers_path"
 echo "expect: tier.rs and service.rs::ensure_tiers_migrated only"
