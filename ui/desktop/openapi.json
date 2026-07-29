@@ -1465,7 +1465,7 @@
           "super::routes::reply"
         ],
         "summary": "Soft interrupt: queue a user message to be injected into the session's",
-        "description": "running turn at the next safe loop boundary, instead of cancelling the turn\nand re-sending the whole context. Returns 202 Accepted; the message surfaces\nas a normal user message in the active reply stream on the next loop step.\n\nBR-61: rejected with 409 when the session has no turn in flight — with no\nrunning loop to drain the queue the text would sit on the agent until some\nunrelated later turn injected it. Clients treat 409 as \"just send it as a\nnormal message\".",
+        "description": "running turn at the next safe loop boundary, instead of cancelling the turn\nand re-sending the whole context. Returns 202 Accepted; the message surfaces\nas a normal user message in the active reply stream on the next loop step.\n\nBR-61: rejected with 409 when the session has no turn in flight — with no\nrunning loop to drain the queue the text would sit on the agent until some\nunrelated later turn injected it. Clients treat 409 as \"just send it as a\nnormal message\".\n\n#69: the 409 is now decided by the *agent's own queue*, not by the turn-lock\ncheck above it. Checking the lock and then queueing are two steps against\nstate the reply loop changes underneath them: a steer could be accepted (202)\nafter the loop had already performed its final empty-queue check, and the text\nthen surfaced in an unrelated later turn. `try_queue_soft_interrupt` decides\nacceptance and enqueues in one critical section, and reports back *which* turn\ntook the message — so a 202 names something real.",
         "operationId": "interrupt",
         "requestBody": {
           "content": {
@@ -1479,13 +1479,20 @@
         },
         "responses": {
           "202": {
-            "description": "Message queued for injection into the running turn"
+            "description": "Message queued for injection into the running turn",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InterruptAccepted"
+                }
+              }
+            }
           },
           "400": {
             "description": "Empty message text"
           },
           "409": {
-            "description": "No turn is in flight for this session"
+            "description": "No turn is accepting interrupts for this session"
           },
           "500": {
             "description": "Internal server error"
@@ -6330,6 +6337,19 @@
           "sessionId": {
             "type": "string",
             "nullable": true
+          }
+        }
+      },
+      "InterruptAccepted": {
+        "type": "object",
+        "description": "Response body for an accepted soft interrupt (#69).",
+        "required": [
+          "turn_id"
+        ],
+        "properties": {
+          "turn_id": {
+            "type": "string",
+            "description": "The agent-loop turn that took the message and will inject it. Identifies\nthe reply loop, and is deliberately *not* the `turn_id` `/agent/cancel`\nreports (that one names the server's turn lock); the two id spaces are\nshaped differently so they cannot be confused."
           }
         }
       },

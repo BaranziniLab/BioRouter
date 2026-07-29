@@ -440,3 +440,168 @@ async fn no_steer_means_no_extra_provider_call() {
     assert_eq!(provider.0.load(Ordering::SeqCst), 1);
     assert!(!agent.has_soft_interrupts());
 }
+
+/// #69: the *loop* is what opens and closes the acceptance window, so prove it
+/// end to end — a unit test on the queue primitives passes just as happily if
+/// the reply loop never calls them.
+///
+/// Mid-turn, `try_queue_soft_interrupt` must be ACCEPTED and name the turn it
+/// landed in (otherwise every real steer would be refused with a 409 and the
+/// steer feature would be dead). Once the turn has ended, the same call must be
+/// REFUSED — accepting there is the #69 bug: a 202 for a message that would
+/// surface in an unrelated later turn.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_reply_loop_opens_the_acceptance_window_and_closes_it_at_exit() {
+    use biorouter::agents::InterruptRefused;
+
+    /// Steers through the *guarded* entry point on its first completion and
+    /// records what the agent answered.
+    struct GuardedSteeringProvider {
+        calls: AtomicUsize,
+        agent: OnceLock<Arc<Agent>>,
+        accepted_turn: std::sync::Mutex<Option<String>>,
+        seen: std::sync::Mutex<Vec<Vec<String>>>,
+    }
+
+    #[async_trait]
+    impl Provider for GuardedSteeringProvider {
+        async fn complete(
+            &self,
+            _system_prompt: &str,
+            messages: &[Message],
+            _tools: &[Tool],
+        ) -> Result<(Message, ProviderUsage), ProviderError> {
+            let n = self.calls.fetch_add(1, Ordering::SeqCst);
+            self.seen.lock().unwrap().push(
+                messages
+                    .iter()
+                    .flat_map(|m| m.content.iter())
+                    .filter_map(|c| match c {
+                        MessageContent::Text(t) => Some(t.text.clone()),
+                        _ => None,
+                    })
+                    .collect(),
+            );
+            let usage = ProviderUsage::new(
+                "mock-model".to_string(),
+                Usage::new(Some(10), Some(5), Some(15)),
+            );
+            if n == 0 {
+                if let Some(agent) = self.agent.get() {
+                    let landed = agent
+                        .try_queue_soft_interrupt("Actually, use R instead.".to_string(), None)
+                        .expect("a running turn must accept a steer");
+                    *self.accepted_turn.lock().unwrap() = Some(landed.as_str().to_string());
+                }
+                return Ok((
+                    Message::assistant().with_text("Done — I used Python."),
+                    usage,
+                ));
+            }
+            Ok((Message::assistant().with_text("Redone in R."), usage))
+        }
+
+        async fn complete_with_model(
+            &self,
+            _model_config: &ModelConfig,
+            system_prompt: &str,
+            messages: &[Message],
+            tools: &[Tool],
+        ) -> Result<(Message, ProviderUsage), ProviderError> {
+            self.complete(system_prompt, messages, tools).await
+        }
+
+        fn get_model_config(&self) -> ModelConfig {
+            ModelConfig::new("mock-model").unwrap()
+        }
+
+        fn metadata() -> ProviderMetadata {
+            SteeringProvider::metadata()
+        }
+
+        fn get_name(&self) -> &str {
+            "mock-test"
+        }
+    }
+
+    let work_dir = TempDir::new().unwrap();
+    let data_dir = TempDir::new().unwrap();
+    let session_manager = Arc::new(SessionManager::new(data_dir.path().to_path_buf()));
+    let agent = Agent::with_config(AgentConfig::new(
+        session_manager.clone(),
+        PermissionManager::instance(),
+        None,
+        BioRouterMode::Auto,
+    ));
+    let session = session_manager
+        .create_session(
+            work_dir.path().to_path_buf(),
+            "guarded-steer".to_string(),
+            SessionType::Hidden,
+        )
+        .await
+        .unwrap();
+    let provider = Arc::new(GuardedSteeringProvider {
+        calls: AtomicUsize::new(0),
+        agent: OnceLock::new(),
+        accepted_turn: std::sync::Mutex::new(None),
+        seen: std::sync::Mutex::new(Vec::new()),
+    });
+    agent
+        .update_provider(provider.clone() as Arc<dyn Provider>, &session.id)
+        .await
+        .unwrap();
+    let agent = Arc::new(agent);
+    let _ = provider.agent.set(agent.clone());
+    std::mem::forget(data_dir);
+
+    // A steer offered before the loop starts has no turn to land in.
+    assert!(
+        matches!(
+            agent.try_queue_soft_interrupt("too early".into(), None),
+            Err(InterruptRefused::TurnEnded)
+        ),
+        "with no turn running there is nothing to steer"
+    );
+
+    let messages = drain(&agent, "Plot the data", &session.id).await.unwrap();
+
+    // Accepted mid-turn, and told which turn took it.
+    let landed = provider
+        .accepted_turn
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("the mid-turn steer must have been accepted");
+    assert!(
+        landed.starts_with("agent-turn-"),
+        "the accepted turn id must name the agent loop's turn, got {landed:?}"
+    );
+
+    // …and consumed by that same turn, not a later one.
+    assert_eq!(
+        provider.calls.load(Ordering::SeqCst),
+        2,
+        "the accepted steer must keep the turn alive for one more provider call"
+    );
+    assert!(
+        user_texts(&messages)
+            .iter()
+            .any(|t| t == "Actually, use R instead."),
+        "the accepted steer must reach the transcript, saw: {:?}",
+        user_texts(&messages)
+    );
+
+    // The turn is over: acceptance is withdrawn.
+    assert!(
+        matches!(
+            agent.try_queue_soft_interrupt("too late".into(), None),
+            Err(InterruptRefused::TurnEnded)
+        ),
+        "a steer arriving after the turn ended must be refused, not queued for the next one"
+    );
+    assert!(
+        !agent.has_soft_interrupts(),
+        "a refused steer must leave nothing behind"
+    );
+}

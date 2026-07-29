@@ -318,6 +318,14 @@ export const startTetrateSetup = <ThrowOnError extends boolean = false>(options?
  * running loop to drain the queue the text would sit on the agent until some
  * unrelated later turn injected it. Clients treat 409 as "just send it as a
  * normal message".
+ *
+ * #69: the 409 is now decided by the *agent's own queue*, not by the turn-lock
+ * check above it. Checking the lock and then queueing are two steps against
+ * state the reply loop changes underneath them: a steer could be accepted (202)
+ * after the loop had already performed its final empty-queue check, and the text
+ * then surfaced in an unrelated later turn. `try_queue_soft_interrupt` decides
+ * acceptance and enqueues in one critical section, and reports back *which* turn
+ * took the message — so a 202 names something real.
  */
 export const interrupt = <ThrowOnError extends boolean = false>(options: Options<InterruptData, ThrowOnError>) => (options.client ?? client).post<InterruptResponses, InterruptErrors, ThrowOnError>({
     url: '/interrupt',

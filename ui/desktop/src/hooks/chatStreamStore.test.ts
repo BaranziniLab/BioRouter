@@ -945,7 +945,10 @@ describe('ChatStreamRegistry', () => {
     let releaseInterrupt: (() => void) | null = null;
     vi.mocked(interrupt).mockImplementation(
       () =>
-        new Promise((resolve) => (releaseInterrupt = () => resolve({ data: undefined } as never)))
+        // #69: an accepted interrupt now answers with the turn that took it.
+        new Promise(
+          (resolve) => (releaseInterrupt = () => resolve({ data: { turn_id: 'agent-turn-1' } }))
+        ) as never
     );
 
     const controller = registry.getController('s1');

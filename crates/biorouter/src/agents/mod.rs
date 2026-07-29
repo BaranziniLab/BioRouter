@@ -87,7 +87,8 @@ pub mod workspace_inspector;
 pub mod workspace_summary;
 
 pub use agent::{
-    Agent, AgentConfig, AgentEvent, ConfirmationOutcome, ExtensionLoadResult, PersistedMessage,
+    Agent, AgentConfig, AgentEvent, ConfirmationOutcome, Drained, ExtensionLoadResult,
+    InterruptRefused, PersistedMessage, TurnId,
 };
 pub use budget::ReplyBudget;
 pub use effort::ReasoningEffort;

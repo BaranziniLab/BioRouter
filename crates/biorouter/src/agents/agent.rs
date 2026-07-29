@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
@@ -517,6 +517,98 @@ pub struct QueuedInterrupt {
     pub provenance: Option<crate::conversation::message::MessageProvenance>,
 }
 
+/// Identity of one run of the agent's reply loop (#69).
+///
+/// Minted by the loop itself, **not** the server's `ActiveTurn.turn_id`: the two
+/// counters live in different processes-worth of state and are deliberately given
+/// different shapes (`agent-turn-N` here, `turn-N` there) so an id from one is
+/// never mistaken for an id of the other. It exists so an accepted soft interrupt
+/// can name the turn that took it — a 202 that cannot say *which* turn it landed
+/// in is the ambiguity #69 is about.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TurnId(String);
+
+impl TurnId {
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+
+    /// The next loop-run id in this process.
+    pub(super) fn mint() -> Self {
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        Self(format!(
+            "agent-turn-{}",
+            SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for TurnId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl From<TurnId> for String {
+    fn from(id: TurnId) -> String {
+        id.0
+    }
+}
+
+/// #69: the soft-interrupt queue owns whether it is accepting, so acceptance and
+/// enqueue happen in one critical section. A prior `is_turn_active` check cannot
+/// substitute: check-then-queue is two steps against state that changes underneath
+/// them, and adding more checks only narrows the window.
+pub(super) struct SoftInterrupts {
+    /// The turn currently accepting, if any.
+    turn: Option<TurnId>,
+    /// Cleared by `close_and_drain` once the loop has committed to exiting.
+    accepting: bool,
+    queued: Vec<QueuedInterrupt>,
+}
+
+impl SoftInterrupts {
+    fn new() -> Self {
+        Self {
+            turn: None,
+            accepting: false,
+            queued: Vec::new(),
+        }
+    }
+}
+
+/// Why [`Agent::try_queue_soft_interrupt`] would not take a steer (#69).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InterruptRefused {
+    /// No turn is accepting: either none is running, or the running one has closed.
+    TurnEnded,
+}
+
+impl std::fmt::Display for InterruptRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TurnEnded => f.write_str("no turn is accepting interrupts for this session"),
+        }
+    }
+}
+
+/// The outcome of the turn loop's take-and-close at its exit (#69).
+///
+/// `pub` for the same reason [`Agent::open_for_turn`] is: the route-level tests
+/// have to be able to drive an agent through the turn-lifecycle transitions the
+/// reply loop performs, without running a reply loop.
+#[derive(Debug)]
+pub enum Drained {
+    /// Items were taken; the turn stays open and must loop again to consume them.
+    Some(Vec<QueuedInterrupt>),
+    /// Nothing queued; the queue is now closed and the loop may exit.
+    Empty,
+}
+
 /// The main biorouter Agent
 pub struct Agent {
     pub(super) provider: SharedProvider,
@@ -567,7 +659,11 @@ pub struct Agent {
     /// injected at the next safe loop boundary in `reply_internal` instead of
     /// cancelling the turn (no lost work, no full context re-send). A plain
     /// `std::Mutex` so callers can push without awaiting the agent's async locks.
-    pub(super) soft_interrupts: Arc<std::sync::Mutex<Vec<QueuedInterrupt>>>,
+    ///
+    /// #69: the guarded value also carries *which* turn is accepting and whether
+    /// it still is, so a steer's acceptance and its enqueue are one critical
+    /// section rather than a check the loop can invalidate in between.
+    pub(super) soft_interrupts: Arc<std::sync::Mutex<SoftInterrupts>>,
     /// BR-43 shadow-git checkpoints: captures the work-tree at turn boundaries so
     /// `/rewind` can restore files/conversation. `None` when disabled (the
     /// default) or on the subagent/test paths. Gated by `BIOROUTER_CHECKPOINTS`.
@@ -874,7 +970,7 @@ impl Agent {
             goals: Default::default(),
             fallback_scheduler: tokio::sync::OnceCell::new(),
             vault: Mutex::new(None),
-            soft_interrupts: Arc::new(std::sync::Mutex::new(Vec::new())),
+            soft_interrupts: Arc::new(std::sync::Mutex::new(SoftInterrupts::new())),
             checkpoints,
             eager_compactions: Arc::new(std::sync::Mutex::new(HashSet::new())),
             injected_skills: Mutex::new(HashMap::new()),
@@ -908,56 +1004,133 @@ impl Agent {
         }
     }
 
+    /// The soft-interrupt queue's guard, recovered past a poisoning. The guarded
+    /// value is only ever pushed to, taken from, or re-flagged, so no invariant
+    /// can be mid-update when a panic poisons it — dropping an injection because
+    /// some unrelated task panicked would be strictly worse.
+    fn lock_interrupts(&self) -> std::sync::MutexGuard<'_, SoftInterrupts> {
+        self.soft_interrupts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Open the queue for a new turn (#69). Any straggler from a previous turn is
+    /// dropped and logged rather than silently injected — that is the #69 bug's
+    /// own shape.
+    ///
+    /// `pub` because the *route-level* tests have to be able to put an agent into
+    /// the accepting state without running a whole reply loop; the only production
+    /// caller is the reply loop itself.
+    pub fn open_for_turn(&self, turn: TurnId) {
+        let mut q = self.lock_interrupts();
+        if !q.queued.is_empty() {
+            warn!(
+                count = q.queued.len(),
+                "dropping interrupts left by a previous turn; they were never accepted"
+            );
+            q.queued.clear();
+        }
+        q.turn = Some(turn);
+        q.accepting = true;
+    }
+
+    /// Re-open the queue after the loop decided *not* to exit at a point where it
+    /// had already closed (a blocked Stop hook, a red done-gate, a self-critique
+    /// revision). Without this the queue would stay shut for the rest of a turn
+    /// that is demonstrably still running, and every steer would be refused.
+    /// Keeps the queue's contents — unlike [`Agent::open_for_turn`], nothing here
+    /// starts a new turn.
+    pub(super) fn reopen_for_more_work(&self) {
+        let mut q = self.lock_interrupts();
+        if q.turn.is_some() {
+            q.accepting = true;
+        }
+    }
+
+    /// Accept a steer if and only if a turn is still accepting (#69). Returns the
+    /// turn it landed in, so the caller can be told what its 202 actually promised.
+    pub fn try_queue_soft_interrupt(
+        &self,
+        text: String,
+        provenance: Option<crate::conversation::message::MessageProvenance>,
+    ) -> Result<TurnId, InterruptRefused> {
+        let mut q = self.lock_interrupts();
+        if !q.accepting {
+            return Err(InterruptRefused::TurnEnded);
+        }
+        let turn = q.turn.clone().ok_or(InterruptRefused::TurnEnded)?;
+        q.queued.push(QueuedInterrupt { text, provenance });
+        Ok(turn)
+    }
+
     /// Queue a user message to be injected into the running turn at the next safe
     /// loop boundary (soft interrupt). Cheap + lock-light: callable from a server
     /// route or the CLI while a turn is streaming, without cancelling it.
+    ///
+    /// **Unguarded** — see [`Agent::queue_soft_interrupt_with_provenance`]. New
+    /// callers that report success to anyone want
+    /// [`Agent::try_queue_soft_interrupt`] instead.
     pub fn queue_soft_interrupt(&self, text: String) {
         self.queue_soft_interrupt_with_provenance(text, None);
     }
 
-    /// BR-71: queue a mid-turn injection stamped with its origin. Used by
-    /// `workspace_send_prompt mode:"steer"` and the subagent-tab steer path.
+    /// BR-71: queue a mid-turn injection stamped with its origin. Used by the
+    /// subagent-tab steer path.
     ///
-    /// Recovers past a poisoned lock rather than dropping the injection. This
-    /// method returns `()`, so a dropped injection is unobservable to its
-    /// caller — tolerable when the only producer was `POST /interrupt` (the
-    /// human sees the missing message and retypes it), not tolerable once a
-    /// *calling agent* is told its cross-session steer was delivered. The
-    /// guarded value is a `Vec` only ever pushed to or `mem::take`n, so no
-    /// invariant can be mid-update when a panic poisons it.
+    /// **Unguarded**: this pushes whether or not a turn is accepting, and returns
+    /// `()`, so a caller can never learn that its text will not be consumed. That
+    /// is why #69 added [`Agent::try_queue_soft_interrupt`], which is what the
+    /// `/interrupt` route and `workspace_send_prompt mode:"steer"` use. This entry
+    /// point survives for in-loop producers that already know a turn is running.
+    /// Anything it leaves behind is dropped (with a warning) by the next
+    /// [`Agent::open_for_turn`] rather than injected into an unrelated turn.
     pub fn queue_soft_interrupt_with_provenance(
         &self,
         text: String,
         provenance: Option<crate::conversation::message::MessageProvenance>,
     ) {
-        let mut q = self
-            .soft_interrupts
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        q.push(QueuedInterrupt { text, provenance });
+        let mut q = self.lock_interrupts();
+        q.queued.push(QueuedInterrupt { text, provenance });
     }
 
     /// Drain queued soft-interrupt messages (FIFO). Returns empty when none.
-    /// Recovers past a poisoned lock — see
-    /// [`Agent::queue_soft_interrupt_with_provenance`].
+    /// Leaves the queue *open*: this is the mid-turn drain at the top of a loop
+    /// step, not the turn's exit (which is [`Agent::close_and_drain`]).
     pub(super) fn drain_soft_interrupts(&self) -> Vec<QueuedInterrupt> {
-        let mut q = self
-            .soft_interrupts
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        std::mem::take(&mut *q)
+        let mut q = self.lock_interrupts();
+        std::mem::take(&mut q.queued)
     }
 
-    /// Whether any soft interrupt is still waiting to be injected. Checked at the
-    /// turn's exit so a steer that landed while the *final* provider response was
-    /// streaming keeps the loop alive for one more step (BR-61) instead of being
-    /// stranded on the queue until some later turn.
+    /// Take everything and, only if there was nothing, close in the same critical
+    /// section (#69). That is what makes the exit atomic: after `Drained::Empty`
+    /// no further interrupt can be accepted, so nothing can arrive between the
+    /// check and the exit.
+    pub fn close_and_drain(&self) -> Drained {
+        let mut q = self.lock_interrupts();
+        let taken = std::mem::take(&mut q.queued);
+        if taken.is_empty() {
+            q.accepting = false;
+            Drained::Empty
+        } else {
+            Drained::Some(taken)
+        }
+    }
+
+    /// Put items taken by [`Agent::close_and_drain`] back at the head of the
+    /// queue, for the same turn's next loop step to consume in order. Anything
+    /// accepted in between (the queue is still open) keeps its place behind them.
+    pub(super) fn requeue_for_this_turn(&self, pending: Vec<QueuedInterrupt>) {
+        let mut q = self.lock_interrupts();
+        let mut restored = pending;
+        restored.append(&mut q.queued);
+        q.queued = restored;
+    }
+
+    /// Whether any soft interrupt is still waiting to be injected. Observation
+    /// only — the turn's exit uses [`Agent::close_and_drain`], because a *check*
+    /// here followed by an exit there is the two-step #69 removed.
     pub fn has_soft_interrupts(&self) -> bool {
-        let q = self
-            .soft_interrupts
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        !q.is_empty()
+        !self.lock_interrupts().queued.is_empty()
     }
 
     /// The hooks manager driving user-configured lifecycle hooks.
@@ -3927,6 +4100,14 @@ impl Agent {
             // spend the budget twice over.
             let mut budget_deadline: Option<u32> = None;
 
+            // #69: this run of the loop is now the turn that soft interrupts are
+            // accepted *into*. Opening here — where the loop actually starts, not
+            // where the stream was built — means acceptance begins and ends with a
+            // real consumer, and anything a previous turn left behind is dropped
+            // with a warning instead of ambushing this one.
+            let this_turn = TurnId::mint();
+            self.open_for_turn(this_turn.clone());
+
             loop {
                 if is_token_cancelled(&cancel_token) {
                     // BR-67: a cancelled turn and a completed turn look identical
@@ -5413,15 +5594,27 @@ impl Agent {
                     break;
                 }
 
-                // BR-61: a soft interrupt queued while the final provider response
-                // was streaming arrives too late for this iteration's drain, and a
-                // turn that is about to exit would leave it parked until some later
-                // turn injected it out of context. Keep the loop alive for one more
-                // step so the steer is drained, answered, and seen now. Still bounded
-                // by max_turns / max_tool_calls, which are re-checked at the top.
-                if exit_chat && self.has_soft_interrupts() {
-                    info!("soft interrupt pending at turn exit; continuing the loop to consume it");
-                    exit_chat = false;
+                // BR-61 + #69: take-and-close atomically. A non-empty drain keeps
+                // the loop alive for one more step so the steer is answered in
+                // context (BR-61: it would otherwise sit parked until some later
+                // turn injected it out of nowhere); an empty drain closes the
+                // queue, so anything arriving afterwards is refused rather than
+                // stranded. The two must be one critical section — a separate
+                // `has_soft_interrupts` check followed by an exit is exactly the
+                // window #69 reports. Still bounded by max_turns / max_tool_calls,
+                // which are re-checked at the top.
+                if exit_chat {
+                    match self.close_and_drain() {
+                        Drained::Some(pending) => {
+                            info!(
+                                count = pending.len(),
+                                "soft interrupt pending at turn exit; continuing the loop to consume it"
+                            );
+                            self.requeue_for_this_turn(pending);
+                            exit_chat = false;
+                        }
+                        Drained::Empty => {}
+                    }
                 }
 
                 if exit_chat {
@@ -5497,6 +5690,12 @@ impl Agent {
                                 // skip this iteration's Stop hook. The counter does
                                 // not reset on the tool calls the fix requires, so
                                 // the loop is bounded by `max_iterations`.
+                                //
+                                // #69: the exit above already closed the queue on
+                                // the assumption the turn was over. It is not, so
+                                // re-open it — refusing steers for the rest of a
+                                // turn that is still working would be its own bug.
+                                self.reopen_for_more_work();
                                 tokio::task::yield_now().await;
                                 continue;
                             } else {
@@ -5562,6 +5761,10 @@ impl Agent {
                             // iteration's Stop hook. The next finish attempt runs
                             // Stop hooks normally, and the critique won't fire again
                             // once the pass budget is spent.
+                            //
+                            // #69: re-open the queue the exit check closed — the
+                            // turn is continuing after all.
+                            self.reopen_for_more_work();
                             tokio::task::yield_now().await;
                             continue;
                         }
@@ -5665,11 +5868,35 @@ impl Agent {
                             // Keep looping: the model sees the feedback next turn.
                             // After a give-up the goal is cleared, so the next stop
                             // proceeds once the agent delivers its wrap-up.
+                            //
+                            // #69: a blocked Stop reverses the exit the queue was
+                            // closed for, so re-open it for the extra work.
+                            self.reopen_for_more_work();
                         }
                     }
                 }
 
                 tokio::task::yield_now().await;
+            }
+
+            // #69: the loop is over on every path that reaches here — including
+            // the aborts that break out above `close_and_drain` (cancel, budget,
+            // stall, max_turns). Close the queue so a steer aimed at this turn is
+            // refused rather than accepted into a session with nothing running.
+            // A steer that got in first is reported (it is about to be dropped by
+            // the next `open_for_turn`); it cannot be answered, because there is
+            // no loop left to answer it. An early-cancelled consumer can drop this
+            // stream before this line, in which case the next turn's
+            // `open_for_turn` is what clears the queue.
+            if let Drained::Some(stranded) = self.close_and_drain() {
+                warn!(
+                    count = stranded.len(),
+                    turn = %this_turn,
+                    "turn ended before its queued soft interrupts could be injected"
+                );
+                // Closed for good: re-taking the (now empty) queue flips
+                // `accepting` off, which the non-empty branch above left on.
+                let _ = self.close_and_drain();
             }
 
             // BR-12: the turn is complete — the agent loop drained and control is
@@ -6718,6 +6945,78 @@ mod tests {
         assert_eq!(drained.len(), 1, "the injection must still be drainable");
         assert_eq!(drained[0].text, "after the poison");
         assert!(!agent.has_soft_interrupts(), "drain empties the queue");
+    }
+
+    /// A bare `Agent` on a throwaway session store — enough for the queue-level
+    /// tests below, which never touch the provider or the history.
+    async fn test_agent() -> Agent {
+        let temp = tempfile::TempDir::new().unwrap();
+        let sm = std::sync::Arc::new(crate::session::SessionManager::new(
+            temp.path().to_path_buf(),
+        ));
+        // The store is never read here, but the dir must outlive the agent.
+        std::mem::forget(temp);
+        Agent::with_config(AgentConfig::new(
+            sm,
+            crate::config::permission::PermissionManager::instance(),
+            None,
+            crate::config::BioRouterMode::Auto,
+        ))
+    }
+
+    /// #69: an interrupt that arrives after the loop has committed to exiting must be
+    /// REFUSED, not queued into whatever turn runs next.
+    ///
+    /// The old shape returned 202 unconditionally: the route observed an active turn,
+    /// awaited the agent lookup, and pushed — while the loop performed its final
+    /// empty-queue check and exited. The message then surfaced in an unrelated turn.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_interrupt_after_the_close_is_refused_not_deferred() {
+        let agent = test_agent().await;
+
+        agent.open_for_turn(TurnId::new("turn-a"));
+
+        // The loop reaches its exit with nothing queued: close and drain in one step.
+        assert!(matches!(agent.close_and_drain(), Drained::Empty));
+
+        // A steer arrives one instant too late.
+        let refused = agent.try_queue_soft_interrupt("too late".into(), None);
+        assert!(
+            matches!(refused, Err(InterruptRefused::TurnEnded)),
+            "an interrupt after the close must be refused; got {refused:?}"
+        );
+
+        // And it must not be sitting in the queue waiting to ambush the next turn.
+        agent.open_for_turn(TurnId::new("turn-b"));
+        assert!(
+            matches!(agent.close_and_drain(), Drained::Empty),
+            "the refused interrupt must not have been queued for a later turn"
+        );
+    }
+
+    /// The mirror: an interrupt that arrives while the turn is still accepting is
+    /// taken, and is consumed by THAT turn rather than a later one.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_interrupt_before_the_close_is_consumed_by_its_own_turn() {
+        let agent = test_agent().await;
+        agent.open_for_turn(TurnId::new("turn-a"));
+
+        let landed = agent
+            .try_queue_soft_interrupt("in time".into(), None)
+            .expect("an open turn must accept");
+        assert_eq!(
+            landed.as_str(),
+            "turn-a",
+            "the caller is told which turn took it"
+        );
+
+        match agent.close_and_drain() {
+            Drained::Some(items) => {
+                assert_eq!(items.len(), 1);
+                assert_eq!(items[0].text, "in time");
+            }
+            Drained::Empty => panic!("the queued steer must be drained by its own turn"),
+        }
     }
 }
 

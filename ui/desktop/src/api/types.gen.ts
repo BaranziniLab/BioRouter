@@ -750,6 +750,19 @@ export type InspectJobResponse = {
 };
 
 /**
+ * Response body for an accepted soft interrupt (#69).
+ */
+export type InterruptAccepted = {
+    /**
+     * The agent-loop turn that took the message and will inject it. Identifies
+     * the reply loop, and is deliberately *not* the `turn_id` `/agent/cancel`
+     * reports (that one names the server's turn lock); the two id spaces are
+     * shaped differently so they cannot be confused.
+     */
+    turn_id: string;
+};
+
+/**
  * Request body for the soft-interrupt route.
  */
 export type InterruptRequest = {
@@ -3500,7 +3513,7 @@ export type InterruptErrors = {
      */
     400: unknown;
     /**
-     * No turn is in flight for this session
+     * No turn is accepting interrupts for this session
      */
     409: unknown;
     /**
@@ -3513,8 +3526,10 @@ export type InterruptResponses = {
     /**
      * Message queued for injection into the running turn
      */
-    202: unknown;
+    202: InterruptAccepted;
 };
+
+export type InterruptResponse = InterruptResponses[keyof InterruptResponses];
 
 export type GetActiveData = {
     body?: never;

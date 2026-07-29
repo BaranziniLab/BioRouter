@@ -485,6 +485,7 @@ derive_utoipa!(Icon as IconSchema);
         super::routes::action_required::ConfirmToolActionRequest,
         super::routes::reply::ChatRequest,
         super::routes::reply::InterruptRequest,
+        super::routes::reply::InterruptAccepted,
         super::routes::reply::CancelTurnRequest,
         super::routes::reply::CancelTurnResponse,
         super::routes::session::ImportSessionRequest,

@@ -6,7 +6,7 @@ use axum::{
     routing::post,
     Json, Router,
 };
-use biorouter::agents::{PersistedMessage, ReasoningEffort};
+use biorouter::agents::{InterruptRefused, PersistedMessage, ReasoningEffort};
 use biorouter::conversation::message::{Message, MessageContent, TokenState};
 use biorouter::conversation::Conversation;
 use biorouter::session::session_manager::ReplaceOutcome;
@@ -1042,6 +1042,16 @@ pub struct InterruptRequest {
     pub text: String,
 }
 
+/// Response body for an accepted soft interrupt (#69).
+#[derive(Debug, Deserialize, Serialize, utoipa::ToSchema)]
+pub struct InterruptAccepted {
+    /// The agent-loop turn that took the message and will inject it. Identifies
+    /// the reply loop, and is deliberately *not* the `turn_id` `/agent/cancel`
+    /// reports (that one names the server's turn lock); the two id spaces are
+    /// shaped differently so they cannot be confused.
+    pub turn_id: String,
+}
+
 /// Soft interrupt: queue a user message to be injected into the session's
 /// running turn at the next safe loop boundary, instead of cancelling the turn
 /// and re-sending the whole context. Returns 202 Accepted; the message surfaces
@@ -1051,30 +1061,49 @@ pub struct InterruptRequest {
 /// running loop to drain the queue the text would sit on the agent until some
 /// unrelated later turn injected it. Clients treat 409 as "just send it as a
 /// normal message".
+///
+/// #69: the 409 is now decided by the *agent's own queue*, not by the turn-lock
+/// check above it. Checking the lock and then queueing are two steps against
+/// state the reply loop changes underneath them: a steer could be accepted (202)
+/// after the loop had already performed its final empty-queue check, and the text
+/// then surfaced in an unrelated later turn. `try_queue_soft_interrupt` decides
+/// acceptance and enqueues in one critical section, and reports back *which* turn
+/// took the message — so a 202 names something real.
 #[utoipa::path(
     post,
     path = "/interrupt",
     request_body = InterruptRequest,
     responses(
-        (status = 202, description = "Message queued for injection into the running turn"),
+        (status = 202, description = "Message queued for injection into the running turn", body = InterruptAccepted),
         (status = 400, description = "Empty message text"),
-        (status = 409, description = "No turn is in flight for this session"),
+        (status = 409, description = "No turn is accepting interrupts for this session"),
         (status = 500, description = "Internal server error")
     )
 )]
 pub async fn interrupt(
     State(state): State<Arc<AppState>>,
     Json(req): Json<InterruptRequest>,
-) -> Result<StatusCode, StatusCode> {
+) -> Result<(StatusCode, Json<InterruptAccepted>), StatusCode> {
     if req.text.trim().is_empty() {
         return Err(StatusCode::BAD_REQUEST);
     }
+    // Cheap early-out only: it avoids constructing an agent for an idle session.
+    // It is no longer the guard — see `try_queue_soft_interrupt` below.
     if !state.is_turn_active(&req.session_id) {
         return Err(StatusCode::CONFLICT);
     }
     let agent = state.get_agent_for_route(req.session_id).await?;
-    agent.queue_soft_interrupt(req.text);
-    Ok(StatusCode::ACCEPTED)
+    match agent.try_queue_soft_interrupt(req.text, None) {
+        Ok(turn_id) => Ok((
+            StatusCode::ACCEPTED,
+            Json(InterruptAccepted {
+                turn_id: turn_id.into(),
+            }),
+        )),
+        // #69: the turn the caller addressed has ended. Refusing is the honest
+        // answer — queueing for whatever runs next is the bug this replaces.
+        Err(InterruptRefused::TurnEnded) => Err(StatusCode::CONFLICT),
+    }
 }
 
 /// Request body for the addressable cancel route.
@@ -2483,6 +2512,14 @@ mod tests {
         async fn test_interrupt_accepts_steer_while_turn_in_flight() {
             let state = AppState::new().await.unwrap();
             let _guard = begin_turn(&state, "steering-session").expect("turn lock acquired");
+            // #69: acceptance is the *agent loop's* to give, so the session's
+            // agent has to be in the accepting state a running loop puts it in.
+            // The server's turn lock alone is no longer enough.
+            let agent = state
+                .get_agent("steering-session".to_string())
+                .await
+                .unwrap();
+            agent.open_for_turn(biorouter::agents::TurnId::new("agent-turn-test"));
 
             let app = routes(Arc::clone(&state));
             let response = app
@@ -2491,14 +2528,51 @@ mod tests {
                 .unwrap();
 
             assert_eq!(response.status(), StatusCode::ACCEPTED);
+            assert_eq!(
+                json_body(response).await["turn_id"],
+                serde_json::json!("agent-turn-test"),
+                "a 202 must name the turn that actually took the message"
+            );
 
-            let agent = state
-                .get_agent("steering-session".to_string())
-                .await
-                .unwrap();
             assert!(
                 agent.has_soft_interrupts(),
                 "the steer must be queued on the session's agent"
+            );
+        }
+
+        /// #69: the turn lock is still held — the reply task has not unwound yet —
+        /// but the loop has performed its final drain and committed to exiting.
+        /// The old route read only the lock and returned 202, and the text then
+        /// surfaced in an unrelated later turn.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn test_interrupt_refuses_once_the_agent_loop_has_closed() {
+            let state = AppState::new().await.unwrap();
+            let _guard = begin_turn(&state, "closing-session").expect("turn lock acquired");
+            let agent = state
+                .get_agent("closing-session".to_string())
+                .await
+                .unwrap();
+            agent.open_for_turn(biorouter::agents::TurnId::new("agent-turn-closing"));
+            // What the loop does at its exit when nothing is queued.
+            assert!(matches!(
+                agent.close_and_drain(),
+                biorouter::agents::Drained::Empty
+            ));
+
+            let app = routes(Arc::clone(&state));
+            let response = app
+                .oneshot(interrupt_request("closing-session", "too late"))
+                .await
+                .unwrap();
+
+            assert_eq!(
+                response.status(),
+                StatusCode::CONFLICT,
+                "a steer that misses its turn must be refused, not deferred"
+            );
+            assert!(
+                !agent.has_soft_interrupts(),
+                "the refused steer must not be sitting on the agent for a later turn"
             );
         }
 
