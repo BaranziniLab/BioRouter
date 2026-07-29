@@ -1038,6 +1038,13 @@ impl Agent {
             crate::security::sensitive_ops::SensitiveOpsInspector,
         ));
 
+        // BR-71 §5: cross-session capability changes always confirm, in every
+        // mode. Inert for every tool but `workspace_set_tools` and
+        // `workspace_open`.
+        tool_inspection_manager.add_inspector(Box::new(
+            crate::agents::workspace_inspector::WorkspaceMutationInspector,
+        ));
+
         // Add permission inspector (medium-high priority). BR-18: it reads the
         // shared risk registry the agent refreshes each turn from the model's
         // tool list, so `SmartApprove` auto-approves read-only-annotated tools
@@ -6556,6 +6563,14 @@ mod tests {
         assert!(
             inspector_names.contains(&"managed"),
             "Tool inspection manager should contain managed policy inspector"
+        );
+        // BR-71 §5: the always-confirm hook for cross-session capability
+        // changes. Its own unit tests all pass a `WorkspaceMutationInspector`
+        // directly, so without this assertion deleting the registration would
+        // leave every one of them green while the guarantee was gone.
+        assert!(
+            inspector_names.contains(&"workspace_mutation"),
+            "Tool inspection manager should contain workspace mutation inspector"
         );
 
         Ok(())
