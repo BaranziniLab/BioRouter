@@ -6697,21 +6697,100 @@ async fn a_private_provider_binds_to_anything_and_a_public_session_accepts_anyth
 }
 
 #[tokio::test]
-async fn a_concurrent_ratchet_cannot_interleave_into_a_bad_state() {
-    // The check and the write are one conditional UPDATE, so there is no TOCTOU
-    // window. Race a bind against a ratchet 200 times and assert the invariant
-    // holds in every outcome: if the row is private, its provider is private.
+async fn a_bind_is_never_accepted_against_a_row_that_is_already_private() {
+    // Interleaving (A), FORCED: the ratchet commits strictly BEFORE the bind's
+    // UPDATE runs. This is the case the conditional UPDATE exists for, and the
+    // one nothing could previously produce.
+    let (agent, s) = agent_on(private_provider()).await;
+
+    let reached = seams::arm_before_bind_update();
+    let bind = tokio::spawn({ let a = agent.clone(); let id = s.id.clone();
+                              async move { a.update_provider(public_provider(), &id).await } });
+    let release = reached.await.unwrap();      // update_provider is parked at the seam
+    ratchet_to_private(&s.id).await;           // runs alone, to completion
+    release.send(()).unwrap();
+
+    let err = bind.await.unwrap().unwrap_err();
+    assert!(matches!(err.downcast_ref::<PrivacyRefusal>(),
+                     Some(PrivacyRefusal::PublicModelOnPrivateSession { .. })),
+            "the WHERE clause did not see a ratchet that committed before it");
+    let row = reread(&s.id).await;
+    assert_eq!(row.provider_name.as_deref(), Some("versa_azure"), "a refused bind wrote anyway");
+    assert_eq!(agent.provider().await.unwrap().get_name(), "versa_azure");
+}
+
+#[tokio::test]
+async fn a_ratchet_that_commits_after_a_legal_bind_lands_in_the_state_gate_b_owns() {
+    // Interleaving (B), FORCED: the ratchet commits AFTER the bind's UPDATE and
+    // BEFORE the in-memory swap. Both statements were legal when they ran, so
+    // both succeed and the row ends (private, anthropic).
+    //
+    // ⚠ THIS IS NOT A BUG, AND THE PREVIOUS VERSION OF THIS TEST ASSERTED IT
+    //   WAS. "The provider bound to a private session is always private" is not
+    //   a sentence a conditional UPDATE can deliver. What it delivers is
+    //   narrower and exact: *a bind is never accepted against a row that is
+    //   already private*. A ratchet landing after a legal bind is a different
+    //   event, and the state it produces — private row, public `provider_name`
+    //   — is the SAME residual an LRU rehydration, a legacy row and
+    //   `restore_provider_from_session`'s `Config::global()` fallback all
+    //   produce. Task 13's `an_unrepairable_mismatch_refuses_this_turn_and_leaves_the_row_alone`
+    //   is what owns it, and the repair card is what fixes it.
+    let (agent, s) = agent_on(private_provider()).await;
+
+    let reached = seams::arm_after_bind_before_swap();
+    let bind = tokio::spawn({ let a = agent.clone(); let id = s.id.clone();
+                              async move { a.update_provider(public_provider(), &id).await } });
+    let release = reached.await.unwrap();
+    ratchet_to_private(&s.id).await;
+    release.send(()).unwrap();
+    bind.await.unwrap().unwrap();              // the bind was legal when it ran: Ok
+
+    let row = reread(&s.id).await;
+    assert_eq!(row.privacy_tier, SessionClassification::Private);
+    assert_eq!(row.provider_name.as_deref(), Some("anthropic"));
+    // Not TORN: `provider_name` and `model_config_json` came from one UPDATE, so
+    // no reader can see one provider's name beside another's model config.
+    assert_eq!(model_name_of(&row), public_provider().get_model_config().model_name);
+    // And the property that actually matters holds: the next turn refuses
+    // rather than running a public model against a private session.
+    let events = drain(agent.reply(user("hi"), cfg(&s), None).await.unwrap()).await;
+    assert!(events.iter().any(is_refusal), "{events:#?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_unconstrained_race_observes_both_outcomes() {
+    // The fuzz layer is KEPT — a seam only proves the two interleavings someone
+    // thought of. What changes is that it must PROVE it raced.
+    //
+    // ⚠ `flavor = "multi_thread"` is load-bearing and its absence is half of why
+    //   the previous version tested nothing: `#[tokio::test]` defaults to
+    //   `current_thread`, where two `tokio::spawn`s cannot preempt each other at
+    //   all — they interleave only at `.await` points, in the same order every
+    //   iteration. Two hundred iterations of a deterministic schedule is one
+    //   iteration, run two hundred times.
+    let (mut bound, mut refused) = (0usize, 0usize);
     for _ in 0..200 {
         let (agent, s) = agent_on(private_provider()).await;
         let a = tokio::spawn({ let a = agent.clone(); let id = s.id.clone();
                                async move { a.update_provider(public_provider(), &id).await } });
         let b = tokio::spawn(ratchet_to_private_owned(s.id.clone()));
-        let _ = tokio::join!(a, b);
+        let (a, b) = tokio::join!(a, b);
+        b.unwrap();
+        let bind_ok = a.unwrap().is_ok();
+        if bind_ok { bound += 1 } else { refused += 1 }
+
+        // The invariant that holds in EVERY interleaving, asserted
+        // UNCONDITIONALLY — the previous version's `if row.is_private()` guard
+        // made the whole assertion skippable, and the ratchet always wins the
+        // row, so it was skipped in the only branch it could have caught.
         let row = reread(&s.id).await;
-        if row.privacy_tier.is_private() {
-            assert_eq!(row.provider_name.as_deref(), Some("versa_azure"));
-        }
+        assert_eq!(row.privacy_tier, SessionClassification::Private);
+        assert_eq!(row.provider_name.as_deref() == Some("anthropic"), bind_ok,
+                   "a refused bind wrote the row, or an accepted one did not");
     }
+    assert!(bound > 0 && refused > 0,
+            "200 iterations produced {bound} bound / {refused} refused — one-sided, so the loop \
+             raced nothing. That is the state this test used to report as a pass.");
 }
 ```
 
@@ -6827,9 +6906,15 @@ async fn a_nonexistent_session_is_not_reported_as_a_privacy_refusal() {
 
         // Issue #56 Gate A. Persist FIRST: today the in-memory swap precedes
         // the persist, so a refused write would leave the chat running on the
-        // refused model. The invariant this establishes is one sentence — the
-        // provider bound to a private session is always private — and it is
-        // what lets every later reader trust `sessions.provider_name`.
+        // refused model. The invariant this establishes is one sentence, and it
+        // is narrower than the one an earlier draft claimed: **a bind is never
+        // accepted against a row that is already private.** NOT "the provider
+        // bound to a private session is always private" — a ratchet that
+        // commits after a legal bind produces (private, public provider), and
+        // that residual is Gate B's (Task 13), not this gate's. Overstating it
+        // is what made Step 1's race test assert something false.
+        #[cfg(test)]
+        seams::before_bind_update().await;
         match self
             .config
             .session_manager
@@ -6850,11 +6935,73 @@ async fn a_nonexistent_session_is_not_reported_as_a_privacy_refusal() {
             }
         }
 
+        #[cfg(test)]
+        seams::after_bind_before_swap().await;
         let mut current_provider = self.provider.lock().await;
         *current_provider = Some(provider);
         Ok(())
     }
 ```
+
+(b″) **The two test seams, and why a seam rather than more iterations.** A concurrency gate that
+cannot *force* the interleaving it is about is not a gate — and this one could not, twice over: two
+`tokio::spawn`s a few microseconds long, on a `#[tokio::test]` runtime that is `current_thread` by
+default and therefore cannot preempt them at all. The seams are `#[cfg(test)]`, so nothing of them
+exists in a shipped binary:
+
+```rust
+/// Test-only rendezvous points inside `update_provider` (issue #56).
+///
+/// `arm_*` returns a receiver that fires when `update_provider` reaches the
+/// seam, carrying the sender that releases it — so a test can run a whole
+/// ratchet *inside* the window instead of hoping a spawn lands there. Two
+/// channels and not a `Barrier`: a 2-party `Barrier::wait` releases both sides
+/// at the rendezvous, which is the one thing this must not do.
+#[cfg(test)]
+pub(crate) mod seams {
+    use std::sync::{Mutex, OnceLock};
+    use tokio::sync::oneshot;
+
+    type Slot = OnceLock<Mutex<Option<oneshot::Sender<oneshot::Sender<()>>>>>;
+    static BEFORE_BIND: Slot = OnceLock::new();
+    static AFTER_BIND: Slot = OnceLock::new();
+
+    fn slot(s: &'static Slot) -> &'static Mutex<Option<oneshot::Sender<oneshot::Sender<()>>>> {
+        s.get_or_init(|| Mutex::new(None))
+    }
+
+    fn arm(s: &'static Slot) -> oneshot::Receiver<oneshot::Sender<()>> {
+        let (tx, rx) = oneshot::channel();
+        *slot(s).lock().unwrap() = Some(tx);
+        rx
+    }
+
+    async fn park(s: &'static Slot) {
+        // The guard is dropped at the end of this statement, before the await:
+        // holding a std::sync::MutexGuard across an await point is the classic
+        // way to turn a test seam into a deadlock.
+        let armed = { slot(s).lock().unwrap().take() };
+        if let Some(reached) = armed {
+            let (release_tx, release_rx) = oneshot::channel();
+            let _ = reached.send(release_tx);
+            let _ = release_rx.await;
+        }
+    }
+
+    pub(crate) fn arm_before_bind_update() -> oneshot::Receiver<oneshot::Sender<()>> {
+        arm(&BEFORE_BIND)
+    }
+    pub(crate) fn arm_after_bind_before_swap() -> oneshot::Receiver<oneshot::Sender<()>> {
+        arm(&AFTER_BIND)
+    }
+    pub(super) async fn before_bind_update() { park(&BEFORE_BIND).await }
+    pub(super) async fn after_bind_before_swap() { park(&AFTER_BIND).await }
+}
+```
+
+⚠ `take()`, not `clone()`: the slot is consumed on first arrival, so an un-armed `update_provider`
+— every other test in this file, and every one in Task 13 — walks straight through both seams with
+one uncontended lock and no await.
 
 (b′) **`crates/biorouter/src/privacy/refusal.rs` is created here, by Task 12** — not by Task 14, as
 the first version of this plan said. Task 12's own code returns `PrivacyRefusal`, and Task 13's calls
@@ -6966,6 +7113,26 @@ grep -c "PrivacyBarrierBody" ui/desktop/src/api/types.gen.ts ; echo "expect: >= 
 # The client throws.
 awk '/const changeModel/,/^  \);/' ui/desktop/src/components/ModelAndProviderContext.tsx \
   | grep -c "throwOnError" ; echo "expect: 2 (updateAgentProvider AND setConfigProvider); 1 today"
+# The concurrency gate can FORCE its interleavings, and its seams ship in no
+# binary. A `#[cfg(test)]` that drifted off the module is a rendezvous point in
+# production code.
+awk '/pub async fn update_provider/,/^    }/' crates/biorouter/src/agents/agent.rs \
+  | grep -n "cfg(test)\|seams::\|bind_provider_if_allowed\|\*current_provider = Some"
+echo "Expected FOUR lines, in this order: seams::before_bind_update (under a"
+echo "  cfg(test) on the line above it), bind_provider_if_allowed,"
+echo "  seams::after_bind_before_swap (likewise), *current_provider = Some."
+echo "  A seam call NOT preceded by #[cfg(test)] fails this gate."
+grep -c "pub(crate) mod seams" crates/biorouter/src/agents/agent.rs ; echo "expect: 1"
+grep -n -B1 "pub(crate) mod seams" crates/biorouter/src/agents/agent.rs | grep -c "cfg(test)"
+echo "expect: 1 — the module itself is test-only"
+# The fuzz loop is multi-threaded, or it schedules nothing. `#[tokio::test]`
+# defaults to current_thread, where two spawns interleave only at await points
+# and do so identically on all 200 iterations.
+grep -n -A1 'flavor = "multi_thread"' crates/biorouter/src/agents/agent.rs \
+  | grep -c "the_unconstrained_race_observes_both_outcomes" ; echo "expect: 1"
+# …and it asserts it actually raced, rather than reporting a one-sided loop as a pass.
+awk '/async fn the_unconstrained_race_observes_both_outcomes/,/^    }/' \
+  crates/biorouter/src/agents/agent.rs | grep -c "bound > 0 && refused > 0" ; echo "expect: 1"
 ```
 
 **What this catches.** The wrong implementation adds the check to `Agent::update_provider` as an
@@ -6974,6 +7141,22 @@ passes any test that only asserts `Err`, and it leaves the live agent running on
 model — the precise inverse of the design's promise. The first assertion of Step 1's first test and
 the `awk` ordering gate are what fail it. Separately, shipping Gate A without (c) and (d) reproduces
 the shipped bug exactly: a refusal rendered as a green success toast.
+
+**And the concurrency gate.** Its previous form — 200 unconstrained `tokio::spawn` pairs and
+`if row.privacy_tier.is_private() { assert_eq!(row.provider_name, Some("versa_azure")) }` — failed
+in three independent ways at once, which is why it is rewritten rather than tuned. (i) It could not
+produce the interleaving: `#[tokio::test]` is `current_thread`, so the two tasks cannot preempt each
+other and interleave only at `.await` points, in the same order on every one of the 200 iterations.
+(ii) Its assertion was guarded by an `if` on the very condition that decides whether anything is
+checked, and the ratchet always wins the row, so the guard skipped the assertion in the only branch
+that could have caught something. (iii) The assertion was **false for a correct implementation**: a
+ratchet that commits after a legal bind produces (private, public provider), and that is the
+residual Gate B owns, not a violation of Gate A. **This gate rejects: an implementation in which the
+`WHERE` predicate is evaluated in Rust between two statements instead of inside the UPDATE** —
+`a_bind_is_never_accepted_against_a_row_that_is_already_private` parks `update_provider` at a seam,
+runs the whole ratchet inside the window, releases it, and requires a `PrivacyRefusal`; a
+read-then-write implementation binds instead, and no amount of looping would have shown it. It also
+rejects a fuzz loop that races nothing, because `bound > 0 && refused > 0` is now asserted.
 
 - [ ] **Step 6: Commit**
 
