@@ -73,8 +73,16 @@ pub mod turn_abort;
 pub mod turn_guard;
 pub mod types;
 pub mod vault_refs;
-// BR-71 §5: the always-confirm hook for cross-session capability changes.
+// BR-71: the `workspace` platform extension — the in-process sibling of
+// `chatrecall_extension`, whose tools operate the workspace itself (sessions,
+// and the GUI's tabs when one is attached).
+//
+// The plan asked for this beside `chatrecall_extension`; rustfmt's
+// `reorder_modules` sorts each contiguous `mod` group, so any such placement is
+// undone by `cargo fmt` — and the move strands the comment on whichever module
+// takes the vacated line. Sorted position, own comment.
 pub mod workspace_extension;
+// BR-71 §5: the always-confirm hook for cross-session capability changes.
 pub mod workspace_inspector;
 pub mod workspace_summary;
 
