@@ -2969,6 +2969,15 @@ mod tests {
         started: Mutex<Vec<(String, String, crate::conversation::message::Message)>>,
         /// Every `gui_command` frame.
         frames: Mutex<Vec<serde_json::Value>>,
+        /// Every `cancel_turn(session_id)`, in order. Task 16 needs the CALL
+        /// recorded, not just its answer: a `workspace_close` that returned the
+        /// right sentence without ever tripping the token is exactly the wrong
+        /// implementation this records to exclude.
+        cancels: Mutex<Vec<String>>,
+        /// Every `stop_agent(session_id)`, in order — same reason.
+        stops: Mutex<Vec<String>>,
+        /// When set, `stop_agent` fails with it (and records the call anyway).
+        stop_error: Mutex<Option<String>>,
         turn_seq: AtomicUsize,
     }
 
@@ -2989,6 +2998,12 @@ mod tests {
         }
         fn epilogue(self, events: Vec<SessionBusEvent>) -> Self {
             *self.epilogue.lock().unwrap() = events;
+            self
+        }
+        /// Make `stop_agent` fail, so a test can pin that the failure surfaces
+        /// as a tool error instead of a cheerful "stopped and evicted".
+        fn stop_fails(self, message: &str) -> Self {
+            *self.stop_error.lock().unwrap() = Some(message.to_string());
             self
         }
         fn install(self) -> std::sync::Arc<Self> {
@@ -3017,6 +3032,15 @@ mod tests {
                 .cloned()
                 .collect()
         }
+        fn all_frames(&self) -> Vec<serde_json::Value> {
+            self.frames.lock().unwrap().clone()
+        }
+        fn cancels(&self) -> Vec<String> {
+            self.cancels.lock().unwrap().clone()
+        }
+        fn stops(&self) -> Vec<String> {
+            self.stops.lock().unwrap().clone()
+        }
     }
 
     struct FakeLease;
@@ -3037,8 +3061,17 @@ mod tests {
         fn is_turn_active(&self, session_id: &str) -> bool {
             self.active.lock().unwrap().contains(session_id)
         }
-        fn cancel_turn(&self, _session_id: &str) -> Option<String> {
-            None
+        /// Records the call and answers the way the daemon does: there is a
+        /// token to trip only while a turn is in flight, and tripping it ends
+        /// that turn — so an idle session yields `None` and a busy one yields
+        /// its id exactly once.
+        fn cancel_turn(&self, session_id: &str) -> Option<String> {
+            self.cancels.lock().unwrap().push(session_id.to_string());
+            self.active
+                .lock()
+                .unwrap()
+                .remove(session_id)
+                .then(|| "turn-live".to_string())
         }
         fn begin_turn(
             &self,
@@ -3047,7 +3080,15 @@ mod tests {
         ) -> Result<Box<dyn WorkspaceTurnLease>, String> {
             Ok(Box::new(FakeLease))
         }
-        async fn stop_agent(&self, _session_id: &str) -> Result<(), String> {
+        async fn stop_agent(&self, session_id: &str) -> Result<(), String> {
+            self.stops.lock().unwrap().push(session_id.to_string());
+            // Bind out of the guard before the early return: a `MutexGuard`
+            // alive across the tail of an `async fn` makes the future `!Send`.
+            let failure = self.stop_error.lock().unwrap().clone();
+            if let Some(message) = failure {
+                return Err(message);
+            }
+            self.active.lock().unwrap().remove(session_id);
             Ok(())
         }
         async fn start_detached_turn(
@@ -3833,5 +3874,238 @@ mod tests {
         assert!(result.content[0].as_text().unwrap().text.contains("daemon"));
 
         crate::workspace_services::clear_test_override();
+    }
+
+    // The two tests above exercise only the paths where `workspace_close`
+    // *declines to act*: an idle `turn`, a headless `tab`, and a `turn` with no
+    // daemon at all. Every one of them is satisfied by a handler that matches on
+    // `scope` and returns the expected sentence without ever calling
+    // `gui_command`, `cancel_turn` or `stop_agent` — which is why the reviewer
+    // could not tell the real implementation from that stub. The tests below
+    // pin the CALLS, not the prose: `FakeServices` records each one, so a
+    // handler that only talks fails them.
+
+    /// Call `workspace_close` as `caller`.
+    async fn close(c: &WorkspaceClient, caller: &str, args: serde_json::Value) -> CallToolResult {
+        let args: rmcp::model::JsonObject = serde_json::from_value(args).unwrap();
+        c.call_tool(
+            "workspace_close",
+            Some(args),
+            crate::agents::mcp_client::McpMeta::new(caller.to_string()),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap()
+    }
+
+    /// `scope:"tab"` WITH a GUI: the tab close must actually reach the renderer,
+    /// addressed to the target, and nothing else may happen — the session and
+    /// its turn survive, so no cancel, no stop, and no toast (closing a tab is
+    /// the user's own window management, not a cross-session intervention).
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn close_tab_with_a_gui_sends_the_close_tab_frame_and_nothing_else() {
+        let services = FakeServices::with_gui(true).install();
+        let c = client();
+        let target = unique_id("tab-target");
+
+        let result = close(
+            &c,
+            "closer",
+            serde_json::json!({ "session_id": target, "scope": "tab" }),
+        )
+        .await;
+
+        assert_ne!(result.is_error, Some(true), "got: {}", text_of(&result));
+        let frames = services.all_frames();
+        assert_eq!(
+            frames.len(),
+            1,
+            "expected exactly one frame, got: {frames:?}"
+        );
+        assert_eq!(frames[0]["type"], "workspace");
+        assert_eq!(frames[0]["cmd"], "close_tab");
+        assert_eq!(frames[0]["session_id"], target);
+        assert!(services.cancels().is_empty(), "tab scope must not cancel");
+        assert!(services.stops().is_empty(), "tab scope must not stop");
+        assert!(text_of(&result).contains(&target));
+
+        crate::workspace_services::clear_test_override();
+    }
+
+    /// `scope:"turn"` on a session that IS running: the token must be tripped
+    /// for that session, the answer must name the turn the daemon reported, and
+    /// §5 says the target's GUI is told who did it.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn close_turn_cancels_the_running_turn_and_tells_the_target() {
+        let target = unique_id("turn-target");
+        let services = FakeServices::with_gui(true).busy(&target).install();
+        let c = client();
+        let caller = unique_id("closer");
+
+        let result = close(
+            &c,
+            &caller,
+            serde_json::json!({ "session_id": target, "scope": "turn" }),
+        )
+        .await;
+
+        assert_ne!(result.is_error, Some(true), "got: {}", text_of(&result));
+        assert_eq!(
+            services.cancels(),
+            vec![target.clone()],
+            "the running turn's token was never tripped"
+        );
+        let text = text_of(&result);
+        assert!(
+            text.contains("turn-live") && text.contains(&target),
+            "the answer must name the cancelled turn and its session; got: {text}"
+        );
+
+        let notifies = services.notify_frames();
+        assert_eq!(notifies.len(), 1, "expected one toast, got: {notifies:?}");
+        assert_eq!(
+            notifies[0]["session_id"], target,
+            "toast went to the wrong session"
+        );
+        let message = notifies[0]["message"].as_str().unwrap();
+        assert!(
+            message.contains(&caller) && message.to_lowercase().contains("cancel"),
+            "the toast must say what happened and who did it; got: {message}"
+        );
+        assert!(
+            services.stops().is_empty(),
+            "turn scope must not evict the agent"
+        );
+
+        crate::workspace_services::clear_test_override();
+    }
+
+    /// `scope:"agent"`: cancel + evict, and tell the target. The session record
+    /// surviving is what the answer promises, so it says so.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn close_agent_stops_the_agent_and_tells_the_target() {
+        let target = unique_id("agent-target");
+        let services = FakeServices::with_gui(true).busy(&target).install();
+        let c = client();
+        let caller = unique_id("closer");
+
+        let result = close(
+            &c,
+            &caller,
+            serde_json::json!({ "session_id": target, "scope": "agent" }),
+        )
+        .await;
+
+        assert_ne!(result.is_error, Some(true), "got: {}", text_of(&result));
+        assert_eq!(
+            services.stops(),
+            vec![target.clone()],
+            "stop_agent was never called"
+        );
+        let text = text_of(&result);
+        assert!(
+            text.contains(&target) && text.contains("session record"),
+            "got: {text}"
+        );
+
+        let notifies = services.notify_frames();
+        assert_eq!(notifies.len(), 1, "expected one toast, got: {notifies:?}");
+        assert_eq!(notifies[0]["session_id"], target);
+        let message = notifies[0]["message"].as_str().unwrap();
+        assert!(
+            message.contains(&caller) && message.to_lowercase().contains("stopped"),
+            "got: {message}"
+        );
+
+        crate::workspace_services::clear_test_override();
+    }
+
+    /// A failing eviction must surface, not be papered over by the success
+    /// sentence — and it must NOT toast the target that its agent was stopped
+    /// when it was not.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn close_agent_surfaces_a_failed_stop() {
+        let target = unique_id("stop-fail");
+        let services = FakeServices::with_gui(true)
+            .stop_fails("registry is wedged")
+            .install();
+        let c = client();
+
+        let result = close(
+            &c,
+            "closer",
+            serde_json::json!({ "session_id": target, "scope": "agent" }),
+        )
+        .await;
+
+        assert_eq!(result.is_error, Some(true), "got: {}", text_of(&result));
+        assert!(
+            text_of(&result).contains("registry is wedged"),
+            "got: {}",
+            text_of(&result)
+        );
+        assert!(
+            services.notify_frames().is_empty(),
+            "a failed stop must not announce that the agent was stopped"
+        );
+
+        crate::workspace_services::clear_test_override();
+    }
+
+    /// An unrecognised scope is a refusal that names the three legal ones — and
+    /// above all it must not silently fall through to one of them.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn close_rejects_an_unknown_scope_without_touching_anything() {
+        let target = unique_id("bad-scope");
+        let services = FakeServices::with_gui(true).busy(&target).install();
+        let c = client();
+
+        let result = close(
+            &c,
+            "closer",
+            serde_json::json!({ "session_id": target, "scope": "everything" }),
+        )
+        .await;
+
+        assert_eq!(result.is_error, Some(true));
+        let text = text_of(&result);
+        assert!(
+            text.contains("everything")
+                && text.contains("tab")
+                && text.contains("turn")
+                && text.contains("agent"),
+            "the refusal must name the offending scope and the legal ones; got: {text}"
+        );
+        assert!(services.cancels().is_empty());
+        assert!(services.stops().is_empty());
+        assert!(services.all_frames().is_empty());
+
+        crate::workspace_services::clear_test_override();
+    }
+
+    /// The annotation the task specifies. `workspace_close` cancels turns and
+    /// evicts agents, so a client that trusts `read_only_hint` to decide what it
+    /// may call unattended must be told the truth.
+    #[tokio::test]
+    async fn close_is_annotated_as_a_mutating_tool() {
+        let c = client();
+        let tools = c
+            .list_tools(None, CancellationToken::new())
+            .await
+            .unwrap()
+            .tools;
+        let tool = tools
+            .iter()
+            .find(|t| t.name == "workspace_close")
+            .expect("workspace_close is advertised");
+        let annotations = tool.annotations.as_ref().expect("annotated");
+        assert_eq!(annotations.read_only_hint, Some(false));
+        assert_eq!(annotations.destructive_hint, Some(true));
+        assert_eq!(annotations.idempotent_hint, Some(false));
     }
 }
