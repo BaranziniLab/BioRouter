@@ -251,8 +251,28 @@ Structured read of any conversation.
 - `spawn_context`: for subagent sessions — the exact rendered system prompt, task
   instructions, and granted extensions/KBs it was started with (§4.4).
 
-Implementation: one call to `get_session(id, true)` + projection. Oversized results go
-through the existing session-blob mechanism rather than truncating silently.
+Implementation: one call to `get_session(id, true)` + projection. Oversized results are
+retained in full by the existing large-result machinery rather than truncated silently.
+Which mechanism carries them depends on size, and it is **not** the session blob in the
+band a raised `max_chars` actually reaches:
+
+- Above BR-6's `DEFAULT_LARGE_RESPONSE_TOKENS` (~25k tokens; the 200k-char `max_chars`
+  ceiling is roughly 50k tokens of prose) the result is an ordinary extension-tool result,
+  so `Agent::dispatch_tool_call` hands it to `large_response_handler::process_tool_response`,
+  which writes the whole body to a handle under `<working_dir>/.biorouter/tool-output/` and
+  returns a head/tail preview naming that path. The full payload never reaches persistence,
+  so BR-7 never sees it.
+- Below that budget the result is persisted intact, and BR-7 applies: a tool-response text
+  item over `DEFAULT_BLOB_THRESHOLD_BYTES` (64 KB) moves to the `message_blobs` side table,
+  hydrated back byte-for-byte on read (or left as a stub readable with
+  `platform__read_session_blob` under `BIOROUTER_SESSION_BLOB_LAZY_LOAD`).
+
+This ordering is BR-7's own stated design — its threshold sits "comfortably above anything
+the BR-6 handler lets through". An earlier revision of this paragraph named only the session
+blob, and the Task 13 handler repeated that claim in a comment and in the model-facing clip
+marker; both were corrected. The binding requirement is the one that held throughout: the
+payload is never silently truncated, and the reply always says where the rest is. Pinned by
+`read_conversation_oversized_result_is_retained_in_full_on_the_production_path`.
 
 #### `workspace_send_prompt`
 Inject a prompt into another conversation.

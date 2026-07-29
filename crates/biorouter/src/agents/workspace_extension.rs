@@ -151,10 +151,10 @@ struct WorkspaceReadParams {
     /// first, then tail).
     #[serde(skip_serializing_if = "Option::is_none")]
     from_msg_uid: Option<String>,
-    /// Cap on returned characters (default 20000, max 200000). Oversized
-    /// results above the BR-7 blob threshold are externalized by the caller's
-    /// own persist path — see the note in the handler — never silently
-    /// truncated at a raised cap.
+    /// Cap on returned characters (default 20000, max 200000). A raised cap is
+    /// never silently truncated: a result too large to return inline is kept in
+    /// full and the reply says where to read it — see the handler's note for
+    /// which mechanism carries it at which size.
     #[serde(skip_serializing_if = "Option::is_none")]
     max_chars: Option<usize>,
 }
@@ -506,21 +506,47 @@ impl WorkspaceClient {
             _ => project_transcript(tail(args.last)),
         };
 
-        // Oversized-result handling (§4.1 "session-blob mechanism, never silent
-        // truncation"): this tool RESULT is persisted into the CALLER's session,
-        // where BR-7's externalization (`message_blobs::externalize`; the
-        // threshold is `DEFAULT_BLOB_THRESHOLD_BYTES` in message_blobs.rs)
-        // stores payloads above the blob threshold as session blobs readable via
-        // platform__read_session_blob — so a raised max_chars round-trips intact
-        // instead of bloating context. The tool-level cap is model-facing
-        // pagination; when it clips, the marker names the narrowing controls
-        // rather than dropping data silently.
+        // Oversized-result handling. The design of record says "oversized results
+        // go through the existing session-blob mechanism rather than truncating
+        // silently" (§4.1). The binding half of that is **never truncating
+        // silently**; the mechanism that actually carries a big result is NOT
+        // BR-7's session blob, and saying so here was wrong. The real production
+        // path, traced end to end:
+        //
+        //   1. This is an ordinary extension tool, so `dispatch_tool_call`
+        //      returns into `Agent::dispatch_tool_call`, which hands every result
+        //      to BR-6 `large_response_handler::process_tool_response`.
+        //   2. BR-6 measures the AGGREGATE token count and, above
+        //      `DEFAULT_LARGE_RESPONSE_TOKENS` (~25k tokens — reachable here,
+        //      since the 200k-char `max_chars` ceiling is roughly 50k tokens of
+        //      prose), writes the FULL body to a handle under
+        //      `<working_dir>/.biorouter/tool-output/` and replaces the result
+        //      with a head/tail preview naming that path. So above that budget
+        //      the payload never reaches persistence whole, and BR-7 never sees
+        //      it — the session-blob claim was false exactly where it mattered.
+        //   3. Below the BR-6 budget the result is persisted intact, and only
+        //      there does BR-7 apply: `message_blobs::externalize` moves a tool
+        //      response text item over `DEFAULT_BLOB_THRESHOLD_BYTES` (64 KB) to
+        //      the blob table, hydrated back byte-for-byte on read (or left as a
+        //      stub, readable with `platform__read_session_blob`, under
+        //      `BIOROUTER_SESSION_BLOB_LAZY_LOAD`). BR-7's own module doc states
+        //      this ordering: its threshold sits "comfortably above anything the
+        //      BR-6 handler lets through".
+        //
+        // Both bands retain the whole payload and both announce the indirection,
+        // so §4.1's requirement holds — via a filesystem handle above ~25k tokens
+        // and a session blob below it. `read_conversation_oversized_result_is_
+        // retained_in_full_on_the_production_path` pins band 2 against the real
+        // BR-6 entry point. The tool-level cap below is model-facing pagination
+        // layered on top; when it clips it names the narrowing controls rather
+        // than dropping data silently, and it must not promise a mechanism.
         let clipped = if body.chars().count() > max_chars {
             let cut: String = body.chars().take(max_chars).collect();
             format!(
                 "{cut}\n… [clipped at {max_chars} chars — narrow with `last` or \
-                 `from_msg_uid`, or raise `max_chars` (up to 200000; oversized \
-                 results are stored as a session blob, not lost)]"
+                 `from_msg_uid`, or raise `max_chars` (up to 200000). A raised cap \
+                 is not silently truncated: a result too large to return inline is \
+                 kept in full and the reply says where to read it.]"
             )
         } else {
             body
@@ -1544,5 +1570,143 @@ mod tests {
             }))
             .await;
         assert_eq!(roomy, full);
+    }
+
+    /// §4.1's "never truncating silently", proven on the REAL production path.
+    ///
+    /// A `max_chars` raised to its 200k ceiling produces a body of roughly 50k
+    /// tokens — well over BR-6's ~25k-token inline budget. In production this
+    /// tool is an ordinary extension tool, so its result leaves
+    /// `dispatch_tool_call` and goes straight into
+    /// [`large_response_handler::process_tool_response`], which offloads the
+    /// whole payload to a handle and replaces the reply with a preview. The
+    /// handler's doc comment used to promise a BR-7 *session blob* instead;
+    /// that mechanism only applies below BR-6's budget, so the promise was
+    /// false in exactly the band a raised cap reaches.
+    ///
+    /// This test pins the behaviour the promise is really made of: nothing is
+    /// lost, and the reply says where the rest is. It drives the same entry
+    /// point the agent loop drives, so it fails if BR-6 is ever reordered out
+    /// of this tool's path, if its budget is raised past the `max_chars`
+    /// ceiling, or if offloading stops writing the full body.
+    #[tokio::test]
+    async fn read_conversation_oversized_result_is_retained_in_full_on_the_production_path() {
+        use crate::agents::large_response_handler::{
+            process_tool_response, LargeResponseContext, DEFAULT_LARGE_RESPONSE_TOKENS,
+        };
+        use crate::conversation::message::Message;
+        use crate::session::session_manager::SessionType;
+
+        let c = client();
+        let sm = c.context.session_manager.clone();
+        let big = sm
+            .create_session(std::env::temp_dir(), "big".into(), SessionType::User)
+            .await
+            .unwrap();
+        // Token-dense filler (distinct short numbers), so "over 200k chars" is
+        // reliably also "over 25k tokens" rather than depending on how well the
+        // BPE merges repeated prose.
+        let chunk: String = (0..900).map(|n| format!("{n} ")).collect();
+        for i in 0..80 {
+            let mut m = Message::user().with_text(format!("line {i}: {chunk}"));
+            sm.add_message_adopting_uid(&big.id, &mut m).await.unwrap();
+        }
+
+        // 1. What this extension hands back at the documented ceiling.
+        let args: rmcp::model::JsonObject = serde_json::from_value(serde_json::json!({
+            "session_id": big.id, "view": "transcript", "max_chars": 200_000
+        }))
+        .unwrap();
+        let raw = c
+            .call_tool(
+                "workspace_read_conversation",
+                Some(args),
+                test_meta(),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let full = raw.content[0].as_text().unwrap().text.clone();
+        assert!(
+            full.chars().count() > 200_000,
+            "the fixture must reach the cap; got {} chars",
+            full.chars().count()
+        );
+        assert!(full.contains("[clipped at 200000 chars"), "cap not applied");
+
+        // 2. The BR-6 stage the agent loop applies to every dispatched result.
+        // Its handle lands under the session working dir, so point that at a
+        // directory this test owns.
+        let workdir = tempfile::TempDir::new().unwrap();
+        let processed = process_tool_response(
+            Ok(raw.clone()),
+            &LargeResponseContext {
+                session_id: big.id.clone(),
+                working_dir: workdir.path().to_path_buf(),
+                tool_name: "workspace__workspace_read_conversation".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+        let summary = processed.content[0].as_text().unwrap().text.clone();
+        assert_ne!(
+            summary, full,
+            "a {}k-char result must not be handed to the model inline \
+             (BR-6 budget is {DEFAULT_LARGE_RESPONSE_TOKENS} tokens)",
+            200
+        );
+        assert!(
+            summary.contains("The complete output is saved at:"),
+            "the reply must say where the rest is: {summary}"
+        );
+        assert!(summary.contains("preview"), "{summary}");
+
+        // 3. …and the FULL payload really is there, byte for byte. This is the
+        // whole claim: a raised `max_chars` round-trips instead of being
+        // silently truncated.
+        let handle_dir = workdir.path().join(".biorouter/tool-output");
+        let handle = std::fs::read_dir(&handle_dir)
+            .unwrap_or_else(|e| panic!("no handle dir at {}: {e}", handle_dir.display()))
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .find(|p| p.is_file())
+            .expect("BR-6 wrote no handle file");
+        assert_eq!(
+            std::fs::read_to_string(&handle).unwrap(),
+            full,
+            "the offloaded handle must hold the complete result"
+        );
+
+        // The boundary is real: an ordinary-sized read of the same session is
+        // passed through untouched, so the offload is size-driven rather than
+        // always-on for this tool.
+        let args: rmcp::model::JsonObject = serde_json::from_value(serde_json::json!({
+            "session_id": big.id, "view": "summary"
+        }))
+        .unwrap();
+        let small = c
+            .call_tool(
+                "workspace_read_conversation",
+                Some(args),
+                test_meta(),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let small_text = small.content[0].as_text().unwrap().text.clone();
+        let passed_through = process_tool_response(
+            Ok(small),
+            &LargeResponseContext {
+                session_id: big.id,
+                working_dir: workdir.path().to_path_buf(),
+                tool_name: "workspace__workspace_read_conversation".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            passed_through.content[0].as_text().unwrap().text,
+            small_text
+        );
     }
 }
