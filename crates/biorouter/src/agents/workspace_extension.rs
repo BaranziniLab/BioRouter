@@ -176,6 +176,45 @@ struct WorkspaceSendPromptParams {
     timeout_s: Option<u64>,
 }
 
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct WorkspaceSetToolsParams {
+    session_id: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    add_extensions: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    remove_extensions: Vec<String>,
+    /// Skills to enable FOR THIS CONVERSATION ONLY (BR-71 decision c). This
+    /// never changes the user's machine-wide skill preferences.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    add_skills: Vec<String>,
+    /// Skills to disable for this conversation only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    remove_skills: Vec<String>,
+    /// Switch the conversation's provider. Required whenever `model` is given —
+    /// a model name alone is ambiguous across providers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    provider: Option<String>,
+    /// Switch the conversation's model. Validated against the provider's
+    /// published catalog. Takes effect on the target's NEXT turn; a turn
+    /// already running keeps the provider it started with.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    model: Option<String>,
+    /// The knowledge bases active for the session, replacing the current set.
+    /// An empty list clears them. (Plural per issue #45.)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    set_knowledge_bases: Option<Vec<String>>,
+    /// Which of `set_knowledge_bases` becomes the session's **write target** —
+    /// where a `kb_write`/`kb_ingest` with no explicit `kb_id` lands.
+    ///
+    /// Omit it and the sensible thing happens: the current target is kept if it
+    /// is still in the new set, otherwise the first base in the new list is
+    /// pinned, and an empty list clears the target. Pass `""` to clear it
+    /// explicitly. Only meaningful together with `set_knowledge_bases`, and it
+    /// must name one of them — the service refuses a target outside the set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    primary_knowledge_base: Option<String>,
+}
+
 /// The tools [`INSTRUCTIONS`] names whose handler is still a placeholder, each
 /// with the task that lands it.
 ///
@@ -189,7 +228,6 @@ struct WorkspaceSendPromptParams {
 /// dispatch arm is shadowed by nothing and the surface test fails — and adds it
 /// to `get_tools()` in the same commit.
 const PENDING_TOOLS: &[(&str, &str)] = &[
-    ("workspace_set_tools", "Task 15"),
     ("workspace_close", "Task 16"),
     ("workspace_watch", "Task 17"),
     ("workspace_open", "Task 24"),
@@ -267,10 +305,19 @@ impl WorkspaceClient {
                 serde_json::to_value(schema_for!(WorkspaceSendPromptParams)).unwrap(),
                 false,
             ),
-            // Tasks 15-17 and 19/24 append:
-            // workspace_set_tools, workspace_close,
-            // workspace_watch, workspace_open, and `subagent` (advertised only;
-            // the spawn dispatch lives in agent.rs — see Task 19).
+            Self::tool(
+                "workspace_set_tools",
+                "Change what a conversation may use: add/remove extensions, add/remove \
+                 skills for that conversation only, switch its provider+model (applies \
+                 to its next turn), or set its knowledge bases. Security-relevant \
+                 changes always ask the user first, in every permission mode.",
+                serde_json::to_value(schema_for!(WorkspaceSetToolsParams)).unwrap(),
+                false,
+            ),
+            // Tasks 16-17 and 19/24 append:
+            // workspace_close, workspace_watch, workspace_open, and `subagent`
+            // (advertised only; the spawn dispatch lives in agent.rs — see
+            // Task 19).
         ]
     }
 
@@ -991,6 +1038,284 @@ impl WorkspaceClient {
             other => Err(format!("unknown mode '{other}' (turn | steer | note)")),
         }
     }
+
+    /// BR-71 `workspace_set_tools`: the one place an agent changes *what another
+    /// conversation can use* — extensions, session-scoped skills,
+    /// provider+model, and knowledge bases.
+    async fn handle_set_tools(
+        &self,
+        caller_session_id: &str,
+        arguments: Option<JsonObject>,
+    ) -> Result<Vec<Content>, String> {
+        let args: WorkspaceSetToolsParams = parse_args(arguments)?;
+
+        // ---- Resolve EVERYTHING before mutating anything, so a bad name is a
+        // clean no-op rather than a half-applied change. ------------------
+        //
+        // Resolve through `get_extension_entry_by_name`, NOT
+        // `get_extension_by_name`. The latter is `…entry_by_name(name).map(|e|
+        // e.config)` (`config/extensions.rs:138-140`) — it DISCARDS the
+        // operator's `enabled` flag. Issue #42's gate lives one layer up, in
+        // `manage_extensions`' enable path (`check_enable_allowed`,
+        // `extension_manager_extension.rs:97-125`), and `Agent::add_extension`
+        // does not re-check it. So resolving with the flag-less helper would
+        // make `workspace_set_tools` a SECOND, ungated way to enable an
+        // extension an operator deliberately wrote `enabled: false` for —
+        // including on the caller's own session. That is the pinned
+        // tool-environment case (benchmarking, safety) the #42 doc comment
+        // names, and defeating it is a straight privilege escalation.
+        let mut add_configs = Vec::new();
+        for name in &args.add_extensions {
+            match crate::config::get_extension_entry_by_name(name) {
+                None => return Err(format!("unknown extension '{name}'")),
+                Some(entry)
+                    if !entry.enabled
+                        && crate::config::extension_entry_is_persisted(&entry.config.name()) =>
+                {
+                    // Same refusal text `manage_extensions` gives, so the model
+                    // gets the same guidance whichever door it tried.
+                    return Err(format!(
+                        "Extension '{name}' is disabled in the Biorouter configuration \
+                         (enabled: false). The operator turned it off deliberately, so do not \
+                         enable it yourself — not here and not on another conversation. If it \
+                         is needed for this task, ask the user to re-enable it."
+                    ));
+                }
+                Some(entry) => add_configs.push(entry.config),
+            }
+        }
+
+        // §5: workspace control must not fan out through delegation trees.
+        //
+        // Matched on the RESOLVED config name, normalized — the registry key an
+        // extension is actually loaded under (`extension_manager::normalize`).
+        // A literal `n == "workspace"` on the raw request would sail past
+        // `"Workspace"`, which is this extension's own configured name
+        // ([`EXTENSION_NAME`]) and therefore the spelling a model is most likely
+        // to send.
+        let grants_workspace = add_configs.iter().any(|config| {
+            crate::agents::extension_manager::normalize(&config.name())
+                == crate::agents::extension_manager::normalize(EXTENSION_NAME)
+        });
+        if grants_workspace {
+            let target = self
+                .context
+                .session_manager
+                .get_session(&args.session_id, false)
+                .await
+                .map_err(|e| e.to_string())?;
+            if target.session_type == crate::session::session_manager::SessionType::SubAgent {
+                return Err(
+                    "subagent sessions can never be granted the workspace extension".into(),
+                );
+            }
+        }
+
+        // Model/provider (decision b): resolve and validate here; apply below.
+        let new_provider = match (&args.provider, &args.model) {
+            (None, None) => None,
+            (None, Some(_)) => {
+                return Err(
+                    "`model` requires `provider` — a model name is ambiguous across providers; \
+                     pass both (e.g. provider:\"anthropic\", model:\"claude-opus-5\")"
+                        .into(),
+                );
+            }
+            (Some(provider_name), model) => {
+                // The provider registry is the same one /agent/update_provider
+                // resolves through. NOTE the real signature: `pub async fn
+                // providers() -> Vec<(ProviderMetadata, ProviderType)>`
+                // (`providers/factory.rs:109`, re-exported at
+                // `providers/mod.rs:47`). It must be AWAITED, and its items are
+                // 2-tuples — `.find(|m| m.name == …)` on the raw item does not
+                // compile. One `await`, destructured once and reused for the
+                // error message, so the registry is not read twice.
+                let registry = crate::providers::providers().await;
+                let metadata = registry
+                    .iter()
+                    .map(|(metadata, _kind)| metadata)
+                    .find(|m| m.name == *provider_name)
+                    .ok_or_else(|| {
+                        format!(
+                            "unknown provider '{provider_name}' (known: {})",
+                            registry
+                                .iter()
+                                .map(|(m, _)| m.name.clone())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        )
+                    })?
+                    .clone();
+                let model_name = model
+                    .clone()
+                    .unwrap_or_else(|| metadata.default_model.clone());
+                let known: Vec<String> = metadata
+                    .known_models
+                    .iter()
+                    .map(|m| m.name.clone())
+                    .collect();
+                if !model_is_known(&model_name, &known, metadata.allows_unlisted_models) {
+                    return Err(format!(
+                        "'{model_name}' is not a known model for provider '{provider_name}' \
+                         (known: {})",
+                        known.join(", ")
+                    ));
+                }
+                let model_config = crate::model::ModelConfig::new(&model_name)
+                    .map_err(|e| format!("invalid model config: {e}"))?;
+                Some((
+                    provider_name.clone(),
+                    model_name,
+                    crate::providers::create(provider_name, model_config)
+                        .await
+                        .map_err(|e| format!("failed to create {provider_name} provider: {e}"))?,
+                ))
+            }
+        };
+
+        // ---- Apply. --------------------------------------------------------
+        let mut applied = Vec::new();
+
+        // The live agent is fetched ONLY for the dimensions that need one.
+        // `get_or_create_agent` is create-on-miss, and its miss path mints a
+        // bare, provider-less agent and caches it under the target's id, where
+        // the turn runner will pick it up — the hazard
+        // `target_mode_requires_approval` documents at length. A skills-only or
+        // KB-only call must not pay that price for a target the user has not
+        // opened.
+        let needs_agent =
+            !add_configs.is_empty() || !args.remove_extensions.is_empty() || new_provider.is_some();
+        let agent = if needs_agent {
+            let agent_manager = crate::execution::manager::AgentManager::instance()
+                .await
+                .map_err(|e| e.to_string())?;
+            Some(
+                agent_manager
+                    .get_or_create_agent(args.session_id.clone())
+                    .await
+                    .map_err(|e| e.to_string())?,
+            )
+        } else {
+            None
+        };
+
+        // The exact /agent/add_extension handler path (routes/agent.rs:744-767):
+        // add on the live agent, persist only after a successful load.
+        if let Some(agent) = &agent {
+            let mut extensions_changed = false;
+            for config in add_configs {
+                let name = config.name().to_string();
+                agent
+                    .add_extension(config)
+                    .await
+                    .map_err(|e| format!("failed to add '{name}': {e}"))?;
+                applied.push(format!("+{name}"));
+                extensions_changed = true;
+            }
+            for name in &args.remove_extensions {
+                agent
+                    .remove_extension(name)
+                    .await
+                    .map_err(|e| format!("failed to remove '{name}': {e}"))?;
+                applied.push(format!("-{name}"));
+                extensions_changed = true;
+            }
+            if extensions_changed {
+                agent
+                    .persist_extension_state(&args.session_id)
+                    .await
+                    .map_err(|e| format!("failed to persist extension state: {e}"))?;
+            }
+        }
+
+        // Skills — SESSION-SCOPED (Task 11). Never the machine-wide file.
+        if !args.add_skills.is_empty() || !args.remove_skills.is_empty() {
+            crate::agents::session_skills::apply(
+                &self.context.session_manager,
+                &args.session_id,
+                &args.add_skills,
+                &args.remove_skills,
+            )
+            .await
+            .map_err(|e| format!("failed to scope skills: {e}"))?;
+            for name in &args.add_skills {
+                applied.push(format!("+skill:{name}"));
+            }
+            for name in &args.remove_skills {
+                applied.push(format!("-skill:{name}"));
+            }
+        }
+
+        // Model/provider — mirrors /agent/update_provider, which also persists
+        // provider_name + model_config onto the session row.
+        if let (Some(agent), Some((provider_name, model_name, provider))) = (&agent, new_provider) {
+            agent
+                .update_provider(provider, &args.session_id)
+                .await
+                .map_err(|e| format!("failed to switch provider: {e}"))?;
+            applied.push(format!("model={provider_name}/{model_name}"));
+        }
+
+        // Knowledge bases (plural — issue #45), with their write target.
+        if let Some(kbs) = args.set_knowledge_bases {
+            use crate::workspace_services::KbPrimaryChoice;
+            let services = workspace_services::get()
+                .ok_or("knowledge-base scoping requires the BioRouter daemon")?;
+            // Three-valued, because the underlying model is: absent → Auto
+            // (keep-if-member, else first, else clear); `""` → an explicit
+            // "no write target here"; a name → pin it. Membership is validated
+            // by the service against the RESULTING set, so a name outside `kbs`
+            // comes back as a clear error rather than a half-applied write.
+            let primary = match args.primary_knowledge_base.as_deref() {
+                None => KbPrimaryChoice::Auto,
+                Some("") => KbPrimaryChoice::Clear,
+                Some(id) => KbPrimaryChoice::Set(id.to_string()),
+            };
+            let selection = services.set_knowledge_bases(&args.session_id, &kbs, primary)?;
+            applied.push(if selection.kb_ids.is_empty() {
+                "kb=<cleared>".to_string()
+            } else {
+                // Report the RESULT, not the request: the service may have moved
+                // the write target itself, and a tool result that echoes the
+                // request teaches the model a state the store does not hold.
+                format!(
+                    "kb={} (primary={})",
+                    selection.kb_ids.join("+"),
+                    selection.primary_kb.as_deref().unwrap_or("<none>")
+                )
+            });
+        }
+
+        if applied.is_empty() {
+            return Ok(vec![Content::text(format!(
+                "No changes requested for session {}.",
+                args.session_id
+            ))]);
+        }
+
+        // §5 autonomous-mode visibility: every change surfaces on the target tab.
+        // (The always-confirm inspector, Task 10, has already run for the
+        // security-relevant subset — this toast is what covers the rest.)
+        self.notify_target(
+            &args.session_id,
+            format!(
+                "Tools changed by another agent ({caller_session_id}): {}",
+                applied.join(", ")
+            ),
+        )
+        .await;
+
+        let next_turn_note = if applied.iter().any(|a| a.starts_with("model=")) {
+            " The model change applies to this conversation's NEXT turn."
+        } else {
+            ""
+        };
+        Ok(vec![Content::text(format!(
+            "Applied to session {}: {}.{next_turn_note}",
+            args.session_id,
+            applied.join(", ")
+        ))])
+    }
 }
 
 /// True in every permission mode that can ACTUALLY raise a tool confirmation.
@@ -1176,6 +1501,25 @@ impl Drop for InjectedTurnGuard {
     }
 }
 
+/// Is this model acceptable for this provider?
+///
+/// Three ways to be yes, in decreasing order of certainty:
+/// 1. it is in the provider's published `known_models` catalog;
+/// 2. the provider publishes no catalog at all (nothing to check against — let
+///    the provider reject it at request time with a better message than we
+///    could synthesize);
+/// 3. the provider **declares** that it takes unlisted model names
+///    (`ProviderMetadata.allows_unlisted_models`, builder
+///    `ProviderMetadata::with_unlisted_models()`). ollama, llamacpp,
+///    gcpvertexai and every custom/declarative provider set it, and the field
+///    exists for exactly this question — the GUI's model picker reads it to
+///    decide whether to offer a free-text box. A locally pulled
+///    `ollama`/`qwen3.6:latest` is not in any published catalog and must not be
+///    refused here when the app's own picker accepts it.
+fn model_is_known(model: &str, known_models: &[String], allows_unlisted: bool) -> bool {
+    allows_unlisted || known_models.is_empty() || known_models.iter().any(|m| m == model)
+}
+
 fn parse_args<T: serde::de::DeserializeOwned>(arguments: Option<JsonObject>) -> Result<T, String> {
     let args = arguments.ok_or("Missing arguments")?;
     serde_json::from_value(serde_json::Value::Object(args))
@@ -1329,6 +1673,7 @@ impl McpClientTrait for WorkspaceClient {
             "workspace_list" => self.handle_list(caller, arguments).await,
             "workspace_read_conversation" => self.handle_read_conversation(caller, arguments).await,
             "workspace_send_prompt" => self.handle_send_prompt(caller, arguments).await,
+            "workspace_set_tools" => self.handle_set_tools(caller, arguments).await,
             // BR-71 decision 22: the spawn tool is advertised here but
             // dispatched by the agent loop (it needs the parent's TaskConfig).
             // Reachable only if that interception is ever removed.
@@ -3104,5 +3449,190 @@ mod tests {
             "a refused steer must not be sitting in the queue waiting to ambush \
              the next turn"
         );
+    }
+
+    // ---- Task 15: workspace_set_tools ----------------------------------
+    //
+    // Every test below is `serial(workspace_services)` even though none of them
+    // installs a stand-in. `handle_set_tools` ends by pushing a §5 visibility
+    // toast through `notify_target`, which reads the PROCESS-GLOBAL services
+    // override — so an un-serialized set_tools test that lands while
+    // `a_turn_injects_a_framed_stamped_message_and_announces_itself` holds its
+    // `FakeServices` deposits a "Tools changed by another agent" frame in that
+    // test's `notify_frames()` and fails its "one toast" assertion. Observed,
+    // not theorized: it is what the first green run of this task did.
+
+    async fn set_tools(c: &WorkspaceClient, args: serde_json::Value) -> CallToolResult {
+        let args: rmcp::model::JsonObject = serde_json::from_value(args).unwrap();
+        c.call_tool(
+            "workspace_set_tools",
+            Some(args),
+            test_meta(),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn set_tools_rejects_unknown_names_before_mutating_anything() {
+        let c = client();
+        let sm = c.context.session_manager.clone();
+        let target = sm
+            .create_session(
+                std::env::temp_dir(),
+                "t".into(),
+                crate::session::session_manager::SessionType::User,
+            )
+            .await
+            .unwrap();
+
+        let result = set_tools(
+            &c,
+            serde_json::json!({
+                "session_id": target.id, "add_extensions": ["definitely-not-an-extension"]
+            }),
+        )
+        .await;
+        assert_eq!(result.is_error, Some(true), "got: {}", text_of(&result));
+        assert!(
+            text_of(&result).contains("definitely-not-an-extension"),
+            "got: {}",
+            text_of(&result)
+        );
+    }
+
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn set_tools_applies_session_scoped_skills_without_touching_the_machine_config() {
+        let c = client();
+        let sm = c.context.session_manager.clone();
+        let target = sm
+            .create_session(
+                std::env::temp_dir(),
+                "skills-target".into(),
+                crate::session::session_manager::SessionType::User,
+            )
+            .await
+            .unwrap();
+
+        let result = set_tools(
+            &c,
+            serde_json::json!({
+                "session_id": target.id,
+                "add_skills": ["single-cell"],
+                "remove_skills": ["ralph"]
+            }),
+        )
+        .await;
+        assert_ne!(result.is_error, Some(true), "got: {}", text_of(&result));
+
+        // Session-scoped, and persisted where Task 11 says it lives.
+        let over = crate::agents::session_skills::for_session(&sm, &target.id)
+            .await
+            .unwrap();
+        assert!(over.add.contains(&"single-cell".to_string()));
+        assert!(over.remove.contains(&"ralph".to_string()));
+
+        // Decision (c): the machine-wide preference is untouched.
+        let machine = crate::config::paths::Paths::config_dir().join("skills-config.json");
+        let before = std::fs::read_to_string(&machine).ok();
+        let _ = set_tools(
+            &c,
+            serde_json::json!({ "session_id": target.id, "add_skills": ["proteomics"] }),
+        )
+        .await;
+        assert_eq!(
+            std::fs::read_to_string(&machine).ok(),
+            before,
+            "workspace_set_tools must never write skills-config.json"
+        );
+    }
+
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn set_tools_validates_the_model_against_the_providers_catalog() {
+        let c = client();
+        let sm = c.context.session_manager.clone();
+        let target = sm
+            .create_session(
+                std::env::temp_dir(),
+                "model-target".into(),
+                crate::session::session_manager::SessionType::User,
+            )
+            .await
+            .unwrap();
+
+        // Unknown PROVIDER: refused by name, before any agent is touched.
+        let result = set_tools(
+            &c,
+            serde_json::json!({
+                "session_id": target.id, "provider": "not-a-provider", "model": "whatever"
+            }),
+        )
+        .await;
+        assert_eq!(result.is_error, Some(true), "got: {}", text_of(&result));
+        assert!(
+            text_of(&result).contains("not-a-provider"),
+            "got: {}",
+            text_of(&result)
+        );
+
+        // `model` without `provider` is refused with a message that says so —
+        // a model name alone is ambiguous across providers.
+        let result = set_tools(
+            &c,
+            serde_json::json!({ "session_id": target.id, "model": "gpt-5.5" }),
+        )
+        .await;
+        assert_eq!(result.is_error, Some(true), "got: {}", text_of(&result));
+        assert!(
+            text_of(&result).contains("provider"),
+            "got: {}",
+            text_of(&result)
+        );
+    }
+
+    #[test]
+    fn known_model_check_accepts_catalog_entries_and_rejects_typos() {
+        // The pure half, testable without a configured provider: a provider's
+        // metadata carries `known_models` and `allows_unlisted_models`.
+        let known = vec!["claude-sonnet-9".to_string(), "claude-opus-5".to_string()];
+        assert!(model_is_known("claude-opus-5", &known, false));
+        assert!(!model_is_known("claude-opus-V", &known, false));
+        // An empty catalog means "this provider does not publish one" — accept,
+        // and let the provider itself reject at request time.
+        assert!(model_is_known("anything", &[], false));
+        // Decision b, honestly implemented: a provider that DECLARES it accepts
+        // unlisted models must accept them here too. ollama, llamacpp,
+        // gcpvertexai and every custom/declarative provider set this flag
+        // (`ProviderMetadata::with_unlisted_models()`), and the GUI's own model
+        // picker honours it. Refusing `ollama` + `qwen3.6:latest` — a locally
+        // pulled model that is by definition not in any published catalog —
+        // would make the tool stricter than the UI it mirrors.
+        assert!(model_is_known("qwen3.6:latest", &known, true));
+    }
+
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn set_tools_reports_every_applied_change_in_one_line() {
+        let c = client();
+        let sm = c.context.session_manager.clone();
+        let target = sm
+            .create_session(
+                std::env::temp_dir(),
+                "report".into(),
+                crate::session::session_manager::SessionType::User,
+            )
+            .await
+            .unwrap();
+        let result = set_tools(
+            &c,
+            serde_json::json!({ "session_id": target.id, "add_skills": ["single-cell"] }),
+        )
+        .await;
+        let text = text_of(&result);
+        assert!(text.contains("+skill:single-cell"), "got: {text}");
     }
 }
