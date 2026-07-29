@@ -759,6 +759,27 @@ public-capability session may not read a private KB), or state plainly that KBs 
 public sink and warn at ingest. "Follow-on" is too weak given the KB is the feature most likely to
 be used from a private OMOP session.
 
+**B4.1 — the selection itself is content, so a public session sees a filtered view of it and its
+pointer can read `null`.** A knowledge base's **id and name are user-authored** and routinely name a
+cohort or a study, which is the same reasoning §7 uses to make `workspace_list` *omit* private rows
+rather than redact them. That rule has to reach the pointer, not just the bases: `kb_get_active`
+takes **no arguments** and returns the whole selection — every visible id, plus the primary and its
+deprecated `active_kb` mirror — so one call with nothing to guess enumerates what `kb_list_bases`
+omits. So a public-capability session sees `knowledge_bases` with the private ids removed, and
+`primary_kb` reads `null` whenever the stored pointer names a base it may not reach. That is
+truthful for that session rather than a redaction: it has no write target it can use, and its
+KB-less writes correctly fail with the existing "no primary" message. `kb_set_active` refuses a
+private target with the sentence a *nonexistent* id gets, byte for byte — a refusal that said
+"private" would confirm the base exists in a politer sentence.
+
+**The filter is on the view and never on the store**, and that is a decision rather than an
+implementation detail. The stored pointer is what the "one axis, one pointer" repair logic reads;
+that logic promotes a primary to the first remaining member of the set and *writes it*. Filtering
+the store would therefore make a public model's read silently re-point the user's own primary,
+machine-wide and persisted, and the Knowledge view would then show the moved pointer with nothing
+having asked for it. One truth on disk; two model-facing tools render a capability-scoped
+projection of it.
+
 **B5 — the composite misclassifies the backfill in the leaky direction.** `get_name()` returns the
 lead's name (`lead_worker.rs:332-334`) and `update_provider` persists exactly that string. With
 `BIOROUTER_LEAD_PROVIDER=anthropic` over a `versa_azure` base, every worker turn runs on the
