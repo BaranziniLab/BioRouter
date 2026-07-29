@@ -47,9 +47,7 @@ pub async fn run() -> Result<()> {
     // the workspace extension's tools can reach the turn lock, the detached turn
     // runner and (Slice 2) the GUI bridge. Without this the tools degrade to
     // their headless behaviour even inside the daemon.
-    biorouter::workspace_services::install(std::sync::Arc::new(
-        crate::workspace::services::ServerWorkspaceServices::new(app_state.clone()),
-    ));
+    crate::workspace::services::install_workspace_services(app_state.clone());
 
     let cors = CorsLayer::new()
         .allow_origin(AllowOrigin::predicate(|origin: &HeaderValue, _| {

@@ -37,6 +37,20 @@ impl ServerWorkspaceServices {
     }
 }
 
+/// Publish this daemon's platform services to the `biorouter` crate, so the
+/// workspace extension's tools can reach the turn lock, the detached turn
+/// runner and (Slice 2) the GUI bridge. Without it those tools degrade to their
+/// headless behaviour *inside the daemon*, which is silent: every one of them
+/// still answers, just about a session-level world.
+///
+/// A named function rather than three lines inlined in `commands/agent.rs`,
+/// because a bootstrap step that only exists at a call site is a bootstrap step
+/// nothing can test. `biorouter::workspace_services::install` writes a
+/// `OnceLock`, so this is first-call-wins and later calls are no-ops.
+pub fn install_workspace_services(state: Arc<AppState>) {
+    biorouter::workspace_services::install(Arc::new(ServerWorkspaceServices::new(state)));
+}
+
 #[async_trait::async_trait]
 impl WorkspaceServices for ServerWorkspaceServices {
     fn gui_attached(&self) -> bool {
@@ -573,5 +587,42 @@ mod tests {
             set(&["alpha", "beta"]),
             "a scope that has hidden nothing sees every installed base"
         );
+    }
+
+    /// The daemon's bootstrap step (`commands/agent.rs`) must actually publish a
+    /// working implementation — `install` being a no-op, or the daemon never
+    /// calling it, is the difference between the workspace tools controlling the
+    /// workspace and silently answering about a session-level world.
+    ///
+    /// **This test writes the process-global `OnceLock`** in
+    /// `biorouter::workspace_services`, deliberately and once: it is the only
+    /// way to exercise `install`, which every other test in the workspace suite
+    /// avoids by using `set_for_tests` instead (see that module's doc comment on
+    /// why a `OnceLock` written from a test is unrecoverable). Nothing else in
+    /// `biorouter-server` reads `workspace_services::get()`, so pinning it for
+    /// the rest of this binary's run is inert. If a future task adds a
+    /// `biorouter-server` test that needs "no daemon installed", it will have to
+    /// live in its own integration-test binary — not weaken this one.
+    #[tokio::test]
+    async fn the_bootstrap_publishes_a_working_implementation() {
+        let state = crate::state::AppState::new().await.unwrap();
+        install_workspace_services(state.clone());
+
+        let installed =
+            biorouter::workspace_services::get().expect("the daemon's services are installed");
+
+        // Not just "something is there": it answers, and it answers about THIS
+        // daemon's state. A stand-in that returned false for everything would
+        // pass the first assertion, so the turn lock is the witness — the
+        // installed services see a turn this test starts through `state`.
+        let token = tokio_util::sync::CancellationToken::new();
+        let _guard = state
+            .try_begin_turn_idempotent("br71-bootstrap-witness", token, None)
+            .expect("lock acquired");
+        assert!(installed.is_turn_active("br71-bootstrap-witness"));
+        assert!(!installed.is_turn_active("br71-bootstrap-never-started"));
+        // Slice 1 reports headless for the GUI half.
+        assert!(!installed.gui_attached());
+        assert!(installed.layout_snapshot().is_none());
     }
 }
