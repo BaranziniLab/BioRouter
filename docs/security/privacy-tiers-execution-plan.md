@@ -1612,8 +1612,35 @@ PLAN=docs/security/privacy-tiers-execution-plan.md
 # (a) Every `-p <pkg> --lib <FILTER>` in the plan either resolves against that
 #     package's listing, or is in the deferred set with the task that creates it.
 #     A filter in NEITHER set is the BR-71 defect and fails here.
-# The 12 deferred names from Step 3's second table, verbatim. Every one measured 0.
-DEFERRED='privacy|privacy::tests|privacy::extensions|privacy::refusal|privacy::alt_provider|privacy::visibility|privacy::declassify|providers::tier_tests|knowledge::tier|agents::chatrecall_extension|session::chat_history_search|every_copy_path_carries_the_tier_and_the_provider'
+#
+# ⚠ The deferred set is keyed on the (PACKAGE, FILTER) PAIR, not on the filter
+# name. A name-only allowlist — which is what this gate used to be — excuses the
+# filter in EVERY package: `cargo test -p biorouter-mcp --lib privacy::refusal`
+# names nothing, will never name anything (`privacy/refusal.rs` is created in
+# `biorouter`, see File structure), and was reported DEFER because a filter of
+# the same name is expected in a different crate. That is the identical shape to
+# the defect this whole task exists to catch — a filter that prints `0 passed`
+# and exits 0 — reintroduced by the gate meant to catch it. The `PKG` column is
+# what closes it.
+#
+# The 12 deferred rows from Step 3's second table, verbatim: package, filter,
+# owning task, and the EVIDENCE grep that proves this plan really creates it.
+# Every one measured 0 today.
+cat > /tmp/56-filters/deferred.txt <<'ROWS'
+biorouter|privacy|4|crates/biorouter/src/privacy/mod.rs
+biorouter|privacy::tests|4|crates/biorouter/src/privacy/mod.rs
+biorouter|providers::tier_tests|5|crates/biorouter/src/providers/tier_tests.rs
+biorouter|privacy::extensions|8|crates/biorouter/src/privacy/extensions.rs
+biorouter|agents::chatrecall_extension|10,17|crates/biorouter/src/agents/chatrecall_extension.rs
+biorouter-mcp|knowledge::tier|10A|crates/biorouter-mcp/src/knowledge/tier.rs
+biorouter|privacy::refusal|12|crates/biorouter/src/privacy/refusal.rs
+biorouter|session::chat_history_search|17|crates/biorouter/src/session/chat_history_search.rs
+biorouter|privacy::alt_provider|19|crates/biorouter/src/privacy/alt_provider.rs
+biorouter|privacy::visibility|21|crates/biorouter/src/privacy/visibility.rs
+biorouter|every_copy_path_carries_the_tier_and_the_provider|22|fn every_copy_path_carries_the_tier_and_the_provider
+biorouter|privacy::declassify|29|crates/biorouter/src/privacy/declassify.rs
+ROWS
+wc -l < /tmp/56-filters/deferred.txt ; echo "expect: 12 — Step 3's second table has 12 rows"
 # BOTH spellings. Measured at this revision: 79 occurrences of the plain form
 # `--lib <FILTER>` and 7 of the `--lib -- <NAME> <NAME>` form, deduplicating to
 # 42 (package, filter) pairs. The second pattern is not optional: the first
@@ -1632,12 +1659,17 @@ while read -r pkg filter; do
   # `[ "$n" -gt 0 ]` below dies with "integer expression expected" — on every
   # deferred filter, i.e. exactly the rows this gate exists to classify.
   n=$(grep -c -- "$filter" "/tmp/56-filters/$pkg.txt" 2>/dev/null) || n=0
+  # The deferral lookup is on the PAIR and is anchored at both ends of both
+  # fields: `grep -Fx "$pkg|$filter"` on the row's first two columns. Unanchored,
+  # `privacy` would excuse any future filter containing the word — a deferral
+  # that never expires — and without the package it excuses the same filter in
+  # a crate that will never define it.
+  task=$(awk -F'|' -v p="$pkg" -v f="$filter" '$1==p && $2==f { print $3 }' \
+           /tmp/56-filters/deferred.txt)
   if [ "$n" -gt 0 ]; then
     echo "OK      $pkg $filter ($n tests)"
-  elif echo "$filter" | grep -qE "^($DEFERRED)$"; then
-    # Anchored at BOTH ends. Unanchored, `privacy` would excuse any future filter
-    # containing the word — a deferral that never expires.
-    echo "DEFER   $pkg $filter (created by a later task — see Step 3's table)"
+  elif [ -n "$task" ]; then
+    echo "DEFER   $pkg $filter (created by Task $task — see Step 3's table)"
   else
     echo "MISSING $pkg $filter — names no test in the listing and no task creates it"
   fi
@@ -1646,22 +1678,42 @@ sort /tmp/56-filters/verdict.txt
 grep -c '^MISSING' /tmp/56-filters/verdict.txt ; echo "expect: 0"
 grep -c '^DEFER'   /tmp/56-filters/verdict.txt ; echo "expect: 12 at this task; fewer at Task 20; 0 at Task 40"
 grep -c '^OK'      /tmp/56-filters/verdict.txt ; echo "expect: 30 at this task (Step 3's first table)"
+# Every deferred ROW is USED. The three counts above are satisfied by a deferred
+# table with spare rows in it — an entry that excuses a filter nobody writes is
+# a permanent hole, and it is how a wrong package sneaks back in.
+while IFS='|' read -r pkg filter task _evidence; do
+  grep -q "^DEFER   $pkg $filter " /tmp/56-filters/verdict.txt \
+    || echo "UNUSED  $pkg $filter (Task $task) — deferred but no gate in the plan names it"
+done < /tmp/56-filters/deferred.txt
+echo "expect: no UNUSED lines"
 echo "⚠ The COUNT is the gate, never the exit code — the same rule as every named"
 echo "  cargo filter in this plan. And the loop reads from a file rather than a pipe"
 echo "  precisely so a verdict cannot be lost in a subshell."
 echo "A single MISSING line fails this gate. Do not 'fix' it by deleting the filter:"
 echo "  either the module path is wrong (correct it here) or the task's tests do not"
 echo "  exist yet (record a pre-count of 0 in that task, as Task 2 and Task 6 do)."
-# (b) Every DEFERRED entry is a module this plan actually creates. A deferred
+# (b) Every DEFERRED entry is something this plan actually creates. A deferred
 #     entry nothing creates is a filter that stays green forever.
-for f in privacy/extensions.rs privacy/refusal.rs privacy/alt_provider.rs \
-         privacy/visibility.rs privacy/declassify.rs; do
-  echo -n "crates/biorouter/src/$f: " ; grep -c "crates/biorouter/src/$f" "$PLAN"
-done
-echo -n "crates/biorouter-mcp/src/knowledge/tier.rs: "
-grep -c "crates/biorouter-mcp/src/knowledge/tier.rs" "$PLAN"
-echo "expect: >= 1 each — every deferred module has a Create row in this plan"
-echo "  (File structure, and the owning task's Files table)"
+#
+# ⚠ ALL TWELVE, from the same table, in a loop — not a hand-written list of the
+#     six that happen to be new .rs files under `privacy/`. The six this used to
+#     omit are exactly the six that are NOT a new file in that directory, and
+#     they are the ones where "does the plan create it?" is a real question:
+#     `privacy` and `privacy::tests` are test modules INSIDE a created file;
+#     `providers::tier_tests` is a file in another directory;
+#     `agents::chatrecall_extension` and `session::chat_history_search` are
+#     `#[cfg(test)]` blocks added to files that ALREADY EXIST and today have
+#     none; and `every_copy_path_carries_the_tier_and_the_provider` is a bare
+#     test name with no file at all. Hence the fourth column: whatever proves
+#     that row, whether a path or a `fn` name.
+while IFS='|' read -r pkg filter task evidence; do
+  n=$(grep -c -- "$evidence" "$PLAN") || n=0
+  [ "$n" -gt 0 ] && echo "OK       $pkg $filter (Task $task) ← $evidence ($n)" \
+                 || echo "UNBACKED $pkg $filter (Task $task) — nothing in this plan creates it"
+done < /tmp/56-filters/deferred.txt
+echo "expect: 12 OK lines, no UNBACKED. Measured today: privacy/mod.rs 14,"
+echo "  providers/tier_tests.rs 3, chatrecall_extension.rs 7, chat_history_search.rs 8,"
+echo "  the bare test name 1."
 # (c) Re-runnable, and the phase gates re-run it: after Task 20 the DEFERRED set
 #     must have lost knowledge::tier, privacy::extensions and privacy::refusal;
 #     after Task 40 it must be EMPTY.
@@ -1672,6 +1724,19 @@ by a nesting its file does not advertise, which libtest answers with `0 passed` 
 by every phase gate in this plan as a pass. It also catches the inverse, which nobody has looked for:
 a filter that resolves to *more* tests than the task believes, so a `pre + N` assertion is arithmetic
 on the wrong base. Both are invisible to `grep`, and both are one `--list` away from being visible.
+
+**This gate rejects: a `cargo test -p biorouter-mcp --lib privacy::refusal` anywhere in this plan.**
+That command names no test in `biorouter-mcp`, will never name one — `privacy/refusal.rs` is created
+in `biorouter` (File structure, Task 12) — and prints `0 passed; 0 failed` with exit 0 forever. Under
+the name-only allowlist it was reported **DEFER**, because a filter spelled `privacy::refusal` is
+expected in a *different* crate; it now fails as **MISSING**, because the deferral is keyed on the
+`(package, filter)` pair. The same fix rejects the mirror — a real filter written against the wrong
+package, e.g. `-p biorouter --lib knowledge::tier`, which is a `biorouter-mcp` module. And the two
+new loops reject the two ways a table can lie about itself: a **deferred row nothing in the plan
+names** (UNUSED — a standing excuse for a filter that will never be written), and a **deferred row
+this plan never creates** (UNBACKED). Step 5(b) previously validated six of the twelve rows, and the
+six it omitted were precisely the six that are not a new file under `privacy/` — the two `#[cfg(test)]`
+blocks added to files that already exist with no tests at all, and one bare test name with no file.
 
 ⚠ **This task does not close the risk for the twelve deferred filters** — they name modules and one
 test that do not exist yet and cannot be listed. It converts "unruled-out for all 42" into
@@ -9474,9 +9539,15 @@ curl -s -X POST http://127.0.0.1:3000/agent/call_tool -H 'X-Secret-Key: test' \
 
 ```bash
 # Nine of Task 4b's twelve deferred filters were created by Tasks 4-19, so only
-# three may still be deferred here. Re-run Task 4b Steps 1 and 5 with:
-#   DEFERRED='privacy::visibility|privacy::declassify|every_copy_path_carries_the_tier_and_the_provider'
-# Expect: 0 MISSING, 3 DEFER, and OK with a non-zero count for all nine of
+# three may still be deferred here. Re-run Task 4b Steps 1 and 5, deleting the
+# nine landed ROWS from /tmp/56-filters/deferred.txt and keeping these three:
+#   biorouter|privacy::visibility|21|crates/biorouter/src/privacy/visibility.rs
+#   biorouter|privacy::declassify|29|crates/biorouter/src/privacy/declassify.rs
+#   biorouter|every_copy_path_carries_the_tier_and_the_provider|22|fn every_copy_path_carries_the_tier_and_the_provider
+# Delete rows rather than editing a regex: the deferral is keyed on the
+# (package, filter) PAIR, and a nine-term alternation is where a package gets
+# dropped (Task 4b's "What this catches").
+# Expect: 0 MISSING, 3 DEFER, 0 UNUSED, and OK with a non-zero count for all nine of
 # privacy, privacy::tests, privacy::extensions, privacy::refusal,
 # privacy::alt_provider, providers::tier_tests, knowledge::tier,
 # agents::chatrecall_extension and session::chat_history_search.
@@ -12180,9 +12251,9 @@ echo "expect: non-zero (0 is the untouched baseline)"
 
 ```bash
 # Every module this plan creates now exists, so nothing may be deferred. Re-run
-# Task 4b Steps 1 and 5 with:
-#   DEFERRED=''            # nothing is allowed to be missing at the release gate
-# Expect: 0 MISSING and 0 DEFER across all 42 (package, filter) pairs.
+# Task 4b Steps 1 and 5 with an EMPTY deferred table:
+#   : > /tmp/56-filters/deferred.txt   # nothing may be missing at the release gate
+# Expect: 0 MISSING, 0 DEFER and 0 UNUSED across all 42 (package, filter) pairs.
 # A single DEFER here means a filter this plan has been quoting for forty tasks
 # names a module that never came to exist — a gate that has been printing
 # `0 passed` and exiting 0 the whole time. That is BR-71's most expensive defect,
