@@ -1116,34 +1116,99 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn read_conversation_projects_tool_calls_and_refuses_hidden() {
+    /// The seeded workspace every `workspace_read_conversation` test reads.
+    ///
+    /// The fixture exists because the original single gate test could not tell a
+    /// correct handler from several plausible wrong ones: it seeded a lone tool
+    /// *request* (so correlation, status and digests were untested), asserted
+    /// only the ABSENCE of earlier prose for `from_msg_uid` (so an off-by-one
+    /// that dropped the named message too would pass), never exercised `last`,
+    /// `summary` or `max_chars`, and refused an EMPTY hidden session through a
+    /// single view (so "refuses hidden" was indistinguishable from "renders
+    /// nothing" or "refuses transcript only").
+    ///
+    /// So the fixture carries, in `open`, seven messages chosen so that every
+    /// projection has both something it MUST contain and something it MUST NOT:
+    ///
+    /// | # | message                                        | discriminates |
+    /// |---|------------------------------------------------|---------------|
+    /// | 1 | user "please compute"                          | prose vs. tool views; the head of `summary` |
+    /// | 2 | assistant tool request `call-1` → `shell`      | inclusive `from_msg_uid` slicing |
+    /// | 3 | user tool response `call-1` → ok               | request/response correlation + ok digest |
+    /// | 4 | assistant tool request `call-2` → `grep`       | a second pair, so correlation is per-id |
+    /// | 5 | user tool response `call-2` → error            | the error status branch |
+    /// | 6 | assistant "here is the answer"                 | `last` tail ordering |
+    /// | 7 | user "SPAWN CONTEXT …" (SpawnContext, agent-invisible) | provenance-specific projection |
+    ///
+    /// plus a POPULATED `hidden` session (so a refusal cannot be an empty render)
+    /// and a `plain` session with no spawn record (so the missing-spawn error has
+    /// a subject).
+    struct ReadFixture {
+        client: WorkspaceClient,
+        open_id: String,
+        hidden_id: String,
+        plain_id: String,
+        /// The durable msg_uid of message 2 (the `shell` request), adopted by
+        /// `add_message_adopting_uid` (#41).
+        shell_request_uid: String,
+    }
+
+    impl ReadFixture {
+        /// Call `workspace_read_conversation` and return the whole result.
+        async fn read(&self, args: serde_json::Value) -> CallToolResult {
+            let args: rmcp::model::JsonObject = serde_json::from_value(args).unwrap();
+            self.client
+                .call_tool(
+                    "workspace_read_conversation",
+                    Some(args),
+                    test_meta(),
+                    CancellationToken::new(),
+                )
+                .await
+                .unwrap()
+        }
+
+        /// Call it and return the text of a SUCCESSFUL result, failing loudly on
+        /// an error result — otherwise "the projection omitted X" and "the call
+        /// errored" are the same passing assertion.
+        async fn read_ok(&self, args: serde_json::Value) -> String {
+            let result = self.read(args).await;
+            let text = result.content[0].as_text().unwrap().text.clone();
+            assert_ne!(result.is_error, Some(true), "unexpected error: {text}");
+            text
+        }
+    }
+
+    async fn read_fixture() -> ReadFixture {
         use crate::conversation::message::{Message, MessageProvenance, ProvenanceKind};
+        use crate::session::session_manager::SessionType;
         let c = client();
         let sm = c.context.session_manager.clone();
 
         let hidden = sm
-            .create_session(
-                std::env::temp_dir(),
-                "h".into(),
-                crate::session::session_manager::SessionType::Hidden,
-            )
+            .create_session(std::env::temp_dir(), "h".into(), SessionType::Hidden)
             .await
             .unwrap();
         let open = sm
-            .create_session(
-                std::env::temp_dir(),
-                "o".into(),
-                crate::session::session_manager::SessionType::User,
-            )
+            .create_session(std::env::temp_dir(), "o".into(), SessionType::User)
+            .await
+            .unwrap();
+        let plain = sm
+            .create_session(std::env::temp_dir(), "p".into(), SessionType::User)
             .await
             .unwrap();
 
-        // Seed: a user message, a tool request, and a spawn-context record.
-        let mut m1 = Message::user().with_text("please compute");
-        sm.add_message_adopting_uid(&open.id, &mut m1)
+        // The hidden session is POPULATED. An empty one would let "refuses
+        // hidden" pass on a handler that simply had nothing to say.
+        let mut secret = Message::user().with_text("hidden secret");
+        sm.add_message_adopting_uid(&hidden.id, &mut secret)
             .await
             .unwrap();
+        let mut ordinary = Message::user().with_text("nothing special");
+        sm.add_message_adopting_uid(&plain.id, &mut ordinary)
+            .await
+            .unwrap();
+
         // CallToolRequestParams derives NO Default — spell all four fields.
         // The citation is the DEPENDENCY's file, not this repo's:
         // ~/.cargo/registry/.../rmcp-0.14.0/src/model.rs:1887-1902 (derive
@@ -1153,23 +1218,39 @@ mod tests {
         // the derive list is `Debug, Serialize, Deserialize, Clone, PartialEq`
         // — still no `Default`. Do NOT resolve this against
         // `crates/biorouter/src/model.rs`, which is 908 lines and unrelated.
-        let mut m2 = Message::assistant().with_tool_request(
-            "call-1",
+        let request = |name: &str, args: serde_json::Value| {
             Ok(rmcp::model::CallToolRequestParams {
                 meta: None,
-                name: "shell".into(),
-                arguments: Some(
-                    serde_json::json!({"command": "ls"})
-                        .as_object()
-                        .unwrap()
-                        .clone(),
-                ),
+                name: name.to_string().into(),
+                arguments: Some(args.as_object().unwrap().clone()),
                 task: None,
-            }),
+            })
+        };
+
+        let mut m1 = Message::user().with_text("please compute");
+        let mut m2 = Message::assistant().with_tool_request(
+            "call-1",
+            request("shell", serde_json::json!({"command": "ls"})),
         );
-        sm.add_message_adopting_uid(&open.id, &mut m2)
-            .await
-            .unwrap();
+        let mut m3 = Message::user().with_tool_response(
+            "call-1",
+            Ok(rmcp::model::CallToolResult::success(vec![Content::text(
+                "total 0 alpha.txt",
+            )])),
+        );
+        let mut m4 = Message::assistant().with_tool_request(
+            "call-2",
+            request("grep", serde_json::json!({"pattern": "beta"})),
+        );
+        let mut m5 = Message::user().with_tool_response(
+            "call-2",
+            Err(rmcp::model::ErrorData::new(
+                rmcp::model::ErrorCode::INTERNAL_ERROR,
+                "grep exploded",
+                None,
+            )),
+        );
+        let mut m6 = Message::assistant().with_text("here is the answer");
         let mut spawn = Message::user()
             .with_text("SPAWN CONTEXT …")
             .with_provenance(MessageProvenance {
@@ -1177,83 +1258,291 @@ mod tests {
                 from_session_id: None,
                 from_session_name: None,
             });
+        // Agent-invisible, so the spawn_context projection is proven to key off
+        // PROVENANCE rather than off whatever the agent happens to still see.
         spawn.metadata.agent_visible = false;
-        sm.add_message_adopting_uid(&open.id, &mut spawn)
-            .await
-            .unwrap();
 
-        let call = |view: &str, sid: &str| {
-            let args: rmcp::model::JsonObject =
-                serde_json::from_value(serde_json::json!({ "session_id": sid, "view": view }))
-                    .unwrap();
-            (args,)
-        };
+        for message in [
+            &mut m1, &mut m2, &mut m3, &mut m4, &mut m5, &mut m6, &mut spawn,
+        ] {
+            sm.add_message_adopting_uid(&open.id, message)
+                .await
+                .unwrap();
+        }
 
-        // Hidden sessions are refused (§5 "no covert reads").
-        let (args,) = call("transcript", &hidden.id);
-        let refused = c
-            .call_tool(
-                "workspace_read_conversation",
-                Some(args),
-                test_meta(),
-                CancellationToken::new(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(refused.is_error, Some(true));
+        ReadFixture {
+            client: c,
+            open_id: open.id,
+            hidden_id: hidden.id,
+            plain_id: plain.id,
+            shell_request_uid: m2.id.clone().expect("adopted uid"),
+        }
+    }
 
-        // tool_calls view names the tool, not the prose.
-        let (args,) = call("tool_calls", &open.id);
-        let tc = c
-            .call_tool(
-                "workspace_read_conversation",
-                Some(args),
-                test_meta(),
-                CancellationToken::new(),
-            )
-            .await
-            .unwrap();
-        let text = tc.content[0].as_text().unwrap().text.clone();
-        assert!(text.contains("shell"));
-        assert!(!text.contains("please compute"));
+    /// §5 "no covert reads": a hidden session is refused whatever view is asked
+    /// for, and its content never leaks into the refusal.
+    ///
+    /// Every view is exercised because refusing only the default (`transcript`)
+    /// would leave `tool_calls` — the projection that shows exactly what that
+    /// agent DID — as an unguarded back door.
+    #[tokio::test]
+    async fn read_conversation_refuses_a_populated_hidden_session_in_every_view() {
+        let f = read_fixture().await;
+        for view in ["transcript", "tool_calls", "summary", "spawn_context"] {
+            let result = f
+                .read(serde_json::json!({ "session_id": f.hidden_id, "view": view }))
+                .await;
+            let text = result.content[0].as_text().unwrap().text.clone();
+            assert_eq!(result.is_error, Some(true), "view {view} was not refused");
+            assert!(text.contains("hidden"), "view {view}: {text}");
+            assert!(
+                !text.contains("hidden secret"),
+                "view {view} leaked the session's content: {text}"
+            );
+        }
+        // The same read against a visible session succeeds — so the refusal is
+        // the session TYPE, not a handler that fails on everything.
+        let ok = f
+            .read_ok(serde_json::json!({ "session_id": f.open_id, "view": "transcript" }))
+            .await;
+        assert!(ok.contains("please compute"), "{ok}");
+    }
 
-        // spawn_context view returns the provenance-marked record.
-        let (args,) = call("spawn_context", &open.id);
-        let sc = c
-            .call_tool(
-                "workspace_read_conversation",
-                Some(args),
-                test_meta(),
-                CancellationToken::new(),
-            )
-            .await
-            .unwrap();
-        assert!(sc.content[0]
-            .as_text()
-            .unwrap()
-            .text
-            .contains("SPAWN CONTEXT"));
+    /// §4.1 `tool_calls`: request/response pairs only, correlated by their
+    /// shared id, each carrying its status and a result digest.
+    #[tokio::test]
+    async fn read_conversation_tool_calls_correlates_pairs_with_status_and_digest() {
+        let f = read_fixture().await;
+        let text = f
+            .read_ok(serde_json::json!({ "session_id": f.open_id, "view": "tool_calls" }))
+            .await;
 
-        // BR-45 range: from_msg_uid slices the transcript from that message on.
-        // m2's uid was adopted by add_message_adopting_uid (#41).
-        let uid = m2.id.clone().expect("adopted uid");
-        let args: rmcp::model::JsonObject = serde_json::from_value(serde_json::json!({
-            "session_id": open.id, "view": "transcript", "from_msg_uid": uid
-        }))
-        .unwrap();
-        let ranged = c
-            .call_tool(
-                "workspace_read_conversation",
-                Some(args),
-                test_meta(),
-                CancellationToken::new(),
-            )
-            .await
-            .unwrap();
-        let rtext = ranged.content[0].as_text().unwrap().text.clone();
+        // Both directions of both pairs, each stamped with its own id — a
+        // projection that dropped responses, or that lost the correlation, fails
+        // here rather than passing on the tool name alone.
+        assert!(text.contains("→ [call-1]"), "{text}");
+        assert!(text.contains("← [call-1]"), "{text}");
+        assert!(text.contains("→ [call-2]"), "{text}");
+        assert!(text.contains("← [call-2]"), "{text}");
+        // Arguments, not just the name (§4.1 "tool name, arguments, status,
+        // result digest").
+        assert!(text.contains("Tool: shell"), "{text}");
+        assert!(text.contains("\"command\""), "{text}");
+        assert!(text.contains("Tool: grep"), "{text}");
+        // Status + digest, both branches.
+        assert!(text.contains("ok: total 0 alpha.txt"), "{text}");
+        assert!(text.contains("error:"), "{text}");
+        assert!(text.contains("grep exploded"), "{text}");
+
+        // …and none of the prose. This is what "without transcript noise" means.
+        assert!(!text.contains("please compute"), "{text}");
+        assert!(!text.contains("here is the answer"), "{text}");
+        assert!(!text.contains("SPAWN CONTEXT"), "{text}");
+
+        // The empty branch is reachable and says so rather than returning "".
+        let none = f
+            .read_ok(serde_json::json!({
+                "session_id": f.open_id, "view": "tool_calls", "last": 1
+            }))
+            .await;
+        assert!(none.contains("No tool calls in range."), "{none}");
+    }
+
+    /// `transcript`: prose plus one-line stubs for tool payloads, with the
+    /// injection stamp on a provenance-marked message.
+    #[tokio::test]
+    async fn read_conversation_transcript_stubs_tool_payloads_and_stamps_provenance() {
+        let f = read_fixture().await;
+        let text = f
+            .read_ok(serde_json::json!({ "session_id": f.open_id, "view": "transcript" }))
+            .await;
+
+        // The header identifies the session being read — the model is looking at
+        // someone else's conversation and must be able to tell which.
         assert!(
-            !rtext.contains("please compute"),
-            "messages before the uid are excluded"
+            text.starts_with(&format!("Session {} (o, User)", f.open_id)),
+            "{text}"
         );
+        assert!(text.contains("please compute"), "{text}");
+        assert!(text.contains("here is the answer"), "{text}");
+        // Tool payloads collapse to stubs — the tool call is named, the result is
+        // referenced by id rather than inlined.
+        assert!(text.contains("<tool call: Tool: shell"), "{text}");
+        assert!(text.contains("<tool result: call-1>"), "{text}");
+        assert!(
+            !text.contains("total 0 alpha.txt"),
+            "the result payload must not be inlined in a transcript: {text}"
+        );
+        // BR-71 provenance: an injected record says so.
+        assert!(text.contains("(injected: SpawnContext)"), "{text}");
+    }
+
+    /// BR-45 range: `from_msg_uid` is INCLUSIVE of the named message, and `last`
+    /// is a tail applied after the slice.
+    ///
+    /// The inclusive half is the assertion the original gate lacked: it checked
+    /// only that earlier prose was gone, which an off-by-one that also dropped
+    /// the named message would satisfy.
+    #[tokio::test]
+    async fn read_conversation_range_is_inclusive_and_last_is_a_tail() {
+        let f = read_fixture().await;
+        let from_shell = serde_json::json!({
+            "session_id": f.open_id, "view": "transcript",
+            "from_msg_uid": f.shell_request_uid,
+        });
+
+        let ranged = f.read_ok(from_shell.clone()).await;
+        assert!(
+            !ranged.contains("please compute"),
+            "messages before the uid are excluded: {ranged}"
+        );
+        assert!(
+            ranged.contains("<tool call: Tool: shell"),
+            "the NAMED message is included, not skipped: {ranged}"
+        );
+        assert!(ranged.contains("SPAWN CONTEXT"), "{ranged}");
+
+        // `last` is a TAIL, not a head: the newest messages survive.
+        let tail1 = f
+            .read_ok(serde_json::json!({
+                "session_id": f.open_id, "view": "transcript", "last": 1
+            }))
+            .await;
+        assert!(tail1.contains("SPAWN CONTEXT"), "{tail1}");
+        assert!(!tail1.contains("please compute"), "{tail1}");
+        assert!(!tail1.contains("here is the answer"), "{tail1}");
+
+        let tail2 = f
+            .read_ok(serde_json::json!({
+                "session_id": f.open_id, "view": "transcript", "last": 2
+            }))
+            .await;
+        assert!(tail2.contains("here is the answer"), "{tail2}");
+        assert!(tail2.contains("SPAWN CONTEXT"), "{tail2}");
+        assert!(!tail2.contains("<tool call: Tool: grep"), "{tail2}");
+
+        // Combined, in the documented order: uid slice FIRST, then tail.
+        let mut both = from_shell.clone();
+        both["last"] = serde_json::json!(1);
+        let both = f.read_ok(both).await;
+        assert!(both.contains("SPAWN CONTEXT"), "{both}");
+        assert!(!both.contains("<tool call: Tool: shell"), "{both}");
+
+        // A `last` wider than the slice does not reach back past the uid — the
+        // range wins, so the two controls compose instead of fighting.
+        let mut wide = from_shell;
+        wide["last"] = serde_json::json!(500);
+        let wide = f.read_ok(wide).await;
+        assert!(wide.contains("<tool call: Tool: shell"), "{wide}");
+        assert!(!wide.contains("please compute"), "{wide}");
+
+        // An unknown uid is an error naming it, not a silent whole-transcript
+        // read — the failure mode that would quietly hand back everything.
+        let unknown = f
+            .read(serde_json::json!({
+                "session_id": f.open_id, "view": "transcript", "from_msg_uid": "no-such-uid"
+            }))
+            .await;
+        let text = unknown.content[0].as_text().unwrap().text.clone();
+        assert_eq!(unknown.is_error, Some(true), "{text}");
+        assert!(text.contains("no-such-uid"), "{text}");
+        assert!(!text.contains("please compute"), "{text}");
+    }
+
+    /// `summary`: the chatrecall-load head/tail digest, over the WHOLE session.
+    #[tokio::test]
+    async fn read_conversation_summary_reports_head_tail_and_size() {
+        let f = read_fixture().await;
+        let text = f
+            .read_ok(serde_json::json!({ "session_id": f.open_id, "view": "summary" }))
+            .await;
+
+        assert!(text.contains("Working dir:"), "{text}");
+        // The count is over every message, which is what makes this a summary
+        // rather than a differently-formatted transcript.
+        assert!(text.contains("Messages: 7"), "{text}");
+        let (head, tail) = text
+            .split_once("--- Last ---")
+            .expect("summary has a head and a tail section");
+        assert!(head.contains("--- First ---"), "{text}");
+        assert!(head.contains("please compute"), "head: {head}");
+        assert!(tail.contains("SPAWN CONTEXT"), "tail: {tail}");
+        assert!(
+            !tail.contains("please compute"),
+            "head and tail must not overlap: {tail}"
+        );
+
+        // The digest is of the whole session, so the transcript-only `last`
+        // narrowing does not silently shrink it.
+        let narrowed = f
+            .read_ok(serde_json::json!({
+                "session_id": f.open_id, "view": "summary", "last": 1
+            }))
+            .await;
+        assert!(narrowed.contains("Messages: 7"), "{narrowed}");
+        assert!(narrowed.contains("please compute"), "{narrowed}");
+    }
+
+    /// `spawn_context`: the provenance-marked record only — §4.4's "how was this
+    /// subagent started", not the conversation that followed.
+    #[tokio::test]
+    async fn read_conversation_spawn_context_returns_only_the_provenance_record() {
+        let f = read_fixture().await;
+        let text = f
+            .read_ok(serde_json::json!({ "session_id": f.open_id, "view": "spawn_context" }))
+            .await;
+
+        assert!(text.contains("SPAWN CONTEXT"), "{text}");
+        // A handler that fell through to the ordinary transcript would also
+        // contain the record — these three are what tell the two apart.
+        assert!(!text.contains("please compute"), "{text}");
+        assert!(!text.contains("here is the answer"), "{text}");
+        assert!(!text.contains("Tool: shell"), "{text}");
+
+        // A session with no spawn record says so rather than returning the
+        // transcript or an empty success.
+        let missing = f
+            .read(serde_json::json!({ "session_id": f.plain_id, "view": "spawn_context" }))
+            .await;
+        let text = missing.content[0].as_text().unwrap().text.clone();
+        assert_eq!(missing.is_error, Some(true), "{text}");
+        assert!(text.contains("no recorded spawn context"), "{text}");
+        assert!(!text.contains("nothing special"), "{text}");
+    }
+
+    /// `max_chars` clips the BODY and says so, naming the controls that narrow
+    /// the read — §4.1's "never truncating silently".
+    #[tokio::test]
+    async fn read_conversation_max_chars_clips_visibly_and_names_the_controls() {
+        let f = read_fixture().await;
+        let full = f
+            .read_ok(serde_json::json!({ "session_id": f.open_id, "view": "transcript" }))
+            .await;
+        assert!(!full.contains("clipped at"), "the full read is not clipped");
+
+        let clipped = f
+            .read_ok(serde_json::json!({
+                "session_id": f.open_id, "view": "transcript", "max_chars": 40
+            }))
+            .await;
+        assert!(clipped.contains("[clipped at 40 chars"), "{clipped}");
+        // The marker names the narrowing controls instead of leaving the model
+        // to re-run the same call and get the same clip.
+        assert!(clipped.contains("`last`"), "{clipped}");
+        assert!(clipped.contains("`from_msg_uid`"), "{clipped}");
+        assert!(clipped.contains("max_chars"), "{clipped}");
+        // The tail of the transcript really is gone, and the header — which is
+        // outside the cap — really is still there.
+        assert!(!clipped.contains("SPAWN CONTEXT"), "{clipped}");
+        assert!(clipped.starts_with("Session "), "{clipped}");
+
+        // A cap above the body length is a no-op, so the clip is driven by the
+        // parameter rather than being always-on.
+        let roomy = f
+            .read_ok(serde_json::json!({
+                "session_id": f.open_id, "view": "transcript", "max_chars": 200_000
+            }))
+            .await;
+        assert_eq!(roomy, full);
     }
 }
