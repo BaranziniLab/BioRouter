@@ -134,6 +134,37 @@ impl AppState {
         }))
     }
 
+    /// [`AppState::new`] with its `KnowledgeService` rooted at `knowledge_root`
+    /// instead of the developer's real knowledge tree.
+    ///
+    /// Test-only, and it exists because a test of the knowledge-selection seam
+    /// has to CREATE knowledge bases and move a session's write target around.
+    /// Against `new_default()` that would write into
+    /// `~/.config/biorouter/knowledge` — inventing bases in the developer's own
+    /// sidebar and repointing their primary. The session database behind
+    /// `AgentManager::instance()` still cannot be relocated from inside a
+    /// running test binary (`BIOROUTER_PATH_ROOT` is read before the process
+    /// starts), so this isolates the part that can be isolated; see the
+    /// preamble in `workspace/services.rs`'s tests.
+    #[cfg(test)]
+    pub(crate) async fn new_with_knowledge_root(
+        knowledge_root: PathBuf,
+    ) -> anyhow::Result<Arc<AppState>> {
+        let agent_manager = AgentManager::instance().await?;
+        let tunnel_manager = Arc::new(TunnelManager::new());
+        let knowledge_service = Arc::new(KnowledgeService::new(knowledge_root));
+
+        Ok(Arc::new(Self {
+            agent_manager,
+            workflow_file_hash_map: Arc::new(Mutex::new(HashMap::new())),
+            workflow_session_tracker: Arc::new(Mutex::new(HashSet::new())),
+            active_turns: Arc::new(StdMutex::new(HashMap::new())),
+            tunnel_manager,
+            extension_loading_tasks: Arc::new(Mutex::new(HashMap::new())),
+            knowledge_service,
+        }))
+    }
+
     /// Begin an interactive turn for `session_id`. Returns a `TurnGuard` that
     /// keeps the session marked busy until dropped, or a [`TurnConflict`] if a
     /// turn is already in flight — the caller must reject the duplicate `/reply`

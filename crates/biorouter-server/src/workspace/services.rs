@@ -477,4 +477,101 @@ mod tests {
         // acquired the session's turn slot and leaked it.
         assert!(!state.is_turn_active(&session.id));
     }
+
+    /// The KB pair is the only non-trivial *decision* in this file: resolving
+    /// `KbPrimaryChoice::Auto` against the RESULTING set, in one place, so every
+    /// surface gets the same answer. Both methods returning
+    /// `KbSelectionView::default()` — the shape of a stub — passed the gate
+    /// before this test existed.
+    ///
+    /// Runs against a temp knowledge root (`new_with_knowledge_root`), because
+    /// it creates bases and moves a write target: against the real service it
+    /// would invent knowledge bases in the developer's sidebar.
+    #[tokio::test]
+    async fn the_kb_pair_resolves_auto_against_the_resulting_set() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let state = crate::state::AppState::new_with_knowledge_root(temp.path().to_path_buf())
+            .await
+            .unwrap();
+        let services = ServerWorkspaceServices::new(state.clone());
+        state
+            .knowledge_service
+            .create_base("alpha", "Alpha", None)
+            .unwrap();
+        state
+            .knowledge_service
+            .create_base("beta", "Beta", None)
+            .unwrap();
+
+        let sid = "br71-kb-scope";
+        let set = |ids: &[&str]| ids.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+
+        // Auto on a scope with no primary pins the first id — the thing that
+        // makes a fresh session's KB-less writes work at all.
+        let view = services
+            .set_knowledge_bases(sid, &set(&["alpha", "beta"]), KbPrimaryChoice::Auto)
+            .unwrap();
+        assert_eq!(view.kb_ids, set(&["alpha", "beta"]));
+        assert_eq!(view.primary_kb.as_deref(), Some("alpha"));
+        // `knowledge_selection` reports the same claim the mutator returned —
+        // set and pointer together, not two unlocked reads.
+        assert_eq!(services.knowledge_selection(sid), view);
+
+        // Auto KEEPS a primary that is still a member of the new set.
+        let view = services
+            .set_knowledge_bases(sid, &set(&["beta", "alpha"]), KbPrimaryChoice::Auto)
+            .unwrap();
+        assert_eq!(view.primary_kb.as_deref(), Some("alpha"));
+
+        // Auto MOVES it when the old target leaves the set.
+        let view = services
+            .set_knowledge_bases(sid, &set(&["beta"]), KbPrimaryChoice::Auto)
+            .unwrap();
+        assert_eq!(view.kb_ids, set(&["beta"]));
+        assert_eq!(view.primary_kb.as_deref(), Some("beta"));
+
+        // Set pins explicitly.
+        let view = services
+            .set_knowledge_bases(
+                sid,
+                &set(&["alpha", "beta"]),
+                KbPrimaryChoice::Set("beta".to_string()),
+            )
+            .unwrap();
+        assert_eq!(view.primary_kb.as_deref(), Some("beta"));
+
+        // Clear removes the write target without narrowing the set. This is
+        // "no primary for this session", not "inherit the machine's".
+        let view = services
+            .set_knowledge_bases(sid, &set(&["alpha", "beta"]), KbPrimaryChoice::Clear)
+            .unwrap();
+        assert_eq!(view.kb_ids, set(&["alpha", "beta"]));
+        assert_eq!(view.primary_kb, None);
+        assert_eq!(services.knowledge_selection(sid), view);
+
+        // An empty set clears the pointer too: no legal member to point at.
+        let view = services
+            .set_knowledge_bases(sid, &[], KbPrimaryChoice::Auto)
+            .unwrap();
+        assert!(view.kb_ids.is_empty());
+        assert_eq!(view.primary_kb, None);
+
+        // A pin outside the resulting set is refused whole — the service
+        // validates against the result, and this seam must not paper over it.
+        let err = services
+            .set_knowledge_bases(
+                sid,
+                &set(&["alpha"]),
+                KbPrimaryChoice::Set("beta".to_string()),
+            )
+            .unwrap_err();
+        assert!(err.contains("beta"), "{err}");
+
+        // An unknown session has no selection, and reading one never fails.
+        assert_eq!(
+            services.knowledge_selection("br71-kb-never-seen").kb_ids,
+            set(&["alpha", "beta"]),
+            "a scope that has hidden nothing sees every installed base"
+        );
+    }
 }
