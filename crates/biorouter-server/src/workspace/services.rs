@@ -319,9 +319,12 @@ mod tests {
     ///   `routes/session.rs`, `routes/session_events.rs` and `state.rs` all
     ///   carry the same warning: these tests create rows in the developer's own
     ///   history. Keep session names unique and never assert on row counts.
-    ///   Relocating that would mean setting `BIOROUTER_PATH_ROOT` before the
-    ///   process starts, which no test can do for a binary it is already
-    ///   running inside — it is a crate-wide change, not a Task 9 one.
+    ///   Relocating it would mean `BIOROUTER_PATH_ROOT` being set before the
+    ///   `LazyLock<SESSION_STORAGE>` resolves `Paths::data_dir()`
+    ///   (`session_manager.rs`), i.e. before whichever test touches the manager
+    ///   first — which libtest's parallel scheduling does not let a test decide.
+    ///   Fixing that is a crate-wide change (a path seam on `SessionManager`),
+    ///   not a Task 9 one.
     /// * **Extensions are always passed explicitly**, never `None`. `None`
     ///   means "the developer's own enabled extension set", and loading it
     ///   walks `merge_environments` → `Config::get_secret` → the macOS
