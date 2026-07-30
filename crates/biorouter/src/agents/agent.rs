@@ -6513,6 +6513,18 @@ mod tests {
             inspector_names.contains(&"managed"),
             "Tool inspection manager should contain managed policy inspector"
         );
+        // #63: the consent gate for the machine-wide memory store. Its own tests
+        // build a manager by hand, so *this* is the only thing that notices if
+        // the agent stops registering it — at which point every global memory
+        // becomes readable again with no prompt, and nothing else goes red.
+        assert!(
+            inspector_names.contains(&crate::security::global_memory::GLOBAL_MEMORY_INSPECTOR_NAME),
+            "Tool inspection manager should contain the global-memory consent gate"
+        );
+        assert!(
+            inspector_names.contains(&"sensitive_ops"),
+            "Tool inspection manager should contain the sensitive-ops gate"
+        );
 
         Ok(())
     }
