@@ -213,6 +213,19 @@ describe('MemorySection', () => {
     expect(screen.getByText('clinical')).toBeTruthy();
   });
 
+  it('a failed load says so, and does not claim there is no project', async () => {
+    mockInventory.mockRejectedValue(new Error('the daemon is not answering'));
+    render(<MemorySection />);
+
+    expect(await screen.findByText(/the daemon is not answering/i)).toBeTruthy();
+    // "No project open" is a real, different state. Reporting it when the
+    // request simply failed tells the user their memories are not there,
+    // which for a store they are being asked to consent to reads of is the
+    // one wrong answer.
+    expect(screen.queryByText(/no project/i)).toBeNull();
+    expect(screen.queryByText(/nothing has been remembered/i)).toBeNull();
+  });
+
   it('a long category name and a long memory body cannot break the layout', async () => {
     const long = 'a'.repeat(400);
     mockInventory.mockResolvedValue(

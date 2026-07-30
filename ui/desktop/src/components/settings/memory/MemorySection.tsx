@@ -93,7 +93,11 @@ export default function MemorySection() {
       setLocal(response.data.local ?? null);
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not read the memory stores.');
+      setError(
+        `Could not read the memory stores: ${
+          err instanceof Error ? err.message : 'the request failed.'
+        }`
+      );
     } finally {
       setLoading(false);
     }
@@ -214,9 +218,14 @@ export default function MemorySection() {
         </p>
       )}
 
-      {loading && !global ? (
-        <p className="text-xs text-text-muted">Reading the memory stores…</p>
-      ) : (
+      {loading && !global && <p className="text-xs text-text-muted">Reading the memory stores…</p>}
+
+      {/* Gated on `global`, not on `!loading`, so a failed load renders neither
+          store block. Falling through would show the "no project open" card and
+          tell the user their memories are not there — the one wrong answer for
+          a store they are being asked to approve reads of. The error above
+          already says what happened, and Refresh retries it. */}
+      {global && (
         <div className="flex flex-col gap-4">
           <StoreBlock
             store={global}
