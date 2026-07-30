@@ -161,9 +161,11 @@ fn no_pages_written_error(source_id: &str, result: &SubAgentResult) -> String {
                 name,
                 ok: false,
                 summary,
-            } => Some(format!("{name}: {summary}")),
+            } => Some(format!("{name}: {}", clip(summary, 160))),
             _ => None,
         })
+        .rev()
+        .take(3)
         .collect();
     if !failures.is_empty() {
         msg.push_str(&format!("; failed tool calls: {}", failures.join(" | ")));
@@ -176,9 +178,22 @@ fn no_pages_written_error(source_id: &str, result: &SubAgentResult) -> String {
              provider request failed or was cut short",
         );
     } else {
-        msg.push_str(&format!("; the model's last message was: {final_text}"));
+        msg.push_str(&format!(
+            "; the model's last message was: {}",
+            clip(final_text, 400)
+        ));
     }
     msg
+}
+
+/// Keep the failure message readable: it travels through an SSE frame and lands
+/// in a single line of the digest panel, where a few thousand characters of
+/// model output would bury the part that explains what happened.
+fn clip(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    format!("{}…", s.chars().take(max).collect::<String>())
 }
 
 // ---------------------------------------------------------------------------
