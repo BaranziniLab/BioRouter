@@ -22306,44 +22306,59 @@ tests`:
     }
 ```
 
-and, in `crates/biorouter-server/src/routes/session.rs`'s test module:
+and, in `crates/biorouter-server/src/routes/session.rs`'s route-test module (the one
+whose header says *"`AppState::new()` opens the REAL user session database, so a route
+test here must be READ-ONLY"*, and whose tests are `#[tokio::test(flavor =
+"multi_thread")] #[serial]`):
 
 ```rust
     /// BR-71 / CLI parity: the daemon is the ONLY authority on liveness
     /// (`AppState::active_turns` is an in-process map), so it has to publish it.
-    #[tokio::test]
+    ///
+    /// ⚠ **No session is created and none is deleted.** `try_begin_turn_idempotent`
+    /// inserts into the in-memory `active_turns` map and never consults the store,
+    /// so fabricated ids exercise the whole path — which keeps this test inside
+    /// this module's READ-ONLY rule (`AppState::new()` opens the real user DB).
+    /// The `#[serial]` attribute is not optional: `active_turns` is process-wide
+    /// and a concurrent route test holding a turn would make the first assertion
+    /// flake.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
     async fn running_sessions_reports_exactly_the_sessions_holding_a_turn() {
-        let (state, _tmp) = test_state().await;
-        let idle = create_test_session(&state).await;
-        let busy = create_test_session(&state).await;
+        let state = AppState::new().await.unwrap();
+        let busy = format!("parity-busy-{}", uuid::Uuid::new_v4());
+        let idle = format!("parity-idle-{}", uuid::Uuid::new_v4());
 
-        let response = get_running(&state).await;
-        assert!(response.session_ids.is_empty(), "no turns yet: {response:?}");
+        let before = get_running(state.clone()).await;
+        assert!(!before.contains(&busy), "precondition: {before:?}");
 
-        let _guard = state
+        let guard = state
             .try_begin_turn_idempotent(&busy, CancellationToken::new(), None)
-            .expect("session is free");
+            .expect("nothing holds this fabricated session");
 
-        let response = get_running(&state).await;
-        assert_eq!(response.session_ids, vec![busy.clone()]);
+        let during = get_running(state.clone()).await;
+        assert!(during.contains(&busy), "a held turn must be reported");
         assert!(
-            !response.session_ids.contains(&idle),
-            "an idle session must not be reported running"
+            !during.contains(&idle),
+            "a session with no turn must not be reported running"
         );
 
-        drop(_guard);
+        drop(guard);
         assert!(
-            get_running(&state).await.session_ids.is_empty(),
-            "the guard's Drop clears the slot; the route must read live state, \
-             not a snapshot taken at startup"
+            !get_running(state.clone()).await.contains(&busy),
+            "TurnGuard::drop clears the slot, so the route must read LIVE state — \
+             a snapshot taken at construction passes every assertion above and \
+             fails this one"
         );
     }
 ```
 
-(`test_state` / `create_test_session` are this module's existing helpers — check their
-names at task start; `routes/session.rs` already has `mod diverge_tests` and the route
-tests that call `state.is_turn_active`, so a helper for both exists. `get_running` is a
-two-line local that calls the handler and deserializes its `Json`.)
+(`get_running` is a local two-liner in the same shape as this module's existing
+`get_activity` / `get_sidebar_sessions` helpers: `oneshot` the router at
+`GET /sessions/running` and return `Vec<String>` from the body. Reuse them rather than
+inventing a third shape. ⚠ `assert!(before.is_empty())` would be **wrong** here — the
+real daemon-shared `AppState` may legitimately hold another test's turn; assert about
+*this* test's ids only.)
 
 - [ ] **Step 2: Run to verify failure**
 
