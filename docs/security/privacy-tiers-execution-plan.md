@@ -932,6 +932,41 @@ private session wrote into it are covered by the same sentence, and that is the 
 rule starts applying to what happens next. A user who wants an existing app protected immediately
 opens it once in a private chat.
 
+### AR-15 — A caller holding the daemon secret can raise its own session's capability with no credentials
+
+`POST /agent/update_provider` (`routes/agent.rs:686-731`) binds **any** provider to **any** session
+with only `X-Secret-Key`. `llamacpp` is in the private set and needs **no credentials at all** —
+`LlamaCppProvider::from_env` (`providers/llamacpp.rs:315`) cannot fail on a missing secret and
+`metadata()` (`:458-491`) declares no required key, pinned by the tree's own
+`metadata_has_zero_config_defaults` (`:830`). Gate A refuses a *public* provider on a *private*
+session; the **upward** bind is permitted by design. So one credential-free POST makes a session
+private-capability, and every gate in this plan then permits what it would otherwise refuse.
+
+**Why it is accepted rather than closed.** The rule that would close it — refuse the upward bind
+while tiers are enabled — forbids *"switch this chat to a private model"*, which is **step 1 of the
+two-ways-out message in every refusal this feature ships**. And the daemon cannot distinguish the
+user clicking the model chip from a tool call issuing the same POST, because `check_token`
+(`auth.rs:80-127`) is one machine-wide bearer secret with no principal, no per-session token and no
+origin binding.
+
+**Bounding it honestly.** This is a *credential* escalation, not a *model* escalation. Reaching it
+requires the daemon secret, and [AR-11](#ar-11--the-daemons-own-api-secret-is-recoverable-so-the-second-door-is-held-by-layer-a-and-not-by-the-environment-strip)
+already concedes that a caller holding the secret reads `GET /sessions/{id}/export`, the
+`/knowledge/*` read routes and `GET /diagnostics/{id}` (a zip containing a verbatim `config.yaml`)
+**without any of this**. AR-15 adds the tool channel to a set of HTTP channels the same credential
+already opens; it does not cross a boundary that credential did not already cross.
+
+**What is genuinely new, and why it still matters:** the model can obtain that credential in-process
+on Linux (`computercontroller__cache view /proc/self/environ`) with no shell and therefore with no
+Layer B sandbox involved. Denying `/proc` is neither effective (`/proc/<pid>/environ`,
+`/proc/self/task/*/environ`) nor within *"the four roots and nothing else"*.
+
+**Stated in the operator's terms:** privacy tiers stop a public **model** from reaching private
+material through the tools it is given. They do not make the daemon's own API secret a per-session
+credential, and anyone — or any model — that obtains that secret has full local access with or
+without this feature. Closing it needs a caller identity in the daemon's auth model, the same fix as
+[Open question 18](#open-questions) and [Open question 20](#open-questions).
+
 ---
 
 ## Which test filters are validated, and which are not
@@ -11050,9 +11085,97 @@ leaked log finds it, and it keeps every **remote** caller out.
 extension with no capability check, no permission prompt and no approval frame — measured live,
 `computercontroller__cache view /etc/hosts` returned the file contents. It dispatches through
 `agent.extension_manager.dispatch_tool_call` at `routes/agent.rs:1160-1163`, which **is** Task 14B's
-choke point. So a caller holding the secret gets exactly what the chat gets and nothing more: Gate C
-refuses a private extension, Layer A refuses a deny-root path. Had the barrier gone into
-`Agent::dispatch_tool_call` instead, this route would have been an unguarded hole.
+choke point. Had the barrier gone into `Agent::dispatch_tool_call` instead, this route would have
+been an unguarded hole.
+
+#### ⚠ Withdrawn 3: "a caller holding the secret gets exactly what the chat gets and nothing more"
+
+Round 3 knocked this down and it is false. `CallToolRequest` (`routes/agent.rs:207-211`) carries a
+caller-supplied `session_id`; `call_tool` resolves `get_agent_for_route(payload.session_id)` (`:1145`)
+and dispatches through **that** agent's extension manager (`:1162`). With the recovered secret,
+`GET /sessions` enumerates ids (`routes/session.rs:240`). So a caller selects a **private** session's
+id, and the barrier derives that session's Private capability and permits the call. This is issue #47
+(cross-session dispatch), and it interacts with #56 in three ways that must be written down rather
+than papered over.
+
+**(1) The obvious defence cannot be written on this tree, so it is struck rather than deferred.**
+A rule of the form *"refuse cross-session dispatch when tiers are enabled and the target's tier
+differs from the caller's"* needs a **caller tier**. There is none. `check_token`
+(`crates/biorouter-server/src/auth.rs:80-127`) is the entire authorization model: one machine-wide
+shared secret from `X-Secret-Key`, compared byte-wise at `:121`, plus a 20-failures-per-minute
+throttle keyed on a peer IP that is always `127.0.0.1` (`:32-41`, `:111`) and which records
+**failures only** (`:123`), so a valid-secret caller is unthrottled. No principal, no per-session
+token, no origin binding on any non-app route. The target session's capability is the only capability
+in scope and there is nothing to compare it against. **Do not spend a round designing that rule.**
+
+**(2) What this plan does instead: the route declares Public.** Because Task 10 forces every entry to
+*supply* a `CallCapability`, and because this entry has no caller identity, it supplies
+`CallCapability::public_enforced()` — the most restrictive answer, independent of whose session id
+was named. Then selecting a private session's id buys nothing: the call is evaluated as public
+whatever agent it lands on.
+
+**Measured blast radius, because this sounds worse than it is.** The only non-generated caller of
+`/agent/call_tool` in the whole desktop app is `ui/desktop/src/components/McpApps/McpAppRenderer.tsx:154`,
+and it is always same-session. `POST /agent/read_resource` gets the same treatment for the same
+reason. **No legitimate cross-session use breaks**, and the cost is that an MCP-UI resource rendered
+inside a *private* chat is evaluated as public — which is the safe direction and produces a refusal
+the user resolves the same way as any other.
+
+⚠ **This is a narrowing, not a closure.** It closes "borrow another session's capability". It does
+not close "issue any tool call at all with the daemon secret", which is [AR-11](#ar-11--the-daemons-own-api-secret-is-recoverable-so-the-second-door-is-held-by-layer-a-and-not-by-the-environment-strip)
+and stays true.
+
+**(3) The dependency, stated in the words the operator needs.** With `public_enforced()` in place,
+#56's tool-channel barrier holds on this route **whether or not #47 is fixed**. What #56 still
+depends on #47 for is *the rest of the route's behaviour*: a caller with the secret can still run
+tools inside somebody else's session — writing to their working directory, ratcheting their
+classification, appending to their transcript. **That is #47's problem and #56 neither fixes nor
+worsens it.** The honest sentence for the release notes is: *privacy tiers stop a public model from
+reaching private material; they do not turn the daemon's own API secret into a per-session
+credential, and anyone holding that secret has full local access with or without this feature.*
+
+#### ⚠ The binding constraint is one step earlier, and it is inside #56's own scope
+
+An adversary does not need a second session at all.
+
+`POST /agent/update_provider` (`routes/agent.rs:686-731`, registered `:1270`) sets **any** provider on
+**any** session's agent with only the daemon secret: it resolves the agent (`:690-693`), builds the
+provider with `create(&payload.provider, model_config)` (`:713`) and calls `agent.update_provider`
+(`:721`). Gate A (Task 12) refuses a **public** provider on a **private** session; the **upward** bind
+is explicitly fine and this plan's own test says so (`a_private_provider_binds_to_anything_…`,
+`// upward: fine`).
+
+And there is a Private-tier provider that needs **zero credentials**:
+
+- `llamacpp` is in the private set (Task 5).
+- `LlamaCppProvider::from_env` (`providers/llamacpp.rs:315`) reads only optional config keys and
+  **cannot fail on a missing secret** — measured: no `get_secret` on the construction path.
+- `metadata()` (`:458-491`) declares no required key, and the tree already pins that with
+  `metadata_has_zero_config_defaults` (`:830`).
+- `providers::create` (`factory.rs:139-149`) is a registry lookup plus the constructor. The provider
+  never has to *answer* — every gate only reads `p.tier()`.
+
+So: recover the secret (AR-11), `POST /agent/update_provider {session_id: "<any>", provider:
+"llamacpp", model: "qwen3.5-4b"}`, and that agent's capability is Private. Credential-free, no race
+window, permanent until the next bind.
+
+**This plan does not close it, and the reason is not cost.** Refusing the upward bind while tiers are
+enabled would forbid *"switch this chat to a private model"* — which is **step 1 of the two-ways-out
+message in every single refusal this feature ships** (Task 12's, Task 14B's, Gate D's). A control
+whose remediation path is itself refused is not a control. There is no version of this rule that
+distinguishes the user clicking the model chip from a tool call issuing the same POST, because — (1)
+above — the daemon cannot tell them apart.
+
+**Recorded as [AR-15](#ar-15--a-caller-holding-the-daemon-secret-can-raise-its-own-sessions-capability-with-no-credentials) and as a stated dependency**: closing it needs a caller
+identity in the daemon's auth model, which is the same fix as [Open question 18](#open-questions)
+and [Open question 20](#open-questions), and is out of scope here.
+
+⚠ **And AR-11's own bound is weaker than it reads.** The secret is recoverable *in-process*, with no
+shell, by any tool that reads a caller-named path: `computercontroller__cache view
+/proc/self/environ` on Linux. Layer A does not deny it and cannot usefully — `/proc/<pid>/environ`
+for any pid, `/proc/self/task/*/environ`, and on macOS it is `sysctl(KERN_PROCARGS2)` rather than a
+path at all. Adding `/proc` to the deny entries would be both ineffective and a violation of *"the
+four roots and nothing else"*. **Stated, not fixed.**
 
 **Withdrawn 2: "the app tree is the only on-disk source of app ids."** Round 2:
 
@@ -11135,19 +11258,30 @@ ones**. `GET /apps/{id}/runstate` additionally returns a pending tool's `name`, 
 1. `GET /apps` — the list — is **not** exempt (`auth.rs:71-73`'s comment says why: "an id is all
    `/apps/{id}/agent` needs"), so the id cannot be enumerated over HTTP without the secret. ✔ still
    true.
-2. ~~The other place ids exist is the app tree on disk, which is deny root #4.~~ **False, and this
-   was the premise round 2 knocked down.** `agent_drafter__list_apps` (`agent_drafter/mod.rs:2636`)
+2. ~~The other place ids exist is the app tree on disk, which is deny root #4.~~ **False as
+   originally written, and now half-repaired.** `agent_drafter__list_apps` (`agent_drafter/mod.rs:2636`)
    enumerates every id **in-process**, through `ArtifactStore::list` (`store.rs:606`), and
    `agent_drafter` is Public (design:975). It takes no path, so neither Layer A nor a filesystem deny
-   touches it. A public model can obtain an id by asking for one.
+   touches it — which is exactly why the guard had to move into the store.
+   [Task 14E](#task-14e-the-roots-own-doors--where-the-handler-not-the-caller-supplies-the-path)
+   makes `ArtifactStore::list` filter by the app's tier, so **a public model can no longer obtain a
+   private app's id**. It can still obtain a *public* app's id, which is correct: a public app is
+   material a public session may already read. The residual in (c) therefore shrinks from "every
+   drafted app on the machine" to "every app a public chat could already open", and
+   [Open question 19](#open-questions) is no longer blocked on 18.
 3. The socket carries the app's own capability grants, not the session's — but those grants can
    include a **private** knowledge base, so it is not a general read of the user's data and it is not
    nothing either.
 
 **So the residual is larger than [AR-6](#ar-6--on-a-host-that-cannot-express-the-read-deny-a-public-session-loses-the-shell-and-two-costs-come-with-the-sandbox-itself)'s
 last paragraph said, and its size is now known:** a public-capability model does not need to *already
-know* an app id — it can list them. Every drafted app on the machine is reachable from a public chat,
-and each one exposes its manifest-granted knowledge bases.
+know* an app id — it can list the **public** ones (Task 14E filters the private ones out) and drive
+each of their agents over the unauthenticated socket, including any knowledge base that app's
+manifest granted it. **That last clause is what keeps this open even after Task 14E**: an app's
+manifest grant is not the app's tier, so a *public* app whose manifest grants a *private* base is
+still a path from a public chat to private content. Closing it means making the grant obey the tier
+(a change to `resolve_kb_grant`, `apps.rs:2474-2505`) or authenticating the socket
+([Open question 18](#open-questions)).
 
 **Two ways to close it, and this plan takes neither.** Authenticating the app socket with something
 the page has and a shell does not is a change to how apps are served
@@ -11247,6 +11381,47 @@ fn call_tool_dispatches_through_the_barrier_and_not_around_it() {
     );
 }
 
+/// Withdrawn 3, as the assertion that makes it true rather than as prose.
+/// `POST /agent/call_tool` has no caller identity, so it declares Public and
+/// naming a private session's id buys nothing. Without this the route hands a
+/// secret-holder the target session's capability (issue #47).
+#[tokio::test]
+async fn call_tool_evaluates_as_public_whatever_session_id_it_is_given() {
+    let private_sess = private_session_on(private_provider()).await;
+    // The target agent IS private-capability. The route must not inherit that.
+    assert!(agent_for(&private_sess.id).await.provider().await.unwrap().tier().is_private());
+
+    let body = http_post_with_secret("/agent/call_tool", json!({
+        "session_id": private_sess.id,
+        "name": "computercontroller__cache",
+        "arguments": {"command": "view",
+                      "path": private_roots().knowledge.join("page.md")},
+    })).await;
+    assert!(body.contains("private model"),
+            "the route borrowed the target session's capability: {body}");
+
+    // …and a private EXTENSION is refused through the same route, for the same
+    // reason — this is Gate C reading the declared capability, not a second rule.
+    let body = http_post_with_secret("/agent/call_tool", json!({
+        "session_id": private_sess.id, "name": "ucsfomopagent__run_query", "arguments": {},
+    })).await;
+    assert!(body.contains("ucsfomopagent"), "{body}");
+}
+
+/// The cost, asserted so it is a decision: the one production caller is
+/// same-session and keeps working. `McpAppRenderer.tsx:154` is the ONLY
+/// non-generated `callTool` in the desktop app (measured), so this is the whole
+/// blast radius.
+#[tokio::test]
+async fn the_mcp_ui_renderers_same_session_call_still_works() {
+    let s = public_session_on(public_provider()).await;
+    let body = http_post_with_secret("/agent/call_tool", json!({
+        "session_id": s.id, "name": "developer__text_editor",
+        "arguments": {"command": "view", "path": "/tmp/ordinary.txt"},
+    })).await;
+    assert!(!body.contains("private model"), "{body}");
+}
+
 /// (c), as a pin rather than a fix: the unauthenticated app surface is EXACTLY
 /// these five shapes. It is a deliberate carve-out with a comment explaining
 /// itself (`auth.rs:71-73`), and this test is what makes widening it a decision
@@ -11272,9 +11447,10 @@ a test would mean either changing `list_apps`, which Task 14B's §(5) test says 
 writing an assertion that is false. The honest artefact is the residual in (c) and
 [Open question 18](#open-questions), not a green test over a hole.
 
-- [ ] **Step 2: Run** → **PASS on all four.**
+- [ ] **Step 2: Run** → the four pins **PASS**; the two `call_tool` capability tests **FAIL**
+(the route inherits the target agent's capability today).
 
-⚠ **All four pass before Step 3, and that is the honest outcome.** They are regression pins
+⚠ **The four pins pass before Step 3, and that is the honest outcome.** They are regression pins
 on behaviour that is already correct, in the same spirit as Task 2. Do not manufacture a red by
 weakening the production code first, and do not "fix" the first test by loosening its assertion when
 it turns out `BackgroundJobs::spawn` was renamed — resolve the real entry point and pin *that*. A
@@ -11283,9 +11459,14 @@ moved and the test needs the new name before anything else is believed.
 
 - [ ] **Step 3: Implement**
 
-Nothing to implement unless Step 2's first test fails. If it does, route the job spawn through
-`configure_shell_command` — do **not** add a second `strip_daemon_private_env` call, which would
-leave two spawn paths to keep in step and is the divergence this task exists to prevent.
+**(a) The two identity-free routes declare Public.** `call_tool` (`routes/agent.rs:1140`) and
+`read_resource` pass `CallCapability::public_enforced()` into `dispatch_tool_call`. One line each,
+and the reasoning is Withdrawn 3 (1)–(2): there is no caller tier to sample, so the safe constant is
+the only honest answer.
+
+**(b) Nothing else,** unless Step 2's background-job test fails. If it does, route the job spawn
+through `configure_shell_command` — do **not** add a second `strip_daemon_private_env` call, which
+would leave two spawn paths to keep in step and is the divergence this task exists to prevent.
 
 - [ ] **Step 4: Run**
 
@@ -11376,6 +11557,20 @@ echo "expect: exactly 1 line, reading agent.extension_manager.dispatch_tool_call
 echo "        A hit on `agent.dispatch_tool_call(` instead is Agent::dispatch_tool_call —"
 echo "        one frame UP, past Gate C and past DR-14 Layer A. It compiles, it works,"
 echo "        and it silently reopens every tool to anyone holding the secret."
+
+# (5) …and it declares Public, because it has no caller identity. The wrong
+#     implementation samples the TARGET agent's provider here, which reads
+#     correctly, compiles, and hands a secret-holder any private session's
+#     capability (issue #47).
+awk '/async fn call_tool\(/,/^}/' crates/biorouter-server/src/routes/agent.rs \
+  | grep -n "CallCapability::"
+echo "expect: exactly 1 line, CallCapability::public_enforced(). A"
+echo "        CallCapability::sample(...) here is the defect."
+awk '/async fn read_resource\(/,/^}/' crates/biorouter-server/src/routes/agent.rs \
+  | grep -c "public_enforced"
+echo "expect: 1 — the sibling route, same reasoning"
+grep -rn "CallCapability::sample(" --include='*.rs' crates/biorouter-server/src/
+echo "expect: no output — the server crate has no caller identity to sample from"
 ```
 
 **What this catches.**
