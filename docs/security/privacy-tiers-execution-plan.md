@@ -4,8 +4,11 @@
 > designed in [`privacy-tiers.md`](privacy-tiers.md) ([issue #56](https://github.com/BaranziniLab/biorouter/issues/56)):
 > fifty tasks in seven phases — forty numbered, plus **4b** (resolve every test filter against a
 > real `cargo --list`), **10A, 10B, 10C and 10D**, the knowledge-base tier the operator ruled on
-> after the first adversarial review, and **14A–14F**, the read-deny the operator
-> ruled on after the fifth — each with a Files table, a failing test, complete
+> after the first adversarial review, **14A–14F**, the read-deny the operator
+> ruled on after the fifth (**all six now `DEFERRED` — see
+> [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store)**), and **29A** and **30A**,
+> the user-controllable knowledge-base tier and the non-private-model disclosure the operator ruled on
+> 2026-07-30 — each with a Files table, a failing test, complete
 > implementation code, a run step, a gate that fails a plausible wrong implementation, and one commit.
 > **Status:** Proposed — ready to execute. The design's rulings are settled (see
 > [Decisions of record](#decisions-of-record)); the costs the operator knowingly accepted are in
@@ -877,6 +880,7 @@ crates/biorouter/src/providers/tier_tests.rs           Task 5  — `#[cfg(test)]
 crates/biorouter/src/privacy/registry_private.rs       Task 8  — @generated from landing/
 crates/biorouter/src/privacy/extensions.rs             Task 8  — classify_extension(name)
 crates/biorouter-mcp/src/knowledge/tier.rs             Task 10A — the KB tier store + migration
+⛔ DEFERRED by DR-17 — none of the seven below is created in v1:
 crates/biorouter-sandbox/src/private_data.rs           Task 14B — the meta key, PrivateDataPolicy, the refusal
 crates/biorouter-sandbox/tests/read_deny.rs            Task 14A — Layer B, the live kernel-enforcement proof
 crates/biorouter-mcp/src/private_roots.rs              Task 14B — the five entries, the ONE resolver
@@ -888,10 +892,14 @@ crates/biorouter/src/privacy/refusal.rs                Task 12 — PrivacyRefusa
 crates/biorouter/src/privacy/alt_provider.rs           Task 19 — assert_alt_provider_allowed
 crates/biorouter/src/privacy/visibility.rs             Task 21 — the §7 matrix as one predicate
 crates/biorouter/src/privacy/declassify.rs             Task 29 — UserConfirmation + declassify()
+crates/biorouter-mcp/src/knowledge/tier_user.rs        Task 29A — UserKbTierChange; the ONE lowering writer (DR-18)
+crates/biorouter/src/privacy/disclosure.rs             Task 30A — the ONE copy constant + required_for() (DR-17 req. 3)
 ui/desktop/src/components/ui/PrivacyBadge.tsx          Task 26
 ui/desktop/src/components/ui/DangerousConfirmDialog.tsx Task 29
 ui/desktop/src/components/sessions/DeclassifySessionDialog.tsx Task 29
 ui/desktop/src/components/settings/privacy/PrivacyPanel.tsx Task 30
+ui/desktop/src/components/knowledge/KbTierControl.tsx  Task 29A — publicize / privatize, user-only
+ui/desktop/src/components/privacy/NonPrivateModelDisclosure.tsx Task 30A — the one-time blocking dialog
 ui/desktop/src/components/privacy/FirstRunPrivacyNotice.tsx Task 38
 landing/scripts/check-docs-privacy.mjs                 Task 36
 docs/security/privacy-tiers-migration.md               Task 38
@@ -904,6 +912,11 @@ implementation returns `PrivacyRefusal::PublicModelOnPrivateSession`, Task 13's 
 module and says which item it adds. `privacy/visibility.rs` is Task **21**, not 24 — Task 21 is the
 task that creates it. `privacy/alt_provider.rs` (Task 19) and the three UI files were missing from
 this list entirely.
+
+⚠ **And seven of them are no longer created at all.** DR-17 defers Tasks 14A–14F, so the block marked
+⛔ above is dead in v1 — a worker who creates those files has implemented a descoped task, and a phase
+gate that expects them fails a correct tree. Two files replace them in scope terms rather than in
+kind: `knowledge/tier_user.rs` (Task 29A) and `privacy/disclosure.rs` (Task 30A).
 
 ---
 
@@ -18653,7 +18666,17 @@ Check, with evidence: (1) a private chat's badge in History, the chat header, th
 sidebar; (2) switching a private chat to a public model shows the Gate A repair card and **no**
 success toast; (3) a private extension in the composer's selector is visible-but-disabled with its
 reason; (4) the declassification dialog's phrase gate, Cancel focus, and the resulting
-"Public — made public by you on …" badge.
+"Public — made public by you on …" badge; (5) **[Task 30A](#task-30a-the-non-private-model-disclosure)'s
+disclosure** — it appears on a fresh sandboxed profile whose default provider is public, before the
+first turn, it does **not** appear for `llamacpp`, and it still appears with the master toggle off;
+(6) **[Task 29A](#task-29a-knowledge-base-publicize--privatize--user-only-graded-audited)'s tier
+control** — the palette shows a Private chip before the base is selected, publicizing names the page
+count and gates the button on the base id, and privatizing is one click.
+
+⚠ **(5) is not optional and is not a UX nicety.** It is requirement 3 of
+[DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store) — the term on which that ruling's
+accepted risks are acceptable. A Phase 4 that passes without it has shipped the narrowing without the
+thing that justifies it.
 
 - [ ] **Step 3: The badges are mounted, not merely defined**
 
