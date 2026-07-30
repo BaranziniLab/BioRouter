@@ -7243,6 +7243,25 @@ mod tests {
             !names.iter().any(|n| n.starts_with("workspace__workspace_")),
             "auto-injection must not grant cross-session control: {names:?}"
         );
+
+        // THE 18 → 19 BOUNDARY, pinned. Dispatch still intercepts only the BARE
+        // name (`Agent::dispatch_tool_call`), and `WorkspaceClient::call_tool`
+        // answers the prefixed one with "dispatched by the agent loop" until
+        // Task 19 rewires it. So at THIS commit the bare tool is the only
+        // *callable* delegation path, and deleting its push early — the exact
+        // ordering failure the plan calls non-negotiable — would leave a session
+        // with a tool it cannot use while every other assertion here still
+        // passed. Both names must be present, deliberately, for exactly one
+        // commit.
+        //
+        // TASK 19 MUST FLIP THIS: once the standalone push is deleted and
+        // dispatch is rewired to `workspace__subagent`, assert the bare name is
+        // GONE rather than present.
+        assert!(
+            names.iter().any(|n| n == SUBAGENT_TOOL_NAME),
+            "until Task 19 rewires dispatch, the bare `subagent` is the only \
+             callable spawn path and must still be advertised: {names:?}"
+        );
     }
 
     /// The dispatch half of the same guarantee: `available_tools` is enforced
@@ -7523,6 +7542,71 @@ mod tests {
         assert!(
             persisted.extensions.iter().any(|e| e.name() == "workspace"),
             "an explicit enable is a user decision and must be recorded"
+        );
+    }
+
+    /// The SECOND persist path, driven end-to-end rather than through the shared
+    /// helper.
+    ///
+    /// `save_extension_state` is the reply loop's own path — it fires on any
+    /// turn where the model successfully enables an extension through
+    /// `manage_extensions`, i.e. on exactly the population that gets the
+    /// auto-injection (Auto mode, at least one extension). Asserting only on
+    /// `persistable_extension_configs` would leave that path free to regress to
+    /// its old unfiltered `get_extension_configs()` snapshot with every other
+    /// test still green, so this one goes through the method itself and reads
+    /// the SESSION ROW back.
+    #[tokio::test]
+    async fn the_reply_loop_save_path_also_excludes_the_auto_injection() {
+        let (agent, session_id) = agent_with_one_extension_for_tests().await;
+        let _ = agent.list_tools(&session_id, None).await; // triggers the injection
+        assert!(
+            agent
+                .extension_manager
+                .is_extension_enabled("workspace")
+                .await,
+            "precondition: the injection happened"
+        );
+
+        agent
+            .save_extension_state(&SessionConfig {
+                id: session_id.clone(),
+                schedule_id: None,
+                max_turns: None,
+                max_tool_calls: None,
+                budget: None,
+                retry_config: None,
+                reasoning_effort: None,
+            })
+            .await
+            .unwrap();
+
+        let session = agent
+            .config
+            .session_manager
+            .get_session(&session_id, false)
+            .await
+            .unwrap();
+        let persisted =
+            crate::session::EnabledExtensionsState::from_extension_data(&session.extension_data)
+                .expect("a state was written");
+        assert!(
+            !persisted.extensions.iter().any(|e| e.name() == "workspace"),
+            "the reply loop's own persist path must exclude the injection too: {:?}",
+            persisted
+                .extensions
+                .iter()
+                .map(|e| e.name().to_string())
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            persisted.extensions.iter().any(|e| e.name() == "todo"),
+            "…while still recording the extensions the user really has: {:?}",
+            persisted
+                .extensions
+                .iter()
+                .map(|e| e.name().to_string())
+                .collect::<Vec<_>>()
         );
     }
 
