@@ -21,6 +21,8 @@ flowchart TD
 
 A nested call — the model runs `developer/shell` from inside a `code_execution` script — adds one hop. `code_execution` re-enters `ExtensionManager::dispatch_tool_call` from its own tool-handler task, so links C through H repeat *inside* that task, with the same token.
 
+There is a second, independent trigger for F→H. `POST /agent/stop` does two things: it cancels the turn (the chain above) and it evicts the session, which drops the extension and closes its transport. Those race. rmcp gives every tool call a request-scoped `CancellationToken` descended from the serve loop's, and the running service holds a drop guard on that chain, so the token trips exactly when the connection goes away. The shell tool watches it alongside the notification-driven one, and either reaches the same kill. Relying on the notification alone left the command running whenever teardown won.
+
 ## Rule 1 — never abort a future that owes a cancellation downstream
 
 The link that broke in #72 was C→D. `handle_execute_code` called `tool_handler.abort()` the instant the token tripped. The handler task was parked inside the nested dispatch, and that dispatch is the only thing that sends `notifications/cancelled` to the Developer extension. Aborting it dropped the future before it could send, so `on_cancelled` never fired and the command kept running with nobody waiting for it.
@@ -36,7 +38,9 @@ On Unix, signalling a pid signals that process only. `sh -c 'worker &'` leaves `
 `tokio::process::Command::kill_on_drop(true)` does **not** do that — it signals the direct child only. It is a useful backstop against leaking one process, not a tree reaper. Two things close the gap:
 
 - `kill_process_group` on the cooperative paths (cancellation, the foreground budget): SIGTERM, a grace pause, then SIGKILL, all to `-pid`.
-- `ProcessGroupReaper`, an RAII guard armed around the child, for the paths where no cancellation ever arrives — the extension being torn down, the transport closing, an outer layer giving up. It SIGKILLs the group from `Drop`, with no grace pause, because `Drop` must not sleep and nobody is left to read the output.
+- `ProcessGroupReaper`, an RAII guard armed around the child, for the paths where the tool's future is dropped without any cancellation — an outer layer giving up, a task aborted. It SIGKILLs the group from `Drop`, with no grace pause, because `Drop` must not sleep and nobody is left to read the output.
+
+The guard is not a substitute for the token chain: an extension's request task is a detached `tokio::spawn`, so tearing the connection down does *not* drop its future. That path needs rule 1's cooperative token, which is why the shell watches rmcp's request-scoped one too.
 
 The reaper is **disarmed** the moment the child has been waited on or explicitly killed. After a reap the pid can be recycled, and a negative-pid signal would then land on a stranger's process group. Any new exit path from `execute_shell_command` has to keep that pairing.
 
@@ -46,7 +50,7 @@ An orphan is invisible from inside the process that created it: the turn ends, t
 
 So the tests assert on the OS, not on the code. Each one runs a real command that forks a real grandchild which sleeps and then writes a marker file; the test cancels or drops, waits past the sleep, and asserts the marker never appears. A test that only checks the tool call returned quickly passes with the bug intact — the call returning is exactly what happens while the process keeps running.
 
-- `crates/biorouter/tests/nested_shell_cancellation.rs` — both dispatch paths, end to end through a real `ExtensionManager`.
+- `crates/biorouter/tests/nested_shell_cancellation.rs` — both dispatch paths and the teardown trigger, end to end through a real `ExtensionManager`.
 - `dropping_the_shell_future_reaps_the_whole_process_tree` (in `rmcp_developer.rs`) — the drop path, with no cancellation involved at all.
 - `a_foreground_command_is_killed_when_it_blows_its_budget` — the budget path.
 
