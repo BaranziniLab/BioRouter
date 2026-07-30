@@ -685,6 +685,10 @@ mod tests {
     /// The corpus every escaping test runs over: one entry per character class
     /// that has ever broken an escaping scheme, plus the two literal entity
     /// spellings that catch a wrong `&` ordering.
+    ///
+    /// Shared verbatim with the renderer's port — see
+    /// [`the_shared_corpus_binds_both_implementations`], which pins this list
+    /// and this encoder to `resource_ref_corpus.json`.
     const HOSTILE_NAMES: &[&str] = &[
         "rna-qc",
         "my skill",
@@ -705,7 +709,51 @@ mod tests {
         "   ",
         "&#10;",
         "&#65;",
+        "it's\ta — b",
+        r#"single-cell "QC" & prep <v2>"#,
     ];
+
+    /// The renderer emits these tags and this parser reads them, so the two
+    /// encoders have to produce the same bytes for the same name. They cannot
+    /// share code, so they share a corpus: `resource_ref_corpus.json` lists
+    /// every hostile name with its exact encoding, and both test suites assert
+    /// against it.
+    ///
+    /// Without this the divergence is invisible — each side keeps passing its
+    /// own tests while the tag the composer writes names a resource this parser
+    /// never finds.
+    #[test]
+    fn the_shared_corpus_binds_both_implementations() {
+        let corpus: serde_json::Value =
+            serde_json::from_str(include_str!("resource_ref_corpus.json"))
+                .expect("the shared corpus is valid JSON");
+        let pairs = corpus["pairs"]
+            .as_array()
+            .expect("the shared corpus has a `pairs` array");
+
+        let raw_names: Vec<&str> = pairs
+            .iter()
+            .map(|pair| pair[0].as_str().expect("every pair starts with a raw name"))
+            .collect();
+        assert_eq!(
+            raw_names, HOSTILE_NAMES,
+            "the shared corpus and this crate's corpus have drifted apart"
+        );
+
+        for pair in pairs {
+            let (raw, encoded) = (pair[0].as_str().unwrap(), pair[1].as_str().unwrap());
+            assert_eq!(
+                encode_ref_value(raw),
+                encoded,
+                "this encoder disagrees with the shared corpus on `{raw}`"
+            );
+            assert_eq!(
+                decode_ref_value(encoded),
+                raw,
+                "this decoder disagrees with the shared corpus on `{encoded}`"
+            );
+        }
+    }
 
     /// The property the whole scheme rests on.
     #[test]

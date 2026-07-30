@@ -1,0 +1,43 @@
+{
+  "_comment": [
+    "The shared conformance corpus for the <biorouter-ref …> escaping contract.",
+    "",
+    "Two implementations have to agree byte for byte or a reference resolves to",
+    "the wrong resource — silently, because the tag still looks well formed.",
+    "This file is the agreement: `crates/biorouter/src/agents/resource_refs.rs`",
+    "and `ui/desktop/src/utils/resourceRefs.ts` both read it in their tests and",
+    "both assert every pair, so a change to either encoder turns one of them red",
+    "instead of shipping a divergence.",
+    "",
+    "`pairs` is [raw, encoded]. One entry per character class that has ever",
+    "broken an escaping scheme, plus the literal entity spellings (`&amp;`,",
+    "`&quot;`) that catch a wrong ampersand ordering and the numeric references",
+    "(`&#10;`, `&#65;`) that catch a decoder guessing outside the closed table."
+  ],
+  "pairs": [
+    ["rna-qc", "rna-qc"],
+    ["my skill", "my skill"],
+    ["say \"hi\"", "say &quot;hi&quot;"],
+    ["tom & jerry", "tom &amp; jerry"],
+    ["a &amp; b", "a &amp;amp; b"],
+    ["a &quot; b", "a &amp;quot; b"],
+    ["&", "&amp;"],
+    ["&&&", "&amp;&amp;&amp;"],
+    ["<script>alert(1)</script>", "&lt;script&gt;alert(1)&lt;/script&gt;"],
+    ["a < b > c", "a &lt; b &gt; c"],
+    ["commas, everywhere,", "commas, everywhere,"],
+    ["line one\nline two", "line one&#10;line two"],
+    ["carriage\r\nreturn", "carriage&#13;&#10;return"],
+    ["naïve café — 生物路由器 🧬", "naïve café — 生物路由器 🧬"],
+    [
+      "<biorouter-ref type=\"skill\" name=\"nested\">",
+      "&lt;biorouter-ref type=&quot;skill&quot; name=&quot;nested&quot;&gt;"
+    ],
+    ["", ""],
+    ["   ", "   "],
+    ["&#10;", "&amp;#10;"],
+    ["&#65;", "&amp;#65;"],
+    ["it's\ta — b", "it's\ta — b"],
+    ["single-cell \"QC\" & prep <v2>", "single-cell &quot;QC&quot; &amp; prep &lt;v2&gt;"]
+  ]
+}
