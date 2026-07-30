@@ -365,8 +365,7 @@ mod tests {
             },
         )
         .await
-        .err()
-        .expect("a Meditation that wrote no Soul page must not report an ingest")
+        .expect_err("a Meditation that wrote no Soul page must not report an ingest")
         .to_string();
 
         assert!(

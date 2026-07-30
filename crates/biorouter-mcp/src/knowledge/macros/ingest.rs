@@ -107,7 +107,18 @@ pub async fn ingest(svc: &KnowledgeService, args: IngestArgs) -> Result<IngestRe
             // that failed mid-request: the turn comes back as a bare apology, or
             // (Google, candidate with no `parts`) as a wholly empty message, and
             // both look exactly like "the agent has no more tool calls".
-            if !repo.txn_has_changes(&txn)? {
+            //
+            // A failure to *answer* the question aborts too: leaving HEAD parked
+            // on the txn branch is how the next write to this KB lands somewhere
+            // nobody is looking.
+            let wrote_something = match repo.txn_has_changes(&txn) {
+                Ok(changed) => changed,
+                Err(e) => {
+                    let _ = repo.abort_txn(&txn);
+                    return Err(e.context("checking whether the ingest wrote anything"));
+                }
+            };
+            if !wrote_something {
                 let _ = repo.abort_txn(&txn);
                 anyhow::bail!(no_pages_written_error(&raw.source_id, &r));
             }
@@ -429,8 +440,7 @@ mod tests {
         .await;
 
         let err = result
-            .err()
-            .expect("a digest that wrote no knowledge page must not report success")
+            .expect_err("a digest that wrote no knowledge page must not report success")
             .to_string();
         assert!(
             err.contains("no knowledge"),
@@ -479,8 +489,7 @@ mod tests {
             },
         )
         .await
-        .err()
-        .expect("an empty provider reply must not report a completed digest")
+        .expect_err("an empty provider reply must not report a completed digest")
         .to_string();
 
         assert!(
@@ -523,8 +532,7 @@ mod tests {
             },
         )
         .await
-        .err()
-        .expect("a digest whose every tool call failed must not report success")
+        .expect_err("a digest whose every tool call failed must not report success")
         .to_string();
 
         assert!(

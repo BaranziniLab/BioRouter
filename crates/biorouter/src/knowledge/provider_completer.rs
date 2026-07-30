@@ -331,8 +331,7 @@ mod tests {
         let err = completer
             .complete("sys", &[LlmMessage::User("hi".into())], &[])
             .await
-            .err()
-            .expect("an undecodable tool request must not look like a finished turn")
+            .expect_err("an undecodable tool request must not look like a finished turn")
             .to_string();
 
         assert!(
@@ -367,8 +366,7 @@ mod tests {
         let err = completer
             .complete("sys", &[LlmMessage::User("hi".into())], &[])
             .await
-            .err()
-            .expect("a partially undecodable turn must not be executed as if intact")
+            .expect_err("a partially undecodable turn must not be executed as if intact")
             .to_string();
 
         assert!(
