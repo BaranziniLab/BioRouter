@@ -474,6 +474,11 @@ pub fn sensitive_file_operation(
     None
 }
 
+/// This inspector's name, as it appears on an [`InspectionResult`]. Named so
+/// [`crate::tool_inspection::NON_DELEGABLE_APPROVAL_INSPECTORS`] cannot drift
+/// from it.
+pub const SENSITIVE_OPS_INSPECTOR_NAME: &str = "sensitive_ops";
+
 /// Inspector that, **in Auto mode only**, escalates the sensitive-operation set
 /// to the standard approval flow. See the module docs for the policy.
 pub struct SensitiveOpsInspector;
@@ -481,7 +486,7 @@ pub struct SensitiveOpsInspector;
 #[async_trait]
 impl ToolInspector for SensitiveOpsInspector {
     fn name(&self) -> &'static str {
-        "sensitive_ops"
+        SENSITIVE_OPS_INSPECTOR_NAME
     }
 
     fn as_any(&self) -> &dyn std::any::Any {

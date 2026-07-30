@@ -7,6 +7,11 @@ use crate::security::policy::{Decision, PolicyEngine};
 use crate::security::{SecurityManager, SecurityResult};
 use crate::tool_inspection::{InspectionAction, InspectionResult, ToolInspector};
 
+/// This inspector's name, as it appears on an [`InspectionResult`]. Named so
+/// [`crate::tool_inspection::NON_DELEGABLE_APPROVAL_INSPECTORS`] cannot drift
+/// from it. Also the key `get_security_finding_id_from_results` matches on.
+pub const SECURITY_INSPECTOR_NAME: &str = "security";
+
 /// Security inspector that governs tool calls with three layers:
 ///   1. the always-on, non-bypassable catastrophic-command denylist (BR-20),
 ///   2. the auditable command policy engine (BR-21) — argv-parsed, path-
@@ -61,7 +66,7 @@ impl SecurityInspector {
 #[async_trait]
 impl ToolInspector for SecurityInspector {
     fn name(&self) -> &'static str {
-        "security"
+        SECURITY_INSPECTOR_NAME
     }
 
     fn as_any(&self) -> &dyn std::any::Any {

@@ -391,9 +391,54 @@ pub fn get_security_finding_id_from_results(
     inspection_results
         .iter()
         .find(|result| {
-            result.tool_request_id == tool_request_id && result.inspector_name == "security"
+            result.tool_request_id == tool_request_id
+                && result.inspector_name
+                    == crate::security::security_inspector::SECURITY_INSPECTOR_NAME
         })
         .and_then(|result| result.finding_id.clone())
+}
+
+/// Inspectors whose `RequireApproval` is a question **for the human** rather
+/// than a policy decision an automation may stand in for.
+///
+/// A `PermissionRequest` hook is a convenience: the user writes it once, in
+/// advance, so routine prompts stop interrupting them. That is a reasonable
+/// thing to delegate — but only for approvals the *permission mode* raised.
+/// These four inspectors escalate because something about this specific call is
+/// dangerous or discloses data the user has not seen, and each of them exists
+/// precisely because automated grants (Auto mode, `AlwaysAllow`, a SmartApprove
+/// read-only grade, an org policy) must not decide it. A hook is one more
+/// automated grant, and it runs *after* the escalation-only merge, where the
+/// lattice can no longer protect the verdict.
+///
+/// Deny is unaffected in both directions: a hook may always deny, and these
+/// inspectors' own `Deny` never reaches this path at all.
+pub const NON_DELEGABLE_APPROVAL_INSPECTORS: &[&str] = &[
+    // Issue #63 — cross-session (machine-wide) memory disclosure.
+    crate::security::global_memory::GLOBAL_MEMORY_INSPECTOR_NAME,
+    // Prompt-injection findings and the command policy engine's `ask`.
+    crate::security::security_inspector::SECURITY_INSPECTOR_NAME,
+    // Auto-mode escalation of writes to SSH keys, keychains, system dirs, …
+    crate::security::sensitive_ops::SENSITIVE_OPS_INSPECTOR_NAME,
+    // A trusted admin's policy; a project-local hook is not the admin.
+    crate::permission::managed_inspector::MANAGED_INSPECTOR_NAME,
+];
+
+/// Whether this tool request's approval must be answered by the user in person.
+///
+/// True when any inspector in [`NON_DELEGABLE_APPROVAL_INSPECTORS`] asked for
+/// approval on it. The caller ([`crate::agents::Agent::handle_approval_tool_requests`])
+/// uses this to ignore a `PermissionRequest` hook's `allow` and show the card
+/// anyway.
+pub fn approval_requires_a_human(
+    tool_request_id: &str,
+    inspection_results: &[InspectionResult],
+) -> bool {
+    inspection_results.iter().any(|result| {
+        result.tool_request_id == tool_request_id
+            && matches!(result.action, InspectionAction::RequireApproval(_))
+            && NON_DELEGABLE_APPROVAL_INSPECTORS.contains(&result.inspector_name.as_str())
+    })
 }
 
 #[cfg(test)]
@@ -547,6 +592,66 @@ mod tests {
             merged.needs_approval.is_empty(),
             "an inspector's ask must not resurrect a call the permission baseline denied"
         );
+    }
+
+    // --- who may answer an approval ---------------------------------------
+
+    /// Every inspector that escalates *because the call itself is dangerous or
+    /// discloses unseen data* raises an approval only a human may answer. Each
+    /// of these exists to stop an automated grant from deciding the call; a
+    /// `PermissionRequest` hook is one more automated grant.
+    #[test]
+    fn a_security_raised_approval_is_not_delegable() {
+        for inspector in NON_DELEGABLE_APPROVAL_INSPECTORS {
+            let results = vec![result(
+                "req_1",
+                inspector,
+                InspectionAction::RequireApproval(Some("because".into())),
+            )];
+            assert!(
+                approval_requires_a_human("req_1", &results),
+                "{inspector}'s approval must reach the user in person"
+            );
+        }
+    }
+
+    /// The bound is narrow on purpose: an ordinary permission-mode prompt is
+    /// exactly what a `PermissionRequest` hook is for, and a hook that can no
+    /// longer answer one is a broken feature, not a safer one.
+    #[test]
+    fn an_ordinary_permission_prompt_stays_delegable() {
+        for inspector in ["permission", "hooks", "repetition"] {
+            let results = vec![result(
+                "req_1",
+                inspector,
+                InspectionAction::RequireApproval(None),
+            )];
+            assert!(
+                !approval_requires_a_human("req_1", &results),
+                "{inspector} raises ordinary approvals; a hook may still answer them"
+            );
+        }
+        assert!(
+            !approval_requires_a_human("req_1", &[]),
+            "no inspection result at all is an ordinary prompt"
+        );
+    }
+
+    /// The predicate is per-request and per-action: a security inspector that
+    /// *allowed* this call, or that asked about a **different** one, must not
+    /// make this approval non-delegable.
+    #[test]
+    fn only_this_requests_own_security_ask_counts() {
+        let results = vec![
+            result("req_1", "security", InspectionAction::Allow),
+            result(
+                "req_2",
+                "global_memory",
+                InspectionAction::RequireApproval(Some("other call".into())),
+            ),
+        ];
+        assert!(!approval_requires_a_human("req_1", &results));
+        assert!(approval_requires_a_human("req_2", &results));
     }
 
     /// Three inspectors disagreeing about one call still resolve to the top of the
