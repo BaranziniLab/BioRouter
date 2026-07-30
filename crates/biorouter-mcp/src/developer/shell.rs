@@ -517,6 +517,28 @@ impl Drop for ProcessGroupReaper {
     }
 }
 
+/// Ties a spawned task's lifetime to a scope: aborts it on drop.
+///
+/// The foreground heartbeat loops forever by construction, so its owner must
+/// stop it — and `execute_shell_command` can leave by `?` from inside a
+/// `select!` arm as well as by returning a value. An explicit `abort()` after
+/// the `select!` is skipped by the `?` path, and a heartbeat that outlives its
+/// command notifies the client about a command that finished long ago. Making it
+/// RAII removes the class of mistake instead of the one instance.
+pub struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl AbortOnDrop {
+    pub fn new(handle: tokio::task::JoinHandle<()>) -> Self {
+        Self(handle)
+    }
+}
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 /// Registers a running **foreground** shell command in the process-wide
 /// active-work registry for as long as it runs, with a cancel action that kills
 /// its process group (issue #72).
@@ -1112,6 +1134,36 @@ mod tests {
         assert!(
             message.contains("process group"),
             "and the reassurance that nothing was left running: {message}"
+        );
+    }
+
+    /// The heartbeat loops forever, so leaving the scope must stop it. An
+    /// explicit `abort()` at the end of `execute_shell_command` was skipped by
+    /// the `?` inside one of its `select!` arms, which would have left a task
+    /// notifying the client about a command that finished long ago.
+    #[tokio::test]
+    async fn abort_on_drop_stops_an_endless_task() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let ticks = std::sync::Arc::new(AtomicUsize::new(0));
+        let counter = ticks.clone();
+        let guard = AbortOnDrop::new(tokio::spawn(async move {
+            loop {
+                counter.fetch_add(1, Ordering::SeqCst);
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        }));
+
+        tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+        assert!(ticks.load(Ordering::SeqCst) > 0, "the task must have run");
+        drop(guard);
+
+        let after_drop = ticks.load(Ordering::SeqCst);
+        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+        assert_eq!(
+            ticks.load(Ordering::SeqCst),
+            after_drop,
+            "the task must stop the moment its guard drops"
         );
     }
 

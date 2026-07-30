@@ -1671,9 +1671,17 @@ impl DeveloperServer {
         //  - a heartbeat tells the client how long it has been running, so a
         //    silent command is not indistinguishable from a hung agent;
         //  - an explicit budget bounds it (see `FOREGROUND_TIMEOUT_DEFAULT`).
+        //
+        // Both are RAII rather than explicit stop calls, because the arms below
+        // can leave this function by `?` as well as by returning a value, and a
+        // heartbeat that outlives its command would notify the client forever.
         let started = std::time::Instant::now();
         let _active_work = super::shell::ForegroundWorkGuard::register(&command_text, pid);
-        let heartbeat = Self::foreground_heartbeat(peer.clone(), command_text.clone(), started);
+        let _heartbeat = super::shell::AbortOnDrop::new(Self::foreground_heartbeat(
+            peer.clone(),
+            command_text.clone(),
+            started,
+        ));
 
         // Stream the output and wait for completion with cancellation support
         let output_task = self.stream_shell_output(
@@ -1684,7 +1692,7 @@ impl DeveloperServer {
 
         let budget = self.foreground_timeout;
 
-        let outcome = tokio::select! {
+        tokio::select! {
             output_result = output_task => {
                 // Wait for the process to complete. PAR-02: the status is the
                 // only signal that a silent command failed — carry it out.
@@ -1743,10 +1751,7 @@ impl DeveloperServer {
                     None,
                 ))
             }
-        };
-
-        heartbeat.abort();
-        outcome
+        }
     }
 
     /// Report a still-running foreground command to the client every
