@@ -314,16 +314,11 @@ impl Agent {
                     );
                 }
 
-                // Find the corresponding inspection result for this tool request
-                let security_message = inspection_results.iter()
-                    .find(|result| result.tool_request_id == request.id)
-                    .and_then(|result| {
-                        if let crate::tool_inspection::InspectionAction::RequireApproval(Some(message)) = &result.action {
-                            Some(message.clone())
-                        } else {
-                            None
-                        }
-                    });
+                // What the card tells the user about *why* they are being asked.
+                let security_message = crate::tool_inspection::approval_prompt_for_request(
+                    &request.id,
+                    inspection_results,
+                );
 
                 // BR-63: give the card enough to decide with. The BR-18 registry
                 // already grades every tool it handed the model this turn, and

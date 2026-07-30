@@ -353,6 +353,68 @@ pub fn apply_inspection_results_to_permissions(
     permission_result
 }
 
+/// How prominently an inspector's approval explanation is shown on the card.
+/// Lower sorts first.
+fn approval_message_rank(inspector_name: &str) -> u8 {
+    if inspector_name == crate::security::global_memory::GLOBAL_MEMORY_INSPECTOR_NAME {
+        // The only explanation that names *what data is about to cross a
+        // boundary*, and which category. It leads.
+        0
+    } else if NON_DELEGABLE_APPROVAL_INSPECTORS.contains(&inspector_name) {
+        // "Policy requires approval", "flagged as potentially dangerous" — still
+        // security-raised, still above ordinary prompt text.
+        1
+    } else {
+        2
+    }
+}
+
+/// The explanation shown on a tool's approval card: **every** distinct reason an
+/// inspector gave for escalating this call, most consequential first, blank-line
+/// separated. `None` when nobody explained anything — an ordinary permission
+/// prompt the card renders on its own.
+///
+/// This used to take the first inspection result for the request and read a
+/// message off it *if that one happened to have one*, which failed two ways at
+/// once: a second inspector's explanation was dropped, and any earlier
+/// result without a message (an `Allow`, a bare `RequireApproval(None)`, an
+/// advisory `Warn`) swallowed the explanation behind it and left the user an
+/// unexplained card. Both silently hid the issue-#63 cross-session disclosure
+/// text — the part that names the category and says the store is machine-wide —
+/// behind, say, a managed-policy ask.
+pub fn approval_prompt_for_request(
+    tool_request_id: &str,
+    inspection_results: &[InspectionResult],
+) -> Option<String> {
+    let mut messages: Vec<(u8, &str)> = Vec::new();
+    for result in inspection_results {
+        if result.tool_request_id != tool_request_id {
+            continue;
+        }
+        let InspectionAction::RequireApproval(Some(message)) = &result.action else {
+            continue;
+        };
+        let message = message.trim();
+        if message.is_empty() || messages.iter().any(|(_, seen)| *seen == message) {
+            continue;
+        }
+        messages.push((approval_message_rank(&result.inspector_name), message));
+    }
+    if messages.is_empty() {
+        return None;
+    }
+    // Stable, so inspectors sharing a rank keep their registration order.
+    messages.sort_by_key(|(rank, _)| *rank);
+
+    Some(
+        messages
+            .into_iter()
+            .map(|(_, message)| message)
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+    )
+}
+
 /// Collect the advisory (`InspectionAction::Warn`) reasons from a round of
 /// inspection, in inspector order and de-duplicated.
 ///
@@ -652,6 +714,118 @@ mod tests {
         ];
         assert!(!approval_requires_a_human("req_1", &results));
         assert!(approval_requires_a_human("req_2", &results));
+    }
+
+    // --- what the card says ------------------------------------------------
+
+    const MEMORY_CARD: &str =
+        "🔒 Cross-session memory read.\nThe global memory category \"clinical\"…";
+
+    fn ask(id: &str, inspector: &str, message: &str) -> InspectionResult {
+        result(
+            id,
+            inspector,
+            InspectionAction::RequireApproval(Some(message.to_string())),
+        )
+    }
+
+    /// Two inspectors can escalate the same call for two different reasons. The
+    /// card must carry both — dropping one leaves the user consenting to a
+    /// question they were never shown.
+    #[test]
+    fn every_approval_reason_reaches_the_card() {
+        let results = vec![
+            ask("req_1", "managed", "Your organization requires approval."),
+            ask("req_1", "global_memory", MEMORY_CARD),
+        ];
+
+        let prompt = approval_prompt_for_request("req_1", &results).expect("a card explanation");
+
+        assert!(
+            prompt.contains("Your organization requires approval."),
+            "the managed reason must survive: {prompt}"
+        );
+        assert!(
+            prompt.contains("clinical"),
+            "the cross-session disclosure explanation must survive: {prompt}"
+        );
+    }
+
+    /// …and the disclosure comes first. It is the only one of these that names
+    /// *what data is about to cross a boundary*; the others say "policy requires
+    /// approval", which the user can act on without reading it twice.
+    #[test]
+    fn the_cross_session_disclosure_is_never_buried() {
+        let results = vec![
+            ask("req_1", "managed", "Your organization requires approval."),
+            ask("req_1", "security", "🔒 Security Alert: flagged."),
+            ask("req_1", "global_memory", MEMORY_CARD),
+        ];
+
+        let prompt = approval_prompt_for_request("req_1", &results).expect("a card explanation");
+
+        assert!(
+            prompt.starts_with("🔒 Cross-session memory read."),
+            "the memory disclosure must lead the card: {prompt}"
+        );
+    }
+
+    /// The sharpest form of the bug this replaces: selection used to take the
+    /// *first result for the request* and then ask whether that one carried a
+    /// message. Any earlier result without one — an `Allow`, a bare
+    /// `RequireApproval(None)`, an advisory `Warn` — swallowed every explanation
+    /// behind it, and the user got an unexplained card.
+    #[test]
+    fn an_earlier_messageless_result_cannot_swallow_the_explanation() {
+        for leading in [
+            InspectionAction::Allow,
+            InspectionAction::RequireApproval(None),
+            InspectionAction::Warn,
+        ] {
+            let results = vec![
+                result("req_1", "permission", leading.clone()),
+                ask("req_1", "global_memory", MEMORY_CARD),
+            ];
+
+            let prompt = approval_prompt_for_request("req_1", &results);
+
+            assert_eq!(
+                prompt.as_deref(),
+                Some(MEMORY_CARD),
+                "a leading {leading:?} must not hide the explanation behind it"
+            );
+        }
+    }
+
+    /// Reasons are per request, de-duplicated, and absent when nobody explained
+    /// anything (a bare `RequireApproval(None)` is the ordinary permission
+    /// prompt, which the card renders on its own).
+    #[test]
+    fn approval_reasons_are_scoped_and_deduplicated() {
+        let results = vec![
+            ask("req_1", "global_memory", MEMORY_CARD),
+            ask("req_1", "sensitive_ops", MEMORY_CARD),
+            ask("req_2", "managed", "a different call entirely"),
+        ];
+
+        let prompt = approval_prompt_for_request("req_1", &results).expect("a card explanation");
+        assert_eq!(prompt, MEMORY_CARD, "an identical reason is not repeated");
+        assert!(
+            !prompt.contains("a different call entirely"),
+            "another request's reason must not leak onto this card: {prompt}"
+        );
+
+        assert_eq!(
+            approval_prompt_for_request(
+                "req_3",
+                &[result(
+                    "req_3",
+                    "permission",
+                    InspectionAction::RequireApproval(None)
+                )]
+            ),
+            None
+        );
     }
 
     /// Three inspectors disagreeing about one call still resolve to the top of the

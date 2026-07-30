@@ -161,14 +161,22 @@ async fn agent_with_hooks(
     (agent, session.id, work_dir)
 }
 
+/// One confirmation card as the user would see it.
+#[derive(Debug)]
+struct Card {
+    tool_name: String,
+    /// The explanation shown above the arguments — why this call is being
+    /// escalated at all.
+    prompt: Option<String>,
+}
+
 /// Run one turn to completion, answering every confirmation card with "allow
-/// once" so the loop progresses, and returning the tool names the cards were
-/// raised for.
+/// once" so the loop progresses, and returning the cards that were raised.
 async fn drain_collecting_cards(
     agent: &Agent,
     user: &str,
     session_id: &str,
-) -> Result<(Vec<Message>, Vec<String>)> {
+) -> Result<(Vec<Message>, Vec<Card>)> {
     let session_config = SessionConfig {
         id: session_id.to_string(),
         schedule_id: None,
@@ -188,8 +196,17 @@ async fn drain_collecting_cards(
     while let Some(event) = stream.next().await {
         if let AgentEvent::Message(message) = event? {
             if let Some(MessageContent::ActionRequired(action)) = message.content.first() {
-                if let ActionRequiredData::ToolConfirmation { id, tool_name, .. } = &action.data {
-                    cards.push(tool_name.clone());
+                if let ActionRequiredData::ToolConfirmation {
+                    id,
+                    tool_name,
+                    prompt,
+                    ..
+                } = &action.data
+                {
+                    cards.push(Card {
+                        tool_name: tool_name.clone(),
+                        prompt: prompt.clone(),
+                    });
                     agent
                         .handle_confirmation(
                             id.clone(),
@@ -230,10 +247,32 @@ async fn a_permission_hook_cannot_auto_allow_a_global_memory_read() {
         .await
         .unwrap();
 
+    let card = cards
+        .iter()
+        .find(|card| card.tool_name == "memory__retrieve_memories")
+        .unwrap_or_else(|| {
+            panic!(
+                "the user must still be asked about a machine-wide memory read; a \
+                 PermissionRequest hook answered it for them instead (cards raised: {cards:?})"
+            )
+        });
+
+    // A card is only consent if it says what is being consented to. This is the
+    // wiring check for the aggregated explanation: the text must survive the
+    // inspection results, the merge, and the approval stream, and arrive on the
+    // card the client renders.
+    let prompt = card
+        .prompt
+        .as_deref()
+        .expect("the card must explain why it is being shown");
     assert!(
-        cards.iter().any(|name| name == "memory__retrieve_memories"),
-        "the user must still be asked about a machine-wide memory read; a \
-         PermissionRequest hook answered it for them instead (cards raised: {cards:?})"
+        prompt.contains("clinical"),
+        "the card must name the category being disclosed: {prompt}"
+    );
+    assert!(
+        prompt.contains("every Biorouter session on this computer"),
+        "the card must say the store is machine-wide, or the user cannot judge \
+         the blast radius: {prompt}"
     );
 }
 
@@ -252,7 +291,9 @@ async fn a_permission_hook_cannot_auto_allow_a_global_memory_write() {
         .unwrap();
 
     assert!(
-        cards.iter().any(|name| name == "memory__remember_memory"),
+        cards
+            .iter()
+            .any(|card| card.tool_name == "memory__remember_memory"),
         "a machine-wide memory write must still reach the user (cards raised: {cards:?})"
     );
 }
