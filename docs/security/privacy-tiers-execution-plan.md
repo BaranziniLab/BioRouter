@@ -5204,7 +5204,9 @@ every one of them gets both rows: the four HTTP macro routes (above), the platfo
 (`every_tool_that_writes_content_ratchets_and_the_plumbing_ones_do_not`, which drives all nineteen
 tools as `Private` and the ratchet-list assertion pins the `Public` direction), CP3
 (`a_br_kb_ingest_from_a_private_app_session_ratchets_the_base` plus the mid-turn pair), and CP4
-(Task 10C's export test). The seventh — the **CLI** — gets both rows too, below; only the **probe
+(Task 10C's export test). The seventh — the **CLI** — gets three rows below, two on
+`build_completer` and one on the **handler** (round 3 §7: a handler can call `paired` and then ignore
+its tier, which no constructor test can see); only the **probe
 binary** does not, and the reason is structural rather than a shortfall of effort.
 
 *Why the previous version's "structural only, for both" was not enough.* Once Step 5 (i) forbids a
@@ -5294,6 +5296,69 @@ async fn the_cli_capability_follows_the_INSTANCE_not_the_name_the_user_typed() {
                "the CLI keyed its capability on the name the user typed");
 }
 ```
+
+**And the CLI's second row is on the HANDLER, not on `build_completer`** — round 3 §7's finding, and
+the reason it is not enough to test the constructor:
+
+> The CLI test only checks `build_completer`'s returned tuple, not the handlers. A handler can call
+> `paired`, ignore its tier, and derive capability from the requested provider name — all structural
+> counts pass.
+
+That is true, and every check in Step 5 (i) passes it: no literal appears, `ProviderCompleter::new`
+is gone, `paired(` appears once. What separates the two implementations is where the value the
+handler *puts in the Args* came from, and only a handler-level behavioural row can see that.
+
+```rust
+// crates/biorouter-cli/src/commands/knowledge.rs, in its #[cfg(test)] mod tests (:755-756)
+
+#[tokio::test]
+async fn the_cli_ingest_HANDLER_ratchets_from_the_instance_and_the_name_is_the_same_in_both_legs() {
+    // ⚠ THE PROVIDER NAME IS `ollama` IN BOTH LEGS, and that is the whole
+    // construction. An implementation that keys on the requested name gives the
+    // SAME answer twice and fails one leg; so does one that hardcodes either
+    // literal. Only a handler that reads the CONSTRUCTED instance passes both.
+    //
+    // What varies is `OLLAMA_HOST`: Task 5 makes a loopback Ollama Private and a
+    // non-loopback one Public (`is_loopback_host`, providers/ollama.rs `:46-50`
+    // reads the var), which is exactly a same-name/different-tier pair with no
+    // credential and no network anywhere in it.
+    //
+    // No test mode: `build_completer`'s early return (:74-76) hands back a
+    // TestModeCompleter and Public before any provider exists, which would make
+    // both legs Public and the test vacuous.
+    for (host, want_private) in [("http://127.0.0.1:11434", true),
+                                 ("http://ollama.example.com", false)] {
+        let _env = env_lock::lock_env(&[("OLLAMA_HOST", Some(host)),
+                                        ("BIOROUTER_KNOWLEDGE_TEST_MODE", None)]);
+        // `service()` (:31-33) is `KnowledgeService::new_default()`, whose root
+        // is `paths::knowledge_root()` -> `in_config_dir("knowledge")` ->
+        // `$BIOROUTER_PATH_ROOT/config/knowledge` when the override is set
+        // (biorouter-mcp/src/paths.rs:40-56). That is how this row gets a
+        // throwaway store instead of the developer's own.
+        let (root, _tmp) = cli_knowledge_root_with_base("k");
+
+        // The sub-agent WILL fail — nothing is listening on either host — and
+        // that is fine and is the point: CP2 raises before it runs
+        // (`macros/ingest.rs:47`), so the ratchet is observable without an LLM.
+        let _ = handle_ingest(Some("k".into()), None, None, Some("n=412".into()), None,
+                              Some("ollama".into()), Some("qwen3.5:4b".into())).await;
+
+        assert_eq!(tier::is_private(&root, "k"), want_private,
+                   "OLLAMA_HOST={host}: the handler did not read the constructed instance");
+    }
+}
+```
+
+**This gate rejects: a CLI handler that calls `paired`, discards its tier, and writes
+`caller_is_private: provider.as_deref() == Some(\"ollama\")`.** The name is `ollama` in both legs, so
+that implementation stamps *private* twice and the second leg fails. It rejects the two literals for
+the same reason — `true` and `false` are each constant across the legs — and it rejects a handler
+that quietly re-enters test mode, because the fixture clears `BIOROUTER_KNOWLEDGE_TEST_MODE` and a
+`TestModeCompleter` is Public in both legs. **What it does not reject** is a *second* CLI handler
+(`handle_query`, `handle_lint`, `handle_ingest_conversation`) making the same mistake; those three
+carry the same shape and no behavioural row. That is a deliberate stop: `handle_ingest` is the one
+that writes content into a base, and the other three are covered structurally by Step 5 (i) plus
+this row's existence as the pattern to copy. Stated so it is not read as coverage.
 
 ⚠ `build_completer`'s **test-mode early return** (`:74-76`, `test_mode::env_enabled()` →
 `TestModeCompleter`) has no provider to read a tier from, and it is the CLI's twin of
@@ -5686,7 +5751,7 @@ cargo test -p biorouter-server --test knowledge_routes
 cargo test -p biorouter-server --lib routes::apps 2>&1 | grep "test result:"  # 90 + 1
 cargo test -p biorouter --lib knowledge::conversation_ingest 2>&1 | grep "test result:"  # 2, unchanged
 cargo test -p biorouter --lib knowledge::provider_completer 2>&1 | grep "test result:"  # 4 + 1
-cargo test -p biorouter-cli --lib commands::knowledge 2>&1 | grep "test result:"  # 9 + 2
+cargo test -p biorouter-cli --lib commands::knowledge 2>&1 | grep "test result:"  # 9 + 3
 ```
 
 Expected: **PASS**, and `cargo check --workspace --all-targets` clean. The CLI line is not
