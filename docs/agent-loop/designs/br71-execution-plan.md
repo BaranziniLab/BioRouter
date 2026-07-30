@@ -22326,8 +22326,16 @@ test here must be READ-ONLY"*, and whose tests are `#[tokio::test(flavor =
     #[serial]
     async fn running_sessions_reports_exactly_the_sessions_holding_a_turn() {
         let state = AppState::new().await.unwrap();
-        let busy = format!("parity-busy-{}", uuid::Uuid::new_v4());
-        let idle = format!("parity-idle-{}", uuid::Uuid::new_v4());
+        // ⚠ NOT `uuid::Uuid::new_v4()`: `uuid` is not a dependency of
+        // `biorouter-server` (`grep -n uuid crates/biorouter-server/Cargo.toml`
+        // returns nothing), so that would be an unresolved-crate error. A
+        // nanosecond stamp is unique enough for two ids in one test.
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let busy = format!("parity-busy-{stamp}");
+        let idle = format!("parity-idle-{stamp}");
 
         let before = get_running(state.clone()).await;
         assert!(!before.contains(&busy), "precondition: {before:?}");
@@ -22353,7 +22361,11 @@ test here must be READ-ONLY"*, and whose tests are `#[tokio::test(flavor =
     }
 ```
 
-(`get_running` is a local two-liner in the same shape as this module's existing
+(Imports: the module already has `use super::*;`, which brings `AppState` and `Arc`;
+add `use serial_test::serial;` if that module does not already have it — `diverge_tests`
+does — and `use tokio_util::sync::CancellationToken;` (`tokio-util 0.7.15` is a direct
+dependency of `biorouter-server`; `serial_test` is a dev-dependency via the workspace).
+`get_running` is a local two-liner in the same shape as this module's existing
 `get_activity` / `get_sidebar_sessions` helpers: `oneshot` the router at
 `GET /sessions/running` and return `Vec<String>` from the body. Reuse them rather than
 inventing a third shape. ⚠ `assert!(before.is_empty())` would be **wrong** here — the
