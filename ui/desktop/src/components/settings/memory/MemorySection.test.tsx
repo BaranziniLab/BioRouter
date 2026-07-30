@@ -241,7 +241,7 @@ describe('MemorySection', () => {
     expect(name.className).toContain('min-w-0');
     expect(name.className).toContain('[overflow-wrap:anywhere]');
 
-    fireEvent.click(screen.getByRole('button', { name: /show the 1 memory in/i }));
+    fireEvent.click(screen.getByRole('button', { name: `Show the 1 memory in ${long}` }));
     const body = await screen.findByText('x'.repeat(2000));
     expect(body.className).toContain('[overflow-wrap:anywhere]');
   });
