@@ -61,6 +61,7 @@ pub mod knowledge;
 pub mod llamacpp;
 pub mod mcp_app_proxy;
 pub mod mcp_ui_proxy;
+pub mod memory;
 pub mod reply;
 pub mod reset;
 pub mod schedule;
@@ -95,6 +96,7 @@ pub fn configure(state: Arc<crate::state::AppState>, secret_key: String) -> Rout
         .merge(schedule::routes(state.clone()))
         .merge(setup::routes(state.clone()))
         .merge(llamacpp::routes(state.clone()))
+        .merge(memory::routes(state.clone()))
         .merge(tunnel::routes(state.clone()))
         .merge(mcp_ui_proxy::routes())
         .merge(mcp_app_proxy::routes(secret_key))
