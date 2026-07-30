@@ -753,27 +753,59 @@ lexically, then by canonicalizing the deepest existing ancestor — and the tool
 few microseconds later. Between those two moments a **concurrently running** process can replace a
 workspace symlink so the daemon's open follows it into a deny root.
 
-Two things bound this, and both were measured.
+⚠ **This risk used to contradict Task 14D, and Task 14D was right.** AR-9 said *"creating a symlink
+or hardlink whose source is inside a deny root requires reading the source path's metadata, and the
+kernel refuses that"*, concluding the link could not be planted from a sandboxed child. Task 14D said
+the opposite, and measured on this host it is correct: **`symlink(2)` never resolves its target.**
 
-- **The link cannot be planted from a sandboxed child on a supported platform.** Creating a symlink
-  or hardlink whose source is inside a deny root requires reading the source path's metadata, and
-  the kernel refuses that: macOS `ln: …: Operation not permitted, rc=1` under a
-  `(deny file-read* (subpath …))`. So the attacker needs an *unsandboxed* writer, which on a
-  supported platform means another tool call — and that tool call's own arguments go through the
-  same barrier.
+```
+ln -s /nonexistent/definitely/absent link1     -> rc=0   (target need not exist at all)
+ln -s "$PWD/denied" link2                      -> rc=0
+chmod 000 noperm; ln -s "$PWD/noperm/inner/s.txt" link3  -> rc=0   (no read of the target)
+```
+
+The **hardlink** half of the old claim stands — `link(2)` does resolve the existing path, so a
+hardlink into a deny root fails under the sandbox. The symlink half is withdrawn. **The attacker
+does not need an unsandboxed writer.**
+
+So two things bound this, and both were measured.
+
 - **A pre-planted hardlink defeats the deny outright, on both platforms.** Seatbelt matches paths,
   not inodes, and `--tmpfs` hides a path, not an inode. Measured: macOS reads a pre-existing hardlink
   to a denied file (`SECRET-KB-CONTENT`, exit 0); Linux does too under a `--tmpfs` deny
   (`SECRET-KB-CONTENT, rc=0`). Nothing short of an inode-aware policy closes that, and neither
-  platform offers one to an unprivileged process.
+  platform offers one to an unprivileged process. **It requires a hardlink created before the deny
+  was in force**, which needs a private-capability session or a pre-tiers install.
+- **The symlink swap window IS closable, on both platforms this product ships — and the plan's claim
+  that it is not was wrong.** AR-9 used to say the fix needs `openat2(RESOLVE_BENEATH)`, *"Linux 5.6+,
+  no macOS equivalent"*. Measured on macOS 26.5.2 against the shipped SDK
+  (`/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include/sys/fcntl.h:128` and `:158`):
 
-**Stated in the operator's terms:** the read-deny is a barrier against a public model *asking* for
-private material, not against a public model that has already arranged, through some earlier
-unsandboxed write, for a private file to be reachable under a second name. Closing it means
-`openat2(RESOLVE_BENEATH)` (Linux 5.6+, no macOS equivalent) or an inode policy, and neither is
-portable. What this plan does instead is make the window as small as the language allows: the check
-is placed in the same synchronous block as the open wherever the reader is under our control
-(Task 14D), and never across an `.await`.
+  ```
+  O_RESOLVE_BENEATH = 0x1000        O_NOFOLLOW_ANY = 0x20000000
+
+  openat(dirfd=/private/tmp/lnprobe, "denied/x.txt",            O_RESOLVE_BENEATH) -> OK
+  openat(dirfd=/private/tmp/lnprobe, "link2/x.txt",             O_RESOLVE_BENEATH) -> Capabilities insufficient
+  openat(dirfd=/private/tmp/lnprobe, "../lnprobe/denied/x.txt", O_RESOLVE_BENEATH) -> Capabilities insufficient
+  openat(dirfd=/private/tmp/lnprobe, "link2/x.txt",             O_NOFOLLOW_ANY)    -> Too many levels of symbolic links
+  ```
+
+  Both a symlink traversal and a `..` escape are refused **at open time**, which is the whole of the
+  TOCTOU. `O_RESOLVE_BENEATH` is the direct analogue of Linux's `RESOLVE_BENEATH`; `O_NOFOLLOW_ANY`
+  is the stricter "no symlink in any component". [Task 14D](#task-14d-layer-as-seams--the-readers-that-never-reach-the-choke-point) (c) specifies resolve-and-open on
+  top of them.
+
+  ⚠ **And one measured trap that will bite the implementer.** `/tmp` on macOS is itself a symlink to
+  `/private/tmp`, so `open("/tmp/x", O_NOFOLLOW_ANY)` fails with `ELOOP` on a perfectly ordinary
+  path. Resolve-and-open must anchor a **canonical** directory fd and pass a relative remainder —
+  which is what the `openat` form above does and what a bare `open(absolute, flag)` does not.
+
+**So what remains, stated in the operator's terms:** the read-deny is a barrier against a public
+model *asking* for private material. It is not a barrier against a private file that was already
+made reachable under a second **inode** — a hardlink planted while the deny was not in force. The
+symlink case is closed at the open, on both platforms, wherever the reader is one we open ourselves;
+where the reader hands a **path** to a third-party crate (`umya_spreadsheet::reader::xlsx::read`,
+`lopdf::Document::load`) it is not, and Task 14D (c) says which those are.
 
 ### AR-10 — On Linux, a deny root that does not exist when a job starts stays visible to that job for its whole life
 
@@ -11727,28 +11759,70 @@ fn a_memory_category_cannot_traverse_out_of_the_store() {
 }
 ```
 
-**(3) The narrowed TOCTOU — asserting what is achievable, and nothing more.**
+**(3) The TOCTOU — closed at the open, not narrowed, because both platforms can express it.**
 
 ```rust
 // crates/biorouter-mcp/src/developer/rmcp_developer.rs
 #[tokio::test]
 async fn a_symlink_planted_before_the_call_does_not_resolve() {
-    // The reachable half of round 2's finding 2. A sandboxed background job
-    // CAN create `./kb -> <deny root>` (creating a symlink does not read the
-    // target). Layer A canonicalizes the deepest existing ancestor, so by the
-    // time the call arrives the link is followed and refused.
-    //
-    // ⚠ What this does NOT assert is the swap window between the check and the
-    // open. That is AR-9 and it is not closable portably: it needs
-    // openat2(RESOLVE_BENEATH), which Linux 5.6+ has and macOS does not. A test
-    // claiming to close it would be a test that passes because the race is hard
-    // to lose, which is the worst kind of green.
+    // A sandboxed background job CAN create `./kb -> <deny root>`: symlink(2)
+    // never resolves its target (AR-9, measured — `ln -s` into a chmod-000
+    // directory and to a nonexistent path both succeed). Layer A canonicalizes
+    // the deepest existing ancestor, so by the time the call arrives the link
+    // is followed and refused.
     let ws = tempfile::tempdir().unwrap();
     std::os::unix::fs::symlink(private_roots().knowledge, ws.path().join("kb")).unwrap();
     let server = developer_on(ws.path(), Restricted::Yes);
     for relaxed in [true, false] {
         assert!(server.resolve_path_jailed("kb/page.md", relaxed).is_err());
     }
+}
+
+/// THE swap-window test, and it is a real forced race rather than a hope.
+///
+/// The previous version of this task asserted only the pre-planted case and
+/// wrote off the swap window as "not closable portably: it needs
+/// openat2(RESOLVE_BENEATH), which Linux 5.6+ has and macOS does not." **That
+/// is false** — macOS ships `O_RESOLVE_BENEATH` (0x1000) and `O_NOFOLLOW_ANY`
+/// (0x20000000), both measured working in AR-9. So this is closed at the open,
+/// and the test forces the interleaving instead of relying on losing a race.
+#[tokio::test]
+async fn a_symlink_swapped_between_the_check_and_the_open_does_not_resolve() {
+    // The seam fires AFTER `resolve_path_jailed` has returned Ok and BEFORE
+    // `safe_open` runs — exactly the window an argument check leaves open.
+    let ws = tempfile::tempdir().unwrap();
+    std::fs::create_dir(ws.path().join("kb")).unwrap();
+    std::fs::write(ws.path().join("kb/page.md"), "ordinary").unwrap();
+    let server = developer_on(ws.path(), Restricted::Yes);
+
+    let reached = seams::arm_after_path_check();
+    let read = tokio::spawn({
+        let server = server.clone();
+        async move { server.text_editor_view("kb/page.md").await }
+    });
+    let release = reached.await.unwrap();
+    // Swap the directory for a symlink into the deny root — what a concurrently
+    // running shell does, and what a checked PathBuf cannot survive.
+    std::fs::remove_dir_all(ws.path().join("kb")).unwrap();
+    std::os::unix::fs::symlink(private_roots().knowledge, ws.path().join("kb")).unwrap();
+    release.send(()).unwrap();
+
+    let out = format!("{:?}", read.await.unwrap());
+    assert!(out.contains("private") || out.contains("Capabilities insufficient")
+            || out.contains("Too many levels"), "the swap was followed: {out}");
+}
+
+#[test]
+fn safe_open_anchors_a_canonical_dirfd_and_not_an_absolute_path() {
+    // ⚠ THE trap, measured on macOS 26.5.2: `/tmp` is itself a symlink to
+    // `/private/tmp`, so `open("/tmp/x", O_NOFOLLOW_ANY)` fails with ELOOP on a
+    // perfectly ordinary path. An implementation that passes the absolute path
+    // straight to `open` with the flag is unusable and will be "fixed" by
+    // deleting the flag.
+    let d = tempfile::tempdir_in("/tmp").unwrap();
+    std::fs::write(d.path().join("ordinary.txt"), "x").unwrap();
+    assert!(safe_open(d.path(), "ordinary.txt").is_ok(),
+            "an ordinary file under /tmp must open");
 }
 
 #[tokio::test]
@@ -11870,9 +11944,57 @@ enumeration this whole design refuses to depend on. Pay the second walk.
 (`memory/mod.rs:354` takes the `read_dir(base_dir)` path for it) and never reaches `get_memory_file`
 with it. Rejecting it here would be a silent feature removal that no memory test covers.
 
-**(c) The reader-side check, adjacent to the resolve, before the relaxed early return.**
+**(c) Resolve **and open** — a checked `PathBuf` is not the fix, and round 3 was right about that.**
 
-In `resolve_path_jailed`, immediately after `let resolved = …` (`:2076-2081`) and **before** the
+> The proposed Developer repair still returns a checked `PathBuf`; it does not return an
+> already-open handle. Other readers receive no adjacent recheck at all.
+
+Correct. The repair is a helper that returns a **`File`**, so the thing that was checked is the thing
+that was opened:
+
+```rust
+/// crates/biorouter-mcp/src/privacy_open.rs
+///
+/// Open `rel` beneath `dir`, refusing any symlink or `..` that leaves it —
+/// **at the open**, so there is no window between the check and the read.
+///
+/// AR-9 used to say this needed `openat2(RESOLVE_BENEATH)` and had "no macOS
+/// equivalent". Measured, that is false: macOS ships `O_RESOLVE_BENEATH`
+/// (0x1000) and `O_NOFOLLOW_ANY` (0x20000000) in the current SDK, and both
+/// refuse a symlink traversal AND a `..` escape with ECAPMODE / ELOOP.
+///
+/// ⚠ `dir` must be CANONICAL and `rel` relative. `/tmp` on macOS is itself a
+/// symlink to `/private/tmp`, so passing an absolute path to `open` with these
+/// flags fails on ordinary files — which is how the flag gets deleted.
+pub fn safe_open(dir: &Path, rel: &Path) -> io::Result<File> {
+    #[cfg(target_os = "linux")]  { /* openat2(RESOLVE_BENEATH|RESOLVE_NO_MAGICLINKS) */ }
+    #[cfg(target_os = "macos")]  { /* openat(dirfd, rel, O_RDONLY|O_RESOLVE_BENEATH) */ }
+    #[cfg(windows)]              { /* no equivalent — see below */ }
+}
+```
+
+⚠ **Windows has no equivalent, and that is consistent rather than a gap:** Windows also has no
+Layer B ([AR-6](#ar-6--on-a-host-that-cannot-express-the-read-deny-a-public-session-loses-the-shell-and-two-costs-come-with-the-sandbox-itself)(1))
+and the five spawning tools are already refused there. On Windows `safe_open` falls back to the
+lexical + canonicalize check, and the residual is the swap window — which needs a concurrently
+running writer, which needs one of the tools Windows already refuses.
+
+**Where it is used, and where it cannot be — measured, because this is the honest boundary:**
+
+| Reader | Opens with | Can take a `File`? |
+|---|---|---|
+| `developer__text_editor` | `std::fs::read_to_string(resolved)` after `resolve_path_jailed` (`rmcp_developer.rs:2066`) | **yes** |
+| `computercontroller__cache` `View` | `tokio::fs::read_to_string(path)` (`computercontroller/mod.rs:1482`) | **yes** |
+| `computercontroller__xlsx_tool` | `umya_spreadsheet::reader::xlsx::read(path)` (`xlsx_tool.rs:37`) | **measure it.** If the crate exposes a reader-taking entry point, use it; if not, this reader keeps the check-then-use window and says so here |
+| `computercontroller__pdf_tool` | `lopdf::Document::load(path)` (`pdf_tool.rs:34`) | **measure it** — same rule |
+| `computercontroller__docx_tool` | `docx-rs` | **measure it** — same rule |
+
+**Do not skip the measurement and do not assume.** A row that turns out to be path-only is a stated
+residual; a row asserted to take a reader and silently left path-based is the shape this plan keeps
+punishing.
+
+**And the check still goes before the relaxed-jail early return.** In `resolve_path_jailed`,
+immediately after `let resolved = …` (`:2076-2081`) and **before**
 `if jail_relaxed { return Ok(resolved); }` at `:2084-2087`:
 
 ```rust
@@ -11880,12 +12002,17 @@ In `resolve_path_jailed`, immediately after `let resolved = …` (`:2076-2081`) 
         // Auto mode, the mode agents run in, and a check placed after that
         // return never fires in production while every jailed-mode test passes.
         //
-        // This is a SECOND evaluation of a decision Layer A already made at the
-        // choke point, and it is here for the TOCTOU (AR-9), not for coverage:
-        // it runs as close to the open as the code allows, so the window in
-        // which a concurrently-running shell can swap a workspace symlink is a
-        // few instructions rather than an `.await`.
-        if self.private_data.is_restricted() && is_under_any(&resolved, &private_roots::all()) {
+        // `cap` is the CallCapability this call was admitted on (Task 10),
+        // arriving through `RequestContext.meta` — NOT a `self.private_data`
+        // field. `DeveloperServer` has no such field (`rmcp_developer.rs:330`)
+        // and adding one would recreate the cross-call race Task 10 removed:
+        // built-ins are poolable (`agents/extension.rs:524`), so one server can
+        // serve several sessions of differing tiers.
+        //
+        // This is a second evaluation of a decision Layer A already made at the
+        // choke point. It is here for COVERAGE of the relaxed path; the TOCTOU
+        // is closed one layer down, by `safe_open`.
+        if cap.restricts_private_data() && is_under_any(&resolved, &private_roots::all()) {
             return Err(ErrorData::new(
                 rmcp::model::ErrorCode::INVALID_PARAMS,
                 private_root_refusal("developer__text_editor", &resolved),
@@ -11893,6 +12020,10 @@ In `resolve_path_jailed`, immediately after `let resolved = …` (`:2076-2081`) 
             ));
         }
 ```
+
+⚠ **`text_editor` takes no `RequestContext` today** (`rmcp_developer.rs:1185`; only `shell` does, at
+`:1323`). It gains one, along with the other eight Developer tools — the same mechanical change
+Task 14E makes across `agent_drafter`, `knowledge` and `memory`, and for the same reason.
 
 ⚠ **`Jail` already exists and is better than anything written for this task.**
 `crates/biorouter-mcp/src/developer/jail.rs` does deny-components before touching the filesystem
@@ -11949,7 +12080,7 @@ PY
 grep -rn "PrivatePathPolicy::for_call" --include='*.rs' crates/ | grep -v "mod tests" \
   | grep -v "^crates/biorouter/src/privacy/path_policy.rs:"
 echo "expect: exactly 3 lines — extension_manager.rs (Task 14B), agent.rs (this task),"
-echo "        rmcp_developer.rs (the TOCTOU re-check). No fourth, and no hand-rolled"
+echo "        rmcp_developer.rs (the relaxed-path re-check). No fourth, and no hand-rolled"
 echo "        starts_with anywhere:"
 grep -rn "starts_with(&private_roots\|starts_with(private_roots" --include='*.rs' crates/
 echo "expect: no output"
@@ -11974,6 +12105,38 @@ i_relax = body.index('if jail_relaxed {')
 assert i_deny < i_relax, 'the DR-14 check must precede the relaxed-jail early return'
 print('OK  deny at', i_deny, ' relaxed return at', i_relax)
 PY
+
+# (4b) The TOCTOU is closed at the OPEN. A check that returns a PathBuf which is
+#      then handed to `read_to_string` is check-then-use, which is what round 3
+#      rejected - and it reads identically to the fix.
+grep -c "fn safe_open" crates/biorouter-mcp/src/privacy_open.rs ; echo "expect: 1"
+grep -c "RESOLVE_BENEATH" crates/biorouter-mcp/src/privacy_open.rs
+echo "expect: >= 2 - one per platform arm. Zero means it is a lexical check wearing"
+echo "        the name, and the swap window is still open."
+grep -rn "fs::read_to_string(" crates/biorouter-mcp/src/computercontroller/mod.rs
+echo "expect: no hit inside the cache View arm - :1482's bare read is replaced by safe_open"
+grep -c "safe_open" crates/biorouter-mcp/src/developer/rmcp_developer.rs \
+                    crates/biorouter-mcp/src/computercontroller/mod.rs
+echo "expect: >= 1 and >= 1 - the two readers whose open we control"
+
+# (4c) NO capability FIELD on any server. A field would recreate the cross-call
+#      race Task 10 removed: built-ins are poolable (agents/extension.rs:524),
+#      so one server object can serve several sessions of differing tiers.
+grep -c "private_data" crates/biorouter-mcp/src/developer/rmcp_developer.rs
+echo "expect: 0 - the capability arrives per call in RequestContext.meta"
+awk '/pub struct DeveloperServer/,/^}/' crates/biorouter-mcp/src/developer/rmcp_developer.rs \
+  | grep -cE "capability|private_data|restricted"
+echo "expect: 0"
+
+# (4d) The path-taking third-party readers are ENUMERATED, not forgotten. Each
+#      is either routed through a reader-taking API or annotated as a residual.
+grep -n "umya_spreadsheet::reader\|Document::load\|docx_rs::read" \
+  crates/biorouter-mcp/src/computercontroller/xlsx_tool.rs \
+  crates/biorouter-mcp/src/computercontroller/pdf_tool.rs \
+  crates/biorouter-mcp/src/computercontroller/docx_tool.rs
+echo "expect: every hit is either a reader-taking form, or carries an"
+echo "        'AR-9 residual: path-only' comment. A bare path-taking call with no"
+echo "        comment is an unmeasured claim, which is what this plan keeps losing to."
 
 # (5) The approval preview is still user-only. AR-12 rests entirely on this.
 grep -n "user_only()" crates/biorouter/src/agents/tool_execution.rs
