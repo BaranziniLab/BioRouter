@@ -348,7 +348,13 @@ fn render_tool_request(req: &ToolRequest, theme: Theme, debug: bool) {
             "developer__text_editor" => render_text_editor_request(call, debug),
             "developer__shell" => render_shell_request(call, debug),
             "code_execution__execute_code" => render_execute_code_request(call, debug),
-            "subagent" => render_subagent_request(call, debug),
+            // BR-71: the spawn tool is advertised by the workspace extension
+            // now, so the name that reaches the transcript is normally the
+            // PREFIXED one. The bare form still arrives from prefix-stripping
+            // models (dispatch tolerates both — `is_spawn_tool_call`), so both
+            // must render as a delegation rather than falling through to the
+            // generic "tool with arguments" card.
+            "subagent" | "workspace__subagent" => render_subagent_request(call, debug),
             "todo__write" => render_todo_request(call, debug),
             _ => render_default_request(call, debug),
         },

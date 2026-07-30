@@ -25,6 +25,10 @@ use crate::workflow::local_workflows::load_local_workflow_file;
 use crate::workflow::{SubWorkflow, Workflow};
 
 pub const SUBAGENT_TOOL_NAME: &str = "subagent";
+/// The name dispatch actually sees once the workspace extension advertises the
+/// tool: extension-advertised tools are prefixed `{extension}__{tool}`
+/// (`ExtensionManager::get_prefixed_tools`).
+pub const SUBAGENT_TOOL_PREFIXED: &str = "workspace__subagent";
 pub const SUBAGENT_STATUS_TOOL_NAME: &str = "subagent_status";
 
 // --- Fork-bomb guard -------------------------------------------------------
@@ -97,6 +101,14 @@ pub struct SubagentParams {
     /// historical blocking call.
     #[serde(default)]
     pub background: bool,
+    /// BR-71 §4.5: open the child as a visible tab. Defaults to true when a GUI
+    /// is attached and false headless (Task 36 resolves it); `false` forces
+    /// today's invisible run even with the app open.
+    #[serde(default)]
+    pub visible: Option<bool>,
+    /// "tab" (default) | "split" | "window" — where the child's tab opens.
+    #[serde(default)]
+    pub placement: Option<String>,
 }
 
 fn default_summary() -> bool {
@@ -147,6 +159,15 @@ pub fn create_subagent_tool(sub_workflows: &[SubWorkflow]) -> Tool {
                 "type": "boolean",
                 "default": true,
                 "description": "If true (default), return only the subagent's final summary."
+            },
+            "visible": {
+                "type": "boolean",
+                "description": "Show this subagent in its own tab that the user can watch and talk to. Defaults to true when the desktop app is open. Pass false to run it silently."
+            },
+            "placement": {
+                "type": "string",
+                "enum": ["tab", "split", "window"],
+                "description": "Where the subagent's tab opens. Default \"tab\" (background, never steals focus)."
             }
         }
     });
@@ -327,7 +348,10 @@ fn list_handles(parent_session_id: &str) -> CallToolResult {
     }
 }
 
-fn build_tool_description(sub_workflows: &[SubWorkflow]) -> String {
+/// `pub(crate)` so `Agent::list_tools` can restore the sub-workflow-enriched
+/// description onto the tool the workspace extension advertises with `&[]` —
+/// only the agent holds the `sub_workflows` map.
+pub(crate) fn build_tool_description(sub_workflows: &[SubWorkflow]) -> String {
     let mut desc = String::from(
         "Delegate a task to a subagent that runs independently with its own context.\n\n\
          Modes:\n\
@@ -595,7 +619,9 @@ fn spawn_background_subagent(
     let handle = BackgroundSubagent::register(
         task_config.parent_session_id.clone(),
         child_session_id.clone(),
-        title.clone(),
+        // The title is no longer spliced into the assistant-facing text (it
+        // reads off the handle's snapshot instead), so this is its last use.
+        title,
         cancel.clone(),
     );
 
@@ -625,15 +651,8 @@ fn spawn_background_subagent(
         task_handle.complete(result);
     });
 
-    let text = format!(
-        "Subagent started in the background.\n\
-         handle: {}\n\
-         task: {}\n\n\
-         It runs independently of this turn. Collect its result with \
-         `subagent_status` — `{{\"handle\": \"{}\"}}` to poll, or \
-         `{{\"handle\": \"{}\", \"wait\": true}}` to block until it finishes.",
-        handle.id, title, handle.id, handle.id
-    );
+    // Task 36 replaces the empty note with `ChildVisibility::parent_note`.
+    let text = background_started_message(&handle.id, &handle.child_session_id, "");
 
     CallToolResult {
         content: vec![Content::text(text)],
@@ -641,6 +660,37 @@ fn spawn_background_subagent(
         is_error: Some(false),
         meta: None,
     }
+}
+
+/// What a `background: true` spawn returns to the parent. BR-71 decision 23:
+/// `subagent_status` no longer exists, and the child's SESSION ID is the handle
+/// every workspace tool takes.
+///
+/// `visibility_note` carries `ChildVisibility::parent_note` (Task 36) when the
+/// child ended up in the background for a reason the parent needs to know —
+/// notably decision 26's 4-tab cap. The background path returns IMMEDIATELY,
+/// before the `SubagentResult` exists, so the result's assistant-facing text
+/// (which is where Task 36 otherwise appends the note) is not reachable here:
+/// without this argument, the model is never told WHY a fan-out's fifth child
+/// has no tab, which is precisely the case the cap exists for.
+fn background_started_message(
+    handle_id: &str,
+    child_session_id: &str,
+    visibility_note: &str,
+) -> String {
+    let mut text = format!(
+        "Subagent started in the background (handle `{handle_id}`, session \
+         `{child_session_id}`). It keeps working while you do.\n\
+         - Wait for it: workspace_watch {{\"session_ids\": [\"{child_session_id}\"]}}\n\
+         - Check on it: workspace_read_conversation {{\"session_id\": \"{child_session_id}\", \
+         \"view\": \"summary\"}}\n\
+         - Stop it: workspace_close {{\"session_id\": \"{child_session_id}\", \"scope\": \"turn\"}}"
+    );
+    if !visibility_note.is_empty() {
+        text.push_str("\n\n");
+        text.push_str(visibility_note);
+    }
+    text
 }
 
 /// A short label for the handle list, from the workflow's prompt/instructions.
@@ -900,6 +950,49 @@ mod tests {
         }))
         .unwrap();
         assert!(params.background);
+    }
+
+    #[test]
+    fn spawn_params_accept_visible_and_placement_and_keep_every_legacy_field() {
+        let params: SubagentParams = serde_json::from_value(serde_json::json!({
+            "instructions": "count files",
+            "extensions": ["developer"],
+            "summary": false,
+            "background": true,
+            "visible": false,
+            "placement": "split"
+        }))
+        .unwrap();
+        assert_eq!(params.instructions.as_deref(), Some("count files"));
+        assert_eq!(
+            params.extensions.as_deref(),
+            Some(&["developer".to_string()][..])
+        );
+        assert!(!params.summary);
+        assert!(params.background);
+        assert_eq!(params.visible, Some(false));
+        assert_eq!(params.placement.as_deref(), Some("split"));
+    }
+
+    #[test]
+    fn the_background_result_points_at_workspace_watch_not_subagent_status() {
+        let text = background_started_message("sub_1", "child-session-id", "");
+        assert!(text.contains("workspace_watch"));
+        assert!(text.contains("child-session-id"));
+        assert!(!text.contains("subagent_status"));
+    }
+
+    /// Decision 26: when a child goes to the background because the 4-tab cap
+    /// was full, the PARENT must be told why. The background path returns
+    /// before any `SubagentResult` exists, so the note has to ride on this
+    /// message or it is never delivered.
+    #[test]
+    fn a_capped_background_start_tells_the_parent_why() {
+        let note = "child-session-id is running in the background (you already have \
+                    4 subagent tabs open, which is the limit). Find it in History.";
+        let text = background_started_message("sub_2", "child-session-id", note);
+        assert!(text.contains("background"));
+        assert!(text.contains("History"));
     }
 
     #[test]

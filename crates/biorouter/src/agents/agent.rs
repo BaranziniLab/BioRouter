@@ -33,8 +33,8 @@ use crate::agents::stall::{StallAction, StallCheckConfig, StallWatch};
 use crate::agents::subagent_handle;
 use crate::agents::subagent_task_config::TaskConfig;
 use crate::agents::subagent_tool::{
-    create_subagent_status_tool, create_subagent_tool, handle_subagent_status_tool,
-    handle_subagent_tool, SUBAGENT_STATUS_TOOL_NAME, SUBAGENT_TOOL_NAME,
+    create_subagent_status_tool, handle_subagent_status_tool, handle_subagent_tool,
+    SUBAGENT_STATUS_TOOL_NAME, SUBAGENT_TOOL_NAME,
 };
 use crate::agents::types::SessionConfig;
 use crate::agents::types::{FrontendTool, SharedProvider, ToolResultReceiver};
@@ -458,6 +458,28 @@ fn normalize_each_turn() -> bool {
     Config::global()
         .get_param::<bool>("BIOROUTER_NORMALIZE_EACH_TURN")
         .unwrap_or(true)
+}
+
+/// BR-71 decision 22: the merged spawn tool reaches dispatch under the
+/// workspace prefix, and bare for models that strip prefixes (the same
+/// tolerance `ExtensionManager::dispatch_tool_call` already applies to
+/// code_execution tools).
+pub(crate) fn is_spawn_tool_call(tool_name: &str) -> bool {
+    tool_name == crate::agents::subagent_tool::SUBAGENT_TOOL_PREFIXED
+        || tool_name == crate::agents::subagent_tool::SUBAGENT_TOOL_NAME
+}
+
+/// Workspace tools that block on work happening in ANOTHER session, and must
+/// therefore not hold a global tool-dispatch permit while they do. Both name
+/// forms, like `is_spawn_tool_call`.
+pub(crate) fn is_parking_workspace_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "workspace_watch"
+            | "workspace__workspace_watch"
+            | "workspace_send_prompt"
+            | "workspace__workspace_send_prompt"
+    )
 }
 
 pub struct ToolCategorizeResult {
@@ -2839,8 +2861,12 @@ impl Agent {
         cancellation_token: Option<CancellationToken>,
         session: &Session,
     ) -> (String, Result<ToolCallResult, ErrorData>) {
-        // Prevent subagents from creating other subagents
-        if session.session_type == SessionType::SubAgent && tool_call.name == SUBAGENT_TOOL_NAME {
+        // Prevent subagents from creating other subagents (decision 25:
+        // nesting stays flat). Both name forms, or a prefix-stripping model in
+        // a child session walks straight past the guard.
+        if session.session_type == SessionType::SubAgent
+            && is_spawn_tool_call(tool_call.name.as_ref())
+        {
             return (
                 request_id,
                 Err(ErrorData::new(
@@ -2918,7 +2944,43 @@ impl Agent {
         }
 
         debug!("WAITING_TOOL_START: {}", tool_call.name);
-        let result: ToolCallResult = if tool_call.name == SUBAGENT_TOOL_NAME {
+        let result: ToolCallResult = if is_spawn_tool_call(tool_call.name.as_ref()) {
+            // Same gate `subagents_enabled` applies when advertising. The
+            // extension advertises the tool; this is what stops a model that
+            // remembers the name from spawning in a session where delegation is
+            // off.
+            if !self.subagents_enabled(&session.id).await {
+                return (
+                    request_id,
+                    Err(ErrorData::new(
+                        ErrorCode::INVALID_REQUEST,
+                        "Subagent delegation is not available in this session".to_string(),
+                        None,
+                    )),
+                );
+            }
+            // …and the PER-SESSION grant, which the mode gate above does not
+            // cover. Intercepting before `ExtensionManager::dispatch_tool_call`
+            // means its `is_tool_available` check never runs for this name, so a
+            // session whose `workspace` entry was deliberately restricted — say
+            // `available_tools: ["workspace_list"]` — could still spawn through
+            // the BARE `subagent`. Re-checking here is what makes "enforced in
+            // both places" true for the spawn tool too, not just for
+            // `workspace_*`.
+            if !self
+                .extension_manager
+                .is_extension_tool_available(Self::SPAWN_EXTENSION, SUBAGENT_TOOL_NAME)
+                .await
+            {
+                return (
+                    request_id,
+                    Err(ErrorData::new(
+                        ErrorCode::RESOURCE_NOT_FOUND,
+                        "Tool 'subagent' is not available for extension 'workspace'".to_string(),
+                        None,
+                    )),
+                );
+            }
             let provider = match self.provider().await {
                 Ok(p) => p,
                 Err(_) => {
@@ -3020,7 +3082,27 @@ impl Agent {
         // their leaf tools are still bounded here (permit acquired before any
         // path lock, so a lock holder always makes progress — no deadlock).
         let dispatch_args = tool_call.arguments.clone();
-        let bound_dispatch = tool_call.name != SUBAGENT_TOOL_NAME;
+        // BR-71: the spawn exclusion above now has to cover BOTH name forms —
+        // the tool is advertised as `workspace__subagent`, and the bare name
+        // still arrives from prefix-stripping models.
+        //
+        // BR-71 also adds two more wrappers with exactly that shape. Both PARK on
+        // work performed elsewhere, for up to 600 s:
+        //
+        //   * `workspace_watch` — waits on other sessions' bus events (up to 32
+        //     ids, `timeout_s` clamped to 600). Eight concurrent watches take
+        //     all eight permits and stall every other tool call in the daemon,
+        //     including the user's own foreground conversation, for ten minutes.
+        //   * `workspace_send_prompt` with `mode:"turn", wait:"final_message"` —
+        //     the true deadlock: it holds a permit while waiting for the TARGET
+        //     session's detached turn to finish, and that turn's own tool calls
+        //     contend for the same eight permits. At saturation nothing can
+        //     complete until the timeout fires.
+        //
+        // A parking wrapper does no work of its own, so exempting it does not
+        // widen the concurrency this semaphore exists to bound.
+        let bound_dispatch = !is_spawn_tool_call(tool_call.name.as_ref())
+            && !is_parking_workspace_tool(tool_call.name.as_ref());
         // Stage 0 instrumentation: the existing WAITING_TOOL_START/END pair
         // above brackets only dispatch *setup* — the future below is returned
         // un-awaited and driven later by `select_all`, so those markers close
@@ -3475,6 +3557,24 @@ impl Agent {
             prefixed_tools.retain(|tool| tool.name != prefixed_spawn_tool);
         }
 
+        // BR-71: the extension advertises the spawn tool with no sub-workflow
+        // knowledge; only the Agent has the map. Restore the enriched
+        // description here so a session that defines sub-workflows still tells
+        // the model their names — the pre-merge behaviour.
+        if subagents_enabled {
+            let sub_workflows: Vec<_> = self.sub_workflows.lock().await.values().cloned().collect();
+            if !sub_workflows.is_empty() {
+                if let Some(spawn) = prefixed_tools
+                    .iter_mut()
+                    .find(|t| t.name == crate::agents::subagent_tool::SUBAGENT_TOOL_PREFIXED)
+                {
+                    spawn.description = Some(
+                        crate::agents::subagent_tool::build_tool_description(&sub_workflows).into(),
+                    );
+                }
+            }
+        }
+
         if (extension_name.is_none() || extension_name.as_deref() == Some("platform"))
             && self.config.scheduler_service.is_some()
         {
@@ -3503,11 +3603,14 @@ impl Agent {
                 prefixed_tools.push(final_output_tool.tool());
             }
 
+            // BR-71 decision 20: the standalone bare-`subagent` push that used
+            // to live here is GONE, and the Task 21 gate greps this file to
+            // prove it. The workspace extension is now the one and only
+            // advertisement of the spawn tool (Task 18 loads it above,
+            // `get_prefixed_tools` lists it as `workspace__subagent`); pushing
+            // a second bare copy here would advertise the same tool twice
+            // under two names.
             if subagents_enabled {
-                let sub_workflows = self.sub_workflows.lock().await;
-                let sub_workflows_vec: Vec<_> = sub_workflows.values().cloned().collect();
-                prefixed_tools.push(create_subagent_tool(&sub_workflows_vec));
-
                 // BR-40: the poll half of the spawn→poll model. Offered only
                 // when background subagents are enabled — without them there is
                 // never a handle to poll.
@@ -7239,24 +7342,106 @@ mod tests {
             "auto-injection must not grant cross-session control: {names:?}"
         );
 
-        // THE 18 → 19 BOUNDARY, pinned. Dispatch still intercepts only the BARE
-        // name (`Agent::dispatch_tool_call`), and `WorkspaceClient::call_tool`
-        // answers the prefixed one with "dispatched by the agent loop" until
-        // Task 19 rewires it. So at THIS commit the bare tool is the only
-        // *callable* delegation path, and deleting its push early — the exact
-        // ordering failure the plan calls non-negotiable — would leave a session
-        // with a tool it cannot use while every other assertion here still
-        // passed. Both names must be present, deliberately, for exactly one
-        // commit.
-        //
-        // TASK 19 MUST FLIP THIS: once the standalone push is deleted and
-        // dispatch is rewired to `workspace__subagent`, assert the bare name is
-        // GONE rather than present.
+        // THE 18 → 19 BOUNDARY, now crossed. Task 18 deliberately advertised
+        // BOTH the bare `subagent` (the standalone push, the only *callable*
+        // path while dispatch still matched on the bare name) and the prefixed
+        // `workspace__subagent`, for exactly one commit. Task 19 deleted the
+        // standalone push and taught dispatch both name forms
+        // (`is_spawn_tool_call`), so the duplicate advertisement is gone: the
+        // extension is the ONE place the spawn tool is advertised (decision 20).
+        // The bare name stays *dispatchable* for prefix-stripping models — it is
+        // simply no longer *listed* twice.
         assert!(
-            names.iter().any(|n| n == SUBAGENT_TOOL_NAME),
-            "until Task 19 rewires dispatch, the bare `subagent` is the only \
-             callable spawn path and must still be advertised: {names:?}"
+            !names.iter().any(|n| n == SUBAGENT_TOOL_NAME),
+            "after Task 19 the workspace extension is the only advertisement; \
+             the standalone bare `subagent` must be gone: {names:?}"
         );
+    }
+
+    /// Both spellings reach the spawn interception. A model that strips
+    /// extension prefixes calls `subagent`; everything else calls
+    /// `workspace__subagent`. Neither may fall through to the extension
+    /// manager, which would land on the extension's "dispatched by the agent
+    /// loop" error arm.
+    #[test]
+    fn dispatch_recognizes_both_spawn_tool_name_forms() {
+        assert!(is_spawn_tool_call("workspace__subagent"));
+        assert!(is_spawn_tool_call("subagent"));
+        assert!(!is_spawn_tool_call("workspace__workspace_list"));
+        assert!(!is_spawn_tool_call("subagent_status")); // never a spawn call
+    }
+
+    #[test]
+    fn parking_workspace_tools_are_exempt_from_the_dispatch_semaphore() {
+        for name in [
+            "workspace_watch",
+            "workspace__workspace_watch",
+            "workspace_send_prompt",
+            "workspace__workspace_send_prompt",
+        ] {
+            assert!(
+                is_parking_workspace_tool(name),
+                "{name} parks on another session and must not hold a permit"
+            );
+        }
+        // Non-parking workspace tools stay bounded — they do their own work.
+        for name in ["workspace_list", "workspace__workspace_set_tools"] {
+            assert!(!is_parking_workspace_tool(name));
+        }
+    }
+
+    /// The sub-workflow-enriched description survives the move. The extension
+    /// advertises with `&[]` (it has no access to the agent's `sub_workflows`
+    /// map), so `list_tools` must restore the enriched text — otherwise a
+    /// session that defines sub-workflows silently stops telling the model they
+    /// exist, which is invisible until someone notices the model never uses one.
+    #[tokio::test]
+    async fn sub_workflow_names_still_reach_the_spawn_tool_description() {
+        let (agent, session_id) = agent_with_one_extension_for_tests().await;
+        agent
+            .add_sub_workflows(vec![crate::workflow::SubWorkflow {
+                name: "test_workflow".to_string(),
+                path: "test.yaml".to_string(),
+                values: None,
+                sequential_when_repeated: false,
+                description: Some("A test workflow".to_string()),
+            }])
+            .await;
+
+        let tools = agent.list_tools(&session_id, None).await;
+        let spawn = tools
+            .iter()
+            .find(|t| t.name == "workspace__subagent")
+            .expect("the spawn tool is advertised");
+        let description = spawn.description.as_ref().unwrap();
+        assert!(
+            description.contains("Available subworkflows"),
+            "got: {description}"
+        );
+        assert!(description.contains("test_workflow"), "got: {description}");
+    }
+
+    /// F-class regression: a restricted grant must bind the bare name too.
+    #[tokio::test]
+    async fn a_restricted_workspace_grant_refuses_the_bare_spawn_name() {
+        let (agent, session_id) = agent_with_one_extension_for_tests().await;
+        agent
+            .add_extension(crate::agents::extension::ExtensionConfig::Platform {
+                name: "workspace".into(),
+                description: "Workspace Control".into(),
+                bundled: Some(true),
+                // Read-only grant: no spawning from this session.
+                available_tools: vec!["workspace_list".to_string()],
+            })
+            .await
+            .unwrap();
+        assert!(
+            !agent
+                .extension_manager
+                .is_extension_tool_available("workspace", "subagent")
+                .await
+        );
+        let _ = session_id;
     }
 
     /// The dispatch half of the same guarantee: `available_tools` is enforced

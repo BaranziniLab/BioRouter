@@ -17,7 +17,9 @@ use crate::providers::toolshim::{
 };
 
 use crate::agents::code_execution_extension::EXTENSION_NAME as CODE_EXECUTION_EXTENSION;
-use crate::agents::subagent_tool::{SUBAGENT_STATUS_TOOL_NAME, SUBAGENT_TOOL_NAME};
+use crate::agents::subagent_tool::{
+    SUBAGENT_STATUS_TOOL_NAME, SUBAGENT_TOOL_NAME, SUBAGENT_TOOL_PREFIXED,
+};
 use crate::session::session_manager::UsageLedgerEntry;
 #[cfg(test)]
 use crate::session::SessionType;
@@ -96,6 +98,30 @@ fn coerce_tool_arguments(
     Some(coerced)
 }
 
+/// Survives the code-execution tool filter?
+///
+/// When the `code_execution` extension is active the model is meant to reach
+/// ordinary tools by *writing code*, so the tool list collapses to
+/// `code_execution__*`. Two families are exempt because code cannot express
+/// them: spawning a subagent (it runs its own agent loop, not a function call),
+/// and BR-71's workspace control (it operates the daemon and the GUI, not the
+/// sandbox). Both name forms of the spawn tool are kept — models strip prefixes.
+pub(crate) fn survives_code_execution_filter(tool_name: &str, code_exec_prefix: &str) -> bool {
+    tool_name.starts_with(code_exec_prefix)
+        || tool_name == SUBAGENT_TOOL_NAME
+        || tool_name == SUBAGENT_TOOL_PREFIXED
+        // KEEP until Task 19b deletes the tool itself. `subagent_status` is
+        // still advertised at this commit (gated on
+        // `BIOROUTER_SUBAGENT_BACKGROUND`), and BR-40's reason for the clause
+        // still holds: a model that can spawn a background child but cannot poll
+        // it strands every handle. Dropping it here also orphans the
+        // `SUBAGENT_STATUS_TOOL_NAME` import, which `./scripts/clippy-lint.sh`
+        // (`-D warnings`) fails on. Task 19b removes this line AND the import
+        // together.
+        || tool_name == SUBAGENT_STATUS_TOOL_NAME
+        || tool_name.starts_with("workspace__")
+}
+
 async fn toolshim_postprocess(
     response: Message,
     toolshim_tools: &[Tool],
@@ -130,14 +156,7 @@ impl Agent {
             .await;
         if code_execution_active {
             let code_exec_prefix = format!("{CODE_EXECUTION_EXTENSION}__");
-            tools.retain(|tool| {
-                tool.name.starts_with(&code_exec_prefix)
-                    || tool.name == SUBAGENT_TOOL_NAME
-                    // BR-40: `subagent_status` survives the code-execution filter
-                    // alongside `subagent` — a model that can spawn a background
-                    // child but cannot poll it would strand every handle.
-                    || tool.name == SUBAGENT_STATUS_TOOL_NAME
-            });
+            tools.retain(|tool| survives_code_execution_filter(&tool.name, &code_exec_prefix));
         }
 
         // Stable tool ordering is important for multi session prompt caching.
@@ -602,6 +621,36 @@ mod tests {
         assert_eq!(names, sorted);
 
         Ok(())
+    }
+
+    #[test]
+    fn the_code_execution_filter_keeps_the_prefixed_spawn_tool_and_workspace_tools() {
+        let prefix = format!("{CODE_EXECUTION_EXTENSION}__");
+        // Kept: the sandbox itself …
+        assert!(survives_code_execution_filter(
+            &format!("{prefix}execute_code"),
+            &prefix
+        ));
+        // … both spellings of the spawn tool — a filter that knows only the
+        // bare name deletes delegation from every default session …
+        assert!(survives_code_execution_filter("subagent", &prefix));
+        assert!(survives_code_execution_filter(
+            "workspace__subagent",
+            &prefix
+        ));
+        // … and the whole workspace surface, or enabling Workspace Control
+        // silently does nothing in the default configuration.
+        assert!(survives_code_execution_filter(
+            "workspace__workspace_list",
+            &prefix
+        ));
+        assert!(survives_code_execution_filter(
+            "workspace__workspace_send_prompt",
+            &prefix
+        ));
+        // Dropped: everything the model is supposed to reach through code.
+        assert!(!survives_code_execution_filter("developer__shell", &prefix));
+        assert!(!survives_code_execution_filter("memory__remember", &prefix));
     }
 
     #[tokio::test]

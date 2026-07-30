@@ -2351,6 +2351,65 @@ mod tests {
         }
     }
 
+    /// Decision 22: the merged spawn tool keeps the name every prompt, skill,
+    /// workflow and doc already uses — the whole reason the operator merged it
+    /// into the workspace extension instead of adding a second spawn tool
+    /// beside it. Every pre-merge parameter has to survive the move, or a
+    /// config that passes `settings`/`extensions` silently starts failing
+    /// schema validation.
+    #[tokio::test]
+    async fn the_workspace_extension_advertises_the_spawn_tool_under_its_existing_name() {
+        let c = client();
+        let tools = c
+            .list_tools(None, CancellationToken::new())
+            .await
+            .unwrap()
+            .tools;
+        let spawn = tools
+            .iter()
+            .find(|t| t.name == "subagent")
+            .expect("the merged spawn tool keeps its name (decision 22)");
+        // Every pre-merge parameter survives …
+        let props = spawn.input_schema.get("properties").unwrap();
+        for field in [
+            "instructions",
+            "subworkflow",
+            "parameters",
+            "extensions",
+            "settings",
+            "summary",
+        ] {
+            assert!(props.get(field).is_some(), "lost parameter {field}");
+        }
+        // … plus the BR-71 additions.
+        assert!(props.get("visible").is_some());
+        assert!(props.get("placement").is_some());
+    }
+
+    #[tokio::test]
+    async fn the_extension_arm_for_the_spawn_tool_directs_to_dispatch_rather_than_panicking() {
+        // Unreachable in practice — Agent::dispatch_tool_call intercepts the
+        // name first — but a reachable arm must not panic.
+        let c = client();
+        let args: rmcp::model::JsonObject =
+            serde_json::from_value(serde_json::json!({ "instructions": "x" })).unwrap();
+        let result = c
+            .call_tool(
+                "subagent",
+                Some(args),
+                test_meta(),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(true));
+        assert!(result.content[0]
+            .as_text()
+            .unwrap()
+            .text
+            .contains("agent loop"));
+    }
+
     /// This task registers exactly ONE tool; Tasks 13-17 append the rest.
     ///
     /// **This assertion is deliberately ADDITIVE (`contains`), not exact

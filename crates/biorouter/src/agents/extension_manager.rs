@@ -1164,6 +1164,21 @@ impl ExtensionManager {
         self.extensions.lock().await.contains_key(name)
     }
 
+    /// Is `tool` granted for `extension` in this session's configuration?
+    ///
+    /// Extracted so the agent loop can apply the SAME `available_tools` rule to
+    /// tools it intercepts before `dispatch_tool_call` (BR-71's merged spawn
+    /// tool is the only one). `true` when the extension is not loaded at all —
+    /// the caller has its own reason to refuse in that case, and this predicate
+    /// answers only the grant question.
+    pub async fn is_extension_tool_available(&self, extension: &str, tool: &str) -> bool {
+        self.extensions
+            .lock()
+            .await
+            .get(extension)
+            .is_none_or(|e| e.config.is_tool_available(tool))
+    }
+
     pub async fn is_bundled_target_enabled(&self, target: &BundledExtensionTarget) -> bool {
         self.extensions
             .lock()
