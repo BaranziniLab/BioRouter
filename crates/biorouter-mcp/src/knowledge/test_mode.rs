@@ -6,16 +6,33 @@ use serde_json::json;
 
 const SOURCE_ID_MARKER: &str = "source-id=";
 
+/// `BIOROUTER_KNOWLEDGE_TEST_MODE=empty-reply` — every completion comes back
+/// with no text and no tool calls.
+///
+/// That is the shape a provider request that failed or was cut short leaves
+/// behind: Google returns a candidate with no `parts` on a MAX_TOKENS or SAFETY
+/// stop, and the decoder turns it into a content-free assistant message. It is
+/// indistinguishable from "the agent has no more tool calls", which is how a
+/// dead request came to be reported as a completed digest (issue #71). This mode
+/// is what lets the real HTTP ingest stream be driven through that failure
+/// without a live provider.
+const MODE_EMPTY_REPLY: &str = "empty-reply";
+
+fn mode() -> Option<String> {
+    let value = std::env::var("BIOROUTER_KNOWLEDGE_TEST_MODE").ok()?;
+    let value = value.trim().to_ascii_lowercase();
+    match value.as_str() {
+        "1" | "true" | "yes" | "on" | MODE_EMPTY_REPLY => Some(value),
+        _ => None,
+    }
+}
+
 pub fn env_enabled() -> bool {
-    std::env::var("BIOROUTER_KNOWLEDGE_TEST_MODE")
-        .ok()
-        .map(|value| {
-            matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            )
-        })
-        .unwrap_or(false)
+    mode().is_some()
+}
+
+fn simulate_empty_reply() -> bool {
+    mode().as_deref() == Some(MODE_EMPTY_REPLY)
 }
 
 pub struct TestModeCompleter;
@@ -28,6 +45,10 @@ impl Completer for TestModeCompleter {
         messages: &[LlmMessage],
         _tools: &[Tool],
     ) -> Result<LlmReply> {
+        if simulate_empty_reply() {
+            return Ok(text_reply(""));
+        }
+
         if system.contains("connectivity test") {
             return Ok(text_reply("OK"));
         }
