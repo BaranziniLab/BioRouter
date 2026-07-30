@@ -10007,12 +10007,54 @@ git commit -m "feat(privacy): refuse a public session's tools any path inside Bi
 
 A sandboxed child cannot open `sessions.db`. It can still talk to the process that can:
 `GET /sessions/{id}/export` returns a transcript as JSON to anyone holding
-`BIOROUTER_SERVER__SECRET_KEY` (design §9.3 A1). DR-14's sandbox closes the front door; this task is
-the audit that the back one is shut, and it is an audit rather than a fix because **the strip is
-already there and already tested**. Recording *what was measured* is the point — the previous round
-of this plan spent a whole task on a leak that had been closed two commits before the fork.
+`BIOROUTER_SERVER__SECRET_KEY` (design §9.3 A1). This task pins the half of that door that **is**
+shut, and states plainly the half that is not.
 
-#### What was measured, at `9558c346`
+#### ⚠ Two claims this task used to make, both withdrawn
+
+**Withdrawn 1: "a sandboxed child knows where the daemon is and has no way to authenticate to it."**
+Round 2 called this false and it is. The strip is correct and stays; what was wrong was the
+conclusion drawn from it. Measured for this round:
+
+- **macOS.** A child reads its *parent's* environment with `ps -Ewww -p $PPID`; re-measured here, a
+  shell started with `SECRETCANARY=parent_canary_777` printed the canary from its own child. SIP
+  withholds environments for Apple **platform** binaries only — `/bin/sleep` withholds, a locally
+  compiled binary does not, and neither does the shipped, notarized, hardened-runtime
+  `BioRouter.app/…/biorouterd`. Nor is it `ps`'s setuid bit: a plain non-setuid
+  `sysctl(CTL_KERN, KERN_PROCARGS2, pid)` reader recovers it, including under a Seatbelt profile
+  carrying the deny roots.
+- **Linux.** `/proc/self/environ` is readable **in-process** by any tool that reads a caller-supplied
+  path.
+
+**So the plan no longer claims the secret is out of reach.** The residual is
+[AR-11](#ar-11--the-daemons-own-api-secret-is-recoverable-so-the-second-door-is-held-by-layer-a-and-not-by-the-environment-strip)
+and [Open question 20](#open-questions). What the strip still buys is real and is what (a)–(b) pin:
+it keeps the secret out of the *child's own* environment, which is where a careless `env | grep` or a
+leaked log finds it, and it keeps every **remote** caller out.
+
+**And the biggest local route is held by Layer A rather than by the strip.**
+`POST /agent/call_tool` (`routes/agent.rs:1140`, registered `:1268`) executes any tool of any
+extension with no capability check, no permission prompt and no approval frame — measured live,
+`computercontroller__cache view /etc/hosts` returned the file contents. It dispatches through
+`agent.extension_manager.dispatch_tool_call` at `routes/agent.rs:1160-1163`, which **is** Task 14B's
+choke point. So a caller holding the secret gets exactly what the chat gets and nothing more: Gate C
+refuses a private extension, Layer A refuses a deny-root path. Had the barrier gone into
+`Agent::dispatch_tool_call` instead, this route would have been an unguarded hole.
+
+**Withdrawn 2: "the app tree is the only on-disk source of app ids."** Round 2:
+
+> Task 14C's app-ID premise is also false. It says disk and authenticated `GET /apps` are the two
+> sources of IDs, but public `agent_drafter__list_apps` directly enumerates them.
+
+Confirmed on the tree: `agent_drafter__list_apps` (`agent_drafter/mod.rs:2636`) enumerates every app
+id in-process through `ArtifactStore::list` (`store.rs:606`), and `agent_drafter` is **Public**
+(design:975). `list_apps` takes no path argument, so Layer A cannot refuse it and neither can a
+filesystem deny — **the ids are handed over by a tool that is public by design.** The corrected
+premise, and what follows from it, is (c) below.
+
+#### What was measured
+
+| Spawn family the DR-14 sandbox relies on | Strip call site | Already pinned by |
 
 | Spawn family the DR-14 sandbox relies on | Strip call site | Already pinned by |
 |---|---|---|
@@ -10027,9 +10069,13 @@ of this plan spent a whole task on a leak that had been closed two commits befor
 **inherited** keys (`env::vars_os()`) and the ones **explicitly set on the command**
 (`doomed_env_keys` `:81-88`), and `is_daemon_private_env_key` (`:36-50`) is deny-by-default inside
 `BIOROUTER_SERVER__`/`GOOSE_SERVER__` plus a credential-shaped net over the rest of BioRouter's
-namespace. **`BIOROUTER_PORT` is deliberately kept** (`:116`'s assertion) — so a sandboxed child
-knows where the daemon is and has no way to authenticate to it. **That is the whole second-order
-argument, and it has three holes worth pinning.**
+namespace. **`BIOROUTER_PORT` is deliberately kept** (`:116`'s assertion), and so is
+`BIOROUTER_APP_BASE_URL` (set at `commands/agent.rs:69`) — `is_daemon_private_env_key` needs a
+`BIOROUTER_SERVER__` prefix or a credential marker and `BASE_URL` has neither, so a child is measured
+to hold `port: 39231` and `base: http://127.0.0.1:39231`. **Locating the daemon is free and is meant
+to be.** What the strip buys is the *credential*, in the child's own environment, against every
+remote caller — not, per Withdrawn 1, against a local one. **Three things are worth pinning
+anyway.**
 
 **(a) Nothing asserts the background job *reaches* the strip.** It does today, because
 `background.rs:128` calls `configure_shell_command` — but that is a routing fact, and Task 2 point 3
@@ -10051,22 +10097,61 @@ trees. `serve_index` (`apps.rs:168-184`) embeds the per-app socket token in the 
 So a loopback client that knows an app id can fetch the page, read the token, and drive that app's
 agent — including any knowledge base the manifest granted it.
 
-**Three things stand between a public-capability shell and that path, and they are worth stating
-because two of them are DR-14's doing:**
+**The whole chain was driven live for this round, on a sandboxed daemon, with no `X-Secret-Key`
+anywhere:**
+
+```
+GET /apps/<id>/                    -> 200, 42160 bytes
+   page contains  wsToken":"11be46754afca4d19a3dd898b8492e3e"
+GET /apps/<id>/agent?token=<that>  -> HTTP/1.1 101 Switching Protocols
+GET /apps/<id>/agent?token=deadbeef            -> 403
+GET /apps/<id>/agent  (Origin: https://evil.com, right token) -> 403
+GET /apps/<id>/dist/app.js         -> 200
+```
+
+The two gates work. They are simply fed by an unauthenticated page. On that socket a caller can
+send `prompt` (a real agent turn on the app's model, extensions and skills, `apps.rs:3331`),
+`approve` (approve the agent's own tool calls, `:4415`), `history` (that session's message backlog,
+`:3368-3378`) and `kb` `search`/`page`/`graph`/`history` (`handle_kb_frame`, `:2474-2505`), bounded
+only by `resolve_kb_grant` — i.e. exactly the bases the app's manifest granted, **including private
+ones**. `GET /apps/{id}/runstate` additionally returns a pending tool's `name`, `args` and `prompt`
+(`:4583-4590`), and `GET /apps/{id}/models` the full provider catalogue (`:4597-4601`).
+
+**What actually stands between a public-capability model and that chain — corrected:**
 
 1. `GET /apps` — the list — is **not** exempt (`auth.rs:71-73`'s comment says why: "an id is all
-   `/apps/{id}/agent` needs"), so the id cannot be enumerated over HTTP without the secret.
-2. The other place ids exist is the app tree on disk, `<config>/agent_drafter` — which is **deny
-   root #4**. This is the concrete reason the Agent Drafter root is on DR-14's list and not merely
-   because apps hold vault secrets.
-3. The socket carries the app's own capability grants, not the session's, so it is not a general
-   read of the user's data.
+   `/apps/{id}/agent` needs"), so the id cannot be enumerated over HTTP without the secret. ✔ still
+   true.
+2. ~~The other place ids exist is the app tree on disk, which is deny root #4.~~ **False, and this
+   was the premise round 2 knocked down.** `agent_drafter__list_apps` (`agent_drafter/mod.rs:2636`)
+   enumerates every id **in-process**, through `ArtifactStore::list` (`store.rs:606`), and
+   `agent_drafter` is Public (design:975). It takes no path, so neither Layer A nor a filesystem deny
+   touches it. A public model can obtain an id by asking for one.
+3. The socket carries the app's own capability grants, not the session's — but those grants can
+   include a **private** knowledge base, so it is not a general read of the user's data and it is not
+   nothing either.
 
-**The residual is real and is [AR-6](#ar-6--on-a-host-that-cannot-express-the-read-deny-a-public-session-loses-the-shell-and-two-costs-come-with-the-sandbox-itself)'s
-last paragraph: a public-capability model that already knows an app id can still drive that app.**
-Closing it means authenticating the app socket with something the page has and a shell does not,
-which is a change to how apps are served and is out of this feature's scope.
-[Open question 18](#open-questions) carries it.
+**So the residual is larger than [AR-6](#ar-6--on-a-host-that-cannot-express-the-read-deny-a-public-session-loses-the-shell-and-two-costs-come-with-the-sandbox-itself)'s
+last paragraph said, and its size is now known:** a public-capability model does not need to *already
+know* an app id — it can list them. Every drafted app on the machine is reachable from a public chat,
+and each one exposes its manifest-granted knowledge bases.
+
+**Two ways to close it, and this plan takes neither.** Authenticating the app socket with something
+the page has and a shell does not is a change to how apps are served
+([Open question 18](#open-questions)). Reclassifying `agent_drafter` as Private would close it at
+Gate C and would take the whole drafter workflow out of every public chat, which is a far larger
+behaviour change than this feature has a mandate for. **Recorded rather than closed, and the reason
+the deny root stays whole is now (1) alone** — `GET /apps` needing the secret — which
+[Open question 19](#open-questions) already depends on.
+
+⚠ **`agent_drafter__list_platform_catalog` is the same shape one level over, and nobody has named
+it.** `Catalog::discover` (`agent_drafter/catalog.rs:69`) → `discover_kbs()` (`:125`) opens the real
+`KnowledgeService` and returns **every installed knowledge base's id and name** to a Public tool with
+no arguments. That is deny-root-#2 *metadata*, and it is not DR-14's to fix: it is exactly the surface
+[Task 10D](#task-10d-the-metadata-surface--cp5-because-a-barrier-that-names-what-it-refused-has-not-refused-it)
+exists for — CP5 sits at `Catalog::discover` for this reason. This ⚠ is here so a reader of Task 14C
+does not conclude the filesystem deny covers it. If Task 10D's CP5 is descoped, this becomes an open
+hole with no owner.
 
 **Files:**
 
@@ -10105,21 +10190,48 @@ fn a_background_job_is_built_through_the_shared_shell_builder() {
 
 // auth.rs — (b). The negative half, at the layer that decides it.
 #[test]
-fn the_port_alone_does_not_authenticate() {
-    // Everything a DR-14-sandboxed child is left holding is BIOROUTER_PORT. This
-    // pins that knowing it buys nothing: no header, a wrong header, and an empty
-    // header all fail, and `/sessions/{id}/export` is not on any exempt list.
+fn the_port_and_the_base_url_alone_do_not_authenticate() {
+    // A DR-14-sandboxed child is left holding BIOROUTER_PORT and
+    // BIOROUTER_APP_BASE_URL — both deliberately preserved. This pins that
+    // knowing where the daemon is buys nothing: no header, a wrong header and
+    // an empty header all fail, and none of these routes is on an exempt list.
+    //
+    // ⚠ It does NOT pin that the secret is unobtainable. It is obtainable —
+    // `ps -Ewww -p $PPID` on macOS, `/proc/self/environ` in-process on Linux
+    // (AR-11). This test is about the header check, which is the only thing
+    // `auth.rs` can be responsible for.
     assert!(!secret_matches("", "the-real-secret"));
     assert!(!secret_matches("the-real-secre", "the-real-secret"));
     for path in [
         "/sessions/abc/export", "/sessions/abc", "/sessions", "/agent/call_tool",
-        "/config/upsert", "/knowledge/bases", "/apps",
+        "/config/upsert", "/knowledge/bases", "/apps", "/diagnostics/abc",
     ] {
         assert!(
             !is_public_app_get(&Method::GET, path),
             "{path} must require the secret"
         );
     }
+}
+
+/// The corrected premise, as an assertion rather than as prose (round 2's
+/// finding 8). If `POST /agent/call_tool` ever stops dispatching through
+/// `ExtensionManager::dispatch_tool_call`, the secret stops buying "what the
+/// chat already had" and starts buying "every tool, ungated" — and no other
+/// test in this plan notices, because Gate C's own four-path test
+/// (`every_convergent_path_into_the_manager_is_refused`) would still pass
+/// against a route that had been rewired to `Agent::dispatch_tool_call`.
+#[test]
+fn call_tool_dispatches_through_the_barrier_and_not_around_it() {
+    let src = include_str!("../routes/agent.rs");
+    let body = &src[src.find("async fn call_tool(").expect("call_tool")..];
+    let body = &body[..body.find("\n}\n").unwrap_or(body.len())];
+    assert!(
+        body.contains("extension_manager\n        .dispatch_tool_call(")
+            || body.contains("extension_manager.dispatch_tool_call("),
+        "call_tool must reach the ExtensionManager's dispatch — the choke point Gate C \
+         and DR-14 Layer A both sit at. Agent::dispatch_tool_call is a DIFFERENT function \
+         one frame up, and routing here would leave this route ungated with the secret."
+    );
 }
 
 /// (c), as a pin rather than a fix: the unauthenticated app surface is EXACTLY
@@ -10141,9 +10253,15 @@ fn the_unauthenticated_app_surface_does_not_grow_by_accident() {
 }
 ```
 
-- [ ] **Step 2: Run** → **PASS on all three.**
+⚠ **What Step 1 deliberately does NOT contain: a test that a public model cannot obtain an app id.**
+It can — `agent_drafter__list_apps` is a Public tool that enumerates them (Withdrawn 2). Writing such
+a test would mean either changing `list_apps`, which Task 14B's §(5) test says must keep working, or
+writing an assertion that is false. The honest artefact is the residual in (c) and
+[Open question 18](#open-questions), not a green test over a hole.
 
-⚠ **All three pass before Step 3, and that is the honest outcome.** They are regression pins
+- [ ] **Step 2: Run** → **PASS on all four.**
+
+⚠ **All four pass before Step 3, and that is the honest outcome.** They are regression pins
 on behaviour that is already correct, in the same spirit as Task 2. Do not manufacture a red by
 weakening the production code first, and do not "fix" the first test by loosening its assertion when
 it turns out `BackgroundJobs::spawn` was renamed — resolve the real entry point and pin *that*. A
@@ -10161,6 +10279,7 @@ leave two spawn paths to keep in step and is the divergence this task exists to 
 ```bash
 cargo test -p biorouter-mcp --lib -- developer::background
 cargo test -p biorouter-server --lib auth
+cargo test -p biorouter-server --lib -- routes::agent::tests::call_tool_dispatches_through_the_barrier
 # The two live child-env tests this task's argument rests on. They are #[ignore]d
 # halves plus their drivers; run the drivers explicitly so this task's PR shows
 # them green rather than citing them.
@@ -10229,20 +10348,33 @@ PY
 #     the prose above must be rewritten rather than silently becoming stronger.
 grep -c 'BIOROUTER_PORT' crates/biorouter-sandbox/src/environment.rs
 echo "expect: 2 — the assertion and its expected value, in the strip test"
+
+# (4) The route that makes the recovered secret harmless still goes through the
+#     barrier. This is the single line that decides whether AR-11's residual is
+#     "the transcript routes" or "every tool, ungated".
+grep -n "dispatch_tool_call" crates/biorouter-server/src/routes/agent.rs
+echo "expect: exactly 1 line, reading agent.extension_manager.dispatch_tool_call(...)."
+echo "        A hit on `agent.dispatch_tool_call(` instead is Agent::dispatch_tool_call —"
+echo "        one frame UP, past Gate C and past DR-14 Layer A. It compiles, it works,"
+echo "        and it silently reopens every tool to anyone holding the secret."
 ```
 
-**What this catches.** A future background-job path that builds its own `Command` — the exact defect
-Task 2 point 3 names one layer down, where it would hand the daemon's secret to a child the DR-14
-sandbox has already confined, defeating the sandbox through the API rather than the filesystem. A
-`.env()` added after the strip in either builder. And an `is_public_app_get` widened by one more
-`matches!` arm, which is a one-line change that turns an unauthenticated read of an app id into an
-unauthenticated read of something else.
+**What this catches.**
+
+| Gate | Wrong implementation it rejects |
+|---|---|
+| (1) | A future background-job path that builds its own `Command` — the exact defect Task 2 point 3 names one layer down, where it hands the daemon's credentials to a child, past the sandbox. |
+| (2) | A `.env()` added after the strip in either builder — removing a key that is then put back, which no environment test catches unless it happens to name that key. |
+| (3) | A hardening pass that also strips `BIOROUTER_PORT`, which would make this task's prose silently stronger than the code. |
+| (4) | `POST /agent/call_tool` rewired to `Agent::dispatch_tool_call` — the function with the same name one frame up. Nothing else in this plan notices: Gate C's four-path test would still pass, because it exercises the route as it is *today*. This is the same trap Task 14's own "What this catches" describes, asserted from the route's side. |
+| the unauth surface test | An `is_public_app_get` widened by one more `matches!` arm, which is a one-line change that turns an unauthenticated read of an app id into an unauthenticated read of something else. |
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add crates/biorouter-mcp/src/developer/background.rs crates/biorouter-server/src/auth.rs
-git commit -m "test(privacy): pin the daemon-secret strip on every spawn the read-deny relies on (#56)"
+git add crates/biorouter-mcp/src/developer/background.rs crates/biorouter-server/src/auth.rs \
+        crates/biorouter-server/src/routes/agent.rs
+git commit -m "test(privacy): pin the daemon-secret strip and the route the barrier depends on (#56)"
 ```
 
 ---
