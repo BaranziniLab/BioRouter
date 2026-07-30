@@ -52,7 +52,26 @@ Memories are plain files on your machine, organized by category. There are two s
 | Global (user-wide) | `~/.config/biorouter/memory/` on macOS and Linux; `~\AppData\Roaming\BaranziniLab\Biorouter\config\memory` on Windows |
 | Local (project-specific) | `.biorouter/memory/` inside the working directory |
 
-Because they are ordinary files, you can inspect, edit or delete them directly when you want to audit or reset what BioRouter has learned.
+Because they are ordinary files, you can inspect, edit or delete them directly when you want to audit or reset what BioRouter has learned. You do not have to, though — the desktop app lists both stores and lets you prune them.
+
+## Seeing and deleting what was remembered
+
+Open **Settings → Chat → Memory**. It lists both stores separately — the global one shared by every conversation on this computer, and the current project's local one — each with its directory path, its categories, and every memory inside them. Expand a category to read its contents.
+
+This matters most for the global store. A conversation asking to read a global memory category has to be approved by you first, and that approval card names the category; this section is where you find out what is in it before deciding. The card names this path so you know where to look.
+
+What each memory shows is what the store actually records, and no more:
+
+| Shown | Where it comes from |
+|-------|---------------------|
+| Category name | The category file's name |
+| Scope, and the store's absolute path | Which of the two directories the file is in |
+| Tags | The memory's own `#` tag line, when the model attached one |
+| Category size and "Updated" date | The category file's size and modification time on disk |
+
+A memory is a line in a flat text file, so nothing records **when an individual memory was written, which conversation wrote it, or which model**. The date shown is per category — the last time anything was appended to that file — not per memory, and the section labels it that way rather than dating each row with a timestamp the file cannot support.
+
+Two delete controls sit alongside the listing: one on each memory, one on each category. Both ask first, and the confirmation says what is about to be lost — the number of memories going, who could read them, and that it cannot be undone. Deleting the last memory in a category deletes the category too, so its name stops being offered to future sessions. Nothing is recoverable afterwards; BioRouter keeps no copy.
 
 ## Available tools
 

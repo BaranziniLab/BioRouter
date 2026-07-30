@@ -51,8 +51,11 @@ without asking would be irreversible, or would move your data somewhere you cann
 | Saving or deleting a **global** memory | *"Cross-session memory write"* / *"Cross-session memory change"*, naming the category | Marking a note global is what makes it follow you into every other project. |
 | Clearing **all** global memories | *"Deletes every global memory"* | It cannot be undone. |
 
-Two related notes on memory:
+Three related notes on memory:
 
+- **You can read the store yourself.** These approvals name a category; **Settings → Chat →
+  Memory** is where you see what is in it, and delete anything you would rather BioRouter did
+  not have. See [seeing and deleting what was remembered](../extensions/built-in/memory.md#seeing-and-deleting-what-was-remembered).
 - **Project-local memories never prompt.** They live in your project's `.biorouter/memory`, so
   they only reach a session you opened that directory in. Nothing on this page changes them.
 - **There is no "read all my global memories" call.** BioRouter refuses it. Global memory is
