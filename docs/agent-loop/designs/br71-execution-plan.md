@@ -47,6 +47,24 @@
 > `refreshSessionList` consumer — and it is the first pass to have **run** any of the
 > gates it reviewed rather than reading them.
 >
+> **Amended 2026-07-30 — CLI parity (operator requirement).** Three tasks added:
+> **38b** (`biorouter sessions list --subagents`, so a subagent is *discoverable* from a
+> terminal), **38c** (`biorouter sessions attach` / `sessions cancel`, so a **live** one
+> can be joined at its current position, steered and stopped) and **42b** (a standing
+> gate that fails the build when a workspace capability is reachable from the GUI or the
+> daemon and has no CLI counterpart). 38b/38c sit in **Phase 3**, beside Task 38, because
+> they stand on Tasks 32/33/34 and because a phase that shipped the GUI half alone is the
+> drift this requirement exists to prevent; 42b sits in **Phase 4** with the release
+> gates. The requirement, its verbatim text and the reading of record for "inject
+> problems" are in
+> [New scope](#new-scope-operator-requested-additions) item **e**. **Task count: 47 → 50.**
+> Four defects in prescribed code were found and repaired during the same pass, all by
+> reading the tree rather than recalling it: `Conversation` serializes as a **bare array**,
+> not `{"messages": […]}`; `clap::Id` cannot be compared to a `&str` through references
+> (`.as_str()` is required); `uuid` is not a dependency of `biorouter-server`; and
+> `ui/desktop/openapi.json` is 275 KB, so the parity gate's reader is `#[cfg(test)]`
+> rather than shipped in the CLI binary.
+>
 > **Location note:** the writing-plans skill's default path is
 > `docs/superpowers/plans/YYYY-MM-DD-<feature>.md`; this plan deliberately lives beside
 > its design doc under `docs/agent-loop/designs/` per this repo's design-doc convention
