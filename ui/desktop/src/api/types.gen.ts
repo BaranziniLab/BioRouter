@@ -962,6 +962,131 @@ export type McpAppResource = {
 };
 
 /**
+ * One category file, listed in full.
+ */
+export type MemoryCategoryInventory = {
+    entries: Array<MemoryEntry>;
+    /**
+     * The category file's modification time, Unix seconds.
+     *
+     * **Per category, not per entry.** Appending any memory restamps the whole
+     * file, so this dates the most recent write to the category and says
+     * nothing about when the other entries arrived. `None` when the filesystem
+     * does not report one.
+     */
+    modified?: number | null;
+    name: string;
+    /**
+     * The category file's size on disk.
+     */
+    size_bytes: number;
+};
+
+export type MemoryDeleteCategoryRequest = {
+    category: string;
+    scope: MemoryScope;
+    /**
+     * Required when `scope` is `local`.
+     */
+    working_dir?: string | null;
+};
+
+export type MemoryDeleteCategoryResponse = {
+    /**
+     * How many memories the category held.
+     */
+    removed_entries: number;
+};
+
+export type MemoryDeleteEntryRequest = {
+    category: string;
+    /**
+     * The body that was listed at that position. The delete refuses unless it
+     * still matches, so a list that went stale while an agent appended to the
+     * store cannot delete the wrong memory.
+     */
+    content: string;
+    /**
+     * The entry's position in the category, as listed.
+     */
+    index: number;
+    scope: MemoryScope;
+    /**
+     * Required when `scope` is `local`.
+     */
+    working_dir?: string | null;
+};
+
+export type MemoryDeleteEntryResponse = {
+    /**
+     * Whether the category itself was removed because it emptied.
+     */
+    category_removed: boolean;
+    /**
+     * Memories left in the category.
+     */
+    remaining: number;
+};
+
+/**
+ * One stored memory, exactly as it sits in the category file.
+ */
+export type MemoryEntry = {
+    /**
+     * The entry body, interior newlines preserved.
+     */
+    content: string;
+    /**
+     * Position within the category file, counting from zero.
+     *
+     * Stable only for as long as the file is untouched, which is why
+     * [`MemoryServer::delete_entry`] takes the body back as a guard rather
+     * than trusting the index on its own.
+     */
+    index: number;
+    /**
+     * Words from the entry's leading `# …` line; empty when it has none.
+     */
+    tags: Array<string>;
+};
+
+/**
+ * Both stores, as far as the caller can see them.
+ */
+export type MemoryInventoryResponse = {
+    global: MemoryStoreInventory;
+    local?: MemoryStoreInventory | null;
+};
+
+/**
+ * Which of the two stores an entry lives in.
+ *
+ * The distinction is the whole subject of issue #63: `Local` is this project's
+ * `.biorouter/memory`, reachable only by a session opened in that directory;
+ * `Global` is the machine-wide store every Biorouter session on the computer
+ * shares.
+ */
+export type MemoryScope = 'global' | 'local';
+
+/**
+ * One store: where it is, and everything in it.
+ */
+export type MemoryStoreInventory = {
+    categories: Array<MemoryCategoryInventory>;
+    /**
+     * Whether that directory exists yet. The store is created lazily on first
+     * write, so "no directory" is the ordinary empty state, not an error.
+     */
+    exists: boolean;
+    /**
+     * Absolute path of the store directory, shown to the user so "global" and
+     * "local" are not the only thing they have to go on.
+     */
+    path: string;
+    scope: MemoryScope;
+};
+
+/**
  * A message to or from an LLM
  */
 export type Message = {
@@ -4295,6 +4420,92 @@ export type McpUiProxyResponses = {
      */
     200: unknown;
 };
+
+export type MemoryDeleteCategoryData = {
+    body: MemoryDeleteCategoryRequest;
+    path?: never;
+    query?: never;
+    url: '/memory/delete_category';
+};
+
+export type MemoryDeleteCategoryErrors = {
+    /**
+     * Invalid category, or a local scope with no working_dir
+     */
+    400: unknown;
+    /**
+     * No such category
+     */
+    404: unknown;
+};
+
+export type MemoryDeleteCategoryResponses = {
+    /**
+     * The category was deleted
+     */
+    200: MemoryDeleteCategoryResponse;
+};
+
+export type MemoryDeleteCategoryResponse2 = MemoryDeleteCategoryResponses[keyof MemoryDeleteCategoryResponses];
+
+export type MemoryDeleteEntryData = {
+    body: MemoryDeleteEntryRequest;
+    path?: never;
+    query?: never;
+    url: '/memory/delete_entry';
+};
+
+export type MemoryDeleteEntryErrors = {
+    /**
+     * Invalid category, or a local scope with no working_dir
+     */
+    400: unknown;
+    /**
+     * No memory at that position
+     */
+    404: unknown;
+    /**
+     * The category changed since it was listed
+     */
+    409: unknown;
+};
+
+export type MemoryDeleteEntryResponses = {
+    /**
+     * The memory was deleted
+     */
+    200: MemoryDeleteEntryResponse;
+};
+
+export type MemoryDeleteEntryResponse2 = MemoryDeleteEntryResponses[keyof MemoryDeleteEntryResponses];
+
+export type MemoryInventoryData = {
+    body?: never;
+    path?: never;
+    query?: {
+        /**
+         * The project directory whose local store to list. Omit for global only.
+         */
+        working_dir?: string | null;
+    };
+    url: '/memory/inventory';
+};
+
+export type MemoryInventoryErrors = {
+    /**
+     * A store could not be read
+     */
+    500: unknown;
+};
+
+export type MemoryInventoryResponses = {
+    /**
+     * Everything both memory stores hold
+     */
+    200: MemoryInventoryResponse;
+};
+
+export type MemoryInventoryResponse2 = MemoryInventoryResponses[keyof MemoryInventoryResponses];
 
 export type ReplyData = {
     body: ChatRequest;
