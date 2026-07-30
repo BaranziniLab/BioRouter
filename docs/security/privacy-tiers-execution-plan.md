@@ -3552,7 +3552,17 @@ async fn a_swap_after_admission_does_not_change_what_this_call_may_load() {
 
     // Park the call AFTER `Agent::dispatch_tool_call` has returned its future
     // and BEFORE anything drives it — i.e. exactly where a real queued call
-    // sits. `seams::hold_dispatch_queue()` is Task 12's rendezvous shape.
+    // sits.
+    //
+    // ⚠ **THIS TASK CREATES `agents::agent::seams`, not Task 12.** Task 12 is
+    // two tasks away and its own ⚠ about `privacy::refusal` is the identical
+    // shape: a `seams::` call here against a module Task 12 has not written yet
+    // is an `unresolved module` compile error, and Step 2 already expects a
+    // DIFFERENT compile error, so the two would be indistinguishable. Declare
+    // the `#[cfg(test)] pub mod seams` in `agents/agent.rs` here, with
+    // `hold_dispatch_queue` as its first rendezvous; Task 12 adds
+    // `before_bind_write` / `after_bind_before_swap` and Tasks 14B/14D add
+    // `arm_after_agent_sample` / `arm_after_path_check` to the SAME module.
     let held = seams::hold_dispatch_queue();
     let call = tokio::spawn({
         let agent = agent.clone();
