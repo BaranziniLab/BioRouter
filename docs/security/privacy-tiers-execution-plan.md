@@ -17643,6 +17643,13 @@ task must reject is *a master toggle wired to some of the gates*. A textual grep
 "wired to twenty" from "wired to three"; twenty paired assertions can, and each one names the gate it
 covers so a failure points at the missing wiring rather than at "privacy is broken".
 
+⚠ **[DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store) reduces this to eighteen matrix rows / seventeen enforcement points.** Layer A's
+`path_policy::for_call` and Layer B's `shell.rs::build_sandbox_policy` are the two that go, because
+Tasks 14A–14F are deferred and neither point exists in v1. Every count in this task — the matrix, the
+inventory diffs, the `n -eq` assertion — is stated below in its original nineteen/twenty form and
+must be read minus those two. **Do not "restore" them**: an inventory that demands an enforcement
+point a correct tree does not have is this task's own named failure class.
+
 ⚠ **The previous version of this matrix had ten rows and the plan has nineteen enforcement points
 plus one invariant row.**
 It omitted Gate F entirely (Task 18 — a public model *enabling* `ucsfomopagent`, and a private

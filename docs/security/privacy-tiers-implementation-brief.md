@@ -496,7 +496,8 @@ written before it is implemented, and writing it requires resolving two recorded
   model can edit is not a switch"*; `/config/upsert` is the **HTTP** channel to the same file and no
   layer of DR-14 sees it.
 
-**The toggle's own hazard:** DR-15's matrix covers **twenty** rows — nineteen enforcement points plus
+**The toggle's own hazard:** DR-15's matrix covers **twenty** rows — ⚠ **eighteen under DR-17, which
+removes Layer A's and Layer B's rows with the deferred stage** — nineteen enforcement points plus
 the session-copy invariant — and an earlier version covered ten. Gate F's two channels, the spawn
 matrix, Layer A's insertion points, the catalog, the export location and the visibility predicate could
 all stay armed with the feature "off". It is closed at both ends by two inventory diffs, the second of
@@ -678,7 +679,7 @@ What the checking pass will verify. Pre-empt it.
    Is a deferral keyed on the `(package, filter)` pair? Is a provenance check two-directional?
 6. **Deviations recorded.** Every place the plan's prescribed code did not compile, or its anchor did
    not resolve, is written into the task in the same commit. Silent fixes are a finding.
-7. **The toggle's twenty rows.** Every enforcement point is in the matrix or the inventory, and session
+7. **The toggle's twenty rows** (eighteen under DR-17). Every enforcement point is in the matrix or the inventory, and session
    copy is asserted **identically in both columns** (DR-15: propagating a stamp is not classifying).
 8. **The accepted risks are still the accepted risks.** AR-1 through AR-15 are rulings, not bug
    reports. A PR that closes one silently has changed a decision; a PR that *widens* one has introduced
