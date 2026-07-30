@@ -5405,6 +5405,12 @@ async fn the_cli_ingest_HANDLER_ratchets_from_the_instance_and_the_name_is_the_s
         // `$BIOROUTER_PATH_ROOT/config/knowledge` when the override is set
         // (biorouter-mcp/src/paths.rs:40-56). That is how this row gets a
         // throwaway store instead of the developer's own.
+        //
+        // The fixture: set `BIOROUTER_PATH_ROOT` to a fresh `TempDir`, create
+        // base "k", and return `(<tmp>/config/knowledge, the TempDir)`. ⚠ Return
+        // the `TempDir` and BIND it — a dropped one deletes the tree before the
+        // call runs, which is exactly how Task 10A's route mirror came to assert
+        // against a directory that no longer existed.
         let (root, _tmp) = cli_knowledge_root_with_base("k");
 
         // The sub-agent WILL fail — nothing is listening on either host — and
@@ -16226,6 +16232,15 @@ async fn the_master_toggle_governs_every_gate_in_both_directions() {
     //   the bytes must not come back, and asserting on the BYTES rather than on
     //   which of the two happened is what keeps this row meaningful on a CI
     //   runner whose sandbox capability nobody controls.
+    //
+    //   ⚠ `seed_page_in_private_root` and `shell_via_agent` are FIXTURES, and
+    //   the distinction from the helper they replace is the whole lesson: the
+    //   old row's meaning lived *inside* an undefined predicate, so there was
+    //   nothing left in the test to be right or wrong. These two only set up
+    //   and invoke — the assertion is here, in the test, on a sentinel this
+    //   test wrote. `shell_via_agent` returns the tool's output text **whatever
+    //   the outcome**, refusal message included; it must not `unwrap()`, or the
+    //   refusing-host branch panics instead of passing.
     seed_page_in_private_root("SENTINEL-COHORT-N-412");
     let out = shell_via_agent(&format!("cat {}", private_page_path())).await;
     assert!(!out.contains("SENTINEL-COHORT-N-412"),
