@@ -512,7 +512,8 @@ to be private or public."* This is DR-8 and DR-16 in a third place: lowering a *
 classification is the user's act alone, raising a **session's** capability is the user's act alone,
 and now setting a **base's** tier is the user's act alone. A model may not call it, in either
 direction, on either channel. It routes through the same user-proof
-[Task 18A](#open-questions) builds for DR-16 — one mechanism, not a second one.
+[Task 18A](#task-18a-the-two-http-channels-that-raise-a-sessions-own-tier-and-the-user-proof-neither-of-them-has)
+builds for DR-16 — one mechanism, not a second one.
 
 **(d) Publicizing is a one-way door for content that already exists in the base, and its confirmation
 must say so concretely.** Releasing a base puts everything a private model wrote into it in reach of
@@ -17251,6 +17252,275 @@ git add crates/biorouter/src/privacy/declassify.rs crates/biorouter-server/src/r
         crates/biorouter-server/src/auth.rs ui/desktop/src/components/ui/DangerousConfirmDialog.tsx \
         ui/desktop/src/components/sessions ui/desktop/openapi.json ui/desktop/src/api
 git commit -m "feat(privacy): user-only declassification with a graded confirmation and an audit row (#56)"
+```
+
+---
+
+### Task 29A: Knowledge-base publicize / privatize — user-only, graded, audited
+
+**This task exists because of [DR-18](#dr-18--the-knowledge-base-tier-is-user-controllable-and-a-private-session-creates-a-private-base)**, and it is the whole of the new
+work that ruling created. Tasks 10A–10D already give a base a tier and ratchet it; nothing in the
+product can *move* one. That absence was
+[AR-1](#ar-1--resolved-by-dr-18--a-knowledge-base-that-one-private-session-touched-becomes-unreadable-from-every-public-chat-including-the-users-own-ordinary-work),
+and this task resolves it.
+
+**Do Task 29 first.** This is its twin, deliberately: the same proof-of-user, the same
+`DangerousConfirmDialog`, the same "one lowering writer in the tree" gate, the same audit-before-write
+ordering. Two mechanisms for one idea is how the two confirmations diverge.
+
+⚠ **The lowering direction is the dangerous one, and it is not symmetric with a session's.**
+Declassifying a *session* exposes one transcript the user is looking at. Publicizing a *base* exposes
+**everything every private model ever wrote into it**, to every public model, from the next tool call
+onward — and for anything already read there is no undo. So the confirmation counts what it is about
+to release rather than asking a generic question, and the count is computed server-side from the
+tree, not from anything the renderer already had lying around.
+
+⚠ **There is no `kb_set_tier` tool and there must never be one.** A model raises a tier as a
+side-effect of writing (`raise_tier`, raise-only, Task 10B) and can do nothing else. Every wrong
+implementation of this task is a route or a tool that lets a model choose, so Step 5's gate is an
+enumeration of tier writers rather than a count.
+
+**Files:**
+
+| Action | Path | Anchor |
+|---|---|---|
+| Create | `crates/biorouter-mcp/src/knowledge/tier_user.rs` | new — `UserKbTierChange` (the proof ZST) and `set_unlocked`, the **only** writer in the tree that may lower a base's tier |
+| Modify | `crates/biorouter-mcp/src/knowledge/tier.rs` | Task 10A's raise-only module; it keeps `raise_unlocked` / `forget_unlocked` and gains nothing — the lowering writer lives in its own file so the gate below can name a file rather than a function |
+| Modify | `crates/biorouter-mcp/src/knowledge/service.rs` | `set_tier_by_user` beside `raise_tier` (Task 10A's wrapper, which takes `lock_root()`); same lock discipline and the same deadlock rule — never call it from `create_base` / `import_brkb` / `delete_base`, which already hold the lock |
+| Modify | `crates/biorouter-server/src/routes/knowledge.rs` | new `POST /knowledge/bases/{id}/tier`, and the tier on the bases listing so the chip has something to render (⚠ verify against Task 10D's metadata inventory before adding a field — that task owns what this response may carry) |
+| Modify | `crates/biorouter-server/src/auth.rs` | the same `X-User-Action` proof [Task 18A](#task-18a-the-two-http-channels-that-raise-a-sessions-own-tier-and-the-user-proof-neither-of-them-has) builds for DR-16. **Do not add a second header, a second key or a second check.** |
+| Create | `ui/desktop/src/components/knowledge/KbTierControl.tsx` | new — the tier chip and both directions |
+| Modify | `ui/desktop/src/components/knowledge/KnowledgeView.tsx` | the KB header, beside the existing base controls |
+| Modify | `ui/desktop/src/components/knowledge/KBSelector/KBSelectorPalette.tsx` | the tier badge on each row of the palette, so the tier is visible **before** the user switches, not after |
+| Reference | `ui/desktop/src/components/ui/DangerousConfirmDialog.tsx` | Task 29's primitive. Reused, never re-created. |
+| Reference | `crates/biorouter/src/privacy/declassify.rs` | Task 29's shape, which this mirrors |
+
+- [ ] **Step 1: Write the failing tests**
+
+```rust
+#[test]
+fn only_a_user_proof_can_lower_a_base_and_a_model_cannot_construct_one() {
+    // The mirror of Task 29's `only_a_user_confirmation_can_lower_the_tier`.
+    // `UserKbTierChange` is a ZST; the KB MCP server, the three macros,
+    // `KbToolDispatch` and every `#[tool]` handler have no path to one.
+    let svc = svc_with_base("omop");
+    svc.raise_tier("omop", /* caller_is_private */ true).unwrap();
+    assert_eq!(tier_of(&svc, "omop"), KbTier::Private);
+
+    svc.set_tier_by_user("omop", KbTier::Public, UserKbTierChange::for_test()).unwrap();
+    assert_eq!(tier_of(&svc, "omop"), KbTier::Public);
+
+    // …and the other direction, which is the cheap one.
+    svc.set_tier_by_user("omop", KbTier::Private, UserKbTierChange::for_test()).unwrap();
+    assert_eq!(tier_of(&svc, "omop"), KbTier::Private);
+}
+
+#[test]
+fn a_publicized_base_is_not_indistinguishable_from_one_that_was_always_public() {
+    // The `.kb-tiers` entry records how the value got there, exactly as
+    // `privacy_reason` does for a session. Without this, a user cannot tell a
+    // base they released from one that was never private, and neither can a
+    // support conversation six months later.
+    let svc = svc_with_base("omop");
+    svc.raise_tier("omop", true).unwrap();
+    svc.set_tier_by_user("omop", KbTier::Public, UserKbTierChange::for_test()).unwrap();
+    let e = entry(&svc, "omop");
+    assert_eq!(e.tier, KbTier::Public);
+    assert_eq!(e.reason.as_deref(), Some("publicized_by_user"));
+    assert!(e.changed_at.is_some());
+}
+
+#[test]
+fn the_ratchet_still_ratchets_after_a_publicize() {
+    // Publicizing is not an exemption. The next private write raises it again,
+    // and the user is not silently left on a base that stopped ratcheting.
+    let svc = svc_with_base("omop");
+    svc.raise_tier("omop", true).unwrap();
+    svc.set_tier_by_user("omop", KbTier::Public, UserKbTierChange::for_test()).unwrap();
+    svc.raise_tier("omop", /* caller_is_private */ true).unwrap();
+    assert_eq!(tier_of(&svc, "omop"), KbTier::Private);
+}
+
+#[test]
+fn a_base_created_by_a_private_model_is_private_before_any_ingest() {
+    // DR-18(b), pinned here rather than only in Task 10B, because this is the
+    // task a reader lands on when they ask "when does a base become private?".
+    // Nothing has been written into it — no page, no raw source, no macro run.
+    let srv = kb_server();
+    call_tool_as(&srv, "kb_create_base", json!({ "id": "cohort", "name": "Cohort" }), Private);
+    assert_eq!(tier_of(&srv.service, "cohort"), KbTier::Private);
+
+    call_tool_as(&srv, "kb_create_base", json!({ "id": "notes", "name": "Notes" }), Public);
+    assert_eq!(tier_of(&srv.service, "notes"), KbTier::Public);
+}
+```
+
+```rust
+#[tokio::test]
+async fn the_tier_route_needs_more_than_the_secret_key() {
+    // Identical to Task 29's `the_route_needs_more_than_the_secret_key`, and it
+    // must stay identical: §9.3 A1 puts the secret inside any developer-enabled
+    // agent shell, so `X-Secret-Key` alone is not a human.
+    assert_eq!(post_tier(no_headers()).await.status(), 401);
+    assert_eq!(post_tier(secret_key_only()).await.status(), 403);
+    assert_eq!(post_tier(secret_key_and_user_action()).await.status(), 200);
+}
+
+#[tokio::test]
+async fn a_daemon_with_no_user_action_key_refuses_both_directions() {
+    // Open question 23's posture, applied here without inventing a second
+    // answer: a daemon started by `just run-server` has no key, so the control
+    // is unavailable rather than open. The error names why.
+    let app = daemon_without_user_action_key().await;
+    let r = post_tier_on(&app, secret_key_only()).await;
+    assert_eq!(r.status(), 403);
+    assert!(body(r).await.contains("started without a user-action key"));
+}
+```
+
+```tsx
+it('publicizing names the blast radius and the phrase gates the button', async () => {
+  render(<KbTierControl kb={{ id: 'omop', name: 'OMOP', tier: 'private', pageCount: 214, rawSourceCount: 37 }} />);
+  await user.click(screen.getByRole('button', { name: /Make this knowledge base public/ }));
+  // Concrete, not "are you sure".
+  expect(screen.getByText(/214 pages/)).toBeInTheDocument();
+  expect(screen.getByText(/37 raw sources/)).toBeInTheDocument();
+  expect(screen.getByText(/cannot be undone for content that has already been read/i)).toBeInTheDocument();
+
+  const confirm = screen.getByRole('button', { name: /Make public/ });
+  expect(confirm).toBeDisabled();
+  await user.type(screen.getByRole('textbox'), 'OMOP');            // the NAME is not the phrase
+  expect(confirm).toBeDisabled();
+  await user.clear(screen.getByRole('textbox'));
+  await user.type(screen.getByRole('textbox'), 'omop');            // the id is
+  expect(confirm).toBeEnabled();
+});
+
+it('privatizing is single-click and discloses nothing', async () => {
+  render(<KbTierControl kb={{ id: 'notes', name: 'Notes', tier: 'public', pageCount: 9 }} />);
+  await user.click(screen.getByRole('button', { name: /Make this knowledge base private/ }));
+  expect(screen.queryByRole('textbox')).toBeNull();
+  expect(onSetTier).toHaveBeenCalledWith('notes', 'private');
+});
+
+it('the tier is visible in the palette before the user switches to a base', () => {
+  render(<KBSelectorPalette bases={[{ id: 'omop', name: 'OMOP', tier: 'private' }, { id: 'notes', name: 'Notes', tier: 'public' }]} />);
+  expect(within(screen.getByRole('option', { name: /OMOP/ })).getByText(/Private/)).toBeInTheDocument();
+  expect(within(screen.getByRole('option', { name: /Notes/ })).queryByText(/Private/)).toBeNull();
+});
+```
+
+- [ ] **Step 2: Run** → Rust **COMPILE ERROR** (`unresolved module tier_user`, `no method named set_tier_by_user`); TS **FAIL**.
+
+- [ ] **Step 3: Implement**
+
+```rust
+// crates/biorouter-mcp/src/knowledge/tier_user.rs
+
+/// Proof that a human asked. A ZST, constructed in exactly one place — the
+/// `POST /knowledge/bases/{id}/tier` handler, after `auth` has matched the
+/// user-action proof Task 18A issues. No MCP server, no `#[tool]` handler, no
+/// macro, no `KbToolDispatch` and no CLI subcommand can construct one.
+///
+/// This is Task 29's `UserConfirmation`, for bases instead of sessions, and it
+/// is a separate type on purpose: one proof must not be spendable on the other
+/// subject.
+pub struct UserKbTierChange(());
+
+/// The ONLY writer in the tree permitted to LOWER a base's tier. `tier::raise_unlocked`
+/// is monotone by construction and stays that way; this bypasses it with its own
+/// write, and Step 5 asserts exactly one such writer exists.
+///
+/// Writes the provenance in the same entry, before returning: `reason` and
+/// `changed_at`, so a released base is never indistinguishable from one that was
+/// always public.
+///
+/// Caller must hold the root lock — `KnowledgeService::set_tier_by_user` is the
+/// wrapper that takes it. Task 10A decision (5b): calling the wrapper from
+/// inside `create_base` / `import_brkb` / `delete_base` deadlocks.
+pub(super) fn set_unlocked(
+    root: &Path,
+    kb_id: &str,
+    tier: KbTier,
+    _ok: &UserKbTierChange,
+) -> anyhow::Result<()> { … }
+```
+
+**The route.** `POST /knowledge/bases/{id}/tier`, body `{ "tier": "private" | "public" }`. It
+requires the `X-User-Action` proof **in both directions** — privatizing needs no confirmation *dialog*
+but it is still not a thing a model may do, and admitting one direction without the proof is how the
+tool channel gets it back. On a daemon with no key it fails closed with the message Open question 23
+specifies, naming the four launch paths that lack one.
+
+**The grading, and why it differs from Task 29's.** A session's confirmation is graded by
+`privacy_reason` — `mcp:*` gets the typed phrase, `turn:*` gets single-click-plus-undo — because the
+two describe genuinely different exposures. A base has one direction that discloses and one that does
+not, so the grading is by **direction**:
+
+| Direction | Confirmation | Why |
+|---|---|---|
+| private → public (**publicize**) | typed phrase = the **base id**, with the page and raw-source counts rendered beside it, and one sentence saying it cannot be undone for content already read | The base id is short, unique and forces the user to check *which* base — the same argument Task 29 makes for a session-id suffix over a session name, and for the same reason (`fallback_session_name`'s duplicates have a KB analogue in default names like `default`). |
+| public → private (**privatize**) | single click, no phrase, no undo timer | Nothing is disclosed. An undo timer here would be theatre, and the reversal is one click away in the other direction. |
+
+**No 5-second undo on the publicize path.** Task 29 offers one for `turn:*` sessions because the
+exposure is a single transcript the user is looking at. Here the first thing a public model does with
+a released base is read it, and an undo that cannot recall what was read is a false promise.
+
+- [ ] **Step 4: Run**
+
+```bash
+cargo test -p biorouter-mcp --lib knowledge::tier_user
+cargo test -p biorouter-mcp --lib knowledge::tier
+cargo test -p biorouter-server --test knowledge_routes
+just generate-openapi && (cd ui/desktop && npm run generate-api)
+cd ui/desktop && npx vitest run KbTierControl KBSelectorPalette KnowledgeView 2>&1 | tail -6
+```
+
+- [ ] **Step 5: Gate**
+
+```bash
+# (1) EXACTLY ONE lowering writer in the tree, and it is the user's. Enumerated,
+#     not counted: a count is satisfied by deleting this one and adding a
+#     different one somewhere worse.
+grep -rln --include='*.rs' "fn set_unlocked\|set_tier_by_user" crates/ | sort
+echo "expect: crates/biorouter-mcp/src/knowledge/tier_user.rs and crates/biorouter-mcp/src/knowledge/service.rs — nothing else"
+
+# (2) Nothing a model can reach constructs the proof. This is the whole of
+#     'user-only', and it is the assertion that fails the plausible wrong
+#     implementation (a kb_set_tier tool, or a route without the proof).
+grep -rn "UserKbTierChange" crates/ | grep -v "knowledge/tier_user.rs" | grep -v "routes/knowledge.rs"
+echo "expect: no output"
+
+# (3) No tier-setting TOOL exists, under any spelling. The model's only tier
+#     writer is the raise-only ratchet.
+grep -rn '#\[tool(name *= *"kb_[a-z_]*tier' crates/biorouter-mcp/src/
+echo "expect: no output"
+
+# (4) One dialog primitive, still genuinely shared — Task 29's list plus this.
+cd ui/desktop && grep -rl "DangerousConfirmDialog" src/components | sort
+echo "expect: DangerousConfirmDialog.tsx, DangerousConfirmDialog.test.tsx, DeclassifySessionDialog.tsx, KbTierControl.tsx, and Task 30's PrivacyPanel.tsx"
+
+# (5) One user-proof mechanism, not two. The header Task 18A defines is the one
+#     this route reads; a second header name here is the defect this catches.
+grep -rn "X-User-Action\|x-user-action" crates/biorouter-server/src | sed 's/:.*//' | sort -u
+echo "expect: auth.rs plus the handlers that require it — and NO second header name anywhere"
+```
+
+**What this catches.** Four wrong implementations. (1) A `kb_set_tier` MCP tool, which is the obvious
+way to make the feature reachable and hands the decision straight back to the model — gate (3). (2) A
+route that requires only the secret key, which is Task 29's own trap re-run on a new endpoint —
+`the_tier_route_needs_more_than_the_secret_key`. (3) A publicize dialog that asks *"are you sure?"*
+without counting anything, which is what a generic `ConfirmationModal` gives you for free — the
+blast-radius test. (4) A publicize that also disables the ratchet, reasoning that the user said
+public — `the_ratchet_still_ratchets_after_a_publicize`.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add crates/biorouter-mcp/src/knowledge/tier_user.rs crates/biorouter-mcp/src/knowledge/service.rs \
+        crates/biorouter-server/src/routes/knowledge.rs crates/biorouter-server/src/auth.rs \
+        ui/desktop/src/components/knowledge ui/desktop/openapi.json ui/desktop/src/api
+git commit -m "feat(privacy): user-only publicize/privatize for knowledge bases, graded and audited (#56)"
 ```
 
 ---
