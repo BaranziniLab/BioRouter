@@ -4,8 +4,11 @@
 > designed in [`privacy-tiers.md`](privacy-tiers.md) ([issue #56](https://github.com/BaranziniLab/biorouter/issues/56)):
 > fifty tasks in seven phases — forty numbered, plus **4b** (resolve every test filter against a
 > real `cargo --list`), **10A, 10B, 10C and 10D**, the knowledge-base tier the operator ruled on
-> after the first adversarial review, and **14A–14F**, the read-deny the operator
-> ruled on after the fifth — each with a Files table, a failing test, complete
+> after the first adversarial review, **14A–14F**, the read-deny the operator
+> ruled on after the fifth (**all six now `DEFERRED` — see
+> [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store)**), and **29A** and **30A**,
+> the user-controllable knowledge-base tier and the non-private-model disclosure the operator ruled on
+> 2026-07-30 — each with a Files table, a failing test, complete
 > implementation code, a run step, a gate that fails a plausible wrong implementation, and one commit.
 > **Status:** Proposed — ready to execute. The design's rulings are settled (see
 > [Decisions of record](#decisions-of-record)); the costs the operator knowingly accepted are in
@@ -18,6 +21,15 @@
 > ([AR-15](#ar-15--a-caller-holding-the-daemon-secret-can-raise-its-own-sessions-capability-with-no-credentials));
 > both need a caller identity in the daemon's auth model, which this plan does not add.
 > **Audience:** the engineer or agent implementing issue #56, and the reviewer of its PRs.
+
+> ⚠ **Scope ruling, 2026-07-30 — read [Scope ruling — DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store) before any task.**
+> The operator has **narrowed** this feature. The general filesystem barrier (DR-14, Tasks 14A–14F)
+> is descoped for v1 and those tasks are marked `DEFERRED` in place — do not implement them, do not
+> delete them. What remains in scope is the session store, the capability lattice, the private-only
+> extensions, and a **new** user-facing disclosure obligation
+> ([Task 30A](#task-30a-the-non-private-model-disclosure)) that is what makes the accepted risks
+> legitimate. Everything below DR-17's section still describes the wider feature; where a task, an
+> accepted risk or an open question is affected, it says so in place.
 
 > **For agentic workers:** follow the subagent-driven-development or executing-plans skill and
 > work task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. Work in the worktree
@@ -315,6 +327,256 @@ collected in [Departures from the design](#departures-from-the-design).
 
 ---
 
+## Scope ruling — DR-17 narrows this plan to the session store
+
+**Read this before any task below.** On 2026-07-30 the operator narrowed #56. Roughly a third of
+this plan is now **deferred rather than deleted**, and the sections that are still load-bearing are
+named at the end of this one. Nothing here re-argues the ruling; it applies it and makes its
+consequences visible.
+
+### Knowledge bases are in scope — the operator confirmed it, and added a requirement
+
+The first draft of this section left an open question: does a knowledge base fall under *"other
+files that are generated in other sessions in other places"*, which the ruling accepts as the user's
+own risk? **It does not, and the operator said so directly.**
+
+> knowledge bases should also be able to be deemed private - as it is also a piece of biorouter
+> component . please make sure that users can change the kb to be private or public and the private
+> model generated kb will automatically be private until the user publicize it, and all the other
+> guardrails will apply as well
+
+A knowledge base is BioRouter's own store of ingested content — a durable, named collection the
+product creates and maintains — not an incidental file a session happened to leave on disk. So
+**DR-13's tier ratchet stays, every guardrail applies to a KB, and the ruling adds a control this
+plan did not have**: the user may move a base between private and public. That is
+**[DR-18](#dr-18--the-knowledge-base-tier-is-user-controllable-and-a-private-session-creates-a-private-base)**,
+and it resolves [AR-1](#ar-1--resolved-by-dr-18--a-knowledge-base-that-one-private-session-touched-becomes-unreadable-from-every-public-chat-including-the-users-own-ordinary-work) — the accepted cost that a base one private chat touched was
+unreadable from every public chat with no way back.
+
+### The ruling, verbatim
+
+> The generic idea is to lock the sessions that are actually private or executed using a private
+> model so that a public model or a non-private model cannot use the AI agent to easily get access
+> to those sessions.
+>
+> As for other files that are generated in other sessions in other places, we essentially let the
+> users know that if they're using a public model that's not HIPAA compliant or not hosted
+> on-premise or locally, they are at their own risk for their computer to essentially be exposed to
+> models that can potentially gather information from them.
+>
+> We don't need to encrypt every single file that is generated by those private models, but we just
+> need to make sure that the exact session logs and histories cannot be viewed by the public models.
+> The public models cannot spin up private models to help them do their work of querying the
+> sensitive databases using all of the different extensions that are only available for the private
+> models.
+>
+> Overall, the philosophy is to still make sure that users understand the risks of using non-private
+> models, but then we don't have to enforce and encrypt every single step along the way. for now
+
+### What is in scope — three hard requirements
+
+1. **Session logs and histories are locked.** A public-capability model must not be able to read the
+   transcript of a private session. This is the core of the feature and nothing below softens it.
+2. **A public model may not obtain private capability.** It cannot raise its own tier (DR-16), and it
+   cannot reach the private-only extensions — `ucsfomopagent` and `cdwagent` — that query the
+   sensitive databases. *"The public models cannot spin up private models to help them do their work"*
+   is the whole attack this feature exists to stop.
+3. **Users are told the risk.** A model that is not HIPAA-compliant, not on-premise and not local can
+   reach what is on the machine, and the user must be told so somewhere they actually read. This is a
+   **product obligation with a task and a gate** ([Task 30A](#task-30a-the-non-private-model-disclosure)),
+   not a line of prose in a design document.
+
+### What is out of scope — three accepted risks
+
+4. **Files a private session produced elsewhere on disk** — working files, outputs, artifacts,
+   exports. Not protected. *"We don't need to encrypt every single file that is generated by those
+   private models."*
+5. **Encryption at rest.** Not required anywhere, for anything.
+6. **A general filesystem barrier.** DR-14's Layer A / Layer B read-deny over four roots and one
+   file is **descoped for v1**. *"We don't have to enforce and encrypt every single step along the
+   way. for now."*
+
+### Why accepting 4–6 is legitimate and not an oversight
+
+Requirement 3 is what makes the difference, and it is the reason it is written as work rather than as
+a caveat. An accepted risk that the user is **told about** is a tradeoff the user makes; an accepted
+risk the product knows about and does not disclose is a misrepresentation. The operator's own framing
+is *"still make sure that users understand the risks of using non-private models"* — the disclosure
+is not a consolation for the missing barrier, it is the term on which the missing barrier is
+acceptable. **If Task 30A does not ship, this narrowing is not defensible.** That is why it carries a
+gate of its own and is listed in Task 32's phase gate rather than left to Task 39's documentation
+sweep.
+
+### This is the operator narrowing a ruling, not an implementer narrowing one
+
+The [implementation brief](privacy-tiers-implementation-brief.md#the-amendment-protocol) forbids
+silently narrowing a settled ruling: *"the rulings are the operator's, not the plan's."* That rule is
+intact. DR-14 was the operator's and DR-17 is the operator's; the brief's protocol ends at *"raise it
+to the operator"*, and this is what the operator answered. **No implementer may invoke DR-17 to
+descope anything it does not name** — in particular it does not touch DR-3, DR-4, DR-6, DR-13 or
+DR-16, and it does not relax any gate on the agent-mediated channel.
+
+### What this changes, concretely
+
+- **Tasks 14A–14F are `DEFERRED`** and their content is left intact — see
+  [what is deferred](#what-is-deferred-and-why-nothing-was-deleted).
+- **The barrier's one required root is the session store.** The four review rounds that kept failing
+  were all about *generalising* the barrier across four roots and every tool that could reach them.
+  That generalisation is no longer required.
+- **`supports_read_deny`, the Seatbelt live probe, the bubblewrap `--tmpfs` work and the Landlock
+  refusal are unnecessary for v1.** So is every platform-capability probe built to feed them.
+- **AR-6, AR-9 and AR-10 are retired**, and AR-8 and AR-11 are amended — see
+  [Accepted risks](#accepted-risks). AR-6 is the important one: public sessions on Windows and on
+  bubblewrap-less Linux would have lost `developer__shell` and four sibling tools entirely. **That
+  cost is no longer paid.** It was the single largest usability price in the design.
+- **Open questions 17, 19 and 22 are resolved by descoping**, and 18 and 20 are narrowed. None of
+  them is dropped; each says so in place.
+- **[Task 30A](#task-30a-the-non-private-model-disclosure) is new**, and it is load-bearing.
+- **[#63](https://github.com/BaranziniLab/biorouter/issues/63) stands on its own.** Global-memory
+  consent is a separate, already-built control and this narrowing does not touch it.
+
+### What is deferred, and why nothing was deleted
+
+The Task 14 series — [14A](#task-14a-layer-b--the-read-deny-sandbox-policy-and-what-each-platform-can-actually-express),
+[14B](#task-14b-layer-a--the-barrier-at-the-dispatch-choke-point-and-the-policy-it-hands-to-layer-b),
+[14C](#task-14c-the-other-door--the-daemons-own-http-api-pinned-rather-than-assumed),
+[14D](#task-14d-layer-as-seams--the-readers-that-never-reach-the-choke-point),
+[14E](#task-14e-the-roots-own-doors--where-the-handler-not-the-caller-supplies-the-path),
+[14F](#task-14f-export_apps-write-target--a-tool-that-reads-a-root-and-writes-anywhere-is-a-copy-primitive) —
+plus [DR-14 is two layers](#dr-14-is-two-layers-and-the-os-sandbox-is-the-second-one) carry four
+review rounds of analysis, most of it **measured on real hosts**: what Seatbelt can and cannot
+express, that bubblewrap aborts on an absent `--tmpfs` destination, that Landlock has no deny rule at
+all, that Windows has no unprivileged confinement, that `symlink(2)` never resolves its target, that
+macOS ships `O_RESOLVE_BENEATH` and `O_NOFOLLOW_ANY`, and that a child recovers its parent's
+environment through `sysctl` under every profile that can be constructed. Those facts were expensive
+to establish and none of them expires. **Deleting the tasks would throw away the most costly
+knowledge in this document**, and the next person asked for a filesystem barrier would pay for it
+twice.
+
+So each deferred task keeps its heading, its Files table, its code and its gates, and gains a banner
+saying it is out of scope for v1 and why. A phase gate must not run them; a worker must not
+implement them; a reviewer must not ask for them.
+
+### What remains load-bearing
+
+The session store is locked on the **agent-mediated** channels — the ones a model reaches by asking
+BioRouter for something. These tasks are unchanged and are what requirement 1 rests on:
+
+| Requirement | Tasks that carry it |
+|---|---|
+| The tier model itself | 4, 4b, 5, 6, 7, 8, 9 |
+| Session logs and histories locked (req. 1) | **10** (the `chatrecall` LOAD guard and the one `CallCapability` sample), **11** (Gate G, cross-session conversation ingest), **17** (Gate D, `chatrecall` SEARCH in both builders), **21** (the visibility predicate), **22** (session copy carries the tier), **23** (spawn) |
+| No tier escalation (req. 2, first half) | **12** (Gate A, the bind), **13** (Gate B, the turn and the ratchet), **18A** (DR-16's user-only raise), **19** (Gate H, the alternate-provider construction sites) |
+| Private extensions unreachable (req. 2, second half) | **14** (Gate C, the dispatch choke point), **15** (Gate C's eight siblings), **16** (Gate E, discovery), **18** (Gate F, the two non-tool extension channels) |
+| Knowledge bases, and the user's control over their tier | **10A, 10B, 10C, 10D**, plus **29A** (publicize / privatize, DR-18) |
+| Disclosure (req. 3) | **30A**, with 26–29 and 31 as the surfaces it sits on |
+| The master toggle | **30** — with its enforcement-point matrix reduced by the deferred rows |
+| Migration, docs, release | 33–40 |
+
+**And here is the honest consequence, which the design now states in the same words.** With Layer A
+and Layer B deferred, a public-capability model that holds `developer__shell` can still `cat` the
+session database, a private session's derived artifacts, and any file a private session wrote
+anywhere on disk. What the remaining work stops is the **agent-mediated** path (the model asking
+BioRouter to hand it another session's content), the **transcript** path (a private history being
+sent to a public model on a turn), and the **tier-escalation** path (a public session acquiring
+private capability or a private extension). It does not make the machine opaque to a public model,
+and no document in this campaign may imply that it does. That is requirement 3's subject, and
+requirement 3 is why this is a considered tradeoff.
+
+**If the filesystem channel is ever revived**, the cheapest correct path is Task 14B narrowed to one
+root — the session store — with Layer B still off. That is a small fraction of what 14A–14F specify
+and it is the reason they are kept.
+
+## DR-18 — the knowledge-base tier is user-controllable, and a private session creates a private base
+
+**Read this with [Task 29A](#task-29a-knowledge-base-publicize--privatize--user-only-graded-audited),
+which implements it, and with [DR-13](#decisions-of-record), which it extends rather than replaces.**
+
+### The ruling, verbatim
+
+> knowledge bases should also be able to be deemed private - as it is also a piece of biorouter
+> component . please make sure that users can change the kb to be private or public and the private
+> model generated kb will automatically be private until the user publicize it, and all the other
+> guardrails will apply as well
+
+### What it settles
+
+**(a) A knowledge base is in scope, and every guardrail applies.** DR-17 accepts *"other files that
+are generated in other sessions in other places"* as the user's own risk; a knowledge base is not one
+of those. It is *"a piece of biorouter component"* — the product's own durable, named store of
+ingested content. So DR-13's ratchet stays, Tasks 10A–10D are unchanged and load-bearing, and a
+public-capability session may neither read nor write a private base (CP1–CP4).
+
+**(b) A base takes a tier when it is created, not only when it is first ingested into.** *"The
+private model generated kb will automatically be private."*
+
+**(c) The user may move a base in both directions, and only the user may.** *"Users can change the kb
+to be private or public."* This is DR-8 and DR-16 in a third place: lowering a **session's**
+classification is the user's act alone, raising a **session's** capability is the user's act alone,
+and now setting a **base's** tier is the user's act alone. A model may not call it, in either
+direction, on either channel. It routes through the same user-proof
+[Task 18A](#task-18a-the-two-http-channels-that-raise-a-sessions-own-tier-and-the-user-proof-neither-of-them-has)
+builds for DR-16 — one mechanism, not a second one.
+
+**(d) Publicizing is a one-way door for content that already exists in the base, and its confirmation
+must say so concretely.** Releasing a base puts everything a private model wrote into it in reach of
+every public model, permanently for anything already read. The confirmation therefore names the blast
+radius — how many pages, how many raw sources, and that it cannot be undone for content already
+exposed — the way Task 29's session declassification is graded by `privacy_reason` rather than
+offering a generic *"are you sure"*. **Privatizing is the cheap direction**: nothing is disclosed by
+it, so it is single-click, and it is what makes the control symmetric instead of a trapdoor.
+
+### What the plan already had, and what is genuinely new — measured against the plan's own tasks
+
+Requirement (b) is **already specified for the path that matters**, and this section states where, so
+nobody rebuilds it:
+
+- **The model-facing creation path already stamps at creation.** Task 10B gives `kb_create_base`
+  (`knowledge/server.rs:357`) and `kb_import` (`:764`) a `RequestContext` — the only two `#[tool]`
+  signature changes in that task — and each calls `self.service.raise_tier(&id,
+  caller_is_private)` *after* the create succeeds, precisely because the subject id does not exist
+  beforehand. So **a base a private-capability model creates is private before a single page is
+  written to it**, which is the ruling's sentence exactly.
+- **The service layer deliberately registers PUBLIC and lets the layer above raise it.**
+  `KnowledgeService::create_base` and `import_brkb` register the new id unconditionally as public
+  (Task 10A decision 5a) rather than taking a tier argument, because `create_base` has **8 callers**
+  and `import_brkb` similar, and threading a capability through all of them was the change that would
+  not land. The tier is applied one call up, where the caller's capability is actually known. That is
+  a correct design under DR-18 and must not be "fixed".
+- **What is new is (c) and (d): there is no user control at all today.** The plan's own text said so
+  in as many words — *"there is no declassification path for a KB in v1"* — and
+  [AR-1](#ar-1--resolved-by-dr-18--a-knowledge-base-that-one-private-session-touched-becomes-unreadable-from-every-public-chat-including-the-users-own-ordinary-work)
+  was the accepted cost of not having one. Task 29A is the whole of the new work.
+
+### The one asymmetry, decided rather than left implicit
+
+A base created through a **non-model** path takes no tier and starts **public**: `POST
+/knowledge/bases` (`routes/knowledge.rs:354`), the CLI's two `create_base` call sites
+(`biorouter-cli/src/commands/knowledge.rs:388`, `:520`), `reset.rs:123` and `soul.rs:76` are all in
+Task 10B's *"plain write routes that get no raise"* list, and they stay there.
+
+**That is the ruling's words applied literally and it is the right reading.** The ruling privatises
+*"the private model generated kb"* — a base a **model** produced. A user clicking *New knowledge
+base* in the Knowledge view is the user, not a model, even if the chat in the next tab is on Versa;
+inheriting a tier from an unrelated chat would privatise bases the user never intended and is exactly
+the mis-click hazard DR-4 refused for sessions. The user who wants that base private has a one-click
+control now, which is why this asymmetry is affordable and was not before. **Once the base exists,
+every subsequent guardrail applies to it identically however it was created** — the first private
+ingest ratchets it (CP2/CP3), and a public model cannot read it after that.
+
+### What must not be built
+
+- **No second user-proof mechanism.** If DR-16's `X-User-Action` key is not yet available, Task 29A
+  fails closed and says so; it does not invent an alternative.
+- **No model-invocable tier setter.** There is no `kb_set_tier` MCP tool, no `caller_is_private`
+  override, and no HTTP route that changes a tier without the user proof. The ratchet
+  (`raise_tier`) stays the *only* tier writer a model can reach, and it is raise-only.
+- **No per-page tier.** Pages are markdown in a git tree; per-page classification is a storage
+  redesign and DR-18 does not ask for one. Publicizing releases the whole base, which is why (d)'s
+  confirmation counts pages.
+
+---
+
 ## Read this before you chase a line number
 
 **Every Rust anchor in `privacy-tiers.md` is stale.** The design was verified against `main` at
@@ -526,6 +788,18 @@ the signature churn from the control. 10D adds a **fifth** choke point of its ow
 metadata and never touches base content — the reason both of 10C's new-surface detectors are blind
 to it.
 
+**O17 — Task 29A follows Task 29 and Task 10A; Task 30A follows neither and must not wait for
+Task 30.**
+Task 29A reuses Task 29's `DangerousConfirmDialog`, its focus discipline and its "one lowering writer"
+gate, and it writes into Task 10A's `.kb-tiers` store — writing it first means inventing a second
+confirmation primitive and a second tier writer, which is the divergence both gates exist to prevent.
+It also needs Task 18A's user-proof; where that does not exist yet it fails **closed** and says so,
+per [Open question 23](#open-questions). **Task 30A is different and the difference matters.** It is
+the term on which [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store)'s accepted risks are acceptable, it is independent
+of the master toggle by construction, and it shares nothing with Task 30 but a settings panel. Making
+it a step inside Task 30 is how a scope narrowing ships without the disclosure that justifies it — so
+it is its own task, with its own gate, and Task 32 asserts it.
+
 **O13 — Every task's commit leaves `cargo test` green, and where it cannot, the task says what red
 to expect.**
 Not a style rule: the previous draft left **nine consecutive commits** (10B through 19) failing
@@ -543,8 +817,14 @@ state, which is the condition under which people stop reading failures. Three ru
    caller. "Task N adds this field" in a Files table, for a field task N−1 makes required, is a task
    that cannot compile — see Task 10B's ⚠ on `conversation_ingest.rs:205`.
 
-**O14 — Every read-deny is emitted AFTER the allow it subtracts from, and every capability check
-runs BEFORE the early return it would otherwise sit behind.**
+**O14 — ⛔ DEFERRED with Tasks 14A–14F ([DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store)). Every read-deny is emitted AFTER the allow it
+subtracts from, and every capability check runs BEFORE the early return it would otherwise sit
+behind.**
+There is no read-deny in v1, so nothing here constrains an ordering. Kept because all four failures
+are silent and a revival needs them on day one: in SBPL the **last** matching rule wins, in
+bubblewrap the **later** filesystem option wins, `shell_sandbox_wrap`'s DR-14 arm must precede the
+`SandboxMode::Off` early return, and `resolve_path_jailed`'s must precede the `jail_relaxed` return —
+because relaxed **is** Auto mode, which is the mode agents run in.
 Four places, one shape, and all four failures are silent. In SBPL the last matching rule wins, so a
 `(deny file-read* …)` emitted before `BASE_POLICY`'s `(allow file-read*)` (`seatbelt.rs:35`) or
 before the writable-roots block produces a profile that compiles, runs, reports `Full`, and denies
@@ -570,7 +850,12 @@ of an unbounded dispatch queue), and `PrivatePathPolicy::for_call` must **not** 
 [AR-13](#ar-13--the-capability-is-sampled-at-permit-time-so-a-model-swap-mid-tool-call-is-honoured-on-the-next-call-not-this-one)
 for what this deliberately does not close.
 
-**O16 — Task 14E's doors land with or after Task 14B, and before Phase 2's gate (Task 20).**
+**O16 — ⛔ Its first half is DEFERRED with Tasks 14A–14F ([DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store)); its second half is NOT.**
+⚠ Read the whole item: the *"fifth and sixth"* paragraph below belongs to **Task 10D**, which is in
+scope and unchanged, and it is one of the plan's few orderings a count-based gate cannot see. Only
+the 14B/14E/14F sentence is deferred.
+
+**Task 14E's doors land with or after Task 14B, and before Phase 2's gate (Task 20).**
 Task 14B guards the arguments; Task 14E guards the roots' own resolvers. Shipping 14B alone leaves
 every id-keyed reader open (`read_app`, `export_app`, `list_apps`) while the plan's own coverage
 claim reads as satisfied, which is precisely the state round 3 rejected. Task 14E depends on Task 10
@@ -618,6 +903,7 @@ crates/biorouter/src/providers/tier_tests.rs           Task 5  — `#[cfg(test)]
 crates/biorouter/src/privacy/registry_private.rs       Task 8  — @generated from landing/
 crates/biorouter/src/privacy/extensions.rs             Task 8  — classify_extension(name)
 crates/biorouter-mcp/src/knowledge/tier.rs             Task 10A — the KB tier store + migration
+⛔ DEFERRED by DR-17 — none of the seven below is created in v1:
 crates/biorouter-sandbox/src/private_data.rs           Task 14B — the meta key, PrivateDataPolicy, the refusal
 crates/biorouter-sandbox/tests/read_deny.rs            Task 14A — Layer B, the live kernel-enforcement proof
 crates/biorouter-mcp/src/private_roots.rs              Task 14B — the five entries, the ONE resolver
@@ -629,10 +915,14 @@ crates/biorouter/src/privacy/refusal.rs                Task 12 — PrivacyRefusa
 crates/biorouter/src/privacy/alt_provider.rs           Task 19 — assert_alt_provider_allowed
 crates/biorouter/src/privacy/visibility.rs             Task 21 — the §7 matrix as one predicate
 crates/biorouter/src/privacy/declassify.rs             Task 29 — UserConfirmation + declassify()
+crates/biorouter-mcp/src/knowledge/tier_user.rs        Task 29A — UserKbTierChange; the ONE lowering writer (DR-18)
+crates/biorouter/src/privacy/disclosure.rs             Task 30A — the ONE copy constant + required_for() (DR-17 req. 3)
 ui/desktop/src/components/ui/PrivacyBadge.tsx          Task 26
 ui/desktop/src/components/ui/DangerousConfirmDialog.tsx Task 29
 ui/desktop/src/components/sessions/DeclassifySessionDialog.tsx Task 29
 ui/desktop/src/components/settings/privacy/PrivacyPanel.tsx Task 30
+ui/desktop/src/components/knowledge/KbTierControl.tsx  Task 29A — publicize / privatize, user-only
+ui/desktop/src/components/privacy/NonPrivateModelDisclosure.tsx Task 30A — the one-time blocking dialog
 ui/desktop/src/components/privacy/FirstRunPrivacyNotice.tsx Task 38
 landing/scripts/check-docs-privacy.mjs                 Task 36
 docs/security/privacy-tiers-migration.md               Task 38
@@ -646,6 +936,11 @@ module and says which item it adds. `privacy/visibility.rs` is Task **21**, not 
 task that creates it. `privacy/alt_provider.rs` (Task 19) and the three UI files were missing from
 this list entirely.
 
+⚠ **And seven of them are no longer created at all.** DR-17 defers Tasks 14A–14F, so the block marked
+⛔ above is dead in v1 — a worker who creates those files has implemented a descoped task, and a phase
+gate that expects them fails a correct tree. Two files replace them in scope terms rather than in
+kind: `knowledge/tier_user.rs` (Task 29A) and `privacy/disclosure.rs` (Task 30A).
+
 ---
 
 ## Accepted risks
@@ -655,7 +950,21 @@ plain language because each one is a way a *correct* implementation of this plan
 something a user might expect to have. **Do not treat any of them as a bug report**; each is a
 ruling. What is *not* on this list is a defect.
 
-### AR-1 — A knowledge base that one private session touched becomes unreadable from every public chat, including the user's own ordinary work
+⚠ **Six of these changed on 2026-07-30.** The operator's scope ruling [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store) retired
+**AR-6**, **AR-9** and **AR-10** — they existed only to support the general filesystem barrier, which
+is descoped — and amended **AR-8** and **AR-11**. The knowledge-base ruling [DR-18](#dr-18--the-knowledge-base-tier-is-user-controllable-and-a-private-session-creates-a-private-base)
+resolved **AR-1**. None was deleted: each says in place what happened to it and why, because an
+accepted cost that simply disappears from a document is indistinguishable from one nobody noticed.
+
+### AR-1 — RESOLVED by DR-18 — A knowledge base that one private session touched becomes unreadable from every public chat, including the user's own ordinary work
+
+> ✅ **RESOLVED by [DR-18](#dr-18--the-knowledge-base-tier-is-user-controllable-and-a-private-session-creates-a-private-base), 2026-07-30.** The operator ruled that *"users can change the kb to be private
+> or public"*. AR-1 was entirely a statement of **the missing way back** — a base ratcheted by one
+> private page was unreadable from every public chat for ever. That way back now exists, is user-only,
+> and is specified in [Task 29A](#task-29a-knowledge-base-publicize--privatize--user-only-graded-audited).
+> The text below is kept because it is the clearest description of what the ratchet costs a user
+> *until they publicize*, and every one of its bullets is still true of a base the user has not acted
+> on. What is no longer true is the last one, and it is corrected in place.
 
 The ruling (Tasks 10A–10C): **a knowledge base takes the tier of the most sensitive session that has
 ingested into it, and a public-capability session may not read a private KB.** The alternative the
@@ -686,14 +995,22 @@ The cost, stated plainly:
   — and it is discoverable, because the refusal string names it. It is still a real loss of
   ergonomics for a user whose default model is commercial and whose knowledge base has one private
   page in it.
-- **There is no declassification path for a KB in v1.** Sessions get one (Task 29, user-only, graded,
-  audited). A KB does not, and the CLI escape hatch (Task 31) does not cover KBs either. A user who
-  ratchets their only knowledge base by accident has no in-product exit short of `kb_export` →
-  `kb_import` into a fresh id from a public chat, which Task 10A explicitly does **not** launder
-  (an import stamps the importing session's tier and cannot lower an existing one). Follow-up, and
-  [Open question 15](#open-questions) records it.
+- ~~**There is no declassification path for a KB in v1.**~~ **CORRECTED — there is one, and it is the
+  whole of [DR-18](#dr-18--the-knowledge-base-tier-is-user-controllable-and-a-private-session-creates-a-private-base).** The user publicizes the base from the Knowledge view: user-only, never the model,
+  routed through the same user-proof DR-16 requires and confirmed against a count of the pages it
+  releases ([Task 29A](#task-29a-knowledge-base-publicize--privatize--user-only-graded-audited)). The
+  sentence this replaces was true of every draft before 2026-07-30 and is the reason AR-1 existed;
+  it is struck rather than deleted so a reader who remembers the old constraint can see it lift.
+  [Open question 15](#open-questions) is answered with it.
 
 ### AR-2 — Every knowledge base that exists today starts **public** at migration, even if a private session fed it
+
+> ⚠ **AMENDED by [DR-18](#dr-18--the-knowledge-base-tier-is-user-controllable-and-a-private-session-creates-a-private-base).** Still accepted, and still fail-**open** for the reason below. What changed is
+> the repair: a user who knows a pre-upgrade base holds private material can now **privatize it
+> directly** ([Task 29A](#task-29a-knowledge-base-publicize--privatize--user-only-graded-audited))
+> instead of waiting for the next private ingest to ratchet it. The residual is therefore "public
+> until the user acts or a private session ingests", not "public until a private session ingests".
+> Task 38's day-one notice must name the new control, not just the exposure.
 
 `.kb-tiers` does not exist before Task 10A, and the tree keeps no record of which session wrote which
 page — the git author is `Biorouter`, not a session id. So the migration writes `public` for every
@@ -758,7 +1075,21 @@ the first place (CP5 and the two error lists). Closing the last inch needs const
 on `kb_create_base`, which DR-7 declines and which would cost the user a truthful error on the
 overwhelmingly common non-adversarial case.
 
-### AR-6 — On a host that cannot express the read-deny a public session loses the shell, and two costs come with the sandbox itself
+### AR-6 — RETIRED by DR-17 — On a host that cannot express the read-deny a public session loses the shell, and two costs come with the sandbox itself
+
+> ✅ **RETIRED by [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store), 2026-07-30. This cost is not paid.** DR-14's read-deny is descoped for v1, so a
+> public-capability session **keeps `developer__shell` and its background jobs,
+> `computercontroller__automation_script`, `computer_control` and `compute__compute_run` /
+> `compute_python` on every platform** — Windows and bubblewrap-less Linux included. Consequences (2)
+> and (3) go with it: a public session can read its own chat history from the shell, and can reach an
+> Agent Drafter app's files.
+>
+> **What that costs, stated rather than hidden:** the shell is exactly the channel that reaches the
+> session database, so requirement 1 is now held on the **agent-mediated** channels only and a public
+> model with a shell can `cat` a private transcript out of `sessions.db`. That is DR-17's accepted
+> risk, and it is the single largest thing the disclosure in
+> [Task 30A](#task-30a-the-non-private-model-disclosure) exists to tell the user about. The text below
+> is kept intact for whoever revives the barrier.
 
 DR-14 fails **closed**. Three consequences were put to the operator and accepted.
 
@@ -836,7 +1167,18 @@ says" and "the toggle secretly keeps a ledger", the operator's ruling picks the 
 sentence before the switch flips, and the persistent strip repeats it while the toggle is off. A
 user who accepts that sentence has accepted AR-7.
 
-### AR-8 — A private model with a shell can still carry a knowledge base out of the deny root
+### AR-8 — AMENDED by DR-17 — A private model with a shell can still carry a knowledge base anywhere on disk
+
+> ⚠ **AMENDED by [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store).** The framing "out of the deny root" no longer applies — there is no deny root
+> in v1. Two halves survive and one is withdrawn. **Withdrawn:** the claim that a model's export of a
+> private base lands somewhere a public session cannot read, which depended on deny root #2; Task 10A
+> still forces the export location, and it is now a provenance control rather than a barrier.
+> **Survives, and is now the general case:** a private-capability model with a shell can copy its
+> base's markdown, its `.brkb` archive or `sessions.db` anywhere, and a public chat opened afterwards
+> may read it. Under DR-17 that is no longer a knowledge-base-specific residual — it is accepted risk
+> 4 for every root, and the reasoning below (a private model is *being sent* the private material, so
+> constraining what it writes is an egress control and a different feature) is why it is accepted
+> rather than closed.
 
 Task 10A decision (2) closes the archive-laundering path in the two directions that matter: an
 imported base takes `max(archive marker, importer)` so a `.brkb` can only ever over-classify itself,
@@ -860,7 +1202,15 @@ somewhere a public chat can read them, and it will.** The controls that bear on 
 already in the product — approval mode for shell commands, `.biorouterignore`, and the fact that a
 private chat is running the user's own institutional model on the user's own machine.
 
-### AR-9 — Layer A is check-then-use, so a concurrently running shell can still race one in-process reader
+### AR-9 — RETIRED by DR-17 — Layer A is check-then-use, so a concurrently running shell can still race one in-process reader
+
+> ✅ **RETIRED by [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store), 2026-07-30.** Layer A is descoped, so there is no check-then-use window to race
+> and no deny root to race into. Kept intact for one reason: its measurements are the expensive part
+> and none of them expires — `symlink(2)` never resolves its target, a **pre-planted hardlink** defeats
+> a path-matching deny on both kernels, macOS ships `O_RESOLVE_BENEATH` (`0x1000`) and
+> `O_NOFOLLOW_ANY` (`0x20000000`) and both refuse a symlink traversal and a `..` escape at open time,
+> and `/tmp` is itself a symlink so resolve-and-open must anchor a canonical directory fd. Anyone
+> reviving the barrier starts from these, not from a fresh investigation.
 
 [Layer A](#dr-14-is-two-layers-and-the-os-sandbox-is-the-second-one) refuses a tool call whose
 arguments name a path inside a deny root. It decides that by resolving the path *at check time* —
@@ -922,7 +1272,14 @@ symlink case is closed at the open, on both platforms, wherever the reader is on
 where the reader hands a **path** to a third-party crate (`umya_spreadsheet::reader::xlsx::read`,
 `lopdf::Document::load`) it is not, and Task 14D (c) says which those are.
 
-### AR-10 — On Linux, a deny root that does not exist when a job starts stays visible to that job for its whole life
+### AR-10 — RETIRED by DR-17 — On Linux, a deny root that does not exist when a job starts stays visible to that job for its whole life
+
+> ✅ **RETIRED by [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store), 2026-07-30.** There is no bubblewrap wrapper and no deny root in v1, so the race
+> has no subject. Kept for its two measured facts, both of which a revival needs on day one:
+> `--tmpfs` on a destination that does not exist **aborts bubblewrap** (`bwrap: Can't mkdir …: Read-only
+> file system`, exit 1), and an SBPL deny of a path that does not yet exist still applies once another
+> process creates it — so the skip-absent-roots workaround is a Linux necessity and must never be
+> hoisted into a shared helper.
 
 `--tmpfs` on a destination that does not exist **aborts bubblewrap** — measured,
 `bwrap: Can't mkdir …/memory: Read-only file system`, exit 1, even when the parent directory exists.
@@ -960,7 +1317,19 @@ measured, an SBPL deny of a path that does not yet exist still applies once anot
 it (`Operation not permitted`), because SBPL is a path-pattern match. That asymmetry is why the
 `is_dir()` skip must stay inside `wrap_bubblewrap` and must not be hoisted into a shared helper.
 
-### AR-11 — The daemon's own API secret is recoverable, so the second door is held by Layer A and not by the environment strip
+### AR-11 — AMENDED by DR-17 — The daemon's own API secret is recoverable
+
+> ⚠ **AMENDED by [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store).** The measurements stand and are unaffected: a child recovers its parent's
+> environment with `ps -Ewww -p $PPID` on macOS — under a hardened, notarized binary, and under every
+> sandbox profile that can be constructed, because `sysctl-read` is not gated — and
+> `computercontroller__cache view /proc/self/environ` returns it in-process on Linux. **What is
+> withdrawn is the title's second half.** The second door is no longer "held by Layer A", because
+> Layer A is descoped: `POST /agent/call_tool` is still covered by **Gate C** (a private extension is
+> refused there, and that is requirement 2), but the path-barrier half of that coverage is gone. So a
+> caller holding the daemon secret can read `GET /sessions/{id}/export`, the `/knowledge/*` read
+> routes and `GET /diagnostics/{id}` — which DR-17 accepts and
+> [Task 30A](#task-30a-the-non-private-model-disclosure) discloses.
+> [Open question 20](#open-questions) still carries the real fix.
 
 Issue #57's `strip_daemon_private_env` removes `BIOROUTER_SERVER__SECRET_KEY` from every child
 BioRouter spawns, and it does that correctly (Task 14C's audit). The design then concluded that a
@@ -1003,6 +1372,12 @@ that.** What that costs, and what still holds:
   do. [Open question 20](#open-questions) carries it.
 
 ### AR-12 — The approval card's file preview reads a model-chosen path before anyone approves it
+
+> ⚠ **Unchanged by [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store), but its pin moved.** AR-12 is not a filesystem-barrier risk — nothing crosses
+> to the model, because the preview message is `.user_only()` — so the ruling does not touch it. Its
+> guard test `the_approval_preview_never_reaches_the_model` was written into the now-deferred
+> [Task 14D](#task-14d-layer-as-seams--the-readers-that-never-reach-the-choke-point); if that pin is
+> wanted in v1, lift the single test out rather than reviving the task.
 
 `ToolPreview::for_tool_call` (`agents/tool_execution.rs:310`) runs on the **approval** path — before
 the tool is dispatched and before the user has approved anything. For a `write`/`str_replace`/`insert`
@@ -1058,6 +1433,14 @@ swap, which is a change to `update_provider`'s contract for every session and is
 
 ### AR-14 — Every Biorouter app that exists today starts **public** at migration, even if it was built in a private chat
 
+> ⛔ **DEFERRED with Task 14E by [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store).** Agent Drafter apps get no tier in v1, so there is no migration
+> to fail open and this risk has no subject yet. It is kept verbatim because it is the argument for
+> *why* the migration must fail open when the app tier is built — `Manifest.session_id` is
+> `Option<String>`, the session it names may be deleted, and nothing else on disk says which model
+> built the app. Note the asymmetry the ruling creates and do not read it as an oversight: **knowledge
+> bases get a tier and a user control ([DR-18](#dr-18--the-knowledge-base-tier-is-user-controllable-and-a-private-session-creates-a-private-base)); apps do not.** A KB is a store of ingested
+> content; an app's source is code the user asked for.
+
 [Task 14E](#task-14e-the-roots-own-doors--where-the-handler-not-the-caller-supplies-the-path) gives
 each app in `<config>/agent_drafter` a tier, and migrates everything already on disk as **public**.
 This is AR-2's twin and it is accepted for the same reasons plus one more:
@@ -1097,7 +1480,7 @@ user clicking the model chip from a tool call issuing the same POST, because `ch
 origin binding.
 
 **Bounding it honestly.** This is a *credential* escalation, not a *model* escalation. Reaching it
-requires the daemon secret, and [AR-11](#ar-11--the-daemons-own-api-secret-is-recoverable-so-the-second-door-is-held-by-layer-a-and-not-by-the-environment-strip)
+requires the daemon secret, and [AR-11](#ar-11--amended-by-dr-17--the-daemons-own-api-secret-is-recoverable)
 already concedes that a caller holding the secret reads `GET /sessions/{id}/export`, the
 `/knowledge/*` read routes and `GET /diagnostics/{id}` (a zip containing a verbatim `config.yaml`)
 **without any of this**. AR-15 adds the tool channel to a set of HTTP channels the same credential
@@ -1190,14 +1573,15 @@ count is therefore paired with either a named-test filter or a pre/post delta th
 which runs `cargo test -p <pkg> --lib -- --list` for all five packages this plan filters on and
 resolves every one of its **42** `(package, filter)` pairs against the real listing. It is placed
 immediately after Task 4 because Task 4 is the first commit that produces a `privacy::` module, and
-it is docs-only. What it cannot close is the **nine** modules later tasks create
-(`privacy::{extensions,refusal,alt_provider,visibility,declassify,private_roots}`,
-`providers::tier_tests`, `knowledge::tier`, and `private_data` in the **sixth** package,
-`biorouter-sandbox` — which no earlier revision of this plan filtered on at all, so Task 4b's
-`--list` sweep must add it); those are a named deferred set that Task 20's and Task 40's gates re-run
-with a shrinking and then an empty list. Task 14A also introduces a **second integration binary** in
-that package, `--test read_deny`, alongside the existing `--test sandbox`; a `--test` filter naming a
-binary that does not exist is a cargo hard error rather than a silent zero, so it is self-checking. Two further facts Task 4b's design turns on, both easy to get
+it is docs-only. What it cannot close is the modules later tasks create
+(`privacy::{extensions,refusal,alt_provider,visibility,declassify}`, `providers::tier_tests`,
+`knowledge::tier`, and — added by [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store) — `knowledge::tier_user` and `privacy::disclosure`);
+those are a named deferred set that Task 20's and Task 40's gates re-run
+with a shrinking and then an empty list. ⚠ **Superseded by [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store):** an earlier wording here added
+`private_data` in a **sixth** package (`biorouter-sandbox`) and Task 14A's second integration binary
+`--test read_deny`. Both belong to deferred tasks, so the sweep is five packages and there is no
+second binary. The self-checking property still holds and is worth keeping in mind for a revival: a
+`--test` filter naming a binary that does not exist is a cargo hard error rather than a silent zero. Two further facts Task 4b's design turns on, both easy to get
 wrong: this plan spells its filters in **two** forms (`--lib <FILTER>`, 34 occurrences, and
 `--lib -- <NAME> <NAME>`, 7 — an audit of only the first misses `privacy::refusal` and
 `privacy::alt_provider` entirely), and a libtest filter is a **substring** match, not a prefix, so
@@ -2112,6 +2496,44 @@ the gate in Step 5 asserts that partition. **58** `(package, filter)` pairs, all
 | `biorouter` | `every_copy_path_carries_the_tier_and_the_provider` | Task 22 | **0** ✓ — a bare **test name**, not a module; it is in the `--lib -- …` form and is invisible to an audit of only the plain form |
 | `biorouter` | `privacy::declassify` | Task 29 | **0** ✓ |
 
+⚠ **This table is 18 rows and [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store) changes it to 15 — five out, two in. Fix it in the same
+commit as the deferral, not later.** Task 4b's own gate asserts that *every deferred entry is
+something this plan actually creates*, and Task 40 asserts the deferred set is **empty**. Both fail a
+**correct** tree once Tasks 14A–14F are out of scope, which is the precise failure mode this section
+exists to prevent — a gate that reports a shortfall for work nobody was supposed to do.
+
+**Five rows retire with the deferred tasks**, and the filters that quote them must go with them —
+they name modules v1 does not create:
+
+| Package | Filter | Owning task |
+|---|---|---|
+| `biorouter-mcp` | `private_roots` | 14B ⛔ |
+| `biorouter` | `privacy::private_roots` | 14B ⛔ |
+| `biorouter` | `privacy::path_policy` | 14B ⛔ |
+| `biorouter-mcp` | `agent_drafter::tier` | 14E ⛔ |
+| `biorouter-server` | `call_tool_dispatches_through_the_barrier` | 14C ⛔ |
+
+With them go the **sixth package** and the second integration binary: `biorouter-sandbox`
+`private_data` (14B) and `--test read_deny` (14A) are not created in v1, so Task 4b sweeps **five**
+packages again, not six, and the paragraph below that says otherwise is superseded here.
+
+**Two rows join**, from the two tasks the same ruling added:
+
+| Package | Filter | Owning task | Evidence |
+|---|---|---|---|
+| `biorouter-mcp` | `knowledge::tier_user` | 29A | `crates/biorouter-mcp/src/knowledge/tier_user.rs` |
+| `biorouter` | `privacy::disclosure` | 30A | `crates/biorouter/src/privacy/disclosure.rs` |
+
+Both measure **0** today, for the same reason every other deferred row does: nothing creates them yet.
+
+⚠ **And one row is missing that is not DR-17's doing.** Task 18A's Step 4 runs
+`cargo test -p biorouter-server --lib -- auth::`, and `(biorouter-server, auth::)` appears in
+**neither** table — so Task 4b's audit reports it MISSING and exits non-zero, which is a real finding
+about a real filter rather than a consequence of this ruling. It is not resolved here because the
+count must be **measured** against a `cargo test -- --list`, not reasoned: `auth.rs` has a
+pre-existing test module, so the row belongs in the *resolved* table with its number, and a guessed
+number is the defect this whole section exists to catch.
+
 **What the measurement changed.** Five things, and none of them was catchable by reading:
 
 0. **A filter that names a module the tree does not have.** Task 14C's Step 4 said
@@ -2188,18 +2610,23 @@ biorouter|privacy::extensions|8|crates/biorouter/src/privacy/extensions.rs
 biorouter|agents::chatrecall_extension|10,17|crates/biorouter/src/agents/chatrecall_extension.rs
 biorouter-mcp|knowledge::tier|10A|crates/biorouter-mcp/src/knowledge/tier.rs
 biorouter|privacy::refusal|12|crates/biorouter/src/privacy/refusal.rs
-biorouter-mcp|private_roots|14B|crates/biorouter-mcp/src/private_roots.rs
-biorouter|privacy::private_roots|14B|crates/biorouter/src/privacy/private_roots.rs
-biorouter|privacy::path_policy|14B|crates/biorouter/src/privacy/path_policy.rs
-biorouter-mcp|agent_drafter::tier|14E|crates/biorouter-mcp/src/agent_drafter/tier.rs
-biorouter-server|call_tool_dispatches_through_the_barrier|14C|fn call_tool_dispatches_through_the_barrier
 biorouter|session::chat_history_search|17|crates/biorouter/src/session/chat_history_search.rs
 biorouter|privacy::alt_provider|19|crates/biorouter/src/privacy/alt_provider.rs
 biorouter|privacy::visibility|21|crates/biorouter/src/privacy/visibility.rs
 biorouter|every_copy_path_carries_the_tier_and_the_provider|22|fn every_copy_path_carries_the_tier_and_the_provider
 biorouter|privacy::declassify|29|crates/biorouter/src/privacy/declassify.rs
+biorouter-mcp|knowledge::tier_user|29A|crates/biorouter-mcp/src/knowledge/tier_user.rs
+biorouter|privacy::disclosure|30A|crates/biorouter/src/privacy/disclosure.rs
 ROWS
-want "deferred rows" 18 "$(wc -l < /tmp/56-filters/deferred.txt | tr -d ' ')"
+# ⚠ FIFTEEN, not eighteen, and the difference is DR-17. Five rows left with the
+# deferred barrier — `private_roots` (14B), `privacy::private_roots` (14B),
+# `privacy::path_policy` (14B), `agent_drafter::tier` (14E) and
+# `call_tool_dispatches_through_the_barrier` (14C) — because nothing in v1
+# creates them, and a deferred entry nothing creates is a filter that stays
+# green for ever, which assertion (b) below exists to reject. Two arrived with
+# Tasks 29A and 30A. If this number moves again, the table three sections up
+# moved with it or one of them is wrong.
+want "deferred rows" 15 "$(wc -l < /tmp/56-filters/deferred.txt | tr -d ' ')"
 # ⚠ AND THE OTHER 41. Step 3's first table claims an EXACT measured count for
 # every filter that resolves, and every `pre + N` assertion in this plan is
 # arithmetic on one of those numbers. Until this round the loop below treated
@@ -2375,9 +2802,11 @@ while IFS='|' read -r pkg filter task evidence; do
 done < /tmp/56-filters/deferred.txt
 want "UNBACKED rows" 0 "$unbacked"
 # (c) Re-runnable, and the phase gates re-run it: after Task 20 the DEFERRED set
-#     must have lost knowledge::tier, agent_drafter::tier, privacy::extensions
-#     and privacy::refusal;
-#     after Task 40 it must be EMPTY. Those runs edit the heredoc above — which
+#     must have lost knowledge::tier, privacy::extensions and privacy::refusal
+#     (⚠ NOT agent_drafter::tier — DR-17 defers Task 14E, and that row is struck
+#     from the table along with the other four barrier rows);
+#     after Task 40 it must be EMPTY — which it can only be because the five
+#     deferred rows were REMOVED, not because they resolved. Those runs edit the heredoc above — which
 #     assertion (2) then re-checks — rather than relaxing anything here.
 #
 # ── LAST LINE. This block's exit status IS the verdict.
@@ -4179,7 +4608,7 @@ stated plainly so no one discovers them later:
    also holds the shell can copy the artifact out of the deny root. That is not new and not
    specific to archives — a private model with a shell can copy the whole knowledge tree — and this
    design constrains what the *public* model can reach. Recorded as
-   [AR-8](#ar-8--a-private-model-with-a-shell-can-still-carry-a-knowledge-base-out-of-the-deny-root).
+   [AR-8](#ar-8--amended-by-dr-17--a-private-model-with-a-shell-can-still-carry-a-knowledge-base-anywhere-on-disk).
 3. **Three fail directions, and they differ on purpose** (DR-10's pattern, one module over).
    *Migration* → **public** (fail open; AR-2). *A kb id with no entry, in a store that exists, for a
    directory that does exist on disk* → **private** (fail closed: a base that appeared without
@@ -9358,6 +9787,13 @@ is not part of this commit.
 
 ### DR-14 is two layers, and the OS sandbox is the second one
 
+> ⛔ **Background for a DEFERRED series ([DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store)).** DR-14's two-layer
+> read-deny is out of scope for v1. This section is retained because it is the clearest statement
+> of *why* enumerating file readers cannot work — a structural fact about BioRouter that outlives
+> the barrier and that any future filesystem control must start from. **It specifies no work in
+> v1.**
+
+
 Read this before Tasks 14A, 14B, 14D. The first two rounds of this plan treated the OS sandbox as
 *the* mechanism, and both times a reviewer found a public tool that reads a private root without ever
 spawning a process. That is not a gap in the list of tools; it is a category error. **BioRouter reads
@@ -9430,6 +9866,16 @@ Windows, because Layer A does not need a kernel.
 ---
 
 ### Task 14A: Layer B — the read-deny sandbox policy, and what each platform can actually express
+
+> ⛔ **DEFERRED — out of scope for v1 by operator ruling ([DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store)).**
+> The general filesystem barrier is descoped: *"we don't have to enforce and encrypt every
+> single step along the way. for now."* **Do not implement this task, do not let a phase gate
+> run it, and do not ask for it in review. Do not delete it either** — what follows is four
+> review rounds of measured analysis that stays true, and a revival would otherwise pay for it
+> a second time.
+>
+> **Why this one especially is kept:** its platform findings are the most expensive facts in this document — Seatbelt expresses a path deny directly, bubblewrap *aborts* on an absent `--tmpfs` destination, Landlock has no deny rule at all, and Windows offers no unprivileged confinement. DR-17 retires [AR-6](#ar-6--retired-by-dr-17--on-a-host-that-cannot-express-the-read-deny-a-public-session-loses-the-shell-and-two-costs-come-with-the-sandbox-itself) along with this task, so **a public-capability session on Windows or on bubblewrap-less Linux keeps `developer__shell` and its four siblings.** That was the largest usability price in the design and it is no longer paid.
+
 
 **Why this task exists.** Gates A–H, and CP1–CP5 over knowledge bases, all sit on *tool calls*. A
 public-capability model does not have to defeat any of them: `developer__shell` runs an arbitrary
@@ -9616,7 +10062,7 @@ The sandboxed child cannot forge the link (creating it needs read access to the 
 denied). It is only reachable through an **unsandboxed in-process writer** — a public model asking
 the daemon to `ln <deny-root>/page.md ./x` through a file tool, then reading `./x` from the shell.
 That is a second, independent reason Layer A is the primary: with Layer A refusing the `ln`
-argument, the hardlink is never planted. Recorded as [AR-9](#ar-9--layer-a-is-check-then-use-so-a-concurrently-running-shell-can-still-race-one-in-process-reader).
+argument, the hardlink is never planted. Recorded as [AR-9](#ar-9--retired-by-dr-17--layer-a-is-check-then-use-so-a-concurrently-running-shell-can-still-race-one-in-process-reader).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -10568,6 +11014,16 @@ git commit -m "feat(sandbox): a read-deny policy, and each backend's honest answ
 
 
 ### Task 14B: Layer A — the barrier at the dispatch choke point, and the policy it hands to Layer B
+
+> ⛔ **DEFERRED — out of scope for v1 by operator ruling ([DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store)).**
+> The general filesystem barrier is descoped: *"we don't have to enforce and encrypt every
+> single step along the way. for now."* **Do not implement this task, do not let a phase gate
+> run it, and do not ask for it in review. Do not delete it either** — what follows is four
+> review rounds of measured analysis that stays true, and a revival would otherwise pay for it
+> a second time.
+>
+> **If the filesystem channel is ever revived, this is the task to revive** — narrowed to the one root DR-17 names, the session store, with Layer B left off. That is a small fraction of what 14A–14F specify, and it is the reason the series is kept rather than deleted.
+
 
 Task 14A gave `biorouter-sandbox` a read-deny it can express and an honest answer about where it
 cannot. That is Layer B, and it only ever covers a **child process**. This task builds **Layer A**: a
@@ -11613,7 +12069,7 @@ as the directory overmounts — after every `--bind` — and Task 14A's ordering
 **(i) Create the four directory roots at startup — the AR-10 mitigation, and never the fifth.**
 
 `--tmpfs` on a destination that does not exist aborts bubblewrap outright (Task 14A ⚑, measured), so
-absent roots must be skipped, and a skipped root is [AR-10](#ar-10--on-linux-a-deny-root-that-does-not-exist-when-a-job-starts-stays-visible-to-that-job-for-its-whole-life)'s
+absent roots must be skipped, and a skipped root is [AR-10](#ar-10--retired-by-dr-17--on-linux-a-deny-root-that-does-not-exist-when-a-job-starts-stays-visible-to-that-job-for-its-whole-life)'s
 race. Shrink the window by creating them: in `wrap_bubblewrap`, immediately before the deny loop,
 
 ```rust
@@ -11648,7 +12104,7 @@ so issue #57 holds there, but nothing else does. Route it through the same
 
 ⚠ **`computer_control` on Windows is refused for a public-capability session** along with
 `automation_script`, because Windows cannot express the read-deny at all — and *only* those, per
-[AR-6](#ar-6--on-a-host-that-cannot-express-the-read-deny-a-public-session-loses-the-shell-and-two-costs-come-with-the-sandbox-itself)(1).
+[AR-6](#ar-6--retired-by-dr-17--on-a-host-that-cannot-express-the-read-deny-a-public-session-loses-the-shell-and-two-costs-come-with-the-sandbox-itself)(1).
 Layer A keeps every in-process tool working there.
 
 
@@ -11818,6 +12274,16 @@ git commit -m "feat(privacy): refuse a public session's tools any path inside Bi
 
 ### Task 14C: The other door — the daemon's own HTTP API, pinned rather than assumed
 
+> ⛔ **DEFERRED — out of scope for v1 by operator ruling ([DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store)).**
+> The general filesystem barrier is descoped: *"we don't have to enforce and encrypt every
+> single step along the way. for now."* **Do not implement this task, do not let a phase gate
+> run it, and do not ask for it in review. Do not delete it either** — what follows is four
+> review rounds of measured analysis that stays true, and a revival would otherwise pay for it
+> a second time.
+>
+> **What is not deferred with it:** `strip_daemon_private_env` itself already shipped in issue #57 and Task 2 pins it; nothing here withdraws that. What defers is the barrier posture built on top of it. [AR-11](#ar-11--amended-by-dr-17--the-daemons-own-api-secret-is-recoverable)'s measurements — a child recovers its parent's environment through `sysctl` on macOS under every constructible profile, and `/proc/self/environ` is readable in-process on Linux — stand, and are now part of the residual DR-17 discloses rather than mechanises.
+
+
 A sandboxed child cannot open `sessions.db`. It can still talk to the process that can:
 `GET /sessions/{id}/export` returns a transcript as JSON to anyone holding
 `BIOROUTER_SERVER__SECRET_KEY` (design §9.3 A1). This task pins the half of that door that **is**
@@ -11840,7 +12306,7 @@ conclusion drawn from it. Measured for this round:
   path.
 
 **So the plan no longer claims the secret is out of reach.** The residual is
-[AR-11](#ar-11--the-daemons-own-api-secret-is-recoverable-so-the-second-door-is-held-by-layer-a-and-not-by-the-environment-strip)
+[AR-11](#ar-11--amended-by-dr-17--the-daemons-own-api-secret-is-recoverable)
 and [Open question 20](#open-questions). What the strip still buys is real and is what (a)–(b) pin:
 it keeps the secret out of the *child's own* environment, which is where a careless `env | grep` or a
 leaked log finds it, and it keeps every **remote** caller out.
@@ -11887,7 +12353,7 @@ inside a *private* chat is evaluated as public — which is the safe direction a
 the user resolves the same way as any other.
 
 ⚠ **This is a narrowing, not a closure.** It closes "borrow another session's capability". It does
-not close "issue any tool call at all with the daemon secret", which is [AR-11](#ar-11--the-daemons-own-api-secret-is-recoverable-so-the-second-door-is-held-by-layer-a-and-not-by-the-environment-strip)
+not close "issue any tool call at all with the daemon secret", which is [AR-11](#ar-11--amended-by-dr-17--the-daemons-own-api-secret-is-recoverable)
 and stays true.
 
 **(3) The dependency, stated in the words the operator needs.** With `public_enforced()` in place,
@@ -12038,7 +12504,7 @@ ones**. `GET /apps/{id}/runstate` additionally returns a pending tool's `name`, 
    include a **private** knowledge base, so it is not a general read of the user's data and it is not
    nothing either.
 
-**So the residual is larger than [AR-6](#ar-6--on-a-host-that-cannot-express-the-read-deny-a-public-session-loses-the-shell-and-two-costs-come-with-the-sandbox-itself)'s
+**So the residual is larger than [AR-6](#ar-6--retired-by-dr-17--on-a-host-that-cannot-express-the-read-deny-a-public-session-loses-the-shell-and-two-costs-come-with-the-sandbox-itself)'s
 last paragraph said, and its size is now known:** a public-capability model does not need to *already
 know* an app id — it can list the **public** ones (Task 14E filters the private ones out) and drive
 each of their agents over the unauthenticated socket, including any knowledge base that app's
@@ -12361,6 +12827,16 @@ git commit -m "test(privacy): pin the daemon-secret strip and the route the barr
 
 ### Task 14D: Layer A's seams — the readers that never reach the choke point
 
+> ⛔ **DEFERRED — out of scope for v1 by operator ruling ([DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store)).**
+> The general filesystem barrier is descoped: *"we don't have to enforce and encrypt every
+> single step along the way. for now."* **Do not implement this task, do not let a phase gate
+> run it, and do not ask for it in review. Do not delete it either** — what follows is four
+> review rounds of measured analysis that stays true, and a revival would otherwise pay for it
+> a second time.
+>
+> **One pin inside it does not belong to the barrier:** `the_approval_preview_never_reaches_the_model` guards [AR-12](#ar-12--the-approval-cards-file-preview-reads-a-model-chosen-path-before-anyone-approves-it), which is about the daemon reading a file it was not asked to read and rendering it **to the user**, not about a tier crossing. AR-12 stays an accepted risk on its own terms; if that pin is wanted without the barrier, lift it out of this task rather than reviving the task.
+
+
 Task 14B's barrier covers every **MCP tool call**, because `ExtensionManager::dispatch_tool_call` is
 the one function they all pass through. Three kinds of in-process read are not MCP tool calls, and a
 plan that stops at 14B leaves each of them exactly as open as it was:
@@ -12370,7 +12846,7 @@ plan that stops at 14B leaves each of them exactly as open as it was:
 2. **`ToolPreview::for_tool_call`**, which reads the file a `write` is about to clobber — *before*
    dispatch and *before* the user approves.
 3. **The tool bodies themselves**, which open the file some microseconds after Layer A approved the
-   argument. That window is [AR-9](#ar-9--layer-a-is-check-then-use-so-a-concurrently-running-shell-can-still-race-one-in-process-reader),
+   argument. That window is [AR-9](#ar-9--retired-by-dr-17--layer-a-is-check-then-use-so-a-concurrently-running-shell-can-still-race-one-in-process-reader),
    and it can be narrowed even though it cannot be closed.
 
 Plus one pre-existing traversal that the same insertion point fixes for free.
@@ -12717,7 +13193,7 @@ pub fn safe_open(dir: &Path, rel: &Path) -> io::Result<File> {
 ```
 
 ⚠ **Windows has no equivalent, and that is consistent rather than a gap:** Windows also has no
-Layer B ([AR-6](#ar-6--on-a-host-that-cannot-express-the-read-deny-a-public-session-loses-the-shell-and-two-costs-come-with-the-sandbox-itself)(1))
+Layer B ([AR-6](#ar-6--retired-by-dr-17--on-a-host-that-cannot-express-the-read-deny-a-public-session-loses-the-shell-and-two-costs-come-with-the-sandbox-itself)(1))
 and the five spawning tools are already refused there. On Windows `safe_open` falls back to the
 lexical + canonicalize check, and the residual is the swap window — which needs a concurrently
 running writer, which needs one of the tools Windows already refuses.
@@ -12992,6 +13468,16 @@ git commit -m "feat(privacy): cover the four in-process readers that never reach
 
 
 ### Task 14E: The roots' own doors — where the handler, not the caller, supplies the path
+
+> ⛔ **DEFERRED — out of scope for v1 by operator ruling ([DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store)).**
+> The general filesystem barrier is descoped: *"we don't have to enforce and encrypt every
+> single step along the way. for now."* **Do not implement this task, do not let a phase gate
+> run it, and do not ask for it in review. Do not delete it either** — what follows is four
+> review rounds of measured analysis that stays true, and a revival would otherwise pay for it
+> a second time.
+>
+> **The knowledge half of this task is NOT deferred.** A public-capability model still may not read or write a private knowledge base — that is CP1–CP4 in [Task 10C](#task-10c-the-knowledge-base-barrier--one-line-at-each-of-the-four-choke-points), which [DR-18](#dr-18--the-knowledge-base-tier-is-user-controllable-and-a-private-session-creates-a-private-base) keeps and extends. What defers here is the **Agent Drafter app tier** (and [AR-14](#ar-14--every-biorouter-app-that-exists-today-starts-public-at-migration-even-if-it-was-built-in-a-private-chat) with it), the memory funnel, and the resolver-privacy work that [Open question 22](#open-questions) records.
+
 
 Task 14B refuses a tool call whose **arguments** name a path inside a private root. Round 3's central
 finding is that this is a different thing from refusing the **reads the handlers perform**:
@@ -13603,6 +14089,16 @@ git commit -m "feat(privacy): put the read-deny in each private root's own resol
 
 ### Task 14F: `export_app`'s write target — a tool that reads a root and writes anywhere is a copy primitive
 
+> ⛔ **DEFERRED — out of scope for v1 by operator ruling ([DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store)).**
+> The general filesystem barrier is descoped: *"we don't have to enforce and encrypt every
+> single step along the way. for now."* **Do not implement this task, do not let a phase gate
+> run it, and do not ask for it in review. Do not delete it either** — what follows is four
+> review rounds of measured analysis that stays true, and a revival would otherwise pay for it
+> a second time.
+>
+> Its knowledge-base twin is **not** deferred: Task 10A's forced model-export location inside the knowledge root, and the raise-only provenance marker on `.brkb` import, are part of the KB gates DR-18 keeps.
+
+
 Task 14E's door decides **whether** `export_app` may read the app. This task decides **where** it may
 put the result, and it is a separate rule for a reason the round-3 review states exactly:
 
@@ -13687,9 +14183,11 @@ async fn the_users_own_export_route_is_unconstrained() {
 ```
 
 ⚠ **`../escape` from inside the workspace must be refused, and that is why the check is on the
-CANONICALIZED, composed destination** — the deepest-existing-ancestor technique
-`privacy::path_policy::is_under_any` already uses (Task 14B (d)), not `starts_with` on the raw
-string. A `target_dir` of `<ws>/../elsewhere` is textually "under the workspace" and is not.
+CANONICALIZED, composed destination** — the deepest-existing-ancestor technique, not `starts_with` on
+the raw string. ⚠ **[DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store) defers Task 14B, so `privacy::path_policy::is_under_any` does not
+exist in v1 and this task must not import it.** The technique is three lines (canonicalize the
+deepest existing ancestor of the composed destination, then compare); write it here rather than
+reviving a deferred module for one helper. A `target_dir` of `<ws>/../elsewhere` is textually "under the workspace" and is not.
 
 - [ ] **Step 2: Run** → **FAIL** (every destination is currently accepted).
 
@@ -14361,7 +14859,7 @@ extension's *tools* arrive in a session Task 18's F1 already refuses to let the 
 
 **And the daemon cannot tell the user from the model.** `check_token` (`auth.rs:80-127`) compares one
 machine-wide bearer against the `X-Secret-Key` header (`:115-118`) and has **no principal**: every
-authenticated request is indistinguishable, whoever sent it, and [AR-11](#ar-11--the-daemons-own-api-secret-is-recoverable-so-the-second-door-is-held-by-layer-a-and-not-by-the-environment-strip)
+authenticated request is indistinguishable, whoever sent it, and [AR-11](#ar-11--amended-by-dr-17--the-daemons-own-api-secret-is-recoverable)
 measured that bearer to be recoverable from inside the daemon. That is exactly why DR-16 rejected
 *treat identity-free routes as public*: refusing every raise takes the **user's** model picker away
 along with the model's, and the picker is what the entire refusal vocabulary points at. So this task
@@ -16842,6 +17340,275 @@ git commit -m "feat(privacy): user-only declassification with a graded confirmat
 
 ---
 
+### Task 29A: Knowledge-base publicize / privatize — user-only, graded, audited
+
+**This task exists because of [DR-18](#dr-18--the-knowledge-base-tier-is-user-controllable-and-a-private-session-creates-a-private-base)**, and it is the whole of the new
+work that ruling created. Tasks 10A–10D already give a base a tier and ratchet it; nothing in the
+product can *move* one. That absence was
+[AR-1](#ar-1--resolved-by-dr-18--a-knowledge-base-that-one-private-session-touched-becomes-unreadable-from-every-public-chat-including-the-users-own-ordinary-work),
+and this task resolves it.
+
+**Do Task 29 first.** This is its twin, deliberately: the same proof-of-user, the same
+`DangerousConfirmDialog`, the same "one lowering writer in the tree" gate, the same audit-before-write
+ordering. Two mechanisms for one idea is how the two confirmations diverge.
+
+⚠ **The lowering direction is the dangerous one, and it is not symmetric with a session's.**
+Declassifying a *session* exposes one transcript the user is looking at. Publicizing a *base* exposes
+**everything every private model ever wrote into it**, to every public model, from the next tool call
+onward — and for anything already read there is no undo. So the confirmation counts what it is about
+to release rather than asking a generic question, and the count is computed server-side from the
+tree, not from anything the renderer already had lying around.
+
+⚠ **There is no `kb_set_tier` tool and there must never be one.** A model raises a tier as a
+side-effect of writing (`raise_tier`, raise-only, Task 10B) and can do nothing else. Every wrong
+implementation of this task is a route or a tool that lets a model choose, so Step 5's gate is an
+enumeration of tier writers rather than a count.
+
+**Files:**
+
+| Action | Path | Anchor |
+|---|---|---|
+| Create | `crates/biorouter-mcp/src/knowledge/tier_user.rs` | new — `UserKbTierChange` (the proof ZST) and `set_unlocked`, the **only** writer in the tree that may lower a base's tier |
+| Modify | `crates/biorouter-mcp/src/knowledge/tier.rs` | Task 10A's raise-only module; it keeps `raise_unlocked` / `forget_unlocked` and gains nothing — the lowering writer lives in its own file so the gate below can name a file rather than a function |
+| Modify | `crates/biorouter-mcp/src/knowledge/service.rs` | `set_tier_by_user` beside `raise_tier` (Task 10A's wrapper, which takes `lock_root()`); same lock discipline and the same deadlock rule — never call it from `create_base` / `import_brkb` / `delete_base`, which already hold the lock |
+| Modify | `crates/biorouter-server/src/routes/knowledge.rs` | new `POST /knowledge/bases/{id}/tier`, and the tier on the bases listing so the chip has something to render (⚠ verify against Task 10D's metadata inventory before adding a field — that task owns what this response may carry) |
+| Modify | `crates/biorouter-server/src/auth.rs` | the same `X-User-Action` proof [Task 18A](#task-18a-the-two-http-channels-that-raise-a-sessions-own-tier-and-the-user-proof-neither-of-them-has) builds for DR-16. **Do not add a second header, a second key or a second check.** |
+| Create | `ui/desktop/src/components/knowledge/KbTierControl.tsx` | new — the tier chip and both directions |
+| Modify | `ui/desktop/src/components/knowledge/KnowledgeView.tsx` | the KB header, beside the existing base controls |
+| Modify | `ui/desktop/src/components/knowledge/KBSelector/KBSelectorPalette.tsx` | the tier badge on each row of the palette, so the tier is visible **before** the user switches, not after |
+| Reference | `ui/desktop/src/components/ui/DangerousConfirmDialog.tsx` | Task 29's primitive. Reused, never re-created. |
+| Reference | `crates/biorouter/src/privacy/declassify.rs` | Task 29's shape, which this mirrors |
+
+- [ ] **Step 1: Write the failing tests**
+
+```rust
+#[test]
+fn only_a_user_proof_can_lower_a_base_and_a_model_cannot_construct_one() {
+    // The mirror of Task 29's `only_a_user_confirmation_can_lower_the_tier`.
+    // `UserKbTierChange` is a ZST; the KB MCP server, the three macros,
+    // `KbToolDispatch` and every `#[tool]` handler have no path to one.
+    let svc = svc_with_base("omop");
+    svc.raise_tier("omop", /* caller_is_private */ true).unwrap();
+    assert_eq!(tier_of(&svc, "omop"), KbTier::Private);
+
+    svc.set_tier_by_user("omop", KbTier::Public, UserKbTierChange::for_test()).unwrap();
+    assert_eq!(tier_of(&svc, "omop"), KbTier::Public);
+
+    // …and the other direction, which is the cheap one.
+    svc.set_tier_by_user("omop", KbTier::Private, UserKbTierChange::for_test()).unwrap();
+    assert_eq!(tier_of(&svc, "omop"), KbTier::Private);
+}
+
+#[test]
+fn a_publicized_base_is_not_indistinguishable_from_one_that_was_always_public() {
+    // The `.kb-tiers` entry records how the value got there, exactly as
+    // `privacy_reason` does for a session. Without this, a user cannot tell a
+    // base they released from one that was never private, and neither can a
+    // support conversation six months later.
+    let svc = svc_with_base("omop");
+    svc.raise_tier("omop", true).unwrap();
+    svc.set_tier_by_user("omop", KbTier::Public, UserKbTierChange::for_test()).unwrap();
+    let e = entry(&svc, "omop");
+    assert_eq!(e.tier, KbTier::Public);
+    assert_eq!(e.reason.as_deref(), Some("publicized_by_user"));
+    assert!(e.changed_at.is_some());
+}
+
+#[test]
+fn the_ratchet_still_ratchets_after_a_publicize() {
+    // Publicizing is not an exemption. The next private write raises it again,
+    // and the user is not silently left on a base that stopped ratcheting.
+    let svc = svc_with_base("omop");
+    svc.raise_tier("omop", true).unwrap();
+    svc.set_tier_by_user("omop", KbTier::Public, UserKbTierChange::for_test()).unwrap();
+    svc.raise_tier("omop", /* caller_is_private */ true).unwrap();
+    assert_eq!(tier_of(&svc, "omop"), KbTier::Private);
+}
+
+#[test]
+fn a_base_created_by_a_private_model_is_private_before_any_ingest() {
+    // DR-18(b), pinned here rather than only in Task 10B, because this is the
+    // task a reader lands on when they ask "when does a base become private?".
+    // Nothing has been written into it — no page, no raw source, no macro run.
+    let srv = kb_server();
+    call_tool_as(&srv, "kb_create_base", json!({ "id": "cohort", "name": "Cohort" }), Private);
+    assert_eq!(tier_of(&srv.service, "cohort"), KbTier::Private);
+
+    call_tool_as(&srv, "kb_create_base", json!({ "id": "notes", "name": "Notes" }), Public);
+    assert_eq!(tier_of(&srv.service, "notes"), KbTier::Public);
+}
+```
+
+```rust
+#[tokio::test]
+async fn the_tier_route_needs_more_than_the_secret_key() {
+    // Identical to Task 29's `the_route_needs_more_than_the_secret_key`, and it
+    // must stay identical: §9.3 A1 puts the secret inside any developer-enabled
+    // agent shell, so `X-Secret-Key` alone is not a human.
+    assert_eq!(post_tier(no_headers()).await.status(), 401);
+    assert_eq!(post_tier(secret_key_only()).await.status(), 403);
+    assert_eq!(post_tier(secret_key_and_user_action()).await.status(), 200);
+}
+
+#[tokio::test]
+async fn a_daemon_with_no_user_action_key_refuses_both_directions() {
+    // Open question 23's posture, applied here without inventing a second
+    // answer: a daemon started by `just run-server` has no key, so the control
+    // is unavailable rather than open. The error names why.
+    let app = daemon_without_user_action_key().await;
+    let r = post_tier_on(&app, secret_key_only()).await;
+    assert_eq!(r.status(), 403);
+    assert!(body(r).await.contains("started without a user-action key"));
+}
+```
+
+```tsx
+it('publicizing names the blast radius and the phrase gates the button', async () => {
+  render(<KbTierControl kb={{ id: 'omop', name: 'OMOP', tier: 'private', pageCount: 214, rawSourceCount: 37 }} />);
+  await user.click(screen.getByRole('button', { name: /Make this knowledge base public/ }));
+  // Concrete, not "are you sure".
+  expect(screen.getByText(/214 pages/)).toBeInTheDocument();
+  expect(screen.getByText(/37 raw sources/)).toBeInTheDocument();
+  expect(screen.getByText(/cannot be undone for content that has already been read/i)).toBeInTheDocument();
+
+  const confirm = screen.getByRole('button', { name: /Make public/ });
+  expect(confirm).toBeDisabled();
+  await user.type(screen.getByRole('textbox'), 'OMOP');            // the NAME is not the phrase
+  expect(confirm).toBeDisabled();
+  await user.clear(screen.getByRole('textbox'));
+  await user.type(screen.getByRole('textbox'), 'omop');            // the id is
+  expect(confirm).toBeEnabled();
+});
+
+it('privatizing is single-click and discloses nothing', async () => {
+  render(<KbTierControl kb={{ id: 'notes', name: 'Notes', tier: 'public', pageCount: 9 }} />);
+  await user.click(screen.getByRole('button', { name: /Make this knowledge base private/ }));
+  expect(screen.queryByRole('textbox')).toBeNull();
+  expect(onSetTier).toHaveBeenCalledWith('notes', 'private');
+});
+
+it('the tier is visible in the palette before the user switches to a base', () => {
+  render(<KBSelectorPalette bases={[{ id: 'omop', name: 'OMOP', tier: 'private' }, { id: 'notes', name: 'Notes', tier: 'public' }]} />);
+  expect(within(screen.getByRole('option', { name: /OMOP/ })).getByText(/Private/)).toBeInTheDocument();
+  expect(within(screen.getByRole('option', { name: /Notes/ })).queryByText(/Private/)).toBeNull();
+});
+```
+
+- [ ] **Step 2: Run** → Rust **COMPILE ERROR** (`unresolved module tier_user`, `no method named set_tier_by_user`); TS **FAIL**.
+
+- [ ] **Step 3: Implement**
+
+```rust
+// crates/biorouter-mcp/src/knowledge/tier_user.rs
+
+/// Proof that a human asked. A ZST, constructed in exactly one place — the
+/// `POST /knowledge/bases/{id}/tier` handler, after `auth` has matched the
+/// user-action proof Task 18A issues. No MCP server, no `#[tool]` handler, no
+/// macro, no `KbToolDispatch` and no CLI subcommand can construct one.
+///
+/// This is Task 29's `UserConfirmation`, for bases instead of sessions, and it
+/// is a separate type on purpose: one proof must not be spendable on the other
+/// subject.
+pub struct UserKbTierChange(());
+
+/// The ONLY writer in the tree permitted to LOWER a base's tier. `tier::raise_unlocked`
+/// is monotone by construction and stays that way; this bypasses it with its own
+/// write, and Step 5 asserts exactly one such writer exists.
+///
+/// Writes the provenance in the same entry, before returning: `reason` and
+/// `changed_at`, so a released base is never indistinguishable from one that was
+/// always public.
+///
+/// Caller must hold the root lock — `KnowledgeService::set_tier_by_user` is the
+/// wrapper that takes it. Task 10A decision (5b): calling the wrapper from
+/// inside `create_base` / `import_brkb` / `delete_base` deadlocks.
+pub(super) fn set_unlocked(
+    root: &Path,
+    kb_id: &str,
+    tier: KbTier,
+    _ok: &UserKbTierChange,
+) -> anyhow::Result<()> { … }
+```
+
+**The route.** `POST /knowledge/bases/{id}/tier`, body `{ "tier": "private" | "public" }`. It
+requires the `X-User-Action` proof **in both directions** — privatizing needs no confirmation *dialog*
+but it is still not a thing a model may do, and admitting one direction without the proof is how the
+tool channel gets it back. On a daemon with no key it fails closed with the message Open question 23
+specifies, naming the four launch paths that lack one.
+
+**The grading, and why it differs from Task 29's.** A session's confirmation is graded by
+`privacy_reason` — `mcp:*` gets the typed phrase, `turn:*` gets single-click-plus-undo — because the
+two describe genuinely different exposures. A base has one direction that discloses and one that does
+not, so the grading is by **direction**:
+
+| Direction | Confirmation | Why |
+|---|---|---|
+| private → public (**publicize**) | typed phrase = the **base id**, with the page and raw-source counts rendered beside it, and one sentence saying it cannot be undone for content already read | The base id is short, unique and forces the user to check *which* base — the same argument Task 29 makes for a session-id suffix over a session name, and for the same reason (`fallback_session_name`'s duplicates have a KB analogue in default names like `default`). |
+| public → private (**privatize**) | single click, no phrase, no undo timer | Nothing is disclosed. An undo timer here would be theatre, and the reversal is one click away in the other direction. |
+
+**No 5-second undo on the publicize path.** Task 29 offers one for `turn:*` sessions because the
+exposure is a single transcript the user is looking at. Here the first thing a public model does with
+a released base is read it, and an undo that cannot recall what was read is a false promise.
+
+- [ ] **Step 4: Run**
+
+```bash
+cargo test -p biorouter-mcp --lib knowledge::tier_user
+cargo test -p biorouter-mcp --lib knowledge::tier
+cargo test -p biorouter-server --test knowledge_routes
+just generate-openapi && (cd ui/desktop && npm run generate-api)
+cd ui/desktop && npx vitest run KbTierControl KBSelectorPalette KnowledgeView 2>&1 | tail -6
+```
+
+- [ ] **Step 5: Gate**
+
+```bash
+# (1) EXACTLY ONE lowering writer in the tree, and it is the user's. Enumerated,
+#     not counted: a count is satisfied by deleting this one and adding a
+#     different one somewhere worse.
+grep -rln --include='*.rs' "fn set_unlocked\|set_tier_by_user" crates/ | sort
+echo "expect: crates/biorouter-mcp/src/knowledge/tier_user.rs and crates/biorouter-mcp/src/knowledge/service.rs — nothing else"
+
+# (2) Nothing a model can reach constructs the proof. This is the whole of
+#     'user-only', and it is the assertion that fails the plausible wrong
+#     implementation (a kb_set_tier tool, or a route without the proof).
+grep -rn "UserKbTierChange" crates/ | grep -v "knowledge/tier_user.rs" | grep -v "routes/knowledge.rs"
+echo "expect: no output"
+
+# (3) No tier-setting TOOL exists, under any spelling. The model's only tier
+#     writer is the raise-only ratchet.
+grep -rn '#\[tool(name *= *"kb_[a-z_]*tier' crates/biorouter-mcp/src/
+echo "expect: no output"
+
+# (4) One dialog primitive, still genuinely shared — Task 29's list plus this.
+cd ui/desktop && grep -rl "DangerousConfirmDialog" src/components | sort
+echo "expect: DangerousConfirmDialog.tsx, DangerousConfirmDialog.test.tsx, DeclassifySessionDialog.tsx, KbTierControl.tsx, and Task 30's PrivacyPanel.tsx"
+
+# (5) One user-proof mechanism, not two. The header Task 18A defines is the one
+#     this route reads; a second header name here is the defect this catches.
+grep -rn "X-User-Action\|x-user-action" crates/biorouter-server/src | sed 's/:.*//' | sort -u
+echo "expect: auth.rs plus the handlers that require it — and NO second header name anywhere"
+```
+
+**What this catches.** Four wrong implementations. (1) A `kb_set_tier` MCP tool, which is the obvious
+way to make the feature reachable and hands the decision straight back to the model — gate (3). (2) A
+route that requires only the secret key, which is Task 29's own trap re-run on a new endpoint —
+`the_tier_route_needs_more_than_the_secret_key`. (3) A publicize dialog that asks *"are you sure?"*
+without counting anything, which is what a generic `ConfirmationModal` gives you for free — the
+blast-radius test. (4) A publicize that also disables the ratchet, reasoning that the user said
+public — `the_ratchet_still_ratchets_after_a_publicize`.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add crates/biorouter-mcp/src/knowledge/tier_user.rs crates/biorouter-mcp/src/knowledge/service.rs \
+        crates/biorouter-server/src/routes/knowledge.rs crates/biorouter-server/src/auth.rs \
+        ui/desktop/src/components/knowledge ui/desktop/openapi.json ui/desktop/src/api
+git commit -m "feat(privacy): user-only publicize/privatize for knowledge bases, graded and audited (#56)"
+```
+
+---
+
 ### Task 30: Settings → Privacy — the master toggle, its three hardening measures, and the badge it does not hide
 
 **This task changed shape under DR-15.** The first version shipped a Gate-C-scoped switch and a test
@@ -16883,6 +17650,13 @@ The gate that matters is behavioural and it is a **matrix**, because the wrong i
 task must reject is *a master toggle wired to some of the gates*. A textual grep cannot separate
 "wired to twenty" from "wired to three"; twenty paired assertions can, and each one names the gate it
 covers so a failure points at the missing wiring rather than at "privacy is broken".
+
+⚠ **[DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store) reduces this to eighteen matrix rows / seventeen enforcement points.** Layer A's
+`path_policy::for_call` and Layer B's `shell.rs::build_sandbox_policy` are the two that go, because
+Tasks 14A–14F are deferred and neither point exists in v1. Every count in this task — the matrix, the
+inventory diffs, the `n -eq` assertion — is stated below in its original nineteen/twenty form and
+must be read minus those two. **Do not "restore" them**: an inventory that demands an enforcement
+point a correct tree does not have is this task's own named failure class.
 
 ⚠ **The previous version of this matrix had ten rows and the plan has nineteen enforcement points
 plus one invariant row.**
@@ -17428,12 +18202,20 @@ crates/biorouter-mcp/src/knowledge/tier.rs	assert_reachable
 crates/biorouter-mcp/src/knowledge/server.rs	kb_export
 crates/biorouter-mcp/src/knowledge/server.rs	call_tool
 crates/biorouter-mcp/src/agent_drafter/catalog.rs	discover
-crates/biorouter/src/privacy/path_policy.rs	for_call
-crates/biorouter-mcp/src/developer/shell.rs	build_sandbox_policy
 ROWS
+# ⚠ TWO ROWS REMOVED BY DR-17, and the count below moved with them:
+#   crates/biorouter/src/privacy/path_policy.rs      for_call
+#   crates/biorouter-mcp/src/developer/shell.rs      build_sandbox_policy
+# Both are Layer A / Layer B, which Tasks 14A-14F defer. Leaving them in makes
+# this inventory demand two enforcement points that a CORRECT v1 tree does not
+# have — the exact "gate that fails a correct implementation" class this task's
+# own preamble is about. The matrix loses the same two rows.
 sort -u /tmp/56-toggle-A.txt > /tmp/56-toggle-want.txt
 sort -u /tmp/56-toggle-B.txt > /tmp/56-cap-want.txt
 n=$(( $(wc -l < /tmp/56-toggle-want.txt) + $(wc -l < /tmp/56-cap-want.txt) ))
+# ⚠ SEVENTEEN under DR-17, against a matrix of EIGHTEEN rows. It was 19/20
+# before the two Layer A / Layer B rows above were removed; the arithmetic and
+# the reason are unchanged, only the total. What follows is that reason.
 # ⚠ NINETEEN, against a matrix of TWENTY rows, and the difference is named
 # rather than fudged: matrix row 17 (session copy) is an INVARIANT asserted
 # identically in both columns, not an enforcement point. It refuses nothing and
@@ -17441,7 +18223,7 @@ n=$(( $(wc -l < /tmp/56-toggle-want.txt) + $(wc -l < /tmp/56-cap-want.txt) ))
 # session's stamp to public, durably, because re-enabling does not revisit it.
 # See DR-15's ⚠. If a later task makes the copy paths conditional on the toggle,
 # that is the change that adds the twentieth row here, and it should not.
-[ "$n" -eq 19 ] || { echo "FAIL  inventory has $n rows; expected 19 (matrix 20 - the copy invariant)"; tog_rc=1; }
+[ "$n" -eq 17 ] || { echo "FAIL  inventory has $n rows; expected 17 (matrix 18 - the copy invariant)"; tog_rc=1; }
 scan 'privacy_tiers_enabled[(][)]' | grep -v '/privacy/mod\.rs' > /tmp/56-toggle-have.txt
 scan '[.](enforced|restricts_private_data)[(][)]' \
   | grep -v '/privacy/capability\.rs' > /tmp/56-cap-have.txt
@@ -17569,6 +18351,272 @@ git commit -m "feat(privacy): one master toggle for the whole privacy-tier featu
 
 ---
 
+
+### Task 30A: The non-private-model disclosure
+
+**This task is requirement 3 of
+[DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store), and it is the term on which
+that ruling's accepted risks are acceptable.** The operator descoped the general filesystem barrier
+*"for now"* and, in the same breath, required that users *"understand the risks of using non-private
+models"* — that a model which is not HIPAA-compliant, not hosted on-premise and not local *"can
+potentially gather information from them"*. An accepted risk the user is told about is a tradeoff the
+user makes. The same risk undisclosed is a misrepresentation. **If this task does not ship, the
+narrowing is not defensible**, which is why it is a task with a gate rather than a paragraph in
+§14 and why [Task 32](#task-32-phase-4-gate) runs its assertions.
+
+⚠ **This is the one part of the feature that must work with the master toggle OFF.** DR-15 turns off
+gates, ratchet and refusals; it does not turn off the truth. With enforcement off the exposure is
+*larger*, so the disclosure is shown identically and the settings strip says both things. Wiring the
+disclosure behind `privacy_tiers_enabled()` is the plausible wrong implementation and Step 5 fails it.
+
+⚠ **One copy, one definition, served to every surface.** The sentence exists in the GUI, in the CLI,
+in `docs/`, and on the landing site. Four hand-written copies drift within one release and the
+drifted one is always the one a user reads. The text lives in **Rust**, the renderer fetches it, and
+the docs surfaces quote the same constant. A grep gate asserts there is exactly one definition.
+
+⚠ **It says what is *not* protected, and it says it first.** The temptation is to describe the
+guarantee — locked transcripts, no private extensions — because that is the flattering half. A user
+who reads only the guarantee concludes the machine is opaque to a public model, which is precisely
+what DR-17 says it must not imply. The order is: what this model can reach → what BioRouter does stop
+→ what to use instead.
+
+**Files:**
+
+| Action | Path | Anchor |
+|---|---|---|
+| Create | `crates/biorouter/src/privacy/disclosure.rs` | new — the **one** copy constant, the three-property predicate (`is_hipaa_eligible` / `is_on_premise` / `is_local`, all three false ⇒ disclose), and the acknowledgement record |
+| Modify | `crates/biorouter-server/src/routes/config_management.rs` | `GET /privacy/disclosure` (the copy plus whether it has been acknowledged) and `POST /privacy/disclosure/ack`; register beside Task 30's toggle routes |
+| Create | `ui/desktop/src/components/privacy/NonPrivateModelDisclosure.tsx` | new — the one-time blocking dialog, built on Task 29's `DangerousConfirmDialog` focus discipline (Cancel-equivalent holds focus, Enter does not acknowledge) |
+| Modify | `ui/desktop/src/components/settings/privacy/PrivacyPanel.tsx` | Task 30's panel; the permanent long-form statement lives here, above the master toggle |
+| Modify | `ui/desktop/src/components/settings/providers/ProviderGrid.tsx` | ⚠ this file hardcodes its three section labels (`"Local Models"` `:208`, `"Institutional Models"` `:218`, `"Commercial Models"` `:227`) and ignores `providerOrdering.ts`'s `label`/`accentClassName` — the Commercial section's one-line form goes **here**, not in the ordering module, or nothing renders |
+| Modify | `ui/desktop/src/components/bottom_menu/` model chip | the short form as the Public badge's tooltip (Task 28 places the badge; this adds its text) |
+| Modify | `crates/biorouter-cli/src/commands/configure.rs` | printed when a public provider is selected, and on first public bind — R10 makes the CLI a required surface (Task 31) |
+| Modify | `docs/security/data-privacy-and-phi.md` | the same words, quoted from the constant (Task 39 owns the sweep) |
+| Modify | `landing/docs.html` | the same words (Task 36 owns the drift check) |
+
+- [ ] **Step 1: Write the failing tests**
+
+```rust
+#[test]
+fn the_disclosure_names_all_three_properties_the_ruling_names() {
+    // Not a spelling test. The operator's sentence has three conditions —
+    // "not HIPAA compliant", "not hosted on-premise", "not local" — and a copy
+    // edit that drops one turns a specific warning into a vague one. Each is
+    // asserted separately so the failure names which was lost.
+    let c = disclosure::COPY_LONG;
+    assert!(c.contains("HIPAA"));
+    assert!(c.contains("on-premise") || c.contains("on premises"));
+    assert!(c.to_lowercase().contains("local"));
+    // …and the thing at risk is named concretely, not as "your data".
+    assert!(c.contains("files on this computer"));
+}
+
+#[test]
+fn the_disclosure_states_the_limit_of_the_protection_not_only_the_protection() {
+    // DR-17's honest consequence, in the copy: the barrier stops the
+    // agent-mediated path, the transcript path and tier escalation. It does NOT
+    // make the machine opaque. A copy that omits this is the failure mode this
+    // whole task exists to prevent.
+    let c = disclosure::COPY_LONG;
+    assert!(c.contains("does not"));
+    assert!(c.contains("shell") || c.contains("read files"));
+}
+
+#[test]
+fn only_a_model_that_is_none_of_the_three_triggers_it() {
+    assert!(disclosure::required_for(&meta("openai")));          // public
+    assert!(disclosure::required_for(&meta("anthropic")));       // public
+    assert!(!disclosure::required_for(&meta("llamacpp")));       // local
+    assert!(!disclosure::required_for(&meta("ollama")));         // local
+    assert!(!disclosure::required_for(&meta("versa_azure")));    // institutional
+    assert!(!disclosure::required_for(&meta("versa_bedrock")));  // institutional
+    // The predicate is the tier, not a second list. A provider added to the
+    // private set in Task 5 must stop triggering this with no edit here.
+    assert_eq!(
+        disclosure::required_for(&meta("versa_azure")),
+        !matches!(ProviderTier::Private, t if t == meta("versa_azure").tier())
+    );
+}
+
+#[test]
+fn the_disclosure_is_independent_of_the_master_toggle() {
+    // DR-15 turns enforcement off. It does not turn the truth off, and with
+    // enforcement off the exposure is larger, not smaller.
+    for enabled in [true, false] {
+        set_privacy_tiers_enabled(enabled);
+        assert!(disclosure::required_for(&meta("openai")));
+    }
+}
+```
+
+```rust
+#[tokio::test]
+async fn the_acknowledgement_is_recorded_once_and_is_not_agent_writable() {
+    // Once per install, not once per session: a dialog on every chat is clicked
+    // through, which is exactly the outcome this task exists to avoid.
+    assert!(!get_disclosure(&app).await.acknowledged);
+    post_ack(&app).await;
+    assert!(get_disclosure(&app).await.acknowledged);
+
+    // And it is a user act. A model that could acknowledge on the user's behalf
+    // would silently remove the only thing making DR-17's risks acceptable.
+    assert_eq!(post_ack_with(secret_key_only()).await.status(), 403);
+}
+```
+
+```tsx
+it('a public model gets the dialog before the first turn, and a local model never does', async () => {
+  const { rerender } = render(<App provider="openai" disclosureAcknowledged={false} />);
+  expect(await screen.findByRole('dialog', { name: /not hosted by your institution/i })).toBeVisible();
+  // BEFORE, not after: an acknowledgement collected once the transcript already
+  // went out is a receipt, not a disclosure.
+  expect(sendTurn).not.toHaveBeenCalled();
+
+  rerender(<App provider="llamacpp" disclosureAcknowledged={false} />);
+  expect(screen.queryByRole('dialog')).toBeNull();
+});
+
+it('the dialog cannot be dismissed by Escape or an overlay click', async () => {
+  render(<NonPrivateModelDisclosure open onAcknowledge={onAck} />);
+  await user.keyboard('{Escape}');
+  expect(screen.getByRole('dialog')).toBeVisible();
+  await user.click(screen.getByTestId('dialog-overlay'));
+  expect(screen.getByRole('dialog')).toBeVisible();
+  expect(onAck).not.toHaveBeenCalled();
+});
+
+it('the panel states the limit even when enforcement is off', () => {
+  render(<PrivacyPanel enabled={false} />);
+  expect(screen.getByText(/enforcement off/i)).toBeInTheDocument();
+  expect(screen.getByText(/can read files on this computer/i)).toBeInTheDocument();
+});
+
+it('the renderer does not carry its own copy of the sentence', () => {
+  // The dialog renders server-supplied text. A hardcoded English string here is
+  // the drift this task exists to prevent, and it is invisible until the two
+  // disagree.
+  render(<NonPrivateModelDisclosure open copy={{ long: 'SERVED-COPY-MARKER' }} onAcknowledge={vi.fn()} />);
+  expect(screen.getByText(/SERVED-COPY-MARKER/)).toBeInTheDocument();
+});
+```
+
+- [ ] **Step 2: Run** → Rust **COMPILE ERROR** (`unresolved module disclosure`); TS **FAIL**.
+
+- [ ] **Step 3: Implement**
+
+**The copy.** Long form (the dialog and the settings panel), with the provider name interpolated:
+
+> **{Provider} is not hosted by your institution.**
+>
+> It is not HIPAA-compliant, is not hosted on-premise, and does not run on this computer. Anything a
+> chat on this model can reach, it can send there — **files on this computer**, the contents of your
+> working directory, and whatever a command you approve prints.
+>
+> BioRouter does stop three things: this model cannot read another chat's transcript, cannot read a
+> knowledge base marked private, and cannot use the private data extensions (**UCSF OMOP**, **CDW**)
+> or switch this chat to a private model to reach them.
+>
+> It **does not** stop it reading ordinary files on this computer — including files an earlier
+> private chat wrote outside BioRouter's own storage. If the work involves patient data, use a local
+> model or an institutional one.
+
+Short form (the model chip's Public badge tooltip, and the CLI's one-liner):
+
+> Not HIPAA-compliant, not on-premise, not local — this model can see files on this computer. Private
+> chats and private knowledge bases stay out of its reach.
+
+**When it is shown.**
+
+| Surface | Trigger | Blocking? |
+|---|---|---|
+| Dialog | the first time a public-tier provider is bound **in this install**, before the first turn on it | yes, once |
+| Provider grid, Commercial section | always | no |
+| Model chip badge tooltip | always, on a public model | no |
+| Settings → Privacy | always, above the master toggle, and restated when the toggle is off | no |
+| CLI | `biorouter configure` on selecting a public provider, and once on first public bind | no |
+| `docs/` + `landing/docs.html` | always | no |
+
+**Why once per install rather than once per session.** A confirmation a user sees daily is a
+confirmation they stop reading, and this one has no *action* to gate — there is no safe alternative
+being offered at that moment, only a fact to convey. So it is shown once, forcefully, and is then
+carried permanently by a badge, a section header and a settings panel that anyone can go back to.
+That is the same reasoning DR-8 uses for grading a session's declassification rather than confirming
+every read.
+
+**The predicate is the tier, not a third list.** `disclosure::required_for` is
+`provider.tier() == ProviderTier::Public`. Task 5 owns the membership, DR-1 owns the rule, and adding
+a fourth private provider must switch this off with no edit here. A hand-written provider list in
+`disclosure.rs` is the wrong implementation Step 5 greps for.
+
+- [ ] **Step 4: Run**
+
+```bash
+cargo test -p biorouter --lib privacy::disclosure
+cargo test -p biorouter-server --lib routes::config_management
+just generate-openapi && (cd ui/desktop && npm run generate-api)
+cd ui/desktop && npx vitest run NonPrivateModelDisclosure PrivacyPanel ProviderGrid 2>&1 | tail -6
+```
+
+- [ ] **Step 5: Gate**
+
+```bash
+# (1) ONE definition of the sentence. The failure this catches is four
+#     hand-written copies that drift, and it is invisible until a user reads the
+#     stale one. Anchored on a distinctive phrase from the copy, not on the word
+#     "HIPAA" — which legitimately appears in docs/security/data-privacy-and-phi.md
+#     as prose.
+grep -rn "is not HIPAA-compliant, is not hosted on-premise" --include='*.rs' --include='*.ts' --include='*.tsx' crates/ ui/desktop/src/
+echo "expect: exactly 1 hit, in crates/biorouter/src/privacy/disclosure.rs"
+
+# (2) The renderer holds no copy of its own — it renders what the route served.
+cd ui/desktop && grep -rn "HIPAA" src/components/ | grep -v "\.test\."
+echo "expect: no output (the string arrives over the API)"
+cd ..
+
+# (3) The disclosure does NOT read the master toggle. This is the plausible
+#     wrong implementation — every other privacy surface reads it, so wiring
+#     this one the same way is the natural mistake, and it silences the
+#     disclosure in exactly the configuration where the risk is highest.
+awk '/mod disclosure|^pub fn required_for|^pub const COPY/,0' crates/biorouter/src/privacy/disclosure.rs \
+  | grep -c "privacy_tiers_enabled"
+echo "expect: 0"
+
+# (4) The predicate is the tier, not a second provider list. A list here goes
+#     stale the first time Task 5's private set changes, and it goes stale
+#     silently in the unsafe direction.
+grep -cE '"openai"|"anthropic"|"llamacpp"|"ollama"|"versa_' crates/biorouter/src/privacy/disclosure.rs \
+  | grep -v '^0$' && echo "FAIL: disclosure.rs names providers" || echo "OK: no provider names outside tests"
+
+# (5) It is on every surface R10 requires. Enumerated, because a count is
+#     satisfied by four hits on one surface.
+for f in ui/desktop/src/components/privacy/NonPrivateModelDisclosure.tsx \
+         ui/desktop/src/components/settings/privacy/PrivacyPanel.tsx \
+         ui/desktop/src/components/settings/providers/ProviderGrid.tsx \
+         crates/biorouter-cli/src/commands/configure.rs ; do
+  test -e "$f" && grep -qi "disclosure" "$f" && echo "OK   $f" || echo "MISS $f"
+done
+echo "expect: OK on all four"
+```
+
+**What this catches.** Four wrong implementations, each of which leaves the feature looking finished.
+(1) A disclosure gated on `privacy_tiers_enabled()`, which goes quiet exactly when it matters most —
+gate (3). (2) Four hand-written copies of the sentence, one of which is already stale — gate (1)+(2).
+(3) A copy that describes only the guarantee and never the limit, which is the reading DR-17 forbids —
+`the_disclosure_states_the_limit_of_the_protection_not_only_the_protection`. (4) An acknowledgement
+collected *after* the first turn, which records consent for something that already happened — the
+`sendTurn` assertion in the first TSX test.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add crates/biorouter/src/privacy/disclosure.rs crates/biorouter-server/src/routes/config_management.rs \
+        crates/biorouter-cli/src/commands/configure.rs ui/desktop/src/components/privacy \
+        ui/desktop/src/components/settings ui/desktop/openapi.json ui/desktop/src/api \
+        docs/security/data-privacy-and-phi.md landing/docs.html
+git commit -m "feat(privacy): disclose what a non-private model can reach (#56, DR-17 req. 3)"
+```
+
+---
 
 ### Task 31: The CLI is a required R10 surface
 
@@ -17704,7 +18752,17 @@ Check, with evidence: (1) a private chat's badge in History, the chat header, th
 sidebar; (2) switching a private chat to a public model shows the Gate A repair card and **no**
 success toast; (3) a private extension in the composer's selector is visible-but-disabled with its
 reason; (4) the declassification dialog's phrase gate, Cancel focus, and the resulting
-"Public — made public by you on …" badge.
+"Public — made public by you on …" badge; (5) **[Task 30A](#task-30a-the-non-private-model-disclosure)'s
+disclosure** — it appears on a fresh sandboxed profile whose default provider is public, before the
+first turn, it does **not** appear for `llamacpp`, and it still appears with the master toggle off;
+(6) **[Task 29A](#task-29a-knowledge-base-publicize--privatize--user-only-graded-audited)'s tier
+control** — the palette shows a Private chip before the base is selected, publicizing names the page
+count and gates the button on the base id, and privatizing is one click.
+
+⚠ **(5) is not optional and is not a UX nicety.** It is requirement 3 of
+[DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store) — the term on which that ruling's
+accepted risks are acceptable. A Phase 4 that passes without it has shipped the narrowing without the
+thing that justifies it.
 
 - [ ] **Step 3: The badges are mounted, not merely defined**
 
@@ -18779,13 +19837,15 @@ the implementation is wrong.
 | **DR-7** | **`chatrecall` obeys the barrier** — private models recall from private and public, public models from public only. **Side channels (existence, counts, timing) are explicitly out of scope**: no count padding, no constant-time responses, no decoys. Only content must not cross. |
 | **DR-8** | **Declassification is the user's alone** — an explicit deprivatise action in History. Nothing automatic, nothing an agent can invoke. Graded by `privacy_reason`: `mcp:*` gets a typed confirmation, `turn:*`-only gets single-click with undo. |
 | **DR-9** | ~~**A global opt-out exists, off by default**, scoped to Gate C (the MCP tool gate) only.~~ **Superseded by DR-15.** The operator has since ruled that the opt-out is a *master* switch over the whole feature, which is the wider of the two readings [Open question 3](#open-questions) recorded. The Gate-C-scoped key is retired rather than kept alongside the master one: two switches whose scopes nest are two things a user must reason about at the moment they are least able to, and the narrower one has no remaining job. |
-| **DR-14** | **A public-capability session's tools may not reach Biorouter's own private data, on by default, and the control is TWO layers.** **Layer A (primary)** is an in-process path barrier at `ExtensionManager::dispatch_tool_call` — the one function every tool call passes through — which refuses any call whose arguments name a path inside the private entries. It needs no kernel support, so it holds on every platform, for every tool that exists and every tool added later. **Layer B (defence in depth)** is the OS read-deny sandbox (Seatbelt / bubblewrap) wrapping the five tools that spawn a child process, which Layer A cannot see into once the command is handed over. The entries are the four roots the operator named — the session store, the knowledge roots, the global memory root and the Agent Drafter app root — plus one file, `<config>/config.yaml`, because a master switch a public model can edit is not a switch. Everything else on the filesystem stays readable and writable — this is **not** a general jail and must not become one. **Private-capability sessions are unaffected.** Where the platform cannot express the kernel deny, the fail direction is **closed** for the five spawning tools only (they are refused, naming the two ways out); every in-process tool keeps working, because Layer A does not need a kernel. Tasks 14A–14D. |
-| **DR-15** | **One master toggle turns the entire privacy-tier feature off**, config key `BIOROUTER_PRIVACY_TIERS`, default `on`. Off means: no bind gate, no turn gate, no dispatch gate, no discovery filter, no `chatrecall` filter, no `chatrecall` LOAD guard, no knowledge-base barrier, no catalog scoping, no forced export location, no **extension-enablement refusal and no stripping of a private server's instructions** (Gate F), no spawn matrix, no visibility predicate, no classification ratchet, **no in-process path barrier** (DR-14 Layer A) and **no read-deny sandbox** (DR-14 Layer B) — nothing is refused and nothing is sandboxed. ⚠ **Session copy is NOT on that list, and an earlier wording of this row put it there.** A copy carrying its parent's stored tier is *propagation of an existing column*, which the sentence after this one preserves explicitly; it is not a classification decision. Reading it the other way makes "copy the chat" a laundering operation that **survives re-enabling** — the copy is stamped `public` for ever and the paragraph below promising that re-enabling "resumes enforcement over the history that existed" becomes false. For the same reason `import_session`'s fail-closed default (a transcript arriving with no tier is stamped Private) is unaffected: it is a provenance stamp on incoming data, not a runtime judgement about what a live session touched, which is what the ratchet is and what AR-7 is about. So the copy paths are not an enforcement point at all — they are the fix for §9.3 B1 (a branch of a private chat silently running on a public model), they refuse nothing, and they read no toggle. Task 30's matrix asserts them **identically in both columns** and its inventory does not list them. Task 30 enumerates all nineteen enforcement points and fails if the tree contains one that is in neither its matrix nor its inventory. It does **not** delete the columns, the stamps already written, or the audit rows, so turning it back on resumes enforcement over the history that existed when it was turned off. It does **not** hide the badges either: they keep rendering, restyled and suffixed *— enforcement off*, beside a persistent strip. A guardrail that vanishes when disabled cannot be noticed by the person who disabled it six months ago; a badge that still reads plain **Private** while nothing enforces it is a false statement. Neither is acceptable, so the badge stays and changes what it says. |
+| **DR-14** | ⛔ **DEFERRED for v1 by [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store) — do not implement, do not delete.** The ruling stands as a ruling; what changed is that the operator descoped the work that carries it (*"we don't have to enforce and encrypt every single step along the way. for now"*). Tasks 14A–14F keep their content and carry a banner apiece. Original text: **A public-capability session's tools may not reach Biorouter's own private data, on by default, and the control is TWO layers.** **Layer A (primary)** is an in-process path barrier at `ExtensionManager::dispatch_tool_call` — the one function every tool call passes through — which refuses any call whose arguments name a path inside the private entries. It needs no kernel support, so it holds on every platform, for every tool that exists and every tool added later. **Layer B (defence in depth)** is the OS read-deny sandbox (Seatbelt / bubblewrap) wrapping the five tools that spawn a child process, which Layer A cannot see into once the command is handed over. The entries are the four roots the operator named — the session store, the knowledge roots, the global memory root and the Agent Drafter app root — plus one file, `<config>/config.yaml`, because a master switch a public model can edit is not a switch. Everything else on the filesystem stays readable and writable — this is **not** a general jail and must not become one. **Private-capability sessions are unaffected.** Where the platform cannot express the kernel deny, the fail direction is **closed** for the five spawning tools only (they are refused, naming the two ways out); every in-process tool keeps working, because Layer A does not need a kernel. Tasks 14A–14D. |
+| **DR-15** | ⚠ **Amended by [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store): two of the listed enforcement points no longer exist.** *"No in-process path barrier"* and *"no read-deny sandbox"* are vacuous in v1 because neither is built, so Task 30's matrix drops those rows and its inventory must not expect them. Everything else in this row is unchanged and still binding. **One master toggle turns the entire privacy-tier feature off**, config key `BIOROUTER_PRIVACY_TIERS`, default `on`. Off means: no bind gate, no turn gate, no dispatch gate, no discovery filter, no `chatrecall` filter, no `chatrecall` LOAD guard, no knowledge-base barrier, no catalog scoping, no forced export location, no **extension-enablement refusal and no stripping of a private server's instructions** (Gate F), no spawn matrix, no visibility predicate, no classification ratchet, **no in-process path barrier** (DR-14 Layer A) and **no read-deny sandbox** (DR-14 Layer B) — nothing is refused and nothing is sandboxed. ⚠ **Session copy is NOT on that list, and an earlier wording of this row put it there.** A copy carrying its parent's stored tier is *propagation of an existing column*, which the sentence after this one preserves explicitly; it is not a classification decision. Reading it the other way makes "copy the chat" a laundering operation that **survives re-enabling** — the copy is stamped `public` for ever and the paragraph below promising that re-enabling "resumes enforcement over the history that existed" becomes false. For the same reason `import_session`'s fail-closed default (a transcript arriving with no tier is stamped Private) is unaffected: it is a provenance stamp on incoming data, not a runtime judgement about what a live session touched, which is what the ratchet is and what AR-7 is about. So the copy paths are not an enforcement point at all — they are the fix for §9.3 B1 (a branch of a private chat silently running on a public model), they refuse nothing, and they read no toggle. Task 30's matrix asserts them **identically in both columns** and its inventory does not list them. Task 30 enumerates all nineteen enforcement points and fails if the tree contains one that is in neither its matrix nor its inventory. It does **not** delete the columns, the stamps already written, or the audit rows, so turning it back on resumes enforcement over the history that existed when it was turned off. It does **not** hide the badges either: they keep rendering, restyled and suffixed *— enforcement off*, beside a persistent strip. A guardrail that vanishes when disabled cannot be noticed by the person who disabled it six months ago; a badge that still reads plain **Private** while nothing enforces it is a false statement. Neither is acceptable, so the badge stays and changes what it says. |
 | **DR-10** | **Fail directions differ by kind, deliberately.** Migration backfill → fail **open** (public). Runtime read of a missing/unparseable column → fail **closed** (private, with `error!`). Import with no tier → fail **closed**. Unknown provider → **Public** (fail-*safe*: less privileged). Unlisted extension → **Public** (fail-open, DR-6). Any gate's lookup failing → refuse, encoded inside `Ok(..)`, never as `Err`. |
 | **DR-11** | **`medcp` stays callable by a public model**, and that is the accepted cost of DR-6. It is enabled on the operator's machine with `CLINICAL_RECORDS_*` against a clinical MSSQL backend. The reasoning: a hand-installed extension is the user's own choice, and medcp is a *connector* rather than a data source. **The badge is a statement about provenance, not about the data behind the connector.** |
 | **DR-12** | **`spokeagent` is public.** SPOKE holds no patient data; its passcode gates the service, not private content. |
 | **DR-13** | **A knowledge base ratchets on ingest**, resolving the either/or design §9.3 B4 refused to defer. A KB takes the tier of the most sensitive session that has ingested into it, and a public-capability session may not read *or write* a private KB. The alternative — declare KBs a designed public sink and warn at ingest — was **rejected**. Two costs come with it and were accepted, not overlooked: a KB one private session touched is unreadable from every public chat including the user's own ordinary work, and existing KBs migrate **public** even if a private session fed them. Both are written out in [Accepted risks](#accepted-risks) (AR-1, AR-2); there is no KB declassification path in v1. A third cost — the *existence* of a private base stays inferable from a guessed id, DR-7's side-channel scope applied consistently — is [AR-5](#ar-5--the-existence-of-a-private-knowledge-base-is-still-inferable). Tasks 10A–10D. |
 | **DR-16** | **Raising a session's capability to Private is the user's act alone. A model may never do it.** This is DR-8 made symmetric: *lowering* a session's classification was already user-only, and *raising* its capability now matches. Concretely — `POST /agent/update_provider` refuses a bind that would take a session from public capability to private unless the request carries a proof-of-user the daemon issued to its own UI, and `POST /agent/add_extension` refuses attaching a private-classified extension to a public-capability session outright. A bind that **keeps or lowers** the tier is untouched, on both routes and for every caller. [Task 18A](#task-18a-the-two-http-channels-that-raise-a-sessions-own-tier-and-the-user-proof-neither-of-them-has). **The operator was shown the cost and took it.** Three costs, each named before the ruling: it inverts a settled plan test (Task 12's `a_private_provider_binds_to_anything_and_a_public_session_accepts_anything`, whose `// upward: fine` comment is now `// upward: user-only`); it can break an agent workflow that switches itself to a local model mid-run; and it turns *"switch this chat to a private model"* — step 1 of the two-ways-out message in **every** refusal this feature ships — into an instruction the model must hand to the user rather than follow. **Two alternatives were rejected.** *Allow-but-ratchet* (permit the raise, stamp the session private) was rejected because a public model then chooses when to become private, which is exactly the classification it is supposed to be bound by. *Treat identity-free routes as public* — the [Task 14C](#task-14c-the-other-door--the-daemons-own-http-api-pinned-rather-than-assumed) (2) posture, which refuses every raise unconditionally because the route has no principal — was rejected because it removes the **user's** model picker along with the model's, which is the one control the whole refusal vocabulary points at. Choosing neither is what forces Task 18A to build a user-proof that does not exist today; the design has assumed one twice (§12.1, and Task 29's `secret_key_and_capability_token()`) and defined it neither time. **What would justify revisiting:** real evidence from use that the local-model handoff is a routine, legitimate agent step — an agent that switches to `llamacpp` to process something it should not send out, and which now stops and asks. If that pattern appears in practice, the answer is a *scoped* permission (a user-granted, per-session "this agent may switch to a local model" grant) rather than reopening the bind, because the failure being prevented is the model choosing its own tier and a scoped grant leaves the choosing with the user. |
+| **DR-17** | **The feature is narrowed to the session store, and the general filesystem barrier is descoped for v1.** In scope and non-negotiable: (1) session logs and histories are locked against a public-capability model; (2) a public model may neither raise its own tier (DR-16) nor reach the private-only extensions `ucsfomopagent` / `cdwagent`; (3) **the user is told** that a model which is not HIPAA-compliant, not on-premise and not local can reach what is on their machine ([Task 30A](#task-30a-the-non-private-model-disclosure)). Accepted as risk, and disclosed rather than mechanised: files a private session produced elsewhere on disk, encryption at rest, and **DR-14's Layer A / Layer B read-deny** — *"we don't have to enforce and encrypt every single step along the way. for now."* Tasks 14A–14F are **DEFERRED, not deleted**; AR-6, AR-9 and AR-10 are retired with them, so a public session on Windows or bubblewrap-less Linux **keeps the shell**. Requirement 3 is what makes accepting the rest a considered tradeoff rather than an oversight, which is why it ships as a task with a gate. Full text in [Scope ruling — DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store). |
+| **DR-18** | **A knowledge base is a first-class BioRouter component: it carries a tier, every guardrail applies to it, and the *user* — never a model — decides that tier.** Confirmed and extended by the operator on 2026-07-30: *"knowledge bases should also be able to be deemed private - as it is also a piece of biorouter component . please make sure that users can change the kb to be private or public and the private model generated kb will automatically be private until the user publicize it, and all the other guardrails will apply as well."* Four parts. (a) **DR-13's ratchet stays** — Tasks 10A–10D unchanged, and a public-capability session may neither read nor write a private base. (b) **Tier at creation, not only on ingest**: a base a private-capability model creates is private from birth. (c) **The user may publicize or privatize a base**, from the Knowledge view, **user-only** and routed through the same user-proof DR-16 requires — a model may never do it, in either direction. (d) **Publicizing is graded and irreversible for content already released**, so its confirmation names the page count and says so; privatizing is single-click, because nothing is disclosed by it. [Task 29A](#task-29a-knowledge-base-publicize--privatize--user-only-graded-audited). This **resolves [AR-1](#ar-1--resolved-by-dr-18--a-knowledge-base-that-one-private-session-touched-becomes-unreadable-from-every-public-chat-including-the-users-own-ordinary-work)** and answers half (a) of [Open question 15](#open-questions). Full text in [DR-18 — the knowledge-base tier](#dr-18--the-knowledge-base-tier-is-user-controllable-and-a-private-session-creates-a-private-base). |
 
 ---
 
@@ -18815,7 +19875,7 @@ Nine more this plan surfaced. Twelve and thirteen need a ruling before the phase
 fourteen, fifteen and sixteen are follow-ups whose *residual* is already accepted (AR-3, AR-1, and —
 for sixteen — a pre-existing theme gap this feature neither creates nor is scoped to fix).
 Seventeen, eighteen and nineteen came out of DR-14 and each has its residual recorded in
-[AR-6](#ar-6--on-a-host-that-cannot-express-the-read-deny-a-public-session-loses-the-shell-and-two-costs-come-with-the-sandbox-itself).
+[AR-6](#ar-6--retired-by-dr-17--on-a-host-that-cannot-express-the-read-deny-a-public-session-loses-the-shell-and-two-costs-come-with-the-sandbox-itself).
 ⚠ **The ordering constraint that used to be stated here — "nineteen must not be actioned before
 eighteen" — is withdrawn, and nineteen's own Blocks cell already said so while this sentence still
 said the opposite.** It rested on the premise that narrowing the Agent Drafter root would hand a
@@ -18830,14 +19890,14 @@ independent follow-ups.
 | **12** | **Does `ensure_privacy_schema` co-landing with BR-71 need a merge-order decision?** Both branches add `parent_session_id`; both would take migration 17. The shape-guarded arm plus the unconditional reconcile makes either order safe **in the database**, but the two diffs conflict textually in `session_manager.rs`. Resolution guidance: take either side — the columns are identical — and keep the **shape-guarded** form. | Task 6, and BR-71 Task 1. |
 | **13** | **Does `medcp`'s continued reachability need a first-run notice, or is the badge enough?** §13.5 specifies a one-time notice naming any **enabled** extension that is Public and declares clinical-looking credentials. On the operator's machine that names exactly one extension, `medcp`, and nothing else changes. | Task 38's notice copy. Hard-code that expectation into its test fixture. |
 | **14** | **How does `memory`'s local store get a tier?** AR-3: `compose_instructions` (`memory/mod.rs:277`) inlines local memories in full (`:310-322`) into every session opened in that directory, including one on a public model, and Task 19 ships only a disclosure. The design's §9.3 B3 names the fix — "classify memory entries and filter `retrieve_all` by the session's capability tier at init" — but the on-disk format carries no provenance (`:387-388` writes a `# {tags}` line and bare lines; `:414-418` reads them back keyed by the *tag string*), and `compose_instructions` runs once at `MemoryServer::new` (`:108`) rather than per turn, so a naive capability filter there freezes across a mid-session model swap — the O6 hazard. A real fix needs per-entry provenance **and** a per-turn recompute. | Nothing in this plan. Open it as a follow-up issue at Task 40 Step 6. |
-| **15** | **Does a knowledge base need a declassification path, and does the barrier belong on the GUI's own read routes?** Two halves of the same scope question. (a) AR-1: a session can be declassified (Task 29, user-only, graded, audited) and a KB cannot, so a user who ratchets their only base by accident has no in-product exit. (b) Task 10C gates the four `/knowledge/*` **macro** routes (they run a model) and deliberately leaves the GUI's read routes alone (the Knowledge view is the user, not a model) — a defensible line, but it means the *app* shows a private base that the *agent* in the next tab cannot read, and nobody has decided whether that asymmetry should be visible in the UI. | Nothing in this plan; both are follow-ups. (a) is the one a user will hit first. |
-| **17** | **Should Linux get a Landlock read-deny by granting the complement?** Landlock has no deny rule, so hiding a subpath means handling read accesses and granting read to every sibling of every ancestor of every deny root. Task 14A declines it in v1 for three measured reasons, the disqualifying one being that anything created in an enumerated ancestor *after* the ruleset is built is unreadable for that command's lifetime — `cd ~ && mkdir out && echo x > out/f && cat out/f` fails. | Task 14A makes `bubblewrap` the only Linux mechanism that can express the read-deny, and the refusal names `apt install bubblewrap` as the fix. A Landlock complement would remove that dependency; it needs a real ergonomics trial on a populated `$HOME` before it is worth the failure mode. |
-| **18** | **Should the per-app agent WebSocket be authenticated by something a shell cannot obtain?** `GET /apps/{id}` and `GET /apps/{id}/agent` are deliberately unauthenticated (`auth.rs:52-78`), and `serve_index` (`apps.rs:168-184`) embeds the socket token in the page it serves, so any loopback client that knows an app id can read the token and drive that app's agent. ⚠ **There are THREE local sources of app ids, not two, and this row said two until this round.** DR-14 removes the first two — `GET /apps` needs the secret, and the app tree is deny root #4 — but the third is `agent_drafter__list_apps` (`agent_drafter/mod.rs:2636` → `ArtifactStore::list`, `store.rs:606`), a tool on a **public** extension that takes no path argument, so neither Layer A nor a filesystem deny can see it. Task 14C withdrew that premise; this row had not caught up. What Task 14E changes is narrower than "removes": a public-capability session's `list_apps` no longer returns a **private** app's id, so what stays reachable is that any loopback client — including a public-capability session — can drive a **public** app's agent socket with no credential at all. | Nothing in this plan; the residual is stated in [AR-6](#ar-6--on-a-host-that-cannot-express-the-read-deny-a-public-session-loses-the-shell-and-two-costs-come-with-the-sandbox-itself) and pinned by Task 14C's `the_unauthenticated_app_surface_does_not_grow_by_accident`. |
-| **20** | **Should the daemon's HTTP API authenticate a caller that is on the same machine?** [AR-11](#ar-11--the-daemons-own-api-secret-is-recoverable-so-the-second-door-is-held-by-layer-a-and-not-by-the-environment-strip): the secret is recoverable from the daemon's own environment (`ps -Ewww -p $PPID` on macOS, `/proc/self/environ` in-process on Linux), so `check_token`'s header comparison stops a remote caller and not a local one. Layer A covers the biggest local route, `POST /agent/call_tool`, because that route dispatches through the same choke point. It does **not** cover the routes that return private content without running a tool: `GET /sessions/{id}/export` and the rest of the transcript family, the `/knowledge/*` read routes, `GET /apps/{id}/export`, and `GET /diagnostics/{id}` — which returns a zip of `session.json`, recent `logs/*.jsonl` and a verbatim `config.yaml`, and is the widest single route in the API. | Nothing in this plan. Task 14C states the residual instead of the old "no way to authenticate" claim, and pins the strip so the *remote* half stays closed. Closing the local half needs a per-caller credential the daemon does not hand to its own children — the same shape as [Open question 18](#open-questions), and probably the same fix. |
-| **19** | **Should DR-14's Agent Drafter root narrow to `.vault/` plus other sessions' apps on the FILESYSTEM channel too?** Task 14E has now answered the *tool* channel: apps carry a tier, and a public session may read a public app and not a private one. The filesystem channel still denies the whole root, so a public-capability chat cannot `cat` even its **own** public app's source from the shell (AR-6(3)) — a real ergonomic loss, and now an asymmetry a user can see (`read_app` works, `cat` does not). Narrowing it means teaching Layer A which app a raw path belongs to, which is the per-object resolution the filesystem channel deliberately does not have. | Task 14B denies the whole root on the filesystem channel; Task 14E resolves per app on the tool channel. Narrowing the filesystem side is a follow-up, and it is no longer blocked on 18 — Task 14E's `list_apps` filter already removes a **private** app's id from a public model's reach, which was 18's dependency. |
+| **15** | **(a) ANSWERED by [DR-18](#dr-18--the-knowledge-base-tier-is-user-controllable-and-a-private-session-creates-a-private-base) — half (b) still open.** ~~**Does a knowledge base need a declassification path,~~ and does the barrier belong on the GUI's own read routes?** Two halves of the same scope question. (a) AR-1: a session can be declassified (Task 29, user-only, graded, audited) and a KB cannot, so a user who ratchets their only base by accident has no in-product exit.~~ **It does, and it has one: [Task 29A](#task-29a-knowledge-base-publicize--privatize--user-only-graded-audited).** Half (b) is untouched and still open. (b) Task 10C gates the four `/knowledge/*` **macro** routes (they run a model) and deliberately leaves the GUI's read routes alone (the Knowledge view is the user, not a model) — a defensible line, but it means the *app* shows a private base that the *agent* in the next tab cannot read, and nobody has decided whether that asymmetry should be visible in the UI. | (a) is now [DR-18](#dr-18--the-knowledge-base-tier-is-user-controllable-and-a-private-session-creates-a-private-base) and [Task 29A](#task-29a-knowledge-base-publicize--privatize--user-only-graded-audited). (b) remains a follow-up — and [Task 29A](#task-29a-knowledge-base-publicize--privatize--user-only-graded-audited) makes the asymmetry *more* visible, not less, because the Knowledge view now shows a tier chip the agent obeys and the read routes do not. |
+| **17** | ✅ **RESOLVED by [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store) — the question has no subject.** There is no Linux read-deny in v1, so there is nothing for Landlock to express and no `bubblewrap` dependency to remove. The analysis is kept because it is the measured reason Landlock cannot do this at all, and a revival would otherwise re-derive it. ~~**Should Linux get a Landlock read-deny by granting the complement?** Landlock has no deny rule, so hiding a subpath means handling read accesses and granting read to every sibling of every ancestor of every deny root. Task 14A declines it in v1 for three measured reasons, the disqualifying one being that anything created in an enumerated ancestor *after* the ruleset is built is unreadable for that command's lifetime — `cd ~ && mkdir out && echo x > out/f && cat out/f` fails.~~ | **Nothing — Task 14A is deferred.** Previously: Task 14A makes `bubblewrap` the only Linux mechanism that can express the read-deny, and the refusal names `apt install bubblewrap` as the fix. A Landlock complement would remove that dependency; it needs a real ergonomics trial on a populated `$HOME` before it is worth the failure mode. |
+| **18** | ⚠ **WIDENED by [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store), not resolved.** DR-14 used to remove two of the three local sources of an app id; with the barrier deferred, **all three are open again** — `GET /apps` needs only the secret, the app tree is an ordinary directory, and `agent_drafter__list_apps` is unfiltered because Task 14E is deferred. So any loopback client that can list apps can drive any app's agent socket with no credential. This is squarely inside DR-17's accepted risk and inside [Task 30A](#task-30a-the-non-private-model-disclosure)'s disclosure. Original text: **Should the per-app agent WebSocket be authenticated by something a shell cannot obtain?** `GET /apps/{id}` and `GET /apps/{id}/agent` are deliberately unauthenticated (`auth.rs:52-78`), and `serve_index` (`apps.rs:168-184`) embeds the socket token in the page it serves, so any loopback client that knows an app id can read the token and drive that app's agent. ⚠ **There are THREE local sources of app ids, not two, and this row said two until this round.** DR-14 removes the first two — `GET /apps` needs the secret, and the app tree is deny root #4 — but the third is `agent_drafter__list_apps` (`agent_drafter/mod.rs:2636` → `ArtifactStore::list`, `store.rs:606`), a tool on a **public** extension that takes no path argument, so neither Layer A nor a filesystem deny can see it. Task 14C withdrew that premise; this row had not caught up. What Task 14E changes is narrower than "removes": a public-capability session's `list_apps` no longer returns a **private** app's id, so what stays reachable is that any loopback client — including a public-capability session — can drive a **public** app's agent socket with no credential at all. | Nothing in this plan; the residual is stated in [AR-6](#ar-6--retired-by-dr-17--on-a-host-that-cannot-express-the-read-deny-a-public-session-loses-the-shell-and-two-costs-come-with-the-sandbox-itself) and pinned by Task 14C's `the_unauthenticated_app_surface_does_not_grow_by_accident`. |
+| **20** | ⚠ **WIDENED by [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store), not resolved.** Layer A used to cover the biggest local route, `POST /agent/call_tool`; with it deferred, that route is covered by **Gate C** for private *extensions* and by nothing for private *paths*. The route list below is unchanged and is now the full extent of what a local caller holding the secret can read. Original text: **Should the daemon's HTTP API authenticate a caller that is on the same machine?** [AR-11](#ar-11--amended-by-dr-17--the-daemons-own-api-secret-is-recoverable): the secret is recoverable from the daemon's own environment (`ps -Ewww -p $PPID` on macOS, `/proc/self/environ` in-process on Linux), so `check_token`'s header comparison stops a remote caller and not a local one. Layer A covers the biggest local route, `POST /agent/call_tool`, because that route dispatches through the same choke point. It does **not** cover the routes that return private content without running a tool: `GET /sessions/{id}/export` and the rest of the transcript family, the `/knowledge/*` read routes, `GET /apps/{id}/export`, and `GET /diagnostics/{id}` — which returns a zip of `session.json`, recent `logs/*.jsonl` and a verbatim `config.yaml`, and is the widest single route in the API. | Nothing in this plan. Task 14C states the residual instead of the old "no way to authenticate" claim, and pins the strip so the *remote* half stays closed. Closing the local half needs a per-caller credential the daemon does not hand to its own children — the same shape as [Open question 18](#open-questions), and probably the same fix. |
+| **19** | ✅ **RESOLVED by [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store) — the filesystem channel is descoped, so there is no root to narrow.** The ergonomic loss it recorded (a public chat cannot `cat` its own app's source) is not incurred. The *tool*-channel half went with it: Task 14E is deferred, so apps carry no tier in v1 (see [AR-14](#ar-14--every-biorouter-app-that-exists-today-starts-public-at-migration-even-if-it-was-built-in-a-private-chat)). ~~**Should DR-14's Agent Drafter root narrow to `.vault/` plus other sessions' apps on the FILESYSTEM channel too?** Task 14E has now answered the *tool* channel: apps carry a tier, and a public session may read a public app and not a private one. The filesystem channel still denies the whole root, so a public-capability chat cannot `cat` even its **own** public app's source from the shell (AR-6(3)) — a real ergonomic loss, and now an asymmetry a user can see (`read_app` works, `cat` does not). Narrowing it means teaching Layer A which app a raw path belongs to, which is the per-object resolution the filesystem channel deliberately does not have.~~ | **Nothing — Tasks 14B and 14E are deferred.** Previously: Task 14B denies the whole root on the filesystem channel; Task 14E resolves per app on the tool channel. Narrowing the filesystem side is a follow-up, and it is no longer blocked on 18 — Task 14E's `list_apps` filter already removes a **private** app's id from a public model's reach, which was 18's dependency. |
 | **16** | **`--text-subtle` on `--background-medium` is sub-AA in three of the six family×mode scopes, and #56 is not the right owner of the fix.** Measured with `ui/desktop/scripts/lib/theme-tokens.mjs`: parchment:dark **3.75**, alma-mater:light **4.45**, alma-mater:dark **4.28**, against a 4.5 floor. `--background-medium` is the row-hover ground that `biorouter-list-row`, `SessionItem` and `ExtensionItem` all paint, so this affects every subtle label on a hovered row **today** — it is a pre-existing gap, not something the privacy badge introduces, and `check-contrast.mjs` has never asserted it. Task 26 therefore audits only `--text-default` and `--text-muted` on that ground (the two the badge actually uses) and the total is **288**, not 294. Auditing the third token as well makes the run exit 1 with three failures whose only fix is a theme-token edit — precisely the "Zero theme work" Task 26 Step 5 forbids, and a scope the privacy feature has no business taking. | Nothing in this plan. Open it as a theme/a11y follow-up at Task 40 Step 6, alongside the deferred findings from the 2026-07 theme redesign. Do **not** close it by lowering the threshold in `check-contrast.mjs`. |
 | **21** | **`bin/knowledge_ingest_probe.rs` is the one macro caller with no behavioural row.** It is a `[[bin]]` target, so `cargo test -p biorouter-server --lib` never compiles it and no harness in the repo executes it. Task 10B closes it *by construction* instead — `ProviderCompleter::paired` hands back the completer and the tier from one `Arc`, and Step 5 asserts zero surviving production uses of `ProviderCompleter::new` — but if a future edit re-derives the probe's tier from `cli.provider` rather than from the instance, nothing fails. | Nothing in this plan. **Accepted risk, in the operator's terms:** the probe is a developer diagnostic run by hand with `--root` and a default `probe` KB; a wrong tier there mis-stamps one developer's own scratch base on their own machine, and no model can reach it. If the probe ever becomes something a model or a route invokes, it needs a behavioural row before that lands. |
-| **22** | **The knowledge root's door is a convention enforced by a grep, not by a private function.** The other three roots have a resolver the type system can hide: `ArtifactStore::dir` is already private (`agent_drafter/store.rs:447`), `MemoryRouter::get_memory_file` is private (`memory/mod.rs:336`), and the session store is a sqlx pool nobody outside `session/` should hold. Knowledge has none — `resolve_readable_path` (`knowledge/store.rs:121`) has **3** call sites against roughly **40** direct filesystem reads in the same module, and `KnowledgeService::root()` is `pub` (`service.rs:415`) because `routes/knowledge.rs` legitimately joins off it at 7 sites. So CP1–CP4 are the door and Task 14E Step 5 (4) is what stops an eighth reader appearing beside them. | Nothing in this plan. **Accepted risk, in the operator's terms:** a future reader of the knowledge tree added inside `biorouter-mcp` would bypass the barrier and only a grep would notice. The fix is to make `root()` `pub(crate)` and give `biorouter-server` a narrower accessor that returns a *base's* directory rather than the tree's — a mechanical change across 7 call sites, deliberately not bundled into a task whose subject is something else. |
+| **22** | ✅ **RESOLVED by [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store) as posed, and it does not become moot.** The comparison it rests on — that the *other three* roots have a private resolver and knowledge does not — is gone with the other three roots. What survives is real and is now covered by [DR-18](#dr-18--the-knowledge-base-tier-is-user-controllable-and-a-private-session-creates-a-private-base)'s gates rather than by a deny root: CP1–CP4 **are** the knowledge door, and a new reader added beside them inside `biorouter-mcp` still bypasses the barrier. The `pub(crate)` follow-up below stands on its own merits. ~~**The knowledge root's door is a convention enforced by a grep, not by a private function.** The other three roots have a resolver the type system can hide: `ArtifactStore::dir` is already private (`agent_drafter/store.rs:447`), `MemoryRouter::get_memory_file` is private (`memory/mod.rs:336`), and the session store is a sqlx pool nobody outside `session/` should hold. Knowledge has none — `resolve_readable_path` (`knowledge/store.rs:121`) has **3** call sites against roughly **40** direct filesystem reads in the same module, and `KnowledgeService::root()` is `pub` (`service.rs:415`) because `routes/knowledge.rs` legitimately joins off it at 7 sites. So CP1–CP4 are the door and Task 14E Step 5 (4) is what stops an eighth reader appearing beside them.~~ **With Task 14E deferred, nothing does** — [Task 10C](#task-10c-the-knowledge-base-barrier--one-line-at-each-of-the-four-choke-points)'s completeness test is the surviving guard, and it is a test rather than a type. | Nothing in this plan. **Accepted risk, in the operator's terms:** a future reader of the knowledge tree added inside `biorouter-mcp` would bypass the barrier and only a grep would notice. The fix is to make `root()` `pub(crate)` and give `biorouter-server` a narrower accessor that returns a *base's* directory rather than the tree's — a mechanical change across 7 call sites, deliberately not bundled into a task whose subject is something else. |
 
 Three came out of DR-16. Two are **decisions rather than follow-ups** — Task 18A cannot
 answer either without inventing an operator ruling, so it states what it does meanwhile and stops;
@@ -18846,7 +19906,7 @@ and is a scope question the ruling does not reach.
 
 | # | Question | Blocks |
 |---|---|---|
-| **23** | **What should a daemon that was handed no user-action key do?** DR-16's refusal is conditioned on a per-launch key the Electron main process mints and hands `biorouterd` on stdin ([Task 18A](#task-18a-the-two-http-channels-that-raise-a-sessions-own-tier-and-the-user-proof-neither-of-them-has)). Four shipping ways to start the daemon supply no such key: `just run-server`, `just debug-server` (the external backend `just debug-ui` talks to), a hand-run `biorouterd agent`, and any headless/server deployment. In all four the raise is refused **for every caller, including the human at the keyboard** — a private model cannot be bound to a session over HTTP at all. That is the only direction consistent with DR-16 ("the model may never do it" cannot be relaxed by *how the daemon was started*, which a model can influence), and it is a real ergonomic loss on the dev path that this repo's own `just debug-ui` workflow uses daily. The alternative — an env-var escape hatch — is not an alternative: the daemon's environment is exactly what [AR-11](#ar-11--the-daemons-own-api-secret-is-recoverable-so-the-second-door-is-held-by-layer-a-and-not-by-the-environment-strip) measured to be recoverable, so a key delivered that way is a key the model has. | **Answered in part by [Task 18A](#task-18a-the-two-http-channels-that-raise-a-sessions-own-tier-and-the-user-proof-neither-of-them-has) Step 3(a) and 3(f); the last third stays open.** **Closed:** *fail closed* is now specified, not merely preferred — `read_user_action_digest` returns `None` when stdin is a terminal or carries no digest, `install_user_action_digest(None)` is a legal state, and `user_action_matches(_, None)` is `false` for every caller, asserted by `a_daemon_with_no_user_action_key_refuses_every_raise`. **Closed:** the dev path, by *supplying a key* rather than by opening a hatch — `just debug-server` pipes `sha256('biorouter-dev-user-action')` on stdin and `getUserActionKey` returns the same published constant under `BIOROUTER_EXTERNAL_BACKEND`, mirroring `getServerSecret`'s `'test'` branch (`main.ts:906-908`). That key is deliberately public: a daemon's user-proof is whatever the person who launched it chose, and on that path the launcher *is* the developer. It weakens nothing shipped, where the key is 32 random bytes per launch that never leave the Electron main process. `just run-server` is left keyless on purpose, so the fail-closed path stays reachable by hand, and the gate asserts it stays that way. **Still open, and needing an operator ruling rather than an implementation: the headless deployment.** A server install has no GUI, so there is no process that can mint a key on the user's behalf and no picker for the proof to come from; deciding what "the user" means there is the same shape as [Open question 8](#open-questions) and is not something Task 18A can invent. Until it is ruled on, a headless daemon cannot bind a private model over HTTP at all. |
+| **23** | **What should a daemon that was handed no user-action key do?** DR-16's refusal is conditioned on a per-launch key the Electron main process mints and hands `biorouterd` on stdin ([Task 18A](#task-18a-the-two-http-channels-that-raise-a-sessions-own-tier-and-the-user-proof-neither-of-them-has)). Four shipping ways to start the daemon supply no such key: `just run-server`, `just debug-server` (the external backend `just debug-ui` talks to), a hand-run `biorouterd agent`, and any headless/server deployment. In all four the raise is refused **for every caller, including the human at the keyboard** — a private model cannot be bound to a session over HTTP at all. That is the only direction consistent with DR-16 ("the model may never do it" cannot be relaxed by *how the daemon was started*, which a model can influence), and it is a real ergonomic loss on the dev path that this repo's own `just debug-ui` workflow uses daily. The alternative — an env-var escape hatch — is not an alternative: the daemon's environment is exactly what [AR-11](#ar-11--amended-by-dr-17--the-daemons-own-api-secret-is-recoverable) measured to be recoverable, so a key delivered that way is a key the model has. | **Answered in part by [Task 18A](#task-18a-the-two-http-channels-that-raise-a-sessions-own-tier-and-the-user-proof-neither-of-them-has) Step 3(a) and 3(f); the last third stays open.** **Closed:** *fail closed* is now specified, not merely preferred — `read_user_action_digest` returns `None` when stdin is a terminal or carries no digest, `install_user_action_digest(None)` is a legal state, and `user_action_matches(_, None)` is `false` for every caller, asserted by `a_daemon_with_no_user_action_key_refuses_every_raise`. **Closed:** the dev path, by *supplying a key* rather than by opening a hatch — `just debug-server` pipes `sha256('biorouter-dev-user-action')` on stdin and `getUserActionKey` returns the same published constant under `BIOROUTER_EXTERNAL_BACKEND`, mirroring `getServerSecret`'s `'test'` branch (`main.ts:906-908`). That key is deliberately public: a daemon's user-proof is whatever the person who launched it chose, and on that path the launcher *is* the developer. It weakens nothing shipped, where the key is 32 random bytes per launch that never leave the Electron main process. `just run-server` is left keyless on purpose, so the fail-closed path stays reachable by hand, and the gate asserts it stays that way. **Still open, and needing an operator ruling rather than an implementation: the headless deployment.** A server install has no GUI, so there is no process that can mint a key on the user's behalf and no picker for the proof to come from; deciding what "the user" means there is the same shape as [Open question 8](#open-questions) and is not something Task 18A can invent. Until it is ruled on, a headless daemon cannot bind a private model over HTTP at all. |
 | **24** | **Does DR-16 extend to the config routes that set the *default* provider?** The ruling names two routes. Two more reach the same outcome one step later and are not covered: `POST /config/set_provider` (`config_management.rs:876-889`, registered `:923`) writes `BIOROUTER_PROVIDER`/`BIOROUTER_MODEL`, and `POST /config/upsert` (`:183-193`) writes **any** key including `BIOROUTER_PROVIDER`, both with nothing but the secret. `restore_provider_from_session` (`agent.rs:5682-5688`) falls back to `config.get_biorouter_provider()` for a row with no `provider_name`, so a session started after such a write comes up private-capability with no `/agent/update_provider` call at all. ⚠ **DR-14 does not cover this.** It makes `<config>/config.yaml` deny entry #5 on the *filesystem* channel precisely because *"a master switch a public model can edit is not a switch"* — and `POST /config/upsert` is the **HTTP** channel to the same file, which no layer of DR-14 sees. By DR-14's own argument, a default provider a public model can edit is a tier raise. It is a raise of every *future* session rather than of the caller's own, which is why it is a scope question and not a bug report. | **Answered by [Task 18A](#task-18a-the-two-http-channels-that-raise-a-sessions-own-tier-and-the-user-proof-neither-of-them-has) Step 3(d).** **Ruled:** the `X-User-Action` requirement extends to both handlers, for a **named key set only** — a blanket rule on `/config/upsert` would make every programmatic config write a user act, and a rule that fires constantly is one people route around. The set is `CAPABILITY_CONFIG_KEYS` in the new `crates/biorouter/src/privacy/config_keys.rs`, and it is five: `BIOROUTER_PROVIDER` (the default itself, read through `config_value!` at `config/base.rs:1147`); `BIOROUTER_LEAD_MODEL` (its mere presence diverts `create()` to the lead/worker path at `factory.rs:142-146`, **before** the registry lookup, changing the tier of every provider name rather than of one); `BIOROUTER_LEAD_PROVIDER` (names the lead half, one of the two tiers `least()` takes); and `OLLAMA_HOST` + `LLAMACPP_EXTERNAL_HOST` (Task 5's third test makes a self-hosted provider Private only while its base URL is loopback, so these two keys *are* that boundary). `set_config_provider` is guarded unconditionally, since it writes `BIOROUTER_PROVIDER` by construction; `upsert_config` is guarded by `is_capability_key(&query.key)`. `/config/remove` is deliberately unguarded — deleting the key cannot raise anything, because `restore_provider_from_session` then fails with *"Could not configure agent: missing provider"* (`agent.rs:5686`). **How a future capability-determining key avoids being forgotten:** not by a rule someone must remember, but by `every_config_key_the_tier_resolver_reads_is_classified`, which scans the five files Task 5 touches to define `tier()` for `get_param("KEY")` literals — 22 today — and fails unless each appears in **exactly one** of `CAPABILITY_CONFIG_KEYS` or `NOT_CAPABILITY_CONFIG_KEYS`, the latter carrying a one-line reason per key. Adding a config read to any of those files fails the test until someone classifies it. A companion test forbids computed keys (`get_param(&format!(..))`), which the scan could not see; measured, there are none today. Related: Task 30's `/config/upsert` confirmation phrase, which is a UX guard and not an authorization boundary, and which Task 18A's key now can promote to one. |
 | **25** | **Does DR-16 reach the app runtime, which binds a provider the model itself authored?** Measured while writing Task 18A, and not covered by it. `configure_main_provider` (`routes/apps.rs:809`, called `:1259`) and `configure_worker_provider` (`:1480`, called `:1553`) both read `AgentConfig.model` — a `{provider, model}` pair — out of the app's stored manifest (`agent_drafter/store.rs:76-79`) and bind it with `agent.update_provider` **in process**, at `:820` and `:1492`, never through `POST /agent/update_provider`. That manifest is agent-authored: `agent_drafter__declare_profiles` (`agent_drafter/mod.rs:2497-2528`) takes a per-profile `model` straight from `ProfileParam` (`:699-712`) — tool arguments the model writes — and `agent_drafter` is **Public** by design. So a public model can name `llamacpp` in a profile and the app runtime will bind it, with Task 18A's guard nowhere on that path. **What is NOT claimed:** a worker profile gets its own session (`worker_session_key` → `app:{id}:{cid}:{profile}`, `:1450-1452`), so that is a session *created* at a tier, which is the same shape as any new session and not a raise. The sharp case is the app's **main** session, which is long-lived: a manifest edit followed by a reconnect re-runs `configure_main_provider` against a session that already exists. | Nothing in this plan. **The question is scope, not mechanism:** whether an app session's capability is fixed for its lifetime or re-derived per connection is [Task 22](#task-22-session-copy--three-hand-rolled-builders-become-one-derived-session-helper)'s and [Task 23](#task-23-spawn--reorder-stamp-filter-and-the-spawn-matrix)' to answer, and the answer decides whether this is a raise at all. Extending Task 18A here is not mechanical the way open question 24 was: these are in-process calls with no HTTP request to carry a header, so the proof would have to be a manifest-level grant rather than a request-level one — the *scoped permission* shape DR-16 names as the right answer if the local-model handoff turns out to be a routine agent step. |
 

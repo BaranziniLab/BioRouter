@@ -2,10 +2,11 @@
 
 > **What this is.** The design for a privacy-tier system that keeps conversations touched by
 > private models or private data sources from ever reaching a model hosted outside the user's
-> institution. It classifies models, sessions and MCP extensions, enforces the boundary at
-> five choke points in the agent loop, and puts BioRouter's own private data out of reach of a
-> public session's tools with a two-layer read-deny (§9.5).
-> **Status:** Proposed — needs operator rulings on §17 before implementation.
+> institution. It classifies models, sessions, MCP extensions and knowledge bases, and enforces the
+> boundary at five choke points in the agent loop.
+> **Status:** Proposed — **narrowed by operator ruling on 2026-07-30 ([DR-17](privacy-tiers-execution-plan.md#scope-ruling--dr-17-narrows-this-plan-to-the-session-store)); read §1 before
+> anything else.** The general filesystem read-deny of §9.5 is **descoped for v1** and this document
+> no longer claims it. §17 still needs rulings.
 > **Audience:** developers working on the agent loop, `biorouter-server`, the session store, and
 > the desktop GUI.
 
@@ -29,7 +30,16 @@
 
 ## 1. Summary
 
-Two independent lattices, one column, one predicate, five gates **and one two-layer read-deny**.
+> ⚠ **Scope ruling, 2026-07-30 ([DR-17](privacy-tiers-execution-plan.md#scope-ruling--dr-17-narrows-this-plan-to-the-session-store) and [DR-18](privacy-tiers-execution-plan.md#dr-18--the-knowledge-base-tier-is-user-controllable-and-a-private-session-creates-a-private-base)).** This section was rewritten to match what
+> is actually being built. **The general filesystem read-deny of §9.5 is descoped for v1.** What is in
+> scope: session logs and histories locked against a public-capability model; a public model that can
+> neither raise its own tier nor reach the private-only extensions; knowledge bases as first-class
+> tiered objects with a user-controlled tier; and a **disclosure** telling users what a non-private
+> model can reach. §9.5, §16(8) and §16(9) still describe the wider control and are marked in place —
+> they are retained as the specification a revival would start from, not as work.
+
+Two independent lattices, one column, one predicate, five gates — **and, deliberately, no general
+filesystem barrier**.
 
 - **Capability** — what a session may *do* — is the **least** privileged model currently bound to
   it. A mixed lead/worker configuration therefore has public reach, because its transcript already
@@ -40,15 +50,38 @@ Two independent lattices, one column, one predicate, five gates **and one two-la
 A public model must never reach a private session — not once, not read-only, not indirectly. The
 converse is unrestricted: a private model may read anything.
 
-The five gates sit on *tool calls*, which is not where the boundary ends. A public-capability
-session also holds tools that run arbitrary commands and read arbitrary paths, and the private
-material is ordinary files on disk. So a sixth control, **on by default**, puts four directories and
-one file out of reach of those tools for the duration of a public-capability session (§9.5). It is
-**two layers**, because BioRouter reads files two different ways: an in-process barrier at the one
-function every tool call passes through — the primary defence, needing no kernel support — and an OS
-sandbox behind it for the five tools that hand the work to a child process. One **master toggle**
-turns the whole feature — gates, ratchet and read-deny — off for a user who does not want it
-(§10.6).
+The five gates sit on *tool calls*, and **that is where this design's guarantee ends.** A
+public-capability session also holds tools that run arbitrary commands and read arbitrary paths, and
+the private material is ordinary files on disk. §9.5 specifies a sixth control that would close that
+channel — a two-layer read-deny over four directories and one file. **It is descoped for v1 by
+operator ruling, and this design does not claim it.**
+
+**So state the boundary plainly, because a reader must not infer a stronger one.** A public model
+with shell access **can** still read a private session's derived artifacts, and any file a private
+session wrote outside BioRouter's own session store. What the gates stop is narrower and is worth
+stating positively:
+
+- **The agent-mediated path.** A public model cannot ask BioRouter for another session's content —
+  not through `chatrecall` in either mode, not through cross-session conversation ingest, not through
+  the BR-71 workspace tools, not through a private knowledge base.
+- **The transcript path.** A private session's history is never sent to a public model on a turn, on a
+  summary, on an auto-name, or through a copy, diverge or import.
+- **The tier-escalation path.** A public session cannot acquire private capability, cannot attach a
+  private extension, and cannot see or call `ucsfomopagent` or `cdwagent` — the *"public models cannot
+  spin up private models to help them do their work"* requirement.
+
+**Knowledge bases are first-class, not incidental files.** A base carries a tier, takes it at creation
+from the model that created it, ratchets on ingest, and a public-capability session may neither read
+nor write a private one. The **user** — never a model — moves a base between private and public
+([DR-18](privacy-tiers-execution-plan.md#dr-18--the-knowledge-base-tier-is-user-controllable-and-a-private-session-creates-a-private-base)).
+
+Because the barrier is narrower than the risk, **the risk is disclosed**: a model that is not
+HIPAA-compliant, not hosted on-premise and not local can reach what is on the machine, and the
+product says so where a user reads it. That disclosure is a shipped requirement (R15), not a caveat —
+it is what makes accepting the rest a considered tradeoff rather than an omission.
+
+One **master toggle** turns the enforcement half — gates and ratchet — off for a user who does not
+want it (§10.6). It does not turn off the disclosure.
 
 The system is not expressible with what exists today. `provider_class` in
 `crates/biorouter-server/src/routes/apps.rs:2089` is the only thing in the tree that resembles it,
@@ -126,7 +159,7 @@ Each verified by reading the code, each fixed as a by-product of this design:
 | R4 | A private session may spawn public children; a public session may never gain private reach. |
 | R5 | Children inherit the parent's model and lead/worker mode unless the user says otherwise. |
 | R6 | Lineage decides write access: sessions the caller spawned get full control, everything else is read-only. |
-| R7 | A global opt-out exists, off by default. It is a **master** switch: with it off there is no gate, no ratchet and no read-deny anywhere (§10.6). |
+| R7 | A global opt-out exists, off by default. It is a **master** switch: with it off there is no gate and no ratchet anywhere (§10.6). ⚠ It does **not** switch off R15's disclosure — with enforcement off the exposure is larger, not smaller. |
 | R8 | A public model must never reach a private session. |
 | R9 | Only the user can deprivatise a session, from history settings, with a warning. Nothing automatic, nothing agent-invocable. |
 | R10 | Badges are visible everywhere — models, sessions, MCP servers. |
@@ -134,6 +167,14 @@ Each verified by reading the code, each fixed as a by-product of this design:
 | R12 | Skills carry no classification. |
 | R13 | `chatrecall` obeys the barrier. Side channels (existence, counts, timing) are out of scope; only content must not cross. |
 | R14 | The registry is trusted (only the Baranzini Lab can publish) and the classification ships on the landing site and in `registry.json`. |
+| **R15** | **Users are told what a non-private model can reach.** A model that is not HIPAA-compliant, not hosted on-premise and not local can read what is on the machine; the product says so, in the GUI, in the CLI and in the docs, from one shared copy. Added by [DR-17](privacy-tiers-execution-plan.md#scope-ruling--dr-17-narrows-this-plan-to-the-session-store), which is also what makes its accepted risks acceptable. |
+| **R16** | **A knowledge base is a first-class tiered object, and the *user* owns its tier.** It takes a tier at creation from the model that created it, ratchets on ingest, is unreadable and unwritable to a public-capability session when private — and the user, never a model, may publicize or privatize it. Added by [DR-18](privacy-tiers-execution-plan.md#dr-18--the-knowledge-base-tier-is-user-controllable-and-a-private-session-creates-a-private-base). |
+
+⚠ **R8 is unchanged in words and narrowed in reach.** *"A public model must never reach a private
+session"* remains the invariant every gate is written against. What [DR-17](privacy-tiers-execution-plan.md#scope-ruling--dr-17-narrows-this-plan-to-the-session-store) descoped is the
+**filesystem** channel to that material, not the rule: a public model may not be *handed* a private
+session by BioRouter, and it may still read files on the machine it is running on. §1 states the
+boundary; R15 is why that is disclosed rather than implied.
 
 ---
 
@@ -304,6 +345,27 @@ through user-writable `config.yaml`, which would make classification locally for
 contradict R11(i); a new field there costs seven match arms plus an OpenAPI cycle; and `pool_key`
 carries no session id, so one `ucsfomopagent` child process is shared across sessions — the badge
 cannot live on the process.
+
+### 5.4 Knowledge bases
+
+Added by [DR-18](privacy-tiers-execution-plan.md#dr-18--the-knowledge-base-tier-is-user-controllable-and-a-private-session-creates-a-private-base) (R16). A base is not an incidental file — it is *"a piece of biorouter
+component"* — so it carries a tier of its own, in a machine-local `<knowledge-root>/.kb-tiers` store
+rather than in the session database (`biorouter-mcp` cannot depend on `biorouter`, so it cannot name
+`ProviderTier`; the store carries a boolean and the crossing happens one layer up).
+
+Three rules, and the third is the one this design did not have before:
+
+1. **At creation.** A base a **private-capability model** creates is private from birth, before any
+   ingest — the tool handler raises it immediately after `create_base` returns. A base a **user**
+   creates from the Knowledge view or the CLI starts public: the user is not a model, and inheriting a
+   tier from whatever chat happens to be open is the same mis-click hazard §6.1 refuses for sessions.
+2. **On ingest.** The base takes the tier of the most sensitive session that has ingested into it, at
+   all five choke points, and a public-capability session may neither read nor write a private base.
+3. **The user may move it, in both directions, and only the user.** Publicizing is graded — a typed
+   confirmation naming how many pages it releases, and the statement that it cannot be undone for
+   content already read. Privatizing is one click, because nothing is disclosed by it. The control
+   uses the **same** proof-of-user as §12, not a second mechanism, and there is no MCP tool that sets
+   a tier. [Task 29A](privacy-tiers-execution-plan.md#task-29a-knowledge-base-publicize--privatize--user-only-graded-audited).
 
 ---
 
@@ -653,6 +715,19 @@ therefore `code_execution`'s importable-module catalogue for free.
 
 ### 9.2 Why no path escapes
 
+⚠ **Read this table as "every path *through BioRouter*", not "every path".** [DR-17](privacy-tiers-execution-plan.md#scope-ruling--dr-17-narrows-this-plan-to-the-session-store) descoped
+the filesystem barrier, so three escapes are **not** covered and are named here rather than left to be
+discovered:
+
+| Not covered (accepted, and disclosed under R15) | Why |
+|---|---|
+| `cat ~/.local/share/biorouter/sessions/sessions.db` from `developer__shell` | There is no read-deny in v1. The session store is an ordinary file to a tool that runs an arbitrary command. |
+| Reading any file a private session wrote outside BioRouter's own stores | Working files, outputs, exports and artifacts are not tracked and carry no tier. |
+| A local caller that holds the daemon secret calling `GET /sessions/{id}/export` | The secret is recoverable from the daemon's own environment; `check_token` has no principal. §17 carries the fix. |
+
+**What the table below does cover** is the agent-mediated, transcript and tier-escalation paths — the
+three §1 names — and each row is exact:
+
 | Would-be escape | Covered by |
 |---|---|
 | Swap the model from GUI / CLI / HTTP / ACP / scheduler / app page / BR-71 tool | Gate A (the 11-row table above) |
@@ -866,8 +941,24 @@ holds).
 
 ### 9.5 The sixth control — a private-data read-deny for public capability, on by default
 
-**Ruling.** When a session's capability is **public**, its tools may not reach BioRouter's own
-private data. Private-capability sessions are unaffected: this is not a general jail and must not
+> ⛔ **DESCOPED for v1 by operator ruling ([DR-17](privacy-tiers-execution-plan.md#scope-ruling--dr-17-narrows-this-plan-to-the-session-store)), 2026-07-30 — retained, not deleted.**
+> *"We don't have to enforce and encrypt every single step along the way. for now."* Everything in
+> §9.5 below specifies the **filesystem** channel and is not being built: Layer A (the argument
+> barrier), Layer B (the OS sandbox), the four roots and the `config.yaml` entry. The execution plan's
+> Tasks 14A–14F carry the same banner and keep the measured platform analysis, which is the expensive
+> part and stays true.
+>
+> **Two things in this section survive the descoping and must not be read as deferred.** (1) The
+> **tool channel** for knowledge bases — §9.5.1's third column, "the roots' doors" — is exactly the
+> CP1–CP4 barrier the KB gates implement, and [DR-18](privacy-tiers-execution-plan.md#dr-18--the-knowledge-base-tier-is-user-controllable-and-a-private-session-creates-a-private-base) makes it a requirement (R16) rather than a
+> defence-in-depth extra. (2) The structural argument for *why* enumerating file readers cannot work
+> is the most durable paragraph here, and any future filesystem control must start from it.
+>
+> **What is deliberately NOT true in v1:** that a public-capability session's tools cannot reach
+> BioRouter's private data on disk. They can. See §1 and R15.
+
+**Ruling (descoped — see the banner above).** When a session's capability is **public**, its tools may
+not reach BioRouter's own private data. Private-capability sessions are unaffected: this is not a general jail and must not
 become one. Everything outside the named entries stays readable and writable, so ordinary work is
 untouched.
 
@@ -1403,6 +1494,13 @@ reachable from any `workspace_*` handler or MCP server, and explicitly not added
 exemption list. **Per §9.3 A1, secret-key auth alone is not sufficient** — bind it to a one-shot
 token minted by the renderer over Electron IPC.
 
+**The same mechanism, for knowledge bases.** [DR-18](privacy-tiers-execution-plan.md#dr-18--the-knowledge-base-tier-is-user-controllable-and-a-private-session-creates-a-private-base) adds a second user-only tier change —
+publicize / privatize a base (§5.4) — and it reuses this section's proof-of-user, this section's
+dialog primitive and this section's "exactly one lowering writer in the tree" rule. **Two mechanisms
+for one idea is how the two confirmations diverge**, so a `POST /knowledge/bases/{id}/tier` that
+accepts the secret key alone, or a `kb_set_tier` MCP tool, is the wrong implementation of §5.4 and
+not a shortcut. [Task 29A](privacy-tiers-execution-plan.md#task-29a-knowledge-base-publicize--privatize--user-only-graded-audited).
+
 ### 12.2 Why no agent can invoke it
 
 ```rust
@@ -1672,6 +1770,8 @@ Mater and Roche Limit in both modes with no generator run and cannot fail `check
 | Extensions settings | Badge + provenance line, **and a third state computed against the focused session** (§14.5) | extensions settings |
 | BAAM Browse (in-app) | Badge per entry, Private/Public facet, and the `live: false` staleness line | `components/baam/` |
 | `.brxt` install modal | The resulting badge, above the Install button | `BrxtInstallModal.tsx` |
+| **Knowledge view + KB palette** | Base tier chip, and the publicize / privatize control (§5.4) | `components/knowledge/` |
+| **The non-private-model disclosure (R15)** | Once, blocking, on the first public bind in an install; then permanently as the Commercial section's line, the model chip's tooltip, and the Settings → Privacy statement | [Task 30A](privacy-tiers-execution-plan.md#task-30a-the-non-private-model-disclosure) |
 | `workspace_list` rows and the GUI workspace panel | Badge per row | BR-71 Tasks 12 / 22-27 |
 | Landing `baam.html`, `docs.html` | `.tag.private` on the navy ramp; Privacy column | `landing/` |
 
@@ -1990,17 +2090,28 @@ Where this annoys someone who has done nothing wrong:
 6. **Declassification is one chat at a time** for `mcp:`-reason sessions.
 7. **A shared workflow pinning a public provider stops working in private sessions** with nothing
    explaining why, unless §14.7(d) ships.
-8. **A public chat cannot view `config.yaml` through a tool**, so "why isn't my extension loading"
-   debugging moves to a private chat or to Settings. This is the cost of the §9.5.2 decision to deny
-   reads as well as writes on that one file, and it is paid to keep the master switch out of a
-   public model's reach.
-9. **On Windows and on Linux without bubblewrap, a public chat loses the five tools that spawn a
-   child process** — but nothing else. This cost used to be "every file tool", and the two-layer
-   structure in §9.5.1 is what shrank it.
+8. ~~**A public chat cannot view `config.yaml` through a tool.**~~ **Not paid — [DR-17](privacy-tiers-execution-plan.md#scope-ruling--dr-17-narrows-this-plan-to-the-session-store) descopes
+   §9.5.** A public chat reads `config.yaml` like any other file, so "why isn't my extension loading"
+   debugging stays where it is. The corollary is the one §9.5.2 warned about and this design now
+   accepts: **a master switch a public model can read and edit is not a switch**, so the toggle's
+   integrity rests on nothing but the file's own permissions.
+9. ~~**On Windows and on Linux without bubblewrap, a public chat loses the five tools that spawn a
+   child process.**~~ **Not paid — [DR-17](privacy-tiers-execution-plan.md#scope-ruling--dr-17-narrows-this-plan-to-the-session-store) descopes §9.5.** `developer__shell` and its four
+   siblings keep working for a public-capability chat on every platform. This was the single largest
+   usability price in the design.
+10. **The barrier is narrower than a reader of an earlier draft would expect**, and that is now the
+   honest cost. A public model with a shell can read the session database and anything a private chat
+   left on disk. R15's disclosure is the whole of the mitigation, which is why it is a requirement
+   with a task and a gate rather than a paragraph in §14.
+11. **A knowledge base a private chat touched is unreadable from public chats until the user
+   publicizes it** — one click, but a click they must discover. [DR-18](privacy-tiers-execution-plan.md#dr-18--the-knowledge-base-tier-is-user-controllable-and-a-private-session-creates-a-private-base) adds the control; the
+   confirmation names how many pages it releases, and releasing cannot be undone for content already
+   read.
 
 If these are not budgeted, the honest prediction is that the first user with 900 private chats and
 a commercial subscription tries to turn the feature off — and discovers the R7 opt-out covers only
-Gate C, i.e. not the part annoying them. They file a bug instead.
+Gate C, i.e. not the part annoying them. They file a bug instead. (R7 is a master switch now; the
+prediction stands for whatever the next narrowest reading of it turns out to be.)
 
 ---
 
