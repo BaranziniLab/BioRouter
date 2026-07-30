@@ -2526,6 +2526,14 @@ packages again, not six, and the paragraph below that says otherwise is supersed
 
 Both measure **0** today, for the same reason every other deferred row does: nothing creates them yet.
 
+⚠ **And one row is missing that is not DR-17's doing.** Task 18A's Step 4 runs
+`cargo test -p biorouter-server --lib -- auth::`, and `(biorouter-server, auth::)` appears in
+**neither** table — so Task 4b's audit reports it MISSING and exits non-zero, which is a real finding
+about a real filter rather than a consequence of this ruling. It is not resolved here because the
+count must be **measured** against a `cargo test -- --list`, not reasoned: `auth.rs` has a
+pre-existing test module, so the row belongs in the *resolved* table with its number, and a guessed
+number is the defect this whole section exists to catch.
+
 **What the measurement changed.** Five things, and none of them was catchable by reading:
 
 0. **A filter that names a module the tree does not have.** Task 14C's Step 4 said
