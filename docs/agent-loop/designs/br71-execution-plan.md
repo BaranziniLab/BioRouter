@@ -24936,6 +24936,34 @@ the tree — fix it there, once, rather than in two places.
 - [ ] `cargo test -p biorouter-server --lib routes::apps` and
   `node scripts/agent-drafter/ui-control-harness.mjs` — the consult unification (Task 41)
   is cross-subsystem and this is its regression gate.
+- [ ] ⚠ **The standing CLI-parity gate (Task 42b), which is the only check in this list
+  that fails for something nobody wrote.** Every other gate here verifies work that was
+  done; this one fails when work was *not* done — a workspace capability that reached the
+  GUI or the daemon without a terminal counterpart.
+
+  ```bash
+  cargo test -p biorouter-cli --lib -- commands::workspace_parity commands::session_grouping commands::session_watch
+  ```
+  Expected: green, with a **non-zero and stated** count — 5 (Task 42b) + 3 (Task 38b) + 8
+  (Task 20's 3 plus Task 38c's 5) = **16**. Re-measure rather than trusting the sum: a
+  "pre + N" assertion against a stale figure reads a shortfall as a pass, which is the
+  failure this campaign has hit more than once. Note the `--` (same reason as the four
+  preservation families above).
+
+  Three distinct failure shapes, and what each means:
+  - **a compile error in `cli_counterpart` (`E0004`)** — a `WorkspaceCapability` variant
+    was added with no CLI row. This is the guarantee working: fix the table, not the
+    match;
+  - **`the_table_matches_the_workspace_tool_surface_exactly` / `…the_tagged_daemon_route_surface_exactly`
+    red** — a capability entered `WorkspaceClient::get_tools()` or gained
+    `tag = "workspace"` and nobody gave the terminal a way to reach it. That is the
+    operator requirement being violated, not a stale test;
+  - **`every_counterpart_exists_in_the_real_cli` red** — a row *claims* a subcommand or
+    flag the binary does not have. A rename in `cli.rs` lands here.
+- [ ] The end-to-end CLI run, **with no desktop app running**, per Task 40's CLI half:
+  `sessions list --subagents` → `sessions attach <child>` → steer → `sessions cancel`.
+  Exit 0 on each, and a `409` on the steer is the Task 33 control-plane regression, not a
+  CLI bug.
 - [ ] Squash-review the branch diff for the permission-relevant files (Tasks 6, 8, 10,
   14-16, 18, 19, 19b, 23, 33, 35-36) and flag them for **human security review** in the
   PR body, per `.github/copilot-instructions.md`. Call out four by name: **Task 8** (the
