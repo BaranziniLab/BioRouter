@@ -1974,7 +1974,7 @@ the gate in Step 5 asserts that partition. **58** `(package, filter)` pairs, all
 | `biorouter-server` | `routes::config_management` | 3 |
 | `biorouter-server` | `routes::session` | **20** ✓ confirms the hand-measured figure |
 
-**Deferred — 17 pairs, each with the task that creates it. A filter in neither list is the defect:**
+**Deferred — 18 pairs, each with the task that creates it. A filter in neither list is the defect:**
 
 | Package | Filter | Created by | Pre-count today |
 |---|---|---|---|
@@ -1989,6 +1989,7 @@ the gate in Step 5 asserts that partition. **58** `(package, filter)` pairs, all
 | `biorouter-mcp` | `private_roots` | Task 14B | **0** ✓ — `crates/biorouter-mcp/src/private_roots.rs`, the resolver |
 | `biorouter` | `privacy::private_roots` | Task 14B | **0** ✓ — the `biorouter` re-export plus its tests |
 | `biorouter` | `privacy::path_policy` | Task 14B | **0** ✓ — Layer A's verdict |
+| `biorouter-mcp` | `agent_drafter::tier` | Task 14E | **0** ✓ — measured by absence: `crates/biorouter-mcp/src/agent_drafter/tier.rs` does not exist and `agent_drafter/mod.rs` declares no `mod tier` (`grep -c '^mod tier\|^pub mod tier'` → 0), so the module path cannot resolve. Its sibling `agent_drafter::store` is **not** deferred — `store.rs` has a `#[cfg(test)]` block today and that filter resolves |
 | `biorouter-server` | `call_tool_dispatches_through_the_barrier` | Task 14C | **0**, and ⚠ **this row is the live BR-71 defect this task exists to catch, found by running the command.** Task 14C spelled it `routes::agent::tests::call_tool_dispatches_through_the_barrier`, and `routes/agent.rs` has **no module named `tests`** — measured: its two `#[cfg(test)]` blocks are `working_dir_lock_tests` (4 tests) and `knowledge_selection_tests` (4), and `grep -c 'routes::agent::tests::'` over the real listing returns **0**. As written it could never resolve, no matter what Task 14C implemented, and would print `0 passed` with exit 0 for ever. Corrected in Task 14C Step 4 to the **bare test name**, which libtest matches by substring wherever the test lands |
 | `biorouter` | `session::chat_history_search` | Task 17 | **0** ✓ confirms "no `#[cfg(test)]` at all" |
 | `biorouter` | `privacy::alt_provider` | Task 19 | **0** ✓ |
@@ -2060,7 +2061,7 @@ want() {  # want <label> <expected> <actual>
 # and exits 0 — reintroduced by the gate meant to catch it. The `PKG` column is
 # what closes it.
 #
-# The 17 deferred rows from Step 3's second table, verbatim: package, filter,
+# The 18 deferred rows from Step 3's second table, verbatim: package, filter,
 # owning task, and the EVIDENCE grep that proves this plan really creates it.
 # Every one measured 0 today.
 cat > /tmp/56-filters/deferred.txt <<'ROWS'
@@ -2075,6 +2076,7 @@ biorouter|privacy::refusal|12|crates/biorouter/src/privacy/refusal.rs
 biorouter-mcp|private_roots|14B|crates/biorouter-mcp/src/private_roots.rs
 biorouter|privacy::private_roots|14B|crates/biorouter/src/privacy/private_roots.rs
 biorouter|privacy::path_policy|14B|crates/biorouter/src/privacy/path_policy.rs
+biorouter-mcp|agent_drafter::tier|14E|crates/biorouter-mcp/src/agent_drafter/tier.rs
 biorouter-server|call_tool_dispatches_through_the_barrier|14C|fn call_tool_dispatches_through_the_barrier
 biorouter|session::chat_history_search|17|crates/biorouter/src/session/chat_history_search.rs
 biorouter|privacy::alt_provider|19|crates/biorouter/src/privacy/alt_provider.rs
@@ -2082,7 +2084,7 @@ biorouter|privacy::visibility|21|crates/biorouter/src/privacy/visibility.rs
 biorouter|every_copy_path_carries_the_tier_and_the_provider|22|fn every_copy_path_carries_the_tier_and_the_provider
 biorouter|privacy::declassify|29|crates/biorouter/src/privacy/declassify.rs
 ROWS
-want "deferred rows" 17 "$(wc -l < /tmp/56-filters/deferred.txt | tr -d ' ')"
+want "deferred rows" 18 "$(wc -l < /tmp/56-filters/deferred.txt | tr -d ' ')"
 # ⚠ HARVEST FROM FENCED CODE BLOCKS ONLY, WITH `#` COMMENTS STRIPPED. Two
 # measured reasons, both of which made this gate fail on itself:
 #   * the sentence "This gate rejects: a `cargo test -p biorouter-mcp --lib
@@ -2169,7 +2171,8 @@ while IFS='|' read -r pkg filter task evidence; do
 done < /tmp/56-filters/deferred.txt
 want "UNBACKED rows" 0 "$unbacked"
 # (c) Re-runnable, and the phase gates re-run it: after Task 20 the DEFERRED set
-#     must have lost knowledge::tier, privacy::extensions and privacy::refusal;
+#     must have lost knowledge::tier, agent_drafter::tier, privacy::extensions
+#     and privacy::refusal;
 #     after Task 40 it must be EMPTY. Those runs edit the heredoc above — which
 #     assertion (2) then re-checks — rather than relaxing anything here.
 #
