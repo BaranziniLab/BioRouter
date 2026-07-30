@@ -96,14 +96,59 @@ pub fn default_global_store() -> PathBuf {
 
 type ApiError = (StatusCode, String);
 
-/// The store directory for a project, matching what the memory extension uses
-/// for `is_global=false`.
-fn local_store_for(_working_dir: &str) -> PathBuf {
-    PathBuf::new() // STUB
+/// The store directory for a project — the same `<project>/.biorouter/memory`
+/// the memory extension writes to for `is_global=false`.
+fn local_store_for(working_dir: &str) -> PathBuf {
+    PathBuf::from(working_dir).join(".biorouter").join("memory")
 }
 
-fn server_for(_global: &PathBuf, _working_dir: Option<&str>) -> Result<MemoryServer, ApiError> {
-    Err((StatusCode::NOT_IMPLEMENTED, "stub".into())) // STUB
+/// A management server over the machine-wide store and, when the caller named a
+/// project, that project's store.
+///
+/// When no project is named the local store is pointed at an unnameable path
+/// rather than at the daemon's working directory: every caller that could act
+/// on it has already been refused by [`require_project`], and a directory that
+/// cannot exist keeps a future caller from silently operating on the wrong
+/// project's memories.
+fn server_for(global: &PathBuf, working_dir: Option<&str>) -> MemoryServer {
+    let local = working_dir
+        .map(local_store_for)
+        .unwrap_or_else(|| PathBuf::from("\0no-project"));
+    MemoryServer::with_stores(global.clone(), local)
+}
+
+/// A local operation must say which project. Guessing would list — or delete —
+/// memories belonging to whatever directory the daemon happens to be running in.
+fn require_project(scope: MemoryScope, working_dir: Option<&str>) -> Result<(), ApiError> {
+    if scope == MemoryScope::Local && working_dir.is_none_or(str::is_empty) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "A local memory operation needs the project it belongs to: send working_dir. \
+             Local memories live in <project>/.biorouter/memory, and the daemon serves every \
+             window, so there is no single directory it could mean."
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Map a store error onto a status. A refused category is the caller's mistake
+/// — `400`, the same reading `MemoryServer::tool_error` gives the model —
+/// rather than a `500` that reads as "the daemon broke, retry".
+fn store_error(e: &std::io::Error) -> ApiError {
+    let status = if e.kind() == std::io::ErrorKind::InvalidInput {
+        StatusCode::BAD_REQUEST
+    } else {
+        StatusCode::INTERNAL_SERVER_ERROR
+    };
+    (status, e.to_string())
+}
+
+/// Normalise an omitted-or-blank `working_dir` to `None`, so an empty string
+/// from a form or a window with no project takes the "no project" path instead
+/// of resolving to `/.biorouter/memory`.
+fn project_dir(working_dir: Option<&String>) -> Option<&str> {
+    working_dir.map(String::as_str).filter(|d| !d.is_empty())
 }
 
 #[utoipa::path(
@@ -116,11 +161,28 @@ fn server_for(_global: &PathBuf, _working_dir: Option<&str>) -> Result<MemorySer
     ),
 )]
 async fn memory_inventory(
-    State(_global): State<Arc<PathBuf>>,
-    Query(_query): Query<MemoryInventoryQuery>,
+    State(global): State<Arc<PathBuf>>,
+    Query(query): Query<MemoryInventoryQuery>,
 ) -> Result<Json<MemoryInventoryResponse>, ApiError> {
-    // STUB
-    Err((StatusCode::NOT_IMPLEMENTED, "stub".into()))
+    let working_dir = project_dir(query.working_dir.as_ref());
+    let server = server_for(&global, working_dir);
+
+    let global_inventory = server
+        .inventory(MemoryScope::Global)
+        .map_err(|e| store_error(&e))?;
+    let local_inventory = match working_dir {
+        Some(_) => Some(
+            server
+                .inventory(MemoryScope::Local)
+                .map_err(|e| store_error(&e))?,
+        ),
+        None => None,
+    };
+
+    Ok(Json(MemoryInventoryResponse {
+        global: global_inventory,
+        local: local_inventory,
+    }))
 }
 
 #[utoipa::path(
@@ -135,11 +197,42 @@ async fn memory_inventory(
     ),
 )]
 async fn memory_delete_entry(
-    State(_global): State<Arc<PathBuf>>,
-    Json(_req): Json<MemoryDeleteEntryRequest>,
+    State(global): State<Arc<PathBuf>>,
+    Json(req): Json<MemoryDeleteEntryRequest>,
 ) -> Result<Json<MemoryDeleteEntryResponse>, ApiError> {
-    // STUB
-    Err((StatusCode::NOT_IMPLEMENTED, "stub".into()))
+    let working_dir = project_dir(req.working_dir.as_ref());
+    require_project(req.scope, working_dir)?;
+    let server = server_for(&global, working_dir);
+
+    match server
+        .delete_entry(&req.category, req.scope, req.index, &req.content)
+        .map_err(|e| store_error(&e))?
+    {
+        EntryDeletion::Deleted {
+            remaining,
+            category_removed,
+        } => Ok(Json(MemoryDeleteEntryResponse {
+            remaining,
+            category_removed,
+        })),
+        EntryDeletion::OutOfRange => Err((
+            StatusCode::NOT_FOUND,
+            format!(
+                "There is no memory at position {} of category \"{}\". It has already been \
+                 deleted; reload to see what is there now.",
+                req.index, req.category
+            ),
+        )),
+        EntryDeletion::ContentMismatch => Err((
+            StatusCode::CONFLICT,
+            format!(
+                "The memory at position {} of category \"{}\" is not the one that was listed — \
+                 the category changed since then, most likely because a conversation wrote to \
+                 it. Nothing was deleted; reload and try again.",
+                req.index, req.category
+            ),
+        )),
+    }
 }
 
 #[utoipa::path(
@@ -153,11 +246,30 @@ async fn memory_delete_entry(
     ),
 )]
 async fn memory_delete_category(
-    State(_global): State<Arc<PathBuf>>,
-    Json(_req): Json<MemoryDeleteCategoryRequest>,
+    State(global): State<Arc<PathBuf>>,
+    Json(req): Json<MemoryDeleteCategoryRequest>,
 ) -> Result<Json<MemoryDeleteCategoryResponse>, ApiError> {
-    // STUB
-    Err((StatusCode::NOT_IMPLEMENTED, "stub".into()))
+    let working_dir = project_dir(req.working_dir.as_ref());
+    require_project(req.scope, working_dir)?;
+    let server = server_for(&global, working_dir);
+
+    match server
+        .delete_category(&req.category, req.scope)
+        .map_err(|e| store_error(&e))?
+    {
+        Some(removed_entries) => Ok(Json(MemoryDeleteCategoryResponse { removed_entries })),
+        None => Err((
+            StatusCode::NOT_FOUND,
+            format!(
+                "There is no memory category \"{}\" in the {} store.",
+                req.category,
+                match req.scope {
+                    MemoryScope::Global => "global",
+                    MemoryScope::Local => "local",
+                }
+            ),
+        )),
+    }
 }
 
 /// The routes over an explicit global store — the seam the tests use so they
@@ -178,17 +290,35 @@ pub fn routes(_state: Arc<AppState>) -> Router {
     router()
 }
 
-#[allow(dead_code)]
-fn unused(e: EntryDeletion, m: MemoryScope) -> (EntryDeletion, MemoryScope) {
-    (e, m)
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-#[allow(dead_code)]
-fn unused_local(w: &str) -> PathBuf {
-    local_store_for(w)
-}
+    /// The local store the routes manage has to be the one the memory
+    /// extension writes to, or Settings would list a directory nothing uses.
+    #[test]
+    fn the_local_store_is_the_projects_biorouter_memory() {
+        assert_eq!(
+            local_store_for("/Users/someone/work/proj"),
+            PathBuf::from("/Users/someone/work/proj/.biorouter/memory")
+        );
+    }
 
-#[allow(dead_code)]
-fn unused_server(g: &PathBuf, w: Option<&str>) -> Result<MemoryServer, ApiError> {
-    server_for(g, w)
+    /// A blank `working_dir` is "no project", not the filesystem root. Without
+    /// this an empty string would resolve to `/.biorouter/memory`.
+    #[test]
+    fn a_blank_working_dir_is_no_project_at_all() {
+        assert_eq!(project_dir(Some(&String::new())), None);
+        assert_eq!(project_dir(None), None);
+        assert_eq!(project_dir(Some(&"/proj".to_string())), Some("/proj"));
+    }
+
+    #[test]
+    fn only_a_local_operation_needs_a_project() {
+        assert!(require_project(MemoryScope::Global, None).is_ok());
+        assert!(require_project(MemoryScope::Local, Some("/proj")).is_ok());
+        let (status, message) = require_project(MemoryScope::Local, None).unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(message.contains("working_dir"));
+    }
 }
