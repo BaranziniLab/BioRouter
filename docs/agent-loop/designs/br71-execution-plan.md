@@ -1141,7 +1141,7 @@ New files (create):
 ```
 crates/biorouter/src/session_events.rs                     # SessionEventBus: per-session broadcast of SessionBusEvent
 crates/biorouter/src/workspace_services.rs                 # WorkspaceServices trait + OnceLock install/get
-crates/biorouter/src/agents/workspace_extension.rs         # The `workspace` platform extension (6 workspace_* tools in Phase 1, + workspace_open in Phase 2, + the merged `subagent`)
+crates/biorouter/src/agents/workspace_extension.rs         # The `workspace` platform extension (6 workspace_* tools in Phase 1, + workspace_open in Phase 2, + the merged `subagent`); `get_tools()` becomes pub so Task 42b's parity gate can enumerate the real surface
 crates/biorouter/src/agents/workspace_inspector.rs         # WorkspaceMutationInspector: always-confirm hook (Task 10)
 crates/biorouter/src/agents/session_skills.rs              # Session-scoped skill overrides (Task 11)
 crates/biorouter/src/agents/approval_relay.rs              # Approval delegation relay + DelegationPolicy, the one policy point for decisions 30/31 (Task 36b)
@@ -1149,9 +1149,11 @@ crates/biorouter-server/src/workspace/mod.rs               # Module root
 crates/biorouter-server/src/workspace/turn.rs              # THE turn runner: /reply + detached turns both consume it (Tasks 6, 8)
 crates/biorouter-server/src/workspace/bridge.rs            # WorkspaceBridge + per-window registry (UiBridge sibling)
 crates/biorouter-server/src/workspace/services.rs          # ServerWorkspaceServices: WorkspaceServices impl over AppState
-crates/biorouter-server/src/routes/session_events.rs       # GET /sessions/{session_id}/events (SSE observer) + map_bus_event
+crates/biorouter-server/src/routes/session_events.rs       # GET /sessions/{session_id}/events (SSE observer) + map_bus_event; carries tag = "workspace" (Task 42b)
 crates/biorouter-server/src/routes/workspace.rs            # GET /ui/workspace (WS) + auth
-crates/biorouter-cli/src/commands/session_watch.rs         # `biorouter sessions watch|send` (Task 20)
+crates/biorouter-cli/src/commands/session_watch.rs         # `biorouter sessions watch|send` (Task 20); `attach`/`cancel` join it in Task 38c
+crates/biorouter-cli/src/commands/session_grouping.rs      # Parent/child grouping + liveness rendering for `sessions list --subagents` (Task 38b)
+crates/biorouter-cli/src/commands/workspace_parity.rs      # The capability table + the four checks that make CLI parity mechanical (Task 42b)
 ui/desktop/src/components/chatGroups/workspaceCommandRegistry.ts       # Frame→dispatch seam (newTabRegistry sibling)
 ui/desktop/src/components/chatGroups/workspaceCommandRegistry.test.ts
 ui/desktop/src/components/chatGroups/workspaceCommandPlanner.ts        # Pure frame→(actions, effects) planner (Task 26)
@@ -1190,23 +1192,25 @@ crates/biorouter/src/agents/tool_execution.rs              # the one delegation 
 crates/biorouter/src/permission/permission_store.rs        # exact_call_key: the ask identity, lifted out of check_permission/record_permission (Task 36b)
 crates/biorouter/src/agents/skills_extension.rs            # consult the session-scoped skill override (Task 11)
 crates/biorouter/src/agents/reply_parts.rs                 # code-execution retain filter: prefixed `workspace__subagent`, no subagent_status
-crates/biorouter/src/agents/subagent_tool.rs               # SubagentParams gains visible/placement; create_subagent_status_tool deleted; spawn-context + announce
+crates/biorouter/src/agents/subagent_tool.rs               # SubagentParams gains visible/placement; create_subagent_status_tool deleted; spawn-context + announce; subagent_session_label so siblings are distinguishable (Task 38b)
 crates/biorouter/src/agents/subagent_handler.rs            # child registration + turn lease, bus tee, announce, human_intervened
 crates/biorouter/src/agents/subagent_result.rs             # human_intervened field
 crates/biorouter/src/execution/manager.rs                  # AgentManager::register_agent / deregister_agent_if_same + LRU pin sidecar (Task 33)
 crates/biorouter-mcp/src/active_work.rs                    # ActiveWorkKind::DetachedTurn variant (Task 6)
 crates/biorouter-mcp/src/agent_drafter/control.rs          # consult re-expressed over workspace primitives (Task 41)
-crates/biorouter-server/src/state.rs                       # TurnGuard::turn_id() accessor
+crates/biorouter-server/src/state.rs                       # TurnGuard::turn_id() accessor; AppState::active_turn_session_ids (Task 38b)
 crates/biorouter-server/src/lib.rs                         # pub mod workspace
 crates/biorouter-server/src/auth.rs                        # is_unauthenticated_path: /ui/workspace joins the exemption list, as a TESTABLE predicate (Task 23)
 crates/biorouter-server/src/commands/agent.rs              # install ServerWorkspaceServices
 crates/biorouter-server/src/routes/mod.rs                  # merge new routes
-crates/biorouter-server/src/routes/reply.rs                # THE REFACTOR (Task 8): handler becomes lock + spawn runner + bus subscription; user_direct stamping
+crates/biorouter-server/src/routes/reply.rs                # THE REFACTOR (Task 8): handler becomes lock + spawn runner + bus subscription; user_direct stamping; tag = "workspace" on reply/interrupt/cancel_turn (Task 42b)
 crates/biorouter-server/src/routes/apps.rs                 # consult over workspace primitives (Task 41)
-crates/biorouter-server/src/routes/session.rs              # include_subagents query params; SessionSummary additions
+crates/biorouter-server/src/routes/session.rs              # include_subagents query params; SessionSummary additions; GET /sessions/running (Task 38b)
 crates/biorouter-server/src/routes/action_required.rs      # confirm_tool_action consults the approval relay, so either surface resolves the one ask (Task 36b)
 crates/biorouter-server/src/openapi.rs                     # new paths/schemas
-crates/biorouter-cli/src/cli.rs                            # SessionCommand::Watch / Send (Task 20)
+crates/biorouter-cli/src/cli.rs                            # SessionCommand::Watch / Send (Task 20); List --subagents + a subagent-aware lookup_session_id (Task 38b); Attach / Cancel (Task 38c); pub fn command_tree() (Task 42b)
+crates/biorouter-cli/src/commands/session.rs               # handle_session_list gains the grouped, subagent-aware path (Task 38b)
+crates/biorouter-cli/src/commands/mod.rs                   # pub mod session_watch / session_grouping / workspace_parity
 ui/desktop/src/contexts/ChatGroupsContext.tsx              # register workspace command handler; annotations; layout echo
 ui/desktop/src/components/chatGroups/chatGroupsReducer.ts  # export findTabBySession (Task 26)
 ui/desktop/src/components/chatGroups/ChatTabStrip.tsx      # subagent badge, as an OPTIONAL PROP (Task 37 — the strip is pure-props)
@@ -17096,6 +17100,17 @@ sees it running — reconciliation #2), streams onto the bus, opens (background)
 annotated tab the human can watch, steer, and stop; the parent's result reports human
 intervention.
 
+**And the same three verbs from a terminal** (Tasks 38b/38c, the operator's 2026-07-30
+CLI-parity requirement): `biorouter sessions list --subagents` makes a child
+*discoverable* — grouped under its parent, with live/finished state and a label derived
+from its own task rather than the shared `"Subagent task"` literal — and
+`biorouter sessions attach` joins it **while it is running**, rendering the conversation
+so far and then following and steering it. Both are placed here, not in Phase 4, because
+they stand on Task 32's stamping, Task 33's registration (without which `/interrupt`
+mints a different agent for the child and a steer lands nowhere) and Task 34's bus
+publication — and because a phase that shipped the GUI half alone would be the exact
+drift this requirement exists to prevent.
+
 ### Task 32: Spawn stamps `parent_session_id` + persists the spawn context
 
 ⚠ **Anchors re-verified at `ea15a4de` (2026-07-28, drift amendment).** `agent.rs` is
@@ -23740,6 +23755,12 @@ git commit -m "docs(br71): mark slice 3 implemented in the design status header"
 ---
 
 # Phase 4 — Instructions, docs, release gates (design Slice 4)
+
+Also the home of **Task 42b**, the standing CLI-parity gate: the operator's 2026-07-30
+requirement is a *property* ("whatever changes we applied to the GUI and the server side
+will be inherited in the CLI"), and a property needs a mechanism, not a promise. It lands
+here because the capability table cannot be complete until Phase 3 is, and because a gate
+that lands red blocks the phase that introduced it.
 
 ### Task 41: Unify Agent Drafter `consult` onto the workspace spine
 
