@@ -9,6 +9,22 @@
 > **Audience:** developers working on the agent loop, `biorouter-server`, the session store, and
 > the desktop GUI.
 
+> ⚠ **Every line anchor in this document is historical.**
+> They were verified against `main` at `708390d8` and have since moved by roughly **+150
+> to +720 lines** — `extension_manager.rs` by +150, `agent.rs` by +719, `session_manager.rs` by
+> +200. Do **not** chase a line number from this document; the named **symbol** is the anchor. The
+> current positions are tabulated in
+> [the execution plan's drift table](privacy-tiers-execution-plan.md#read-this-before-you-chase-a-line-number),
+> which was re-verified at `9558c346` and confirmed unchanged at `89c1f026`. Three claims here are
+> also false about the tree: §9.3 A1 names a shell-command builder that has never existed, §9.3 B3
+> describes a global-memory mechanism issue #58 deleted, and §2.3 asserts a uniqueness that a second
+> code path contradicts. The execution plan's Task 1 is the task that corrects all three in place.
+>
+> §9.3 B4's forced choice (ratchet knowledge bases, or declare them a public sink) has since been
+> **ruled** by the operator: *ratchet*. See the execution plan's
+> [Accepted risks](privacy-tiers-execution-plan.md#accepted-risks) for the costs that ruling
+> accepts, and its Tasks 10A–10C for the implementation.
+
 ---
 
 ## 1. Summary
