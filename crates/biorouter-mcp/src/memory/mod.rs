@@ -490,7 +490,24 @@ impl MemoryServer {
             for entry in fs::read_dir(base_dir)? {
                 let entry = entry?;
                 if entry.file_type()?.is_file() {
-                    let category = &entry.file_name().to_string_lossy().replace(".txt", "");
+                    // Strip the `.txt` *suffix*; do not substitute the substring.
+                    // `replace(".txt", "")` mangled any category whose own name
+                    // contains it (`a.txt.b.txt` → `a.b`), and the mangled name
+                    // was then fed straight back into `retrieve` below, so the
+                    // memory read as empty. A file without the suffix is not a
+                    // memory file at all and is skipped rather than listed as a
+                    // phantom, permanently empty category.
+                    let file_name = entry.file_name();
+                    let Some(category) = file_name.to_str().and_then(|n| n.strip_suffix(".txt"))
+                    else {
+                        continue;
+                    };
+                    // Anything `retrieve` would refuse cannot be listed as a
+                    // category either — this keeps `retrieve_all` total, so a
+                    // stray file can never fail the whole system prompt.
+                    if validated_category(category).is_err() {
+                        continue;
+                    }
                     let category_memories = self.retrieve(category, is_global)?;
                     memories.insert(
                         category.to_string(),
@@ -1184,6 +1201,45 @@ mod tests {
             !not_yet.exists(),
             "a write through a dangling symlink created {} outside the store",
             not_yet.display()
+        );
+    }
+
+    /// `retrieve_all` derived each category from its filename with
+    /// `replace(".txt", "")` — a substring substitution, not a suffix strip. A
+    /// category whose own name contains `.txt` came back mangled (`a.txt.b` →
+    /// `a.b`), and since the mangled name is then fed straight back into
+    /// `retrieve`, the memory silently read as empty. The same loop also turned
+    /// any non-`.txt` file in the store into a phantom, permanently empty
+    /// category — which `compose_instructions` lists in the system prompt.
+    #[test]
+    fn retrieve_all_strips_the_txt_suffix_instead_of_substituting_it() {
+        let temp = tempdir().unwrap();
+        let server = server_at(temp.path());
+
+        server
+            .remember("context", "a.txt.b", "nested suffix payload", &[], false)
+            .unwrap();
+        fs::write(server.local_memory_dir.join("README.md"), "not a memory\n").unwrap();
+
+        let all = server.retrieve_all(false).unwrap();
+
+        assert!(
+            all.contains_key("a.txt.b"),
+            "retrieve_all mangled a category name containing \".txt\"; got {:?}",
+            all.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            all["a.txt.b"]
+                .iter()
+                .any(|m| m.contains("nested suffix payload")),
+            "the mangled name was fed back into retrieve, so the memory read as \
+             empty: {:?}",
+            all["a.txt.b"]
+        );
+        assert!(
+            !all.contains_key("README.md") && !all.contains_key("README"),
+            "a non-memory file became a phantom empty category: {:?}",
+            all.keys().collect::<Vec<_>>()
         );
     }
 
