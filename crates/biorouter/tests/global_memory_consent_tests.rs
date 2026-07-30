@@ -13,8 +13,10 @@ use std::sync::Arc;
 use biorouter::config::permission::PermissionLevel;
 use biorouter::config::{BioRouterMode, PermissionManager};
 use biorouter::conversation::message::{Message, ToolRequest};
-use biorouter::managed::ManagedPolicy;
-use biorouter::permission::{PermissionInspector, SmartApproveConfig, ToolRiskRegistry};
+use biorouter::managed::{ManagedPolicy, ManagedPolicyFile};
+use biorouter::permission::{
+    ManagedPolicyInspector, PermissionInspector, SmartApproveConfig, ToolRiskRegistry,
+};
 use biorouter::security::global_memory::GlobalMemoryInspector;
 use biorouter::session::Session;
 use biorouter::tool_inspection::ToolInspectionManager;
@@ -279,4 +281,135 @@ async fn registration_order_cannot_defeat_the_gate() {
         1,
         "the gate must win from either position in the inspector list"
     );
+}
+
+// --- the gate must not *weaken* anything either ----------------------------
+//
+// The merge is escalation-only, which is what makes this gate survive Auto and
+// `AlwaysAllow` above. The mirror-image obligation is that its `RequireApproval`
+// never *lowers* a denial: a call in both `denied` and `needs_approval` has its
+// denial written first and an approval card raised second, and "Allow once" on
+// that card dispatches the tool and overwrites the denial. An approval card is
+// then a way to run something that was refused.
+
+/// Every request the merge produces must be in exactly one of the three sets.
+fn assert_partition(result: &biorouter::permission::permission_judge::PermissionCheckResult) {
+    for id in result
+        .approved
+        .iter()
+        .chain(&result.needs_approval)
+        .chain(&result.denied)
+        .map(|r| r.id.clone())
+    {
+        let sets = [&result.approved, &result.needs_approval, &result.denied]
+            .iter()
+            .filter(|set| set.iter().any(|r| r.id == id))
+            .count();
+        assert_eq!(
+            sets,
+            1,
+            "{id} is in {sets} result sets; approved/needs_approval/denied must partition \
+             the batch: {:?}",
+            (
+                result.approved.len(),
+                result.needs_approval.len(),
+                result.denied.len()
+            )
+        );
+    }
+}
+
+/// The user's own `NeverAllow` on the memory tool is the strongest thing they can
+/// say about it. The gate's ask must not convert that standing "never" into a
+/// per-call "allow once" card.
+#[tokio::test]
+async fn a_user_never_allow_is_not_reopened_by_the_memory_card() {
+    for mode in [BioRouterMode::Approve, BioRouterMode::SmartApprove] {
+        let (manager, pm, _tmp) = build_manager();
+        pm.update_user_permission("memory__retrieve_memories", PermissionLevel::NeverAllow);
+
+        let requests = vec![global_read("r1", "clinical")];
+        let result = decide(&manager, &requests, mode).await;
+
+        assert_partition(&result);
+        assert_eq!(
+            result.denied.len(),
+            1,
+            "{mode:?}: the NeverAllow must stand"
+        );
+        assert!(
+            result.needs_approval.is_empty(),
+            "{mode:?}: a tool the user said never to run must not come back as a card"
+        );
+    }
+}
+
+/// A managed (trusted admin) `deny` is non-bypassable by construction — that is
+/// the whole point of the tier. It reaches the merge as a *non-permission* Deny,
+/// so it collides with the memory ask inside `apply_inspection_results_to_permissions`
+/// rather than in the baseline, and the collision must resolve the same way.
+///
+/// Both registration orders are exercised: the agent registers managed first, but
+/// the merge is a lattice and must not depend on that.
+#[tokio::test]
+async fn a_managed_deny_is_not_reopened_by_the_memory_card() {
+    let policy: ManagedPolicyFile =
+        serde_yaml::from_str("permissions:\n  deny: [\"memory__retrieve_memories\"]\n")
+            .expect("managed yaml parses");
+    let policy = Arc::new(ManagedPolicy::from_file(policy));
+
+    for gate_first in [false, true] {
+        let temp = TempDir::new().unwrap();
+        let permission_manager = Arc::new(PermissionManager::new(temp.path().to_path_buf()));
+        let mut manager = ToolInspectionManager::new();
+        if gate_first {
+            manager.add_inspector(Box::new(GlobalMemoryInspector));
+        }
+        manager.add_inspector(Box::new(ManagedPolicyInspector::new(Arc::clone(&policy))));
+        if !gate_first {
+            manager.add_inspector(Box::new(GlobalMemoryInspector));
+        }
+        manager.add_inspector(Box::new(PermissionInspector::with_smart_config(
+            Arc::new(ToolRiskRegistry::new()),
+            permission_manager,
+            Arc::clone(&policy),
+            Arc::new(tokio::sync::Mutex::new(None)),
+            SmartApproveConfig::default(),
+        )));
+
+        let requests = vec![global_read("r1", "clinical")];
+        // Auto is the sharp case: the permission baseline allows everything, so
+        // the managed Deny and the memory Ask are both merge-time overrides and
+        // the *order* they were registered in is all that separates them.
+        let result = decide(&manager, &requests, BioRouterMode::Auto).await;
+
+        assert_partition(&result);
+        assert_eq!(
+            result.denied.len(),
+            1,
+            "gate_first={gate_first}: the managed deny must stand"
+        );
+        assert!(
+            result.needs_approval.is_empty(),
+            "gate_first={gate_first}: an organization's deny must not be reopened as a \
+             consent card the user can click through"
+        );
+    }
+}
+
+/// The gate's own `Deny` (the whole-store read) and its own `Ask` landing on the
+/// same batch must not contaminate each other — a Deny on one request may not
+/// leak into another, and the refused call may not also acquire a card.
+#[tokio::test]
+async fn a_refused_bulk_read_and_an_asked_named_read_stay_separate() {
+    let (manager, _pm, _tmp) = build_manager();
+    let requests = vec![global_read("r1", "*"), global_read("r2", "clinical")];
+    let result = decide(&manager, &requests, BioRouterMode::Auto).await;
+
+    assert_partition(&result);
+    assert_eq!(result.denied.len(), 1);
+    assert_eq!(result.denied[0].id, "r1");
+    assert_eq!(result.needs_approval.len(), 1);
+    assert_eq!(result.needs_approval[0].id, "r2");
+    assert!(result.approved.is_empty());
 }
