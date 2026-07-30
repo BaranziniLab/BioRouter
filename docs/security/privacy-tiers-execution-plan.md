@@ -1573,14 +1573,15 @@ count is therefore paired with either a named-test filter or a pre/post delta th
 which runs `cargo test -p <pkg> --lib -- --list` for all five packages this plan filters on and
 resolves every one of its **42** `(package, filter)` pairs against the real listing. It is placed
 immediately after Task 4 because Task 4 is the first commit that produces a `privacy::` module, and
-it is docs-only. What it cannot close is the **nine** modules later tasks create
-(`privacy::{extensions,refusal,alt_provider,visibility,declassify,private_roots}`,
-`providers::tier_tests`, `knowledge::tier`, and `private_data` in the **sixth** package,
-`biorouter-sandbox` — which no earlier revision of this plan filtered on at all, so Task 4b's
-`--list` sweep must add it); those are a named deferred set that Task 20's and Task 40's gates re-run
-with a shrinking and then an empty list. Task 14A also introduces a **second integration binary** in
-that package, `--test read_deny`, alongside the existing `--test sandbox`; a `--test` filter naming a
-binary that does not exist is a cargo hard error rather than a silent zero, so it is self-checking. Two further facts Task 4b's design turns on, both easy to get
+it is docs-only. What it cannot close is the modules later tasks create
+(`privacy::{extensions,refusal,alt_provider,visibility,declassify}`, `providers::tier_tests`,
+`knowledge::tier`, and — added by [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store) — `knowledge::tier_user` and `privacy::disclosure`);
+those are a named deferred set that Task 20's and Task 40's gates re-run
+with a shrinking and then an empty list. ⚠ **Superseded by [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store):** an earlier wording here added
+`private_data` in a **sixth** package (`biorouter-sandbox`) and Task 14A's second integration binary
+`--test read_deny`. Both belong to deferred tasks, so the sweep is five packages and there is no
+second binary. The self-checking property still holds and is worth keeping in mind for a revival: a
+`--test` filter naming a binary that does not exist is a cargo hard error rather than a silent zero. Two further facts Task 4b's design turns on, both easy to get
 wrong: this plan spells its filters in **two** forms (`--lib <FILTER>`, 34 occurrences, and
 `--lib -- <NAME> <NAME>`, 7 — an audit of only the first misses `privacy::refusal` and
 `privacy::alt_provider` entirely), and a libtest filter is a **substring** match, not a prefix, so
@@ -2494,6 +2495,36 @@ the gate in Step 5 asserts that partition. **58** `(package, filter)` pairs, all
 | `biorouter` | `privacy::visibility` | Task 21 | **0** ✓ |
 | `biorouter` | `every_copy_path_carries_the_tier_and_the_provider` | Task 22 | **0** ✓ — a bare **test name**, not a module; it is in the `--lib -- …` form and is invisible to an audit of only the plain form |
 | `biorouter` | `privacy::declassify` | Task 29 | **0** ✓ |
+
+⚠ **This table is 18 rows and [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store) changes it to 15 — five out, two in. Fix it in the same
+commit as the deferral, not later.** Task 4b's own gate asserts that *every deferred entry is
+something this plan actually creates*, and Task 40 asserts the deferred set is **empty**. Both fail a
+**correct** tree once Tasks 14A–14F are out of scope, which is the precise failure mode this section
+exists to prevent — a gate that reports a shortfall for work nobody was supposed to do.
+
+**Five rows retire with the deferred tasks**, and the filters that quote them must go with them —
+they name modules v1 does not create:
+
+| Package | Filter | Owning task |
+|---|---|---|
+| `biorouter-mcp` | `private_roots` | 14B ⛔ |
+| `biorouter` | `privacy::private_roots` | 14B ⛔ |
+| `biorouter` | `privacy::path_policy` | 14B ⛔ |
+| `biorouter-mcp` | `agent_drafter::tier` | 14E ⛔ |
+| `biorouter-server` | `call_tool_dispatches_through_the_barrier` | 14C ⛔ |
+
+With them go the **sixth package** and the second integration binary: `biorouter-sandbox`
+`private_data` (14B) and `--test read_deny` (14A) are not created in v1, so Task 4b sweeps **five**
+packages again, not six, and the paragraph below that says otherwise is superseded here.
+
+**Two rows join**, from the two tasks the same ruling added:
+
+| Package | Filter | Owning task | Evidence |
+|---|---|---|---|
+| `biorouter-mcp` | `knowledge::tier_user` | 29A | `crates/biorouter-mcp/src/knowledge/tier_user.rs` |
+| `biorouter` | `privacy::disclosure` | 30A | `crates/biorouter/src/privacy/disclosure.rs` |
+
+Both measure **0** today, for the same reason every other deferred row does: nothing creates them yet.
 
 **What the measurement changed.** Five things, and none of them was catchable by reading:
 
