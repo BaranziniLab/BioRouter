@@ -419,7 +419,7 @@ Nine, each forced by a measurement.
 | D5 | §15.1: "added by the same `ALTER TABLE sessions ADD COLUMN` arm BR-71 Task 1 uses" | Shape-guarded arm 17 **plus** an unconditional `ensure_privacy_schema` | O10. |
 | D6 | §18.4: the prompt-hook provider check is "v1 emits a load-time warning; the hard skip is v1.1" | Hard refusal in v1, in the same task as the CLI plan-mode refusal | The Stop hook's payload is `crate::agents::goal::transcript_tail(&conversation)` (`agent.rs:5495-5496`) — a real transcript excerpt — shipped to an arbitrary endpoint resolved by `HooksManager::resolve_prompt_provider` (`hooks/mod.rs:690`) and sent by `run_prompt_hook` (`hooks/prompt_runner.rs:57`). It is structurally identical to P6 and carries the same content. |
 | D7 | §9.3 B4: "Ratchet a KB's classification on ingest … **or** state plainly that KBs are a designed public sink" | Ratchets (operator ruling), and enforces the read side at **five choke points**, not at an enumeration of tool call sites | The design says "a public-capability session may not read a private KB" without naming where that is enforced, and the obvious answer — one check per `kb_*` tool — does not survive measurement. It misses four whole surfaces (`agent_drafter::export_app`, `routes/apps.rs::run_kb_read`, that route's `ingest` arm, and the `KbToolDispatch` sub-agent tool set), and **nine of the nineteen `kb_*` tools take no `RequestContext`** so they cannot learn the caller's capability at all. The barrier therefore sits at `<KnowledgeServer as ServerHandler>::call_tool` (which receives the `RequestContext` for every tool), the three sub-agent macro entries, `handle_kb_frame`, and `stage_full_payload`. A **fifth**, `Catalog::discover` (Task 10D), covers the surface the other four cannot see by construction: a base's **id and name**, which `list_platform_catalog` hands to any model with no arguments at all. Full derivation, with the measurements and what it costs, in Task 10A's ⚠ "where the barrier goes" and its coverage table. |
-| D9 | §9.3 A2: "Add `**/sessions.db*` and the Biorouter data directory" to `DEFAULT_SECRET_PATTERNS` | Does **not** touch `DEFAULT_SECRET_PATTERNS`; hides four roots with an OS sandbox instead (DR-14, Tasks 14A–14C) | Two measurements. `DEFAULT_SECRET_PATTERNS` (`secret_guard.rs:33-45`) is **unconditional** — it is an always-on floor applied to every session, so adding the data directory there would hide the user's own knowledge base and chat history from a **private** session too, which no requirement asks for and AR-1 already shows is expensive. And it would not close the read anyway: the design says so itself ("this raises the cost, it does not close the read"), because `candidate_is_denied` (`:278-292`) is lexical and existence-gated, so `sqlite3 "$(printf '%s' ~/.local/share/biorouter/sessions/sessions.db)"` walks past it. A capability-conditional kernel deny is the only form that is both scoped and a barrier. |
+| D9 | §9.3 A2: "Add `**/sessions.db*` and the Biorouter data directory" to `DEFAULT_SECRET_PATTERNS` | Does **not** touch `DEFAULT_SECRET_PATTERNS`; hides four roots with a **capability-conditional path policy at the dispatch choke point (Layer A), backed by an OS sandbox for spawned children (Layer B)** (DR-14, Tasks 14A–14D) | Two measurements. `DEFAULT_SECRET_PATTERNS` (`secret_guard.rs:33-45`) is **unconditional** — it is an always-on floor applied to every session, so adding the data directory there would hide the user's own knowledge base and chat history from a **private** session too, which no requirement asks for and AR-1 already shows is expensive. And it would not close the read anyway: the design says so itself ("this raises the cost, it does not close the read"), because `candidate_is_denied` (`:278-292`) is lexical and existence-gated, so `sqlite3 "$(printf '%s' ~/.local/share/biorouter/sessions/sessions.db)"` walks past it. What replaces it is a **capability-conditional** policy evaluated at the same choke point `find_denied_path` already runs at, sharing that scan's argument walker but not its verdict — so it is scoped to public sessions, is not existence-gated (`memory/` does not exist on a fresh install and must still be denied), and is a barrier rather than a cost increase. The kernel deny is the **second** layer and covers the one thing an in-process check cannot: a child process the daemon has already handed the command to, where `printf`-style runtime path construction happens in a shell the daemon never sees. |
 | D8 | §9.3 B4 and the first version of this plan put the cross-session ingest guard in `Agent::handle_ingest_conversation` | Puts it in `biorouter::knowledge::conversation_ingest::ingest_conversation` as a **required** `caller_capability` argument | Measured: `grep -rn "conversation_ingest::ingest_conversation\|ingest_conversation(" --include='*.rs' crates/` returns **three** production callers, not one — `agents/knowledge_tool.rs:61` (the platform tool), `biorouter-server/src/routes/knowledge.rs:1233` (`POST /knowledge/bases/{id}/ingest-conversation`, whose `session_ids` array at `:1192-1212` is caller-supplied and loaded with `get_session(sid, true)` at `:1203`) and `biorouter-cli/src/commands/knowledge.rs:571`. A guard in the platform tool leaves the HTTP route — reachable with nothing but the secret key — as an unguarded copy of the same primitive. A required parameter makes all three a compile error. |
 
 ---
@@ -574,13 +574,25 @@ overwhelmingly common non-adversarial case.
 
 DR-14 fails **closed**. Three consequences were put to the operator and accepted.
 
-**(1) Windows loses `developer__shell`, `automation_script` and `computer_control` for every
-public-capability chat.** There is no unprivileged, general-purpose way to hide a directory from an
-arbitrary command on Windows — `shell_sandbox/windows.rs:1-51` works through the five candidates and
-why each fails — so the refusal fires for the common configuration (a commercial model on a Windows
-laptop). The same applies to a Linux host without `bubblewrap`, or with unprivileged user namespaces
-disabled, though there the refusal names a third fix (`apt install bubblewrap`) that actually works.
-macOS is unaffected: Seatbelt ships with the OS and expresses the deny directly.
+**(1) Windows loses the five tools that spawn a child process — `developer__shell` and its
+background jobs, `computercontroller__automation_script`, `computer_control`, and
+`compute__compute_run`/`compute_python` — for every public-capability chat.** There is no
+unprivileged, general-purpose way to hide a directory from an arbitrary command on Windows —
+`shell_sandbox/windows.rs:1-51` works through the five candidates and why each fails — so the refusal
+fires for the common configuration (a commercial model on a Windows laptop). The same applies to a
+Linux host without `bubblewrap`, or with unprivileged user namespaces disabled, though there
+the refusal names a third fix (`apt install bubblewrap`) that actually works. macOS is unaffected:
+Seatbelt ships with the OS and expresses the deny directly.
+
+⚠ **This cost is smaller than the first two rounds of this plan said, and the reason is
+[the two-layer structure](#dr-14-is-two-layers-and-the-os-sandbox-is-the-second-one).** Earlier
+drafts made the OS sandbox *the* mechanism, so an unsupported platform meant refusing **every** tool
+that resolves a caller-supplied path — `text_editor`, `analyze`, `image_processor`, `cache`,
+`xlsx_tool`, `pdf_tool`, `docx_tool`, and every knowledge / memory / drafter tool. That is most of
+the product, and it was the single largest cost in this feature. It is not necessary: Layer A is a
+check inside the daemon's own dispatch path and needs no kernel support at all, so on Windows it
+holds exactly as it does on macOS. **What is refused on an unsupported platform is the five tools
+whose reads happen in a child process the daemon cannot see into — and nothing else.**
 
 The escape hatches are the two the refusal names — switch the chat to a private model, or turn
 privacy tiers off entirely (DR-15) — and the second is a large part of why the operator asked for a
@@ -659,6 +671,116 @@ The user-facing consequence, stated plainly: **a private chat can be told to cop
 somewhere a public chat can read them, and it will.** The controls that bear on it are the ones
 already in the product — approval mode for shell commands, `.biorouterignore`, and the fact that a
 private chat is running the user's own institutional model on the user's own machine.
+
+### AR-9 — Layer A is check-then-use, so a concurrently running shell can still race one in-process reader
+
+[Layer A](#dr-14-is-two-layers-and-the-os-sandbox-is-the-second-one) refuses a tool call whose
+arguments name a path inside a deny root. It decides that by resolving the path *at check time* —
+lexically, then by canonicalizing the deepest existing ancestor — and the tool then opens the file a
+few microseconds later. Between those two moments a **concurrently running** process can replace a
+workspace symlink so the daemon's open follows it into a deny root.
+
+Two things bound this, and both were measured.
+
+- **The link cannot be planted from a sandboxed child on a supported platform.** Creating a symlink
+  or hardlink whose source is inside a deny root requires reading the source path's metadata, and
+  the kernel refuses that: macOS `ln: …: Operation not permitted, rc=1` under a
+  `(deny file-read* (subpath …))`. So the attacker needs an *unsandboxed* writer, which on a
+  supported platform means another tool call — and that tool call's own arguments go through the
+  same barrier.
+- **A pre-planted hardlink defeats the deny outright, on both platforms.** Seatbelt matches paths,
+  not inodes, and `--tmpfs` hides a path, not an inode. Measured: macOS reads a pre-existing hardlink
+  to a denied file (`SECRET-KB-CONTENT`, exit 0); Linux does too under a `--tmpfs` deny
+  (`SECRET-KB-CONTENT, rc=0`). Nothing short of an inode-aware policy closes that, and neither
+  platform offers one to an unprivileged process.
+
+**Stated in the operator's terms:** the read-deny is a barrier against a public model *asking* for
+private material, not against a public model that has already arranged, through some earlier
+unsandboxed write, for a private file to be reachable under a second name. Closing it means
+`openat2(RESOLVE_BENEATH)` (Linux 5.6+, no macOS equivalent) or an inode policy, and neither is
+portable. What this plan does instead is make the window as small as the language allows: the check
+is placed in the same synchronous block as the open wherever the reader is under our control
+(Task 14D), and never across an `.await`.
+
+### AR-10 — On Linux, a deny root that does not exist when a job starts stays visible to that job for its whole life
+
+`--tmpfs` on a destination that does not exist **aborts bubblewrap** — measured,
+`bwrap: Can't mkdir …/memory: Read-only file system`, exit 1, even when the parent directory exists.
+So `wrap_bubblewrap` must skip absent roots or no sandboxed command runs at all. That skip is a
+necessity, not a tolerance, and it creates a race an earlier draft of this plan waved away with *"a
+root that does not exist holds nothing to read"*. That sentence is false, measured:
+
+```
+-- wrapper built with NO deny for $ABSENT (absent roots are skipped) --
+   background process creates the root at t=2s; sandboxed job reads it at t=4s
+LATE-MEMORY-SECRET
+exit=0
+```
+
+**And it is live on this machine right now**, at the plan's own paths:
+
+```
+/Users/wgu/.local/share/biorouter/sessions     EXISTS
+/Users/wgu/.config/biorouter/knowledge         EXISTS
+/Users/wgu/.config/biorouter/memory            ABSENT   <-- bwrap would skip this root
+/Users/wgu/.config/biorouter/agent_drafter     EXISTS
+```
+
+`memory/` is created lazily on first write (`global_memory_dir()` → `in_config_dir("memory")`,
+`memory/mod.rs:82-84`), so on a fresh install the memory root is absent until the first
+`remember_memory`, and a long-running public background job started before that moment can read it
+afterwards.
+
+**Two mitigations, and neither is a closure.** Task 14B creates the four roots at startup if they do
+not exist, which shrinks the window to "a root deleted and recreated mid-session"; and Layer A does
+not have this race at all — it re-resolves the roots on every tool call, so the in-process channel is
+closed for an absent root from the instant it appears. **The residual is exactly one channel on one
+platform: a Linux shell that was already running when the root appeared.** macOS does not share it —
+measured, an SBPL deny of a path that does not yet exist still applies once another process creates
+it (`Operation not permitted`), because SBPL is a path-pattern match. That asymmetry is why the
+`is_dir()` skip must stay inside `wrap_bubblewrap` and must not be hoisted into a shared helper.
+
+### AR-11 — The daemon's own API secret is recoverable, so the second door is held by Layer A and not by the environment strip
+
+Issue #57's `strip_daemon_private_env` removes `BIOROUTER_SERVER__SECRET_KEY` from every child
+BioRouter spawns, and it does that correctly (Task 14C's audit). The design then concluded that a
+sandboxed child "knows where the daemon is and has no way to authenticate to it". **That conclusion
+does not survive measurement and is withdrawn.**
+
+- **macOS.** A child recovers its *parent's* environment with `ps -Ewww -p $PPID`. Re-measured for
+  this round: a shell started with `SECRETCANARY=parent_canary_777` printed the canary from its own
+  child. The protection people assume — SIP withholding process environments — applies only to
+  Apple **platform** binaries: `/bin/sleep` withholds, a locally compiled binary does not, and
+  neither does the shipped, notarized, hardened-runtime `BioRouter.app/…/biorouterd`
+  (`flags=0x10000(runtime)`, `TeamIdentifier=F3YYBXAFJ8`), measured with a canary. It is not `ps`'s
+  setuid bit either: a plain non-setuid `sysctl(CTL_KERN, KERN_PROCARGS2, pid)` reader recovers it,
+  and it still does under `(allow default)`, under `(allow default)(deny file-read* (subpath …))`,
+  and under a deny-by-default profile — `sysctl-read` is not gated by any profile that could be
+  constructed.
+- **Linux.** The daemon's own `/proc/self/environ` is readable **in-process**, by any tool that
+  reads a caller-supplied path — `computercontroller__cache view /proc/self/environ` returns it.
+
+**So the honest statement, in the words the design must now use: the daemon's API secret is not
+defensible against a tool running inside the daemon, and no sandbox this feature installs changes
+that.** What that costs, and what still holds:
+
+- It costs the second-order argument. A public-capability session that recovers the secret can call
+  `GET /sessions/{id}/export` and read a transcript over HTTP. Nothing in DR-14 stops it, and the
+  plan no longer claims otherwise.
+- **What still holds is the biggest route by far, and it holds because of Layer A.**
+  `POST /agent/call_tool` (`routes/agent.rs:1140`, registered `:1268`) executes *any* tool of *any*
+  extension with no capability check, no permission prompt and no approval frame — measured live,
+  `computercontroller__cache view /etc/hosts` returned the file. It dispatches through
+  `agent.extension_manager.dispatch_tool_call` (`routes/agent.rs:1160-1163`), which **is** Layer A's
+  choke point, so the secret buys a caller nothing there that it does not already have in the chat:
+  Gate C refuses a private extension and Layer A refuses a deny-root path, identically. A design that
+  had put the barrier in `Agent::dispatch_tool_call` instead would have lost this entirely.
+- The remaining exposure is the set of HTTP routes that return private content **without** going
+  through a tool call — the transcript routes, the `/knowledge/*` read routes, `GET /apps/{id}/export`
+  — plus `GET /diagnostics/{id}`, which is the widest of them (a zip of `session.json`, recent
+  `logs/*.jsonl`, and a verbatim copy of `config.yaml`). Authenticating those against a caller that
+  is on the same machine and can read the daemon's memory is not something a header comparison can
+  do. [Open question 20](#open-questions) carries it.
 
 ---
 
@@ -7767,7 +7889,73 @@ is not part of this commit.
 
 ---
 
-### Task 14A: The read-deny sandbox policy — what each platform can actually express
+### DR-14 is two layers, and the OS sandbox is the second one
+
+Read this before Tasks 14A, 14B, 14D. The first two rounds of this plan treated the OS sandbox as
+*the* mechanism, and both times a reviewer found a public tool that reads a private root without ever
+spawning a process. That is not a gap in the list of tools; it is a category error. **BioRouter reads
+files two different ways, and only one of them is a child process.**
+
+| | **Layer A — the in-process path policy** | **Layer B — the OS sandbox** |
+|---|---|---|
+| Covers | every tool call, because the check is in the daemon's own dispatch path | processes the daemon spawns |
+| Mechanism | a synchronous refusal at `ExtensionManager::dispatch_tool_call` (`extension_manager.rs:1438`) | Seatbelt / bubblewrap, wrapping the child |
+| Enforced by | BioRouter | the kernel |
+| Defeated by | nothing that is still a tool call | nothing, once the child is wrapped |
+| Role | **PRIMARY** | **defence in depth** |
+| Task | 14B (barrier) + 14D (seams) | 14A (mechanism) + 14B step (h) (wiring) |
+
+**Why Layer A has to be primary.** `computercontroller__cache` reads a caller-supplied path with
+`tokio::fs::read_to_string` at `computercontroller/mod.rs:1482`. `agent_drafter__read_app` reads app
+bytes with `std::fs::read_to_string` at `agent_drafter/store.rs:637`. `developer__text_editor` opens
+files at `text_editor.rs:641`. None of them spawns anything. **They are the daemon.** No sandbox the
+daemon installs on its children can constrain the daemon, so on every platform — including the two
+where Layer B works perfectly — those reads are governed by a check in the code path or by nothing at
+all.
+
+**Why the check must sit at a choke point rather than on a list of tools.** Enumerating readers has
+now been defeated twice: round 1's list named `developer` and `computercontroller`, and round 2 found
+`cache` *inside* `computercontroller`. It is not a discipline problem. A `grep` for
+`fs::`/`File::open` **structurally cannot** find these readers, measured:
+
+| Tool | How it reads the caller's path | Why a `fs::` grep misses it |
+|---|---|---|
+| `computercontroller__xlsx_tool` | `umya_spreadsheet::reader::xlsx::read(path)` — `computercontroller/xlsx_tool.rs:37` | no `fs::` token in the line |
+| `computercontroller__pdf_tool` | `lopdf::Document::load(path)` — `computercontroller/pdf_tool.rs:34` | ditto |
+| `computercontroller__docx_tool` | `fs::read(path)` — `computercontroller/docx_tool.rs:108` | found, but only because this one happens to use `fs` |
+| `datasql__data_query` | `DataSql::open_readonly(&path)` (sqlx) — `datasql/server.rs:115` | ditto |
+| `knowledge__kb_import` | `std::fs::read(&p.src_path)` — `knowledge/server.rs:769` | found; the *decoders* under `knowledge/brkb.rs:28,38` are not |
+
+Measured on this tree: **125 `#[tool(name=…)]` declarations in `crates/biorouter-mcp/src`, 48 with a
+path-shaped parameter** — and that 48 both over-counts (`agent_drafter__ui_render`'s `target` is a DOM
+region) and under-counts (`analyze`'s params live in a different file, `developer/analyze/types.rs:6`).
+A mechanical extractor written for this survey silently dropped **the entire developer server**
+because `rmcp_developer.rs:337` contains an inner `#[cfg(test)]` and the extractor stopped there.
+**Any gate phrased as "the list of tools that read files" is unfixable. The gate must be phrased as
+"every tool call passes through symbol X."**
+
+**The choke point exists and is already built.** `ExtensionManager::dispatch_tool_call`
+(`extension_manager.rs:1438`) carries BR-23's SecretGuard argument scan at `:1505-1527`, whose own
+comment at `:1497-1504` calls it *"the single choke point every tool call flows through."* It covers
+the 7 built-ins, the 5 platform extensions, the in-process app servers (`add_inprocess_server` at
+`:901` inserts into the *same* `self.extensions` map, `:909`/`:931`) and `code_execution`'s inner
+bridge (`code_execution_extension.rs:1814` re-enters the **ExtensionManager's** dispatch, not the
+Agent's). There is exactly one `client.call_tool` in production, at `:1562`, inside it. Task 14B
+extends that mechanism instead of inventing a second one.
+
+**What this reframing buys, and it is worth stating in the design.** Because Layer A holds on every
+platform, Layer B's platform gaps stop being feature-killers. Landlock cannot subtract a read and
+Windows has no unprivileged confinement — but that no longer means "a public session cannot read
+files on those hosts", it means "a public session cannot **spawn a shell** on those hosts". The
+fail-closed refusal (AR-6(1)) narrows from *every file tool* to *the spawned-shell tools*:
+`developer__shell` and its background jobs, `computercontroller__automation_script` and
+`computer_control`, and `compute_run`/`compute_python`. `text_editor`, `analyze`, `image_processor`,
+`cache`, `xlsx_tool`, `pdf_tool`, `docx_tool` and every knowledge/memory/drafter tool keep working on
+Windows, because Layer A does not need a kernel.
+
+---
+
+### Task 14A: Layer B — the read-deny sandbox policy, and what each platform can actually express
 
 **Why this task exists.** Gates A–H, and CP1–CP5 over knowledge bases, all sit on *tool calls*. A
 public-capability model does not have to defeat any of them: `developer__shell` runs an arbitrary
@@ -7806,10 +7994,15 @@ is deliberate: a reviewer of 14B should be reading one `if`, not a Seatbelt prof
 
 #### ⚠ What each platform can express, measured — not assumed
 
+Every row below was **executed**, not reasoned: macOS on this host (macOS 26.5.2, build 25F84),
+Linux in `docker run --privileged --security-opt seccomp=unconfined debian:bookworm-slim` with
+`bubblewrap 0.8.0`. Where a claim in an earlier round of this plan or in a review did not survive
+execution, the correction is marked ⚑ and the measured output is quoted.
+
 | Platform | Mechanism | Read-deny of a subpath | Cost |
 |---|---|---|---|
-| **macOS** | Seatbelt (`sandbox-exec`) | **Yes, directly.** SBPL is last-match-wins, so `(deny file-read* (subpath (param "DENY_ROOT_0")))` appended *after* `BASE_POLICY`'s `(allow file-read*)` (`seatbelt.rs:35`) subtracts that subtree. | Two string pushes and one `-D` argument per root. Nothing measurable. |
-| **Linux + bubblewrap** | `bwrap` | **Yes, directly.** After `--ro-bind / /`, `--tmpfs <root>` overmounts the directory with an empty tmpfs in the child's own mount namespace. A real subtraction: no enumeration, no race, no per-command recomputation. | Needs `bwrap` installed **and** unprivileged user namespaces enabled. One `execve` of a small setuid-free helper per command, which `wrap_bubblewrap` already pays today. |
+| **macOS** | Seatbelt (`sandbox-exec`) | **Yes, directly and measurably.** `(deny file-read* (subpath …))` appended to `BASE_POLICY` blocks the read (`cat: …: Operation not permitted`, exit 1) while an unrelated file still reads (exit 0). Verified in the **production shape** — `writable_roots: ["/"]`, i.e. an `(allow file-write* (subpath "/"))` that is an ancestor of every deny root: read, write and `rm` inside the deny root all fail, writes elsewhere all succeed. | Two string pushes and one `-D` argument per root. Nothing measurable. |
+| **Linux + bubblewrap** | `bwrap` | **Yes, with `--tmpfs <root> --remount-ro <root>`.** After `--ro-bind / /`, `--tmpfs` overmounts the directory with an empty tmpfs in the child's own mount namespace. ⚑ `--tmpfs` **alone is writable** — measured, `rc=0` and the new file appears in the tmpfs — so the write half of the policy needs `--remount-ro` immediately after. | Needs `bwrap` installed **and** unprivileged user namespaces enabled — and ⚑ the former does not imply the latter (see the live probe below). One `execve` of a small setuid-free helper per command, which `wrap_bubblewrap` already pays today. |
 | **Linux, Landlock only** | `landlock` + `seccompiler` | **No — not at all.** A Landlock ruleset is a set of **grants** over paths. There is no deny rule and no way to subtract a subpath from a broader grant. `apply_landlock` (`:413-418`) handles `AccessFs::from_write(abi)` *only*, precisely so reads stay unhandled and therefore open. | See below. |
 | **Windows** | — | **No.** `WindowsSandbox::probe` already reports `tier: None`, and its module docs (`windows.rs:1-51`) work through why no unprivileged, general-purpose confinement exists there. AppContainer could express it and is the designed W2 tier, but it is unimplemented, breaks `git`/`node`/`python` without ACL work, and cannot be validated off a Windows runner. | — |
 
@@ -7831,6 +8024,118 @@ measured consequences, and the third is disqualifying:
 So on Linux the read-deny is expressible **only** through bubblewrap, and `LinuxSandbox` must invert
 its usual preference (`effective_backend` picks Landlock first, `:162-177`) when a policy carries
 deny roots. [Open question 17](#open-questions) keeps the complement approach on the record.
+
+#### ⚑ Five claims that did not survive execution — four of them this plan's own
+
+**⚑1. The SBPL last-match-wins rationale was backwards, and leaving it wrong is dangerous.**
+An earlier draft of Step 3(b) said an early-emitted deny is *"a silent no-op with a passing test
+suite."* Measured on macOS, a deny emitted **before** `(allow file-read*)` still denies:
+
+```
+$ /usr/bin/sandbox-exec -p '(version 1)(deny file-read* (subpath "…/secret"))(allow default)' \
+    /bin/cat …/secret/page.md
+cat: …/secret/page.md: Operation not permitted        exit=1
+```
+
+and in the production `unconfined()` shape, a deny emitted before the `(allow file-write* (subpath
+"/"))` block still denies reads, writes and `rm`. **The described failure mode does not exist on
+macOS.** What *does* defeat a deny on macOS is the opposite thing, measured:
+
+```
+deny X, then (allow file-read* (subpath X))        -> SECRET readable, exit 0   <-- RE-OPENED
+deny X, then (allow file-read* (subpath PARENT-OF-X)) -> SECRET readable, exit 0 <-- RE-OPENED
+deny X, then blanket (allow file-read*)            -> Operation not permitted    <-- still denied
+```
+
+So: an **unfiltered** later allow never overrides a path-filtered deny; a **path-filtered** later
+allow whose `subpath` covers the deny root does. The real macOS hazard is therefore *"someone later
+adds a read-side twin of the writable-roots loop"*, not *"someone emits the deny too early"*.
+
+This correction is not cosmetic. Getting it wrong is what deletes the ordering pin: an implementer
+who trusts the old comment, moves the block earlier on their Mac, sees nothing change, and concludes
+the assertion is cargo-cult, will remove it — **and the Linux ordering, which IS load-bearing and
+DOES fail open silently (⚑4), goes with it.** Keep the assertion; fix the reason.
+
+**⚑2. `supports_read_deny()` must be a two-legged live probe, and round 2's "the sandbox actually
+fails on this host" was a probe artifact.** Round 2 reported that
+`/usr/bin/sandbox-exec -p '(version 1)(allow default)' /bin/true` exits 71 with `sandbox_apply:
+Operation not permitted`. Re-run here, the exit code reproduces and the cause does not:
+
+```
+$ /usr/bin/sandbox-exec -p '(version 1)(allow default)' /bin/true; echo $?
+sandbox-exec: execvp() of '/bin/true' failed: No such file or directory
+71
+$ ls /bin/true; ls /usr/bin/true
+ls: /bin/true: No such file or directory
+-rwxr-xr-x  1 root  wheel  84128 /usr/bin/true
+$ /usr/bin/sandbox-exec -p '(version 1)(allow default)' /usr/bin/true; echo $?
+0
+```
+
+**`/bin/true` does not exist on macOS.** Nested sandboxing also exits 0, so "already inside a
+sandbox" is not the explanation either. Seatbelt is fully functional on this host and
+`seatbelt::available()` is telling the truth *here* — **do not weaken this task to accommodate a
+broken-Seatbelt Mac; that host was not observed.**
+
+Round 2's *structural* criticism stands, though, and is what Step 3(c) below implements:
+`available()` (`seatbelt.rs:168` — **not `:166`**, citation drift) is
+`cfg!(target_os = "macos") && Path::new(SANDBOX_EXEC).exists()`, a file-existence check. The trait's
+own doc forbids exactly that: `ShellSandbox::probe`'s comment at `shell_sandbox/mod.rs:167-170`
+requires *"a real capability probe … never a version guess"*, and Linux honours it (`run_selftest()`
+`linux.rs:120-134`, cached at `:141`) while macOS does not.
+
+And exit 71 is **not** a usable signal on its own — measured, it covers at least three conditions:
+
+| condition | stderr | exit |
+|---|---|---|
+| target binary missing | `execvp() … No such file or directory` | 71 |
+| profile denies `process-exec` of the target | `execvp() … Operation not permitted` | 71 |
+| SBPL syntax error | `sandbox-exec: syntax error: expecting ')'` | **65** |
+
+**A one-legged probe is not enough either.** A probe that only asserts "the deny bites" returns
+`supported` on a host where the sandbox cannot start *any* process — every read fails, so the deny
+"looks" enforced. The probe below has two legs and was measured against all three broken-host
+classes; the shape and the measurements are in Step 3(c).
+
+**⚑3. `bwrap` on `PATH` does not mean bubblewrap works** — and neither review noticed. Under
+**default** Docker seccomp, `bwrap` is installed, executable, and every invocation fails:
+
+```
+bwrap: No permissions to create new namespace, likely because the kernel does not allow
+       non-privileged user namespaces.
+```
+
+`bwrap_on_path()` (`linux.rs:99-101`) would report available, and `probe()` (`:196-200`) would claim
+`tier: Full, mechanism: "bubblewrap"` with nothing executed. Step 3(d)'s
+`bubblewrap_can_deny_reads()` is a live probe for this reason, and it is the Linux twin of ⚑2.
+
+**⚑4. On Linux the argv ordering IS load-bearing and DOES fail open silently.** This is the real
+instance of the hazard ⚑1 wrongly attributed to macOS, and it is unreported by either review:
+
+```
+--tmpfs BEFORE the --bind of its parent  ->  NESTED-SECRET   rc=0   <-- DENY SILENTLY DEFEATED
+--tmpfs AFTER  the --bind of its parent  ->  No such file or directory  rc=1   <-- correct
+```
+
+Three of the four DR-14 roots live under `$HOME`, which is routinely the session working directory
+and therefore a writable `--bind` root, so this is the common case, not a corner. The same holds for
+the `--ro-bind` of `config.yaml` that Task 14D adds: placed before the parent's writable bind, the
+clobber succeeds (`CLOBBER2` written to the host file, `rc=0`).
+
+**⚑5. A pre-planted hardlink defeats the deny on both platforms, and only Layer A closes it.**
+Seatbelt matches **paths**, not inodes; `--tmpfs` hides a **path**, not an inode. Measured:
+
+```
+macOS  J1  sandboxed child tries to CREATE the hardlink   -> ln: Operation not permitted, rc=1
+macOS  K1  sandboxed child reads a PRE-EXISTING hardlink  -> SECRET-KB-CONTENT, exit=0
+Linux  10a same, under a --tmpfs deny                     -> SECRET-KB-CONTENT, rc=0
+```
+
+The sandboxed child cannot forge the link (creating it needs read access to the source, which is
+denied). It is only reachable through an **unsandboxed in-process writer** — a public model asking
+the daemon to `ln <deny-root>/page.md ./x` through a file tool, then reading `./x` from the shell.
+That is a second, independent reason Layer A is the primary: with Layer A refusing the `ln`
+argument, the hardlink is never planted. Recorded as [AR-9](#ar-9--layer-a-is-check-then-use-so-a-concurrently-running-shell-can-still-race-one-in-process-reader).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -7896,10 +8201,12 @@ fn a_deny_root_is_unreadable_and_the_rest_of_the_disk_is_not() {
 /// The ordering half, and the one a correct-looking implementation fails.
 /// A deny root can sit INSIDE a writable root — the session working directory
 /// is `$HOME` under the desktop app, and three of the four DR-14 roots are
-/// under `$HOME`. On macOS the deny block must be emitted after BOTH
-/// `(allow file-read*)` and the writable-roots block; on Linux the `--tmpfs`
-/// options must come after the `--bind`s. Emit either one early and this is the
-/// only test that notices.
+/// under `$HOME`. On Linux the `--tmpfs`/`--remount-ro` options MUST come after
+/// the `--bind`s: emitted before the writable bind of the parent, the deny is
+/// silently defeated (measured: `NESTED-SECRET, rc=0`). On macOS SBPL order
+/// does not decide this (see ⚑1) but the assertion is kept, because the two
+/// backends share `deny_read_roots` and a reviewer who "simplifies" the shared
+/// path breaks Linux with nothing failing on their Mac.
 #[test]
 fn a_deny_root_inside_a_writable_root_is_still_denied() {
     let backend = detect();
@@ -7917,11 +8224,38 @@ fn a_deny_root_inside_a_writable_root_is_still_denied() {
 
     let out = run(&w, &format!("cat {}/page.md", inner.display()));
     assert!(!String::from_utf8_lossy(&out.stdout).contains("COHORT-SENTINEL"));
+
     // …and the write side with it: a public model deleting the user's only
     // knowledge base is not a smaller problem than reading it.
-    let write = run(&w, &format!("rm -f {}/page.md", inner.display()));
-    assert!(!write.status.success(), "a deny root must not be writable either");
-    assert!(inner.join("page.md").exists());
+    //
+    // ⚠ This assertion USED to be `rm -f <page.md>` + `assert!(!status.success())`,
+    // and it could not pass on Linux under any correct implementation. Measured:
+    //
+    //     $ rm -f /nonexistent/nope ; echo $?
+    //     0
+    //
+    // POSIX `-f` suppresses the missing-operand diagnostic AND the exit status,
+    // and under `--tmpfs` the file is *absent*, not *protected* — so `rm -f`
+    // returns 0 on a correctly denied root. It also returns 0 under
+    // `--tmpfs --remount-ro`, because `rm -f` never touches the filesystem. On
+    // macOS the same line passes (`rm: Operation not permitted`), which is why
+    // it survived review: it was green on the author's machine and unlandable on
+    // the platform it was written for.
+    //
+    // Assert the OUTCOME instead of an errno, because the two kernels disagree
+    // about the observable and always will: macOS returns EPERM and `ls` fails;
+    // Linux returns ENOENT and `ls` SUCCEEDS with an empty listing (the tmpfs is
+    // really there and really empty). The one thing both must guarantee is that
+    // the host file is intact afterwards and that a *create* inside the root is
+    // refused.
+    let create = run(&w, &format!("echo x > {}/new.md", inner.display()));
+    assert!(!create.status.success(), "a deny root must not be writable either");
+    assert!(!inner.join("new.md").exists(), "a write leaked to the host");
+
+    let delete = run(&w, &format!("rm {}/page.md", inner.display())); // NOT -f
+    assert!(!delete.status.success(), "a deny root's contents must not be deletable");
+    assert!(inner.join("page.md").exists(), "the host file was deleted");
+    assert_eq!(std::fs::read_to_string(inner.join("page.md")).unwrap(), "COHORT-SENTINEL");
 }
 
 #[test]
@@ -7956,10 +8290,21 @@ fn deny_roots_are_emitted_after_the_read_allow_and_after_the_write_block() {
     let allow_write = p.find("(allow file-write*").expect("writable block");
     let deny_read = p.find("(deny file-read*").expect("deny block");
     let deny_write = p.find("(deny file-write*").expect("deny block");
-    // SBPL is last-match-wins. Emitted before either allow, this profile
-    // compiles, runs, and enforces nothing.
+    // ⚑1: this does NOT pin "otherwise it is a no-op" — measured, an
+    // early-emitted deny still denies on macOS. It pins the ONE ordering rule
+    // macOS really has: no path-filtered `allow` may follow a deny of a path it
+    // covers. Emitting the denies last is the cheapest way to guarantee that
+    // for every future block, and this assertion is what notices when a later
+    // task adds a read-side twin of the writable-roots loop.
     assert!(deny_read > allow_read && deny_read > allow_write);
     assert!(deny_write > allow_read && deny_write > allow_write);
+    // The rule itself, stated as an assertion rather than as a convention: no
+    // `(allow file-...` block may appear after the denies.
+    assert!(
+        p[deny_read..].find("(allow file-").is_none(),
+        "a path-filtered allow after a deny re-opens the deny root — measured, \
+         `deny X` then `(allow file-read* (subpath X))` yields SECRET readable, exit 0"
+    );
 }
 
 #[test]
@@ -8124,11 +8469,23 @@ In `profile()`, **after** the writable-roots block and the network block — i.e
 the final `p.push('\n')`:
 
 ```rust
-        // Issue #56 DR-14. SBPL is LAST-MATCH-WINS, so this block must come
-        // after BASE_POLICY's `(allow file-read*)` (:35) and after the
-        // writable-roots `(allow file-write*)` above. Emitted earlier, the
-        // profile still compiles, `sandbox-exec` still runs, and nothing is
-        // denied — a silent no-op with a passing test suite.
+        // Issue #56 DR-14. Emitted LAST, after BASE_POLICY's `(allow file-read*)`
+        // (:35) and after the writable-roots `(allow file-write*)` above.
+        //
+        // ⚠ The reason is not the one an earlier draft of this plan gave. That
+        // draft said an early-emitted deny is "a silent no-op"; measured on
+        // macOS 26, a deny emitted BEFORE either allow still denies reads,
+        // writes and `rm`, including in the production `writable_roots: ["/"]`
+        // shape. The real rule is narrower and is about what may come AFTER:
+        //
+        //   deny X, then (allow file-read*)                  -> still denied
+        //   deny X, then (allow file-read* (subpath X))       -> RE-OPENED
+        //   deny X, then (allow file-read* (subpath parent))  -> RE-OPENED
+        //
+        // i.e. an unfiltered later allow is harmless; a path-filtered later
+        // allow covering the deny root evaporates it. Emitting the denies last
+        // makes that impossible for every block that exists today and every one
+        // added later, which is why the ordering assertion stays.
         //
         // Two operations rather than one: `file-read*` and `file-write*` are
         // the two SBPL operations BASE_POLICY and the writable block actually
@@ -8155,13 +8512,107 @@ and in `wrap()`, beside the `-DWRITABLE_ROOT_n=` loop:
         }
 ```
 
-**(c) `macos.rs` — thread the field, answer the question.**
+**(c) `seatbelt.rs` — the live two-legged probe, cached.**
+
+```rust
+/// Whether a read-deny is really enforced on this host. A **live self-test**,
+/// because `available()` is a file-existence check and cannot tell a working
+/// Seatbelt from a broken one (⚑2).
+///
+/// TWO legs, and both are required:
+///
+///   * NEGATIVE — reading inside the deny root must fail AND must not emit the
+///     sentinel;
+///   * POSITIVE — reading a control file OUTSIDE it must succeed AND emit its
+///     own sentinel.
+///
+/// The positive leg is the one that is easy to leave out and impossible to do
+/// without: a host where `sandbox-exec` cannot start ANY process fails the
+/// negative leg for the wrong reason and would report `supported`. Measured
+/// against the three broken-host classes:
+///
+///   (i)   sandbox cannot exec anything     -> negative "passes", positive rc=1  -> REJECTED
+///   (ii)  deny inert (relative `subpath`)  -> negative rc=0 with the secret     -> REJECTED
+///   (iii) deny declared uncanonicalized    -> negative rc=0 with the secret     -> REJECTED
+///
+/// Exit codes are deliberately NOT interpreted: measured, 71 covers "target
+/// binary missing", "process-exec denied" and more, while a syntax error is 65.
+/// The probe asserts on the BYTES, and uses the exit status only as a
+/// secondary signal.
+///
+/// Cost: measured 29.9 ms for the pair (10 runs, 0.299 s total). That is why it
+/// is behind a `OnceLock` — `seatbelt.rs`/`macos.rs` contain no cache today
+/// (grep for `OnceLock|OnceCell|static` returns only the `BASE_POLICY` const at
+/// `:23`), and a 30 ms live probe per `developer__shell` call is a real
+/// regression. Linux's precedent is `effective_backend`'s
+/// `static CACHE: OnceLock<Backend>` at `linux.rs:141`.
+pub fn read_deny_selftest() -> bool {
+    static CACHE: OnceLock<bool> = OnceLock::new();
+    *CACHE.get_or_init(run_read_deny_selftest)
+}
+
+fn run_read_deny_selftest() -> bool {
+    if !available() {
+        return false;
+    }
+    let Ok(dir) = tempfile::tempdir() else { return false };
+    // CANONICALIZE. `/var/folders/...` is a symlink to `/private/var/folders/...`
+    // on macOS, and an uncanonicalized `subpath` denies nothing — which is
+    // broken-host class (iii), i.e. the probe would be testing its own bug.
+    let Ok(base) = dir.path().canonicalize() else { return false };
+    let deny = base.join("deny");
+    let ctrl = base.join("ctrl");
+    if std::fs::create_dir_all(&deny).is_err() || std::fs::create_dir_all(&ctrl).is_err() {
+        return false;
+    }
+    if std::fs::write(deny.join("s"), "DENYSENTINEL").is_err()
+        || std::fs::write(ctrl.join("c"), "CTRLSENTINEL").is_err()
+    {
+        return false;
+    }
+    let profile = format!(
+        "(version 1)\n(allow default)\n\
+         (deny file-read*  (subpath (param \"DENY_ROOT_0\")))\n\
+         (deny file-write* (subpath (param \"DENY_ROOT_0\")))\n"
+    );
+    let leg = |target: &std::path::Path| -> std::process::Output {
+        std::process::Command::new(SANDBOX_EXEC)
+            .arg("-p").arg(&profile)
+            .arg(format!("-DDENY_ROOT_0={}", deny.display()))
+            .arg("--").arg("/bin/cat").arg(target)
+            .output()
+            .unwrap_or_else(|_| std::process::Output {
+                status: Default::default(),
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+            })
+    };
+    let negative = leg(&deny.join("s"));
+    let positive = leg(&ctrl.join("c"));
+    !String::from_utf8_lossy(&negative.stdout).contains("DENYSENTINEL")
+        && !negative.status.success()
+        && positive.status.success()
+        && String::from_utf8_lossy(&positive.stdout).contains("CTRLSENTINEL")
+}
+```
+
+⚠ `/bin/cat` is used deliberately and `/bin/true` is not: **`/bin/true` does not exist on macOS**
+(only `/usr/bin/true`), and a probe that execs it fails with `execvp() … No such file or directory`
+and exit 71 — which is exactly how round 2 concluded this host had a broken Seatbelt (⚑2). `/bin/cat`
+exists on every macOS this app supports and is what makes the sentinel-byte assertion possible.
+
+**(c′) `macos.rs` — thread the field, answer the question.**
 
 ```rust
     fn supports_read_deny(&self) -> bool {
-        // Same probe as `probe()`: SBPL deny rules are part of the language, so
-        // if `sandbox-exec` is here at all, the subtraction is expressible.
-        seatbelt::available()
+        // ⚠ NOT `seatbelt::available()`. That is `cfg!(macos) && Path::new(
+        // "/usr/bin/sandbox-exec").exists()` (`seatbelt.rs:168`) — a file
+        // existence check, which `ShellSandbox::probe`'s own doc
+        // (`shell_sandbox/mod.rs:167-170`) forbids: "MUST be a real capability
+        // probe … never a version guess". Linux already honours that
+        // (`run_selftest()` `linux.rs:120-134`); macOS is the backend that does
+        // not, and this is where it starts to.
+        seatbelt::read_deny_selftest()
     }
 
     fn wrap(&self, policy: &SandboxPolicy, program: &str) -> Result<Wrapped, ShellSandboxError> {
@@ -8249,15 +8700,43 @@ In `wrap_bubblewrap`, **after** the writable-root `--bind` loop and before `--un
     // AFTER the writable `--bind`s. bubblewrap applies filesystem operations in
     // argv order and the later one wins for an overlapping path, so a deny root
     // inside a writable root is only subtracted if its `--tmpfs` comes last.
-    // Only existing roots are named: `--tmpfs` needs a mountpoint, and a root
-    // that does not exist holds nothing to read.
+    // ⚑4, MEASURED — this is not a style point:
+    //     --tmpfs BEFORE the --bind of its parent -> NESTED-SECRET, rc=0
+    //     --tmpfs AFTER  the --bind of its parent -> ENOENT, rc=1
+    // Three of the four DR-14 roots are under $HOME, which is routinely the
+    // session working dir and therefore a writable --bind root.
+    //
+    // `--remount-ro` immediately after each `--tmpfs`, because ⚑ a bare
+    // `--tmpfs` is WRITABLE — measured, `echo x > <root>/newfile.md` returns 0
+    // and the file appears in the tmpfs. The write is harmless (it lands in the
+    // child's own tmpfs and the host file is untouched) but the POLICY says
+    // these roots are neither readable nor writable, and a doc claim the code
+    // does not keep is how the next reviewer loses an afternoon. With
+    // `--remount-ro`: `cannot create …: Read-only file system`, rc=2.
+    //
+    // `if root.is_dir()` is NECESSITY, not tolerance. Measured: `--tmpfs` on a
+    // destination that does not exist ABORTS bwrap outright —
+    // `bwrap: Can't mkdir …: Read-only file system`, exit 1 — even when the
+    // parent exists. Skipping absent roots is the only way the wrapper runs at
+    // all. ⚠ It is NOT true that "a root that does not exist holds nothing to
+    // read": see AR-10, where a background process creates the root two seconds
+    // after the wrapper is built and the sandboxed job reads it at t=4 s.
     for root in &policy.deny_read_roots {
         if root.is_dir() {
             args.push("--tmpfs".to_string());
             args.push(root.display().to_string());
+            args.push("--remount-ro".to_string());
+            args.push(root.display().to_string());
         }
     }
 ```
+
+⚠ **Do not hoist the `is_dir()` skip into a shared helper.** macOS is strictly better here and a
+"simplification" would throw that away, measured: on macOS a deny root that does not exist is
+harmless to declare (the profile starts fine, exit 0) **and the deny still applies once another
+process creates it** (`Operation not permitted`). SBPL is a path-pattern match; bwrap needs a real
+mountpoint. The skip belongs in `wrap_bubblewrap` and nowhere else, or macOS silently inherits
+Linux's race (AR-10) for free.
 
 ⚠ `wrap_bubblewrap` today also passes `--unshare-pid`. Leave it exactly as it is: this task changes
 which backend is chosen and adds `--tmpfs` lines, and nothing else. Widening or narrowing the
@@ -13183,7 +13662,7 @@ costs recorded in [Accepted risks](#accepted-risks) (AR-1, AR-2 and AR-5).
 | **10** | **`ActiveWorkItem.title` is cross-session content and predates all of this** — derived from a subagent's task prompt and surfaced process-wide with a session id. The visibility rule is applied to it, but it is exposed only via `GET /active_work` for the GUI (the model-facing `subagent_status` is session-scoped), so it may deserve its own fix rather than riding this one. | Task 21 provides `appears_in_list`; wiring `/active_work` to it is a follow-up. |
 | **11** | **`POST /agent/call_tool` remains inspector-free.** This design is correct either way because the barrier is in the extension manager, but the route is a standing hazard for every *future* inspector-based control, including BR-71's. | Task 14 fixes its error mapping so a refusal reaches the caller as text rather than a bare 500, and Task 20's gate exercises it explicitly. The route itself is unchanged. |
 
-Eight more this plan surfaced. Twelve and thirteen need a ruling before the phase that touches them;
+Nine more this plan surfaced. Twelve and thirteen need a ruling before the phase that touches them;
 fourteen, fifteen and sixteen are follow-ups whose *residual* is already accepted (AR-3, AR-1, and —
 for sixteen — a pre-existing theme gap this feature neither creates nor is scoped to fix).
 Seventeen, eighteen and nineteen came out of DR-14 and each has its residual recorded in
@@ -13199,6 +13678,7 @@ safe once the app socket no longer treats an app id as an authenticator.
 | **15** | **Does a knowledge base need a declassification path, and does the barrier belong on the GUI's own read routes?** Two halves of the same scope question. (a) AR-1: a session can be declassified (Task 29, user-only, graded, audited) and a KB cannot, so a user who ratchets their only base by accident has no in-product exit. (b) Task 10C gates the four `/knowledge/*` **macro** routes (they run a model) and deliberately leaves the GUI's read routes alone (the Knowledge view is the user, not a model) — a defensible line, but it means the *app* shows a private base that the *agent* in the next tab cannot read, and nobody has decided whether that asymmetry should be visible in the UI. | Nothing in this plan; both are follow-ups. (a) is the one a user will hit first. |
 | **17** | **Should Linux get a Landlock read-deny by granting the complement?** Landlock has no deny rule, so hiding a subpath means handling read accesses and granting read to every sibling of every ancestor of every deny root. Task 14A declines it in v1 for three measured reasons, the disqualifying one being that anything created in an enumerated ancestor *after* the ruleset is built is unreadable for that command's lifetime — `cd ~ && mkdir out && echo x > out/f && cat out/f` fails. | Task 14A makes `bubblewrap` the only Linux mechanism that can express the read-deny, and the refusal names `apt install bubblewrap` as the fix. A Landlock complement would remove that dependency; it needs a real ergonomics trial on a populated `$HOME` before it is worth the failure mode. |
 | **18** | **Should the per-app agent WebSocket be authenticated by something a shell cannot obtain?** `GET /apps/{id}` and `GET /apps/{id}/agent` are deliberately unauthenticated (`auth.rs:52-78`), and `serve_index` (`apps.rs:168-184`) embeds the socket token in the page it serves, so any loopback client that knows an app id can read the token and drive that app's agent. DR-14 removes the two local sources of app ids (`GET /apps` needs the secret; the app tree is deny root #4) but does not close the path for an id the model already has. | Nothing in this plan; the residual is stated in [AR-6](#ar-6--on-a-host-that-cannot-express-the-read-deny-a-public-session-loses-the-shell-and-two-costs-come-with-the-sandbox-itself) and pinned by Task 14C's `the_unauthenticated_app_surface_does_not_grow_by_accident`. |
+| **20** | **Should the daemon's HTTP API authenticate a caller that is on the same machine?** [AR-11](#ar-11--the-daemons-own-api-secret-is-recoverable-so-the-second-door-is-held-by-layer-a-and-not-by-the-environment-strip): the secret is recoverable from the daemon's own environment (`ps -Ewww -p $PPID` on macOS, `/proc/self/environ` in-process on Linux), so `check_token`'s header comparison stops a remote caller and not a local one. Layer A covers the biggest local route, `POST /agent/call_tool`, because that route dispatches through the same choke point. It does **not** cover the routes that return private content without running a tool: `GET /sessions/{id}/export` and the rest of the transcript family, the `/knowledge/*` read routes, `GET /apps/{id}/export`, and `GET /diagnostics/{id}` — which returns a zip of `session.json`, recent `logs/*.jsonl` and a verbatim `config.yaml`, and is the widest single route in the API. | Nothing in this plan. Task 14C states the residual instead of the old "no way to authenticate" claim, and pins the strip so the *remote* half stays closed. Closing the local half needs a per-caller credential the daemon does not hand to its own children — the same shape as [Open question 18](#open-questions), and probably the same fix. |
 | **19** | **Should DR-14's Agent Drafter root narrow to `.vault/` plus other sessions' apps?** Denying the whole root means a public-capability chat cannot `cat` its own app's source from the shell, which is a real ergonomic loss for the drafter workflow (AR-6(3)). The whole root is on the list because it is also the only on-disk source of app **ids**, which Open question 18 shows are load-bearing. | Task 14B denies the whole root. Narrowing it is safe only after 18 is closed. |
 | **16** | **`--text-subtle` on `--background-medium` is sub-AA in three of the six family×mode scopes, and #56 is not the right owner of the fix.** Measured with `ui/desktop/scripts/lib/theme-tokens.mjs`: parchment:dark **3.75**, alma-mater:light **4.45**, alma-mater:dark **4.28**, against a 4.5 floor. `--background-medium` is the row-hover ground that `biorouter-list-row`, `SessionItem` and `ExtensionItem` all paint, so this affects every subtle label on a hovered row **today** — it is a pre-existing gap, not something the privacy badge introduces, and `check-contrast.mjs` has never asserted it. Task 26 therefore audits only `--text-default` and `--text-muted` on that ground (the two the badge actually uses) and the total is **288**, not 294. Auditing the third token as well makes the run exit 1 with three failures whose only fix is a theme-token edit — precisely the "Zero theme work" Task 26 Step 5 forbids, and a scope the privacy feature has no business taking. | Nothing in this plan. Open it as a theme/a11y follow-up at Task 40 Step 6, alongside the deferred findings from the 2026-07 theme redesign. Do **not** close it by lowering the threshold in `check-contrast.mjs`. |
 
