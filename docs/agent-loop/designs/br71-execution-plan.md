@@ -22811,7 +22811,12 @@ symbol.**
    and sends `MessageEvent::UpdateConversation { conversation, token_state }` as its
    first frame, then live events — the comment on it says so: *"Join-mid-turn snapshot:
    the observer starts from the full stored conversation, then applies live events."*
-   Nothing new is needed on the server for the read half.
+   Nothing new is needed on the server for the read half. ⚠ **`conversation` is a bare
+   JSON array on the wire**: `Conversation` is `pub struct Conversation(Arc<Vec<Message>>)`
+   with a hand-written `Serialize` that forwards to the inner `Vec`
+   (`crates/biorouter/src/conversation/mod.rs`), so the frame is
+   `{"type":"UpdateConversation","conversation":[…],"token_state":{…}}` — **not**
+   `conversation.messages`. Getting this wrong is invisible until a live run.
 2. **Task 20's `watch` throws that snapshot away.** `session_watch.rs`'s `render_frame`
    maps `"UpdateConversation"` to the single line
    `"[snapshot] conversation resynced"`. That is correct for a *resync* mid-stream and
@@ -22891,14 +22896,21 @@ In `session_watch.rs`'s existing `#[cfg(test)] mod tests` (Task 20 created it):
 ```rust
     #[test]
     fn the_join_snapshot_is_rendered_as_a_transcript_not_a_one_liner() {
+        // ⚠ `conversation` is a BARE ARRAY on the wire, not `{ "messages": [...] }`.
+        // `Conversation` is a newtype over `Arc<Vec<Message>>` whose `Serialize`
+        // impl is `self.0.as_ref().serialize(serializer)` (`conversation/mod.rs`),
+        // and its `ToSchema` declares an Array of `Message`. A fixture shaped
+        // `{"messages": […]}` makes this test pass against an implementation that
+        // is wrong on the real wire — which is the shape a reader assumes.
         let frame = serde_json::json!({
             "type": "UpdateConversation",
-            "conversation": { "messages": [
+            "conversation": [
                 { "role": "user", "content": [{ "type": "text", "text": "audit the migration" }],
                   "metadata": { "userVisible": true } },
                 { "role": "assistant", "content": [{ "type": "text", "text": "found two gaps" }],
                   "metadata": { "userVisible": true } }
-            ]}
+            ],
+            "token_state": { "totalTokens": 12 }
         });
         let lines = render_join_snapshot(&frame);
         assert!(lines.len() >= 2, "the transcript, not a status line: {lines:?}");
@@ -22981,11 +22993,8 @@ list names all four missing symbols rather than assuming.
 /// wrong for a join: it is the difference between "something changed" and "here
 /// is where this conversation is."
 pub(crate) fn render_join_snapshot(frame: &serde_json::Value) -> Vec<String> {
-    let Some(messages) = frame
-        .get("conversation")
-        .and_then(|c| c.get("messages"))
-        .and_then(serde_json::Value::as_array)
-    else {
+    // A bare array — see the fixture note above.
+    let Some(messages) = frame.get("conversation").and_then(serde_json::Value::as_array) else {
         return Vec::new();
     };
     messages
