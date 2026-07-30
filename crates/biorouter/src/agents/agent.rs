@@ -703,6 +703,12 @@ pub struct Agent {
     /// a session reload, a different session on a shared agent) simply misses and
     /// falls back to a full normalization.
     pub(super) normalizer: crate::conversation::SharedNormalizer,
+    /// BR-71 decision 21: extension names this agent loaded ITSELF, as a
+    /// derived consequence of session state rather than a user decision.
+    /// Both persist paths filter these out, because both snapshot every loaded
+    /// extension and would otherwise record the auto-injection as if the user
+    /// had enabled it in Settings.
+    pub(super) auto_injected_extensions: Mutex<HashSet<String>>,
 }
 
 #[derive(Clone, Debug)]
@@ -978,6 +984,7 @@ impl Agent {
             tool_risks,
             efforts: Default::default(),
             normalizer: Default::default(),
+            auto_injected_extensions: Mutex::new(HashSet::new()),
         }
     }
 
@@ -3119,12 +3126,33 @@ impl Agent {
         )
     }
 
+    /// Extension configs that may be recorded as the user's session
+    /// configuration. See [`Agent::auto_injected_extensions`]: an extension this
+    /// agent injected for ITSELF (`ensure_spawn_extension`) is a derived
+    /// per-turn consequence of `subagents_enabled`, not a user decision, and
+    /// must never reach the session row.
+    ///
+    /// Both persist paths go through here, because both snapshot *every loaded
+    /// extension* rather than the one being changed — filtering only one of them
+    /// would still let the other write the injection into `extension_data`.
+    pub(super) async fn persistable_extension_configs(&self) -> Vec<ExtensionConfig> {
+        let auto_injected = self.auto_injected_extensions.lock().await.clone();
+        self.extension_manager
+            .get_extension_configs()
+            .await
+            .into_iter()
+            // `ExtensionConfig::name()` returns an OWNED String, and
+            // `HashSet::<String>::contains` takes `&Q` — so `.as_str()` is
+            // required; `contains(config.name())` is E0308.
+            .filter(|config| !auto_injected.contains(config.name().as_str()))
+            .collect()
+    }
+
     /// Save current extension state to session metadata
     /// Should be called after any extension add/remove operation
     pub async fn save_extension_state(&self, session: &SessionConfig) -> Result<()> {
-        let extension_configs = self.extension_manager.get_extension_configs().await;
-
-        let extensions_state = EnabledExtensionsState::new(extension_configs);
+        let extensions_state =
+            EnabledExtensionsState::new(self.persistable_extension_configs().await);
 
         let session_manager = self.config.session_manager.clone();
         let mut session_data = session_manager.get_session(&session.id, false).await?;
@@ -3145,8 +3173,8 @@ impl Agent {
 
     /// Save current extension state to session by session_id
     pub async fn persist_extension_state(&self, session_id: &str) -> Result<()> {
-        let extension_configs = self.extension_manager.get_extension_configs().await;
-        let extensions_state = EnabledExtensionsState::new(extension_configs);
+        let extensions_state =
+            EnabledExtensionsState::new(self.persistable_extension_configs().await);
 
         let session_manager = self.config.session_manager.clone();
         let session = session_manager.get_session(session_id, false).await?;
@@ -3202,10 +3230,25 @@ impl Agent {
                     let name = config_clone.name().to_string();
                     let normalized_name = normalize(&name);
 
-                    if agent_ref
-                        .extension_manager
-                        .is_extension_enabled(&normalized_name)
+                    // BR-71 decision 21: "already loaded" must not include a
+                    // copy THIS AGENT auto-injected. `ensure_spawn_extension`
+                    // loads `workspace` with `available_tools: ["subagent"]`,
+                    // and a turn can run before (or concurrently with) this
+                    // load — at which point skipping would leave the session's
+                    // own, explicitly configured full-surface entry
+                    // permanently shadowed by the spawn-only one. Falling
+                    // through instead is safe: `add_extension` evicts the
+                    // injection and clears its mark before loading this config.
+                    let auto_injected = agent_ref
+                        .auto_injected_extensions
+                        .lock()
                         .await
+                        .contains(&normalized_name);
+                    if !auto_injected
+                        && agent_ref
+                            .extension_manager
+                            .is_extension_enabled(&normalized_name)
+                            .await
                     {
                         tracing::debug!("Extension {} already loaded, skipping", name);
                         return ExtensionLoadResult {
@@ -3239,6 +3282,29 @@ impl Agent {
     }
 
     pub async fn add_extension(&self, extension: ExtensionConfig) -> ExtensionResult<()> {
+        // BR-71 decision 21: an explicit enable of a name WE auto-injected must
+        // REPLACE the injection, not be swallowed by it.
+        //
+        // `ExtensionManager::add_extension` returns `Ok(())` without touching
+        // anything when the key is already loaded. So without this eviction, a
+        // user who turns Workspace Control on mid-session — after
+        // `ensure_spawn_extension` already loaded `workspace` with
+        // `available_tools: ["subagent"]` — would get a silent no-op: the tool
+        // list keeps only the spawn tool, and the mark cleared below then
+        // persists the SPAWN-ONLY config into the session row as if the user
+        // had chosen it, so the downgrade survives every reload.
+        let injected_key = normalize(&extension.key());
+        let was_auto_injected = self
+            .auto_injected_extensions
+            .lock()
+            .await
+            .contains(&injected_key);
+        if was_auto_injected {
+            // Best-effort: a failure here leaves the injection in place, which
+            // is the same state as not having tried.
+            let _ = self.extension_manager.remove_extension(&injected_key).await;
+        }
+
         match &extension {
             ExtensionConfig::Frontend {
                 tools,
@@ -3271,6 +3337,16 @@ impl Agent {
                     .await?;
             }
         }
+
+        // An EXPLICIT add is a user decision, even for a name we auto-injected
+        // earlier — clear the mark so this one persists normally and Settings
+        // shows what the user actually chose. `ensure_spawn_extension` re-marks
+        // *after* its own call to this method, which is why that ordering
+        // matters there.
+        self.auto_injected_extensions
+            .lock()
+            .await
+            .remove(&injected_key);
 
         Ok(())
     }
@@ -3321,14 +3397,84 @@ impl Agent {
             .unwrap_or(true)
     }
 
+    /// Idempotently load the workspace extension for a session that may
+    /// delegate. Never downgrades a user-enabled entry: the presence check runs
+    /// first, and a present entry (whatever its `available_tools`) is left
+    /// exactly as the user configured it.
+    ///
+    /// That guarantee needs two counterparts, because the injection can also
+    /// land *before* the explicit entry does and the extension manager treats
+    /// an already-loaded key as a no-op:
+    ///
+    /// * [`Agent::add_extension`] evicts an injected copy before loading an
+    ///   explicit one (the user enabling Workspace Control mid-session);
+    /// * [`Agent::load_extensions_from_session`] does not count an injected
+    ///   copy as "already loaded" (a turn that ran before, or concurrently
+    ///   with, the session load).
+    async fn ensure_spawn_extension(&self, session_id: &str) {
+        // Already canonical: `normalize(name_to_key("workspace")) == "workspace"`,
+        // so this is simultaneously the `PLATFORM_EXTENSIONS` registry key, the
+        // extension-manager map key, the advertised tool prefix, and the key the
+        // `auto_injected_extensions` mark is stored under.
+        const NAME: &str = "workspace";
+        if self.extension_manager.is_extension_enabled(NAME).await {
+            return;
+        }
+        let config = ExtensionConfig::Platform {
+            name: NAME.to_string(),
+            description: "Delegate work to subagents".to_string(),
+            bundled: Some(true),
+            // The spawn-only surface. Enforced on BOTH the advertisement path
+            // (`filter`/`is_tool_available` in `fetch_all_tools`) and the
+            // dispatch path (the same predicate in `dispatch_tool_call`).
+            available_tools: vec![SUBAGENT_TOOL_NAME.to_string()],
+        };
+        match self.add_extension(config).await {
+            // Record that WE put it there, so the persist paths can exclude it.
+            // `add_extension` clears the mark on the explicit path, so this
+            // ordering matters: mark AFTER the load.
+            Ok(()) => {
+                self.auto_injected_extensions
+                    .lock()
+                    .await
+                    .insert(NAME.to_string());
+            }
+            // Never fatal: a session that cannot load the extension simply has
+            // no spawn tool this turn, which is a strictly smaller failure than
+            // refusing the turn.
+            Err(e) => tracing::warn!(
+                session_id,
+                "could not inject the workspace extension for subagents: {e}"
+            ),
+        }
+    }
+
     pub async fn list_tools(&self, session_id: &str, extension_name: Option<String>) -> Vec<Tool> {
+        // BR-71 decision 21: the workspace extension is the ONE spawn
+        // implementation, so a session that may delegate must have it LOADED
+        // before the tool list is read. When the user enabled `workspace`
+        // explicitly it is already present with the full surface and this is a
+        // no-op; otherwise it is injected with `available_tools: ["subagent"]`,
+        // so delegation rides along WITHOUT the cross-session control surface
+        // (§5 blast radius unchanged).
+        //
+        // This MUST run before `get_prefixed_tools`: that call is the only read
+        // of the extension manager in this function, and `ensure_spawn_extension`
+        // only *loads* the extension — it does not re-run the read. Injecting
+        // after it would produce a tool list with no spawn tool on that turn,
+        // i.e. "the first turn of every session cannot delegate", and for a
+        // one-shot `biorouter run` every turn is the first turn.
+        let subagents_enabled = self.subagents_enabled(session_id).await;
+        if subagents_enabled {
+            self.ensure_spawn_extension(session_id).await;
+        }
+
         let mut prefixed_tools = self
             .extension_manager
             .get_prefixed_tools(extension_name.clone())
             .await
             .unwrap_or_default();
 
-        let subagents_enabled = self.subagents_enabled(session_id).await;
         if (extension_name.is_none() || extension_name.as_deref() == Some("platform"))
             && self.config.scheduler_service.is_some()
         {
@@ -3376,6 +3522,14 @@ impl Agent {
 
     pub async fn remove_extension(&self, name: &str) -> Result<()> {
         self.extension_manager.remove_extension(name).await?;
+        // Clear any auto-injection mark, so a removed-then-re-injected extension
+        // is not permanently exempt from persistence. Normalized because the
+        // mark is stored under the manager's key, and this parameter is a
+        // caller-supplied name (`remove_extension` normalizes it too).
+        self.auto_injected_extensions
+            .lock()
+            .await
+            .remove(&normalize(name));
         Ok(())
     }
 
@@ -7017,6 +7171,378 @@ mod tests {
             }
             Drained::Empty => panic!("the queued steer must be drained by its own turn"),
         }
+    }
+
+    /// An `Agent` over a throwaway session store with exactly ONE loaded
+    /// extension, in the requested mode.
+    ///
+    /// The single extension is not decoration: `subagents_enabled`'s final
+    /// expression refuses when the extension list is empty, so an agent with no
+    /// extensions can never satisfy the precondition these tests assert.
+    async fn agent_for_tests(mode: crate::config::BioRouterMode) -> (Agent, String) {
+        let temp = tempfile::TempDir::new().unwrap();
+        let sm = std::sync::Arc::new(crate::session::SessionManager::new(
+            temp.path().to_path_buf(),
+        ));
+        let session = sm
+            .create_session(
+                temp.path().to_path_buf(),
+                "tools".into(),
+                crate::session::session_manager::SessionType::User,
+            )
+            .await
+            .unwrap();
+        std::mem::forget(temp); // keep the sqlite file alive for the test
+        let agent = Agent::with_config(AgentConfig::new(
+            sm,
+            crate::config::permission::PermissionManager::instance(),
+            None,
+            mode,
+        ));
+        // One loaded extension, so the "no extensions ⇒ no subagents" gate passes.
+        agent
+            .add_extension(crate::agents::extension::ExtensionConfig::Platform {
+                name: "todo".into(),
+                description: "todo".into(),
+                bundled: Some(true),
+                available_tools: vec![],
+            })
+            .await
+            .unwrap();
+        (agent, session.id)
+    }
+
+    async fn agent_with_one_extension_for_tests() -> (Agent, String) {
+        agent_for_tests(crate::config::BioRouterMode::Auto).await
+    }
+
+    async fn agent_in_chat_mode_for_tests() -> (Agent, String) {
+        agent_for_tests(crate::config::BioRouterMode::Chat).await
+    }
+
+    /// Decision 21: a session with subagents enabled and NO explicit workspace
+    /// entry still gets a spawn tool. This is the regression that would
+    /// otherwise break every existing config when Task 19 lands.
+    #[tokio::test]
+    async fn subagents_enabled_injects_the_workspace_extension_with_the_spawn_tool_only() {
+        let (agent, session_id) = agent_with_one_extension_for_tests().await;
+        assert!(agent.subagents_enabled(&session_id).await, "precondition");
+
+        let names: Vec<String> = agent
+            .list_tools(&session_id, None)
+            .await
+            .iter()
+            .map(|t| t.name.to_string())
+            .collect();
+        assert!(
+            names.iter().any(|n| n == "workspace__subagent"),
+            "spawn tool must be advertised under the workspace prefix: {names:?}"
+        );
+        // …and none of the cross-session surface came with it.
+        assert!(
+            !names.iter().any(|n| n.starts_with("workspace__workspace_")),
+            "auto-injection must not grant cross-session control: {names:?}"
+        );
+    }
+
+    /// The dispatch half of the same guarantee: `available_tools` is enforced
+    /// on the call path too (`extension_manager.rs`, the
+    /// `config.is_tool_available` re-check in `dispatch_tool_call`), so a
+    /// remembered tool name cannot reach the handler.
+    #[tokio::test]
+    async fn an_auto_injected_session_cannot_dispatch_a_cross_session_tool() {
+        let (agent, session_id) = agent_with_one_extension_for_tests().await;
+        let _ = agent.list_tools(&session_id, None).await; // triggers the injection
+        let dispatched = agent
+            .extension_manager
+            .dispatch_tool_call(
+                &session_id,
+                rmcp::model::CallToolRequestParams {
+                    meta: None,
+                    name: "workspace__workspace_send_prompt".into(),
+                    arguments: Some(
+                        serde_json::json!({ "session_id": "other", "text": "hi", "mode": "note" })
+                            .as_object()
+                            .unwrap()
+                            .clone(),
+                    ),
+                    task: None,
+                },
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await;
+        // `ToolCallResult` is not `Debug`, so `unwrap_err()` (which formats the
+        // Ok payload) does not compile — match instead.
+        let err = match dispatched {
+            Ok(_) => panic!(
+                "workspace_send_prompt is outside the auto-injection's \
+                 available_tools and must not reach a handler"
+            ),
+            Err(e) => e,
+        };
+        assert!(err.to_string().contains("not available"), "got: {err}");
+    }
+
+    /// A user-enabled workspace entry keeps the full surface — the injection
+    /// must never downgrade it.
+    #[tokio::test]
+    async fn an_explicit_workspace_entry_keeps_every_tool() {
+        let (agent, session_id) = agent_with_one_extension_for_tests().await;
+        agent
+            .add_extension(crate::agents::extension::ExtensionConfig::Platform {
+                name: "workspace".into(),
+                description: "Workspace Control".into(),
+                bundled: Some(true),
+                available_tools: vec![], // empty = all
+            })
+            .await
+            .unwrap();
+
+        let names: Vec<String> = agent
+            .list_tools(&session_id, None)
+            .await
+            .iter()
+            .map(|t| t.name.to_string())
+            .collect();
+        assert!(
+            names
+                .iter()
+                .any(|n| n == "workspace__workspace_send_prompt"),
+            "{names:?}"
+        );
+        assert!(
+            names.iter().any(|n| n == "workspace__subagent"),
+            "{names:?}"
+        );
+    }
+
+    /// The other order, and the one the plan's two-tier table is really about:
+    /// the user turns Workspace Control on **after** a turn has already
+    /// auto-injected the spawn-only entry.
+    ///
+    /// `ExtensionManager::add_extension` returns `Ok(())` without touching
+    /// anything when the key is already loaded, so the explicit enable is a
+    /// silent no-op unless `Agent::add_extension` evicts the injection first.
+    /// The failure is doubly bad: the model keeps only `subagent`, and the
+    /// spawn-only config is then persisted into the session row as the user's
+    /// own decision, so the downgrade survives every reload.
+    #[tokio::test]
+    async fn an_explicit_enable_upgrades_an_auto_injected_entry() {
+        let (agent, session_id) = agent_with_one_extension_for_tests().await;
+
+        // A turn happens first: the spawn-only surface is injected.
+        let names: Vec<String> = agent
+            .list_tools(&session_id, None)
+            .await
+            .iter()
+            .map(|t| t.name.to_string())
+            .collect();
+        assert!(
+            !names
+                .iter()
+                .any(|n| n == "workspace__workspace_send_prompt"),
+            "precondition: only the spawn tool was injected: {names:?}"
+        );
+
+        // Now the user enables Workspace Control in Settings.
+        agent
+            .add_extension(crate::agents::extension::ExtensionConfig::Platform {
+                name: "workspace".into(),
+                description: "Workspace Control".into(),
+                bundled: Some(true),
+                available_tools: vec![], // empty = all
+            })
+            .await
+            .unwrap();
+
+        let names: Vec<String> = agent
+            .list_tools(&session_id, None)
+            .await
+            .iter()
+            .map(|t| t.name.to_string())
+            .collect();
+        assert!(
+            names
+                .iter()
+                .any(|n| n == "workspace__workspace_send_prompt"),
+            "an explicit enable must REPLACE the auto-injection, not be \
+             swallowed by it: {names:?}"
+        );
+        assert!(
+            names.iter().any(|n| n == "workspace__subagent"),
+            "{names:?}"
+        );
+
+        // …and what persists is the user's full-surface config, not ours.
+        let persisted: Vec<Vec<String>> = agent
+            .persistable_extension_configs()
+            .await
+            .into_iter()
+            .filter(|c| c.name() == "workspace")
+            .map(|c| match c {
+                crate::agents::extension::ExtensionConfig::Platform {
+                    available_tools, ..
+                } => available_tools,
+                other => panic!("unexpected variant: {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            persisted,
+            vec![Vec::<String>::new()],
+            "the persisted entry must be the user's (empty = all), not the \
+             injection's [\"subagent\"]"
+        );
+    }
+
+    /// The session-load mirror of the same guarantee.
+    ///
+    /// `load_extensions_from_session` skips any name already loaded, so an
+    /// injection that landed first (a turn ran before the load, or concurrently
+    /// with it) would permanently shadow the session's OWN explicitly
+    /// configured `workspace` entry with the spawn-only one — and, once
+    /// `add_extension` clears the mark, persist that downgrade back to the row.
+    #[tokio::test]
+    async fn a_session_load_replaces_an_auto_injected_entry_it_would_otherwise_skip() {
+        let (agent, session_id) = agent_with_one_extension_for_tests().await;
+        let _ = agent.list_tools(&session_id, None).await; // injects spawn-only
+
+        // The session's own configuration names workspace with the full surface.
+        let state = crate::session::EnabledExtensionsState::new(vec![
+            crate::agents::extension::ExtensionConfig::Platform {
+                name: "workspace".into(),
+                description: "Workspace Control".into(),
+                bundled: Some(true),
+                available_tools: vec![],
+            },
+        ]);
+        let mut session = agent
+            .config
+            .session_manager
+            .get_session(&session_id, false)
+            .await
+            .unwrap();
+        state
+            .to_extension_data(&mut session.extension_data)
+            .unwrap();
+
+        let agent = std::sync::Arc::new(agent);
+        let results = agent.load_extensions_from_session(&session).await;
+        assert!(
+            results.iter().all(|r| r.success),
+            "load must succeed: {results:?}"
+        );
+
+        let names: Vec<String> = agent
+            .list_tools(&session_id, None)
+            .await
+            .iter()
+            .map(|t| t.name.to_string())
+            .collect();
+        assert!(
+            names
+                .iter()
+                .any(|n| n == "workspace__workspace_send_prompt"),
+            "the session's own entry must win over the injection: {names:?}"
+        );
+    }
+
+    /// The auto-injection must never reach the SESSION ROW. `persist_extension_state`
+    /// snapshots every loaded extension, so without the exclusion this test's
+    /// second half fails and Settings shows Workspace Control enabled on a
+    /// session the user never touched.
+    #[tokio::test]
+    async fn an_auto_injected_extension_is_never_persisted_to_the_session() {
+        let (agent, session_id) = agent_with_one_extension_for_tests().await;
+        let _ = agent.list_tools(&session_id, None).await; // triggers the injection
+        assert!(
+            agent
+                .extension_manager
+                .is_extension_enabled("workspace")
+                .await,
+            "precondition: the injection happened"
+        );
+
+        // BOTH persist paths must filter, so assert on the SHARED helper first —
+        // that is the one thing covering `save_extension_state` too. That method
+        // is the reply loop's own path (fired whenever the model enables an
+        // extension mid-turn through `manage_extensions`); it snapshots the same
+        // set and, without the shared helper, is unfiltered.
+        let persistable: Vec<String> = agent
+            .persistable_extension_configs()
+            .await
+            .iter()
+            .map(|c| c.name().to_string())
+            .collect();
+        assert!(
+            !persistable.contains(&"workspace".to_string()),
+            "the filter both persist paths share must exclude the injection: {persistable:?}"
+        );
+
+        // The GUI toggling ANY extension, and workspace_set_tools, both land here.
+        agent.persist_extension_state(&session_id).await.unwrap();
+
+        let session = agent
+            .config
+            .session_manager
+            .get_session(&session_id, false)
+            .await
+            .unwrap();
+        let persisted =
+            crate::session::EnabledExtensionsState::from_extension_data(&session.extension_data)
+                .expect("a state was written");
+        assert!(
+            !persisted.extensions.iter().any(|e| e.name() == "workspace"),
+            "the auto-injection must not be recorded as a user decision: {:?}",
+            persisted
+                .extensions
+                .iter()
+                .map(|e| e.name().to_string())
+                .collect::<Vec<_>>()
+        );
+
+        // …but an EXPLICIT add of the same extension does persist.
+        agent
+            .add_extension(crate::agents::extension::ExtensionConfig::Platform {
+                name: "workspace".into(),
+                description: "Workspace Control".into(),
+                bundled: Some(true),
+                available_tools: vec![],
+            })
+            .await
+            .unwrap();
+        agent.persist_extension_state(&session_id).await.unwrap();
+        let session = agent
+            .config
+            .session_manager
+            .get_session(&session_id, false)
+            .await
+            .unwrap();
+        let persisted =
+            crate::session::EnabledExtensionsState::from_extension_data(&session.extension_data)
+                .expect("a state was written");
+        assert!(
+            persisted.extensions.iter().any(|e| e.name() == "workspace"),
+            "an explicit enable is a user decision and must be recorded"
+        );
+    }
+
+    /// The inverse: subagents disabled (here: a non-Auto mode) means no
+    /// injection and no spawn tool — today's behaviour, preserved.
+    #[tokio::test]
+    async fn subagents_disabled_injects_nothing() {
+        let (agent, session_id) = agent_in_chat_mode_for_tests().await;
+        assert!(!agent.subagents_enabled(&session_id).await, "precondition");
+        let names: Vec<String> = agent
+            .list_tools(&session_id, None)
+            .await
+            .iter()
+            .map(|t| t.name.to_string())
+            .collect();
+        assert!(!names.iter().any(|n| n.contains("subagent")), "{names:?}");
+        assert!(
+            !names.iter().any(|n| n.starts_with("workspace__")),
+            "{names:?}"
+        );
     }
 }
 

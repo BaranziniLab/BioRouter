@@ -99,6 +99,8 @@ const INSTRUCTIONS: &str = indoc! {r#"
       to; you still receive only its final summary, so use
       workspace_read_conversation view:"tool_calls" on it to verify what it
       actually did. The user may have intervened; the result tells you if so.
+    Only the workspace tools present in your tool list are available to you;
+    `subagent` is always available when delegation is enabled.
     Routing: to search past conversations by content use chatrecall (if
     enabled), not these tools. Durable facts belong in Memory. To fold a
     conversation into a knowledge base use ingest_conversation. If no GUI is
@@ -429,10 +431,14 @@ impl WorkspaceClient {
                 serde_json::to_value(schema_for!(WorkspaceWatchParams)).unwrap(),
                 true,
             ),
-            // Tasks 19/24 append:
-            // workspace_open and `subagent`
-            // (advertised only; the spawn dispatch lives in agent.rs — see
-            // Task 19).
+            // BR-71 decisions 20/22: the ONE spawn tool, under its existing
+            // name. Dispatch is intercepted by the agent loop (it needs the
+            // parent's TaskConfig — provider, extensions, working dir — which
+            // only `Agent::dispatch_tool_call` has); this advertisement is what
+            // puts it in the model's tool list. `&[]` = the generic description;
+            // Task 19 restores the sub-workflow-enriched one.
+            crate::agents::subagent_tool::create_subagent_tool(&[]),
+            // Task 24 appends `workspace_open`.
         ]
     }
 
