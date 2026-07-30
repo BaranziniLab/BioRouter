@@ -106,7 +106,11 @@ async fn auto_mode_refuses_the_whole_store_read() {
     let requests = vec![global_read("r1", "*")];
     let result = decide(&manager, &requests, BioRouterMode::Auto).await;
 
-    assert_eq!(result.denied.len(), 1, "the bulk global read must be denied");
+    assert_eq!(
+        result.denied.len(),
+        1,
+        "the bulk global read must be denied"
+    );
     assert_eq!(result.denied[0].id, "r1");
     assert!(result.approved.is_empty() && result.needs_approval.is_empty());
 }

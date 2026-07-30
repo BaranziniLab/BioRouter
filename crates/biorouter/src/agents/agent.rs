@@ -1007,6 +1007,18 @@ impl Agent {
             crate::security::sensitive_ops::SensitiveOpsInspector,
         ));
 
+        // Issue #63: route access to the machine-wide (global) memory store
+        // through the user. Argument-aware — it reads `is_global`/`category`,
+        // not just the tool name — and, unlike the sensitive-ops gate, active in
+        // every mode that runs tools: Auto's blanket allow is the loudest case,
+        // but a SmartApprove read-only grade and a user `AlwaysAllow` on the
+        // memory tool are the same undisclosed cross-session read. Registered
+        // above the permission inspector for readability only; the merge is
+        // escalation-only, so its verdict wins from either position.
+        tool_inspection_manager.add_inspector(Box::new(
+            crate::security::global_memory::GlobalMemoryInspector,
+        ));
+
         // Add permission inspector (medium-high priority). BR-18: it reads the
         // shared risk registry the agent refreshes each turn from the model's
         // tool list, so `SmartApprove` auto-approves read-only-annotated tools
@@ -2487,6 +2499,18 @@ impl Agent {
                     Some(result)
                         if result.inspector_name
                             == crate::tool_monitor::REPETITION_INSPECTOR_NAME =>
+                    {
+                        result.reason.clone()
+                    }
+                    // #63: a cross-session memory shape Biorouter refuses (the
+                    // whole-store global read). Same reasoning as the loop
+                    // guards above — the user declined nothing, and the reason
+                    // is the only thing that tells the model the itemised call
+                    // still works. `DECLINED_RESPONSE` here would be both untrue
+                    // and unactionable, and would read as the feature being off.
+                    Some(result)
+                        if result.inspector_name
+                            == crate::security::global_memory::GLOBAL_MEMORY_INSPECTOR_NAME =>
                     {
                         result.reason.clone()
                     }

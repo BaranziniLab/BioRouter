@@ -70,7 +70,6 @@
 //! whole-store read is *also* refused inside the memory server itself, where the
 //! shape is unambiguous whatever route reached it.
 
-use rmcp::model::CallToolRequestParams;
 use serde_json::{Map, Value};
 
 use crate::config::BioRouterMode;
@@ -94,12 +93,186 @@ pub enum GlobalMemoryGate {
     Refuse(String),
 }
 
+/// The `biorouter-mcp` memory server's four tools, named as the *tool* names
+/// they are declared with. The `<extension>__` prefix the extension manager adds
+/// is configuration (an operator can mount the server under any name), so it is
+/// deliberately not part of the match.
+const RETRIEVE_MEMORIES: &str = "retrieve_memories";
+const REMEMBER_MEMORY: &str = "remember_memory";
+const REMOVE_MEMORY_CATEGORY: &str = "remove_memory_category";
+const REMOVE_SPECIFIC_MEMORY: &str = "remove_specific_memory";
+
+const MEMORY_TOOL_NAMES: &[&str] = &[
+    RETRIEVE_MEMORIES,
+    REMEMBER_MEMORY,
+    REMOVE_MEMORY_CATEGORY,
+    REMOVE_SPECIFIC_MEMORY,
+];
+
+/// The documented "every category" sentinel, matched exactly as the memory
+/// server dispatches it (`params.category == "*"`). Issue #73 keeps `*` a legal
+/// plain category name as well, so a padded `" * "` is an ordinary category and
+/// must not be reported to the user as a whole-store operation.
+const ALL_CATEGORIES: &str = "*";
+
+/// Which memory tool this is, from the tool name as the model called it.
+fn memory_tool(tool_name: &str) -> Option<&'static str> {
+    // `a__b` → `b`; a bare `b` → `b`.
+    let base = tool_name
+        .rsplit("__")
+        .next()
+        .unwrap_or(tool_name)
+        .to_ascii_lowercase();
+    MEMORY_TOOL_NAMES.iter().copied().find(|n| *n == base)
+}
+
+/// Whether a JSON value reads as `true`.
+///
+/// `is_global` is declared `bool`, but a model that sends `"true"` would
+/// otherwise slip past a strict `as_bool()` and reach the store ungated — and
+/// `serde` would still accept it in some shapes. Leniency here only ever *adds*
+/// a consent prompt. An absent or unrecognised flag is **not** treated as
+/// global: local is the tool's documented default, so failing that way turns a
+/// malformed call into a local one, never into a silent machine-wide one.
+fn reads_as_true(value: &Value) -> bool {
+    match value {
+        Value::Bool(b) => *b,
+        Value::String(s) => matches!(s.trim().to_ascii_lowercase().as_str(), "true" | "yes" | "1"),
+        Value::Number(n) => n.as_f64().is_some_and(|f| f != 0.0),
+        _ => false,
+    }
+}
+
+fn targets_global_store(args: &Map<String, Value>) -> bool {
+    args.get("is_global").is_some_and(reads_as_true)
+}
+
+fn category_of(args: &Map<String, Value>) -> Option<&str> {
+    args.get("category").and_then(Value::as_str)
+}
+
+/// True for the code-execution tool, whose JS body carries the real (inner) tool
+/// calls. Those are dispatched straight through the extension manager and never
+/// reach an agent-layer inspector, so the body itself has to be inspected.
+fn is_execute_code(tool_name: &str) -> bool {
+    tool_name.to_ascii_lowercase().contains("execute_code")
+}
+
+/// Does this script set `is_global` to something truthy anywhere?
+///
+/// Deliberately crude and deliberately over-inclusive: the cost of a false
+/// positive is one approval prompt on a script that also mentions memory, and
+/// the cost of a false negative is the ungated cross-session read this whole
+/// module exists to stop.
+fn sets_global_true(lowercased: &str) -> bool {
+    // `split` + `skip(1)` yields the text following each `is_global` occurrence,
+    // without indexing into the string by byte offset.
+    lowercased.split("is_global").skip(1).any(|after| {
+        let value = after.trim_start_matches(|c: char| {
+            c.is_whitespace() || matches!(c, ':' | '=' | '"' | '\'' | '`')
+        });
+        value.starts_with("true") || value.starts_with("yes") || value.starts_with('1')
+    })
+}
+
+/// A global-memory call embedded in an `execute_code` body.
+fn code_touches_global_memory(code: &str) -> bool {
+    let lowercased = code.to_ascii_lowercase();
+    MEMORY_TOOL_NAMES
+        .iter()
+        .any(|name| lowercased.contains(name))
+        && sets_global_true(&lowercased)
+}
+
 /// Classify a tool call against the global memory store.
 ///
 /// `None` means "this call does not touch the machine-wide store" — a local
 /// memory call, or any other tool at all.
-pub fn global_memory_gate(_tool_name: &str, _args: &Map<String, Value>) -> Option<GlobalMemoryGate> {
-    None
+pub fn global_memory_gate(tool_name: &str, args: &Map<String, Value>) -> Option<GlobalMemoryGate> {
+    if is_execute_code(tool_name) {
+        let code = args.get("code").and_then(Value::as_str)?;
+        return code_touches_global_memory(code).then(|| {
+            GlobalMemoryGate::Ask(
+                "🔒 Cross-session memory access inside a script.\n\
+                 This code_execution call reads or writes the global memory store — the \
+                 machine-wide store shared by every Biorouter session on this computer, in every \
+                 project. Tool calls made from inside a script are not itemised, so the exact \
+                 categories cannot be shown here.\n\
+                 Approve it, or deny it and ask for the memory calls to be made directly so each \
+                 one can be shown to you."
+                    .to_string(),
+            )
+        });
+    }
+
+    let tool = memory_tool(tool_name)?;
+    if !targets_global_store(args) {
+        // Project-local memory lives under the working directory the user
+        // opened, so it crosses no session boundary and is left alone.
+        return None;
+    }
+    let category = category_of(args)?;
+    let all_categories = category == ALL_CATEGORIES;
+
+    Some(match (tool, all_categories) {
+        // The whole-store read: refused, never asked about. See the module docs
+        // — a disclosure neither the card nor the user can enumerate is not
+        // something consent can be given for, and it is never necessary.
+        (RETRIEVE_MEMORIES, true) => GlobalMemoryGate::Refuse(
+            "Refused: retrieve_memories(category=\"*\", is_global=true) would disclose the entire \
+             machine-wide memory store — every global memory written by every other session on \
+             this computer — in one call, and the user cannot be shown what that is in order to \
+             consent to it. Read one category at a time instead: \
+             retrieve_memories(category=\"<name>\", is_global=true), which asks the user about \
+             that category by name. The global category names are listed in your system prompt. \
+             Local bulk retrieval (is_global=false) is unaffected."
+                .to_string(),
+        ),
+        (RETRIEVE_MEMORIES, false) => GlobalMemoryGate::Ask(format!(
+            "🔒 Cross-session memory read.\n\
+             This conversation is asking to read the global memory category \"{category}\" — the \
+             machine-wide store that every Biorouter session on this computer shares, including \
+             sessions in other projects. Its contents were written by other conversations and are \
+             not otherwise part of this one.\n\
+             Approve it to disclose that category here, or deny it. Project-local memories \
+             (.biorouter/memory) are unaffected and never prompt."
+        )),
+        (REMEMBER_MEMORY, _) => GlobalMemoryGate::Ask(format!(
+            "🔒 Cross-session memory write.\n\
+             This conversation is asking to save a memory to the global category \"{category}\" — \
+             the machine-wide store, readable from now on by every Biorouter session on this \
+             computer, in every project.\n\
+             Approve it to let this note follow you across projects, or deny it and ask for a \
+             project-local memory instead."
+        )),
+        // Clearing the whole store is asked about rather than refused: unlike a
+        // bulk read, "wipe my global memories" is something a user can consent
+        // to without being shown the contents.
+        (REMOVE_MEMORY_CATEGORY, true) => GlobalMemoryGate::Ask(
+            "🔒 Deletes every global memory.\n\
+             This conversation is asking to clear the entire machine-wide memory store — every \
+             global category any session on this computer ever saved. This cannot be undone.\n\
+             Approve it only if you asked for your global memories to be wiped. Project-local \
+             memories (.biorouter/memory) are unaffected."
+                .to_string(),
+        ),
+        (REMOVE_MEMORY_CATEGORY | REMOVE_SPECIFIC_MEMORY, _) => GlobalMemoryGate::Ask(format!(
+            "🔒 Cross-session memory change.\n\
+             This conversation is asking to delete from the global memory category \
+             \"{category}\" — the machine-wide store shared by every Biorouter session on this \
+             computer. Removing it here removes it for every project.\n\
+             Approve it, or deny it."
+        )),
+        // `memory_tool` returns one of the four constants above; a new tool
+        // added to the server without a rule here fails closed.
+        _ => GlobalMemoryGate::Ask(format!(
+            "🔒 Cross-session memory access.\n\
+             This conversation is asking to use the global memory category \"{category}\" — the \
+             machine-wide store shared by every Biorouter session on this computer, in every \
+             project.\n\
+             Approve it, or deny it."
+        )),
+    })
 }
 
 /// Inspector that routes global-memory access through the user, in every mode
@@ -166,14 +339,10 @@ impl ToolInspector for GlobalMemoryInspector {
     }
 }
 
-/// Convenience for callers that hold a whole [`CallToolRequestParams`].
-pub fn gate_for_tool_call(tool_call: &CallToolRequestParams) -> Option<GlobalMemoryGate> {
-    global_memory_gate(&tool_call.name, tool_call.arguments.as_ref()?)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rmcp::model::CallToolRequestParams;
     use serde_json::json;
 
     fn args(v: Value) -> Map<String, Value> {
@@ -484,8 +653,13 @@ save_workflow({ name: "x", is_global: true });"#,
             )
             .await
             .unwrap();
-        let r = results.first().expect("a global read must be gated in Auto");
-        assert!(matches!(r.action, InspectionAction::RequireApproval(Some(_))));
+        let r = results
+            .first()
+            .expect("a global read must be gated in Auto");
+        assert!(matches!(
+            r.action,
+            InspectionAction::RequireApproval(Some(_))
+        ));
         assert_eq!(r.inspector_name, GLOBAL_MEMORY_INSPECTOR_NAME);
         assert!(r.finding_id.as_deref().unwrap_or("").starts_with("GMEM-"));
     }
