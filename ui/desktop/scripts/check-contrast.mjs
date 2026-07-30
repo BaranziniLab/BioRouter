@@ -33,6 +33,7 @@ import {
   buildScopes,
   discoverFamilies,
   assertBlockOrder,
+  blend,
   resolveHex,
   contrast as ratioOf,
 } from './lib/theme-tokens.mjs';
@@ -64,6 +65,42 @@ function assert(label, fg, bg, min, scope) {
   const ok = r >= min;
   if (!ok) failures++;
   rows.push([ok ? 'pass' : 'FAIL', `${r.toFixed(2)}:1`, label, `${f} on ${b} (need ${min})`]);
+}
+
+/**
+ * Assert against a TRANSLUCENT fill, composited over the ground it sits on.
+ *
+ * Everything above measures opaque token pairs, which is blind to Tailwind's
+ * `/NN` opacity modifiers — and those are what several surfaces actually paint.
+ * The reference chip (issue #65) is `bg-background-accent/12`: with accent ink
+ * on it the label measured 3.08:1 in `alma-mater:light` inside a user bubble
+ * while every assertion here stayed green, because no token named that colour.
+ */
+function assertOverTint(label, fg, fill, alpha, ground, min, scope) {
+  const fillHex = resolve(fill, scope);
+  const groundHex = resolve(ground, scope);
+  if (!fillHex || !groundHex) {
+    failures++;
+    rows.push(['UNRESOLVED', '', label, `${!fillHex ? fill : ground} does not resolve to a hex`]);
+    return;
+  }
+  const composited = blend(fillHex, alpha, groundHex);
+  const f = resolve(fg, scope);
+  if (!f) {
+    failures++;
+    rows.push(['UNRESOLVED', '', label, `${fg} does not resolve to a hex`]);
+    return;
+  }
+  const r = ratio(f, composited);
+  checks++;
+  const ok = r >= min;
+  if (!ok) failures++;
+  rows.push([
+    ok ? 'pass' : 'FAIL',
+    `${r.toFixed(2)}:1`,
+    label,
+    `${f} on ${fillHex}@${alpha} over ${groundHex} = ${composited} (need ${min})`,
+  ]);
 }
 
 // Grounds that body text can legitimately land on.
@@ -115,6 +152,42 @@ for (const [theme, scope] of Object.entries(SCOPES)) {
       '--text-on-status',
       `--background-${s}`,
       4.5,
+      scope
+    );
+  }
+
+  // The `Badge` accent tone — the app's one chip primitive, and what a
+  // `<biorouter-ref …>` reference chip paints (issue #65). The label is 11px,
+  // so it is small text and owes 4.5:1; the tint and the glyph are affordances
+  // and owe 3:1. Measured on the two grounds a chip lands on: the composer
+  // surface and the user bubble, whose own `--background-medium` sits under the
+  // tint and is the harsher of the pair.
+  for (const g of ['--background-default', '--background-medium']) {
+    assertOverTint(
+      `${theme}: chip label on accent/12 over ${g}`,
+      '--text-default',
+      '--background-accent',
+      0.12,
+      g,
+      4.5,
+      scope
+    );
+    assertOverTint(
+      `${theme}: chip glyph on accent/12 over ${g}`,
+      '--text-accent',
+      '--background-accent',
+      0.12,
+      g,
+      3.0,
+      scope
+    );
+    assertOverTint(
+      `${theme}: chip remove control on accent/12 over ${g}`,
+      '--text-muted',
+      '--background-accent',
+      0.12,
+      g,
+      3.0,
       scope
     );
   }

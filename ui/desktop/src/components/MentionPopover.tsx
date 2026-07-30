@@ -12,6 +12,7 @@ import { ItemIcon } from './ItemIcon';
 import BuiltInBadge from './ui/BuiltInBadge';
 import { CommandType, getActive, getSessionExtensions, getSlashCommands, listBases } from '../api';
 import { getInitialWorkingDir } from '../utils/workingDir';
+import { labelledRefTag, refTag, type RefKind } from '../utils/resourceRefs';
 import { useConfig } from './ConfigContext';
 import { ALL_SKILL_DIRS, loadSkillsFromDirs } from './skills/skillUtils';
 import bundledExtensionsData from './settings/extensions/bundled-extensions.json';
@@ -29,11 +30,17 @@ const typeOrder: Record<DisplayItemType, number> = {
 };
 
 // Slash commands that are purely a UI convenience. Keyed by command name (no
-// leading '/') and inserted as visible routed resource markers.
-const CLIENT_INSERT_COMMANDS: Record<string, { description: string; insert: string }> = {
+// leading '/'). `reference` routes the command through the same reference path
+// as a picked resource, so the composer draws it as a chip instead of leaving a
+// second visual language for the same thing; `insert` is for commands that are
+// not a resource at all.
+const CLIENT_INSERT_COMMANDS: Record<
+  string,
+  { description: string; insert?: string; reference?: MentionReference }
+> = {
   knowledge: {
     description: 'Use the Knowledge extension',
-    insert: '/ext:knowledge ',
+    reference: { kind: 'extension', value: 'knowledge', label: undefined },
   },
   diverge: {
     description: 'Branch this conversation into a new chat with full history. Press Enter',
@@ -75,52 +82,71 @@ const isKnownBuiltInExtension = (name: string) => {
   );
 };
 
-/**
- * The `/ext:` token to insert for an extension named `name` (issue #60).
- *
- * The backend extracts inline markers with `extract_inline_refs`, which splits
- * the message on whitespace — so `/ext:Chat Recall` reaches the resolver as
- * `Chat`, matches nothing, and the agent reports "not a known built-in
- * extension", which reads exactly like a policy refusal. Two bundled extensions
- * are registered under a display string with a space (`Extension Manager`,
- * `Chat Recall`), and any user extension may have one.
- *
- * Dropping *only* the whitespace is lossless: an extension's canonical key is
- * `config::extensions::name_to_key`, i.e. the name with whitespace removed and
- * lowercased, and both `/ext:` consumers already discard it —
- * `resolve_bundled_extension` filters the reference down to alphanumerics, and
- * `Agent::extension_resource_context` falls back to `normalize`, which strips
- * whitespace. So `/ext:ChatRecall` and a hypothetical untruncated
- * `/ext:Chat Recall` resolve to the identical extension, for bundled and user
- * extensions alike.
- *
- * Nothing else may be collapsed. `_` and `-` are *kept* by `normalize`, so they
- * are part of a user extension's key: mapping them away — the tempting
- * "normalise to an id" fix — would turn `/ext:my_tool` into `/ext:mytool`,
- * which no longer matches the enabled extension stored under `my_tool` and
- * breaks the by-name match user extensions rely on today.
- */
-const extensionMarkerName = (name: string) => name.replace(/\s+/g, '');
+/** The resource a picked item refers to, for the composer's chip rail. */
+export interface MentionReference {
+  kind: RefKind;
+  /** The identity the agent resolves: a skill/extension name, or a KB id. */
+  value: string;
+  /** The display string, where it differs from the identity. */
+  label: string | undefined;
+}
 
-const referenceInsert = (item: DisplayItem) => {
-  switch (item.itemType) {
-    case 'KnowledgeBase':
-      return `/kb:${item.relativePath} `;
-    case 'Skill':
-      return `/skill:${item.relativePath} `;
-    case 'Extension':
-      return `/ext:${extensionMarkerName(item.relativePath)} `;
-    default:
-      return null;
-  }
+const REFERENCE_KIND: Partial<Record<DisplayItemType, RefKind>> = {
+  KnowledgeBase: 'knowledge_base',
+  Skill: 'skill',
+  Extension: 'extension',
+};
+
+/**
+ * The resource `item` names, or `null` if it is not a resource reference.
+ *
+ * ## Why this is a tag and no longer a compact marker (issue #65)
+ *
+ * The backend extracted `/skill:` `/ext:` `/kb:` with `extract_inline_refs`,
+ * which splits the message on whitespace — so `/skill:my skill` reached the
+ * resolver as `my` and matched nothing, and the agent reported the resource
+ * unknown, which reads exactly like a policy refusal.
+ *
+ * Issue #60 fixed that for `/ext:` by dropping the whitespace, which was
+ * lossless *there*: an extension's canonical key is the name with whitespace
+ * removed and lowercased, and both `/ext:` consumers already discard it. That
+ * fix cannot transfer to skills. `SkillsClient::handle_load_skill` looks a skill
+ * up with an exact `self.skills.get(name)` on a map keyed by the frontmatter
+ * name, so `myskill` is not `my skill` either — normalising would have traded a
+ * visible truncation for a quieter failure.
+ *
+ * `<biorouter-ref …>` delimits the value explicitly instead of by whitespace,
+ * so a name survives it whatever it contains. Nothing is collapsed any more:
+ * `Chat Recall` is inserted as `Chat Recall`, and `_`/`-` — which survive the
+ * backend's `normalize` and so are part of a user extension's key — keep being
+ * part of the name they were configured with.
+ */
+export const mentionReference = (item: DisplayItem): MentionReference | null => {
+  const clientCommand = CLIENT_INSERT_COMMANDS[item.name];
+  if (clientCommand) return clientCommand.reference ?? null;
+
+  const kind = REFERENCE_KIND[item.itemType];
+  if (!kind) return null;
+
+  // A knowledge base is picked by name and resolved by id — `relativePath` is
+  // the id `kb_search` takes and `name` carries the `kb:`-prefixed display
+  // string the user actually chose. The other kinds are named by the same
+  // string they are resolved by, so a label would only be a duplicate.
+  const label = kind === 'knowledge_base' ? item.name.replace(/^kb:/, '') : undefined;
+
+  return { kind, value: item.relativePath, label: label === item.relativePath ? undefined : label };
 };
 
 export const getMentionInsertText = (item: DisplayItem) => {
-  const clientInsert = CLIENT_INSERT_COMMANDS[item.name];
-  if (clientInsert) return clientInsert.insert;
+  const reference = mentionReference(item);
+  if (reference) {
+    return reference.label
+      ? labelledRefTag(reference.kind, reference.value, reference.label)
+      : refTag(reference.kind, reference.value);
+  }
 
-  const insertedReference = referenceInsert(item);
-  if (insertedReference) return insertedReference;
+  const clientInsert = CLIENT_INSERT_COMMANDS[item.name]?.insert;
+  if (clientInsert) return clientInsert;
 
   return ['Builtin', 'Workflow'].includes(item.itemType) ? `/${item.name}` : item.extra;
 };

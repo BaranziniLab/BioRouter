@@ -35,6 +35,14 @@ import { getNavigationShortcutText } from '../utils/keyboardShortcuts';
 import type { UserAttachment } from '../types/message';
 import { useStopAcknowledgement } from '../hooks/useStopAcknowledgement';
 import { cn } from '../utils';
+import {
+  appendComposerRef,
+  joinComposerText,
+  removeComposerRefAt,
+  splitComposerText,
+} from '../utils/composerRefs';
+import { findRefTags } from '../utils/resourceRefs';
+import { ResourceRefChip } from './ResourceRefChip';
 
 interface QueuedMessage {
   id: string;
@@ -730,20 +738,62 @@ export default function ChatInput({
     }
   }, [debouncedAutosize, displayValue]);
 
-  // Reset textarea height when displayValue is empty
+  // Issue #65 — the composer's two views of one string.
+  //
+  // `displayValue` stays the whole message, reference tags included, because
+  // every other seam in this component already carries it: draft save/restore,
+  // the `?prompt=` deep link, history navigation, the queue, steering, submit.
+  // Holding references in their own state would mean teaching each of those
+  // about them, and each one missed is a reference the user attached and the
+  // agent never sees.
+  //
+  // What the *textarea* binds to is the body — the message with the tags taken
+  // out — so the user never sees ~45 characters of XML where they typed a
+  // sentence. The tags come back as chips in the rail below. `composerRefs` is
+  // the parse, so a chip on screen is always a reference the agent resolves.
+  const { body: composerBody, refs: composerRefs } = useMemo(
+    () => splitComposerText(displayValue),
+    [displayValue]
+  );
+
+  const setComposerText = useCallback(
+    (next: string) => {
+      setDisplayValue(next);
+      updateValue(next);
+    },
+    [updateValue]
+  );
+
+  /** Replace the prose, keeping whatever references are attached. */
+  const setComposerBody = useCallback(
+    (body: string) => setComposerText(joinComposerText(body, composerRefs)),
+    [composerRefs, setComposerText]
+  );
+
+  const handleRemoveReference = useCallback(
+    (index: number) => {
+      setComposerText(removeComposerRefAt(displayValue, index));
+      textAreaRef.current?.focus();
+    },
+    [displayValue, setComposerText]
+  );
+
+  // Reset textarea height when the prose is empty. Keyed off the body, not the
+  // whole message: a message that is nothing but a chip shows an empty box.
   useEffect(() => {
-    if (textAreaRef.current && displayValue === '') {
+    if (textAreaRef.current && composerBody === '') {
       textAreaRef.current.style.height = 'auto';
     }
-  }, [displayValue]);
+  }, [composerBody]);
 
   const handleChange = (evt: React.ChangeEvent<HTMLTextAreaElement>) => {
     const val = evt.target.value;
     const cursorPosition = evt.target.selectionStart;
 
-    setDisplayValue(val);
-    updateValue(val);
+    setComposerBody(val);
     setHasUserTyped(true);
+    // The textarea's offsets are body offsets, and so is everything the mention
+    // popover computes from them.
     checkForMentionOrSlash(val, cursorPosition, evt.target);
   };
 
@@ -1081,7 +1131,10 @@ export default function ChatInput({
       contentToQueue = contentToQueue ? `${contentToQueue} ${pathsString}` : pathsString;
     }
 
-    const interruptionMatch = detectInterruption(displayValue.trim());
+    // The prose again, for the same reason as the /diverge check: "stop" is an
+    // interruption whether or not the user also left a skill attached, and the
+    // detector's short-input branch would not see it past 45 characters of tag.
+    const interruptionMatch = detectInterruption(composerBody.trim());
 
     if (interruptionMatch && interruptionMatch.shouldInterrupt) {
       setLastInterruption(interruptionMatch.matchedText);
@@ -1245,7 +1298,12 @@ export default function ChatInput({
 
       // Intercept the client-side /diverge command before it becomes a message.
       // It branches the current conversation instead of being sent to the agent.
-      const trimmedCandidate = (text ?? displayValue).trim();
+      //
+      // Matched against the prose, not the whole message: a reference is drawn
+      // as a chip and is invisible in the textarea, so comparing the raw text
+      // would let an attached chip silently defeat a command that is — to the
+      // user, correctly — the only thing in the box.
+      const trimmedCandidate = splitComposerText(text ?? displayValue).body.trim();
       if (trimmedCandidate === DIVERGE_TRIGGER) {
         if (sessionId) {
           void diverge(sessionId);
@@ -1379,9 +1437,8 @@ export default function ChatInput({
       }
 
       if (evt.altKey) {
-        const newValue = displayValue + '\n';
-        setDisplayValue(newValue);
-        setValue(newValue);
+        // The newline belongs to the prose, not after the reference block.
+        setComposerBody(composerBody + '\n');
         return;
       }
 
@@ -1422,21 +1479,33 @@ export default function ChatInput({
   };
 
   const handleMentionItemSelect = (itemText: string) => {
-    const beforeMention = displayValue.slice(0, mentionPopover.mentionStart);
-    const afterMention = displayValue.slice(
+    const beforeMention = composerBody.slice(0, mentionPopover.mentionStart);
+    const afterMention = composerBody.slice(
       mentionPopover.mentionStart + 1 + mentionPopover.query.length
     );
-    const newValue = `${beforeMention}${itemText}${afterMention}`;
 
-    setDisplayValue(newValue);
-    setValue(newValue);
+    // A picked resource is a reference, not prose: it goes to the chip rail and
+    // the `@query` it replaced just disappears. Detected by running the inserted
+    // text back through the real parser rather than by asking the popover what
+    // kind of item it was — the parser is the same one the agent uses, so the
+    // composer cannot draw a chip for something the agent would ignore.
+    const inserted = findRefTags(itemText);
+    const isReference = inserted.length === 1 && inserted[0].raw === itemText.trim();
+
+    const nextBody = `${beforeMention}${isReference ? '' : itemText}${afterMention}`;
+    const nextText = joinComposerText(nextBody, composerRefs);
+    setComposerText(
+      isReference
+        ? appendComposerRef(nextText, inserted[0].kind, inserted[0].value, inserted[0].label)
+        : nextText
+    );
     setMentionPopover((prev) => ({ ...prev, isOpen: false }));
     textAreaRef.current?.focus();
 
     // Set cursor position after the inserted file path
     setTimeout(() => {
       if (textAreaRef.current) {
-        const newCursorPosition = beforeMention.length + itemText.length;
+        const newCursorPosition = beforeMention.length + (isReference ? 0 : itemText.length);
         textAreaRef.current.setSelectionRange(newCursorPosition, newCursorPosition);
       }
     }, 0);
@@ -1591,6 +1660,27 @@ export default function ChatInput({
           </span>
         </div>
       )}
+      {/* Attached resources (issue #65). The canonical form of a reference is a
+ `<biorouter-ref …>` tag, which is the only form that survives a name with a
+ space or a quote in it — and is far too much markup to leave sitting in the
+ user's sentence. It lives in the message text; this rail is where the user
+ sees and manages it. Above the prose because a reference qualifies the whole
+ message rather than a point in it, and because the row below the textarea is
+ already the attachments area for images and files. */}
+      {composerRefs.length > 0 && (
+        <div
+          data-testid="composer-reference-rail"
+          className="mb-1.5 flex flex-wrap items-center gap-1.5 px-1"
+        >
+          {composerRefs.map((ref, index) => (
+            <ResourceRefChip
+              key={`${ref.kind}:${ref.value}`}
+              refSpan={ref}
+              onRemove={() => handleRemoveReference(index)}
+            />
+          ))}
+        </div>
+      )}
       {/* Input row — textarea only. Send/Stop button moved to the right end of
  the picker row below so the input width can shrink to the picker row's
  natural width (no extra space stolen by the Send button on this line). */}
@@ -1601,7 +1691,7 @@ export default function ChatInput({
             autoFocus
             id="dynamic-textarea"
             placeholder={getNavigationShortcutText()}
-            value={displayValue}
+            value={composerBody}
             onChange={handleChange}
             onCompositionStart={handleCompositionStart}
             onCompositionEnd={handleCompositionEnd}

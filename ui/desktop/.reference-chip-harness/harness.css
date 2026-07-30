@@ -1,0 +1,5 @@
+/* Tailwind v4 auto-detects sources from the Vite root, which here is this
+   harness directory. Point it at the real component tree so the chip's utility
+   classes are actually generated. */
+@import '../src/styles/main.css';
+@source '../src';
