@@ -158,6 +158,52 @@ async fn cancelling_a_turn_reaps_a_shell_tree_spawned_inside_code_execution() {
     );
 }
 
+/// The other half of Stop: `POST /agent/stop` trips the turn's token **and**
+/// evicts the session, which drops the extension and closes its transport.
+///
+/// That teardown races the cancellation notification, so the reaping cannot
+/// depend on the notification arriving first. Dropping the client ends the
+/// extension's serve loop, whose drop guard cancels the request-scoped token
+/// rmcp hands every tool call — so the shell tool has to be watching that token
+/// too, not only the one the notification trips.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn tearing_down_the_extension_reaps_a_running_shell_tree() {
+    let manager = manager().await;
+    let dir = tempfile::tempdir().unwrap();
+
+    let call = CallToolRequestParams {
+        task: None,
+        meta: None,
+        name: "developer__shell".into(),
+        arguments: Some(object!({ "command": tree_command(dir.path()) })),
+    };
+    let dispatched = manager
+        .dispatch_tool_call(SESSION, call, CancellationToken::new())
+        .await
+        .expect("dispatch");
+    let call_task = tokio::spawn(dispatched.result);
+
+    assert!(
+        wait_for(&dir.path().join("started"), Duration::from_secs(20)).await,
+        "the shell command never started; the test proves nothing"
+    );
+
+    // No cancellation at all — just take the extension away, as session
+    // eviction does.
+    manager
+        .remove_extension("developer")
+        .await
+        .expect("remove developer");
+    call_task.abort();
+
+    tokio::time::sleep(SURVIVE_AFTER + Duration::from_secs(3)).await;
+    assert!(
+        !dir.path().join("survived").exists(),
+        "issue #72: tearing the extension down left the shell command's tree \
+         running with nobody able to reach it"
+    );
+}
+
 /// The direct path, for contrast: a plain `developer__shell` dispatch.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cancelling_a_turn_reaps_a_shell_tree_spawned_directly() {

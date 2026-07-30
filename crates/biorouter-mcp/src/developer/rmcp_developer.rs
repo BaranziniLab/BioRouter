@@ -1352,6 +1352,13 @@ impl DeveloperServer {
         let command = &params.command;
         let peer = context.peer;
         let request_id = context.id;
+        // rmcp's own request-scoped token. It is a descendant of the serve
+        // loop's, so it trips both when the peer sends `notifications/cancelled`
+        // (redundantly with `on_cancelled` below) and — the case that matters —
+        // when the connection itself goes away and the running service's drop
+        // guard fires. Session eviction does exactly that, racing the
+        // cancellation notification it sent a moment earlier (issue #72).
+        let request_ct = context.ct;
 
         // Validate the shell command
         self.validate_shell_command(command)?;
@@ -1388,9 +1395,17 @@ impl DeveloperServer {
             processes.insert(request_id_str.clone(), cancellation_token.clone());
         }
 
-        // Execute the command and capture output
+        // Execute the command and capture output. Either token ending the run
+        // means the same thing — nobody is waiting for this command any more —
+        // so they are folded into one for the run itself.
+        let run_ct = cancellation_token.child_token();
+        let mirror_ct = run_ct.clone();
+        let _mirror = super::shell::AbortOnDrop::new(tokio::spawn(async move {
+            request_ct.cancelled().await;
+            mirror_ct.cancel();
+        }));
         let output_result = self
-            .execute_shell_command(command, working_dir, &peer, cancellation_token.clone())
+            .execute_shell_command(command, working_dir, &peer, run_ct)
             .await;
 
         // Clean up the process from tracking
