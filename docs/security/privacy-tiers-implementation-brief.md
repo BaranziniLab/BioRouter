@@ -6,9 +6,16 @@
 > [`privacy-tiers.md`](privacy-tiers.md) (the design) or
 > [`privacy-tiers-execution-plan.md`](privacy-tiers-execution-plan.md) (the fifty-one task units) —
 > it tells you how to use them and where they are known to be wrong.
-> **Status:** Proposed — the plan it fronts has failed four independent adversarial review rounds and
-> is expected to change again during implementation. Read [the brief is subject to change](#the-brief-is-subject-to-change)
+> **Status:** Proposed — **narrowed by operator ruling on 2026-07-30 ([DR-17](privacy-tiers-execution-plan.md#scope-ruling--dr-17-narrows-this-plan-to-the-session-store) and [DR-18](privacy-tiers-execution-plan.md#dr-18--the-knowledge-base-tier-is-user-controllable-and-a-private-session-creates-a-private-base)).**
+> The plan it fronts has failed four independent adversarial review rounds and is expected to change
+> again during implementation. Read [the brief is subject to change](#the-brief-is-subject-to-change)
 > before anything else.
+>
+> ⚠ **Stage 3 is descoped.** The general filesystem barrier — the stage that failed review four times —
+> is out of scope for v1; its tasks are marked `DEFERRED` in the plan and kept intact. Two new task
+> units replace it in scope terms: **Task 29A** (the user-controlled knowledge-base tier) and
+> **Task 30A** (the non-private-model disclosure, which is what makes the ruling's accepted risks
+> acceptable).
 > **Audience:** the engineer or agent implementing #56, and whoever reviews that work.
 
 Privacy tiers give every model, session, extension and knowledge base one of two tiers. A session's
@@ -59,7 +66,14 @@ Two precedents, both real and both in this document's history:
   assertion, the gate went green, and the control it existed for was dead on both kernels for a full
   round. Every type assertion passed.
 
-**What must never be silently narrowed:** DR-1 through DR-16, and the two structural rulings that came
+⚠ **A narrowing the operator makes is not the narrowing this rule forbids, and [DR-17](privacy-tiers-execution-plan.md#scope-ruling--dr-17-narrows-this-plan-to-the-session-store) is the
+precedent.** The protocol above ends at step 3, *"raise it to the operator"* — and on 2026-07-30 the
+operator answered by descoping the filesystem barrier. That is the protocol working, not a breach of
+it. **The rule still binds every implementer:** no one may invoke DR-17 to descope anything DR-17 does
+not name, and it names three things (files a private session left elsewhere, encryption at rest, the
+general filesystem barrier) and nothing else.
+
+**What must never be silently narrowed:** DR-1 through DR-18, and the two structural rulings that came
 out of the review rounds — *the barrier sits at a choke point, never on an enumeration* (see
 [the killed-approaches register](#the-killed-approaches-register)), and *the capability is sampled once
 at the outermost entry and threaded* (O15).
@@ -230,9 +244,11 @@ read the full row before implementing against it.
 | **DR-11** | "**`medcp` stays callable by a public model**, and that is the accepted cost of DR-6." |
 | **DR-12** | "**`spokeagent` is public.** SPOKE holds no patient data." |
 | **DR-13** | "**A knowledge base ratchets on ingest**… A KB takes the tier of the most sensitive session that has ingested into it, and a public-capability session may not read *or write* a private KB." |
-| **DR-14** | "**A public-capability session's tools may not reach Biorouter's own private data, on by default, and the control is TWO layers.**… The entries are the four roots the operator named — the session store, the knowledge roots, the global memory root and the Agent Drafter app root — plus one file, `<config>/config.yaml`… Everything else on the filesystem stays readable and writable — this is **not** a general jail and must not become one. **Private-capability sessions are unaffected.**" |
+| **DR-14** | ⛔ **DEFERRED for v1 by DR-17 — do not implement Tasks 14A–14F, do not delete them.** "**A public-capability session's tools may not reach Biorouter's own private data, on by default, and the control is TWO layers.**… The entries are the four roots the operator named — the session store, the knowledge roots, the global memory root and the Agent Drafter app root — plus one file, `<config>/config.yaml`… Everything else on the filesystem stays readable and writable — this is **not** a general jail and must not become one. **Private-capability sessions are unaffected.**" |
 | **DR-15** | "**One master toggle turns the entire privacy-tier feature off**, config key `BIOROUTER_PRIVACY_TIERS`, default `on`." ⚠ Session copy is **not** on the list of things it disables; the badges do **not** disappear, they restyle and suffix *— enforcement off*. |
 | **DR-16** | "**Raising a session's capability to Private is the user's act alone. A model may never do it.**" ⚠ **DR-16 has no task written for it.** The ruling names a `Task 18A` that does not exist in the plan. See [Stage 4](#stage-4--the-master-toggle-the-user-only-tier-raise-and-the-ui). |
+| **DR-17** | "The generic idea is to lock the sessions that are actually private or executed using a private model so that a public model or a non-private model cannot use the AI agent to easily get access to those sessions… we just need to make sure that the exact session logs and histories cannot be viewed by the public models. The public models cannot spin up private models to help them do their work of querying the sensitive databases using all of the different extensions that are only available for the private models… we don't have to enforce and encrypt every single step along the way. for now." ⚠ **Also a requirement, not only a descoping:** "still make sure that users understand the risks of using non-private models" — Task 30A, and it is what makes the accepted risks acceptable. |
+| **DR-18** | "knowledge bases should also be able to be deemed private - as it is also a piece of biorouter component . please make sure that users can change the kb to be private or public and the private model generated kb will automatically be private until the user publicize it, and all the other guardrails will apply as well." ⚠ Task 29A, and it **resolves AR-1**. |
 
 Two further rulings are structural rather than policy, came out of the review rounds, and carry the
 same weight:
@@ -311,6 +327,10 @@ count is a no-growth tripwire, not a measurement of #56 — any increase is a ne
 Four stages. Value lands early; the part that has failed review four times is isolated at the end of
 the enforcement work, where it can be re-planned without unwinding anything else.
 
+⚠ **Stage 3 is now DESCOPED ([DR-17](privacy-tiers-execution-plan.md#scope-ruling--dr-17-narrows-this-plan-to-the-session-store)) and the isolation is what made that cheap.** Nothing in Stages 1,
+2 or 4 has to be unwound. Stage 4 gains two task units: **29A** (the KB tier control, [DR-18](privacy-tiers-execution-plan.md#dr-18--the-knowledge-base-tier-is-user-controllable-and-a-private-session-creates-a-private-base)) and
+**30A** (the disclosure, DR-17 requirement 3).
+
 Within a stage, follow the plan's task units in order and honour the **non-negotiable orderings**
 (O1–O16) — each one has a measured failure mode behind it, and O12/O13/O15/O16 are the ones that
 decide whether a commit even compiles.
@@ -380,7 +400,25 @@ side of an unbounded dispatch queue. `PrivatePathPolicy::for_call` must **not** 
 the capability requires changing a signature that BR-71 is concurrently rewriting in an incompatible
 way — in that case, rebase first and re-derive, do not thread twice.
 
-### Stage 3 — the filesystem barrier
+### Stage 3 — the filesystem barrier ⛔ DESCOPED
+
+> ⛔ **OUT OF SCOPE FOR v1 ([DR-17](privacy-tiers-execution-plan.md#scope-ruling--dr-17-narrows-this-plan-to-the-session-store)), 2026-07-30. Do not build this stage.** The operator descoped the
+> general filesystem barrier: *"we don't have to enforce and encrypt every single step along the way.
+> for now."* Its six task units carry the same banner in the plan and keep every measurement.
+>
+> **What that costs, stated:** requirement 1 (session logs and histories locked) is held on the
+> **agent-mediated** channels only, so a public model with `developer__shell` can read `sessions.db`
+> off disk. That is the accepted risk, and Task 30A's disclosure is the term on which it is accepted.
+>
+> **What it saves:** AR-6 is retired — a public-capability session keeps the shell on Windows and on
+> bubblewrap-less Linux — and so are AR-9 and AR-10.
+>
+> **One thing here is NOT descoped.** *"CP1–CP4 are the knowledge root's door"* is the knowledge
+> **tool** channel, and [DR-18](privacy-tiers-execution-plan.md#dr-18--the-knowledge-base-tier-is-user-controllable-and-a-private-session-creates-a-private-base) makes it a requirement (R16). It is Tasks 10A–10D in Stage 1, and it
+> ships.
+>
+> Everything below is retained as the specification a revival starts from. The cheapest revival is
+> Task 14B narrowed to one root — the session store — with Layer B left off.
 
 **Delivers:** Layer A (the in-process path barrier at the dispatch choke point **and a guard in each
 root's own resolver**) and Layer B (the OS read-deny sandbox, spawned children only).
@@ -414,7 +452,8 @@ green first time.
 **Depends on:** Stage 2 (Layer A reads the threaded `CallCapability`; Layer B carries it in `_meta`).
 O16: Task 14E lands with or after 14B and before the Phase 2 gate; 14F depends on 14E.
 
-**Known-open at the end of this stage, and accepted:** AR-9 (the symlink swap window — closed at the
+**Known-open at the end of this stage, and accepted** — ⚠ **all three of these are now RETIRED by
+[DR-17](privacy-tiers-execution-plan.md#scope-ruling--dr-17-narrows-this-plan-to-the-session-store), because the stage they belong to is descoped:** AR-9 (the symlink swap window — closed at the
 open on both platforms via `O_RESOLVE_BENEATH`/`O_NOFOLLOW_ANY` on macOS and `openat2(RESOLVE_BENEATH)`
 on Linux, both measured refusing a symlink traversal and a `..` escape; a **pre-planted hardlink**
 still defeats Layer B, because both kernels match paths, not inodes); AR-10 (on Linux a deny root that
@@ -430,8 +469,15 @@ four previous failures and it is the signal that the architecture, not the list,
 **Delivers:** DR-15's master toggle, DR-16's user-only tier raise, the badges, declassification, the
 CLI surface, the marketplace, and the migration.
 
-**Task units:** Phase 3 (21–25), Phase 4 (26–32), Phase 5 (33–37), Phase 6 (38–40) — **plus a task
-that does not exist yet**.
+**Task units:** Phase 3 (21–25), Phase 4 (26–32) **including the two new ones, 29A and 30A**,
+Phase 5 (33–37), Phase 6 (38–40) — **plus a task that does not exist yet**.
+
+⚠ **Task 30A is not optional and must not be folded into Task 30.** It is DR-17 requirement 3 — the
+disclosure that makes the ruling's accepted risks a considered tradeoff rather than an omission — and
+it is the one privacy surface that must work with the master toggle **off**. Task 32's phase gate
+asserts it. ⚠ **Task 29A depends on Task 18A's user-proof** ([DR-18](privacy-tiers-execution-plan.md#dr-18--the-knowledge-base-tier-is-user-controllable-and-a-private-session-creates-a-private-base): the KB tier is user-only in
+both directions), so where 18A is unresolved 29A fails closed rather than inventing a second
+mechanism.
 
 ⚠ **DR-16 is a settled ruling with no task written for it.** The ruling names `Task 18A: the two HTTP
 channels that raise a session's own tier, and the user-proof neither of them has`. That task must be
