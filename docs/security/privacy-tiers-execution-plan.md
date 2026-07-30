@@ -168,6 +168,38 @@
 > point, including the seven branches `Agent::dispatch_tool_call` short-circuits and a pre-existing
 > `memory` category traversal.
 
+> **Revision note (eighth round — five gates that could not fail, and a toggle matrix missing eight
+> enforcement points).** The reviewer confirmed Task 10C is genuinely closed (it tried to reconstruct
+> the pointer leak past the replacement tests and could not) and graded the other five gates as
+> *narrowed, not closed*. Each had the same defect in a different disguise: **the gate could not fail
+> the wrong implementation it named.** Task 4b printed `MISSING` and exited 0 — the audit whose entire
+> subject is *a command that reports success while doing nothing* was one; every assertion now runs
+> through a `want` helper and the block ends `( exit "$rc" )`, verified failing on a deleted deferred
+> row. Running it also produced three measured finds no reading would have: the harvest matched the
+> command named in its own prose (fenced-and-uncommented only now), it normalised away a trailing
+> `::` so `secret_guard::` (19) was audited as `secret_guard` (20), and **Task 14C's filter named
+> `routes::agent::tests::…` when `routes::agent` has no `tests` module at all** — unresolvable as
+> written, corrected to the bare test name. Tasks 10B/11 left the CLI and the probe *structural
+> only*, which the literal ban does not reach: `caller_is_private: provider_name == Some("ollama")`
+> keys on the requested name and `providers::create` can return something else. `ProviderCompleter::paired`
+> now returns the completer and the tier from one `Arc`, the CLI gets two behavioural rows (offline —
+> `ollama` and `githubcopilot` both build without a credential, measured), and the probe is closed by
+> construction with its residual as open question 21. Task 10D's metadata detector could not tell a
+> filtered surface from an unfiltered one and was blind to UFCS; it is now an exit-non-zero per-file
+> inventory diff that says **in the text** which defect it does and does not catch. Task 10A's forced
+> export location was an observational grep, so keeping the provenance marker while still honouring an
+> outside `dest_path` passed everything; it has three behavioural rows. Task 12's seam sat *outside
+> and before* the helper, so a `SELECT` + unconditional `UPDATE` passed by refusing for the wrong
+> reason; the seam moved inside `bind_provider_if_allowed`, between the read and the write, backed by
+> a structural assertion that no `SELECT` precedes `.execute`. And Task 30's toggle matrix covered ten
+> of **twenty** enforcement points — Gate F's two channels, the spawn matrix, Layer A's insertion
+> points, the catalog, the export location, session copy and the visibility predicate could all stay
+> armed with the feature "off". It is twenty rows now, closed at both ends by two inventory diffs, the
+> second of which starts from the *refusals* so a gate nobody wired still fails. That work surfaced a
+> crate-graph fact the plan had not noticed: **`biorouter-mcp` cannot see `biorouter`**, so a
+> `privacy_tiers_enabled()` defined in `biorouter` is unreachable from five of the twenty points; the
+> atomic moves to `biorouter-mcp` with a `biorouter` re-export.
+
 > **Revision note (fourth round — the barrier's edges, and the first real `cargo` run).** A verifier
 > re-derived the four choke points independently and could not break them on content: it read
 > `rmcp-macros-0.14.0/src/tool_handler.rs` and confirmed the hand-written `call_tool` body is
