@@ -8589,29 +8589,64 @@ awk '/async fn bind_provider_if_allowed/,/^    }/' \
   crates/biorouter/src/session/session_manager.rs > /tmp/56-bind.txt
 [ "$(wc -l < /tmp/56-bind.txt)" -gt 1 ] \
   || { echo "FAIL  bind_provider_if_allowed not found — every check below is vacuous"; bind_rc=1; }
-# (1) The refusal is a WHERE clause, not an `if`.
-n=$(grep -c "privacy_tier = 'public' OR ? = 1" /tmp/56-bind.txt) || n=0
-[ "$n" -eq 1 ] || { echo "FAIL  the conditional predicate is not in the UPDATE (found $n)"; bind_rc=1; }
-n=$(grep -c "UPDATE sessions" /tmp/56-bind.txt) || n=0
-[ "$n" -eq 1 ] || { echo "FAIL  expected exactly one UPDATE sessions, found $n"; bind_rc=1; }
-# (2) NO READ PRECEDES THE WRITE. The wrong implementation is `SELECT
-#     privacy_tier` followed by an unconditional UPDATE; the follow-up
-#     `SELECT EXISTS` is legitimate and comes AFTER. Compare line numbers.
+# ⚠ EVERY SQL CHECK BELOW IS CASE-INSENSITIVE (`grep -i`). Round 3 §7 built the
+# implementation that beat the case-sensitive version: do the real work in
+# lowercase `select` / `update`, and park an uppercase copy of the required
+# strings in a `const` or a comment that nothing executes. (1) then found its
+# predicate in the dead string, (2) found no `SELECT` because the live read was
+# lowercase, and the whole gate reported green over a read-then-write helper.
+# SQLite does not care about the case of a keyword and neither may this gate.
+# (1) The refusal is a WHERE clause, not an `if`, and it is in the SAME string
+#     literal as the UPDATE. A predicate parked in a neighbouring dead const
+#     satisfies two independent greps and is executed by nothing.
+# From the first `sqlx::query(` through the first `.bind(` — the whole literal,
+# whatever its quoting. ⚠ Not an awk RANGE ending in `"#`: that assumes a raw
+# string and fails a legitimate implementation that used an ordinary one, which
+# is a gate rejecting the right answer. And no `\s` anywhere — BSD awk rejects
+# it and the scan then produces nothing, passing vacuously (the same trap Task
+# 30's ⚠ (a) records).
+q=$(awk '/sqlx::query\(/ { f = 1 } f { print } f && /\.bind\(/ { exit }' /tmp/56-bind.txt)
+n=$(printf '%s' "$q" | grep -ci "privacy_tier = 'public' OR ? = 1") || n=0
+[ "$n" -eq 1 ] || { echo "FAIL  the conditional predicate is not inside the UPDATE's own"
+                    echo "      string literal (found $n) — a dead const does not run"; bind_rc=1; }
+n=$(printf '%s' "$q" | grep -ci "UPDATE sessions") || n=0
+[ "$n" -eq 1 ] || { echo "FAIL  the query literal does not contain exactly one UPDATE sessions ($n)"; bind_rc=1; }
+n=$(grep -ci "UPDATE sessions" /tmp/56-bind.txt) || n=0
+[ "$n" -eq 1 ] || { echo "FAIL  expected exactly one UPDATE sessions in the function, found $n —"
+                    echo "      a second one is a dead copy or an unconditional twin"; bind_rc=1; }
+# (2) NO READ PRECEDES THE WRITE, and it is asserted on the OPERATION rather than
+#     on the word SELECT. The wrong implementation is `select privacy_tier`
+#     followed by an unconditional update; the follow-up `SELECT EXISTS` is
+#     legitimate and comes AFTER. sqlx spells every read `fetch_*`, so the
+#     absence of a `fetch_` before the write is the property, whatever the SQL
+#     is spelled like and whether or not it is even SQL.
 w=$(grep -n "\.execute(pool)" /tmp/56-bind.txt | head -1 | cut -d: -f1)
-r=$(grep -n "SELECT" /tmp/56-bind.txt | head -1 | cut -d: -f1)
+r=$(grep -ni "select\|fetch_one\|fetch_optional\|fetch_all\|fetch_scalar" /tmp/56-bind.txt \
+      | head -1 | cut -d: -f1)
 if [ -n "$r" ] && [ -n "$w" ] && [ "$r" -lt "$w" ]; then
-  echo "FAIL  a SELECT precedes the write (line $r before $w) — the predicate is"
+  echo "FAIL  a read precedes the write (line $r before $w) — the predicate is"
   echo "      being evaluated in Rust, and the race is open"
   bind_rc=1
 fi
-# (3) The seam is INSIDE this function, immediately before the write, and
+# …and exactly two queries in the whole function: the UPDATE and the follow-up
+# EXISTS. A third is a read this gate has not reasoned about.
+n=$(grep -c "sqlx::query" /tmp/56-bind.txt) || n=0
+[ "$n" -eq 2 ] || { echo "FAIL  expected exactly 2 sqlx::query calls, found $n"; bind_rc=1; }
+# (3) The seam is INSIDE this function, IMMEDIATELY above the write, and
 #     test-only. Outside it, the forced-interleaving test cannot fail the
-#     read-then-write implementation at all.
+#     read-then-write implementation at all — and merely "before the write" is
+#     not enough either: round 3 §7 put the seam before a hidden read, so the
+#     forced ratchet committed, the read then saw Private and refused, and a
+#     racing implementation produced the right answer. `w == s + 1` is the
+#     contract "after every read, before the write" made mechanical.
 s=$(grep -n "seams::before_bind_write()" /tmp/56-bind.txt | head -1 | cut -d: -f1)
 if [ -z "$s" ]; then
   echo "FAIL  before_bind_write is not called inside bind_provider_if_allowed"; bind_rc=1
-elif [ -n "$w" ] && [ "$s" -ge "$w" ]; then
-  echo "FAIL  the seam is at line $s, at or after the write at $w"; bind_rc=1
+elif [ -n "$w" ] && [ "$w" -ne "$((s + 1))" ]; then
+  echo "FAIL  the seam is at line $s and the write at $w; it must be the line"
+  echo "      IMMEDIATELY above the write. Anything between them is a statement"
+  echo "      the seam parks in front of instead of behind."
+  bind_rc=1
 elif [ "$(sed -n "$((s-1))p" /tmp/56-bind.txt | grep -c 'cfg(test)')" -ne 1 ]; then
   echo "FAIL  the seam is not under #[cfg(test)] — a rendezvous point shipped"; bind_rc=1
 fi
@@ -8678,9 +8713,30 @@ the predicate string must appear inside the `UPDATE`, there must be exactly one 
 **no `SELECT` may appear before `.execute`** (the follow-up `SELECT EXISTS` is after it, and the
 line-number comparison is what separates them), and the seam must be inside the function, under
 `#[cfg(test)]`, above the write — with `agent.rs` asserted to contain **zero** `before_bind_write`
-calls so a copy cannot be left behind at the old, useless position. Those four assertions set
+calls so a copy cannot be left behind at the old, useless position. Those assertions set
 `bind_rc` and the block exits non-zero; they are not prints. It also
 rejects a fuzz loop that races nothing, because `bound > 0 && refused > 0` is now asserted.
+
+**This gate rejects: the same wrong helper, written in lowercase with the required strings parked in
+a dead literal.** Round 3 §7 constructed it and it beat the previous version of this block on three
+independent counts. `select privacy_tier …` in lowercase was invisible to `grep -n "SELECT"`.
+`update sessions` in lowercase was invisible to `grep -c "UPDATE sessions"`, and both required
+strings were satisfied by an uppercase `const` beside them that nothing executes. And the seam,
+required only to be *somewhere before* the write, was placed before the hidden read — so the forced
+ratchet committed, the read then saw `Private`, and the racing implementation returned the right
+answer. Three changes close it, and each maps to one of those: every SQL check is `grep -i`; the
+predicate and the `UPDATE` must appear **inside the query literal itself** (the span from
+`sqlx::query(` to the first `.bind(`), where a neighbouring dead const cannot reach; the read test is
+on the **sqlx operation** (`fetch_*`) rather than on the word `SELECT`, with exactly two
+`sqlx::query` calls permitted in the whole function; and the seam must sit on the line
+**immediately** above the write, which is "after every read, before the write" expressed as
+arithmetic rather than as a doc comment. **Both directions were run, not reasoned about.** Against the prescribed implementation above: `q`
+contains the predicate once and `UPDATE sessions` once, the function contains one `UPDATE sessions`,
+the first `fetch_`/`select` is at line 27 and the write at 23, there are exactly two `sqlx::query`
+calls, and the seam is at 22 with `#[cfg(test)]` at 21 — every check passes. Against round 3's
+lowercase/dead-const helper: predicate-in-literal **0**, `UPDATE sessions` in the function **2**, read
+at line 13 before the write at 21, and the seam at 12 rather than at `w - 1` — it fails on four
+independent counts, any one of which is enough.
 
 - [ ] **Step 6: Commit**
 
