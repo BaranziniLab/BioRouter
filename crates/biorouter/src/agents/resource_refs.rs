@@ -78,6 +78,13 @@
 //! is now an acceptable tradeoff rather than a bug, because a producer that
 //! needs to carry a name the compact form cannot represent has the tag to reach
 //! for, and `reference_marker` picks between the two automatically.
+//!
+//! Those compatibility extractors scan raw message text with no delimiters of
+//! their own, so they have always been able to fire on prose that merely looks
+//! like a reference — `kb_id:` in a sentence selects a knowledge base. That
+//! predates the tag and is left alone deliberately; `inline_marker_round_trips`
+//! at least refuses to *choose* the compact form for a value that would trip
+//! one.
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct KnowledgeBaseRef {
@@ -243,8 +250,19 @@ pub fn inline_marker(kind: RefKind, value: &str) -> String {
 /// than by restating the extractor's rules — a restatement is a second copy
 /// that drifts, and the drift is silent by construction: the marker still looks
 /// fine, it just names a different resource.
+///
+/// The marker must yield that one reference and *nothing else*. A compact
+/// marker is raw text in the message, so the compatibility extractors read it
+/// too: a skill named `kb_id:x` would produce a valid-looking `/skill:kb_id:x`
+/// that also silently selects knowledge base `x`. Requiring a clean read costs
+/// nothing and sends anything ambiguous to the tag.
 pub fn inline_marker_round_trips(kind: RefKind, value: &str) -> bool {
-    !value.is_empty() && extracted_refs(kind, &inline_marker(kind, value)) == [value]
+    if value.is_empty() {
+        return false;
+    }
+    let refs = extract_resource_refs(&inline_marker(kind, value));
+    let total = refs.skills.len() + refs.extensions.len() + refs.knowledge_bases.len();
+    total == 1 && select_refs(refs, kind) == [value]
 }
 
 /// The reference to insert into a message for `value`: the compact marker when
@@ -275,7 +293,10 @@ pub fn reference_marker(kind: RefKind, value: &str) -> String {
 /// is the only definition of "the interfaces agree" that survives contact with
 /// a name nobody anticipated.
 pub fn extracted_refs(kind: RefKind, text: &str) -> Vec<String> {
-    let refs = extract_resource_refs(text);
+    select_refs(extract_resource_refs(text), kind)
+}
+
+fn select_refs(refs: ResourceRefs, kind: RefKind) -> Vec<String> {
     match kind {
         RefKind::Skill => refs.skills,
         RefKind::Extension => refs.extensions,
@@ -1025,6 +1046,31 @@ mod tests {
             );
             assert_eq!(reference_marker(kind, name), ref_tag(kind, name));
         }
+    }
+
+    /// A compact marker is plain text, so the compatibility extractors read it
+    /// too. A name that happens to contain one of their triggers makes the
+    /// marker select a second resource nobody asked for, so it is not eligible
+    /// for the compact form however intact its own value looks.
+    #[test]
+    fn a_marker_that_would_select_a_second_resource_uses_the_tag() {
+        assert!(!inline_marker_round_trips(RefKind::Skill, "kb_id:soul"));
+        assert_eq!(
+            reference_marker(RefKind::Skill, "kb_id:soul"),
+            ref_tag(RefKind::Skill, "kb_id:soul")
+        );
+
+        // The compact form would have looked perfectly healthy from the skill
+        // side alone, which is the trap.
+        assert_eq!(
+            extracted_refs(RefKind::Skill, "/skill:kb_id:soul"),
+            vec!["kb_id:soul".to_string()]
+        );
+        assert_eq!(
+            extracted_refs(RefKind::KnowledgeBase, "/skill:kb_id:soul"),
+            vec!["soul".to_string()],
+            "the compact marker leaked a knowledge base"
+        );
     }
 
     /// The limitation the tag exists to route around, stated as a test so the
