@@ -4225,6 +4225,7 @@ each seam and proves it arrives, 10C then adds one line at each.
 | Modify | `crates/biorouter-mcp/src/agent_drafter/mod.rs` | **CP4.** `stage_full_payload` `:1390-1394` gains `caller_is_private: bool`; its sole caller `export_app` `:2790` gains a `RequestContext` (`:2739-2742` has none today) |
 | Modify | `crates/biorouter-server/src/routes/knowledge.rs` | the four macro routes pass the constructed provider's tier into the macro Args — `ingest` `:1122` (args at `:1142`), `ingest_conversation` `:1187` (args at `:1224`), `query_kb` `:1269` (args at `:1284`), `lint` `:1325` (args at `:1347`); `build_completer` `:899-914`, whose `TestModeCompleter` early return is `:903-907` |
 | Modify | `crates/biorouter/src/knowledge/conversation_ingest.rs` | `ConversationIngestArgs` `:172-180` — **this task adds `caller_capability: ProviderTier` here**, not Task 11 (see ⚠ "the value at `:205`" below); the `IngestArgs` it builds at `:205` |
+| Modify | `crates/biorouter/src/knowledge/provider_completer.rs` | `ProviderCompleter::new` `:27-29` gains a sibling **`paired`** (below). Measured: `ProviderCompleter::new(` has **five production call sites** — `biorouter-cli/src/commands/knowledge.rs`, `biorouter-server/src/bin/knowledge_ingest_probe.rs`, `biorouter-server/src/routes/knowledge.rs`, and `biorouter/src/agents/knowledge_tool.rs` ×2 — i.e. exactly the callers that construct macro `Args`, plus four more inside this file's own `#[cfg(test)] mod tests` (`:…` — a stub `Provider` already lives there, which is what makes the pairing test free) |
 | Modify | `crates/biorouter-cli/src/commands/knowledge.rs` | `IngestArgs` `:457`, `ConversationIngestArgs` `:573`, `LintArgs` `:639`, `QueryArgs` `:718` |
 | Modify | `crates/biorouter/src/agents/knowledge_tool.rs` | `ConversationIngestArgs` `:63` (the platform tool) |
 | Modify | `crates/biorouter-server/src/bin/knowledge_ingest_probe.rs` | `IngestArgs` `:104` |
@@ -4442,14 +4443,143 @@ every one of them gets both rows: the four HTTP macro routes (above), the platfo
 (`every_tool_that_writes_content_ratchets_and_the_plumbing_ones_do_not`, which drives all nineteen
 tools as `Private` and the ratchet-list assertion pins the `Public` direction), CP3
 (`a_br_kb_ingest_from_a_private_app_session_ratchets_the_base` plus the mid-turn pair), and CP4
-(Task 10C's export test). The two that no harness in this repo reaches are the **CLI**
-(`biorouter-cli/src/commands/knowledge.rs`, whose 9 `--lib` tests do not construct a provider) and
-the **probe binary** (`bin/knowledge_ingest_probe.rs`, which is not a test target at all). For those
-two the gate is structural — Step 5 (i) forbids a literal in either direction and (ii) prints the
-expression for a reviewer to trace to the session's bound provider — and that is a **weaker** gate,
-so it is written down here rather than left to be discovered. It is also the smaller risk: both are
-the user at a terminal, where the capability is the session's own provider and there is no second
-agent to source it from by mistake.
+(Task 10C's export test). The seventh — the **CLI** — gets both rows too, below; only the **probe
+binary** does not, and the reason is structural rather than a shortfall of effort.
+
+*Why the previous version's "structural only, for both" was not enough.* Once Step 5 (i) forbids a
+literal, the wrong implementation that survives is not a literal at all: it is
+`caller_is_private: provider_name.as_deref() == Some("ollama")` — the tier derived from the
+**requested name** instead of from the **constructed instance**. That is the same defect
+`a_macro_route_ratchets_from_the_CONSTRUCTED_provider_not_the_requested_name` exists for on the HTTP
+side, and it is *live* for the CLI and the probe, because both go through `providers::create`, whose
+`BIOROUTER_LEAD_MODEL` intercept fires **before** the registry lookup (`factory.rs:139-146`) and can
+hand back a composite whose tier is not the requested name's. A grep that prints an expression for a
+reviewer to trace cannot separate that from the right answer.
+
+*What closes it: one constructor, so the completer and the tier cannot come from different
+providers.*
+
+```rust
+// crates/biorouter/src/knowledge/provider_completer.rs, beside `new` (:27-29)
+
+impl ProviderCompleter {
+    /// The completer **and** the tier of the provider behind it, from one
+    /// binding. Every caller that builds macro `Args` uses this instead of
+    /// `new`, which is what makes "the tier came from a different provider than
+    /// the completer" unrepresentable rather than merely discouraged — the
+    /// defect Step 5 (i)'s literal ban leaves open, and the one the CLI and the
+    /// probe are most exposed to because they resolve a provider by NAME.
+    ///
+    /// `Provider::tier()` (Task 5) is an instance method for exactly this
+    /// reason: `providers::create("ollama", ..)` can return a lead/worker
+    /// composite (`factory.rs:139-146`), and the composite's tier is the least
+    /// of its two halves, not the name that was asked for.
+    ///
+    /// Returns `Self`, not `Box<dyn Completer>`: each caller boxes it where it
+    /// already did, and the concrete type keeps `self.provider` (a **pub**
+    /// field, `:23`) readable, which is what lets the test below assert the
+    /// completer and the tier came from the same `Arc` rather than merely from
+    /// two calls that agreed.
+    pub fn paired(provider: Arc<dyn Provider>) -> (Self, crate::privacy::ProviderTier) {
+        let tier = provider.tier();
+        (Self::new(provider), tier)
+    }
+}
+```
+
+Measured: `ProviderCompleter::new(` has exactly **five** production call sites and they are exactly
+the five macro-`Args` constructors (CLI, probe, `routes/knowledge.rs`, `knowledge_tool.rs` ×2). So
+Step 5's structural half becomes an *exact* assertion — **zero** production uses of `new`, one
+`paired(` in each of the four files — rather than a printed expression a reviewer must trace.
+
+**The CLI gets both behavioural rows**, and they need no network and no credential:
+
+```rust
+// crates/biorouter-cli/src/commands/knowledge.rs, in its #[cfg(test)] mod tests (:755-756)
+
+#[tokio::test]
+async fn the_cli_sources_its_capability_from_the_provider_it_constructed() {
+    // `build_completer` (:67-88) returns `(Box<dyn Completer>, ProviderTier)`
+    // after this task, and `handle_ingest`/`handle_query`/`handle_lint`/
+    // `handle_ingest_conversation` destructure it. Both directions run offline:
+    // MEASURED — of the 25 provider modules, `ollama` and `llamacpp` (private
+    // set) and `githubcopilot`, `claude_code`, `codex`, `cursor_agent`,
+    // `gemini_cli`, `bedrock`, `gcpvertexai`, `sagemaker_tgi` (public) build
+    // their `from_env` with NO `config.get_secrets(..)` call. `githubcopilot`
+    // is the cheapest of the public ones: its `from_env` builds a reqwest
+    // client and a disk cache and nothing else — no token read, no filesystem
+    // probe, no request. `ModelConfig::new` accepts an unknown model name
+    // (`model.rs:400-408` — `find_predefined_model` returning None is not an
+    // error), so neither row needs a real model either.
+    let (_c, tier) = build_completer(Some("ollama".into()), Some("qwen3.5:4b".into()))
+        .await.unwrap();
+    assert_eq!(tier, ProviderTier::Private);
+    let (_c, tier) = build_completer(Some("githubcopilot".into()), Some("gpt-5".into()))
+        .await.unwrap();
+    assert_eq!(tier, ProviderTier::Public);
+}
+
+#[tokio::test]
+async fn the_cli_capability_follows_the_INSTANCE_not_the_name_the_user_typed() {
+    // The row that fails `provider_name == "ollama"`. `providers::create`
+    // intercepts BIOROUTER_LEAD_MODEL before the registry lookup
+    // (`factory.rs:139-146`), so `--provider githubcopilot` can construct a
+    // composite whose lead is a private model; `Provider::tier()` on the
+    // composite is `least(lead, worker)` (Task 5), which is Private.
+    let _guard = lead_model_intercept_to("ollama", "qwen3.5:4b");
+    let (_c, tier) = build_completer(Some("githubcopilot".into()), Some("gpt-5".into()))
+        .await.unwrap();
+    assert_eq!(tier, ProviderTier::Private,
+               "the CLI keyed its capability on the name the user typed");
+}
+```
+
+⚠ `build_completer`'s **test-mode early return** (`:74-76`, `test_mode::env_enabled()` →
+`TestModeCompleter`) has no provider to read a tier from, and it is the CLI's twin of
+`routes/knowledge.rs`'s `TestModeCompleter` branch (`:903-907`). It returns `ProviderTier::Public`
+for the same fail-safe reason and is the **second** named exemption in Step 5 (i) — write it down
+here, because the alternative is a worker discovering the compile error and reaching for whichever
+literal makes it go away.
+
+**The probe binary gets no behavioural row, and here is the reason and the residual.**
+`bin/knowledge_ingest_probe.rs` is a `[[bin]]` target: `cargo test -p biorouter-server --lib` never
+compiles it, no harness in this repo executes it, and turning a developer diagnostic into a test
+target to give it a row would be a bigger change than the thing it protects. What replaces the row
+is that **the probe has no capability expression of its own left to get wrong**: it already holds the
+`Arc<dyn Provider>` it wraps (`provider_for_task`, the argument to `ProviderCompleter::new` today),
+so it destructures `paired(provider_for_task)` and passes the second element. Step 5's zero-uses-of-
+`new` assertion covers it, and `cargo check --workspace --all-targets` (Step 4's first line) does
+compile bins, so it cannot drift into a literal without failing Step 5 (i).
+**Residual, stated in the operator's terms:** if a future edit re-derives the probe's tier from
+`cli.provider` instead of the instance, nothing in this plan fails. The blast radius is one
+developer's own probe knowledge base on their own machine — the probe takes `--root` and defaults to
+a `probe` KB — and it is not reachable by any model. That is the risk being accepted, and it is
+[Open question 21](#open-questions).
+
+```rust
+// crates/biorouter/src/knowledge/provider_completer.rs, in its existing #[cfg(test)] mod tests
+// (which already defines a stub Provider — the `recording` fixture two of its
+//  four tests build — so this row costs no new harness).
+
+#[tokio::test]
+async fn the_completer_and_the_capability_come_from_the_same_provider() {
+    // The unit under the CLI's and the probe's rows. Both directions, and the
+    // third assertion is the one that matters: `paired` cannot be implemented
+    // as "wrap A, look up B" because there is only one argument.
+    let (_c, tier) = ProviderCompleter::paired(stub_provider_with_tier(ProviderTier::Private));
+    assert_eq!(tier, ProviderTier::Private);
+    let (_c, tier) = ProviderCompleter::paired(stub_provider_with_tier(ProviderTier::Public));
+    assert_eq!(tier, ProviderTier::Public);
+    // The completer really wraps the provider whose tier was reported —
+    // `ProviderCompleter.provider` is a pub field (:23), so this is a plain
+    // pointer comparison and needs no downcast.
+    let p = stub_provider_with_tier(ProviderTier::Private);
+    let (c, tier) = ProviderCompleter::paired(Arc::clone(&p));
+    assert_eq!(tier, ProviderTier::Private);
+    assert!(Arc::ptr_eq(&c.provider, &p),
+            "the tier was read from a different Arc than the completer wraps");
+}
+```
 
 ```rust
 // crates/biorouter-mcp/src/knowledge/macros/ingest.rs, in its #[cfg(test)] mod tests (:136)
@@ -4794,15 +4924,18 @@ cargo test -p biorouter-mcp --test knowledge_macros_e2e
 cargo test -p biorouter-server --test knowledge_routes
 cargo test -p biorouter-server --lib routes::apps 2>&1 | grep "test result:"  # 90 + 1
 cargo test -p biorouter --lib knowledge::conversation_ingest 2>&1 | grep "test result:"  # 2, unchanged
-cargo test -p biorouter-cli --lib commands::knowledge 2>&1 | grep "test result:"  # 9, unchanged
+cargo test -p biorouter --lib knowledge::provider_completer 2>&1 | grep "test result:"  # 4 + 1
+cargo test -p biorouter-cli --lib commands::knowledge 2>&1 | grep "test result:"  # 9 + 2
 ```
 
 Expected: **PASS**, and `cargo check --workspace --all-targets` clean. The CLI line is not
 decoration — it is the only crate that constructs all four Args types and never goes near an MCP
 server, so it is the evidence that the required field reached every caller rather than only the ones
-with tests. The `--test knowledge_macros_e2e` line is the one that used to be missing: it is the sole
-out-of-lib constructor of `IngestArgs`/`QueryArgs`, and without it this commit and the eight after it
-leave `cargo test` red.
+with tests, and after this round it carries the CLI's two behavioural rows (`9 + 2`, a pre-count
+measured in Task 4b — never "non-zero"). `knowledge::provider_completer` is **4** today (measured,
+Task 4b) and gains the pairing test. The `--test knowledge_macros_e2e` line is the one that used to
+be missing: it is the sole out-of-lib constructor of `IngestArgs`/`QueryArgs`, and without it this
+commit and the eight after it leave `cargo test` red.
 
 - [ ] **Step 5: Gate**
 
@@ -4912,8 +5045,9 @@ echo "A ZERO is a caller that silently kept a default: routes (3 macro Args),"
 echo "  CLI (3 macro Args), probe (1), conversation_ingest (the ProviderTier->bool"
 echo "  crossing at :205), apps.rs (CP3's param + 3 call sites), drafter (CP4's param)."
 echo "⚠ NON-ZERO IS NOT ENOUGH, and on its own it is not a gate: a file that passes"
-echo "  a hardcoded literal, or a value read from the WRONG agent, counts just the"
-echo "  same. The two blocks below are what make it one."
+echo "  a hardcoded literal, a value read from the WRONG agent, or a tier derived"
+echo "  from the provider NAME the caller typed, all count just the same. The"
+echo "  three blocks below are what make it one."
 # (i) NO LITERAL, IN EITHER DIRECTION. The previous version of this gate forbade
 # only the trusting value (`Private` / `true`), which leaves the mirror wide
 # open: a caller hardcoded to `Public` / `false` compiles, reports NON-ZERO in
@@ -4923,11 +5057,36 @@ echo "  same. The two blocks below are what make it one."
 # the one that must not be reachable by the easy edit.
 grep -rn "caller_is_private: *\(true\|false\)\|caller_capability: *ProviderTier::\(Private\|Public\)" \
   --include='*.rs' crates/*/src/ crates/*/bin/ 2>/dev/null
-echo "expect: exactly ONE hit — routes/knowledge.rs's build_completer TestModeCompleter"
-echo "  branch (:903-907), which returns public BEFORE any provider exists and is"
-echo "  documented in Step 3. Every other production caller must pass an EXPRESSION."
+echo "expect: exactly TWO hits, both named — routes/knowledge.rs's build_completer"
+echo "  TestModeCompleter branch (:903-907) and biorouter-cli's build_completer"
+echo "  test-mode early return (:74-76). Both return public BEFORE any provider"
+echo "  exists, both are documented in Step 3, and there is no third."
+echo "  Every other production caller must pass an EXPRESSION."
 echo "  (`unwrap_or(ProviderTier::Public)` is not matched and must not be: it is the"
 echo "   fail-closed tail of a provider read, not a hardcoded caller.)"
+# (i-b) …and the expression cannot be keyed on the NAME the caller asked for,
+# because the tier now comes out of the same call as the completer. This is an
+# EXACT assertion, not a printed expression: `ProviderCompleter::new(` has five
+# production call sites today and they are exactly the five macro-Args callers.
+grep -rn "ProviderCompleter::new(" --include='*.rs' crates/*/src/ crates/*/bin/ 2>/dev/null \
+  | grep -v "src/knowledge/provider_completer.rs"
+echo "expect: NO OUTPUT — every production caller went through ::paired. A surviving"
+echo "  ::new is a caller free to source its tier from somewhere else, which is the"
+echo "  defect the literal ban above does NOT reach:"
+echo "  \`caller_is_private: provider_name.as_deref() == Some(\"ollama\")\`."
+for f in crates/biorouter-cli/src/commands/knowledge.rs \
+         crates/biorouter-server/src/bin/knowledge_ingest_probe.rs \
+         crates/biorouter-server/src/routes/knowledge.rs \
+         crates/biorouter/src/agents/knowledge_tool.rs; do
+  echo -n "$(basename $f) ::paired: " ; grep -c "ProviderCompleter::paired(" "$f"
+done
+echo "expect: 1, 1, 1, 2 — knowledge_tool.rs has two ProviderCompleter sites today."
+# The probe's tier is read from the SAME binding the completer wraps. It is the
+# one caller with no behavioural row, so this is its whole gate.
+awk '/let ingest_task = tokio::spawn/,/^        \}\);/' \
+  crates/biorouter-server/src/bin/knowledge_ingest_probe.rs \
+  | grep -c "paired(provider_for_task)"
+echo "expect: 1 — the probe destructures the pair; it does not re-derive a tier"
 # (ii) …and the expression is a provider read. Per file, printed, so a value
 # sourced from a DIFFERENT agent than the one whose turn this is shows up as the
 # wrong receiver rather than as a passing count (see CP3's three-site table).
@@ -4977,6 +5136,21 @@ per-caller matrices are what fail it behaviourally.
 **This gate rejects: `IngestArgs { caller_is_private: false, .. }` in `routes/knowledge.rs`** — a
 one-word edit that compiles, keeps `POST /knowledge/bases/{id}/ingest` working, and stops every
 private HTTP ingest from ratcheting.
+(7) **A tier keyed on the provider NAME the caller typed, at a caller with no behavioural row.**
+This is what the previous round's "the CLI and the probe are structural-only" left open, and it is
+not reached by (5)'s literal ban: `caller_is_private: provider_name.as_deref() == Some("ollama")`
+is an expression, it appears in the printed (ii) trace looking like a provider read, and it counts
+NON-ZERO. It is wrong because `providers::create` intercepts `BIOROUTER_LEAD_MODEL` **before** the
+registry lookup (`factory.rs:139-146`), so `--provider githubcopilot` can construct a composite whose
+tier is Private and `--provider ollama` one whose tier is Public.
+**This gate rejects: a `build_completer` that returns only a completer, leaving each caller to
+work out the tier for itself.** `ProviderCompleter::paired` returns both from one `Arc`, the
+zero-surviving-`::new` assertion makes it the only way a production caller can get a completer at
+all, `the_completer_and_the_capability_come_from_the_same_provider` fails a `paired` that looks the
+tier up separately, and
+`the_cli_capability_follows_the_INSTANCE_not_the_name_the_user_typed` fails the name-keyed CLI
+directly, under a live `BIOROUTER_LEAD_MODEL` intercept. The probe is covered by construction rather
+than by a test, for the reason and with the residual stated in Step 3's ⚠ (Open question 21).
 (6) Passing `agent` at all three CP3 call sites, which is the shape the previous draft prescribed
 in one sentence. It compiles, type-checks and passes every single-agent app test, because `agent`
 and `turn_agent` are both `Arc<Agent>` and both in scope at `:3847`; what it does is attribute a
@@ -4992,6 +5166,7 @@ git add crates/biorouter-mcp/src/knowledge/ crates/biorouter-mcp/src/agent_draft
         crates/biorouter-server/src/routes/knowledge.rs crates/biorouter-server/src/routes/apps.rs \
         crates/biorouter-server/src/bin/knowledge_ingest_probe.rs \
         crates/biorouter/src/knowledge/conversation_ingest.rs \
+        crates/biorouter/src/knowledge/provider_completer.rs \
         crates/biorouter/src/agents/knowledge_tool.rs \
         crates/biorouter-cli/src/commands/knowledge.rs
 # The commit must leave the tree green. Verified here, not nine commits later.
@@ -6633,8 +6808,9 @@ async fn each_caller_of_the_guard_is_exercised_in_BOTH_directions() {
     // for the sessions that need it and nothing in this task asserts otherwise.
     //
     // Both production callers a harness reaches, both rows. (The CLI is the
-    // third and is covered structurally — see Task 10B's ⚠ on which callers get
-    // a behavioural row.)
+    // third; it now has its own two behavioural rows in
+    // `biorouter-cli --lib commands::knowledge` — see Task 10B's ⚠ on which
+    // callers get a behavioural row and why the probe binary alone does not.)
     let private = private_session_with_messages("PHI cohort notes").await;
 
     // (a) the HTTP route
@@ -14780,6 +14956,7 @@ safe once the app socket no longer treats an app id as an authenticator.
 | **20** | **Should the daemon's HTTP API authenticate a caller that is on the same machine?** [AR-11](#ar-11--the-daemons-own-api-secret-is-recoverable-so-the-second-door-is-held-by-layer-a-and-not-by-the-environment-strip): the secret is recoverable from the daemon's own environment (`ps -Ewww -p $PPID` on macOS, `/proc/self/environ` in-process on Linux), so `check_token`'s header comparison stops a remote caller and not a local one. Layer A covers the biggest local route, `POST /agent/call_tool`, because that route dispatches through the same choke point. It does **not** cover the routes that return private content without running a tool: `GET /sessions/{id}/export` and the rest of the transcript family, the `/knowledge/*` read routes, `GET /apps/{id}/export`, and `GET /diagnostics/{id}` — which returns a zip of `session.json`, recent `logs/*.jsonl` and a verbatim `config.yaml`, and is the widest single route in the API. | Nothing in this plan. Task 14C states the residual instead of the old "no way to authenticate" claim, and pins the strip so the *remote* half stays closed. Closing the local half needs a per-caller credential the daemon does not hand to its own children — the same shape as [Open question 18](#open-questions), and probably the same fix. |
 | **19** | **Should DR-14's Agent Drafter root narrow to `.vault/` plus other sessions' apps?** Denying the whole root means a public-capability chat cannot `cat` its own app's source from the shell, which is a real ergonomic loss for the drafter workflow (AR-6(3)). The whole root is on the list because it is also the only on-disk source of app **ids**, which Open question 18 shows are load-bearing. | Task 14B denies the whole root. Narrowing it is safe only after 18 is closed. |
 | **16** | **`--text-subtle` on `--background-medium` is sub-AA in three of the six family×mode scopes, and #56 is not the right owner of the fix.** Measured with `ui/desktop/scripts/lib/theme-tokens.mjs`: parchment:dark **3.75**, alma-mater:light **4.45**, alma-mater:dark **4.28**, against a 4.5 floor. `--background-medium` is the row-hover ground that `biorouter-list-row`, `SessionItem` and `ExtensionItem` all paint, so this affects every subtle label on a hovered row **today** — it is a pre-existing gap, not something the privacy badge introduces, and `check-contrast.mjs` has never asserted it. Task 26 therefore audits only `--text-default` and `--text-muted` on that ground (the two the badge actually uses) and the total is **288**, not 294. Auditing the third token as well makes the run exit 1 with three failures whose only fix is a theme-token edit — precisely the "Zero theme work" Task 26 Step 5 forbids, and a scope the privacy feature has no business taking. | Nothing in this plan. Open it as a theme/a11y follow-up at Task 40 Step 6, alongside the deferred findings from the 2026-07 theme redesign. Do **not** close it by lowering the threshold in `check-contrast.mjs`. |
+| **21** | **`bin/knowledge_ingest_probe.rs` is the one macro caller with no behavioural row.** It is a `[[bin]]` target, so `cargo test -p biorouter-server --lib` never compiles it and no harness in the repo executes it. Task 10B closes it *by construction* instead — `ProviderCompleter::paired` hands back the completer and the tier from one `Arc`, and Step 5 asserts zero surviving production uses of `ProviderCompleter::new` — but if a future edit re-derives the probe's tier from `cli.provider` rather than from the instance, nothing fails. | Nothing in this plan. **Accepted risk, in the operator's terms:** the probe is a developer diagnostic run by hand with `--root` and a default `probe` KB; a wrong tier there mis-stamps one developer's own scratch base on their own machine, and no model can reach it. If the probe ever becomes something a model or a route invokes, it needs a behavioural row before that lands. |
 
 ---
 
