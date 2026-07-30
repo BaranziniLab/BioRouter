@@ -57,6 +57,11 @@ const MAX_TOOL_CALL_META_TOTAL_BYTES: usize = 64 * 1024;
 const TOOL_CALLS_META_KEY: &str = "biorouter/tool-calls";
 /// Result-meta key carrying how many sub-calls were executed but not recorded.
 const TOOL_CALLS_DROPPED_META_KEY: &str = "biorouter/tool-calls-dropped";
+/// How long a cancelled `execute_code` waits for its tool handler to wind down
+/// before aborting it — see [`CodeExecutionClient::wind_down_tool_handler`]
+/// (issue #72). Generous, because the normal case returns immediately and this
+/// only bounds a pathological script.
+const NESTED_CANCEL_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 const MAX_COLLECTED_ARTIFACTS: usize = 16;
 const MAX_COLLECTED_ARTIFACT_BYTES: usize = 32 * 1024 * 1024;
 const MAX_EMBEDDED_ARTIFACT_HTML_BYTES: usize = 16 * 1024 * 1024;
@@ -1467,7 +1472,7 @@ impl CodeExecutionClient {
         let js_result = tokio::select! {
             result = js_task => result.map_err(|e| format!("JS execution task failed: {e}"))?,
             () = cancellation_token.cancelled() => {
-                tool_handler.abort();
+                Self::wind_down_tool_handler(tool_handler).await;
                 return Err("JavaScript execution cancelled".to_string());
             }
         };
@@ -1772,6 +1777,37 @@ impl CodeExecutionClient {
         }
     }
 
+    /// Let a cancelled run's tool handler finish on its own before giving up on
+    /// it (issue #72).
+    ///
+    /// This used to be a bare `tool_handler.abort()`. The handler may be parked
+    /// inside a *nested* `dispatch_tool_call`, and the only thing that stops the
+    /// work that call started — a foreground `developer/shell` command, whose
+    /// process group is killed by the developer server's `on_cancelled` — is the
+    /// MCP `notifications/cancelled` that the nested dispatch sends from its own
+    /// cancellation branch. Aborting the task dropped that future before it could
+    /// send, so Stop ended the turn and left the command running. Which of the two
+    /// won was a scheduling race, which is exactly why the report says Stop does
+    /// not *reliably* terminate the command.
+    ///
+    /// `run_tool_handler` stops accepting work the moment the token trips, so in
+    /// the normal case this returns in microseconds. The bound is only there so a
+    /// pathological script (one that swallows the cancellation errors and keeps
+    /// calling tools) cannot hold Stop open.
+    async fn wind_down_tool_handler(mut tool_handler: tokio::task::JoinHandle<()>) {
+        if tokio::time::timeout(NESTED_CANCEL_GRACE, &mut tool_handler)
+            .await
+            .is_err()
+        {
+            tracing::warn!(
+                "execute_code's tool handler did not wind down within {:?} of cancellation; \
+                 aborting it",
+                NESTED_CANCEL_GRACE
+            );
+            tool_handler.abort();
+        }
+    }
+
     async fn run_tool_handler(
         session_id: String,
         mut call_rx: mpsc::UnboundedReceiver<ToolCallRequest>,
@@ -1780,7 +1816,20 @@ impl CodeExecutionClient {
         cancellation_token: CancellationToken,
     ) {
         let mut tool_calls = 0;
-        while let Some((tool_name, arguments, response_tx)) = call_rx.recv().await {
+        loop {
+            // Issue #72: once the turn is cancelled, stop taking new work rather
+            // than dispatching calls that would only be cancelled again — and,
+            // more importantly, return promptly so `wind_down_tool_handler` does
+            // not have to abort us while a nested call is still propagating its
+            // cancellation downstream.
+            let next = tokio::select! {
+                biased;
+                () = cancellation_token.cancelled() => None,
+                message = call_rx.recv() => message,
+            };
+            let Some((tool_name, arguments, response_tx)) = next else {
+                break;
+            };
             tool_calls += 1;
             if tool_calls > MAX_JS_TOOL_CALLS {
                 let error = format!("JavaScript exceeded the {MAX_JS_TOOL_CALLS} tool-call limit");
@@ -2608,6 +2657,60 @@ mod tests {
         // Whitespace-only user text counts as absent.
         let blank = vec![Content::text("   ").with_audience(vec![Role::User])];
         assert_eq!(user_tool_result_text(&blank), None);
+    }
+
+    /// Issue #72, half one: the wind-down must *wait* for the handler.
+    ///
+    /// This was `tool_handler.abort()`, which dropped a nested
+    /// `dispatch_tool_call` mid-flight — and that dispatch is the only thing that
+    /// sends the MCP `notifications/cancelled` the developer server needs in
+    /// order to kill a foreground shell's process group. Cutting the handler off
+    /// here is exactly how Stop left a `find "$HOME" …` scan running.
+    #[tokio::test]
+    async fn wind_down_lets_an_in_flight_tool_handler_finish() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let finished = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&finished);
+        let handler = tokio::spawn(async move {
+            // Stands in for a nested dispatch delivering its cancellation.
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            flag.store(true, Ordering::SeqCst);
+        });
+
+        CodeExecutionClient::wind_down_tool_handler(handler).await;
+
+        assert!(
+            finished.load(Ordering::SeqCst),
+            "a cancelled execute_code must let its tool handler finish propagating \
+             the cancellation downstream, not abort it"
+        );
+    }
+
+    /// Issue #72, half two: waiting is only safe because the handler stops itself.
+    /// If it kept parking on `recv()` for a still-open sender, every Stop would
+    /// burn the whole grace window before aborting anyway.
+    #[tokio::test]
+    async fn run_tool_handler_stops_itself_once_the_turn_is_cancelled() {
+        let collected = Arc::new(Mutex::new(CollectedArtifacts::default()));
+        // The sender stays alive for the whole test: the handler must exit on the
+        // cancellation, not on the channel closing.
+        let (_call_tx, call_rx) = mpsc::unbounded_channel();
+        let token = CancellationToken::new();
+        let handler = tokio::spawn(CodeExecutionClient::run_tool_handler(
+            "cancel-session".to_string(),
+            call_rx,
+            None,
+            Arc::clone(&collected),
+            token.clone(),
+        ));
+
+        token.cancel();
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), handler)
+            .await
+            .expect("the tool handler must return once the turn is cancelled")
+            .expect("the tool handler must not panic");
     }
 
     #[tokio::test]

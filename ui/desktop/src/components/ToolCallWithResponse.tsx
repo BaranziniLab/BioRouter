@@ -730,7 +730,7 @@ export function summarizeToolCall(toolCall: ToolCallSummaryInput): string {
   return displayName;
 }
 
-const logToString = (logMessage: NotificationEvent) => {
+export const logToString = (logMessage: NotificationEvent) => {
   const message = logMessage.message as { method: string; params: unknown };
   const params = message.params as Record<string, unknown>;
 
@@ -743,6 +743,21 @@ const logToString = (logMessage: NotificationEvent) => {
     'stream' in params.data
   ) {
     return `[${params.data.stream}] ${params.data.output}`;
+  }
+
+  // Issue #72: the developer shell's foreground heartbeat. A command that prints
+  // nothing while it works — a big `find`, a slow query — used to leave the card
+  // saying "Working through the tool call" indefinitely, which is
+  // indistinguishable from a hung agent. Render its ready-made sentence rather
+  // than the raw JSON the fallback below would produce.
+  if (
+    params &&
+    params.data &&
+    typeof params.data === 'object' &&
+    'message' in params.data &&
+    typeof (params.data as { message: unknown }).message === 'string'
+  ) {
+    return (params.data as { message: string }).message;
   }
 
   return typeof params.data === 'string' ? params.data : JSON.stringify(params.data);
