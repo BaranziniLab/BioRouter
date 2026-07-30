@@ -2164,6 +2164,57 @@ biorouter|every_copy_path_carries_the_tier_and_the_provider|22|fn every_copy_pat
 biorouter|privacy::declassify|29|crates/biorouter/src/privacy/declassify.rs
 ROWS
 want "deferred rows" 18 "$(wc -l < /tmp/56-filters/deferred.txt | tr -d ' ')"
+# ⚠ AND THE OTHER 41. Step 3's first table claims an EXACT measured count for
+# every filter that resolves, and every `pre + N` assertion in this plan is
+# arithmetic on one of those numbers. Until this round the loop below treated
+# ANY positive count as OK, so the table could claim 122 while the tree said 190
+# and nothing failed — which is the `knowledge::` error this task itself found,
+# reintroduced as a hole in the gate that found it. Same shape as Task 10D's
+# metadata baseline, same rule: a difference you cannot NAME is the defect.
+cat > /tmp/56-filters/resolved.txt <<'ROWS'
+biorouter|agents::agent|21
+biorouter|agents::agent::tests|14
+biorouter|agents::code_execution_extension|69
+biorouter|agents::extension_manager|37
+biorouter|agents::extension_manager_extension|4
+biorouter|agents::knowledge_tool|4
+biorouter|agents::mcp_client|12
+biorouter|agents::reply_parts|2
+biorouter|agents::subagent_tool|16
+biorouter|agents::tool_execution|8
+biorouter|daemon_secret_never_reaches_an_extension_child|1
+biorouter|hooks|93
+biorouter|knowledge::conversation_ingest|2
+biorouter|knowledge::provider_completer|4
+biorouter|providers|359
+biorouter|scheduler|3
+biorouter|session::session_manager|139
+biorouter-cli|commands::knowledge|9
+biorouter-cli|session|166
+biorouter-mcp|agent_drafter::|244
+biorouter-mcp|agent_drafter::catalog|5
+biorouter-mcp|agent_drafter::validate|9
+biorouter-mcp|daemon_secret_never_reaches_a_shell_child|1
+biorouter-mcp|developer::background|23
+biorouter-mcp|developer::rmcp_developer::tests|64
+biorouter-mcp|developer::shell|16
+biorouter-mcp|knowledge::|190
+biorouter-mcp|knowledge::macros|10
+biorouter-mcp|knowledge::macros::ingest|3
+biorouter-mcp|knowledge::server|11
+biorouter-mcp|knowledge::service|38
+biorouter-mcp|memory|12
+biorouter-mcp|memory::|10
+biorouter-mcp|paths::|9
+biorouter-mcp|secret_guard::|19
+biorouter-sandbox|environment|1
+biorouter-server|auth|4
+biorouter-server|routes::agent|8
+biorouter-server|routes::apps|90
+biorouter-server|routes::config_management|3
+biorouter-server|routes::session|20
+ROWS
+want "resolved rows" 41 "$(wc -l < /tmp/56-filters/resolved.txt | tr -d ' ')"
 # ⚠ HARVEST FROM FENCED CODE BLOCKS ONLY, WITH `#` COMMENTS STRIPPED. Two
 # measured reasons, both of which made this gate fail on itself:
 #   * the sentence "This gate rejects: a `cargo test -p biorouter-mcp --lib
@@ -2199,7 +2250,16 @@ while read -r pkg filter; do
   # the same filter in a crate that will never define it.
   task=$(awk -F'|' -v p="$pkg" -v f="$filter" '$1==p && $2==f { print $3 }' \
            /tmp/56-filters/deferred.txt)
-  if [ "$n" -gt 0 ]; then
+  # The recorded pre-count for a pair that resolves. Empty = not in the table.
+  rec=$(awk -F'|' -v p="$pkg" -v f="$filter" '$1==p && $2==f { print $3 }' \
+          /tmp/56-filters/resolved.txt)
+  if [ "$n" -gt 0 ] && [ -z "$rec" ]; then
+    echo "UNRECORDED $pkg $filter ($n tests) — resolves, but Step 3's first table"
+    echo "           records no pre-count for it, so any \`pre + N\` built on it is"
+    echo "           arithmetic on a number nobody measured. Add the row."
+  elif [ "$n" -gt 0 ] && [ "$n" != "$rec" ]; then
+    echo "DRIFT   $pkg $filter — listing says $n, Step 3's table says $rec"
+  elif [ "$n" -gt 0 ]; then
     echo "OK      $pkg $filter ($n tests)"
   elif [ -n "$task" ]; then
     echo "DEFER   $pkg $filter (created by Task $task — see Step 3's table)"
@@ -2208,11 +2268,20 @@ while read -r pkg filter; do
   fi
 done < /tmp/56-filters/wanted.txt > /tmp/56-filters/verdict.txt
 sort /tmp/56-filters/verdict.txt
-miss=$(grep -c '^MISSING' /tmp/56-filters/verdict.txt) || miss=0
-defer=$(grep -c '^DEFER'  /tmp/56-filters/verdict.txt) || defer=0
-ok=$(grep -c '^OK'        /tmp/56-filters/verdict.txt) || ok=0
+miss=$(grep -c '^MISSING'    /tmp/56-filters/verdict.txt) || miss=0
+defer=$(grep -c '^DEFER'     /tmp/56-filters/verdict.txt) || defer=0
+ok=$(grep -c '^OK'           /tmp/56-filters/verdict.txt) || ok=0
+drift=$(grep -c '^DRIFT'     /tmp/56-filters/verdict.txt) || drift=0
+unrec=$(grep -c '^UNRECORDED' /tmp/56-filters/verdict.txt) || unrec=0
 # (1) The gate. A MISSING line is a filter that prints `0 passed` and exits 0.
 want "MISSING lines" 0 "$miss"
+# (1b) …and a DRIFT line is a recorded pre-count the tree no longer agrees with.
+#      Equality, not `>=`: the tasks in this plan ADD tests, so a count that grew
+#      is expected — and the rule is that the task which grew it re-baselines the
+#      row IN THE SAME COMMIT, exactly as Task 10D's metadata baseline works.
+#      `>=` would silently accept the `knowledge:: = 122` error this task found.
+want "DRIFT lines" 0 "$drift"
+want "UNRECORDED lines" 0 "$unrec"
 # (2) Every deferred ROW is USED — the counts alone are satisfied by a deferred
 #     table with spare rows in it, and an entry that excuses a filter nobody
 #     writes is a permanent hole. Asserted as an equality rather than by
@@ -2241,9 +2310,29 @@ echo "  NO module called tests. That filter is unresolvable as written."
 #     that ALREADY EXIST and today have none; and two are bare test names with
 #     no file at all. Hence the fourth column: whatever proves that row, whether
 #     a path or a `fn` name.
+#
+# ⚠ AND THE EVIDENCE IS SEARCHED OVER THE PLAN **MINUS THIS TABLE**. Round 3 §7:
+# every row WITNESSES ITSELF. The heredoc above is inside a fenced block of this
+# very file, so `grep -c -- "$evidence" "$PLAN"` matched the row's own fourth
+# column and returned 1 for every row — including a fabricated row whose fourth
+# column names a function this plan never writes. The check was vacuous in
+# exactly the direction it was written to close. Strip the rows first: they are the only
+# lines in the document with four `|`-separated fields and no leading `|`
+# (markdown table rows all start with `| `). The 41 resolved rows have three
+# fields and are left alone — they carry no path and no `fn`, so they cannot
+# witness anything.
+awk -F'|' 'NF == 4 && $0 !~ /^\|/ && $1 ~ /^biorouter(-[a-z]+)?$/ { next } { print }' \
+  "$PLAN" > /tmp/56-filters/plan-minus-table.txt
+d=$(( $(wc -l < "$PLAN") - $(wc -l < /tmp/56-filters/plan-minus-table.txt) ))
+# Self-check on the stripper: exactly the 18 deferred rows, and NOTHING else.
+# MEASURED against this plan. If this number moves, the awk filter has started
+# eating prose and every UNBACKED verdict below is unsound — which is the failure
+# mode where a too-greedy strip makes real evidence vanish and the gate turns
+# into a wall of false UNBACKEDs that the next reader "fixes" by deleting it.
+want "rows stripped before the evidence search" 18 "$d"
 unbacked=0
 while IFS='|' read -r pkg filter task evidence; do
-  n=$(grep -c -- "$evidence" "$PLAN") || n=0
+  n=$(grep -c -- "$evidence" /tmp/56-filters/plan-minus-table.txt) || n=0
   if [ "$n" -gt 0 ]; then echo "OK       $pkg $filter (Task $task) ← $evidence ($n)"
   else echo "UNBACKED $pkg $filter (Task $task) — nothing in this plan creates it"
        unbacked=$((unbacked + 1)); fi
@@ -2285,6 +2374,29 @@ command that reported success while doing nothing. Every assertion now runs thro
 sets `rc`, and the block's last statement is `( exit "$rc" )`. Verified both ways: against the plan
 as it stands it prints `Task 4b gate: PASS` and exits **0**; with one deferred row deleted it prints
 `FAIL MISSING lines = 1`, `FAIL OK + DEFER == pairs`, and exits **1**.
+
+**This gate rejects: a deferred row whose evidence is its own fourth column.** Round 3 §7 built it —
+add `…|fn <a name nothing writes>` to the heredoc and the `UNBACKED` loop searched the *whole plan*,
+which contains that row, so it counted 1 and reported OK. Every one of the eighteen real rows passed
+for the same reason, which means the check was measuring nothing. The evidence is now searched over
+the plan **minus the eighteen rows** (they are the only lines with four `|`-fields and no leading
+`|`), the stripper's own output is asserted at exactly 18 lines removed, and the fabricated row now
+counts 0 and fails. Verified both ways on this plan: all eighteen real rows still resolve, with
+between 1 and 17 supporting mentions each, and the fabricated one drops to 0. ⚠ **A consequence for
+whoever edits this task: do not write a deferred row's evidence string into prose.** That is the same
+trap as (i) below, wearing the other face — prose naming `fn <deferred test name>` re-creates the
+self-witness that this strip removes, because prose is not stripped.
+
+**This gate rejects: Step 3's first table claiming a pre-count the tree does not have.** Until this
+round the loop treated *any* positive count as `OK`, so `knowledge:: = 122` — the stale figure that
+would have read a 68-test shortfall as a pass, and the single most valuable thing this task found —
+was invisible to the gate that found it. The 41 measured pairs are now a second heredoc keyed on the
+same `(package, filter)` pair, and a listing that disagrees with the recorded number is a `DRIFT`
+line, not an `OK`. It is an **equality**, not `n >= recorded`: tasks in this plan add tests, and the
+rule is that the task which grew a count re-baselines its row in the same commit — the identical
+convention as Task 10D's metadata baseline. `>=` would accept the 122 error unchanged. A filter that
+resolves with **no** recorded row is `UNRECORDED` and also fails, because a `pre + N` assertion built
+on an unmeasured base is the same arithmetic error one step earlier.
 
 **And it rejects the two ways the harvest itself lied.** (i) A whole-file grep picked up the command
 named in *this very sentence* — prose, not a gate — and reported it MISSING for ever, so a correct
