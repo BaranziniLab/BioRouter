@@ -4394,13 +4394,42 @@ async fn a_models_export_of_a_private_base_lands_inside_the_knowledge_root() {
     seed_page(&root, "omop", "knowledge/x.md", "SENTINEL-COHORT-N-412");
     let elsewhere = tempfile::tempdir().unwrap();
     let asked = elsewhere.path().join("omop.brkb");
+    // ⚠ READ-ONLY, and this is the assertion — not decoration. Round 3 §7: a
+    // `!asked.exists()` at the END passes "write the archive outside, then move
+    // it inside before returning", which opens a real public-read window for
+    // however long the copy takes. A final-state check cannot see a transient
+    // file and no amount of polling makes it deterministic. Making the
+    // directory unwritable turns the timing question into an ERROR: the
+    // write-then-move implementation gets EACCES and fails the export; the
+    // correct one never touches this directory and is unaffected.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(elsewhere.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
+        // ⚠ SELF-CHECK ON THE FIXTURE, and it is part of the gate. Under root
+        // the mode bits are ignored and the `chmod` silently becomes a no-op,
+        // which turns this whole test back into the final-state check it
+        // replaces. Assert the property directly rather than proxying it
+        // through a euid comparison — `libc` is not a dependency of this crate
+        // and a proxy can be right while the property is false.
+        assert!(std::fs::write(elsewhere.path().join(".probe"), b"x").is_err(),
+                "the read-only fixture did not take (running as root?) — this test \
+                 would silently degrade to the assertion it was written to replace");
+    }
 
     let out = call_tool_as(&srv, "kb_export",
                            json!({ "kb_id": "omop", "dest_path": asked.display().to_string() }),
                            Private).await.unwrap();
 
-    // (a) nothing was written where the model aimed it.
+    // (a) nothing was written where the model aimed it — at any point, not just
+    //     at the end.
     assert!(!asked.exists(), "a private base was exported outside the deny root");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(elsewhere.path(),
+                                 std::fs::Permissions::from_mode(0o755)).unwrap();  // so TempDir can clean up
+    }
     assert_eq!(std::fs::read_dir(elsewhere.path()).unwrap().count(), 0);
     // (b) the tool REPORTED the real location, and it is under <root>/exports/.
     let written = reported_export_path(&out);
@@ -4430,20 +4459,50 @@ async fn a_models_export_of_a_PUBLIC_base_still_honours_dest_path() {
 }
 
 #[tokio::test]
-async fn the_users_own_export_route_may_still_write_anywhere() {
+async fn the_users_own_export_route_is_not_subject_to_the_models_location_rule() {
     // Task 10C's scope line, asserted rather than described: the seven
     // `/knowledge/*` read handlers and this export are the USER in the
     // Knowledge view, not a model, and DR-14 governs what a MODEL can reach.
     // Driven through the route, because the defect would be a rule applied in
-    // the service and therefore to everyone.
+    // the SERVICE and therefore to everyone.
+    //
+    // ⚠ THIS TEST WAS INVALID UNTIL THIS ROUND, and round 3 §7 was right about
+    // why. It supplied `?dest_path=…` and asserted a file appeared there. The
+    // real handler is `export_brkb(State(svc), Path(id))`
+    // (`routes/knowledge.rs:1518`) — it takes NO query parameters at all, calls
+    // `svc.export_brkb(&id)` and returns the archive as the response BODY with
+    // `Content-Disposition: attachment`. It never writes to disk. So the old
+    // assertion failed against a correct implementation, and its `TempDir` was
+    // dropped at the end of the statement that created it, deleting the parent
+    // directory before the request was even sent.
+    //
+    // What the route can actually witness is the thing that matters: a location
+    // rule implemented one layer down, in `KnowledgeService::export_brkb`, would
+    // change this route too — the user would stop being able to download a
+    // private base from their own Knowledge view. So assert the bytes come back.
     let (app, root) = knowledge_app_with_base("omop").await;
     tier::raise_unlocked(&root, "omop", true).unwrap();
-    let asked = tempfile::tempdir().unwrap().path().join("omop.brkb");
-    let r = app.get(&format!("/knowledge/bases/omop/export?dest_path={}", asked.display())).await;
-    assert_eq!(r.status(), 200);
-    assert!(asked.exists(), "the user's own export was forced into the knowledge root");
+    seed_page(&root, "omop", "knowledge/x.md", "SENTINEL-COHORT-N-412");
+
+    let r = app.get("/knowledge/bases/omop/export").await;
+    assert_eq!(r.status(), 200, "the user's own export of a private base was refused");
+    assert_eq!(r.headers()[header::CONTENT_TYPE], "application/octet-stream");
+    let body = r.bytes().await;
+    assert!(zip_names(&body).iter().any(|n| n.ends_with("knowledge/x.md")),
+            "the route returned {} bytes but not the archive", body.len());
+    // …and nothing was relocated into the knowledge root as a side effect: the
+    // model's rule writes `<root>/exports/`, and the user's route writes nothing.
+    assert!(!root.join("exports").exists());
 }
 ```
+
+**This gate rejects: the forced-location rule implemented in `KnowledgeService::export_brkb` instead
+of in `kb_export`.** That is the tidier-looking place — one function, every caller covered — and it
+is wrong: it takes the user's own download of their own private base away from them in the Knowledge
+view, which no test in this task would otherwise notice. It also rejects a barrier
+(`assert_reachable`) added to the service-level export, which would turn this 200 into a refusal.
+**What it cannot reject** is a rule added to the route itself; nothing here distinguishes that from
+the correct implementation, and the control is the scope ⚠ in Task 10C plus this test's name.
 
 ```rust
 // crates/biorouter-mcp/src/knowledge/service.rs, in its existing #[cfg(test)] mod tests
@@ -4937,14 +4996,25 @@ it is read as a floor, a foreign archive is unaffected, and export→import insi
 refused. The bytes still land wherever the model asked, outside all four DR-14 roots, where the same
 session's shell reads them with `unzip -p` — no import, no marker to strip, no Biorouter involved.
 **This gate rejects: `kb_export` honouring `dest_path` for a private base when the caller is a
-model.** `a_models_export_of_a_private_base_lands_inside_the_knowledge_root` asserts all three
-halves — nothing at the requested path, the reported path under `<knowledge-root>/exports/`, and the
-archive genuinely containing the page, so "write nothing at all" does not pass —
-`a_models_export_of_a_PUBLIC_base_still_honours_dest_path` rejects the over-correction that forces
-every export and would be reverted by whoever hits it, and
-`the_users_own_export_route_may_still_write_anywhere` rejects the version implemented in the service,
-which would apply the rule to the Knowledge view's own export button. Until this round all three
-were one `awk … | grep -n … | head -4` whose output a human was asked to interpret.
+model.** `a_models_export_of_a_private_base_lands_inside_the_knowledge_root` asserts four halves —
+the requested directory is **read-only for the duration of the call**, nothing at the requested path,
+the reported path under `<knowledge-root>/exports/`, and the archive genuinely containing the page,
+so "write nothing at all" does not pass — `a_models_export_of_a_PUBLIC_base_still_honours_dest_path`
+rejects the over-correction that forces every export and would be reverted by whoever hits it, and
+`the_users_own_export_route_is_not_subject_to_the_models_location_rule` rejects the version
+implemented in the service, which would apply the rule to the Knowledge view's own export button.
+Until this round all three were one `awk … | grep -n … | head -4` whose output a human was asked to
+interpret.
+
+**This gate rejects: "write it outside, then move it inside before returning".** Round 3 §7 found
+that one, and it is worse than an ordinary miss because the final state is *correct* — the archive
+really does end up under `exports/` and nothing remains outside — while a complete copy of a private
+knowledge base existed at a public-readable path for the length of the copy. A final-state assertion
+cannot see it and no amount of polling makes the observation deterministic. The read-only `chmod` is
+what converts a timing question into an error: the wrong implementation's first write returns EACCES
+and the export fails; the right one never opens anything in that directory. The `assert_ne!(euid, 0)`
+is part of the gate, not hygiene — under root the mode bits are ignored and the check silently
+becomes the old, weaker one.
 (2) A migration that runs on
 every startup "to pick up new bases", which silently lowers a base the day after a private session
 raised it; test 1's second `ensure_migrated_unlocked` is what fails it, and no grep would. (3) A store
