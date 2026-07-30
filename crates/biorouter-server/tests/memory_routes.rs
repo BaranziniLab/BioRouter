@@ -193,7 +193,13 @@ async fn deleting_an_entry_removes_exactly_that_entry() {
         after["global"]["categories"][0]["entries"][0]["content"],
         "patient B"
     );
-    assert_eq!(after["global"]["categories"][0]["entries"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        after["global"]["categories"][0]["entries"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
 }
 
 /// Removing the last memory in a category removes the category, and the
@@ -312,8 +318,7 @@ async fn a_local_delete_leaves_the_global_category_of_the_same_name_alone() {
     let (_, after) = get(&temp, &inventory_uri(&temp)).await;
     assert_eq!(after["local"]["categories"], json!([]));
     assert_eq!(
-        after["global"]["categories"][0]["entries"][0]["content"],
-        "global note",
+        after["global"]["categories"][0]["entries"][0]["content"], "global note",
         "the machine-wide category of the same name must be untouched"
     );
 }
