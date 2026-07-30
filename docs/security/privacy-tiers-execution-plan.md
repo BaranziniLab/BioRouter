@@ -14341,6 +14341,708 @@ git commit -m "feat(privacy): Gate F - refuse enabling a private extension and h
 
 ---
 
+### Task 18A: The two HTTP channels that raise a session's own tier, and the user-proof neither of them has
+
+[DR-16](#decisions-of-record) is the ruling this task implements: **raising a session's capability to
+Private is the user's act alone, and a model may never do it.** Three things follow, and the third
+is the whole difficulty.
+
+**The two channels are real and neither has a principal.** `POST /agent/update_provider`
+(`routes/agent.rs:686`, registered `:1270`) takes `{provider, model, session_id, …}` and binds it —
+`create(&payload.provider, model_config)` at `:713`, then `agent.update_provider(..)` at `:721`.
+Nothing on that path reads a tier. `llamacpp` is in Task 5's private set, it is the **bundled**
+local model, and it needs no credential at all (`providers/llamacpp.rs`: the sidecar is spawned from
+`<exe dir>/llamacpp/`, and `LlamaCppProvider` carries no API key) — so `{"provider":"llamacpp"}` is a
+tier raise that any caller can perform with nothing but the daemon secret and no setup. `POST
+/agent/add_extension` (`:744`, registered `:1272`) is the same shape one layer over: it hands
+`request.config` straight to `agent.add_extension` and persists it, which is how a private-classified
+extension's *tools* arrive in a session Task 18's F1 already refuses to let the model enable through
+`extensionmanager__manage_extensions`.
+
+**And the daemon cannot tell the user from the model.** `check_token` (`auth.rs:80-127`) compares one
+machine-wide bearer against the `X-Secret-Key` header (`:115-118`) and has **no principal**: every
+authenticated request is indistinguishable, whoever sent it, and [AR-11](#ar-11--the-daemons-own-api-secret-is-recoverable-so-the-second-door-is-held-by-layer-a-and-not-by-the-environment-strip)
+measured that bearer to be recoverable from inside the daemon. That is exactly why DR-16 rejected
+*treat identity-free routes as public*: refusing every raise takes the **user's** model picker away
+along with the model's, and the picker is what the entire refusal vocabulary points at. So this task
+has to build the proof-of-user the design has assumed twice (§12.1, and Task 29's
+`secret_key_and_capability_token()`) and defined neither time. It is recorded as
+[AR-15](#ar-15--a-caller-holding-the-daemon-secret-can-raise-its-own-sessions-capability-with-no-credentials).
+
+**The proof, in one sentence: whoever launches the daemon mints it, and it never touches the
+daemon's environment.** The Electron main process generates 32 random bytes per launch, keeps the
+raw key in the main process, and writes only its **SHA-256 digest** to the daemon on **stdin**,
+closing the pipe immediately. The renderer sends the raw key in `X-User-Action` on the three
+tier-raising requests. Three properties, each load-bearing:
+
+1. **Not in the environment**, because AR-11 measured the environment to be recoverable *in-process*
+   by any tool that reads a caller-named path — `computercontroller__cache view /proc/self/environ`
+   on Linux, and `sysctl(CTL_KERN, KERN_PROCARGS2, pid)` on macOS, which is not a path at all and
+   which no sandbox profile can gate. A key delivered that way is a key the model already has, which
+   is why open question 23 refuses an env-var escape hatch outright.
+2. **Not on the command line** (`safeArgs` stays `['agent']`, `biorouterd.ts:341`), because argv sits
+   in the same `KERN_PROCARGS2` block and in `/proc/<pid>/cmdline`.
+3. **Not in the daemon's memory either.** The daemon stores the *digest*, never the key. A tool that
+   reads the daemon's heap recovers a value it cannot present. This is what makes the user-proof
+   strictly stronger than the daemon secret rather than merely another copy of it — and it is the
+   only part of AR-11's residual this task actually closes.
+
+⚠ **What this does not close, stated.** The raw key lives in the Electron **main** process and
+crosses the IPC bridge to the renderer; a caller who can read *that* process, or who can start their
+own `biorouterd` with a key they chose, is unaffected by any of this. Both are the
+same-machine-caller problem that [Open question 20](#open-questions) carries, and neither is made
+worse here. This task narrows AR-11's residual for one credential; it does not introduce an identity
+model, and the plan must not read as though it did.
+
+**Files:**
+
+| Action | Path | Anchor (re-verified at `0d37998e`) |
+|---|---|---|
+| Modify | `crates/biorouter-server/src/auth.rs` | `secret_matches` `:14-24` (the constant-time compare to copy); `check_token` `:80-127`, its `X-Secret-Key` read `:115-118`; the existing `FAILED_ATTEMPTS: OnceLock` `:26-30` (the storage pattern this file already uses); test mod `:130` |
+| Modify | `crates/biorouter-server/src/commands/agent.rs` | `run` `:30`; the `BIOROUTER_SERVER__SECRET_KEY` read `:35-42` — the digest install goes **immediately after** it and **before** `AppState::new()` `:44` and the `check_token` layer `:53-56` |
+| Modify | `crates/biorouter-server/src/routes/agent.rs` | `update_agent_provider` `:686-731` (`create` `:713`, `agent.update_provider` `:721`); `agent_add_extension` `:744-762`; both `responses(..)` blocks; registrations `:1270`, `:1272` |
+| Modify | `crates/biorouter-server/src/routes/config_management.rs` | `upsert_config` `:183-193` (`config.set(&query.key, ..)` `:187`); `set_config_provider` `:876-890` (`set_biorouter_provider` `:884`); `UpsertConfigQuery` `:47-51`; `SetProviderRequest` `:105-108`; `routes` `:892`; registrations `:895`, `:923`; `.with_state(state)` `:924` |
+| Modify | `crates/biorouter-server/Cargo.toml` | add `sha2 = "0.10"` — **it is not a dependency today**; there is no `[workspace.dependencies] sha2`, so pin the same `0.10` `crates/biorouter/Cargo.toml:59` and `crates/biorouter-mcp/Cargo.toml:87` already use. `hex` and `rand` are already in (`commands/agent.rs:36-37` uses both) |
+| Create | `crates/biorouter/src/privacy/config_keys.rs` | new — the capability-key list and the scan that keeps it honest; declared in `privacy/mod.rs` |
+| Modify | `crates/biorouter/src/privacy/refusal.rs` | created by Task 12; gains three variants and the one shared instruction constant |
+| Modify | `ui/desktop/src/biorouterd.ts` | `BiorouterProcessEnv` `:242-253`; `additionalEnv` `:299-318`; `processEnv` `:320-323`; `spawnOptions` `:332-339` — **`stdio: ['ignore','pipe','pipe']` at `:335`**; `safeArgs` `:341`; `spawn` `:343`. The `BIOROUTER_EXTERNAL_BACKEND` early return `:275-277` never reaches any of it |
+| Modify | `ui/desktop/src/main.ts` | `getServerSecret` `:902-910` (the three-branch shape `getUserActionKey` mirrors); `GENERATED_SECRET` `:909`; `serverSecret` `:1009`; the `get-secret-key` IPC handler `:1934-1937` |
+| Modify | `ui/desktop/src/preload.ts` | `getSecretKey` type `:240`, binding `:468` |
+| Modify | `ui/desktop/src/renderer.tsx` | `client.setConfig` `:450-456` — ⚠ **the header does NOT go here.** A default header is sent on every request; this one is sent on three |
+| Modify | `ui/desktop/src/components/ModelAndProviderContext.tsx` | `updateAgentProvider` `:282-290`, `setConfigProvider` `:294-300` — the two calls that must carry it |
+| Modify | `Justfile` | `debug-server` `:290-292`; `run-server` `:285-287` (unchanged, and the gate asserts it stays unchanged) |
+| Reference | `crates/biorouter/src/agents/agent.rs` | `provider()` `:2511-2516` (`Result<Arc<dyn Provider>>`, `Err` when unset); `update_provider` `:5655`; `restore_provider_from_session` `:5679-5704`, config fallback at **`:5685`** |
+| Reference | `crates/biorouter/src/providers/factory.rs` | `create` `:139-149`; the `BIOROUTER_LEAD_MODEL` intercept `:142-146`, **before** the registry lookup |
+| Reference | `crates/biorouter/src/config/base.rs` | `get_param` `:755-773` — **env wins over the config file** (`:764-767`), which is why a config write is a *default* change and not an immediate one; `set_param` `:788-793`; `config_value!` `:236-250`; `BIOROUTER_PROVIDER` `:1147` |
+| Reference | `crates/biorouter-server/src/routes/agent.rs` | `mod working_dir_lock_tests` `:1279` (`#[cfg(test)]` `:1278`; its doc comment `:1280-1286`) — its doc comment is the constraint that shapes Step 1: *"`AppState::new()` opens the REAL user session database … so a mutating route test must never go through it"* |
+
+**Why the guard is a pure function and not a middleware.** Two measured reasons. (a) The route test
+that would otherwise be the obvious home is forbidden by the comment in the last row — an
+`AppState`-backed HTTP test of `/agent/update_provider` would mutate the developer's real session
+database. (b) A middleware keyed on a path list is the wrong shape anyway: it cannot see *whether the
+request raises the tier*, so it would either refuse every bind (the posture DR-16 rejected) or refuse
+none. The decision is therefore two pure functions the handlers compose, and a source-scan test that
+proves all four handlers compose them.
+
+- [ ] **Step 1: Write the failing tests**
+
+```rust
+// crates/biorouter-server/src/auth.rs — in the existing `mod tests` at :130.
+#[test]
+fn a_daemon_with_no_user_action_key_refuses_every_raise() {
+    // Open question 23, as an assertion. `just run-server`, a hand-run
+    // `biorouterd agent`, and every headless deployment land here.
+    assert!(!user_action_matches(Some("anything"), None));
+    assert!(!user_action_matches(None, None));
+    assert!(!user_action_matches(None, Some(&digest_of("k"))));
+}
+
+#[test]
+fn the_daemon_stores_a_digest_and_never_the_key() {
+    let expected = digest_of("the-real-key");
+    assert!(user_action_matches(Some("the-real-key"), Some(&expected)));
+    assert!(!user_action_matches(Some("the-real-ke"), Some(&expected)));
+    // The stored value is not itself presentable: handing the daemon back what
+    // it holds must NOT authenticate. This is the assertion that fails an
+    // implementation which stores the raw key "for simplicity".
+    assert!(!user_action_matches(Some(&hex::encode(expected)), Some(&expected)));
+}
+
+#[test]
+fn all_four_raise_channels_call_the_guard() {
+    // A source scan, because the alternative — four HTTP tests — has to build
+    // `AppState`, which opens the user's real session DB (routes/agent.rs:1280-1286).
+    // This is the test that fails a PARTIAL implementation: covering
+    // `update_provider` and leaving `add_extension` or the config routes open.
+    let agent_rs = include_str!("routes/agent.rs");
+    let config_rs = include_str!("routes/config_management.rs");
+    for (src, func) in [
+        (agent_rs, "async fn update_agent_provider"),
+        (agent_rs, "async fn agent_add_extension"),
+        (config_rs, "pub async fn upsert_config"),
+        (config_rs, "pub async fn set_config_provider"),
+    ] {
+        assert!(body_of(src, func).contains("is_user_action("),
+                "{func} does not consult the user-action guard");
+    }
+}
+```
+
+```rust
+// crates/biorouter/src/privacy/refusal.rs tests — the rule, and the disclosure bound.
+#[test]
+fn only_an_upward_bind_needs_the_user() {
+    use ProviderTier::{Private, Public};
+    assert!( raise_needs_user_action(Public,  Private));  // the one raise
+    assert!(!raise_needs_user_action(Public,  Public));   // sideways
+    assert!(!raise_needs_user_action(Private, Private));  // sideways
+    assert!(!raise_needs_user_action(Private, Public));   // downward — Gate A's job, not this one
+}
+
+#[test]
+fn a_refusal_names_nothing_the_caller_did_not_ask_for() {
+    // R10's disclosure bound. A refusal that says "pick versa_azure instead"
+    // tells a public model which providers are private, and a refusal that
+    // says "ucsfomopagent is private, cdwagent is not" is a classification
+    // oracle the model can drive one name at a time.
+    let msg = PrivacyRefusal::TierRaiseNeedsUser { requested: "llamacpp".into() }.to_string();
+    for other in ["versa_azure", "versa_bedrock", "ollama"] {
+        assert!(!msg.contains(other), "refusal leaked the classification of {other}");
+    }
+
+    // ⚠ DEPENDENCY, not an invention: Task 8 generates the private extension
+    //   set. This test needs a public accessor for it; if Task 8 shipped it
+    //   private, Step 3 of THIS task exports it. Do not stub the list here —
+    //   a hand-written list stops tracking the generator and the assertion
+    //   goes quietly vacuous.
+    let msg = PrivacyRefusal::PrivateExtensionOverHttp { name: "ucsfomopagent".into() }.to_string();
+    for other in private_extension_ids().filter(|id| id != "ucsfomopagent") {
+        assert!(!msg.contains(&other), "refusal leaked the classification of {other}");
+    }
+    assert!(msg.contains("ucsfomopagent"), "the caller's own name may be named");
+}
+
+#[test]
+fn every_refusal_ends_in_the_same_two_ways_out_sentence() {
+    // DR-16's knock-on: "switch this chat to a private model" is step 1 of the
+    // two-ways-out message in EVERY refusal this feature ships, and here it
+    // becomes something the model hands to the USER instead of following. One
+    // constant, so the two audiences cannot drift into two vocabularies.
+    for msg in [
+        PrivacyRefusal::TierRaiseNeedsUser { requested: "llamacpp".into() }.to_string(),
+        PrivacyRefusal::PrivateExtensionOverHttp { name: "ucsfomopagent".into() }.to_string(),
+        PrivacyRefusal::CapabilityConfigNeedsUser { key: "BIOROUTER_PROVIDER".into() }.to_string(),
+    ] {
+        assert!(msg.contains(ASK_THE_USER_TO_SWITCH), "{msg}");
+        assert!(msg.contains("Do not retry"), "a refusal the model will retry is a loop: {msg}");
+    }
+}
+```
+
+```rust
+// crates/biorouter/src/privacy/config_keys.rs — open question 24's answer, and the
+// mechanism that stops a future capability-determining key being forgotten.
+#[test]
+fn every_config_key_the_tier_resolver_reads_is_classified() {
+    // Scans the five files Task 5 touches to define `tier()` plus factory.rs's
+    // BIOROUTER_LEAD_MODEL intercept, extracts every `get_param("KEY")` literal,
+    // and requires each to appear in EXACTLY ONE of the two lists. Adding a
+    // config read to any of them fails this test until someone decides whether
+    // it determines capability. That is the checkable list: it does not depend
+    // on anyone remembering a rule.
+    let scanned = scan_get_param_keys();          // 22 today
+    assert_eq!(scanned.len(), 22, "the tier-input files' config surface changed");
+    for key in &scanned {
+        let cap = CAPABILITY_CONFIG_KEYS.contains(&key.as_str());
+        let not = NOT_CAPABILITY_CONFIG_KEYS.iter().any(|(k, _why)| k == key);
+        assert!(cap ^ not, "{key} is in neither list, or in both — classify it");
+    }
+    // BIOROUTER_PROVIDER is read through the `config_value!` macro
+    // (base.rs:1147), so the literal never appears in a `get_param(` call and
+    // the scan cannot see it. It is seeded, and this asserts the seed survives.
+    assert!(CAPABILITY_CONFIG_KEYS.contains(&"BIOROUTER_PROVIDER"));
+    assert_eq!(CAPABILITY_CONFIG_KEYS.len(), 5);
+}
+
+#[test]
+fn the_scan_cannot_be_defeated_by_a_computed_key() {
+    // The scan reads string literals. A `get_param(&format!(..))` would be
+    // invisible to it, so the scan asserts there are none — measured: today
+    // every key in all five files is a literal.
+    for (path, src) in tier_input_sources() {
+        assert!(!computed_get_param_re().is_match(src),
+                "{path} builds a config key at runtime; the key scan cannot see it");
+    }
+}
+```
+
+```ts
+// ui/desktop/src/biorouterd.test.ts — the AR-11 property, asserted rather than reviewed.
+it('hands the user-action digest on stdin and never through the environment', async () => {
+  const { spawnArgs } = await startBiorouterdWithFakeSpawn();
+  expect(spawnArgs.options.stdio[0]).toBe('pipe');          // was 'ignore'
+  expect(spawnArgs.args).toEqual(['agent']);                 // not on argv either
+  const env = spawnArgs.options.env as Record<string, string>;
+  for (const [k, v] of Object.entries(env)) {
+    expect(k).not.toMatch(/USER_ACTION/i);
+    expect(v).not.toBe(userActionKeyForTest);               // and not smuggled under another name
+  }
+  expect(stdinWrites.join('')).toContain(sha256Hex(userActionKeyForTest));
+  expect(stdinWrites.join('')).not.toContain(userActionKeyForTest);  // digest, never the key
+  expect(stdinEnded).toBe(true);
+});
+```
+
+- [ ] **Step 2: Run**
+
+```bash
+cargo test -p biorouter-server --lib -- auth::
+cargo test -p biorouter --lib -- privacy::
+cd ui/desktop && npm run test:run -- biorouterd
+```
+
+→ every Rust test above is a **COMPILE ERROR**, not a FAIL: `user_action_matches`,
+`is_user_action`, `raise_needs_user_action`, `PrivacyRefusal`'s three new variants,
+`ASK_THE_USER_TO_SWITCH`, `CAPABILITY_CONFIG_KEYS`, `NOT_CAPABILITY_CONFIG_KEYS`,
+`scan_get_param_keys` and `privacy::config_keys` do not exist. The two helpers
+`body_of` and `digest_of` are new test-local helpers and also do not exist. The
+vitest case is a genuine **FAIL** (`stdio[0]` is `'ignore'`, `biorouterd.ts:335`,
+and nothing writes to stdin) — the only one of the six that compiles today.
+
+- [ ] **Step 3: Implement**
+
+**(a) The proof — minted at launch, delivered on stdin.** In `ui/desktop/src/main.ts`, beside
+`getServerSecret` (`:902-910`) and with its exact three-branch shape:
+
+```ts
+const GENERATED_USER_ACTION_KEY = crypto.randomBytes(32).toString('hex');
+// Deliberately public on the external-backend path: `just debug-server` publishes
+// the same constant, so `just debug-ui` keeps working. See Open question 23.
+const DEV_USER_ACTION_KEY = 'biorouter-dev-user-action';
+const getUserActionKey = (settings: ReturnType<typeof loadSettings>): string => {
+  // ⚠ `userActionKey` is a NEW optional field on the externalBiorouterd settings
+  //    type — it does not exist today. Absent, this returns '' and the raise
+  //    fails closed, which is the right default for a backend the app did not start.
+  if (settings.externalBiorouterd?.enabled) return settings.externalBiorouterd.userActionKey ?? '';
+  if (process.env.BIOROUTER_EXTERNAL_BACKEND) return DEV_USER_ACTION_KEY;
+  return GENERATED_USER_ACTION_KEY;
+};
+```
+
+In `biorouterd.ts`, `stdio[0]` becomes `'pipe'` and the digest is written and the pipe closed
+immediately after `spawn` (`:343`):
+
+```ts
+biorouterdProcess.stdin?.write(sha256Hex(userActionKey) + '\n');
+biorouterdProcess.stdin?.end();
+```
+
+`BiorouterProcessEnv` (`:242-253`) gains **nothing**, and `additionalEnv` (`:299-318`) gains
+**nothing** — that omission is the point, and Step 5 asserts it.
+
+In `commands/agent.rs`, immediately after the secret is resolved (`:35-42`) and before
+`AppState::new()` (`:44`):
+
+```rust
+let user_action_digest = read_user_action_digest().await;
+if user_action_digest.is_none() {
+    tracing::warn!(
+        "no user-action key on stdin: this daemon will refuse every request that raises a \
+         session's privacy capability, including one made by the person at the keyboard"
+    );
+}
+biorouter_server::auth::install_user_action_digest(user_action_digest);
+```
+
+`read_user_action_digest` must **never block a hand-started daemon**, so it is guarded twice:
+
+```rust
+async fn read_user_action_digest() -> Option<[u8; 32]> {
+    use std::io::IsTerminal;
+    // (1) A terminal is a human at a prompt, not a launcher with a key. Reading
+    //     it would hang `just run-server` forever waiting for a line.
+    if std::io::stdin().is_terminal() {
+        return None;
+    }
+    // (2) And a pipe whose writer never closes would hang just as hard, so the
+    //     read is bounded. 2s is far longer than a local `write` + `end`.
+    let line = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        tokio::task::spawn_blocking(|| {
+            let mut s = String::new();
+            std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut s).ok()?;
+            Some(s)
+        }),
+    )
+    .await
+    .ok()?
+    .ok()??;
+    let bytes = hex::decode(line.trim()).ok()?;
+    <[u8; 32]>::try_from(bytes.as_slice()).ok()
+}
+```
+
+The pipe is at EOF from here on, so every process the daemon later spawns inherits an fd 0 that
+carries nothing — the digest is not re-readable by a child, and the raw key was never there.
+
+In `auth.rs`, beside `secret_matches` and using the same non-early-returning compare, plus the
+`OnceLock` storage the file already uses for `FAILED_ATTEMPTS` (`:26-30`):
+
+```rust
+static USER_ACTION_DIGEST: OnceLock<Option<[u8; 32]>> = OnceLock::new();
+
+pub fn install_user_action_digest(digest: Option<[u8; 32]>) {
+    let _ = USER_ACTION_DIGEST.set(digest);
+}
+
+/// Pure, so the whole rule is testable without a process global or a server.
+/// `expected: None` is "this daemon was handed no key" and fails closed.
+pub fn user_action_matches(presented: Option<&str>, expected: Option<&[u8; 32]>) -> bool {
+    let (Some(presented), Some(expected)) = (presented, expected) else {
+        return false;
+    };
+    let got = <sha2::Sha256 as sha2::Digest>::digest(presented.as_bytes());
+    let mut diff = 0u8;
+    for (x, y) in got.iter().zip(expected.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
+pub fn is_user_action(headers: &axum::http::HeaderMap) -> bool {
+    user_action_matches(
+        headers.get("X-User-Action").and_then(|v| v.to_str().ok()),
+        USER_ACTION_DIGEST.get().and_then(|d| d.as_ref()),
+    )
+}
+```
+
+`check_token` is **not** touched: the proof is a per-route requirement, not a second gate on every
+request. CORS already passes it — the daemon's layer is `.allow_headers(Any)` (`commands/agent.rs:51`).
+
+**(b) `POST /agent/update_provider`.** The handler gains a `HeaderMap` extractor — it must sit
+**before** `Json`, which consumes the body and must be last — and three lines between `create` (`:713`)
+and `agent.update_provider` (`:721`):
+
+```rust
+async fn update_agent_provider(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    Json(payload): Json<UpdateProviderRequest>,
+) -> Result<(), impl IntoResponse> {
+    …
+    let current = agent.provider().await.map(|p| p.tier()).unwrap_or(ProviderTier::Public);
+    if raise_needs_user_action(current, new_provider.tier()) && !is_user_action(&headers) {
+        return Err((StatusCode::CONFLICT,
+                    PrivacyRefusal::TierRaiseNeedsUser { requested: payload.provider.clone() }
+                        .to_string()));
+    }
+    agent.update_provider(new_provider, &payload.session_id).await…
+```
+
+`agent.provider()` returns `Err` when no provider is bound (`agent.rs:2511-2516`); treating that as
+`Public` is the conservative reading — an unbound session has no private capability to preserve, and
+a first bind to a private provider is therefore a raise. Add `409` to the `responses(..)` block.
+Sideways and downward binds are untouched **for every caller**, which is what keeps Gate A's
+`agent_on(private_provider())` path, the CLI, `restore_provider_from_session`, and every
+`routes/apps.rs` bind working exactly as before.
+
+**(c) `POST /agent/add_extension`.** DR-16 refuses this one **outright** — there is no user-proof
+branch, because attaching a private extension to a public session is not a raise the user can
+authorize either; the user's route is to switch the model first and then attach.
+
+```rust
+    let capability = agent.provider().await.map(|p| p.tier()).unwrap_or(ProviderTier::Public);
+    if classify_extension(request.config.name()).is_private() && capability == ProviderTier::Public {
+        return Err(ErrorResponse { status: StatusCode::CONFLICT,
+            message: PrivacyRefusal::PrivateExtensionOverHttp {
+                name: request.config.name().to_string() }.to_string() });
+    }
+```
+
+⚠ `ExtensionConfig`'s name accessor is Task 8's dependency, not this task's invention — Task 8 owns
+`classify_extension`'s input shape. If it is a field rather than a method, this is a field read.
+
+**(d) The two config routes — open question 24, closed.** `set_config_provider` (`:876-890`) writes
+`BIOROUTER_PROVIDER` via `set_biorouter_provider` (`:884`), and `upsert_config` (`:183-193`) writes
+**any** key via `config.set(&query.key, ..)` (`:187`). `restore_provider_from_session` falls back to
+`config.get_biorouter_provider()` (`agent.rs:5685` — confirmed present on the tree), so a session
+opened afterwards comes up private-capability with **no `/agent/update_provider` call at all**.
+DR-14 makes `config.yaml` a filesystem deny root precisely because *"a master switch a public model
+can edit is not a switch"*; `/config/upsert` is the HTTP channel to the same file.
+
+The requirement extends to these two routes **for tier-relevant keys only**. A blanket rule would
+make every programmatic config write a user act — the GUI writes config on nearly every settings
+interaction — and a rule that fires constantly is a rule people route around.
+
+```rust
+// crates/biorouter/src/privacy/config_keys.rs
+/// Keys whose value decides what privacy capability a session gets by default.
+/// Writing one of these over HTTP is a user act (DR-16, open question 24).
+pub const CAPABILITY_CONFIG_KEYS: &[&str] = &[
+    // The default provider itself. Read through `config_value!` (base.rs:1147),
+    // so the literal never appears in a `get_param(` call — seeded, not scanned.
+    "BIOROUTER_PROVIDER",
+    // Its presence alone switches `create()` to the lead/worker path
+    // (factory.rs:142-146, BEFORE the registry lookup), which changes the tier
+    // of every provider name rather than of one.
+    "BIOROUTER_LEAD_MODEL",
+    // Names the lead half, whose tier is one of the two `least()` takes.
+    "BIOROUTER_LEAD_PROVIDER",
+    // Task 5's third test: a self-hosted provider is Private only while its
+    // base URL is loopback. These two keys ARE that base URL, so writing one
+    // moves `ollama`/`llamacpp` across the tier boundary in both directions.
+    "OLLAMA_HOST",
+    "LLAMACPP_EXTERNAL_HOST",
+];
+
+/// Every other key the tier-input files read, each with the reason it does not
+/// determine capability. A key must be in exactly one of these two lists.
+pub const NOT_CAPABILITY_CONFIG_KEYS: &[(&str, &str)] = &[
+    ("BIOROUTER_CONTEXT_LIMIT",            "token budget, not a tier input"),
+    ("BIOROUTER_LEAD_TURNS",               "handoff policy between two already-tiered halves"),
+    ("BIOROUTER_LEAD_FAILURE_THRESHOLD",   "handoff policy"),
+    ("BIOROUTER_LEAD_FALLBACK_TURNS",      "handoff policy"),
+    ("BIOROUTER_WORKER_CONTEXT_LIMIT",     "token budget"),
+    ("OLLAMA_TIMEOUT",                     "transport timeout"),
+    ("LLAMACPP_TIMEOUT",                   "transport timeout"),
+    ("LLAMACPP_STARTUP_TIMEOUT",           "sidecar readiness deadline"),
+    ("LLAMACPP_CONTEXT_SIZE",              "token budget"),
+    // ⚠ The four endpoint keys below MOVE where a Private-badged provider sends
+    //   traffic, but they cannot RAISE a tier: Task 5 name-keys versa_azure and
+    //   versa_bedrock Private regardless of endpoint, and azure.rs:204 ships the
+    //   UCSF gateway as a PUBLIC provider's default for the same reason. Pointing
+    //   a private-badged provider off-site is a real and different problem — it
+    //   belongs to Task 5's tier definition and to Open question 5, not to DR-16 —
+    //   and it is recorded here rather than left unstated.
+    ("AZURE_OPENAI_ENDPOINT",              "moves a Private provider's endpoint; does not raise a tier — see Task 5"),
+    ("AZURE_OPENAI_DEPLOYMENT_NAME",       "deployment selection"),
+    ("AZURE_OPENAI_API_VERSION",           "wire version"),
+    ("AWS_ENDPOINT_URL_BEDROCK",           "moves a Private provider's endpoint; does not raise a tier — see Task 5"),
+    ("AWS_REGION",                         "region selection"),
+    ("BEDROCK_MAX_RETRIES",                "retry policy"),
+    ("BEDROCK_INITIAL_RETRY_INTERVAL_MS",  "retry policy"),
+    ("BEDROCK_BACKOFF_MULTIPLIER",         "retry policy"),
+    ("BEDROCK_MAX_RETRY_INTERVAL_MS",      "retry policy"),
+];
+
+/// The files whose `get_param` reads the scan covers: every provider file Task 5's
+/// Files table marks Modify to define `tier()`, plus the factory intercept it marks
+/// Reference. A new provider whose tier depends on config must be added here — and
+/// Task 5's `the_private_set_is_the_four_the_operator_named` is what fails if a new
+/// private provider is added without being classified at all.
+pub const TIER_INPUT_FILES: &[(&str, &str)] = &[
+    ("providers/factory.rs",       include_str!("../providers/factory.rs")),
+    ("providers/ollama.rs",        include_str!("../providers/ollama.rs")),
+    ("providers/llamacpp.rs",      include_str!("../providers/llamacpp.rs")),
+    ("providers/versa_azure.rs",   include_str!("../providers/versa_azure.rs")),
+    ("providers/versa_bedrock.rs", include_str!("../providers/versa_bedrock.rs")),
+];
+
+pub fn is_capability_key(key: &str) -> bool {
+    CAPABILITY_CONFIG_KEYS.contains(&key)
+}
+```
+
+Both handlers gain a `HeaderMap` before `Json` and one guard each — `set_config_provider`
+unconditionally (it writes `BIOROUTER_PROVIDER` by construction), `upsert_config` only when
+`is_capability_key(&query.key)`. `/config/remove` is **deliberately not guarded**: deleting
+`BIOROUTER_PROVIDER` cannot raise anything, because `restore_provider_from_session` then finds no
+provider and returns *"Could not configure agent: missing provider"* (`agent.rs:5686`).
+
+**(e) The refusal strings.** One module, two audiences, and one shared tail so they cannot drift:
+
+```rust
+// crates/biorouter/src/privacy/refusal.rs
+/// The one sentence every refusal in this feature ends on. DR-16 turns step 1 of
+/// the two-ways-out message from something the model DOES into something it SAYS,
+/// so the wording is shared rather than re-typed per call site — including by
+/// Task 18's `check_enable_allowed` arm, which this task rewrites to use it.
+pub const ASK_THE_USER_TO_SWITCH: &str =
+    "ask the user to switch this chat to a private model first — in the desktop app under \
+     Settings > Models, or with the model chip in the composer.";
+```
+
+*Model-facing* (`update_provider`, 409 body, surfaced as a tool result):
+
+> Switching this chat to a private model is the user's decision, not yours. This request did not
+> come from the model picker, so the chat is unchanged and still on its current model. Do not retry —
+> the same call will be refused again. If this task genuinely needs a private model, stop and ask the
+> user to switch this chat to a private model first — in the desktop app under Settings > Models, or
+> with the model chip in the composer.
+
+*Model-facing* (`add_extension`, 409 body) — the same shape as Task 18's F1, so the two channels
+speak with one voice:
+
+> Extension '{name}' is a private extension: the Biorouter marketplace marks it as reaching data held
+> inside the institution, so only a private model may enable or call it. This session is running on a
+> public model, so the extension was not attached. Do not retry. If it is needed for this task, ask
+> the user to switch this chat to a private model first — in the desktop app under Settings > Models,
+> or with the model chip in the composer.
+
+*Model-facing* (the config routes, 409 body):
+
+> '{key}' decides what privacy level new chats start at, so changing it is the user's decision, not
+> yours. The setting is unchanged. Do not retry. If *this* task needs a private model, that is a
+> per-chat change and not a default: ask the user to switch this chat to a private model first — in
+> the desktop app under Settings > Models, or with the model chip in the composer.
+
+*User-facing* — a toast the user should ordinarily **never** see, because the picker carries the
+proof. It appears only on a backend the user started themselves (open question 23), so it names that
+cause instead of accusing the user of being a model:
+
+> **Title:** Can't switch this chat to a private model
+> **Body:** This chat is connected to a backend started outside the Biorouter app, which has no way
+> to confirm a request came from you. Chats already on a private model keep working, and switching
+> to a public model still works. To use a private model, open this chat in the Biorouter app.
+
+Each string names **only** what the caller named. None lists alternatives, none says which other
+providers or extensions are private, and none varies with the classification of anything the caller
+did not ask about — so the refusal cannot be driven as a classification oracle.
+
+**(f) `just debug-server`.** Fails closed everywhere, and the dev path is restored by *supplying a
+key* rather than by an escape hatch:
+
+```make
+# Run server with secret=test and the published dev user-action key, so it pairs
+# with `just debug-ui` (which sends X-Secret-Key: test and X-User-Action: <same>).
+# The key is DELIBERATELY public: this daemon's user-proof is whatever the person
+# who started it chose, and on this path that person is the developer. It weakens
+# nothing in the shipped app, whose key is 32 random bytes per launch and never
+# leaves the Electron main process.
+debug-server:
+    @echo "Running server in debug mode (secret=test, published dev user-action key)..."
+    printf '%s\n' "$(printf 'biorouter-dev-user-action' | shasum -a 256 | cut -d' ' -f1)" \
+      | BIOROUTER_DISABLE_KEYRING=true BIOROUTER_SERVER__SECRET_KEY=test \
+        cargo run -p biorouter-server --bin biorouterd agent
+```
+
+`just run-server` is **left alone on purpose**: it is the "no key" case, and it is what proves the
+fail-closed path is reachable by hand.
+
+**(g) Reconcile Gate A.** Task 12's
+`a_private_provider_binds_to_anything_and_a_public_session_accepts_anything` carries a
+`// upward: fine` comment that now encodes the wrong system behaviour. **It is deliberately
+inverted here by operator ruling (DR-16), not deleted and not quietly weakened.** The
+`Agent::update_provider` call itself still succeeds — that is the correct layer behaviour, and it has
+to stay, because `restore_provider_from_session` (`agent.rs:5703`), the CLI
+(`commands/configure.rs:1651`, `session/builder.rs:201`/`:601`, `commands/web.rs:208`),
+`biorouter-acp` (`server.rs:803`) and every `routes/apps.rs` bind go through it and are not raises a
+user has to authorize. What changes is that the plan no longer states the *system* rule as "upward is
+fine". Task 12's line becomes:
+
+```rust
+    // upward: user-only. Deliberately inverted by DR-16 (was `// upward: fine`).
+    // The AGENT-level bind stays legal, because it is below the gate: session
+    // restore, the CLI and the apps runtime all bind upward legitimately. The
+    // gate is one layer up, on the only channel a model can reach — see
+    // Task 18A, whose `all_four_raise_channels_call_the_guard` is the
+    // assertion that the HTTP raise is refused.
+    agent.update_provider(private_provider(), &s.id).await.unwrap();
+```
+
+and the test is renamed to `a_private_provider_binds_to_anything_at_the_agent_layer`, because
+"binds to anything" was a claim about the system and is now false of it.
+
+- [ ] **Step 4: Run**
+
+```bash
+cargo test -p biorouter-server --lib -- auth::
+cargo test -p biorouter --lib -- privacy::
+cargo test -p biorouter --lib -- agents::agent   # Gate A's inverted test still passes
+cd ui/desktop && npm run test:run -- biorouterd
+```
+
+- [ ] **Step 5: Gate**
+
+```bash
+# 1. THE USER'S RAISE STILL WORKS. A guard that refuses the model by refusing
+#    everyone is the single most likely wrong implementation, and every other
+#    assertion here passes against it.
+awk '/async fn update_agent_provider/,/^}/' crates/biorouter-server/src/routes/agent.rs \
+  | grep -c "raise_needs_user_action" ; echo "expect: 1 — anchored on the enclosing fn, so the `use` line does not count"
+awk '/async fn update_agent_provider/,/^}/' crates/biorouter-server/src/routes/agent.rs \
+  | grep -c "is_user_action(&headers)" ; echo "expect: 1 — a CONDITION, not an unconditional refusal"
+awk '/async fn update_agent_provider/,/^}/' crates/biorouter-server/src/routes/agent.rs \
+  | grep -c "ProviderTier::Private =>" ; echo "expect: 0 — the tier comparison is the pure fn's, not a literal here"
+
+# 2. ALL FOUR CHANNELS, not one. (Also asserted by the source-scan test; the gate
+#    is here because a reviewer reads gates and a partial implementation reads
+#    plausible.)
+for f in update_agent_provider agent_add_extension ; do
+  awk "/async fn $f/,/^}/" crates/biorouter-server/src/routes/agent.rs | grep -c "is_user_action\|PrivateExtensionOverHttp"
+done ; echo "expect: 1 and 1"
+for f in upsert_config set_config_provider ; do
+  awk "/async fn $f/,/^}/" crates/biorouter-server/src/routes/config_management.rs | grep -c "is_user_action"
+done ; echo "expect: 1 and 1"
+# and upsert is key-scoped, not blanket
+awk '/async fn upsert_config/,/^}/' crates/biorouter-server/src/routes/config_management.rs \
+  | grep -c "is_capability_key" ; echo "expect: 1 — a blanket rule makes every config write a user act"
+
+# 3. THE KEY NEVER TOUCHES THE DAEMON ENVIRONMENT (AR-11).
+awk '/interface BiorouterProcessEnv/,/^}/' ui/desktop/src/biorouterd.ts \
+  | grep -ci "user.action" ; echo "expect: 0"
+awk '/const additionalEnv/,/^  } as BiorouterProcessEnv;/' ui/desktop/src/biorouterd.ts \
+  | grep -ci "user.action" ; echo "expect: 0"
+grep -rnE "env\.[A-Z_]*USER_ACTION|process\.env\[[^]]*USER_ACTION" ui/desktop/src | grep -c . ; echo "expect: 0 — no env var exists, by design"
+grep -rn "env::var" crates/biorouter-server/src | grep -c "USER_ACTION" ; echo "expect: 0 — the daemon never reads one either"
+grep -n "stdio:" ui/desktop/src/biorouterd.ts ; echo "expect: stdio[0] == 'pipe'"
+grep -n "safeArgs = " ui/desktop/src/biorouterd.ts ; echo "expect: ['agent'] — the key is not on argv either"
+# The daemon stores a digest, never the key.
+grep -c "OnceLock<Option<\[u8; 32\]>>" crates/biorouter-server/src/auth.rs ; echo "expect: 1"
+grep -c "install_user_action_key\|raw_user_action_key" crates/biorouter-server/src/auth.rs ; echo "expect: 0"
+
+# 4. NO REFUSAL DISCLOSES ANOTHER CLASSIFICATION. The refusal strings live in one
+#    module; nothing may build one from the private set.
+awk '/pub enum PrivacyRefusal/,/^}/' crates/biorouter/src/privacy/refusal.rs \
+  | grep -c "PRIVATE_EXTENSIONS\|private_extension_ids\|join(" ; echo "expect: 0"
+grep -c "ASK_THE_USER_TO_SWITCH" crates/biorouter/src/privacy/refusal.rs ; echo "expect: 4 = 1 definition + 3 uses"
+# The Task 18 literal is now the shared constant, so the two cannot drift.
+grep -rn "with the model chip in the composer" crates/ --include="*.rs" | grep -vc "refusal.rs"
+echo "expect: 0 — every other site references the constant"
+
+# 5. FAIL CLOSED IS REACHABLE BY HAND, and the dev path is a supplied key rather
+#    than a bypass.
+grep -c "BIOROUTER_USER_ACTION\|--user-action" Justfile ; echo "expect: 0 — no env/flag hatch"
+awk '/^debug-server:/,/^$/' Justfile | grep -c "shasum -a 256" ; echo "expect: 1"
+awk '/^run-server:/,/^$/'   Justfile | grep -c "shasum -a 256" ; echo "expect: 0 — run-server stays keyless on purpose"
+```
+
+**What this catches.** Each of the four gate groups rejects one specific wrong implementation, and
+each of those four passes every *other* group:
+
+- **This gate rejects: a guard that refuses the model's raise by refusing everyone's** — the
+  `is_user_action(&headers)` condition reduced to `return Err(..)`, or the tier comparison hardcoded
+  so any `llamacpp` bind 409s. That is the Task 14C (2) posture DR-16 explicitly rejected, it passes
+  every "the model is refused" assertion, and group 1 is what sees it.
+- **This gate rejects: `update_provider` guarded while `add_extension` or the config routes stay
+  open** — the partial implementation, which is the most likely one to ship because the first route
+  is the one DR-16's headline names. Group 2 plus `all_four_raise_channels_call_the_guard` require
+  all four; the `is_capability_key` line additionally rejects the *over*-correction that guards every
+  `upsert` key and turns every programmatic config write into a user act.
+- **This gate rejects: a refusal that discloses classification** — "try versa_azure instead", or a
+  message assembled from the private set, or an extension refusal that differs in shape for a public
+  extension. Group 4 forbids the private set from reaching the refusal module at all, and
+  `a_refusal_names_nothing_the_caller_did_not_ask_for` asserts the message body.
+- **This gate rejects: a user-proof delivered through the daemon environment** — a
+  `BIOROUTER_USER_ACTION_KEY` in `additionalEnv`, which is the obvious implementation (it is exactly
+  how `BIOROUTER_SERVER__SECRET_KEY` is delivered today, `biorouterd.ts:306`) and is the one AR-11
+  measured to be recoverable in-process on both platforms. Group 3 rejects the env var, the argv
+  variant, and the "store the raw key" variant that would make the daemon's own memory replayable.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add crates/biorouter-server/src/auth.rs \
+        crates/biorouter-server/src/commands/agent.rs \
+        crates/biorouter-server/src/routes/agent.rs \
+        crates/biorouter-server/src/routes/config_management.rs \
+        crates/biorouter-server/Cargo.toml \
+        crates/biorouter/src/privacy/config_keys.rs \
+        crates/biorouter/src/privacy/refusal.rs \
+        crates/biorouter/src/privacy/mod.rs \
+        ui/desktop/src/biorouterd.ts ui/desktop/src/main.ts ui/desktop/src/preload.ts \
+        ui/desktop/src/components/ModelAndProviderContext.tsx \
+        Justfile
+git commit -m "feat(privacy): DR-16 - a tier raise over HTTP requires a user-proof the daemon never puts in its environment (#56)"
+```
+
+Then, as its own commit so the inversion is reviewable on its own:
+
+```bash
+git add crates/biorouter/src/agents/agent.rs   # Gate A's test module
+git commit -m "test(privacy)!: invert Gate A's 'upward: fine' by operator ruling (DR-16) (#56)
+
+Task 12 asserted an unconditional upward bind. DR-16 rules that raising a
+session's capability to Private is the user's act alone, so the SYSTEM claim
+that comment made is now false. The agent-layer call still succeeds — session
+restore, the CLI and the apps runtime all bind upward legitimately — and the
+gate lives one layer up, on the HTTP channel a model can reach (Task 18A).
+Deliberately inverted, not deleted."
+```
+
+---
+
 ### Task 19: Gate H — the three alternate-provider construction sites, and memory's global write
 
 Three verified paths hand a **session's** content to a provider the session row never records, none
@@ -18137,13 +18839,16 @@ independent follow-ups.
 | **21** | **`bin/knowledge_ingest_probe.rs` is the one macro caller with no behavioural row.** It is a `[[bin]]` target, so `cargo test -p biorouter-server --lib` never compiles it and no harness in the repo executes it. Task 10B closes it *by construction* instead — `ProviderCompleter::paired` hands back the completer and the tier from one `Arc`, and Step 5 asserts zero surviving production uses of `ProviderCompleter::new` — but if a future edit re-derives the probe's tier from `cli.provider` rather than from the instance, nothing fails. | Nothing in this plan. **Accepted risk, in the operator's terms:** the probe is a developer diagnostic run by hand with `--root` and a default `probe` KB; a wrong tier there mis-stamps one developer's own scratch base on their own machine, and no model can reach it. If the probe ever becomes something a model or a route invokes, it needs a behavioural row before that lands. |
 | **22** | **The knowledge root's door is a convention enforced by a grep, not by a private function.** The other three roots have a resolver the type system can hide: `ArtifactStore::dir` is already private (`agent_drafter/store.rs:447`), `MemoryRouter::get_memory_file` is private (`memory/mod.rs:336`), and the session store is a sqlx pool nobody outside `session/` should hold. Knowledge has none — `resolve_readable_path` (`knowledge/store.rs:121`) has **3** call sites against roughly **40** direct filesystem reads in the same module, and `KnowledgeService::root()` is `pub` (`service.rs:415`) because `routes/knowledge.rs` legitimately joins off it at 7 sites. So CP1–CP4 are the door and Task 14E Step 5 (4) is what stops an eighth reader appearing beside them. | Nothing in this plan. **Accepted risk, in the operator's terms:** a future reader of the knowledge tree added inside `biorouter-mcp` would bypass the barrier and only a grep would notice. The fix is to make `root()` `pub(crate)` and give `biorouter-server` a narrower accessor that returns a *base's* directory rather than the tree's — a mechanical change across 7 call sites, deliberately not bundled into a task whose subject is something else. |
 
-Two more came out of DR-16, and both are **decisions rather than follow-ups** — Task 18A cannot
-answer either without inventing an operator ruling, so it states what it does meanwhile and stops.
+Three came out of DR-16. Two are **decisions rather than follow-ups** — Task 18A cannot
+answer either without inventing an operator ruling, so it states what it does meanwhile and stops;
+both are now answered in part or in full and say so. The third was **measured while writing Task 18A**
+and is a scope question the ruling does not reach.
 
 | # | Question | Blocks |
 |---|---|---|
-| **23** | **What should a daemon that was handed no user-action key do?** DR-16's refusal is conditioned on a per-launch key the Electron main process mints and hands `biorouterd` on stdin ([Task 18A](#task-18a-the-two-http-channels-that-raise-a-sessions-own-tier-and-the-user-proof-neither-of-them-has)). Four shipping ways to start the daemon supply no such key: `just run-server`, `just debug-server` (the external backend `just debug-ui` talks to), a hand-run `biorouterd agent`, and any headless/server deployment. In all four the raise is refused **for every caller, including the human at the keyboard** — a private model cannot be bound to a session over HTTP at all. That is the only direction consistent with DR-16 ("the model may never do it" cannot be relaxed by *how the daemon was started*, which a model can influence), and it is a real ergonomic loss on the dev path that this repo's own `just debug-ui` workflow uses daily. The alternative — an env-var escape hatch — is not an alternative: the daemon's environment is exactly what [AR-11](#ar-11--the-daemons-own-api-secret-is-recoverable-so-the-second-door-is-held-by-layer-a-and-not-by-the-environment-strip) measured to be recoverable, so a key delivered that way is a key the model has. | Task 18A Step 3, and the `debug-server` recipe in the `Justfile`. **What this plan does meanwhile:** fails closed, and teaches `just debug-server` to pipe a key on stdin so the dev path keeps working without an escape hatch. If the operator wants headless deployments to bind private models, that needs a decision about what "the user" means when there is no GUI — the same shape as [Open question 8](#open-questions). |
-| **24** | **Does DR-16 extend to the config routes that set the *default* provider?** The ruling names two routes. Two more reach the same outcome one step later and are not covered: `POST /config/set_provider` (`config_management.rs:876-889`, registered `:923`) writes `BIOROUTER_PROVIDER`/`BIOROUTER_MODEL`, and `POST /config/upsert` (`:183-193`) writes **any** key including `BIOROUTER_PROVIDER`, both with nothing but the secret. `restore_provider_from_session` (`agent.rs:5682-5688`) falls back to `config.get_biorouter_provider()` for a row with no `provider_name`, so a session started after such a write comes up private-capability with no `/agent/update_provider` call at all. ⚠ **DR-14 does not cover this.** It makes `<config>/config.yaml` deny entry #5 on the *filesystem* channel precisely because *"a master switch a public model can edit is not a switch"* — and `POST /config/upsert` is the **HTTP** channel to the same file, which no layer of DR-14 sees. By DR-14's own argument, a default provider a public model can edit is a tier raise. It is a raise of every *future* session rather than of the caller's own, which is why it is a scope question and not a bug report. | Nothing in this plan. **Residual, stated:** a caller holding the secret can make private capability the machine default and then open a session. Extending Task 18A's `X-User-Action` requirement to these two routes is mechanical (they are two handlers in one file) — what needs a ruling is whether `/config/upsert` should require it for *every* key or only for a named set, since a blanket requirement makes every programmatic config write a user act. Related: Task 30's `/config/upsert` confirmation phrase, which is a UX guard and not an authorization boundary, and which Task 18A's key could promote to one. |
+| **23** | **What should a daemon that was handed no user-action key do?** DR-16's refusal is conditioned on a per-launch key the Electron main process mints and hands `biorouterd` on stdin ([Task 18A](#task-18a-the-two-http-channels-that-raise-a-sessions-own-tier-and-the-user-proof-neither-of-them-has)). Four shipping ways to start the daemon supply no such key: `just run-server`, `just debug-server` (the external backend `just debug-ui` talks to), a hand-run `biorouterd agent`, and any headless/server deployment. In all four the raise is refused **for every caller, including the human at the keyboard** — a private model cannot be bound to a session over HTTP at all. That is the only direction consistent with DR-16 ("the model may never do it" cannot be relaxed by *how the daemon was started*, which a model can influence), and it is a real ergonomic loss on the dev path that this repo's own `just debug-ui` workflow uses daily. The alternative — an env-var escape hatch — is not an alternative: the daemon's environment is exactly what [AR-11](#ar-11--the-daemons-own-api-secret-is-recoverable-so-the-second-door-is-held-by-layer-a-and-not-by-the-environment-strip) measured to be recoverable, so a key delivered that way is a key the model has. | **Answered in part by [Task 18A](#task-18a-the-two-http-channels-that-raise-a-sessions-own-tier-and-the-user-proof-neither-of-them-has) Step 3(a) and 3(f); the last third stays open.** **Closed:** *fail closed* is now specified, not merely preferred — `read_user_action_digest` returns `None` when stdin is a terminal or carries no digest, `install_user_action_digest(None)` is a legal state, and `user_action_matches(_, None)` is `false` for every caller, asserted by `a_daemon_with_no_user_action_key_refuses_every_raise`. **Closed:** the dev path, by *supplying a key* rather than by opening a hatch — `just debug-server` pipes `sha256('biorouter-dev-user-action')` on stdin and `getUserActionKey` returns the same published constant under `BIOROUTER_EXTERNAL_BACKEND`, mirroring `getServerSecret`'s `'test'` branch (`main.ts:906-908`). That key is deliberately public: a daemon's user-proof is whatever the person who launched it chose, and on that path the launcher *is* the developer. It weakens nothing shipped, where the key is 32 random bytes per launch that never leave the Electron main process. `just run-server` is left keyless on purpose, so the fail-closed path stays reachable by hand, and the gate asserts it stays that way. **Still open, and needing an operator ruling rather than an implementation: the headless deployment.** A server install has no GUI, so there is no process that can mint a key on the user's behalf and no picker for the proof to come from; deciding what "the user" means there is the same shape as [Open question 8](#open-questions) and is not something Task 18A can invent. Until it is ruled on, a headless daemon cannot bind a private model over HTTP at all. |
+| **24** | **Does DR-16 extend to the config routes that set the *default* provider?** The ruling names two routes. Two more reach the same outcome one step later and are not covered: `POST /config/set_provider` (`config_management.rs:876-889`, registered `:923`) writes `BIOROUTER_PROVIDER`/`BIOROUTER_MODEL`, and `POST /config/upsert` (`:183-193`) writes **any** key including `BIOROUTER_PROVIDER`, both with nothing but the secret. `restore_provider_from_session` (`agent.rs:5682-5688`) falls back to `config.get_biorouter_provider()` for a row with no `provider_name`, so a session started after such a write comes up private-capability with no `/agent/update_provider` call at all. ⚠ **DR-14 does not cover this.** It makes `<config>/config.yaml` deny entry #5 on the *filesystem* channel precisely because *"a master switch a public model can edit is not a switch"* — and `POST /config/upsert` is the **HTTP** channel to the same file, which no layer of DR-14 sees. By DR-14's own argument, a default provider a public model can edit is a tier raise. It is a raise of every *future* session rather than of the caller's own, which is why it is a scope question and not a bug report. | **Answered by [Task 18A](#task-18a-the-two-http-channels-that-raise-a-sessions-own-tier-and-the-user-proof-neither-of-them-has) Step 3(d).** **Ruled:** the `X-User-Action` requirement extends to both handlers, for a **named key set only** — a blanket rule on `/config/upsert` would make every programmatic config write a user act, and a rule that fires constantly is one people route around. The set is `CAPABILITY_CONFIG_KEYS` in the new `crates/biorouter/src/privacy/config_keys.rs`, and it is five: `BIOROUTER_PROVIDER` (the default itself, read through `config_value!` at `config/base.rs:1147`); `BIOROUTER_LEAD_MODEL` (its mere presence diverts `create()` to the lead/worker path at `factory.rs:142-146`, **before** the registry lookup, changing the tier of every provider name rather than of one); `BIOROUTER_LEAD_PROVIDER` (names the lead half, one of the two tiers `least()` takes); and `OLLAMA_HOST` + `LLAMACPP_EXTERNAL_HOST` (Task 5's third test makes a self-hosted provider Private only while its base URL is loopback, so these two keys *are* that boundary). `set_config_provider` is guarded unconditionally, since it writes `BIOROUTER_PROVIDER` by construction; `upsert_config` is guarded by `is_capability_key(&query.key)`. `/config/remove` is deliberately unguarded — deleting the key cannot raise anything, because `restore_provider_from_session` then fails with *"Could not configure agent: missing provider"* (`agent.rs:5686`). **How a future capability-determining key avoids being forgotten:** not by a rule someone must remember, but by `every_config_key_the_tier_resolver_reads_is_classified`, which scans the five files Task 5 touches to define `tier()` for `get_param("KEY")` literals — 22 today — and fails unless each appears in **exactly one** of `CAPABILITY_CONFIG_KEYS` or `NOT_CAPABILITY_CONFIG_KEYS`, the latter carrying a one-line reason per key. Adding a config read to any of those files fails the test until someone classifies it. A companion test forbids computed keys (`get_param(&format!(..))`), which the scan could not see; measured, there are none today. Related: Task 30's `/config/upsert` confirmation phrase, which is a UX guard and not an authorization boundary, and which Task 18A's key now can promote to one. |
+| **25** | **Does DR-16 reach the app runtime, which binds a provider the model itself authored?** Measured while writing Task 18A, and not covered by it. `configure_main_provider` (`routes/apps.rs:809`, called `:1259`) and `configure_worker_provider` (`:1480`, called `:1553`) both read `AgentConfig.model` — a `{provider, model}` pair — out of the app's stored manifest (`agent_drafter/store.rs:76-79`) and bind it with `agent.update_provider` **in process**, at `:820` and `:1492`, never through `POST /agent/update_provider`. That manifest is agent-authored: `agent_drafter__declare_profiles` (`agent_drafter/mod.rs:2497-2528`) takes a per-profile `model` straight from `ProfileParam` (`:699-712`) — tool arguments the model writes — and `agent_drafter` is **Public** by design. So a public model can name `llamacpp` in a profile and the app runtime will bind it, with Task 18A's guard nowhere on that path. **What is NOT claimed:** a worker profile gets its own session (`worker_session_key` → `app:{id}:{cid}:{profile}`, `:1450-1452`), so that is a session *created* at a tier, which is the same shape as any new session and not a raise. The sharp case is the app's **main** session, which is long-lived: a manifest edit followed by a reconnect re-runs `configure_main_provider` against a session that already exists. | Nothing in this plan. **The question is scope, not mechanism:** whether an app session's capability is fixed for its lifetime or re-derived per connection is [Task 22](#task-22-session-copy--three-hand-rolled-builders-become-one-derived-session-helper)'s and [Task 23](#task-23-spawn--reorder-stamp-filter-and-the-spawn-matrix)' to answer, and the answer decides whether this is a raise at all. Extending Task 18A here is not mechanical the way open question 24 was: these are in-process calls with no HTTP request to carry a header, so the proof would have to be a manifest-level grant rather than a request-level one — the *scoped permission* shape DR-16 names as the right answer if the local-model handoff turns out to be a routine agent step. |
 
 ---
 
