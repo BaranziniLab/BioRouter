@@ -1205,21 +1205,123 @@ impl WorkspaceClient {
 
         // ---- Resolve EVERYTHING before mutating anything, so a bad name is a
         // clean no-op rather than a half-applied change. ------------------
-        //
-        // Resolve through `get_extension_entry_by_name`, NOT
-        // `get_extension_by_name`. The latter is `…entry_by_name(name).map(|e|
-        // e.config)` (`config/extensions.rs:138-140`) — it DISCARDS the
-        // operator's `enabled` flag. Issue #42's gate lives one layer up, in
-        // `manage_extensions`' enable path (`check_enable_allowed`,
-        // `extension_manager_extension.rs:97-125`), and `Agent::add_extension`
-        // does not re-check it. So resolving with the flag-less helper would
-        // make `workspace_set_tools` a SECOND, ungated way to enable an
-        // extension an operator deliberately wrote `enabled: false` for —
-        // including on the caller's own session. That is the pinned
-        // tool-environment case (benchmarking, safety) the #42 doc comment
-        // names, and defeating it is a straight privilege escalation.
+        let add_configs = Self::resolve_added_extensions(&args.add_extensions)?;
+        self.refuse_workspace_grant_to_subagent(&args.session_id, &add_configs)
+            .await?;
+        // Model/provider (decision b): resolve and validate here; apply below.
+        let new_provider = Self::resolve_provider_switch(&args.provider, &args.model).await?;
+
+        // ---- Apply. --------------------------------------------------------
+        let mut applied = Vec::new();
+
+        // The live agent is fetched ONLY for the dimensions that need one.
+        // `get_or_create_agent` is create-on-miss, and its miss path mints a
+        // bare, provider-less agent and caches it under the target's id, where
+        // the turn runner will pick it up — the hazard
+        // `target_mode_requires_approval` documents at length. A skills-only or
+        // KB-only call must not pay that price for a target the user has not
+        // opened.
+        let needs_agent =
+            !add_configs.is_empty() || !args.remove_extensions.is_empty() || new_provider.is_some();
+        let agent = if needs_agent {
+            let agent_manager = crate::execution::manager::AgentManager::instance()
+                .await
+                .map_err(|e| e.to_string())?;
+            Some(
+                agent_manager
+                    .get_or_create_agent(args.session_id.clone())
+                    .await
+                    .map_err(|e| e.to_string())?,
+            )
+        } else {
+            None
+        };
+
+        if let Some(agent) = &agent {
+            applied.extend(
+                Self::apply_extension_changes(
+                    agent,
+                    &args.session_id,
+                    add_configs,
+                    &args.remove_extensions,
+                )
+                .await?,
+            );
+        }
+
+        applied.extend(
+            self.apply_session_skills(&args.session_id, &args.add_skills, &args.remove_skills)
+                .await?,
+        );
+
+        // Model/provider — mirrors /agent/update_provider, which also persists
+        // provider_name + model_config onto the session row.
+        if let (Some(agent), Some((provider_name, model_name, provider))) = (&agent, new_provider) {
+            agent
+                .update_provider(provider, &args.session_id)
+                .await
+                .map_err(|e| format!("failed to switch provider: {e}"))?;
+            applied.push(format!("model={provider_name}/{model_name}"));
+        }
+
+        if let Some(kbs) = &args.set_knowledge_bases {
+            applied.push(Self::apply_knowledge_bases(
+                &args.session_id,
+                kbs,
+                args.primary_knowledge_base.as_deref(),
+            )?);
+        }
+
+        if applied.is_empty() {
+            return Ok(vec![Content::text(format!(
+                "No changes requested for session {}.",
+                args.session_id
+            ))]);
+        }
+
+        // §5 autonomous-mode visibility: every change surfaces on the target tab.
+        // (The always-confirm inspector, Task 10, has already run for the
+        // security-relevant subset — this toast is what covers the rest.)
+        self.notify_target(
+            &args.session_id,
+            format!(
+                "Tools changed by another agent ({caller_session_id}): {}",
+                applied.join(", ")
+            ),
+        )
+        .await;
+
+        let next_turn_note = if applied.iter().any(|a| a.starts_with("model=")) {
+            " The model change applies to this conversation's NEXT turn."
+        } else {
+            ""
+        };
+        Ok(vec![Content::text(format!(
+            "Applied to session {}: {}.{next_turn_note}",
+            args.session_id,
+            applied.join(", ")
+        ))])
+    }
+
+    /// Resolve `add_extensions` to loadable configs, or fail the whole call.
+    ///
+    /// Resolve through `get_extension_entry_by_name`, NOT
+    /// `get_extension_by_name`. The latter is `…entry_by_name(name).map(|e|
+    /// e.config)` (`config/extensions.rs:138-140`) — it DISCARDS the
+    /// operator's `enabled` flag. Issue #42's gate lives one layer up, in
+    /// `manage_extensions`' enable path (`check_enable_allowed`,
+    /// `extension_manager_extension.rs:97-125`), and `Agent::add_extension`
+    /// does not re-check it. So resolving with the flag-less helper would
+    /// make `workspace_set_tools` a SECOND, ungated way to enable an
+    /// extension an operator deliberately wrote `enabled: false` for —
+    /// including on the caller's own session. That is the pinned
+    /// tool-environment case (benchmarking, safety) the #42 doc comment
+    /// names, and defeating it is a straight privilege escalation.
+    fn resolve_added_extensions(
+        names: &[String],
+    ) -> Result<Vec<crate::agents::ExtensionConfig>, String> {
         let mut add_configs = Vec::new();
-        for name in &args.add_extensions {
+        for name in names {
             match crate::config::get_extension_entry_by_name(name) {
                 None => return Err(format!("unknown extension '{name}'")),
                 Some(entry)
@@ -1238,9 +1340,15 @@ impl WorkspaceClient {
                 Some(entry) => add_configs.push(entry.config),
             }
         }
+        Ok(add_configs)
+    }
 
-        // §5: workspace control must not fan out through delegation trees.
-        //
+    /// §5: workspace control must not fan out through delegation trees.
+    async fn refuse_workspace_grant_to_subagent(
+        &self,
+        session_id: &str,
+        add_configs: &[crate::agents::ExtensionConfig],
+    ) -> Result<(), String> {
         // Matched on the RESOLVED config name, normalized — the registry key an
         // extension is actually loaded under (`extension_manager::normalize`).
         // A literal `n == "workspace"` on the raw request would sail past
@@ -1255,7 +1363,7 @@ impl WorkspaceClient {
             let target = self
                 .context
                 .session_manager
-                .get_session(&args.session_id, false)
+                .get_session(session_id, false)
                 .await
                 .map_err(|e| e.to_string())?;
             if target.session_type == crate::session::session_manager::SessionType::SubAgent {
@@ -1264,17 +1372,29 @@ impl WorkspaceClient {
                 );
             }
         }
+        Ok(())
+    }
 
-        // Model/provider (decision b): resolve and validate here; apply below.
-        let new_provider = match (&args.provider, &args.model) {
-            (None, None) => None,
-            (None, Some(_)) => {
-                return Err(
-                    "`model` requires `provider` — a model name is ambiguous across providers; \
-                     pass both (e.g. provider:\"anthropic\", model:\"claude-opus-5\")"
-                        .into(),
-                );
-            }
+    /// Decision b's resolve half: validate a provider+model switch and build the
+    /// provider, without applying anything. `None` when no switch was asked for.
+    async fn resolve_provider_switch(
+        provider: &Option<String>,
+        model: &Option<String>,
+    ) -> Result<
+        Option<(
+            String,
+            String,
+            std::sync::Arc<dyn crate::providers::base::Provider>,
+        )>,
+        String,
+    > {
+        match (provider, model) {
+            (None, None) => Ok(None),
+            (None, Some(_)) => Err(
+                "`model` requires `provider` — a model name is ambiguous across providers; \
+                 pass both (e.g. provider:\"anthropic\", model:\"claude-opus-5\")"
+                    .into(),
+            ),
             (Some(provider_name), model) => {
                 // The provider registry is the same one /agent/update_provider
                 // resolves through. NOTE the real signature: `pub async fn
@@ -1317,158 +1437,115 @@ impl WorkspaceClient {
                 }
                 let model_config = crate::model::ModelConfig::new(&model_name)
                     .map_err(|e| format!("invalid model config: {e}"))?;
-                Some((
+                Ok(Some((
                     provider_name.clone(),
                     model_name,
                     crate::providers::create(provider_name, model_config)
                         .await
                         .map_err(|e| format!("failed to create {provider_name} provider: {e}"))?,
-                ))
-            }
-        };
-
-        // ---- Apply. --------------------------------------------------------
-        let mut applied = Vec::new();
-
-        // The live agent is fetched ONLY for the dimensions that need one.
-        // `get_or_create_agent` is create-on-miss, and its miss path mints a
-        // bare, provider-less agent and caches it under the target's id, where
-        // the turn runner will pick it up — the hazard
-        // `target_mode_requires_approval` documents at length. A skills-only or
-        // KB-only call must not pay that price for a target the user has not
-        // opened.
-        let needs_agent =
-            !add_configs.is_empty() || !args.remove_extensions.is_empty() || new_provider.is_some();
-        let agent = if needs_agent {
-            let agent_manager = crate::execution::manager::AgentManager::instance()
-                .await
-                .map_err(|e| e.to_string())?;
-            Some(
-                agent_manager
-                    .get_or_create_agent(args.session_id.clone())
-                    .await
-                    .map_err(|e| e.to_string())?,
-            )
-        } else {
-            None
-        };
-
-        // The exact /agent/add_extension handler path (routes/agent.rs:744-767):
-        // add on the live agent, persist only after a successful load.
-        if let Some(agent) = &agent {
-            let mut extensions_changed = false;
-            for config in add_configs {
-                let name = config.name().to_string();
-                agent
-                    .add_extension(config)
-                    .await
-                    .map_err(|e| format!("failed to add '{name}': {e}"))?;
-                applied.push(format!("+{name}"));
-                extensions_changed = true;
-            }
-            for name in &args.remove_extensions {
-                agent
-                    .remove_extension(name)
-                    .await
-                    .map_err(|e| format!("failed to remove '{name}': {e}"))?;
-                applied.push(format!("-{name}"));
-                extensions_changed = true;
-            }
-            if extensions_changed {
-                agent
-                    .persist_extension_state(&args.session_id)
-                    .await
-                    .map_err(|e| format!("failed to persist extension state: {e}"))?;
+                )))
             }
         }
+    }
 
-        // Skills — SESSION-SCOPED (Task 11). Never the machine-wide file.
-        if !args.add_skills.is_empty() || !args.remove_skills.is_empty() {
+    /// The exact /agent/add_extension handler path (routes/agent.rs:744-767):
+    /// add on the live agent, persist only after a successful load. Returns the
+    /// `applied` labels for the extensions that changed.
+    async fn apply_extension_changes(
+        agent: &crate::agents::Agent,
+        session_id: &str,
+        add_configs: Vec<crate::agents::ExtensionConfig>,
+        remove_extensions: &[String],
+    ) -> Result<Vec<String>, String> {
+        let mut applied = Vec::new();
+        let mut extensions_changed = false;
+        for config in add_configs {
+            let name = config.name().to_string();
+            agent
+                .add_extension(config)
+                .await
+                .map_err(|e| format!("failed to add '{name}': {e}"))?;
+            applied.push(format!("+{name}"));
+            extensions_changed = true;
+        }
+        for name in remove_extensions {
+            agent
+                .remove_extension(name)
+                .await
+                .map_err(|e| format!("failed to remove '{name}': {e}"))?;
+            applied.push(format!("-{name}"));
+            extensions_changed = true;
+        }
+        if extensions_changed {
+            agent
+                .persist_extension_state(session_id)
+                .await
+                .map_err(|e| format!("failed to persist extension state: {e}"))?;
+        }
+        Ok(applied)
+    }
+
+    /// Skills — SESSION-SCOPED (Task 11). Never the machine-wide file. Returns
+    /// the `applied` labels for the skills that changed.
+    async fn apply_session_skills(
+        &self,
+        session_id: &str,
+        add_skills: &[String],
+        remove_skills: &[String],
+    ) -> Result<Vec<String>, String> {
+        let mut applied = Vec::new();
+        if !add_skills.is_empty() || !remove_skills.is_empty() {
             crate::agents::session_skills::apply(
                 &self.context.session_manager,
-                &args.session_id,
-                &args.add_skills,
-                &args.remove_skills,
+                session_id,
+                add_skills,
+                remove_skills,
             )
             .await
             .map_err(|e| format!("failed to scope skills: {e}"))?;
-            for name in &args.add_skills {
+            for name in add_skills {
                 applied.push(format!("+skill:{name}"));
             }
-            for name in &args.remove_skills {
+            for name in remove_skills {
                 applied.push(format!("-skill:{name}"));
             }
         }
+        Ok(applied)
+    }
 
-        // Model/provider — mirrors /agent/update_provider, which also persists
-        // provider_name + model_config onto the session row.
-        if let (Some(agent), Some((provider_name, model_name, provider))) = (&agent, new_provider) {
-            agent
-                .update_provider(provider, &args.session_id)
-                .await
-                .map_err(|e| format!("failed to switch provider: {e}"))?;
-            applied.push(format!("model={provider_name}/{model_name}"));
-        }
-
-        // Knowledge bases (plural — issue #45), with their write target.
-        if let Some(kbs) = args.set_knowledge_bases {
-            use crate::workspace_services::KbPrimaryChoice;
-            let services = workspace_services::get()
-                .ok_or("knowledge-base scoping requires the BioRouter daemon")?;
-            // Three-valued, because the underlying model is: absent → Auto
-            // (keep-if-member, else first, else clear); `""` → an explicit
-            // "no write target here"; a name → pin it. Membership is validated
-            // by the service against the RESULTING set, so a name outside `kbs`
-            // comes back as a clear error rather than a half-applied write.
-            let primary = match args.primary_knowledge_base.as_deref() {
-                None => KbPrimaryChoice::Auto,
-                Some("") => KbPrimaryChoice::Clear,
-                Some(id) => KbPrimaryChoice::Set(id.to_string()),
-            };
-            let selection = services.set_knowledge_bases(&args.session_id, &kbs, primary)?;
-            applied.push(if selection.kb_ids.is_empty() {
-                "kb=<cleared>".to_string()
-            } else {
-                // Report the RESULT, not the request: the service may have moved
-                // the write target itself, and a tool result that echoes the
-                // request teaches the model a state the store does not hold.
-                format!(
-                    "kb={} (primary={})",
-                    selection.kb_ids.join("+"),
-                    selection.primary_kb.as_deref().unwrap_or("<none>")
-                )
-            });
-        }
-
-        if applied.is_empty() {
-            return Ok(vec![Content::text(format!(
-                "No changes requested for session {}.",
-                args.session_id
-            ))]);
-        }
-
-        // §5 autonomous-mode visibility: every change surfaces on the target tab.
-        // (The always-confirm inspector, Task 10, has already run for the
-        // security-relevant subset — this toast is what covers the rest.)
-        self.notify_target(
-            &args.session_id,
-            format!(
-                "Tools changed by another agent ({caller_session_id}): {}",
-                applied.join(", ")
-            ),
-        )
-        .await;
-
-        let next_turn_note = if applied.iter().any(|a| a.starts_with("model=")) {
-            " The model change applies to this conversation's NEXT turn."
-        } else {
-            ""
+    /// Knowledge bases (plural — issue #45), with their write target. Returns
+    /// the one `applied` label describing what the service actually stored.
+    fn apply_knowledge_bases(
+        session_id: &str,
+        kbs: &[String],
+        primary_knowledge_base: Option<&str>,
+    ) -> Result<String, String> {
+        use crate::workspace_services::KbPrimaryChoice;
+        let services = workspace_services::get()
+            .ok_or("knowledge-base scoping requires the BioRouter daemon")?;
+        // Three-valued, because the underlying model is: absent → Auto
+        // (keep-if-member, else first, else clear); `""` → an explicit
+        // "no write target here"; a name → pin it. Membership is validated
+        // by the service against the RESULTING set, so a name outside `kbs`
+        // comes back as a clear error rather than a half-applied write.
+        let primary = match primary_knowledge_base {
+            None => KbPrimaryChoice::Auto,
+            Some("") => KbPrimaryChoice::Clear,
+            Some(id) => KbPrimaryChoice::Set(id.to_string()),
         };
-        Ok(vec![Content::text(format!(
-            "Applied to session {}: {}.{next_turn_note}",
-            args.session_id,
-            applied.join(", ")
-        ))])
+        let selection = services.set_knowledge_bases(session_id, kbs, primary)?;
+        Ok(if selection.kb_ids.is_empty() {
+            "kb=<cleared>".to_string()
+        } else {
+            // Report the RESULT, not the request: the service may have moved
+            // the write target itself, and a tool result that echoes the
+            // request teaches the model a state the store does not hold.
+            format!(
+                "kb={} (primary={})",
+                selection.kb_ids.join("+"),
+                selection.primary_kb.as_deref().unwrap_or("<none>")
+            )
+        })
     }
 
     /// `workspace_close` — the three scopes of "stop", smallest blast radius
