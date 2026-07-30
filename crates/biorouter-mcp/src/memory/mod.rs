@@ -11,9 +11,10 @@ use rmcp::{
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
+    ffi::OsStr,
     fs,
     io::{self, Read, Write},
-    path::PathBuf,
+    path::{Component, Path, PathBuf},
 };
 
 /// Parameters for the remember_memory tool
@@ -81,6 +82,54 @@ pub struct MemoryServer {
 /// worktree, per-app jail) read *and rewrote* the user's real global memories.
 fn global_memory_dir() -> PathBuf {
     crate::paths::in_config_dir("memory")
+}
+
+/// A memory category is a **name**, not a path (issue #73).
+///
+/// `category` arrives as a model-supplied `String` on all four memory tools and
+/// ends up as a filename, so the only safe reading of it is "one plain path
+/// segment". Two escapes fell out of not saying so: `..` walked out of the
+/// store, and — because [`Path::join`] *discards* the base when its argument is
+/// absolute, and the argument is `format!("{category}.txt")` — an absolute
+/// category replaced the store outright (`"/etc/hosts"` → `/etc/hosts.txt`).
+///
+/// The rule is containment, deliberately not a charset allowlist: `*` (the
+/// documented "all" sentinel), dots, spaces and non-ASCII are ordinary names a
+/// model legitimately picks, and rejecting them would break the feature to fix
+/// the bug. Separators are refused on *every* platform, not only the one where
+/// they happen to separate, because a category is written to disk here and read
+/// back somewhere else.
+fn validated_category(category: &str) -> io::Result<&str> {
+    let reject = |why: &str| {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "invalid memory category {category:?}: {why}. A category is a plain name such as \
+                 \"development\" or \"personal\", not a path — it cannot be empty, contain a path \
+                 separator, or point outside the memory store."
+            ),
+        ))
+    };
+
+    if category.is_empty() {
+        return reject("it is empty");
+    }
+    if category.contains('/') || category.contains('\\') {
+        return reject("it contains a path separator");
+    }
+    if category.contains('\0') {
+        return reject("it contains a NUL byte");
+    }
+
+    // Belt and braces for anything the platform still parses as more than a
+    // plain segment — a root, a Windows drive prefix, `.`, `..`. The equality
+    // check also catches a name the parser *normalised* (e.g. a trailing
+    // separator), which must not silently become a different category.
+    let mut components = Path::new(category).components();
+    match (components.next(), components.next()) {
+        (Some(Component::Normal(segment)), None) if segment == OsStr::new(category) => Ok(category),
+        _ => reject("it is not a single path segment"),
+    }
 }
 
 /// Heads the *index* of global memory categories in the system prompt.
@@ -333,14 +382,29 @@ impl MemoryServer {
         &self.instructions
     }
 
-    fn get_memory_file(&self, category: &str, is_global: bool) -> PathBuf {
+    /// The single point every memory tool reaches the filesystem through — and
+    /// therefore the one place a category has to be proved a name (issue #73).
+    fn get_memory_file(&self, category: &str, is_global: bool) -> io::Result<PathBuf> {
+        let category = validated_category(category)?;
         // Defaults to local memory if no is_global flag is provided
         let base_dir = if is_global {
             &self.global_memory_dir
         } else {
             &self.local_memory_dir
         };
-        base_dir.join(format!("{}.txt", category))
+        Ok(base_dir.join(format!("{}.txt", category)))
+    }
+
+    /// Surface a store error to the model. A refused category is the *caller's*
+    /// mistake — `INVALID_PARAMS`, which the model can act on — not
+    /// `INTERNAL_ERROR`, which reads as "the server broke, retry it".
+    fn tool_error(e: &io::Error) -> ErrorData {
+        let code = if e.kind() == io::ErrorKind::InvalidInput {
+            ErrorCode::INVALID_PARAMS
+        } else {
+            ErrorCode::INTERNAL_ERROR
+        };
+        ErrorData::new(code, e.to_string(), None)
     }
 
     pub fn retrieve_all(&self, is_global: bool) -> io::Result<HashMap<String, Vec<String>>> {
@@ -354,10 +418,10 @@ impl MemoryServer {
             for entry in fs::read_dir(base_dir)? {
                 let entry = entry?;
                 if entry.file_type()?.is_file() {
-                    let category = entry.file_name().to_string_lossy().replace(".txt", "");
-                    let category_memories = self.retrieve(&category, is_global)?;
+                    let category = &entry.file_name().to_string_lossy().replace(".txt", "");
+                    let category_memories = self.retrieve(category, is_global)?;
                     memories.insert(
-                        category,
+                        category.to_string(),
                         category_memories.into_iter().flat_map(|(_, v)| v).collect(),
                     );
                 }
@@ -374,7 +438,7 @@ impl MemoryServer {
         tags: &[&str],
         is_global: bool,
     ) -> io::Result<()> {
-        let memory_file_path = self.get_memory_file(category, is_global);
+        let memory_file_path = self.get_memory_file(category, is_global)?;
 
         if let Some(parent) = memory_file_path.parent() {
             fs::create_dir_all(parent)?;
@@ -397,7 +461,7 @@ impl MemoryServer {
         category: &str,
         is_global: bool,
     ) -> io::Result<HashMap<String, Vec<String>>> {
-        let memory_file_path = self.get_memory_file(category, is_global);
+        let memory_file_path = self.get_memory_file(category, is_global)?;
         if !memory_file_path.exists() {
             return Ok(HashMap::new());
         }
@@ -437,7 +501,7 @@ impl MemoryServer {
         memory_content: &str,
         is_global: bool,
     ) -> io::Result<()> {
-        let memory_file_path = self.get_memory_file(category, is_global);
+        let memory_file_path = self.get_memory_file(category, is_global)?;
         if !memory_file_path.exists() {
             return Ok(());
         }
@@ -459,7 +523,7 @@ impl MemoryServer {
     }
 
     pub fn clear_memory(&self, category: &str, is_global: bool) -> io::Result<()> {
-        let memory_file_path = self.get_memory_file(category, is_global);
+        let memory_file_path = self.get_memory_file(category, is_global)?;
         if memory_file_path.exists() {
             fs::remove_file(memory_file_path)?;
         }
@@ -510,7 +574,7 @@ impl MemoryServer {
             &tags,
             params.is_global,
         )
-        .map_err(|e| ErrorData::new(ErrorCode::INTERNAL_ERROR, e.to_string(), None))?;
+        .map_err(|e| Self::tool_error(&e))?;
 
         // The scope is an argument the *model* supplies, and an MCP server has
         // no channel back to the user to ask. What it does have is this result,
@@ -553,7 +617,7 @@ impl MemoryServer {
         } else {
             self.retrieve(&params.category, params.is_global)
         }
-        .map_err(|e| ErrorData::new(ErrorCode::INTERNAL_ERROR, e.to_string(), None))?;
+        .map_err(|e| Self::tool_error(&e))?;
 
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Retrieved memories: {:?}",
@@ -574,14 +638,14 @@ impl MemoryServer {
 
         let message = if params.category == "*" {
             self.clear_all_global_or_local_memories(params.is_global)
-                .map_err(|e| ErrorData::new(ErrorCode::INTERNAL_ERROR, e.to_string(), None))?;
+                .map_err(|e| Self::tool_error(&e))?;
             format!(
                 "Cleared all memory {} categories",
                 if params.is_global { "global" } else { "local" }
             )
         } else {
             self.clear_memory(&params.category, params.is_global)
-                .map_err(|e| ErrorData::new(ErrorCode::INTERNAL_ERROR, e.to_string(), None))?;
+                .map_err(|e| Self::tool_error(&e))?;
             format!("Cleared memories in category: {}", params.category)
         };
 
@@ -604,7 +668,7 @@ impl MemoryServer {
             &params.memory_content,
             params.is_global,
         )
-        .map_err(|e| ErrorData::new(ErrorCode::INTERNAL_ERROR, e.to_string(), None))?;
+        .map_err(|e| Self::tool_error(&e))?;
 
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Removed specific memory from category: {}",
@@ -656,6 +720,340 @@ mod tests {
             .expect("tool result carries text")
             .text
             .clone()
+    }
+
+    /// The contents of a file that lives *outside* the memory store. Every
+    /// escape test asserts this is still exactly what is on disk afterwards.
+    const UNTOUCHED: &str = "ORIGINAL FILE CONTENTS sk-victim-8811\n";
+
+    /// #73. `category` is a model-supplied `String` on all four memory tools,
+    /// and it was pasted straight into a filename —
+    /// `base_dir.join(format!("{category}.txt"))` — with no containment check
+    /// and no re-resolution. A category holding `..` therefore walked *out* of
+    /// the memory store, and each tool did its own thing to whatever it landed
+    /// on: append (`remember_memory`), read (`retrieve_memories`), rewrite
+    /// (`remove_specific_memory`) and **delete** (`remove_memory_category`).
+    ///
+    /// A category is a NAME, not a path.
+    #[tokio::test]
+    async fn a_traversing_category_cannot_escape_the_memory_store() {
+        let temp = tempdir().unwrap();
+        let outside = temp.path().join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        let victim = outside.join("victim.txt");
+        fs::write(&victim, UNTOUCHED).unwrap();
+
+        // <temp>/store/{local,global}/../../outside/victim.txt
+        let server = server_at(&temp.path().join("store"));
+        let escaping = "../../outside/victim";
+
+        let wrote = server
+            .remember_memory(Parameters(RememberMemoryParams {
+                category: escaping.into(),
+                data: "smuggled".into(),
+                tags: vec![],
+                is_global: false,
+            }))
+            .await;
+        assert!(
+            wrote.is_err(),
+            "remember_memory accepted a traversing category"
+        );
+        assert_eq!(
+            fs::read_to_string(&victim).unwrap(),
+            UNTOUCHED,
+            "remember_memory appended to a file outside the memory store"
+        );
+
+        let read = server
+            .retrieve_memories(Parameters(RetrieveMemoriesParams {
+                category: escaping.into(),
+                is_global: false,
+            }))
+            .await;
+        assert!(
+            read.is_err(),
+            "retrieve_memories read a file outside the memory store: {}",
+            read.as_ref().map(result_text).unwrap_or_default()
+        );
+
+        let rewrote = server
+            .remove_specific_memory(Parameters(RemoveSpecificMemoryParams {
+                category: escaping.into(),
+                memory_content: "ORIGINAL".into(),
+                is_global: false,
+            }))
+            .await;
+        assert!(
+            rewrote.is_err(),
+            "remove_specific_memory accepted a traversing category"
+        );
+        assert_eq!(
+            fs::read_to_string(&victim).unwrap(),
+            UNTOUCHED,
+            "remove_specific_memory rewrote a file outside the memory store"
+        );
+
+        // The delete is the worst of the four, so it is checked in both scopes:
+        // the only difference between them is which base dir gets escaped from.
+        for is_global in [false, true] {
+            let deleted = server
+                .remove_memory_category(Parameters(RemoveMemoryCategoryParams {
+                    category: escaping.into(),
+                    is_global,
+                }))
+                .await;
+            assert!(
+                deleted.is_err(),
+                "remove_memory_category accepted a traversing category (is_global={is_global})"
+            );
+            assert!(
+                victim.exists(),
+                "remove_memory_category deleted a file outside the memory store \
+                 (is_global={is_global})"
+            );
+        }
+    }
+
+    /// #73, the second escape. `Path::join` *discards* the base when its
+    /// argument is absolute, and the argument here is `format!("{category}.txt")`
+    /// — so an absolute category did not merely traverse out of the store, it
+    /// replaced it outright (`category="/etc/hosts"` → `/etc/hosts.txt`). The
+    /// victim below is inside the tempdir for the same reason `/etc` is the
+    /// scary example: the mechanism does not care which.
+    #[tokio::test]
+    async fn an_absolute_category_cannot_replace_the_memory_store() {
+        let temp = tempdir().unwrap();
+        let outside = temp.path().join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        let victim = outside.join("victim.txt");
+        fs::write(&victim, UNTOUCHED).unwrap();
+
+        let server = server_at(&temp.path().join("store"));
+        // Absolute, and `<this>.txt` is exactly the victim.
+        let escaping = outside.join("victim").to_string_lossy().into_owned();
+
+        let wrote = server
+            .remember_memory(Parameters(RememberMemoryParams {
+                category: escaping.clone(),
+                data: "smuggled".into(),
+                tags: vec![],
+                is_global: true,
+            }))
+            .await;
+        assert!(
+            wrote.is_err(),
+            "remember_memory accepted an absolute category"
+        );
+        assert_eq!(
+            fs::read_to_string(&victim).unwrap(),
+            UNTOUCHED,
+            "remember_memory appended to an absolute path outside the memory store"
+        );
+
+        let read = server
+            .retrieve_memories(Parameters(RetrieveMemoriesParams {
+                category: escaping.clone(),
+                is_global: true,
+            }))
+            .await;
+        assert!(
+            read.is_err(),
+            "retrieve_memories read an absolute path outside the memory store: {}",
+            read.as_ref().map(result_text).unwrap_or_default()
+        );
+
+        let rewrote = server
+            .remove_specific_memory(Parameters(RemoveSpecificMemoryParams {
+                category: escaping.clone(),
+                memory_content: "ORIGINAL".into(),
+                is_global: true,
+            }))
+            .await;
+        assert!(
+            rewrote.is_err(),
+            "remove_specific_memory accepted an absolute category"
+        );
+        assert_eq!(
+            fs::read_to_string(&victim).unwrap(),
+            UNTOUCHED,
+            "remove_specific_memory rewrote an absolute path outside the memory store"
+        );
+
+        let deleted = server
+            .remove_memory_category(Parameters(RemoveMemoryCategoryParams {
+                category: escaping,
+                is_global: true,
+            }))
+            .await;
+        assert!(
+            deleted.is_err(),
+            "remove_memory_category accepted an absolute category"
+        );
+        assert!(
+            victim.exists(),
+            "remove_memory_category deleted an absolute path outside the memory store"
+        );
+    }
+
+    /// `category="*"` is documented as "all" on `retrieve_memories` and
+    /// `remove_memory_category`, where it is dispatched *before* the path is
+    /// ever built. On `remember_memory` and `remove_specific_memory` it carries
+    /// no such meaning and reaches the filename as a plain name — which it is.
+    /// Validating the category must not cost either behaviour, so all four are
+    /// pinned here.
+    #[tokio::test]
+    async fn the_all_categories_sentinel_survives_category_validation() {
+        let temp = tempdir().unwrap();
+        let server = server_at(temp.path());
+
+        for (category, data) in [
+            ("development", "formats with black"),
+            ("personal", "prefers metric units"),
+        ] {
+            server
+                .remember_memory(Parameters(RememberMemoryParams {
+                    category: category.into(),
+                    data: data.into(),
+                    tags: vec![],
+                    is_global: false,
+                }))
+                .await
+                .unwrap();
+        }
+
+        let all = result_text(
+            &server
+                .retrieve_memories(Parameters(RetrieveMemoriesParams {
+                    category: "*".into(),
+                    is_global: false,
+                }))
+                .await
+                .expect("retrieve_memories(\"*\") is the documented read-everything call"),
+        );
+        assert!(
+            all.contains("formats with black") && all.contains("prefers metric units"),
+            "the \"*\" sentinel stopped returning every category: {all}"
+        );
+
+        // No sentinel meaning here: "*" is a legal single-segment filename and
+        // has always been stored as one.
+        server
+            .remember_memory(Parameters(RememberMemoryParams {
+                category: "*".into(),
+                data: "starred".into(),
+                tags: vec![],
+                is_global: false,
+            }))
+            .await
+            .expect("\"*\" is a plain name on remember_memory, not a path");
+        server
+            .remove_specific_memory(Parameters(RemoveSpecificMemoryParams {
+                category: "*".into(),
+                memory_content: "starred".into(),
+                is_global: false,
+            }))
+            .await
+            .expect("\"*\" is a plain name on remove_specific_memory, not a path");
+
+        server
+            .remove_memory_category(Parameters(RemoveMemoryCategoryParams {
+                category: "*".into(),
+                is_global: false,
+            }))
+            .await
+            .expect("remove_memory_category(\"*\") is the documented clear-everything call");
+        let after = result_text(
+            &server
+                .retrieve_memories(Parameters(RetrieveMemoriesParams {
+                    category: "*".into(),
+                    is_global: false,
+                }))
+                .await
+                .unwrap(),
+        );
+        assert!(
+            !after.contains("formats with black"),
+            "the \"*\" sentinel stopped clearing the store: {after}"
+        );
+    }
+
+    /// The funnel: all four tools reach the filesystem through
+    /// `get_memory_file`, so that is the one place "a category is a name" has
+    /// to hold. Names stay names — including `*`, dots, spaces and non-ASCII,
+    /// so the rule is *containment*, not a charset allowlist that would break
+    /// ordinary categories a model picks.
+    #[test]
+    fn get_memory_file_takes_a_name_and_refuses_a_path() {
+        let temp = tempdir().unwrap();
+        let server = server_at(temp.path());
+
+        for name in [
+            "development",
+            "personal",
+            "a.txt.b",
+            "*",
+            "über",
+            "with space",
+            ".hidden",
+            "-dash",
+        ] {
+            let path = server
+                .get_memory_file(name, false)
+                .unwrap_or_else(|e| panic!("plain category name {name:?} was rejected: {e}"));
+            assert_eq!(path, server.local_memory_dir.join(format!("{name}.txt")));
+        }
+
+        for path_like in [
+            "",
+            ".",
+            "..",
+            "./x",
+            "../evil",
+            "../../outside/victim",
+            "a/b",
+            "sub/dir/x",
+            "/etc/hosts",
+            "/",
+            // Rejected on every platform, not just Windows: a category is
+            // stored as a filename and has to mean the same thing on the
+            // machine that reads it back.
+            "a\\b",
+            "..\\evil",
+        ] {
+            let err = server
+                .get_memory_file(path_like, true)
+                .expect_err(&format!("{path_like:?} was accepted as a category"));
+            assert_eq!(
+                err.kind(),
+                io::ErrorKind::InvalidInput,
+                "a rejected category is the caller's mistake, not an I/O failure: {err}"
+            );
+        }
+    }
+
+    /// A rejected category is the model's mistake, so it comes back as
+    /// `INVALID_PARAMS` — the code the model can act on — rather than
+    /// `INTERNAL_ERROR`, which reads as "the server broke, retry".
+    #[tokio::test]
+    async fn a_rejected_category_is_reported_as_invalid_params() {
+        let temp = tempdir().unwrap();
+        let server = server_at(temp.path());
+
+        let err = server
+            .remember_memory(Parameters(RememberMemoryParams {
+                category: "../escape".into(),
+                data: "smuggled".into(),
+                tags: vec![],
+                is_global: false,
+            }))
+            .await
+            .expect_err("a traversing category has to be refused");
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS, "got: {err:?}");
+        assert!(
+            err.message.contains("category"),
+            "the message has to name what was wrong so the model can fix it: {err:?}"
+        );
     }
 
     /// #58. A memory one session wrote with `is_global=true` was appended
