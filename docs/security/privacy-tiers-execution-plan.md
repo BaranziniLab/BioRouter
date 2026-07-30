@@ -878,6 +878,37 @@ the pin that makes that refactor fail loudly instead. The fix (route it through 
 change to approval rendering for every session, private included, and is a follow-up rather than part
 of this feature.
 
+### AR-13 — The capability is sampled at permit time, so a model swap mid-tool-call is honoured on the next call, not this one
+
+[Task 10](#task-10-the-chatrecall-load-guard-and-callcapability--one-sample-per-call-threaded) makes
+every gate read **one** `CallCapability`, sampled once at the entry that admitted the call. That
+closes the four-independent-samples race round 3 attacked. It does **not** make the decision
+*current*, and it cannot: `ExtensionManager::dispatch_tool_call` returns an **un-awaited** future
+(`extension_manager.rs:1572-1575`), `Agent::dispatch_tool_call` wraps it in a second one whose first
+act is to park on a global semaphore of 8 (`agent.rs:2826-2829`,
+`tool_dispatch_limits.rs:112-134`), and only `stream::select_all` (`agent.rs:4479`) drives it. The gap
+between admission and execution is as long as the tool queue.
+
+So, in both directions:
+
+- A call admitted as **public** stays public for its whole life even if the user upgrades the model
+  mid-flight. That is the safe direction; the cost is a spurious refusal the user fixes by asking
+  again.
+- A call admitted as **private** stays private even if the user downgrades mid-flight. **That is the
+  residual**, and it is bounded by the duration of one tool call — the tool was permitted while the
+  session genuinely had private capability, and its result lands in a session that is by then public.
+  Gate B (Task 13) is what stops that *transcript* being sent onward, so the exposure is the tool's
+  own output sitting in a session whose next turn a public model will read.
+
+**Re-sampling at execution time to fix the second is exactly the bug**, because it is also what lets
+a public-admitted call run with private privileges — round 3's construction, and the reason the
+`Weak<ExtensionManager>` capability channel was deleted rather than repaired. Task 14B Step 1(6)'s
+third test asserts this residual rather than hiding it.
+
+**Stated in the operator's terms:** switching a chat's model takes effect on the next tool call, not
+on the ones already in flight. Closing that would mean cancelling in-flight tool calls on a provider
+swap, which is a change to `update_provider`'s contract for every session and is a follow-up.
+
 ---
 
 ## Which test filters are validated, and which are not
@@ -3194,21 +3225,135 @@ scope), then O3/O4 (bind, then turn), then the extension gates. O13 applies thro
 10C, 10D and 11 each verify `cargo check --workspace --all-targets` before committing, because this
 is the stretch where an earlier draft left nine consecutive commits red.
 
-### Task 10: The chatrecall LOAD guard, and `ExtensionManager::capability_tier()`
+### Task 10: The chatrecall LOAD guard, and `CallCapability` — one sample per call, threaded
 
 `handle_chatrecall`'s LOAD branch has **no filter of any kind** — not even the `exclude_session_id`
 guard SEARCH sets at `:188`, so a session can load itself. It takes a caller-supplied `session_id`,
 calls `get_session(&sid, true)`, and builds a header carrying the target's name, working directory
 and message count before any message text. Ship it first.
 
+It also creates the type every later gate reads, and the rule that makes those gates agree.
+
+#### ⚠ Read this first: the capability is SAMPLED ONCE, and `capability_tier()` is not a method
+
+An earlier version of this task put a `pub async fn capability_tier(&self)` on `ExtensionManager` and
+let each gate call it. Round 3 built the attack that shape permits, and a later survey found the
+sample count is **four**, not the three the review named:
+
+| # | Reader | Where it sampled | Why that is a separate read |
+|---|---|---|---|
+| S1 | the Agent seam (Task 14D) | `agent.rs:2624` | provider mutex |
+| S2 | Gate C + Layer A (Tasks 14, 14B) | `extension_manager.rs` ~`:1495` | provider mutex, **again** |
+| S3 | the built-in `_meta` bit (this task, (d)–(e)) | `extension_manager.rs` ~`:1540` | provider mutex, **a third time** |
+| S4 | the Platform extensions — chatrecall Gate D, Gate E, skills | through the `Weak<ExtensionManager>` (`agents/extension.rs:110-111`) | provider mutex, **a fourth time — and from inside the driven future** |
+
+S4 is the worst-placed. `ExtensionManager::dispatch_tool_call` returns at
+`extension_manager.rs:1572-1575` with `result: Box::new(fut.boxed())` — an **un-awaited** future —
+and `Agent::dispatch_tool_call` wraps that in a second un-awaited future (`agent.rs:2826`) whose first
+act is to park on `tool_dispatch_limits::acquire` (`agent.rs:2829`; a global semaphore of 8, plus
+per-path exclusive write locks). Only `stream::select_all` (`agent.rs:4479`) ever drives it. **The gap
+between S1/S2/S3 and the tool actually running is unbounded wall-clock, not microseconds**, and S4
+lands on the far side of it.
+
+Between the samples the provider can change, and nothing serialises it. `Agent::update_provider`
+(`agent.rs:5655-5675`) takes the mutex at `:5663`, assigns at `:5664`, drops it — no turn lock, no
+in-flight consultation, no generation counter. `POST /agent/update_provider` (`routes/agent.rs:721`)
+is an ordinary axum handler and `try_begin_turn_idempotent` (`state.rs:306-326`) guards `/reply`
+re-entry only. And `biorouterd` runs the **multi-thread** runtime (`biorouter-server/src/main.rs:43`,
+`#[tokio::main]` with no `flavor`), so the swap and the dispatch run genuinely in parallel on
+different worker threads — enumerating the `.await`s between two samples understates the window.
+Any read-then-read of shared mutable state across two program points is a race; there are four such
+reads.
+
+**The master toggle is a second axis with the identical defect, and the plan chose it deliberately.**
+`privacy_tiers_enabled()` is a relaxed atomic load (Task 30) re-read *on purpose* "inside each gate …
+so a mid-session change is honoured". Per call that is four reads: Gate C, `PrivatePathPolicy`,
+Layer B's `_meta` bool, and the Agent seam. So one call can pass Gate C with tiers **on** and then
+build an **empty** path policy with tiers **off**. `enforced` is half of the capability decision and
+must be captured in the same instant as the tier.
+
+**So: one type, one sample, threaded as a parameter.**
+
+```rust
+// crates/biorouter/src/privacy/capability.rs
+/// The capability decision for ONE tool call, taken once and carried.
+///
+/// `Copy` is load-bearing: this has to thread into `async move` blocks that own
+/// no `&self` (`extension_manager.rs:1544`, `agent.rs:2826`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CallCapability {
+    tier: ProviderTier,
+    enforced: bool,
+}
+
+impl CallCapability {
+    /// The ONE read of the provider mutex and the ONE read of the master toggle
+    /// on this call's path. Both, together, at one instant.
+    pub async fn sample(provider: &SharedProvider) -> Self {
+        // `None` — legitimately the state before the first bind — resolves to
+        // Public, the safe direction for every gate that reads this.
+        let tier = provider
+            .lock()
+            .await
+            .as_ref()
+            .map(|p| p.tier())
+            .unwrap_or(ProviderTier::Public);
+        Self { tier, enforced: crate::privacy::privacy_tiers_enabled() }
+    }
+
+    /// For an entry with **no caller identity** — see Task 14C (2).
+    pub const fn public_enforced() -> Self {
+        Self { tier: ProviderTier::Public, enforced: true }
+    }
+
+    pub const fn tier(&self) -> ProviderTier { self.tier }
+    pub const fn enforced(&self) -> bool { self.enforced }
+    /// The predicate every barrier in this plan asks. Folded here so the tier
+    /// and the toggle can never be read at two different instants.
+    pub const fn restricts_private_data(&self) -> bool {
+        self.enforced && !self.tier.is_private()
+    }
+}
+```
+
+**Exactly four production entries sample it** — the same four Task 14's own comment enumerates, and
+no fifth:
+
+| Entry | Anchor | Samples |
+|---|---|---|
+| the agent loop | `agent.rs:2624`, manager at `:2772` | `CallCapability::sample(&self.provider)` — the field at `agent.rs:515` is `pub(super)`, and `agents::agent` is inside `agents::` |
+| `POST /agent/call_tool` | `routes/agent.rs:1140`, manager at `:1162` | `CallCapability::public_enforced()` — Task 14C (2) |
+| the `execute_code` JS bridge | `code_execution_extension.rs:1815` | the `CallCapability` its own `McpMeta` carried in — it holds a `Weak<ExtensionManager>` and no provider handle |
+| `Agent::call_prefetch_tool` (pre-turn) | `agent.rs:1610`, manager at `:1618` | `CallCapability::sample(&self.provider)` |
+
+`ExtensionManager::dispatch_tool_call` gains `cap: CallCapability` as a parameter and **has no way to
+sample**. Gate C, Layer A, the built-in `_meta` bit and Layer B's boolean all read that one value.
+
+**Crate boundary, stated so the fix is implementable.** `crates/biorouter/Cargo.toml:97` depends on
+`biorouter-mcp`; `crates/biorouter-mcp/Cargo.toml:15` depends on `biorouter-sandbox`. `ProviderTier`
+lives in `biorouter`, so it **cannot** travel into `biorouter-mcp`'s servers — which is exactly why
+the wire form is a boolean, and that choice is right. `McpMeta` lives in `biorouter`
+(`mcp_client.rs:136`), so `CallCapability` rides as a real type up to that boundary and is flattened
+to the bool **once**, in `inject_into_extensions` (`mcp_client.rs:161`).
+
+**What this does NOT close, and it is [AR-13](#ar-13--the-capability-is-sampled-at-permit-time-so-a-model-swap-mid-tool-call-is-honoured-on-the-next-call-not-this-one).**
+The sample is taken at *permit* time and the tool runs later. Threading makes the call *consistent* —
+all five consumers agree — not *current*. Re-sampling at execution time to fix that is **exactly the
+bug**, because it is what lets a Public-admitted call run Private.
+
 **Files:**
 
 | Action | Path | Anchor (re-verified at `9558c346`) |
 |---|---|---|
-| Modify | `crates/biorouter/src/agents/chatrecall_extension.rs` | `handle_chatrecall` `:78`; LOAD branch `:90-159`; `get_session(&sid, true)` `:92`; the header `format!` `:113-119` (`loaded_session.name`, `sid`, `working_dir.display()`, `total`); SEARCH `:160-245`; `exclude_session_id` `:188` |
-| Modify | `crates/biorouter/src/agents/extension_manager.rs` | `provider: SharedProvider` field at `:113` — **private**, so a new `pub` accessor is required |
-| Reference | `crates/biorouter/src/agents/extension.rs` | `PlatformExtensionContext` `:109-113` — carries `extension_manager: Option<Weak<ExtensionManager>>`, populated for Platform extensions at `extension_manager.rs:799` |
+| Create | `crates/biorouter/src/privacy/capability.rs` | new — `CallCapability` |
+| Modify | `crates/biorouter/src/agents/chatrecall_extension.rs` | `handle_chatrecall` `:78-82` (gains the capability as a third parameter); LOAD branch `:90-159`; `get_session(&sid, true)` `:92`; the header `format!` `:113-119` (`loaded_session.name`, `sid`, `working_dir.display()`, `total`); SEARCH `:160-245`; `exclude_session_id` `:188`; `call_tool`'s `meta: McpMeta` `:294-302` — **already destructures `meta.session_id`, so the channel exists** |
+| Modify | `crates/biorouter/src/agents/extension_manager.rs` | `dispatch_tool_call` `:1438` gains `cap: CallCapability`; the `McpMeta::new(&session_id)` at `:1557` moves **out** of the `async move` at `:1544` |
+| Modify | `crates/biorouter/src/agents/mcp_client.rs` | `McpMeta` `:137-145` gains `capability: CallCapability`; `inject_into_extensions` `:161-172` flattens it. **No implementor signature changes** — `McpClientTrait::call_tool` already takes `meta: McpMeta` **by value** (`:183-189`), across ~8 implementors in `biorouter` alone (`todo_extension.rs:401`, `code_execution_extension.rs:2048`, `skills_extension.rs:770`, `extension_manager_extension.rs:456`, `chatrecall_extension.rs:294`, `mcp_pool.rs:218`, + mocks) |
+| Modify | `crates/biorouter/src/agents/agent.rs` | `dispatch_tool_call` `:2624`, `call_prefetch_tool` `:1610`; `provider` field `:515` |
+| Modify | `crates/biorouter-server/src/routes/agent.rs` | `call_tool` `:1140-1162` |
+| Delete | — | the `extension_manager: Option<Weak<ExtensionManager>>` **capability** use in `PlatformExtensionContext` (`agents/extension.rs:109-113`, populated at `extension_manager.rs:799`). The `Weak` itself stays for its other users; nothing reads a tier through it any more |
 | Reference | `crates/biorouter/src/agents/types.rs` | `SharedProvider = Arc<Mutex<Option<Arc<dyn Provider>>>>` at `:13` |
+| Reference | `crates/biorouter/src/agents/tool_dispatch_limits.rs` | `:112-134` `DEFAULT_MAX_CONCURRENT_TOOLS = 8` — the queue that makes the permit-to-execution gap unbounded |
 
 - [ ] **Step 1: Write the failing test**
 
@@ -3242,64 +3387,101 @@ async fn load_still_works_for_a_private_caller_and_for_public_targets() {
             .as_text().unwrap().text.contains("weekly notes"));
 }
 
+/// The sample the call was ADMITTED on is the sample the gate reads — even
+/// though the tool ran minutes later, behind the dispatch semaphore.
+///
+/// This is the test the `Weak<ExtensionManager>` design could not pass and
+/// which nothing in rounds 1-3 forced. Under that design chatrecall re-derived
+/// the tier from the provider mutex *inside the driven future*
+/// (`agent.rs:2829`'s `tool_dispatch_limits::acquire` is the park point), so a
+/// call admitted as Public read Private there and returned the transcript.
 #[tokio::test]
-async fn a_dead_extension_manager_weak_refuses_rather_than_defaulting_open() {
-    // PlatformExtensionContext holds a Weak. If it has died the caller's
-    // capability is unknowable, and unknown must refuse — not fall through.
+async fn a_swap_after_admission_does_not_change_what_this_call_may_load() {
+    let (agent, s) = agent_on(public_provider()).await;
     let target = private_session_named("OMOP cohort", "/data/phi/x").await;
-    let out = load_with_dead_weak(&target.id).await.unwrap();
-    assert!(out[0].as_text().unwrap().text.contains("private"));
+
+    // Park the call AFTER `Agent::dispatch_tool_call` has returned its future
+    // and BEFORE anything drives it — i.e. exactly where a real queued call
+    // sits. `seams::hold_dispatch_queue()` is Task 12's rendezvous shape.
+    let held = seams::hold_dispatch_queue();
+    let call = tokio::spawn({
+        let agent = agent.clone();
+        let id = target.id.clone();
+        async move { chatrecall_load(&agent, &id).await }
+    });
+    let release = held.await.unwrap();
+
+    agent.update_provider(private_provider(), &s.id).await.unwrap();
+    release.send(()).unwrap();
+
+    let text = call.await.unwrap().unwrap()[0].as_text().unwrap().text.clone();
+    assert!(text.contains("private"), "a call admitted as public loaded a private transcript");
+    assert!(!text.contains("OMOP"), "leaked the session name: {text}");
 }
 ```
 
-- [ ] **Step 2: Run** → **COMPILE ERROR** (`no method capability_tier on ExtensionManager`).
+**This gate rejects:** every implementation in which chatrecall reads a tier rather than receiving
+one — including the correct-looking `em.capability_tier().await` through the `Weak`. It is the only
+test in this plan that separates *consistent* from *current*, and it is why
+`a_dead_extension_manager_weak_refuses_rather_than_defaulting_open` is **gone rather than passing**:
+under a threaded capability there is no `Weak` upgrade on the capability path, so there is no
+dead-`Weak` branch to defend.
+
+- [ ] **Step 2: Run** → **COMPILE ERROR** (`unresolved module privacy::capability`;
+`dispatch_tool_call` takes 3 arguments not 4; `handle_chatrecall` takes 2 arguments not 3).
 
 - [ ] **Step 3: Implement**
 
-On `ExtensionManager`, one accessor that Gates C, D and E all read (the field at `:113` is private):
+**(a) The type**, verbatim from the ⚠ above, in `crates/biorouter/src/privacy/capability.rs`.
+
+**(b) The four entries sample it, and nothing else does.**
+`ExtensionManager::dispatch_tool_call` (`:1438`) gains `cap: CallCapability` between `tool_call` and
+`cancellation_token`. Every caller supplies one; see the four-row table in the ⚠.
+
+⚠ **Sample it beside `let session_id = session_id.to_string();` (`extension_manager.rs:1543`),
+before `let fut = async move {` (`:1544`)** — no: *do not sample it there at all.* It arrives as a
+parameter and is `Copy`, so it is captured by value into the future for free. The reason to say this
+explicitly is that `:1543` is exactly where a reader will reach for `self.provider`, and a sample
+there is S3 wearing a different name.
+
+**(c) `McpMeta` carries it, and it is built OUTSIDE the future.**
 
 ```rust
-    /// The capability of the model currently bound to this session.
-    ///
-    /// Reads the SAME `Arc<Mutex<Option<..>>>` the Agent swaps in
-    /// `update_provider` (`Agent::new` passes `provider.clone()` to
-    /// `ExtensionManager::new` at `agent.rs:848`), so a mid-session model
-    /// change is visible on the very next call with no plumbing and no TOCTOU
-    /// window.
-    ///
-    /// `None` — legitimately the state before the first bind — resolves to
-    /// **Public**, which is the safe direction for all three gates that read
-    /// this: Gate C refuses private extensions, Gate D filters to public rows,
-    /// Gate E hides private tools.
-    pub async fn capability_tier(&self) -> crate::privacy::ProviderTier {
-        self.provider
-            .lock()
-            .await
-            .as_ref()
-            .map(|p| p.tier())
-            .unwrap_or(crate::privacy::ProviderTier::Public)
-    }
+pub struct McpMeta {
+    pub session_id: String,
+    pub progress_token: Option<String>,
+    /// Issue #56. The capability this call was ADMITTED on. Set from
+    /// `dispatch_tool_call`'s parameter, never re-derived: an in-process
+    /// extension that re-reads the provider mutex from inside the driven future
+    /// reads it minutes later, past the dispatch semaphore.
+    pub capability: CallCapability,
+}
 ```
 
-In `chatrecall_extension.rs`, between `get_session` (`:92`) and the header `format!` (`:113`):
+`McpMeta::new` gains the capability as a second argument. The construction at `:1557` **moves above
+the `async move` at `:1544`** and is captured; the `progress_token` fold moves with it. This costs
+nothing — `register_dispatch()` at `:1540` already runs there — and it deletes S3, because the
+built-in `_meta` bit is now `cap.tier().is_private()` with no `.await`.
+
+**(d) `chatrecall` receives it. The `Weak` upgrade disappears.**
+
+`McpClientTrait::call_tool` already hands Platform extensions `meta: McpMeta` **by value**
+(`mcp_client.rs:183-189`), and `chatrecall_extension.rs:294-302` already destructures
+`meta.session_id`. Thread `meta.capability` into `handle_chatrecall` (`:78-82`) as a third parameter.
+Then, between `get_session` (`:92`) and the header `format!` (`:113`):
 
 ```rust
                 Ok(loaded_session) => {
                     // Issue #56 Gate D (LOAD). BEFORE the header string is
                     // built, so neither the session name nor the working
                     // directory can escape — both are CONTENT under §11.4.
-                    let caller = match self
-                        .context
-                        .extension_manager
-                        .as_ref()
-                        .and_then(|w| w.upgrade())
-                    {
-                        Some(em) => em.capability_tier().await,
-                        // A dead Weak means the capability is unknowable.
-                        // Refuse; never default open.
-                        None => crate::privacy::ProviderTier::Public,
-                    };
-                    if !crate::privacy::visible_to(caller, loaded_session.privacy_tier) {
+                    //
+                    // `cap` was sampled once, at the entry that admitted this
+                    // call. It is NOT re-derived here: this code runs inside
+                    // the driven future, on the far side of
+                    // `tool_dispatch_limits::acquire`, where the provider may
+                    // already be a different one.
+                    if !crate::privacy::visible_to(cap.tier(), loaded_session.privacy_tier) {
                         return Ok(vec![Content::text(CHATRECALL_LOAD_REFUSAL)]);
                     }
 ```
@@ -3359,6 +3541,55 @@ awk '/\/\/ LOAD MODE:/,/\/\/ SEARCH MODE:/' \
 # mentioned a working directory.
 # The refusal is constant and target-free.
 grep -c "loaded_session.name" crates/biorouter/src/agents/chatrecall_extension.rs ; echo "expect: 1 (the header only)"
+
+# ── THE SAMPLING GATE. Whole-tree, and it is a COUNT of ABSENCE, not a
+#    placement assertion. This is what fails the implementation that threads
+#    `cap` correctly and ALSO keeps a sampler "just for the metadata" — the
+#    shape a per-file placement check cannot see, because each file looks right
+#    on its own.
+grep -rn "capability_tier(" --include='*.rs' crates/ | grep -v "fn capability_tier"
+echo "expect: NO OUTPUT. Any hit is a second sample. The method must not exist;"
+echo "        if it does exist, someone will call it, and Gate C will drift back to it."
+grep -rn "fn capability_tier" --include='*.rs' crates/ ; echo "expect: no output"
+
+# Exactly FOUR production samples, and they are the four outermost entries.
+grep -rn "CallCapability::sample(\|CallCapability::public_enforced(" --include='*.rs' crates/*/src/ \
+  | grep -v "mod tests" | sort
+echo "expect: exactly 4 lines —"
+echo "  crates/biorouter/src/agents/agent.rs           (the agent loop, dispatch_tool_call)"
+echo "  crates/biorouter/src/agents/agent.rs           (call_prefetch_tool)"
+echo "  crates/biorouter-server/src/routes/agent.rs    (call_tool -> public_enforced)"
+echo "  crates/biorouter/src/agents/code_execution_extension.rs  (the JS bridge, from its own meta)"
+echo "A FIFTH is a new entry nobody classified; a THIRD means an entry stopped deciding."
+
+# The provider mutex is not read anywhere a gate can see it. `p.tier()` outside
+# capability.rs and the provider modules themselves is a hand-rolled sample.
+grep -rn "\.tier()" --include='*.rs' crates/biorouter/src/agents/ crates/biorouter/src/privacy/ \
+  | grep -v "^crates/biorouter/src/privacy/capability.rs:" | grep -v "mod tests" | grep -v "cap\.tier()"
+echo "expect: no output"
+
+# The master toggle is read ONCE per call, inside the sample. A gate that reads
+# it again can pass Gate C with tiers on and build an empty policy with tiers off.
+grep -rn "privacy_tiers_enabled()" --include='*.rs' crates/ | grep -v "fn privacy_tiers_enabled" \
+  | grep -v "mod tests"
+echo "expect: exactly 1 line, in crates/biorouter/src/privacy/capability.rs (CallCapability::sample)."
+echo "        Every other gate reads cap.enforced() / cap.restricts_private_data()."
+
+# The Weak is no longer a capability channel.
+awk '/fn handle_chatrecall/,/^}/' crates/biorouter/src/agents/chatrecall_extension.rs \
+  | grep -c "extension_manager\|upgrade()"
+echo "expect: 0 — the capability arrives as a parameter, not through a Weak upgrade"
+
+# `McpMeta` is built BEFORE the future, not inside it. Inside is S3's window.
+python3 - <<'PY'
+src = open('crates/biorouter/src/agents/extension_manager.rs').read()
+body = src[src.index('pub async fn dispatch_tool_call('):]
+body = body[:body.index('\n    pub ', 10)]
+i_meta = body.index('McpMeta::new(')
+i_fut  = body.index('let fut = async move')
+assert i_meta < i_fut, f'McpMeta built INSIDE the future (meta {i_meta} > fut {i_fut})'
+print('OK  McpMeta at', i_meta, ' async move at', i_fut)
+PY
 ```
 
 **What this catches.** The wrong implementation builds the header first and *then* returns an error
@@ -3367,10 +3598,18 @@ in hand. The return value is an error either way, so a test asserting only that 
 passes it. The substring assertions in Step 1 are the only thing that fails it, and they are why the
 fixture's name and working directory are unique sentinels.
 
+And the sampling gate catches the one Round 3 constructed: `cap` threaded everywhere it is *read*,
+with `capability_tier()` left standing and called once "for the built-in metadata". Every per-file
+assertion in this plan passes that implementation; the tree-wide count of `capability_tier(` is 1,
+and it must be 0.
+
 - [ ] **Step 6: Commit**
 
 ```bash
-git add crates/biorouter/src/agents/chatrecall_extension.rs crates/biorouter/src/agents/extension_manager.rs
+git add crates/biorouter/src/privacy/ crates/biorouter/src/agents/chatrecall_extension.rs \
+        crates/biorouter/src/agents/extension_manager.rs crates/biorouter/src/agents/mcp_client.rs \
+        crates/biorouter/src/agents/agent.rs crates/biorouter/src/agents/code_execution_extension.rs \
+        crates/biorouter-server/src/routes/agent.rs
 git commit -m "fix(chatrecall): refuse LOAD of a private session before any of it is rendered (#56)"
 ```
 
@@ -4231,17 +4470,20 @@ wire format is the point; everything else reads the const.
             if let Some(token) = progress_token {
                 meta = meta.with_progress_token(token);
             }
-            // Issue #56. Built-ins only — see (d). `caller_capability_for_builtin`
-            // is computed OUTSIDE this future, because `capability_tier()` awaits
-            // the provider mutex and this block owns no `&self`.
-            if let Some(is_private) = caller_capability_for_builtin {
-                meta = meta.with_capability_private(is_private);
+            // Issue #56. Built-ins only — see (d). No `.await`, and no second
+            // read of the provider mutex: `cap` is the parameter
+            // `dispatch_tool_call` was CALLED with (Task 10's ⚠), so this bit
+            // and Gate C's decision cannot disagree.
+            if biorouter_mcp::BUILTIN_EXTENSIONS.contains_key(client_name.as_str()) {
+                meta = meta.with_capability_private(cap.tier().is_private());
             }
 ```
 
-with `let caller_capability_for_builtin = if biorouter_mcp::BUILTIN_EXTENSIONS.contains_key(client_name.as_str())
-{ Some(self.capability_tier().await.is_private()) } else { None };` resolved **before** the
-`async move` block, beside the tier lookup Task 14 adds at the same seam.
+⚠ **This whole block sits ABOVE `let fut = async move` (`:1544`), not inside it** — see Task 10 (c).
+The earlier draft resolved a `caller_capability_for_builtin` outside the future *because
+`capability_tier()` awaited*; with `cap` threaded there is nothing to await and nothing to resolve,
+and the reason to keep the construction outside the future is now the ordering one: anything built
+inside it is built at execution time, on the far side of the dispatch semaphore.
 
 (f) `KnowledgeServer` reads it through the shared helper, mirroring `session_id_from_context`
 (`:222-228`) — note it *delegates* rather than re-implementing, so CP1 and CP4 cannot drift:
@@ -5124,7 +5366,7 @@ inside the loop costs nothing.
 Each site therefore passes
 `<that site's agent>.provider().await.map(|p| p.tier()).unwrap_or(ProviderTier::Public).is_private()`
 (`Agent::provider` is `agent.rs:2511`; `Provider::tier` is Task 5). A dead or unbound provider
-resolves to **Public**, the same direction `ExtensionManager::capability_tier` takes for the same
+resolves to **Public**, the same direction `CallCapability::sample` takes for the same
 reason.
 
 ⚠ `ClientFrame::ModelStatus` sits beside every one of the three and reports `agent` at all three
@@ -7002,7 +7244,9 @@ place to spend it — not a description of what happens when you start this task
 | Reference | `crates/biorouter/src/agents/agent.rs` | dispatch `:2660`; advertisement `:3131` (`ingest_conversation_tool()`), with the surrounding comment "The conversation-ingestion tool is always available on the platform extension" |
 | Reference | `crates/biorouter/src/agents/platform_tools.rs` | `PLATFORM_INGEST_CONVERSATION_TOOL_NAME` `:5`; `ingest_conversation_tool()` `:51`; the description telling the model to "Pass `session_ids`" at `:63-65` |
 
-⚠ **`Agent` has no `capability_tier()`** — Task 10 put that method on `ExtensionManager`, whose
+⚠ **Nothing has a `capability_tier()`** — Task 10 deleted that shape outright (one sample per
+call, threaded). What the Agent has is `self.provider` (`agent.rs:515`, `pub(super)`), which is what
+`CallCapability::sample` reads, and `ExtensionManager`, whose
 `provider` field is private. `handle_ingest_conversation` is `impl Agent` (`knowledge_tool.rs:23-24`),
 so it resolves its own capability with `self.provider().await.map(|p| p.tier()).unwrap_or(ProviderTier::Public)`
 — fail-closed to Public, and `Agent::provider()` is the accessor Task 13 has already hardened. The
@@ -8376,10 +8620,13 @@ block beginning at `:1496`:
             .get(&client_name)
             .map(|e| e.tier)
             .unwrap_or(ProviderTier::Private);   // unknown record => refuse
-        let caller_tier = self.capability_tier().await;
-        if privacy_tiers_enabled() {
+        // `cap` is a PARAMETER (Task 10). Gate C does not sample and cannot:
+        // `dispatch_tool_call` has no way to read the provider any more. That is
+        // what makes this decision, Layer A's policy, the built-in `_meta` bit
+        // and Layer B's boolean provably the same decision.
+        if cap.enforced() {
             if let Some(err) = crate::privacy::refusal::privacy_refusal(
-                &client_name, ext_tier, caller_tier,
+                &client_name, ext_tier, cap.tier(),
             ) {
                 return Err(err.into());
             }
@@ -8474,7 +8721,7 @@ echo "of the two #[cfg(test)] spans above, is a new bypass — read the diff."
 # existed. Assert that the PRIVACY LOOKUP is the thing keyed on client_name,
 # scoped to the function, and pair it with the zero-count on the wrong key.
 awk '/pub async fn dispatch_tool_call/,/^    }/' crates/biorouter/src/agents/extension_manager.rs \
-  | grep -nE "privacy_refusal\(|capability_tier\(" 
+  | grep -nE "privacy_refusal\(|cap\.tier\(\)" 
 echo "expect: at least one line, and EVERY one of them BELOW rel 23, where"
 echo "  'let (client_name, client) = self.get_client_for_tool(..)' binds. A refusal"
 echo "  computed above that line has no resolved record to read."
@@ -9640,7 +9887,7 @@ carry the capability *with the call*:
 
 | | How the capability travels | Why it cannot be raced |
 |---|---|---|
-| **Layer A** | a **local** in `dispatch_tool_call`'s own stack frame: the same `caller_tier` binding [Task 14](#task-14-gate-c--the-dispatch-choke-point-and-the-refusal-as-a-pure-function) introduces for Gate C (`let caller_tier = self.capability_tier().await;`), used to build a `PrivatePathPolicy` and consumed before the function returns | the refusal is returned from the synchronous portion, **before** `let fut = async move` is constructed at `:1544`. A concurrent dispatch cannot reach into this frame; the worst it can do is change what the *next* call reads |
+| **Layer A** | the `cap: CallCapability` **parameter** [Task 10](#task-10-the-chatrecall-load-guard-and-callcapability--one-sample-per-call-threaded) threads in — the same value Gate C reads, sampled once at the entry that admitted this call — used to build a `PrivatePathPolicy` and consumed before the function returns | it is a `Copy` value in this call's own stack frame, and `dispatch_tool_call` cannot re-derive it (there is no sampler left to call). The refusal is returned **before** `let fut = async move` at `:1544` exists. A concurrent dispatch cannot reach into this frame, and a provider swap cannot change what THIS call decided |
 | **Layer B** | the per-call **`_meta`** map — the same channel `biorouter-session-id` already rides in (`mcp_client.rs:864-880`), read server-side from `RequestContext` (`knowledge/server.rs:222-224`) | two overlapping dispatches build two `McpMeta`s from two locals. There is no cell for a second call to clear |
 
 This also kills the round-1 note about task-locals. That note was right about `spawn_and_serve`'s
@@ -9667,7 +9914,7 @@ surprise.
 | Create | `crates/biorouter-sandbox/src/private_data.rs` | new — `CALLER_CAPABILITY_META_KEY`, `PrivateDataPolicy` (the paths + the Layer-B wrap decision), `is_under_any`, `read_deny_unavailable_message` |
 | Modify | `crates/biorouter-sandbox/src/lib.rs` | the `pub mod` list `:29-33` |
 | Modify | `crates/biorouter-mcp/src/lib.rs` | one line in the re-export block beside `pub use biorouter_sandbox::shell_sandbox;` `:39` — this is how `biorouter`, which has **no** direct `biorouter-sandbox` dependency (measured: `crates/biorouter/Cargo.toml:97` lists `biorouter-mcp` only), reaches the type |
-| Create | `crates/biorouter/src/privacy/path_policy.rs` | new — `PrivatePathPolicy::for_caller`, `first_violation`, the refusal |
+| Create | `crates/biorouter/src/privacy/path_policy.rs` | new — `PrivatePathPolicy::for_call`, `first_violation`, the refusal |
 | Create | `crates/biorouter/src/privacy/private_roots.rs` | new — the five entries, one function |
 | Modify | `crates/biorouter/src/agents/mcp_client.rs` | `McpMeta` `:137-145`, `McpMeta::new` `:147-152`, `inject_into_extensions` `:161-172`, `inject_session_id_into_extensions` `:864-880` (the pattern the new key copies) |
 | Modify | `crates/biorouter/src/agents/extension_manager.rs` | `dispatch_tool_call` `:1438`; the `caller_tier` Task 14 computes; the BR-23 block `:1497-1527`; the `McpMeta::new(&session_id)` at `:1553` |
@@ -9853,49 +10100,108 @@ async fn a_private_session_and_a_disabled_feature_are_both_unaffected() {
 }
 ```
 
-**(6) The interleaving — round 2's first new defect, as a forced test rather than a hope.**
+**(6) The interleaving — and it now parks BEFORE the manager samples, which is the whole point.**
+
+⚠ **The previous version of this test parked *after* `dispatch_tool_call` had read `caller_tier`,
+so it structurally could not see round 3's defect.** Round 3's construction is one frame earlier: the
+Agent seam samples Public at `agent.rs:2624`, a swap lands, and the *manager* then samples Private at
+its own seam — a window the old rendezvous opens on the far side of. There are three windows on this
+path and a test must force each:
+
+| Window | Between | Closed by |
+|---|---|---|
+| W1 | the Agent's sample (`agent.rs:2624`) and the manager's (`extension_manager.rs:~1495`) | there is no manager sample: `cap` is a parameter |
+| W2 | Gate C's decision and the built-in `_meta` bit (`:~1540`) | same `cap`, no `.await` |
+| W3 | admission and execution, across `tool_dispatch_limits::acquire` (`agent.rs:2829`) | `cap` is `Copy` and captured; nothing re-derives |
 
 ```rust
-/// Two overlapping dispatches on ONE session, with a model swap in the window.
+/// W1 — round 3's construction, forced. The swap lands AFTER the Agent seam has
+/// sampled and BEFORE the extension manager is entered.
 ///
 /// `#[tokio::test]` is `current_thread` by default and two spawns a few
 /// microseconds long cannot preempt each other, so this uses the same
-/// `#[cfg(test)] mod seams` rendezvous Task 12 introduced: `arm_after_caller_tier`
-/// returns a receiver that fires when `dispatch_tool_call` has read
-/// `caller_tier` and is about to evaluate the policy, carrying the sender that
-/// releases it. The whole swap runs INSIDE that window.
-#[tokio::test]
-async fn a_swap_to_private_mid_dispatch_does_not_release_the_public_call() {
+/// `#[cfg(test)] mod seams` rendezvous Task 12 introduced. The park point is
+/// `arm_after_agent_sample()` — it fires the instant
+/// `CallCapability::sample(&self.provider)` returns at the top of
+/// `Agent::dispatch_tool_call`, which is BEFORE `apply_vault` (`:2767`), BEFORE
+/// `is_frontend_tool` (`:2753`) and BEFORE the manager call at `:2772`.
+///
+/// ⚠ Run under `#[tokio::test(flavor = "multi_thread", worker_threads = 2)]`.
+/// `biorouterd` is multi-thread (`biorouter-server/src/main.rs:43`), so the real
+/// swap does not need an `.await` in the dispatching task to land — and a
+/// current-thread test would prove a weaker property than production needs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_swap_between_the_agent_seam_and_the_manager_does_not_release_the_public_call() {
     let (agent, s) = agent_on(public_provider()).await;
-    let kb = private_roots().knowledge.join("page.md").display().to_string();
+    // ⚠ Constructed so the ARGUMENT scan cannot see it: the point of this test
+    // is the capability, not the path barrier. `developer__shell` with a
+    // runtime-assembled path is the case Layer B exists for, and it is
+    // Layer B's boolean — derived from the same `cap` — that must stay `true`.
+    let cmd = shell_that_reads_the_kb_root_via_a_runtime_variable();
 
-    let reached = seams::arm_after_caller_tier();
+    let reached = seams::arm_after_agent_sample();
     let public_call = tokio::spawn({
-        let agent = agent.clone();
-        let kb = kb.clone();
-        async move { call(&agent, "computercontroller__cache",
-                          json!({"command":"view","path": kb})).await }
+        let (agent, s, cmd) = (agent.clone(), s.clone(), cmd.clone());
+        async move { shell_in(&agent, &s, &cmd).await }
     });
 
-    // Parked with caller_tier == Public already in hand.
+    // Parked with the Agent's `cap` == Public already in hand, and the manager
+    // NOT yet entered.
     let release = reached.await.unwrap();
-    // Everything the round-1 shared cell would have let a concurrent caller do:
     agent.update_provider(private_provider(), &s.id).await.unwrap();
-    assert!(call(&agent, "computercontroller__cache",
-                 json!({"command":"view","path": kb})).await.is_ok(),
-            "the now-private session must be able to read it");
     release.send(()).unwrap();
 
-    let err = public_call.await.unwrap().unwrap_err();
-    assert!(format!("{err:?}").contains("private model"),
-            "a call admitted as public completed with private privileges");
+    let out = public_call.await.unwrap();
+    assert!(!out.contains("COHORT-SENTINEL"),
+            "a call admitted as public ran with private privileges: {out}");
+}
+
+/// W3 — the long window. Admission to execution, across the dispatch semaphore.
+/// Not a microsecond race: `tool_dispatch_limits` caps concurrency at 8
+/// (`tool_dispatch_limits.rs:112-134`) and only `select_all` (`agent.rs:4479`)
+/// drives the future, so this window is as long as the tool queue.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_swap_while_the_call_waits_in_the_dispatch_queue_changes_nothing() {
+    let (agent, s) = agent_on(public_provider()).await;
+    let held = seams::hold_dispatch_queue();          // parks after the future is built
+    let call = tokio::spawn({
+        let (agent, s) = (agent.clone(), s.clone());
+        async move { call(&agent, "computercontroller__cache",
+                          json!({"command":"view",
+                                 "path": private_roots().knowledge.join("page.md")})).await }
+    });
+    let release = held.await.unwrap();
+    agent.update_provider(private_provider(), &s.id).await.unwrap();
+    release.send(()).unwrap();
+    let err = call.await.unwrap().unwrap_err();
+    assert!(format!("{err:?}").contains("private model"));
+}
+
+/// The mirror, and it is the one that catches a "fix" that just refuses
+/// everything: a call admitted as PRIVATE stays private for its whole life even
+/// if the user downgrades mid-flight. That is AR-13's residual, asserted so it
+/// is a decision rather than a surprise.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_call_admitted_as_private_is_not_retro_restricted() {
+    let (agent, s) = agent_on(private_provider()).await;
+    let held = seams::hold_dispatch_queue();
+    let call = tokio::spawn({ /* …the same cache view… */ });
+    let release = held.await.unwrap();
+    agent.update_provider(public_provider(), &s.id).await.unwrap();
+    release.send(()).unwrap();
+    assert!(call.await.unwrap().is_ok(), "AR-13: the admitted capability is the one that holds");
+    // …and the NEXT call is restricted, with no re-admission of anything.
+    assert!(call(&agent, "computercontroller__cache",
+                 json!({"command":"view","path": private_roots().knowledge.join("page.md")}))
+            .await.is_err());
 }
 ```
 
 **This gate rejects:** the round-1 design — an `Arc<RwLock<Vec<PathBuf>>>` written at dispatch and
-read inside the tool body. Under it the public dispatch returns `Ok`, the private dispatch clears the
-cell, and the parked tool body reads an empty deny list and succeeds. It also rejects any variant
-that reads the tier again *after* an `.await` instead of using the value it was admitted on.
+read inside the tool body — *and* round 3's construction, which the previous rendezvous could not
+reach: two independent samples, Agent-then-manager, with the swap between them. It also rejects any
+variant that reads a tier again after an `.await` instead of using the value it was admitted on, and
+(via the third test) a "fix" that re-samples at execution time in the name of freshness.
 
 **(7) Layer B: the policy composes with BR-69 rather than replacing it, and refuses when it cannot.**
 
@@ -10129,9 +10435,17 @@ pub struct PrivatePathPolicy {
 }
 
 impl PrivatePathPolicy {
-    /// The one place the capability and the master opt-out are folded together.
-    pub fn for_caller(caller: ProviderTier) -> Self {
-        let entries = if crate::privacy::privacy_tiers_enabled() && !caller.is_private() {
+    /// Built from the capability this call was ADMITTED on — one `CallCapability`,
+    /// sampled once at the entry (Task 10).
+    ///
+    /// ⚠ It does **not** read the master toggle. `cap.restricts_private_data()`
+    /// is `enforced && !tier.is_private()`, and both halves were captured in the
+    /// same instant. An earlier draft read `privacy_tiers_enabled()` here, which
+    /// meant a single call could pass Gate C with tiers ON and then build an
+    /// EMPTY policy with tiers OFF — half the race, left in place by a fix that
+    /// only threaded the tier.
+    pub fn for_call(cap: CallCapability) -> Self {
+        let entries = if cap.restricts_private_data() {
             biorouter_mcp::private_roots::all()
         } else {
             Vec::new()
@@ -10238,7 +10552,7 @@ Immediately after the BR-23 `SecretGuard` block that ends at `:1527`, and still 
         // defect round 2 found in the Arc<RwLock<Vec<PathBuf>>> design, and it
         // is answered by deleting the shared cell rather than by locking it
         // better.
-        let policy = crate::privacy::path_policy::PrivatePathPolicy::for_caller(caller_tier);
+        let policy = crate::privacy::path_policy::PrivatePathPolicy::for_call(cap);
         if !policy.is_empty() {
             if let Some(args) = tool_call.arguments.as_ref() {
                 // `cwd` is already resolved above for the SecretGuard scan;
@@ -10513,13 +10827,13 @@ measured **19 passed** on this tree, and (a) is a refactor that must not move it
 # There is exactly ONE production call into an MCP client and it is inside
 # dispatch_tool_call (Task 14's gate proves that separately). This asserts the
 # barrier sits in the same function, and that the whole feature is 1 call site.
-grep -rn "PrivatePathPolicy::for_caller\|first_violation(" --include='*.rs' crates/ \
+grep -rn "PrivatePathPolicy::for_call\|first_violation(" --include='*.rs' crates/ \
   | grep -v "^crates/biorouter/src/privacy/path_policy.rs:" | grep -v "mod tests"
 echo "expect: exactly 2 lines, both in crates/biorouter/src/agents/extension_manager.rs,"
 echo "        both inside dispatch_tool_call. A third site in Agent::dispatch_tool_call is"
 echo "        Task 14D's job and is a DIFFERENT symbol - see that task."
 awk '/pub async fn dispatch_tool_call\(/,/^    }/' crates/biorouter/src/agents/extension_manager.rs \
-  | grep -c "PrivatePathPolicy::for_caller"
+  | grep -c "PrivatePathPolicy::for_call"
 echo "expect: 1"
 
 # (2) The barrier is not a list. Zero tool names, zero extension names, in the
@@ -11257,17 +11571,18 @@ At the very top of `Agent::dispatch_tool_call` (`agent.rs:2624`), before the sub
         // {{vault:NAME}} secrets and its comment explains why the seven are
         // deliberately excluded from that. Reordering them to sit under one
         // barrier would leak a resolved secret into a persisted schedule.
+        let cap = crate::privacy::CallCapability::sample(&self.provider).await;
         if let Some(args) = tool_call.arguments.as_ref() {
-            let policy = crate::privacy::path_policy::PrivatePathPolicy::for_caller(
-                self.capability_tier().await,
-            );
-            if let Some(hit) = policy.first_violation(args, &self.working_dir().await) {
+            let policy = crate::privacy::path_policy::PrivatePathPolicy::for_call(cap);
+            if let Some(hit) = policy.first_violation(args, &session.working_dir) {
                 return (
                     request_id,
                     Err(crate::privacy::path_policy::refusal(&tool_call.name, &hit)),
                 );
             }
         }
+        // …and the SAME `cap` is what reaches the extension manager at :2772.
+        // It is sampled here, at the outermost entry, and never again.
 ```
 
 ⚠ **The double evaluation for the 125 tools that DO reach the manager is deliberate and cheap.** The
@@ -11372,7 +11687,7 @@ python3 - <<'PY'
 src = open('crates/biorouter/src/agents/agent.rs').read()
 body = src[src.index('pub async fn dispatch_tool_call('):]
 body = body[:body.index('\n    pub ', 10)]
-i_bar = body.index('PrivatePathPolicy::for_caller')
+i_bar = body.index('PrivatePathPolicy::for_call')
 firsts = [body.index(n) for n in [
     'SUBAGENT_TOOL_NAME', 'PLATFORM_MANAGE_SCHEDULE_TOOL_NAME',
     'PLATFORM_INGEST_CONVERSATION_TOOL_NAME', 'PLATFORM_READ_SESSION_BLOB_TOOL_NAME',
@@ -11385,7 +11700,7 @@ PY
 #     "is this path private" is how the two answers start to differ, and the
 #     difference is invisible until someone reports that one tool refuses a path
 #     another accepts.
-grep -rn "PrivatePathPolicy::for_caller" --include='*.rs' crates/ | grep -v "mod tests" \
+grep -rn "PrivatePathPolicy::for_call" --include='*.rs' crates/ | grep -v "mod tests" \
   | grep -v "^crates/biorouter/src/privacy/path_policy.rs:"
 echo "expect: exactly 3 lines — extension_manager.rs (Task 14B), agent.rs (this task),"
 echo "        rmcp_developer.rs (the TOCTOU re-check). No fourth, and no hand-rolled"
@@ -11509,7 +11824,7 @@ async fn get_prompt_refuses_without_echoing_the_prompt_body() {
     async fn assert_extension_reachable(&self, name: &str) -> Result<(), ErrorData> {
         let tier = self.extensions.lock().await.get(name).map(|e| e.tier)
             .unwrap_or(ProviderTier::Private);
-        match crate::privacy::refusal::privacy_refusal(name, tier, self.capability_tier().await) {
+        match crate::privacy::refusal::privacy_refusal(name, tier, cap.tier()) {
             Some(e) if privacy_tiers_enabled() => Err(e),
             _ => Ok(()),
         }
@@ -11696,7 +12011,7 @@ key from **one** resolver:
     ///    a tool is hidden by one and dispatched by the other. Sharing one
     ///    function is the only way to guarantee that; sharing a *rule* is not.
     async fn allowed_extension_keys(&self) -> Vec<String> {
-        let caller = self.capability_tier().await;
+        let caller = cap.tier();
         let enforce = privacy_tiers_enabled();
         self.extensions
             .lock()
@@ -11741,9 +12056,9 @@ cargo test -p biorouter --lib agents::code_execution_extension
 ```bash
 # The filter is in filter_tools and nowhere upstream.
 awk '/async fn get_all_tools_cached/,/^    }/' crates/biorouter/src/agents/extension_manager.rs \
-  | grep -c "capability_tier\|allowed_extension_keys" ; echo "expect: 0"
+  | grep -c "cap\.tier()\|allowed_extension_keys" ; echo "expect: 0"
 awk '/async fn fetch_all_tools/,/^    }/' crates/biorouter/src/agents/extension_manager.rs \
-  | grep -c "capability_tier\|allowed_extension_keys" ; echo "expect: 0"
+  | grep -c "cap\.tier()\|allowed_extension_keys" ; echo "expect: 0"
 # Both gates derive their key from ONE resolver, and the old split() rule is gone.
 grep -c "resolve_extension_key" crates/biorouter/src/agents/extension_manager.rs ; echo "expect: 3 (1 def + filter_tools + get_client_for_tool)"
 grep -c 'split("__").next()' crates/biorouter/src/agents/extension_manager.rs ; echo "expect: 0"
@@ -11845,7 +12160,8 @@ ids already in the filtered map at `:304-309`) and `convert_to_results` (`:322`)
 
 The tier is resolved with no new plumbing: `PlatformExtensionContext` (`extension.rs:109-113`)
 carries `extension_manager: Option<Weak<ExtensionManager>>`, populated at `extension_manager.rs:799`,
-and Task 10 added `capability_tier()`. **`caller_is_public` is the live provider's tier, not the
+and Task 10 added `CallCapability`. **`caller_is_public` is the capability this call was admitted
+on — `cap.tier()`, never a fresh read — and not the
 caller session's stored classification** — the question is who is about to read this, and the reader
 is the model. It also means a session in the residual state reads as a public caller, which is the
 safe direction.
@@ -12172,7 +12488,7 @@ pub fn assert_alt_provider_allowed(
 ```
 
 and, for memory, two changes in `remember_memory` (`:491-540`), wired through the same
-`PlatformExtensionContext`/`capability_tier()` route Task 10 built: a **refusal** when
+`McpMeta.capability` channel Task 10 built: a **refusal** when
 `is_global == true` and the caller's capability is Private, and — for `is_global == false` from a
 private-capability caller — a **disclosure sentence appended to the existing result copy** at
 `:523-548`, which already exists precisely to tell the user which store a note landed in:
@@ -13924,6 +14240,10 @@ async fn the_master_toggle_governs_every_gate_in_both_directions() {
     // Session copy carries the tier; the visibility predicate hides the row.
     assert_eq!(copy_of(&priv_sess).await.privacy_tier, SessionClassification::Private);  // 17 copy (Task 22)
     assert!(!visible_to(ProviderTier::Public, &priv_sess));                              // 18 VIS  (Task 21)
+    //   ⚠ `visible_to` is PURE (Task 10's ⚠): the toggle reaches it through the
+    //   caller's `cap.enforced()`, so this row is asserted THROUGH a caller.
+    //   `set_privacy_tiers(false)` must therefore change the answer here without
+    //   `visible_to` itself ever reading the flag.
     // DR-14, both layers.
     assert!(dispatch_via_agent("developer__text_editor", &private_page_path())           // 19 Layer A
                 .await.contains("private model"));                                       //  (14B + 14D)
@@ -14209,45 +14529,85 @@ scan() {  # scan <extended-regex>  ->  "path<TAB>fn", production code only
     ' "$f"
   done | sort -u
 }
-# ── (3a) THE INVENTORY. Twenty enforcement points, one row each, in the same
-#         order as Step 1's matrix. `<fn>` cells marked TBD are filled in by the
-#         task that lands them — the diff below is what tells you the cell is
-#         wrong, so a guess does not survive.
-cat > /tmp/56-toggle-inventory.txt <<'ROWS'
+# ── (3a) THE INVENTORY. Twenty enforcement points, one row each, in the
+#         same order as Step 1's matrix — split across the TWO axes the toggle
+#         can travel on, because after Task 10 they are genuinely different.
+#
+#  ⚠ WHY TWO LISTS. Task 10 made the capability ONE sample per tool call:
+#    `CallCapability::sample` reads the provider tier and the master toggle
+#    together, at one instant, and threads the pair. So an enforcement point on
+#    a tool-call path must NOT read the toggle again — a second read is exactly
+#    the defect round 3 attacked (pass Gate C with tiers ON, then build an EMPTY
+#    path policy with tiers OFF). It reads `cap.enforced()` /
+#    `cap.restricts_private_data()` instead.
+#
+#    The gates that are NOT on a tool-call path have no `CallCapability` to
+#    consult — a provider bind, a session copy, a spawn, a CLI planner swap —
+#    and each reads the toggle itself. Those are list A.
+#
+#    The previous version of this gate had ONE list and demanded a direct toggle
+#    read everywhere, so it FAILED the very design this plan prescribes (round 3
+#    §7 found exactly that: "Agent calls `PrivatePathPolicy::for_call` without
+#    directly reading the toggle, while the refusal scanner demands a direct
+#    read"). A gate that rejects the correct implementation is worse than no
+#    gate: the pressure it applies is toward re-adding the second read.
+#
+#  ⚠ `privacy/visibility.rs::visible_to` is on NEITHER list, and that is the
+#    change of shape rather than an omission. It used to read the toggle itself;
+#    it is now a PURE predicate over (caller tier, target classification) and the
+#    toggle is folded in at each caller through `cap.enforced()`. Left reading
+#    the toggle it would be a second read on `chatrecall`'s path — the exact
+#    defect this split exists to prevent. Its row in Step 1's matrix stays: the
+#    behaviour is still asserted in both toggle positions, through its callers.
+cat > /tmp/56-toggle-A.txt <<'ROWS'
+crates/biorouter/src/privacy/capability.rs	sample
 crates/biorouter/src/session/session_manager.rs	bind_provider_if_allowed
 crates/biorouter/src/agents/agent.rs	reply
+crates/biorouter/src/session/chat_history_search.rs	execute
+crates/biorouter/src/knowledge/conversation_ingest.rs	ingest_conversation
+crates/biorouter/src/privacy/alt_provider.rs	assert_alt_provider_allowed
+crates/biorouter/src/agents/subagent_tool.rs	apply_settings_overrides
+crates/biorouter/src/session/session_manager.rs	create_derived_session
+ROWS
+cat > /tmp/56-toggle-B.txt <<'ROWS'
 crates/biorouter/src/agents/extension_manager.rs	dispatch_tool_call
 crates/biorouter/src/agents/extension_manager.rs	assert_extension_reachable
 crates/biorouter/src/agents/extension_manager.rs	allowed_extension_keys
-crates/biorouter/src/session/chat_history_search.rs	execute
-crates/biorouter/src/agents/chatrecall_extension.rs	handle_chatrecall
-crates/biorouter-mcp/src/knowledge/tier.rs	assert_reachable
-crates/biorouter/src/knowledge/conversation_ingest.rs	ingest_conversation
-crates/biorouter/src/privacy/alt_provider.rs	assert_alt_provider_allowed
-crates/biorouter/src/agents/extension_manager_extension.rs	check_enable_allowed
 crates/biorouter/src/agents/extension_manager.rs	get_extensions_info
-crates/biorouter/src/agents/subagent_tool.rs	apply_settings_overrides
-crates/biorouter-mcp/src/agent_drafter/catalog.rs	discover
+crates/biorouter/src/agents/chatrecall_extension.rs	handle_chatrecall
+crates/biorouter/src/agents/extension_manager_extension.rs	check_enable_allowed
+crates/biorouter-mcp/src/knowledge/tier.rs	assert_reachable
 crates/biorouter-mcp/src/knowledge/server.rs	kb_export
 crates/biorouter-mcp/src/knowledge/server.rs	call_tool
-crates/biorouter/src/session/session_manager.rs	create_derived_session
-crates/biorouter/src/privacy/visibility.rs	visible_to
-crates/biorouter/src/privacy/path_policy.rs	for_caller
+crates/biorouter-mcp/src/agent_drafter/catalog.rs	discover
+crates/biorouter/src/privacy/path_policy.rs	for_call
 crates/biorouter-mcp/src/developer/shell.rs	build_sandbox_policy
 ROWS
-sort -u /tmp/56-toggle-inventory.txt > /tmp/56-toggle-want.txt
-n=$(wc -l < /tmp/56-toggle-want.txt)
+sort -u /tmp/56-toggle-A.txt > /tmp/56-toggle-want.txt
+sort -u /tmp/56-toggle-B.txt > /tmp/56-cap-want.txt
+n=$(( $(wc -l < /tmp/56-toggle-want.txt) + $(wc -l < /tmp/56-cap-want.txt) ))
 [ "$n" -eq 20 ] || { echo "FAIL  inventory has $n rows; Step 1's matrix has 20"; tog_rc=1; }
 scan 'privacy_tiers_enabled[(][)]' | grep -v '/privacy/mod\.rs' > /tmp/56-toggle-have.txt
+scan '[.](enforced|restricts_private_data)[(][)]' \
+  | grep -v '/privacy/capability\.rs' > /tmp/56-cap-have.txt
 if diff -u /tmp/56-toggle-want.txt /tmp/56-toggle-have.txt; then
-  echo "ok    every enforcement point reads the toggle, and nothing else does"
+  echo "ok    exactly the off-the-tool-path gates read the toggle, and nothing else does"
 else
-  echo "FAIL  the toggle's call sites and the inventory disagree."
-  echo "      A '-' line is an inventory row whose gate does NOT read the toggle:"
+  echo "FAIL  the toggle's call sites and list A disagree."
+  echo "      A '-' line is a list-A row whose gate does NOT read the toggle:"
   echo "      that gate stays armed when the user turns the feature off."
-  echo "      A '+' line is a NEW enforcement point with no inventory row and no"
-  echo "      row in Step 1's matrix. Add BOTH, in this commit. Do not delete the"
+  echo "      A '+' line is EITHER a new off-path enforcement point with no row,"
+  echo "      OR - far more likely, and the reason this split exists - a SECOND"
+  echo "      read of the toggle on a tool-call path, which reintroduces the"
+  echo "      sample-twice race. Add a row, or delete the read. Do not delete the"
   echo "      '+' line from this list to make it pass."
+  tog_rc=1
+fi
+if diff -u /tmp/56-cap-want.txt /tmp/56-cap-have.txt; then
+  echo "ok    every on-path gate decides from the capability it was handed"
+else
+  echo "FAIL  the capability consumers and list B disagree. A '-' row is an on-path"
+  echo "      gate that decides some other way - check it is not re-reading a tier."
   tog_rc=1
 fi
 # ── (3b) THE CLOSURE THAT CATCHES A GATE NOBODY WIRED AT ALL. (3a) can only see
@@ -14260,15 +14620,18 @@ REFUSE='PrivacyRefusal::|privacy::refusal::|refusal::privacy_refusal[(]|tier::as
 scan "$REFUSE" \
   | grep -vE '/privacy/(refusal|path_policy|visibility)\.rs|/knowledge/tier\.rs' \
   > /tmp/56-refuse-sites.txt
-comm -23 /tmp/56-refuse-sites.txt /tmp/56-toggle-have.txt > /tmp/56-refuse-unguarded.txt
+cat /tmp/56-toggle-have.txt /tmp/56-cap-have.txt | sort -u > /tmp/56-governed.txt
+comm -23 /tmp/56-refuse-sites.txt /tmp/56-governed.txt > /tmp/56-refuse-unguarded.txt
 if [ -s /tmp/56-refuse-unguarded.txt ]; then
-  echo "FAIL  these refuse on privacy grounds without reading the master toggle:"
+  echo "FAIL  these refuse on privacy grounds while consulting NEITHER the master"
+  echo "      toggle nor a CallCapability:"
   cat /tmp/56-refuse-unguarded.txt
-  echo "      Each is an enforcement point the user cannot turn off. Wire it,"
-  echo "      then add its row to the inventory AND to Step 1's matrix."
+  echo "      Each is an enforcement point the user cannot turn off. Wire it to"
+  echo "      one axis or the other, then add its row to list A or list B AND to"
+  echo "      Step 1's matrix."
   tog_rc=1
 else
-  echo "ok    no privacy refusal exists outside a function that reads the toggle"
+  echo "ok    every privacy refusal is governed by the toggle or by a capability"
 fi
 echo "⚠ Layer B (the read-deny sandbox, Task 14A) is the one enforcement point"
 echo "  that emits no refusal string — it hands the kernel a policy. Its row is"
@@ -15433,7 +15796,7 @@ echo "expect: 10 — the SAME 10 as at 9558c346, so this is a no-growth tripwire
 echo "        rather than a measurement of #56. Any increase is a new bypass."
 # O6 — nothing above filter_tools consults a tier.
 awk '/async fn get_all_tools_cached/,/^    }/' crates/biorouter/src/agents/extension_manager.rs \
-  | grep -c "capability_tier\|allowed_extension_keys" ; echo "expect: 0"
+  | grep -c "cap\.tier()\|allowed_extension_keys" ; echo "expect: 0"
 # The ratchet is irreversible except through one statement.
 grep -c "privacy_tier = CASE WHEN" crates/biorouter/src/session/session_manager.rs ; echo "expect: 1"
 grep -rn --include='*.rs' "privacy_tier *= *'public'" crates/ | grep -v "DEFAULT 'public'" | wc -l ; echo "expect: 1"
