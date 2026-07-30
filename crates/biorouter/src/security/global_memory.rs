@@ -234,8 +234,9 @@ pub fn global_memory_gate(tool_name: &str, args: &Map<String, Value>) -> Option<
              machine-wide store that every Biorouter session on this computer shares, including \
              sessions in other projects. Its contents were written by other conversations and are \
              not otherwise part of this one.\n\
-             Approve it to disclose that category here, or deny it. Project-local memories \
-             (.biorouter/memory) are unaffected and never prompt."
+             Approve it to disclose that category here, or deny it. To read \"{category}\" \
+             yourself first — or delete what is in it — open Settings → Chat → Memory. \
+             Project-local memories (.biorouter/memory) are unaffected and never prompt."
         )),
         (REMEMBER_MEMORY, _) => GlobalMemoryGate::Ask(format!(
             "🔒 Cross-session memory write.\n\
@@ -252,8 +253,10 @@ pub fn global_memory_gate(tool_name: &str, args: &Map<String, Value>) -> Option<
             "🔒 Deletes every global memory.\n\
              This conversation is asking to clear the entire machine-wide memory store — every \
              global category any session on this computer ever saved. This cannot be undone.\n\
-             Approve it only if you asked for your global memories to be wiped. Project-local \
-             memories (.biorouter/memory) are unaffected."
+             Approve it only if you asked for your global memories to be wiped. To see what \
+             would be lost, or to delete categories one at a time instead, open \
+             Settings → Chat → Memory. Project-local memories (.biorouter/memory) are \
+             unaffected."
                 .to_string(),
         ),
         (REMOVE_MEMORY_CATEGORY | REMOVE_SPECIFIC_MEMORY, _) => GlobalMemoryGate::Ask(format!(
