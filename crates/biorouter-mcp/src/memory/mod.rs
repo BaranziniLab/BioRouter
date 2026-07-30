@@ -69,6 +69,28 @@ pub struct RemoveSpecificMemoryParams {
     pub is_global: bool,
 }
 
+/// Whether anything in front of a [`MemoryServer`] can put a machine-wide
+/// operation to the user (issue #63 review, finding 3).
+///
+/// The #63 consent gate lives in `biorouter::security::global_memory`, an
+/// *agent-layer* tool inspector. That made consent a property of one caller
+/// rather than of the store: the very same server is also served straight over
+/// stdio by `biorouter mcp memory` (CLI and daemon) to whatever MCP client
+/// asked for it, with no Agent, no inspector and no user to ask — and every
+/// global read, write and delete was open there.
+///
+/// So the store states its own precondition. A boundary that cannot obtain
+/// consent does not get to act without it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GlobalMemoryConsent {
+    /// Biorouter's agent loop is in front of this server: every global
+    /// operation is inspected and put to the user before it is dispatched.
+    Gated,
+    /// Nothing in front of this server can reach the user. Global operations
+    /// are refused; the project-local store is unaffected.
+    Unavailable,
+}
+
 /// Memory MCP Server using official RMCP SDK
 #[derive(Clone)]
 pub struct MemoryServer {
@@ -76,6 +98,7 @@ pub struct MemoryServer {
     instructions: String,
     global_memory_dir: PathBuf,
     local_memory_dir: PathBuf,
+    consent: GlobalMemoryConsent,
 }
 
 /// Where the *global* (cross-project) memory store lives.
@@ -353,7 +376,31 @@ fn base_instructions() -> String {
 
 #[tool_router(router = tool_router)]
 impl MemoryServer {
+    /// A memory server for a caller that has **not** said it can obtain the
+    /// user's consent — so global memory is refused here (see
+    /// [`GlobalMemoryConsent`]). This is what a standalone `serve(...)` gets.
+    ///
+    /// The default is the closed one on purpose. Getting it wrong this way
+    /// breaks global memory loudly in the app, where every test that touches it
+    /// goes red; getting it wrong the other way is a silent machine-wide
+    /// disclosure to whatever MCP client happened to start the server, which is
+    /// the bug this exists to close.
     pub fn new() -> Self {
+        Self::with_consent(GlobalMemoryConsent::Unavailable)
+    }
+
+    /// The server Biorouter's own agent runs as its built-in `memory`
+    /// extension: the agent loop's `GlobalMemoryInspector` is in front of it, so
+    /// global operations are put to the user rather than refused.
+    ///
+    /// The **only** gated constructor, and referenced from exactly one place
+    /// (`BUILTIN_EXTENSIONS`), so "which callers can reach the machine-wide
+    /// store" is a question with a greppable answer.
+    pub fn behind_consent_gate() -> Self {
+        Self::with_consent(GlobalMemoryConsent::Gated)
+    }
+
+    fn with_consent(consent: GlobalMemoryConsent) -> Self {
         let instructions = base_instructions();
 
         // Check for .biorouter/memory in current directory
@@ -370,6 +417,7 @@ impl MemoryServer {
             instructions: instructions.clone(),
             global_memory_dir,
             local_memory_dir,
+            consent,
         };
 
         let updated_instructions = memory_router.compose_instructions(&instructions);
@@ -403,6 +451,10 @@ impl MemoryServer {
             instructions: String::new(),
             global_memory_dir,
             local_memory_dir,
+            // This server is never served to a model — the Settings routes call
+            // `inventory`, not the four tools — so it is left closed like any
+            // other caller that has not stated a consent path.
+            consent: GlobalMemoryConsent::Unavailable,
         }
     }
 
@@ -479,7 +531,15 @@ impl MemoryServer {
     fn compose_instructions(&self, base: &str) -> String {
         // Names only, and by construction: see `category_names`. The local half
         // reads bodies because local bodies are what it inlines.
-        let global_categories = self.category_names(true);
+        //
+        // A server with no consent path lists nothing: its global operations are
+        // refused, so the index would advertise a call that cannot run — and the
+        // names are themselves what the user's *other* sessions chose to call
+        // their work, which is not something to hand an unknown MCP client.
+        let global_categories = match self.consent {
+            GlobalMemoryConsent::Gated => self.category_names(true),
+            GlobalMemoryConsent::Unavailable => Vec::new(),
+        };
         let retrieved_local_memories = self.retrieve_all(false);
 
         let mut updated_instructions = base.to_string();
@@ -495,6 +555,20 @@ impl MemoryServer {
 
         updated_instructions.push_str("\n\n");
         updated_instructions.push_str(&memories_follow_up_instructions);
+
+        if self.consent == GlobalMemoryConsent::Unavailable {
+            // The protocol above describes global memory at length. Say plainly,
+            // once, that it is not on offer here rather than letting the model
+            // discover it one refused call at a time.
+            updated_instructions.push_str(
+                "\n\nGlobal (machine-wide) memory is NOT AVAILABLE in this session. Reading, \
+                 writing or deleting it requires the user to be shown the operation and approve \
+                 it, and nothing in front of this server can ask them. Every call with \
+                 is_global=true is refused; ignore the global-storage parts of the protocol \
+                 above and use the project-local store (is_global=false), which works \
+                 normally.\n",
+            );
+        }
 
         // Global: the index, and only the index.
         if !global_categories.is_empty() {
@@ -592,6 +666,33 @@ impl MemoryServer {
         }
 
         Ok(path)
+    }
+
+    /// The precondition every machine-wide operation carries: somebody in front
+    /// of this server can put it to the user (issue #63 review, finding 3).
+    ///
+    /// Checked here, in the store, rather than only in the agent's inspector,
+    /// because the inspector is one caller's property and this server has other
+    /// callers — `biorouter mcp memory` serves it over stdio to any MCP client,
+    /// with no Agent in the picture at all. A boundary that cannot ask does not
+    /// act unasked; local memory is untouched, so a client using this server for
+    /// project notes is unaffected.
+    fn require_global_consent_path(&self, is_global: bool) -> Result<(), ErrorData> {
+        if !is_global || self.consent == GlobalMemoryConsent::Gated {
+            return Ok(());
+        }
+        Err(ErrorData::new(
+            ErrorCode::INVALID_PARAMS,
+            "Refused: this memory server is running with no way to ask the user about \
+             machine-wide memory, so global operations (is_global=true) are not available \
+             here. The global store is shared by every Biorouter session on this computer, \
+             and reading, writing or deleting it is only allowed where the user can be shown \
+             the operation and approve it — which is inside the Biorouter app. Use the \
+             project-local store instead (is_global=false); it lives in this project's \
+             .biorouter/memory and works normally."
+                .to_string(),
+            None,
+        ))
     }
 
     /// Surface a store error to the model. A refused category is the *caller's*
@@ -821,6 +922,7 @@ impl MemoryServer {
         params: Parameters<RememberMemoryParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let params = params.0;
+        self.require_global_consent_path(params.is_global)?;
 
         if params.data.is_empty() {
             return Err(ErrorData::new(
@@ -879,6 +981,7 @@ impl MemoryServer {
         params: Parameters<RetrieveMemoriesParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let params = params.0;
+        self.require_global_consent_path(params.is_global)?;
 
         // Issue #63 — the floor under the consent gate. The gate in
         // `biorouter::security::global_memory` refuses this shape before
@@ -932,6 +1035,7 @@ impl MemoryServer {
         params: Parameters<RemoveMemoryCategoryParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let params = params.0;
+        self.require_global_consent_path(params.is_global)?;
 
         let message = if params.category == "*" {
             self.clear_all_global_or_local_memories(params.is_global)
@@ -959,6 +1063,7 @@ impl MemoryServer {
         params: Parameters<RemoveSpecificMemoryParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let params = params.0;
+        self.require_global_consent_path(params.is_global)?;
 
         self.remove_specific_memory_internal(
             &params.category,
@@ -999,14 +1104,177 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    /// A server over throwaway stores, so a test never touches the real ones.
+    /// A server over throwaway stores, so a test never touches the real ones —
+    /// standing behind the consent gate, like the built-in `memory` extension
+    /// the app runs.
     fn server_at(base: &std::path::Path) -> MemoryServer {
         MemoryServer {
             tool_router: ToolRouter::new(),
             instructions: String::new(),
             global_memory_dir: base.join("global"),
             local_memory_dir: base.join("local"),
+            consent: GlobalMemoryConsent::Gated,
         }
+    }
+
+    /// The same stores served with nothing in front that can ask the user —
+    /// `biorouter mcp memory` over stdio.
+    fn ungated_server_at(base: &std::path::Path) -> MemoryServer {
+        MemoryServer {
+            consent: GlobalMemoryConsent::Unavailable,
+            ..server_at(base)
+        }
+    }
+
+    /// #63 review, finding 3. `biorouter mcp memory` (CLI and daemon) serves
+    /// this exact server over stdio to whatever MCP client asked for it, with no
+    /// Agent and therefore no `GlobalMemoryInspector` in front of it. Every
+    /// global read, write and delete was wide open there — the consent gate was
+    /// a property of one *caller*, not of the store.
+    ///
+    /// A boundary that cannot ask the user cannot obtain consent, so it refuses
+    /// instead. All four operations, in both shapes.
+    #[tokio::test]
+    async fn a_server_with_no_consent_path_refuses_every_global_operation() {
+        let temp = tempdir().unwrap();
+        let server = ungated_server_at(temp.path());
+
+        // Something to lose, written behind the gate.
+        let gated = server_at(temp.path());
+        gated
+            .remember("context", "clinical", "cohort 4217 secret", &[], true)
+            .unwrap();
+
+        let read = server
+            .retrieve_memories(Parameters(RetrieveMemoriesParams {
+                category: "clinical".into(),
+                is_global: true,
+            }))
+            .await;
+        assert!(
+            read.is_err(),
+            "a named global read succeeded with nothing able to ask the user: {}",
+            read.as_ref().map(result_text).unwrap_or_default()
+        );
+        let bulk = server
+            .retrieve_memories(Parameters(RetrieveMemoriesParams {
+                category: "*".into(),
+                is_global: true,
+            }))
+            .await;
+        assert!(bulk.is_err(), "the whole-store global read succeeded");
+
+        let wrote = server
+            .remember_memory(Parameters(RememberMemoryParams {
+                category: "planted".into(),
+                data: "written with nobody asked".into(),
+                tags: vec![],
+                is_global: true,
+            }))
+            .await;
+        assert!(wrote.is_err(), "a global write succeeded ungated");
+        assert!(
+            !temp.path().join("global").join("planted.txt").exists(),
+            "the refused global write still reached the disk"
+        );
+
+        for category in ["clinical", "*"] {
+            let cleared = server
+                .remove_memory_category(Parameters(RemoveMemoryCategoryParams {
+                    category: category.into(),
+                    is_global: true,
+                }))
+                .await;
+            assert!(
+                cleared.is_err(),
+                "remove_memory_category(category={category:?}) succeeded ungated"
+            );
+        }
+        let removed = server
+            .remove_specific_memory(Parameters(RemoveSpecificMemoryParams {
+                category: "clinical".into(),
+                memory_content: "cohort".into(),
+                is_global: true,
+            }))
+            .await;
+        assert!(removed.is_err(), "a global entry delete succeeded ungated");
+
+        assert_eq!(
+            gated.retrieve("clinical", true).unwrap().len(),
+            1,
+            "a refused global operation still changed the store"
+        );
+    }
+
+    /// The refusal is scoped to the machine-wide store. `.biorouter/memory`
+    /// lives under the directory the client is already working in, crosses no
+    /// session boundary, and is never gated anywhere else either — so an MCP
+    /// client that uses this server for project notes keeps working.
+    #[tokio::test]
+    async fn a_server_with_no_consent_path_still_serves_local_memory() {
+        let temp = tempdir().unwrap();
+        let server = ungated_server_at(temp.path());
+
+        server
+            .remember_memory(Parameters(RememberMemoryParams {
+                category: "development".into(),
+                data: "formats with black".into(),
+                tags: vec![],
+                is_global: false,
+            }))
+            .await
+            .expect("a local write must still work");
+
+        for category in ["development", "*"] {
+            let read = server
+                .retrieve_memories(Parameters(RetrieveMemoriesParams {
+                    category: category.into(),
+                    is_global: false,
+                }))
+                .await
+                .expect("a local read must still work");
+            assert!(
+                result_text(&read).contains("formats with black"),
+                "the local store stopped answering"
+            );
+        }
+    }
+
+    /// The prompt an ungated server hands its client must not carry the index
+    /// either. The category names are what one session chose to call the other
+    /// sessions' work; listing them to a client Biorouter cannot gate is the
+    /// same undisclosed cross-session read in miniature, and it advertises a
+    /// call that will be refused.
+    #[test]
+    fn a_server_with_no_consent_path_does_not_advertise_the_global_index() {
+        let temp = tempdir().unwrap();
+        server_at(temp.path())
+            .remember("context", "clinical", "note", &[], true)
+            .unwrap();
+
+        let instructions = ungated_server_at(temp.path()).compose_instructions("BASE PROTOCOL");
+        assert!(
+            !instructions.contains("clinical"),
+            "an ungated server listed the user's global categories to its \
+             client:\n{instructions}"
+        );
+    }
+
+    /// The wiring, stated as a test rather than left to a reader of `lib.rs`:
+    /// the constructor the built-in extension uses is gated, and the bare one —
+    /// which is what a standalone `serve(...)` reaches for — is not.
+    #[test]
+    fn only_the_agents_own_constructor_is_gated() {
+        assert_eq!(
+            MemoryServer::behind_consent_gate().consent,
+            GlobalMemoryConsent::Gated,
+            "the built-in extension must be able to serve global memory"
+        );
+        assert_eq!(
+            MemoryServer::new().consent,
+            GlobalMemoryConsent::Unavailable,
+            "a server built with no stated consent path must fail closed"
+        );
     }
 
     fn result_text(result: &CallToolResult) -> String {
@@ -1935,6 +2203,7 @@ mod tests {
             instructions: String::new(),
             global_memory_dir: memory_base.join("global"),
             local_memory_dir: memory_base.join("local"),
+            consent: GlobalMemoryConsent::Gated,
         };
 
         assert!(!router.global_memory_dir.exists());
@@ -1976,6 +2245,7 @@ mod tests {
             instructions: String::new(),
             global_memory_dir: memory_base.join("global"),
             local_memory_dir: memory_base.join("local"),
+            consent: GlobalMemoryConsent::Gated,
         };
 
         assert!(router.clear_all_global_or_local_memories(false).is_ok());
@@ -1992,6 +2262,7 @@ mod tests {
             instructions: String::new(),
             global_memory_dir: memory_base.join("global"),
             local_memory_dir: memory_base.join("local"),
+            consent: GlobalMemoryConsent::Gated,
         };
 
         router
@@ -2029,6 +2300,7 @@ mod tests {
             instructions: String::new(),
             global_memory_dir: memory_base.join("global"),
             local_memory_dir: memory_base.join("local"),
+            consent: GlobalMemoryConsent::Gated,
         };
 
         assert!(!router.local_memory_dir.exists());
@@ -2051,6 +2323,7 @@ mod tests {
             instructions: String::new(),
             global_memory_dir: memory_base.join("global"),
             local_memory_dir: memory_base.join("local"),
+            consent: GlobalMemoryConsent::Gated,
         };
 
         router

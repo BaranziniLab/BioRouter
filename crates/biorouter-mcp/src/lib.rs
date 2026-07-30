@@ -125,7 +125,28 @@ pub static BUILTIN_EXTENSIONS: Lazy<HashMap<&'static str, BuiltinDef>> = Lazy::n
         ),
         builtin!(autovisualiser, AutoVisualiserRouter),
         builtin!(computercontroller, ComputerControllerServer),
-        builtin!(memory, MemoryServer),
+        (
+            "memory",
+            BuiltinDef {
+                name: "memory",
+                // Not built via `builtin!`: `MemoryServer::new()` fails closed on
+                // machine-wide memory (issue #63 review, finding 3), because the
+                // same server is also served standalone over stdio by
+                // `biorouter mcp memory` where nothing can ask the user. This is
+                // the one caller with the agent loop's consent gate in front of
+                // it, so it is the one caller that opts in.
+                spawn_server: {
+                    fn spawn(
+                        r: tokio::io::DuplexStream,
+                        w: tokio::io::DuplexStream,
+                        _working_dir: Option<std::path::PathBuf>,
+                    ) {
+                        spawn_and_serve("memory", MemoryServer::behind_consent_gate(), (r, w));
+                    }
+                    spawn
+                },
+            },
+        ),
         builtin!(tutorial, TutorialServer),
         builtin!(agent_drafter, AgentDrafterServer),
         (

@@ -332,6 +332,7 @@ impl MemoryServer {
 
 #[cfg(test)]
 mod tests {
+    use super::super::GlobalMemoryConsent;
     use super::*;
     use rmcp::handler::server::router::tool::ToolRouter;
     use tempfile::tempdir;
@@ -342,6 +343,7 @@ mod tests {
             instructions: String::new(),
             global_memory_dir: base.join("global"),
             local_memory_dir: base.join("local"),
+            consent: GlobalMemoryConsent::Gated,
         }
     }
 
