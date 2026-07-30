@@ -101,24 +101,28 @@ pub async fn ingest(svc: &KnowledgeService, args: IngestArgs) -> Result<IngestRe
         {
             // A clean exit is not the same as a digest. `INGEST_PROCEDURE`
             // requires the run to write `knowledge/sources/<source-id>.md`, so a
-            // transaction whose tree still equals main's produced no knowledge —
-            // and committing it would hand the caller a commit sha for work that
-            // never happened (issue #71). The most common cause is a provider
-            // that failed mid-request: the turn comes back as a bare apology, or
-            // (Google, candidate with no `parts`) as a wholly empty message, and
-            // both look exactly like "the agent has no more tool calls".
+            // transaction that left `knowledge/` exactly as it found it produced
+            // no knowledge — and committing it would hand the caller a commit sha
+            // for work that never happened (issue #71). The most common cause is
+            // a provider that failed mid-request: the turn comes back as a bare
+            // apology, or (Google, candidate with no `parts`) as a wholly empty
+            // message, and both look exactly like "the agent has no more tool
+            // calls". It is `knowledge/` and not the whole tree because the
+            // procedure's other steps — the `raw/` source, the `index.md` entry,
+            // the `log.md` line — each move the tree without adding knowledge, so
+            // a run cut short after one of them would otherwise pass.
             //
             // A failure to *answer* the question aborts too: leaving HEAD parked
             // on the txn branch is how the next write to this KB lands somewhere
             // nobody is looking.
-            let wrote_something = match repo.txn_has_changes(&txn) {
+            let wrote_knowledge = match repo.txn_wrote_knowledge_pages(&txn) {
                 Ok(changed) => changed,
                 Err(e) => {
                     let _ = repo.abort_txn(&txn);
                     return Err(e.context("checking whether the ingest wrote anything"));
                 }
             };
-            if !wrote_something {
+            if !wrote_knowledge {
                 let _ = repo.abort_txn(&txn);
                 anyhow::bail!(no_pages_written_error(&raw.source_id, &r));
             }
@@ -538,6 +542,110 @@ mod tests {
         assert!(
             err.contains("kb_write_page"),
             "the error must name the tool that failed, got: {err}"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // Test 2c: the run touched the transaction, but never wrote knowledge
+    //
+    // "The tree changed" is not the same as "a digest happened". Three of the
+    // sub-agent's tools write outside `knowledge/`: `kb_append_log` appends to
+    // `log.md`, `kb_add_raw_source` materialises under `raw/`, and `kb_write_page`
+    // accepts the top-level `index.md`. Each commits on the transaction branch,
+    // so each on its own moves the txn tree away from main's while the KB gains
+    // no knowledge at all.
+    //
+    // This is not a hypothetical: `INGEST_PROCEDURE` asks for the source page
+    // (step 4), the index update (step 9) and the log line (step 10), so a
+    // provider that dies part-way through — the reported failure — routinely
+    // leaves exactly this state behind.
+    // -------------------------------------------------------------------------
+
+    /// Only `log.md` was touched: the run announced a digest it never performed.
+    #[tokio::test]
+    async fn ingest_fails_when_the_run_only_appended_a_log_line() {
+        let (_dir, svc) = fresh_svc();
+
+        let completer = MockCompleter::new(vec![
+            tool_call_reply(
+                "kb_append_log",
+                serde_json::json!({ "summary": "digested the HRV note", "kind": "ingest" }),
+            ),
+            text_reply("The provider failed before I could write the page."),
+        ]);
+
+        let err = ingest(
+            &svc,
+            IngestArgs {
+                kb_id: "k".into(),
+                source: SourceInput::Text {
+                    text: "Note about HRV.".into(),
+                    title: Some("HRV note".into()),
+                },
+                completer: Box::new(completer),
+                focus: None,
+                bounds: SubAgentBounds::default(),
+                event_sink: None,
+                cancel: None,
+            },
+        )
+        .await
+        .expect_err("a log line is not a digest and must not report success")
+        .to_string();
+
+        assert!(
+            err.contains("no knowledge"),
+            "the error must say the digest wrote no knowledge, got: {err}"
+        );
+
+        // The claim has to hold on disk: nothing under knowledge/.
+        let pages = crate::knowledge::store::list_pages(
+            &paths::kb_root(svc.root(), "k"),
+            Some("knowledge/"),
+        )
+        .unwrap();
+        assert!(
+            pages.is_empty(),
+            "no knowledge page may exist after a log-only run; pages: {pages:?}"
+        );
+    }
+
+    /// Only `raw/` was touched: a second source was materialised and nothing was
+    /// ever integrated into the wiki.
+    #[tokio::test]
+    async fn ingest_fails_when_the_run_only_added_another_raw_source() {
+        let (_dir, svc) = fresh_svc();
+
+        let completer = MockCompleter::new(vec![
+            tool_call_reply(
+                "kb_add_raw_source",
+                serde_json::json!({ "type": "text", "text": "A second note.", "title": "Second" }),
+            ),
+            text_reply("I stashed the source but could not integrate it."),
+        ]);
+
+        let err = ingest(
+            &svc,
+            IngestArgs {
+                kb_id: "k".into(),
+                source: SourceInput::Text {
+                    text: "Note about HRV.".into(),
+                    title: Some("HRV note".into()),
+                },
+                completer: Box::new(completer),
+                focus: None,
+                bounds: SubAgentBounds::default(),
+                event_sink: None,
+                cancel: None,
+            },
+        )
+        .await
+        .expect_err("stashing a raw source is not a digest and must not report success")
+        .to_string();
+
+        assert!(
+            err.contains("no knowledge"),
+            "the error must say the digest wrote no knowledge, got: {err}"
         );
     }
 

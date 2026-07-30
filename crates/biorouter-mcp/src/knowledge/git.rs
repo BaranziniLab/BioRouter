@@ -5,6 +5,17 @@ use std::path::Path;
 
 const WRITE_LOCK_PATH: &str = ".biorouter-knowledge/write.lock";
 
+/// The one directory that holds curated knowledge. `raw/`, `log.md`, `index.md`
+/// and `schema.md` are all bookkeeping around it.
+const KNOWLEDGE_DIR: &str = "knowledge";
+
+/// The oid of a commit's `knowledge/` subtree, or `None` when the commit has no
+/// such directory (git does not track empty ones, so a brand-new KB has none).
+fn knowledge_tree_id(commit: &git2::Commit) -> Result<Option<git2::Oid>> {
+    let tree = commit.tree()?;
+    Ok(tree.get_name(KNOWLEDGE_DIR).map(|entry| entry.id()))
+}
+
 fn stage_all(index: &mut git2::Index) -> Result<()> {
     let write_lock = Path::new(WRITE_LOCK_PATH);
     if index.get_path(write_lock, 0).is_some() {
@@ -181,27 +192,37 @@ impl GitRepo {
         Ok(oid.to_string())
     }
 
-    /// Did anything actually change on this transaction branch?
+    /// Did this transaction write any *knowledge*?
     ///
     /// `commit_txn` squash-commits the txn branch's *tree* onto main, and git is
     /// happy to record a commit whose tree is byte-identical to its parent's. So
     /// a sub-agent that wrote nothing still produced a commit sha, and every
     /// caller downstream read that sha as proof the work happened (issue #71).
-    /// Comparing the two tree oids is the cheapest honest answer: equal trees
-    /// mean the transaction contributed no content.
-    pub fn txn_has_changes(&self, txn: &Txn) -> Result<bool> {
+    ///
+    /// Comparing the *whole* tree does not answer the question, though: three of
+    /// the sub-agent's tools write outside `knowledge/` — `kb_append_log`
+    /// appends to `log.md`, `kb_add_raw_source` materialises under `raw/`, and
+    /// `kb_write_page` accepts the top-level `index.md` — and any one of them
+    /// moves the tree on its own. Since `INGEST_PROCEDURE` asks for all of them,
+    /// a provider that died after the log line would leave a run that announced
+    /// a digest it never performed, and a whole-tree check would wave it
+    /// through. So the comparison is scoped to the `knowledge/` subtree, whose
+    /// oid summarises every page beneath it: differing oids mean at least one
+    /// knowledge page was added, changed or removed, and nothing else does.
+    pub fn txn_wrote_knowledge_pages(&self, txn: &Txn) -> Result<bool> {
         let main = self
             .inner
             .find_branch("main", git2::BranchType::Local)
             .or_else(|_| self.inner.find_branch("master", git2::BranchType::Local))?;
-        let main_tree = main.get().peel_to_commit()?.tree_id();
-        let txn_tree = self
-            .inner
-            .find_branch(&txn.branch, git2::BranchType::Local)?
-            .get()
-            .peel_to_commit()?
-            .tree_id();
-        Ok(main_tree != txn_tree)
+        let main_knowledge = knowledge_tree_id(&main.get().peel_to_commit()?)?;
+        let txn_knowledge = knowledge_tree_id(
+            &self
+                .inner
+                .find_branch(&txn.branch, git2::BranchType::Local)?
+                .get()
+                .peel_to_commit()?,
+        )?;
+        Ok(main_knowledge != txn_knowledge)
     }
 
     pub fn commit_txn(
