@@ -1674,7 +1674,8 @@ Gate C, i.e. not the part annoying them. They file a bug instead.
 10. **`ActiveWorkItem.title` is cross-session content and predates all of this** — derived from a
     subagent's task prompt and surfaced process-wide with a session id. The visibility rule is
     applied to it, but it is exposed only via `GET /active_work` for the GUI (the model-facing
-    `subagent_status` is session-scoped), so it may deserve its own fix rather than riding this one.
+    `workspace_read_conversation` / `workspace_watch` are session-scoped), so it may deserve its own
+    fix rather than riding this one.
 11. **`POST /agent/call_tool` remains inspector-free.** This design is correct either way because
     the barrier is in the extension manager, but the route is a standing hazard for every *future*
     inspector-based control, including BR-71's.

@@ -122,8 +122,8 @@ struct WorkspaceListParams {
     #[serde(skip_serializing_if = "Option::is_none")]
     include_subagents: Option<bool>,
     /// Only sessions spawned by this session id. Pass your own session id to
-    /// list your subagents — the replacement for `subagent_status`'s list mode
-    /// (BR-71 decision 23).
+    /// list your subagents — this is how you enumerate the children you
+    /// delegated to, foreground or background alike.
     #[serde(skip_serializing_if = "Option::is_none")]
     parent_session_id: Option<String>,
     /// Only subagent sessions (`session_type == "sub_agent"`). Combines with

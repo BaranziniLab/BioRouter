@@ -17,9 +17,7 @@ use crate::providers::toolshim::{
 };
 
 use crate::agents::code_execution_extension::EXTENSION_NAME as CODE_EXECUTION_EXTENSION;
-use crate::agents::subagent_tool::{
-    SUBAGENT_STATUS_TOOL_NAME, SUBAGENT_TOOL_NAME, SUBAGENT_TOOL_PREFIXED,
-};
+use crate::agents::subagent_tool::{SUBAGENT_TOOL_NAME, SUBAGENT_TOOL_PREFIXED};
 use crate::session::session_manager::UsageLedgerEntry;
 #[cfg(test)]
 use crate::session::SessionType;
@@ -110,15 +108,11 @@ pub(crate) fn survives_code_execution_filter(tool_name: &str, code_exec_prefix: 
     tool_name.starts_with(code_exec_prefix)
         || tool_name == SUBAGENT_TOOL_NAME
         || tool_name == SUBAGENT_TOOL_PREFIXED
-        // KEEP until Task 19b deletes the tool itself. `subagent_status` is
-        // still advertised at this commit (gated on
-        // `BIOROUTER_SUBAGENT_BACKGROUND`), and BR-40's reason for the clause
-        // still holds: a model that can spawn a background child but cannot poll
-        // it strands every handle. Dropping it here also orphans the
-        // `SUBAGENT_STATUS_TOOL_NAME` import, which `./scripts/clippy-lint.sh`
-        // (`-D warnings`) fails on. Task 19b removes this line AND the import
-        // together.
-        || tool_name == SUBAGENT_STATUS_TOOL_NAME
+        // BR-40's separate poll tool used to need its own clause here, so a
+        // model that spawned a background child could still collect it. BR-71
+        // decision 23 deleted that tool: collecting a background child is now
+        // `workspace_watch` / `workspace_read_conversation` / `workspace_close`,
+        // which the `workspace__` prefix below already exempts.
         || tool_name.starts_with("workspace__")
 }
 

@@ -56,7 +56,7 @@ pub mod stall;
 pub mod structured_output;
 pub mod subagent_execution_tool;
 // BR-40: the async half — a background `subagent` call returns a handle the
-// parent polls with `subagent_status`, instead of blocking the turn.
+// parent waits on with `workspace_watch`, instead of blocking the turn.
 pub mod subagent_handle;
 pub mod subagent_handler;
 pub mod subagent_result;

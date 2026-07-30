@@ -30,12 +30,8 @@ use crate::agents::prompt_manager::PromptManager;
 use crate::agents::resource_refs::{extract_resource_refs, ResourceRefs};
 use crate::agents::retry::{RetryManager, RetryResult};
 use crate::agents::stall::{StallAction, StallCheckConfig, StallWatch};
-use crate::agents::subagent_handle;
 use crate::agents::subagent_task_config::TaskConfig;
-use crate::agents::subagent_tool::{
-    create_subagent_status_tool, handle_subagent_status_tool, handle_subagent_tool,
-    SUBAGENT_STATUS_TOOL_NAME, SUBAGENT_TOOL_NAME,
-};
+use crate::agents::subagent_tool::{handle_subagent_tool, SUBAGENT_TOOL_NAME};
 use crate::agents::types::SessionConfig;
 use crate::agents::types::{FrontendTool, SharedProvider, ToolResultReceiver};
 use crate::checkpoint::{CheckpointConfig, CheckpointKind, CheckpointManager};
@@ -3014,15 +3010,6 @@ impl Agent {
                 session.working_dir.clone(),
                 cancellation_token,
             )
-        } else if tool_call.name == SUBAGENT_STATUS_TOOL_NAME {
-            // BR-40: poll / await / cancel a background subagent. Scoped to this
-            // session's own handles, so one chat can never reach into another's.
-            let arguments = tool_call
-                .arguments
-                .clone()
-                .map(Value::Object)
-                .unwrap_or(Value::Object(serde_json::Map::new()));
-            handle_subagent_status_tool(arguments, session.id.clone())
         } else if self.is_frontend_tool(&tool_call.name).await {
             // For frontend tools, return an error indicating we need frontend execution
             ToolCallResult::from(Err(ErrorData::new(
@@ -3610,14 +3597,14 @@ impl Agent {
             // `get_prefixed_tools` lists it as `workspace__subagent`); pushing
             // a second bare copy here would advertise the same tool twice
             // under two names.
-            if subagents_enabled {
-                // BR-40: the poll half of the spawn→poll model. Offered only
-                // when background subagents are enabled — without them there is
-                // never a handle to poll.
-                if subagent_handle::background_enabled() {
-                    prefixed_tools.push(create_subagent_status_tool());
-                }
-            }
+            //
+            // BR-71 decision 23: the poll half of BR-40's spawn→poll model used
+            // to be pushed here too, gated on `background_enabled()`. It is gone
+            // with the tool — a background child is now waited on with
+            // `workspace_watch`, read with `workspace_read_conversation` and
+            // stopped with `workspace_close`, all of which the workspace
+            // extension already advertises and all of which work for foreground
+            // children and for the human as well.
         }
 
         prefixed_tools
@@ -7355,6 +7342,43 @@ mod tests {
             !names.iter().any(|n| n == SUBAGENT_TOOL_NAME),
             "after Task 19 the workspace extension is the only advertisement; \
              the standalone bare `subagent` must be gone: {names:?}"
+        );
+    }
+
+    /// BR-71 decision 23: `subagent_status` is REMOVED, not renamed. Its three
+    /// jobs are workspace tools now (list → `workspace_list`, poll →
+    /// `workspace_read_conversation`, wait → `workspace_watch`, cancel →
+    /// `workspace_close`), all of which also work for foreground children and
+    /// for the human.
+    ///
+    /// The env guard is load-bearing. The tool was only ever offered when
+    /// `subagent_handle::background_enabled()` is true, and that reads
+    /// `BIOROUTER_SUBAGENT_BACKGROUND`, which defaults to FALSE. Without
+    /// opening the gate this test is green before the deletion too, and a
+    /// botched deletion would still show green.
+    #[tokio::test]
+    async fn no_session_advertises_subagent_status_any_more() {
+        let _guard = env_lock::lock_env([("BIOROUTER_SUBAGENT_BACKGROUND", Some("true"))]);
+
+        let (agent, session_id) = agent_with_one_extension_for_tests().await;
+        assert!(
+            crate::agents::subagent_handle::background_enabled(),
+            "precondition: the gate that used to offer the tool is OPEN"
+        );
+
+        let names: Vec<String> = agent
+            .list_tools(&session_id, None)
+            .await
+            .iter()
+            .map(|t| t.name.to_string())
+            .collect();
+        assert!(
+            !names.iter().any(|n| n.contains("subagent_status")),
+            "decision 23: the tool is removed, not renamed: {names:?}"
+        );
+        assert!(
+            names.iter().any(|n| n == "workspace__subagent"),
+            "…and delegation itself still works: {names:?}"
         );
     }
 

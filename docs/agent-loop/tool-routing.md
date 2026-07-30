@@ -29,9 +29,11 @@ extension** (`crates/biorouter-mcp/src/lib.rs`, `BUILTIN_EXTENSIONS["developer"]
 which is a real, loadable, disable-able extension that merely happens to be enabled
 by default in essentially every session. The only always-present, genuinely
 extension-free tools are the gated `platform__*` tools (`ingest_conversation`,
-`manage_schedule`, `read_session_blob`), `workflow__final_output`, and
-`subagent`/`subagent_status` (which paradoxically require at least one extension to
-be loaded). None of those do file or shell work.
+`manage_schedule`, `read_session_blob`) and `workflow__final_output`. Delegation is
+no longer in that list at all: since BR-71 the spawn tool is advertised by the
+`workspace` extension as `workspace__subagent` (auto-injected when delegation is
+enabled), and it still paradoxically requires at least one extension to be loaded.
+None of those do file or shell work.
 
 So "tools without any extensions" cannot be read literally. The faithful reading of
 the directive is a **tier model** by simplicity, not by extension-vs-not:
