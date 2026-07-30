@@ -387,6 +387,42 @@ mod tests {
         );
     }
 
+    /// Naming the category is only half an answer. The user's actual question
+    /// on seeing this card is "what is *in* `clinical`?", and there is now a
+    /// place that answers it — so the card has to say where, or the approval is
+    /// still over text the user has never seen.
+    ///
+    /// The two cards that need it are the ones whose subject is *content the
+    /// user cannot see*: the read (what am I disclosing?) and the whole-store
+    /// wipe (what am I destroying?). The write card carries its own subject —
+    /// the model just supplied the text — and a card per call would make the
+    /// pointer noise rather than help.
+    #[test]
+    fn the_cards_about_unseen_content_say_where_to_see_it() {
+        for (tool, arguments) in [
+            (
+                "memory__retrieve_memories",
+                json!({"category": "clinical", "is_global": true}),
+            ),
+            (
+                "memory__remove_memory_category",
+                json!({"category": "*", "is_global": true}),
+            ),
+        ] {
+            let gate = global_memory_gate(tool, &args(arguments));
+            let Some(GlobalMemoryGate::Ask(message)) = gate else {
+                panic!("{tool} must ask, got {gate:?}");
+            };
+            assert!(
+                message.contains("Settings")
+                    && message.contains("Chat")
+                    && message.contains("Memory"),
+                "{tool}'s card must point at the surface that lists the store, \
+                 by the path the user would actually follow: {message}"
+            );
+        }
+    }
+
     // --- classification: the writes ---------------------------------------
 
     /// CLAUDE.md records the write as the gap #58 could not close from inside an
