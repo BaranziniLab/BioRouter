@@ -376,6 +376,82 @@ pub fn configure_shell_command(
     Ok(command_builder)
 }
 
+/// SIGKILL a whole process group *now*, with no `await` — the form needed from
+/// `Drop`, where there is no async context to run [`kill_process_group`] in.
+///
+/// `pid` must be the pid of a process spawned through [`configure_shell_command`],
+/// which puts it in a new process group of its own (`process_group(0)`), so its
+/// pid is also its process-group id. Passing anything else is a bug: the negative
+/// pid would name someone else's group.
+pub(crate) fn kill_process_group_now(pid: u32) {
+    #[cfg(unix)]
+    {
+        // No SIGTERM/grace pass: the only caller is the drop path, where nobody
+        // is left to read the command's output anyway, and a grace period would
+        // mean sleeping inside `Drop`.
+        let result = unsafe { libc::kill(-(pid as i32), libc::SIGKILL) };
+        if result != 0 {
+            // ESRCH just means the group is already gone — the common case when
+            // the command had already finished.
+            tracing::debug!("SIGKILL to process group {pid} returned {result}");
+        }
+    }
+    #[cfg(windows)]
+    {
+        let mut command = std::process::Command::new("taskkill");
+        command.args(["/F", "/T", "/PID", &pid.to_string()]);
+        strip_daemon_private_env_std(&mut command);
+        // Fire and forget: `Drop` must not block.
+        let _ = command.spawn();
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = pid;
+    }
+}
+
+/// RAII backstop that kills a foreground shell command's whole process group if
+/// the run ends without the command being waited on — i.e. when the tool future
+/// is dropped (issue #72).
+///
+/// `tokio::process::Command::kill_on_drop(true)` is not enough on Unix: it
+/// SIGKILLs only the direct child, the `$SHELL -c …` process. Everything that
+/// shell forked survives, is reparented to init, and keeps running with no owner
+/// — the orphaned `find "$HOME" …` scan in the report. The shell is spawned into
+/// a process group of its own precisely so one `killpg` can take the tree; this
+/// guard is what performs it on the paths that never reach an explicit kill.
+///
+/// Declare it **after** the `Child` so it drops first, while the child pid is
+/// still un-reaped and therefore still unambiguously names the group.
+/// [`disarm`](Self::disarm) it as soon as the child has been waited on: after
+/// that the pid may be recycled and the signal would land on a stranger.
+pub struct ProcessGroupReaper {
+    pid: Option<u32>,
+}
+
+impl ProcessGroupReaper {
+    /// Arm the reaper for a child spawned by [`configure_shell_command`].
+    /// `None` (the platform gave us no pid) makes it inert.
+    pub fn arm(pid: Option<u32>) -> Self {
+        Self { pid }
+    }
+
+    /// Stop the guard from firing. Call this once the child has been waited on
+    /// or explicitly killed — the work is over and the pid is no longer ours.
+    pub fn disarm(&mut self) {
+        self.pid = None;
+    }
+}
+
+impl Drop for ProcessGroupReaper {
+    fn drop(&mut self) {
+        if let Some(pid) = self.pid.take() {
+            tracing::debug!("reaping abandoned shell process group {pid}");
+            kill_process_group_now(pid);
+        }
+    }
+}
+
 /// Kill a process and all its child processes using platform-specific approaches.
 ///
 /// On Unix systems, kills the entire process group.
@@ -805,6 +881,62 @@ mod tests {
                  regression.\nchild env:\n{child_env}"
             );
         }
+    }
+
+    // ---- issue #72: the process-group reaper -------------------------------
+
+    /// True while `pid` still exists (signal 0 is the standard liveness probe).
+    #[cfg(unix)]
+    fn pid_alive(pid: u32) -> bool {
+        unsafe { libc::kill(pid as i32, 0) == 0 }
+    }
+
+    /// The guard must actually take the group down when it fires. Without it,
+    /// `kill_on_drop` alone leaves everything the shell forked running.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_armed_reaper_kills_the_group_on_drop() {
+        if env::var("BIOROUTER_SHELL_SANDBOX").is_ok() {
+            return; // don't fight an externally-set gate in this process
+        }
+        let cfg = ShellConfig::default();
+        let mut cmd = configure_shell_command(&cfg, "sleep 30", None).expect("infallible when off");
+        let mut child = cmd.spawn().expect("shell child must spawn");
+        let pid = child.id().expect("a spawned child has a pid");
+
+        drop(ProcessGroupReaper::arm(Some(pid)));
+
+        // Without the kill this waits the full 30 seconds.
+        tokio::time::timeout(std::time::Duration::from_secs(5), child.wait())
+            .await
+            .expect("the reaper must have killed the group")
+            .expect("wait must succeed");
+    }
+
+    /// …and it must be completely inert once disarmed. The normal-completion
+    /// path disarms right after `wait()`, because a reaped pid can be recycled
+    /// and the negative-pid signal would then land on a stranger's process group.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_disarmed_reaper_signals_nothing() {
+        if env::var("BIOROUTER_SHELL_SANDBOX").is_ok() {
+            return;
+        }
+        let cfg = ShellConfig::default();
+        let mut cmd = configure_shell_command(&cfg, "sleep 30", None).expect("infallible when off");
+        let mut child = cmd.spawn().expect("shell child must spawn");
+        let pid = child.id().expect("a spawned child has a pid");
+
+        {
+            let mut reaper = ProcessGroupReaper::arm(Some(pid));
+            reaper.disarm();
+        }
+
+        assert!(
+            pid_alive(pid),
+            "a disarmed reaper must not signal anything on drop"
+        );
+        let _ = child.kill().await;
     }
 
     #[test]

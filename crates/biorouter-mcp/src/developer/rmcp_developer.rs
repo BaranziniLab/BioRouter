@@ -1611,6 +1611,13 @@ impl DeveloperServer {
             tracing::warn!("Shell process spawned but PID not available");
         }
 
+        // #72: `kill_on_drop(true)` (set in `configure_shell_command`) signals
+        // only the direct `$SHELL -c …` child; anything that shell forked is
+        // reparented to init and keeps running. Declared *after* `child` so it
+        // drops first, while the pid still names the group. Disarmed on every
+        // path that waits on or kills the child — see `ProcessGroupReaper`.
+        let mut reaper = super::shell::ProcessGroupReaper::arm(pid);
+
         // Stream the output and wait for completion with cancellation support
         let output_task = self.stream_shell_output(
             child.stdout.take().unwrap(),
@@ -1622,7 +1629,12 @@ impl DeveloperServer {
             output_result = output_task => {
                 // Wait for the process to complete. PAR-02: the status is the
                 // only signal that a silent command failed — carry it out.
-                let exit_status = child.wait().await.map_err(|e| ErrorData::new(ErrorCode::INTERNAL_ERROR, e.to_string(), None))?;
+                let waited = child.wait().await;
+                // The pid has been reaped (or the wait failed and nothing more
+                // can be done with it); either way it is no longer ours to
+                // signal, and after reaping it can be recycled.
+                reaper.disarm();
+                let exit_status = waited.map_err(|e| ErrorData::new(ErrorCode::INTERNAL_ERROR, e.to_string(), None))?;
                 // BR-69: prepend the sandbox tier line when the gate is on.
                 output_result.map(|out| {
                     let out = match sandbox_status_line {
@@ -1644,6 +1656,7 @@ impl DeveloperServer {
                         tracing::error!("Failed to kill shell process and child processes: {}", e);
                     }
                 }
+                reaper.disarm();
 
                 Err(ErrorData::new(
                     ErrorCode::INTERNAL_ERROR,
@@ -5137,6 +5150,84 @@ mod tests {
                     "Process should be removed from tracking"
                 );
             }
+
+            cleanup_test_service(running_service, peer);
+        });
+    }
+
+    /// Issue #72: dropping the shell tool's future must take the command's whole
+    /// process tree with it.
+    ///
+    /// `kill_on_drop(true)` only SIGKILLs the direct child — the `$SHELL -c …`
+    /// process. Anything that shell forked (the `sh -c 'sleep …'` grandchild
+    /// here, `find`'s worker in the report) is reparented to init and runs to
+    /// completion with nobody waiting for it. The shell is spawned into its own
+    /// process group, so one `killpg` takes the tree; nothing was doing it.
+    ///
+    /// The future is dropped rather than cancelled on purpose: the cooperative
+    /// cancellation path (`on_cancelled`) already reaps the group. This is the
+    /// path that stays broken when cancellation never arrives — the extension is
+    /// being torn down, the transport closed, an outer layer gave up.
+    #[test]
+    #[serial]
+    #[cfg(unix)]
+    fn dropping_the_shell_future_reaps_the_whole_process_tree() {
+        run_shell_test(|| async {
+            let server = create_test_server();
+            let running_service = serve_directly(server.clone(), create_test_transport(), None);
+            let peer = running_service.peer().clone();
+
+            let dir = tempfile::tempdir().unwrap();
+            let started = dir.path().join("started");
+            let survived = dir.path().join("survived");
+            let command = format!(
+                "sh -c 'sleep 4; touch \"{}\"' & touch \"{}\"; wait",
+                survived.display(),
+                started.display()
+            );
+
+            let server_clone = server.clone();
+            let context = RequestContext {
+                ct: Default::default(),
+                id: NumberOrString::Number(72),
+                meta: Default::default(),
+                extensions: Default::default(),
+                peer: peer.clone(),
+            };
+            let shell_task = tokio::spawn(async move {
+                server_clone
+                    .shell(
+                        Parameters(ShellParams {
+                            working_directory: None,
+                            command,
+                            background: None,
+                            label: None,
+                        }),
+                        context,
+                    )
+                    .await
+            });
+
+            // Wait until the tree is actually up, or the test proves nothing.
+            let deadline = Instant::now() + Duration::from_secs(20);
+            while !started.exists() && Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            assert!(started.exists(), "the shell command never started");
+
+            // Drop the tool future without going through cancellation at all.
+            shell_task.abort();
+            let _ = shell_task.await;
+
+            // Give the orphan every chance to surface.
+            tokio::time::sleep(Duration::from_secs(7)).await;
+
+            assert!(
+                !survived.exists(),
+                "issue #72: dropping the shell future left a grandchild running — \
+                 it woke up afterwards and wrote {}",
+                survived.display()
+            );
 
             cleanup_test_service(running_service, peer);
         });

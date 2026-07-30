@@ -19,7 +19,7 @@
 
 #![cfg(unix)]
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -89,7 +89,7 @@ fn tree_command(dir: &Path) -> String {
     format!("sh -c 'sleep {secs}; touch \"{survived}\"' & touch \"{started}\"; wait")
 }
 
-async fn wait_for(path: &PathBuf, limit: Duration) -> bool {
+async fn wait_for(path: &Path, limit: Duration) -> bool {
     let deadline = tokio::time::Instant::now() + limit;
     while tokio::time::Instant::now() < deadline {
         if path.exists() {
