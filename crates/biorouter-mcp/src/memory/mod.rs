@@ -235,6 +235,48 @@ fn canonical_realish(p: &Path) -> PathBuf {
     }
 }
 
+/// Does `path` land inside the machine-wide memory store?
+///
+/// The store is a directory of text files, so every generic file tool in the
+/// product can address it: `text_editor view <store>/clinical.txt` is the same
+/// disclosure `retrieve_memories(category="clinical", is_global=true)` puts to
+/// the user, and `computercontroller cache --delete` is a deletion with no card
+/// at all. Issue #63's consent gate matches *tool names*, so it saw none of
+/// them, and the #63 review's verdict is that name-matching cannot protect a
+/// file store while generic file access exists. This is the check that closes it
+/// at the storage boundary instead: whatever tool, whatever mode, whatever route
+/// reached the server.
+///
+/// Both sides are resolved as far as the filesystem allows before comparing, so
+/// a symlink into the store, a `..` spelling of it, and macOS's
+/// `/var` → `/private/var` all land on the same answer. The comparison is
+/// component-wise, so a *sibling* whose name merely starts with the store's —
+/// `<config>/memories-notes.txt` — is not inside it.
+///
+/// **Scope.** This closes the memory root, not the general filesystem barrier.
+/// An unsandboxed `developer__shell` still reads any file on the machine; that
+/// is issue #56's separate design and is deliberately not built here.
+pub fn is_in_global_memory_store(path: &Path) -> bool {
+    canonical_realish(path).starts_with(canonical_realish(&global_memory_dir()))
+}
+
+/// What a generic file tool tells the model when it refuses a path inside the
+/// store — including which call *does* work, so the refusal is a redirection
+/// rather than a dead end.
+pub fn global_memory_store_refusal(path: &Path) -> String {
+    format!(
+        "Refused: {} is inside Biorouter's machine-wide memory store, which general file tools \
+         may not read, write or delete. That store is shared by every Biorouter session on this \
+         computer, and every operation on it has to be shown to the user and approved first — \
+         which a file path cannot be. Use the memory tools instead: \
+         retrieve_memories(category=\"<name>\", is_global=true) to read a category, \
+         remember_memory(...) to add to one, remove_memory_category / remove_specific_memory to \
+         delete; each one is put to the user by name. Project-local memory \
+         (.biorouter/memory) is not affected by this rule.",
+        path.display()
+    )
+}
+
 /// Heads the *index* of global memory categories in the system prompt.
 ///
 /// Bodies deliberately do not appear — see [`MemoryServer::compose_instructions`].

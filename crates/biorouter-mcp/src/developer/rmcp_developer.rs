@@ -2237,6 +2237,21 @@ impl DeveloperServer {
             self.effective_cwd()?.join(path)
         };
 
+        // Issue #63 review, finding 2. Biorouter's machine-wide memory store is
+        // a directory of text files, so every tool that resolves a path here
+        // could read, rewrite or delete a global memory — the exact disclosure
+        // the #63 consent gate exists to put to the user, taken with a tool that
+        // gate does not recognise. It is refused as a *place*, before the jail
+        // and regardless of it: in Auto mode the jail is relaxed, which is
+        // precisely when an absolute path into the store resolves.
+        if crate::memory::is_in_global_memory_store(&resolved) {
+            return Err(ErrorData::new(
+                ErrorCode::INVALID_PARAMS,
+                crate::memory::global_memory_store_refusal(&resolved),
+                None,
+            ));
+        }
+
         // Auto mode: the containment jail is relaxed (sensitive writes are still
         // gated upstream by the agent's SensitiveOpsInspector), so skip the
         // outside-working-directory check entirely.

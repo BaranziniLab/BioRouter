@@ -50,6 +50,9 @@ pub use memory::{
     global_memory_dir, EntryDeletion, MemoryCategoryInventory, MemoryEntry, MemoryScope,
     MemoryStoreInventory,
 };
+// The barrier every generic file tool owes the machine-wide store
+// (#63 review, finding 2).
+pub use memory::{global_memory_store_refusal, is_in_global_memory_store, GlobalMemoryConsent};
 pub use tutorial::TutorialServer;
 
 /// Spawns a builtin MCP server onto the given duplex transport. The optional
