@@ -7981,9 +7981,19 @@ async fn a_nonexistent_session_is_not_reported_as_a_privacy_refusal() {
         // parks before the helper is entered and therefore cannot tell a
         // conditional UPDATE from a SELECT-then-UPDATE, which is the exact
         // implementation Gate A exists to reject.
+        //
+        // ⚠ AND THE RECEIVER IS THE STORAGE, NOT THE MANAGER. The method is
+        // defined on `SessionStorage` (that is where the pool is), and
+        // `SessionManager` exposes exactly one accessor — `storage()`
+        // (`session_manager.rs:1187`) — so
+        // `session_manager.bind_provider_if_allowed(..)` does not compile.
+        // Round 3 §7 found this. Either go through `storage()` as below, or
+        // add a thin forwarder on `SessionManager` in the same commit; do not
+        // leave the plan naming a method the type does not have.
         match self
             .config
             .session_manager
+            .storage()
             .bind_provider_if_allowed(session_id, &provider_name, &model_config, tier.is_private())
             .await
             .context("Failed to persist provider config to session")?
@@ -15508,7 +15518,16 @@ async fn the_master_toggle_governs_every_gate_in_both_directions() {
     assert!(shell_requires_read_deny_sandbox_for(ProviderTier::Public));                 // 20 Layer B (14A)
 
     // ---- OFF: nothing is refused, and nothing is sandboxed. -----------------
-    set_privacy_tiers(false).await;
+    // ⚠ `set_privacy_tiers` mutates a PROCESS-GLOBAL atomic, and `cargo test`
+    //   runs this file's tests in parallel threads of one process. Round 3 §7:
+    //   without serialization these tests disable one another, and the matrix
+    //   ends with the flag false, so every privacy test that happens to run
+    //   after it silently asserts nothing. `set_privacy_tiers` must therefore
+    //   take the same process-wide guard `env_lock` uses and return an RAII
+    //   handle that restores the previous value on drop — held for the whole
+    //   test, exactly like `let _g = env_lock::lock_env(..)` elsewhere in this
+    //   plan. A bare setter is the defect.
+    let _g = set_privacy_tiers(false).await;
     assert!(agent.update_provider(public_provider(), &priv_sess.id).await.is_ok());
     assert!(reply_on(public_provider(), &priv_sess.id).await.is_ok());
     assert!(!call_private_tool_via_agent_loop().await.contains("private"));
@@ -15568,12 +15587,44 @@ async fn no_environment_variable_can_turn_protection_off() {
 }
 
 #[tokio::test]
-async fn the_key_cannot_be_flipped_through_config_upsert() {
+async fn a_bare_config_upsert_cannot_flip_the_key_but_the_confirmed_one_can() {
+    // ⚠ THESE TWO ASSERTIONS LOOK CONTRADICTORY AND ARE NOT — round 3 §4 read
+    // the earlier draft as contradictory precisely because it only wrote the
+    // first half. `/config/upsert` MUST be one of the two writers (Step 5's
+    // inventory says so), and a BARE upsert of this key MUST be refused. What
+    // separates them is the confirmation field, which is what Settings →
+    // Privacy sends and what a tool call composing an ordinary config write
+    // does not.
     let r = post_config_upsert("BIOROUTER_PRIVACY_TIERS", "off").await;
     assert_eq!(r.status(), 403);
     assert!(r.text().await.contains("Settings"));
+    assert!(privacy_tiers_enabled(), "a refused request must not have written");
+
+    let r = post_config_upsert_confirmed("BIOROUTER_PRIVACY_TIERS", "off",
+                                         "DISABLE PRIVACY TIERS").await;
+    assert_eq!(r.status(), 200);
+    assert!(!privacy_tiers_enabled());
+
+    // A wrong phrase is refused, and the comparison is exact.
+    set_privacy_tiers(true).await;
+    let r = post_config_upsert_confirmed("BIOROUTER_PRIVACY_TIERS", "off",
+                                         "disable privacy tiers").await;
+    assert_eq!(r.status(), 403);
+    assert!(privacy_tiers_enabled());
 }
 ```
+
+⚠ **State what this is and what it is not.** The confirmation field is a **UX guard against an
+accidental or model-composed config write**, not an authorization boundary. The phrase is a fixed
+string in the shipped source, so a caller holding the daemon secret replays it — which round 3 said,
+and which is true. It is accepted for the same reason
+[AR-15](#ar-15--a-caller-holding-the-daemon-secret-can-raise-its-own-sessions-capability-with-no-credentials)
+is: `check_token` (`auth.rs:80-127`) has no principal, so the daemon cannot tell Settings → Privacy
+from any other loopback caller, and a caller that already holds the secret can raise its own session
+to private capability anyway. **What the guard actually buys** is that the flip cannot be a side
+effect of an ordinary `/config/upsert` — which is the reachable path, because a model *can* compose
+one of those through a tool and cannot compose the daemon secret out of thin air on macOS without a
+shell. Closing it properly needs a per-caller credential, [Open question 20](#open-questions).
 
 ```tsx
 it('the Privacy tab exists and its toggle is mounted', async () => {
