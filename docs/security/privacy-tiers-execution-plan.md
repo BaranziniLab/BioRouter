@@ -909,6 +909,29 @@ third test asserts this residual rather than hiding it.
 on the ones already in flight. Closing that would mean cancelling in-flight tool calls on a provider
 swap, which is a change to `update_provider`'s contract for every session and is a follow-up.
 
+### AR-14 — Every Biorouter app that exists today starts **public** at migration, even if it was built in a private chat
+
+[Task 14E](#task-14e-the-roots-own-doors--where-the-handler-not-the-caller-supplies-the-path) gives
+each app in `<config>/agent_drafter` a tier, and migrates everything already on disk as **public**.
+This is AR-2's twin and it is accepted for the same reasons plus one more:
+
+- There is no evidence to migrate from. `Manifest.session_id` (`agent_drafter/store.rs:222-226`) is
+  `Option<String>` — apps created before it was recorded have `None` — and the session it names may
+  have been deleted. Nothing else on disk says which model built the app.
+- Migrating them **private** would take every existing app away from every public chat on the first
+  launch after upgrade, with no affordance to get any of them back (there is no per-app
+  declassification path, exactly as AR-1 records for knowledge bases).
+
+**So an app that a private session built before this ships stays readable from a public chat until
+something writes to it under private capability, at which point the ratchet raises it permanently.**
+An app's *source* is code the user asked for rather than a transcript, which is why this is a
+different weight of risk from AR-2's knowledge bases — but the app's `.vault/` and any data file the
+private session wrote into it are covered by the same sentence, and that is the part worth knowing.
+
+**In the operator's terms:** the day this ships, existing apps behave exactly as they do today; the
+rule starts applying to what happens next. A user who wants an existing app protected immediately
+opens it once in a private chat.
+
 ---
 
 ## Which test filters are validated, and which are not
@@ -9766,11 +9789,26 @@ git commit -m "feat(sandbox): a read-deny policy, and each backend's honest answ
 ### Task 14B: Layer A — the barrier at the dispatch choke point, and the policy it hands to Layer B
 
 Task 14A gave `biorouter-sandbox` a read-deny it can express and an honest answer about where it
-cannot. That is Layer B, and it only ever covers a **child process**. This task builds **Layer A**,
-the primary defence: a check inside the daemon's own dispatch path that refuses any tool call whose
-arguments name a path inside a private root, on every platform, for every tool that exists today and
-every tool anyone adds later. It then hands the same list to Layer B so a spawned shell gets a kernel
-answer as well.
+cannot. That is Layer B, and it only ever covers a **child process**. This task builds **Layer A**: a
+check inside the daemon's own dispatch path that refuses any tool call whose **arguments** name a
+path inside a private root, on every platform, for every tool that exists today and every tool anyone
+adds later. It then hands the same list to Layer B so a spawned shell gets a kernel answer as well.
+
+⚠ **Layer A covers the FILESYSTEM channel, and that is not the whole ruling.** It guards path-shaped
+arguments; it does not guard the reads a handler performs when the *handler* supplies the root.
+`agent_drafter__read_app` takes an app id and a relative path and the store joins the root itself
+(`store.rs:447`); `export_app` reads the app root implicitly and writes to an ordinary caller-named
+destination; `computercontroller__cache` resolves its relative argument against the **daemon process
+cwd** while Layer A resolves it against the **session** cwd, because only the Developer server
+receives the session working directory (`biorouter-mcp/src/lib.rs:49`, `:77`). All three pass this
+task's own "surprise tool" test.
+
+**That gap is closed by [Task 14E](#task-14e-the-roots-own-doors--where-the-handler-not-the-caller-supplies-the-path), which puts a guard in each root's own resolver, and it is not
+optional: without it the four roots are open to every tool that reaches them by id.** Read the two
+tasks as one control with two halves — the caller's paths, and the roots' doors. An earlier version
+of this plan called Layer A "the primary defence" and carved the tool channel out of DR-14 entirely;
+round 3 called that a redefinition of the operator's ruling rather than an implementation of it, and
+it was.
 
 **It fails closed in one direction only, and that narrowing is the point.** A public-capability
 session on a platform where the *kernel* deny cannot be established loses the five tools that spawn a
@@ -10063,24 +10101,37 @@ async fn every_reader_family_is_refused_a_deny_root_path() {
 updated, nothing here fails — and that is *fine*, because (3) is the test that says the property
 holds. Do not convert this list into the gate; that is the mistake this task exists to undo.
 
-**(5) The legitimate tools are untouched, which is what makes this a targeted deny.**
+**(5) The legitimate tools are untouched *by this layer*, which is what makes this a targeted deny —
+and each of them is answered by its root's own door instead.**
 
 ```rust
 #[tokio::test]
-async fn the_tools_that_own_these_roots_keep_working_in_a_public_session() {
-    // DR-14 governs the FILESYSTEM channel — a path a caller names. The TOOL
-    // channel into these roots is governed by the tier classification and each
-    // server's own gates: `knowledge` by CP1-CP5, `memory`'s global store by
-    // Task 19, `agent_drafter` by its Public classification (design:975). A
-    // barrier that also refused these would be a second, contradictory
-    // classification system, and it would break the Knowledge view.
-    let (mgr, _) = manager_on(public_provider()).await;
+async fn this_layer_does_not_refuse_the_tools_that_own_these_roots() {
+    // ⚠ READ THE NAME. This asserts what LAYER A does, not what the product
+    // does. Layer A scans a caller's path ARGUMENTS; none of these calls names
+    // a path inside a root, so Layer A finds nothing and returns None. That is
+    // correct and it is also NOT coverage: round 3 showed the handler then
+    // opens the root anyway, because the store supplies it.
+    //
+    // The earlier version of this test was called
+    // `the_tools_that_own_these_roots_keep_working_in_a_public_session` and
+    // asserted `read_app` succeeds. That sentence blessed the hole. What
+    // actually governs these four calls is Task 14E — the root's own
+    // resolver — and each is asserted there:
+    //
+    //   kb_read_page         -> CP1-CP4 (Task 10C), per-KB tier
+    //   retrieve_memories    -> the memory door, resting on Task 19 (14E (f))
+    //   read_app / list_apps -> ArtifactStore's door, per-app tier (14E (a),(c))
+    //
+    // So this test uses a PUBLIC object in each root, which both layers permit,
+    // and the private-object cases live in Task 14E where the door is.
+    let (mgr, fx) = manager_on(public_provider()).await;
     assert!(dispatch(&mgr, "knowledge__kb_read_page",
-                     json!({"kb_id":"k","page_path":"topics/x.md"})).await.is_ok());
+                     json!({"kb_id": fx.public_kb, "page_path":"topics/x.md"})).await.is_ok());
     assert!(dispatch(&mgr, "memory__retrieve_memories",
                      json!({"category":"research","is_global":true})).await.is_ok());
     assert!(dispatch(&mgr, "agent_drafter__read_app",
-                     json!({"id":"a","path":"src/app.ts"})).await.is_ok());
+                     json!({"id": fx.public_app, "path":"src/app.ts"})).await.is_ok());
     assert!(dispatch(&mgr, "agent_drafter__list_apps", json!({})).await.is_ok());
 }
 
@@ -11756,6 +11807,767 @@ git commit -m "feat(privacy): cover the four in-process readers that never reach
 
 ---
 
+
+### Task 14E: The roots' own doors — where the handler, not the caller, supplies the path
+
+Task 14B refuses a tool call whose **arguments** name a path inside a private root. Round 3's central
+finding is that this is a different thing from refusing the **reads the handlers perform**:
+
+> `read_app` receives only an app ID and relative path. The real store silently supplies the denied
+> root via `self.root.join(id)`, then reads it. Layer A checks `src/app.ts` under the session cwd,
+> while the handler opens it under `<agent_drafter>/<id>`.
+
+That is correct and it is the finding this task answers. Enumeration has now been defeated three
+times — by **tool name** (round 1: "`developer` and `computercontroller` consume the guard"), by
+**tool list** (round 2: `cache` was inside `computercontroller` all along), and by **argument shape**
+(round 3: the root is not in the arguments at all). The answer is not a fourth enumeration.
+
+**Each root has a resolver that every read of it passes through. The guard goes in the door.** A tool
+nobody has written yet either goes through the root's resolver — and is refused — or it cannot reach
+the root at all. That is structurally different from scanning what a caller happened to type.
+
+#### ⚠ Two corrections to round 3's own account, so nobody re-derives them
+
+**(1) `read_app` and `export_app` do NOT bypass `ArtifactStore`.** Measured: `export_scaffold`
+(`agent_drafter/mod.rs:1204-1213`) does `ArtifactStore::new(root)` then `store.artifact_dir(id)`,
+which calls `dir()`; `read_app` (`:2685`) reaches disk through `load_manifest` / `read_file`, both of
+which call `dir()`. Round 3's stronger claim — that these reach the root behind the resolver's back —
+is checkable and false. **What round 3 actually established stands and is the whole point:** argument
+inspection cannot see the root, so a barrier built on arguments cannot reach these calls. Say the
+true thing; a plan that repeats the false one loses the reader on the paragraph that matters.
+
+**(2) The relative-path mismatch is real and is a second, independent reason.** Only the Developer
+server receives the session working directory — `crates/biorouter-mcp/src/lib.rs:49` and `:77` show
+every other built-in discarding it. `computercontroller__cache` resolves its raw relative argument
+against the **daemon process cwd** (`computercontroller/mod.rs:1473-1482`), while Layer A resolves it
+against the **session** cwd (Task 14B (d)). So for most built-ins the checker and the handler do not
+even agree on what a relative path means. A door does not have this problem: it is handed the same
+absolute path the read will use.
+
+#### The two channels, and both of them are the ruling
+
+The design's §9.5.3 used to carve the tool channel out of DR-14 — *"what Layer A does not cover,
+deliberately: `kb_read_page`, `retrieve_memories`, `read_app`, `list_apps`."* Round 3 called that a
+redefinition of the ruling rather than an implementation of it, and it was. The ruling
+(`privacy-tiers.md` §9.5) says a public-capability session's **tools** may not reach BioRouter's own
+private data; it does not say "unless the tool owns the directory". §9.5.3 is corrected in the same
+change as this task.
+
+The corrected statement, and the one this task implements:
+
+| Channel | What it is | Enforced by | Granularity |
+|---|---|---|---|
+| **Filesystem** | a path a caller names, in an argument or in a shell command line | Layer A (Task 14B) + Layer B (Task 14A) | the **whole root**, no exceptions — the checker has no way to know which object inside the root a raw path belongs to |
+| **Tool** | a read a handler performs through the root's own resolver | **this task** | the **object**, where the root has a per-object tier; the **whole root** where it has none |
+
+**A public session reaching a *public* knowledge base is not an exemption from the ruling — it is the
+knowledge root's door answering.** The ruling protects BioRouter's private data; a base classified
+public is not private data. What is *not* allowed is a root whose contents are undifferentiated being
+handed over because no gate exists. That is exactly the Agent Drafter root, and it is what round 3
+found.
+
+#### The four doors, measured
+
+| Root | Its resolver | Does every read go through it today? | Per-object tier |
+|---|---|---|---|
+| `<config>/agent_drafter` | `ArtifactStore::dir` (`store.rs:447`) — **already private**, and `manifest_path` `:454`, `write_file` `:622`, `read_file` `:630`, `read_bytes` `:637`, `artifact_dir` `:644`, `file_path` `:654`, `delete` `:668` all call it | **Almost.** Three leaks: `list()` `:606` does `std::fs::read_dir(&self.root)` at `:608`; `pub fn root()` `:443` hands out the raw root (one production caller, `mod.rs:2760`); `create_unique_dir` `:465-467` touches `self.root` directly | **none today** — this task adds one |
+| `<config>/knowledge` | **there is none.** `resolve_readable_path`/`resolve_writable_path` (`knowledge/store.rs:121`,`:153`) are path-shape *validators* that take `kb_root` as a parameter. Measured: **3** call sites in the whole tree (`store.rs:83`, `store.rs:101`, `service.rs:1109`) against roughly **40** direct filesystem reads across 17 files in the same module. `kb_root()` (`paths.rs:47`) is `root.join(id)`, infallible, 47 call sites | The door is the **service's tool-facing choke points** — CP1–CP4 (Task 10C) — not a path resolver. Two ends bypass them: `kb_export` (`server.rs:735`) and `kb_import` (`:765`), neither of which takes a `RequestContext` | **yes** — the KB tier (Task 10A) |
+| `<config>/memory` | `get_memory_file` (`memory/mod.rs:336`), reached by `remember` `:383`, `retrieve` `:405`, and the two removers `:445`/`:456` | **No, twice.** `retrieve_all` enumerates `base_dir` directly (`:347-354`); and `compose_instructions` (`:230-231`) inlines memory into the **system prompt at `MemoryServer::new()`** — before any tool call exists | **none**, and it does not need one — see (c) |
+| `<data>/sessions` | **there is none, and there is no path to resolve.** It is a sqlx SQLite pool: `SessionStorage::new(data_dir)` builds `<data>/sessions/sessions.db` (`session_manager.rs:2007-2015`, `SESSIONS_FOLDER` `:30`, `DB_NAME` `:31`) and every read is SQL over `self.pool`. Process-global at `:114-115` | The doors are the **API**: Gate D (`chatrecall`, Task 10/17), Gate G (`ingest_conversation`, Task 11), and `platform__read_session_blob` (scoped to `session.id`, `agent.rs:2678`) | **yes** — `privacy_tier` (Task 6) |
+
+⚠ **A fifth root-reaching reader with no resolver at all.** `computercontroller__cache` `View` does
+`tokio::fs::read_to_string(path)` on the raw argument (`computercontroller/mod.rs:1473-1482`) — no
+resolution, no validation, no cwd. There is nothing to put a guard *into*. It stays a
+**filesystem-channel** reader, covered by Layer A, and (2) above is why Layer A must resolve its
+relative arguments against the **daemon process cwd** for this server rather than the session cwd.
+
+#### ⚠ The capability must reach a resolver, and the channel already ships
+
+Measured end to end against rmcp 0.14 (the workspace version), with a `#[tool_router]` server on a
+`tokio::io::duplex` pair inside a **detached `tokio::spawn`** — `spawn_and_serve`'s exact topology
+(`biorouter-mcp/src/lib.rs:67`):
+
+```
+FORGED via arguments -> meta.capability=<ABSENT>  meta_keys=["progressToken"]
+VIA EXTENSIONS       -> meta.capability=Public    meta_keys=["biorouter-capability","progressToken"]
+```
+
+Three conclusions, all load-bearing:
+
+1. The `extensions → params._meta → RequestContext.meta` path **works across the detached-spawn
+   boundary**. `McpMeta` is built per dispatch (`extension_manager.rs:1557`, moved above the future
+   by Task 10) and injected at `mcp_client.rs:766-769`; `knowledge/server.rs:222` and
+   `agent_drafter/mod.rs:1575` already read `RequestContext.meta` for the session id.
+2. **The model cannot forge it.** A key placed in model-controlled `arguments` as `_meta` does not
+   arrive — they are separate wire fields (`CallToolRequestParams { task, name, arguments, meta }`).
+3. **Setting `CallToolRequestParams.meta` instead of `extensions` closes the transport** — measured,
+   the connection died. Production already avoids it and says why at `mcp_client.rs:164-166` ("we
+   never set the params.meta field and can't collide on the wire"). A snippet prescribing
+   `params.meta` fails at *runtime*, not compile time.
+
+Platform extensions are cheaper still: they receive `meta: McpMeta` **by value** in-process
+(`mcp_client.rs:183-189`) and `chatrecall_extension.rs:294-302` already destructures it.
+
+⚠ **A capability FIELD on the server object is the wrong mechanism, for two measured reasons.**
+(a) Built-ins are **poolable**: `ExtensionConfig::pool_key` returns
+`Some(PoolKey { transport: "builtin:<name>", working_dir, env_fingerprint })`
+(`agents/extension.rs:524`,`:541`), so `BIOROUTER_SHARED_MCP_POOL=1` (`agents/mcp_pool.rs:118`;
+default off) makes **one** `KnowledgeServer` / `MemoryServer` / `AgentDrafterServer` serve several
+sessions of differing tiers. A per-instance field is correct today and silently wrong the day anyone
+sets that flag. (b) The provider — hence the tier — changes mid-session and `Agent::update_provider`
+(`agent.rs:5655`) does **not** respawn extensions, so a construction-time field goes stale. The
+capability is per **call**, and the door takes it as an argument.
+
+#### How many handlers need a `RequestContext` — measured, per server
+
+| Server | Tools | Have one today | Need it added |
+|---|---|---|---|
+| `knowledge` | 19 | 9 (`server.rs:350,376,393,479,494,582,615,715,727`) | 10 |
+| `agent_drafter` | 18 | 1 — `create_app` (`mod.rs:1978`) | 17 |
+| `memory` | 4 | 0 | 4 |
+| `computercontroller` | 11 | 0 (`:1578`,`:1601` are `ServerHandler` methods, not tools) | 11 |
+| `developer` | 10 | 1 — `shell` (`rmcp_developer.rs:1323`); `text_editor` (`:1185`) has none | 9 |
+
+Adding the parameter is mechanical — rmcp's `#[tool]` accepts it as an extra argument, and `shell` /
+`kb_list_bases` are shipping examples.
+
+⚠ **The testability cost this codebase already records.** `knowledge/server.rs:866-868` says of two
+existing functions: *"neither has a cheap behavioural test because both need a live
+`RequestContext`."* So a capability that only exists inside a `RequestContext` is testable only
+(a) over a real duplex transport — the `crates/biorouter-mcp/tests/agent_drafter_registered.rs`
+pattern — or (b) by splitting each tool body into an inner `fn(capability, args)` the unit tests call
+directly. **This task takes (b) everywhere**, which is the shape `knowledge` already uses
+(`kb_id_or_primary(kb_id, context)`): the `#[tool]` method extracts the capability from the context
+and calls an inner function; the door and its tests live on the inner function.
+
+**Files:**
+
+| Action | Path | Anchor (measured this round) |
+|---|---|---|
+| Modify | `crates/biorouter-mcp/src/agent_drafter/store.rs` | `struct ArtifactStore` `:434-436`; `new` `:439`; `root()` `:443`; `dir()` `:447`; `create_unique_dir` `:465`; `list()` `:606`; `Manifest.session_id` `:222-226` |
+| Create | `crates/biorouter-mcp/src/agent_drafter/tier.rs` | new — the per-app tier store, migration, and `assert_app_reachable`. Mirrors `knowledge/tier.rs` (Task 10A) file for file |
+| Modify | `crates/biorouter-mcp/src/agent_drafter/mod.rs` | `root()` and `store()` `:1923`; the 16 `self.store()` call sites; `export_scaffold`'s caller `:2760`; `read_app` `:2685`; `export_app` `:2740`; `list_apps` `:2636`; all 18 `#[tool]` signatures |
+| Modify | `crates/biorouter-server/src/routes/apps.rs` | `fn store()` `:73` and its 15 call sites — the **user channel** |
+| Modify | `crates/biorouter-mcp/src/knowledge/server.rs` | `kb_export` `:735`, `kb_import` `:765` — add the `RequestContext` and the CP4 check |
+| Modify | `crates/biorouter-mcp/src/memory/mod.rs` | `retrieve_all` `:347-354`; `get_memory_file` `:336` (Task 14D already makes it `Result`); `compose_instructions` `:230-231` |
+| Reference | `crates/biorouter/src/session/session_manager.rs` | `storage()` `:1187` — the raw pool handle, and the drift gate below |
+| Reference | `crates/biorouter/src/agents/mcp_client.rs` | `McpMeta` `:137`; `inject_into_extensions` `:161`; `call_tool(.., meta: McpMeta, ..)` `:183-189` |
+
+- [ ] **Step 1: Write the failing tests**
+
+**(1) THE gate: a tool this code has never heard of, reaching a root through its resolver.** The
+door-level twin of Task 14B Step 1(3), and the one no argument-scanning implementation can pass.
+
+```rust
+// crates/biorouter-mcp/src/agent_drafter/tier.rs
+#[tokio::test]
+async fn a_tool_this_code_has_never_heard_of_cannot_read_an_app_either() {
+    // Registered at TEST time through `add_inprocess_server` (:901), the same
+    // entry `appcontrol`/`datasql`/`files` use. Its tool takes NO path: it is
+    // handed an app id and reads through `ArtifactStore` exactly the way
+    // `read_app` does. Layer A sees a bare id and finds nothing to refuse.
+    let (mgr, apps) = manager_on(public_provider()).await;
+    let private_app = app_created_by(private_provider(), "cohort-viewer").await;
+
+    let err = dispatch(&mgr, "surprise__peek_app",
+                       json!({"app": private_app.id})).await.unwrap_err();
+    assert!(format!("{err:?}").contains("private model"), "{err:?}");
+
+    // …and a PUBLIC app through the same never-seen tool is fine, so this is a
+    // door and not a blanket refusal of the extension.
+    let public_app = app_created_by(public_provider(), "notes").await;
+    assert!(dispatch(&mgr, "surprise__peek_app",
+                     json!({"app": public_app.id})).await.is_ok());
+}
+```
+
+**This gate rejects:** every implementation that lives in `read_app`/`export_app`/`list_apps` — a
+per-tool check, a `match tool_name`, a table of "the drafter tools that read". All of them pass
+Task 14B's tests and this one fails them, because the surprise tool never calls any of them.
+
+**(2) The three concrete bypasses round 3 named, each through the real handler.**
+
+```rust
+#[tokio::test]
+async fn the_three_implicit_root_reads_are_refused() {
+    let (mgr, _) = manager_on(public_provider()).await;
+    let app = app_created_by(private_provider(), "cohort-viewer").await;
+    let out = tempfile::tempdir().unwrap();
+
+    // (a) read_app: an id and a RELATIVE path. Nothing here names a root.
+    let e = dispatch(&mgr, "agent_drafter__read_app",
+                     json!({"id": app.id, "path": "src/app.ts"})).await.unwrap_err();
+    assert!(format!("{e:?}").contains("private model"), "{e:?}");
+
+    // (b) export_app: reads the root implicitly, writes wherever it is told.
+    //     `target_dir` is an ORDINARY path — Layer A has nothing to object to.
+    let e = dispatch(&mgr, "agent_drafter__export_app",
+                     json!({"id": app.id,
+                            "target_dir": out.path().display().to_string()}))
+            .await.unwrap_err();
+    assert!(format!("{e:?}").contains("private model"), "{e:?}");
+    assert_eq!(std::fs::read_dir(out.path()).unwrap().count(), 0,
+               "a refused export must leave nothing behind");
+
+    // (c) list_apps: no arguments at all.
+    let listed = dispatch(&mgr, "agent_drafter__list_apps", json!({})).await.unwrap();
+    assert!(!format!("{listed:?}").contains(&app.id),
+            "a private app's id reached a public session's list");
+    assert!(!format!("{listed:?}").contains("cohort"),
+            "a private app's TITLE reached a public session's list");
+}
+```
+
+⚠ **(c) asserts an omission, not a refusal.** Task 10D's rule — *a barrier that names what it refused
+has not refused it* — applies identically here: the list must not say "1 app hidden". An app title in
+this product is written by a model from the user's own request, so it is content.
+
+**(3) The `export_app` write target, which is an exfiltration primitive independent of the door.**
+
+```rust
+#[tokio::test]
+async fn export_app_cannot_write_outside_the_places_a_user_would_look() {
+    // Even for a PUBLIC app in a PUBLIC session — this is not a tier rule, it is
+    // "a tool that recursively reads a directory and writes it wherever it is
+    // told is a copy primitive", and the config file is the sharpest target:
+    // an app may legally contain a top-level `config.yaml` (update_app takes
+    // ordinary relative files, mod.rs:2126/:2220) and the export writes
+    // `target.join(rel)` (mod.rs:2763), overwriting the master switch.
+    let (mgr, roots) = manager_on(public_provider()).await;
+    let app = app_with_a_file(public_provider(), "config.yaml", "privacy_tiers:\n  enabled: false\n").await;
+    let before = std::fs::read_to_string(roots.config_yaml()).unwrap();
+
+    let e = dispatch(&mgr, "agent_drafter__export_app",
+                     json!({"id": app.id, "target_dir": roots.config_dir_str()}))
+            .await.unwrap_err();
+    assert!(format!("{e:?}").contains("cannot export"), "{e:?}");
+    assert_eq!(std::fs::read_to_string(roots.config_yaml()).unwrap(), before,
+               "the master switch was overwritten by an app file");
+
+    // Ordinary destinations still work — this must not become a jail.
+    let out = tempfile::tempdir().unwrap();
+    assert!(dispatch(&mgr, "agent_drafter__export_app",
+                     json!({"id": app.id, "target_dir": out.path().display().to_string()}))
+            .await.is_ok());
+}
+```
+
+⚠ **This test must not be satisfied by Layer A.** Layer A *does* see `target_dir` — it is an ordinary
+path argument — and it refuses the config **file**, not the config **directory** (Task 14B's entry 5
+is a file entry, and `is_under_any` matches `p == e || p.starts_with(e)`, so a target of the config
+*directory* is not a hit). Round 3 found exactly this: *"the plan's own test expects that
+config-directory target to be refused, but its generic containment algorithm can only match the exact
+file or descendants of directory entries. The proposed test and implementation are incompatible."*
+The refusal here therefore lives in `export_app`, on the **composed** destination path, and (3)'s
+assertion on the message (`"cannot export"`, not `"private model"`) is what forces it to be a
+different refusal from Layer A's.
+
+**(4) The other three roots' doors, and the invariant each rests on.**
+
+```rust
+#[tokio::test]
+async fn the_knowledge_doors_ends_are_closed_too() {
+    // CP1-CP4 (Task 10C) are the knowledge root's door. `kb_export` and
+    // `kb_import` are the two ends that do not pass through them: neither takes
+    // a RequestContext today (server.rs:735, :765), so neither can see a
+    // capability, and both read/write a caller-chosen path.
+    let (mgr, kbs) = manager_on(public_provider()).await;
+    let e = dispatch(&mgr, "knowledge__kb_export",
+                     json!({"kb_id": kbs.private_id, "dest_path": "/tmp/x.brkb"}))
+            .await.unwrap_err();
+    assert!(format!("{e:?}").contains("private model"), "{e:?}");
+    assert!(!std::path::Path::new("/tmp/x.brkb").exists());
+}
+
+#[test]
+fn the_memory_door_rests_on_task_19_and_this_is_the_pin() {
+    // The GLOBAL memory store has no per-object tier and does not need one:
+    // Task 19 refuses a private session's write to it, so it can only ever
+    // contain public-session content, so a public session reading it is not a
+    // crossing. That is the ONLY reason `retrieve_memories(is_global=true)` is
+    // permitted, and it is an invariant in another task — pin it here or the
+    // day Task 19 is descoped this door silently becomes a hole.
+    assert!(remember_global_as(ProviderTier::Private, "cohort", "PHI").is_err());
+    assert!(remember_global_as(ProviderTier::Public, "notes", "x").is_ok());
+    assert!(retrieve_global_as(ProviderTier::Public, "notes").is_ok());
+}
+
+#[tokio::test]
+async fn the_session_store_has_exactly_three_api_doors() {
+    // There is no filesystem resolver to guard — it is a sqlx pool. Its doors
+    // are Gate D, Gate G and read_session_blob. This asserts the property that
+    // makes that list closed: nothing outside `session/` obtains a raw storage
+    // handle, so a FOURTH reader cannot be built without failing Step 5 (5).
+    assert!(chatrecall_load_as(ProviderTier::Public, &private_session().await.id)
+            .await.is_err());
+    assert!(ingest_conversation_as(ProviderTier::Public, &private_session().await.id)
+            .await.is_err());
+    assert!(read_session_blob_for_another_session().await.is_err());
+}
+```
+
+**(5) The user's own channel is untouched — the door has two legitimate users.**
+
+```rust
+#[tokio::test]
+async fn the_gui_serves_a_private_app_to_its_owner() {
+    // `routes/apps.rs:73` builds an ArtifactStore at 15 sites to serve the
+    // user's own app in the Applications tab and the artifact panel. The door
+    // is INSIDE ArtifactStore, so it reaches those sites too — and it must not
+    // fire there. This is the test that fails an unconditional deny in `dir()`.
+    let app = app_created_by(private_provider(), "cohort-viewer").await;
+    assert_eq!(http_get(&format!("/apps/{}/", app.id)).await.status(), 200);
+    assert!(http_get("/apps").await.text().await.contains(&app.id));
+}
+```
+
+**(6) Migration and the ratchet, mirroring Task 10A/10B for apps.**
+
+```rust
+#[test]
+fn every_app_that_exists_today_migrates_public_and_the_ratchet_is_one_way() {
+    // AR-14, the twin of AR-2. There is no way to know which tier an existing
+    // app was built under: `Manifest.session_id` (store.rs:222-226) is
+    // `Option` and pre-dates nothing useful, and the session it names may be
+    // gone. Migrating them PRIVATE would take every existing app away from
+    // every public chat on first launch, with no affordance to get it back.
+    let root = seeded_app_root(&["old-a", "old-b"]);
+    migrate(&root).unwrap();
+    assert_eq!(tier_of(&root, "old-a"), ProviderTier::Public);
+
+    // …and a private-capability WRITE raises it, permanently.
+    raise(&root, "old-a", ProviderTier::Private).unwrap();
+    assert_eq!(tier_of(&root, "old-a"), ProviderTier::Private);
+    raise(&root, "old-a", ProviderTier::Public).unwrap();
+    assert_eq!(tier_of(&root, "old-a"), ProviderTier::Private, "the ratchet went backwards");
+
+    // Migration is ONE-SHOT, not a per-startup repair: a second run must not
+    // re-publicise an app the ratchet has since raised.
+    migrate(&root).unwrap();
+    assert_eq!(tier_of(&root, "old-a"), ProviderTier::Private);
+}
+
+#[test]
+fn an_unknown_app_is_private_not_public() {
+    // The direction that matters when the sidecar is missing, truncated or
+    // hand-edited. `tier_of` on an id with no row must refuse, or a corrupted
+    // sidecar declassifies the whole root.
+    let root = seeded_app_root(&[]);
+    assert_eq!(tier_of(&root, "never-seen"), ProviderTier::Private);
+}
+```
+
+- [ ] **Step 2: Run** → **COMPILE ERROR** (`ArtifactStore::new` takes 1 argument not 2;
+`unresolved module agent_drafter::tier`; `read_app` takes 1 argument not 2).
+
+- [ ] **Step 3: Implement**
+
+**(a) `ArtifactStore` carries the capability, and there is NO default.**
+
+```rust
+pub struct ArtifactStore {
+    root: PathBuf,
+    /// Issue #56 DR-14. Who is opening this door. There is deliberately no
+    /// `Default` and no `new(root)` overload: every construction site states a
+    /// caller, so a new one cannot silently inherit "unrestricted". The two
+    /// legitimate callers are the MCP server (per tool call) and the HTTP
+    /// routes (the user's own GUI).
+    caller: StoreCaller,
+}
+
+pub enum StoreCaller {
+    /// A tool call. Refuses any app whose tier this capability may not see.
+    Tool(CapabilityBit),
+    /// The user's own GUI, over the authenticated HTTP API. Always allowed:
+    /// `routes/apps.rs` serves the user their own app, and a deny there breaks
+    /// the Applications tab and the artifact panel for exactly the person the
+    /// feature protects.
+    UserChannel,
+}
+```
+
+⚠ **`CapabilityBit`, not `CallCapability`.** `ProviderTier` lives in `biorouter`, which depends on
+`biorouter-mcp` and not the reverse (`crates/biorouter/Cargo.toml:97`,
+`crates/biorouter-mcp/Cargo.toml:15`). The wire form is already a boolean for this reason (Task 10A
+(d)); `CapabilityBit` is that boolean plus the enforcement flag, defined in `biorouter-mcp`, and
+`McpMeta` flattens `CallCapability` into it once at `inject_into_extensions`.
+
+The door itself:
+
+```rust
+    fn dir(&self, id: &str) -> io::Result<PathBuf> {
+        validate_artifact_id(id)?;
+        // Issue #56 DR-14, the Agent Drafter root's door. EVERY id-keyed access
+        // in this type goes through here (manifest_path :454, write_file :622,
+        // read_file :630, read_bytes :637, artifact_dir :644, file_path :654,
+        // delete :668), which is why the guard is here and not in the tools:
+        // a tool that has not been written yet either calls this or cannot
+        // reach the root at all.
+        self.caller.assert_may_reach(&self.root, id)?;
+        let dir = self.root.join(id);
+        reject_store_symlinks(&self.root, &dir)?;
+        Ok(dir)
+    }
+```
+
+and the three leaks:
+
+- **`list()` (`:606`) filters, and does not narrate.** It already loads each manifest; drop the
+  entries the caller may not see, before `out.push(m)`. No count, no placeholder — Task 10D's rule.
+- **`root()` (`:443`) is removed from the MCP path.** Its one production caller is
+  `export_scaffold(self.root(), …)` at `mod.rs:2760`. Change `export_scaffold` to take the
+  `&ArtifactStore` (it immediately builds one from the path anyway, `mod.rs:1204-1213`) so the
+  capability travels with it. Keep `root()` `pub(crate)` for the tests that use it (`store.rs:744`,
+  `:764`, `:817`, `:905`) and for `routes/apps.rs`.
+- **`create_unique_dir` (`:465`)** is a *write* of a new id; it takes the caller's tier and stamps it
+  through (c) rather than refusing.
+
+**(b) `AgentDrafterServer::store()` takes the call's capability.**
+
+`fn store(&self) -> ArtifactStore` (`mod.rs:1923`) mints a fresh store per call — 16 call sites —
+which is exactly the shape this needs: it becomes `fn store(&self, cap: CapabilityBit)`. All 18
+`#[tool]` methods gain a `RequestContext` (one has it today, `create_app` `:1978`) and each extracts
+the bit through the same helper `knowledge/server.rs:222` uses for the session id.
+
+⚠ **Split each tool body.** `#[tool] pub async fn read_app(&self, params, context)` extracts the bit
+and calls `fn read_app_inner(&self, p: ReadAppParams, cap: CapabilityBit)`. The tests in Step 1 call
+the inner functions; only Step 1(1) and the registered-server integration test go over a real
+transport. This is the codebase's own recorded remedy for `RequestContext` untestability
+(`knowledge/server.rs:866-868`).
+
+**(c) The per-app tier — `agent_drafter/tier.rs`, mirroring `knowledge/tier.rs`.**
+
+Same file, same shape, same three functions, and deliberately no cleverness:
+
+- `<config>/agent_drafter/.app-tiers` — a JSON map `id -> "public" | "private"`, beside the apps
+  rather than inside any of them, so it cannot ride an `export_app` archive as an authority (the
+  identical reason Task 10A keeps the KB tier out of the manifest).
+- **Ratchet on write, at `create_unique_dir` and `write_file`/`save_manifest`**, using `max`, never
+  assignment — the `raise_unlocked` discipline Task 10B's ⚠ spells out. A private-capability caller
+  that writes to an app makes that app private, permanently.
+- **Migration is one-shot**, guarded on the sidecar's existence, exactly like Task 10A's, and
+  everything present at migration is **public** (AR-14).
+- **An id with no row is PRIVATE.** Absence is not permission; a truncated sidecar must fail closed.
+
+**Why an app gets a tier rather than the whole root being denied.** The alternative — refuse a public
+session the drafter root outright — is simpler and was considered. It takes Agent Drafter, a flagship
+feature, out of every chat on a commercial model, which is a far larger behaviour change than the
+ruling calls for and one the master toggle would be used to undo (making the feature's default
+useless). An app already records the chat that created it (`Manifest.session_id`, `store.rs:222-226`),
+sessions already carry `privacy_tier` (Task 6), and the KB tier is the same problem solved three
+tasks earlier. The tier is the smaller, more explicable rule: *an app built in a private chat stays
+in private chats.*
+
+**(d) `export_app`'s destination is constrained — see [Task 14F](#task-14f-export_apps-write-target-a-tool-that-reads-a-root-and-writes-anywhere-is-a-copy-primitive).**
+
+**(e) Knowledge: the two ends that bypass CP1–CP4.** `kb_export` (`server.rs:735`) and `kb_import`
+(`:765`) gain the `RequestContext` and call `tier::assert_reachable` — the same CP4 check Task 10C
+puts on the export path — before touching either the base or the caller's path. Nothing else in the
+knowledge module changes: CP1–CP4 are the door and Task 10C built them.
+
+⚠ **`KnowledgeService::root()` (`service.rs:415`) stays `pub`,** because `routes/knowledge.rs` joins
+off it at 7 sites (`:496`, `:522`, `:543`, `:570`, `:1522`, `:1604`, `:1636`) and those are the
+user's own GUI. What stops an eighth, tool-side reader is Step 5 (4)'s drift gate, not the type
+system. **State this as the weak spot it is:** knowledge is the one root whose door is a convention
+enforced by a grep rather than by a private function. Making `root()` `pub(crate)` and giving the
+server crate a narrower accessor is the right follow-up and is [Open question 21](#open-questions).
+
+**(f) Memory: two of the three, and the third is stated rather than closed.**
+
+- `retrieve_all` (`:347-354`) routes through `get_memory_file` per category instead of enumerating
+  `base_dir`, so the validation Task 14D adds covers it too.
+- `get_memory_file` already becomes `Result` in Task 14D; it additionally refuses when the caller may
+  not reach the store it names.
+- **`compose_instructions` (`:230-231`) cannot take a per-call capability** — it runs inside
+  `MemoryServer::new()`, at extension-load time, before any tool call exists. Threading a capability
+  there means a new argument on `SpawnServerFn` (`lib.rs:52-53`) and its 7 spawn sites, and it would
+  still be stale after `update_provider`. **It is not threaded.** What makes that safe is the same
+  invariant as (4)'s pin: the *global* store can only ever hold public-session content (Task 19), and
+  the *local* store is [AR-3](#ar-3--memorys-local-store-is-not-gated-and-a-private-sessions-note-reaches-every-session-opened-in-that-directory), already accepted. Recorded here so the omission is a decision.
+
+**(g) The session store: no new door, one new guard rail.** Its three API doors exist (Gate D, Gate
+G, `read_session_blob`). What does not exist is anything stopping a fourth: `SessionManager::storage()`
+(`:1187`) is `pub` and hands back the raw `Arc<SessionStorage>`. This task does **not** retire it —
+that is a wide refactor with callers all over the server crate — it pins the caller set (Step 5 (5))
+so a tool-side caller is a failing gate rather than a silent hole.
+
+- [ ] **Step 4: Run**
+
+```bash
+cargo test -p biorouter-mcp --lib -- agent_drafter::tier agent_drafter::store
+cargo test -p biorouter-mcp --lib -- knowledge::                 # pre-count is MEASURED, assert pre + N
+cargo test -p biorouter-mcp --lib -- memory::
+cargo test -p biorouter-mcp --test agent_drafter_registered      # the real-transport leg
+cargo test -p biorouter-server --lib routes::apps                # the user channel must NOT regress
+cargo check --workspace --all-targets
+```
+
+⚠ **Record the pre-counts for `knowledge::`, `memory::` and `routes::apps` before Step 3.** All three
+have substantial suites and "no failures" is satisfied by a run in which this task's tests did not
+compile. `routes::apps` is the one that matters most: it is the test of the *user* channel, and an
+unconditional deny in `dir()` breaks it wholesale — which is the single most likely wrong
+implementation of this task.
+
+- [ ] **Step 5: Gate**
+
+```bash
+# (1) THE gate: the door is inside the type, and it is not a per-tool check.
+#     Zero tool names in the store or the tier module.
+grep -cE '"(read_app|export_app|list_apps|update_app|build_app|launch_app|preview_app)"' \
+  crates/biorouter-mcp/src/agent_drafter/store.rs crates/biorouter-mcp/src/agent_drafter/tier.rs
+echo "expect: 0 and 0 — a tool name here means someone rebuilt the enumeration"
+
+# (2) Every id-keyed read passes the door. Enumerated, not counted: a bare count
+#     is satisfied by ten calls in one method.
+python3 - <<'PY'
+src = open('crates/biorouter-mcp/src/agent_drafter/store.rs').read()
+import re
+# every fn in `impl ArtifactStore` that touches `self.root` must do so through dir()
+body = src[src.index('impl ArtifactStore {'):]
+fns = re.split(r'\n    (?=(?:pub(?:\([a-z()]+\))? )?fn )', body)
+bad = []
+for f in fns:
+    name = re.match(r'\s*(?:pub(?:\([a-z()]+\))? )?fn (\w+)', f)
+    if not name: continue
+    n = name.group(1)
+    if n in ('new', 'dir', 'root'):           # the constructor, the door, the accessor
+        continue
+    if 'self.root' in f and 'self.dir(' not in f and 'assert_may_reach' not in f:
+        bad.append(n)
+print('unguarded self.root users:', bad)
+assert not bad, 'these reach the root without the door'
+PY
+
+# (3) NO default caller. A construction site that forgets is a compile error,
+#     not an unrestricted store.
+grep -rn "ArtifactStore::new(" --include='*.rs' crates/ | grep -v "mod tests" | grep -v "#\[cfg(test)\]"
+echo "expect: every hit passes TWO arguments. The user-channel spelling appears"
+echo "        ONLY in routes/apps.rs:"
+grep -rn "StoreCaller::UserChannel" --include='*.rs' crates/ | grep -v "mod tests"
+echo "expect: exactly 1 line, in crates/biorouter-server/src/routes/apps.rs (fn store)."
+echo "        A second one outside that file is a tool path claiming to be the user."
+grep -c "impl Default for StoreCaller\|StoreCaller::default" crates/biorouter-mcp/src/agent_drafter/store.rs
+echo "expect: 0 — a Default is how 'unrestricted' comes back as an accident"
+
+# (4) The knowledge root's NEW-SURFACE detector, extended by the two ends.
+#     Task 10C already counts the ways to reach base CONTENT from outside
+#     `knowledge/`; this adds the two ends that reach it from INSIDE while
+#     bypassing CP1-CP4.
+grep -rn "svc.root()\|service.root()\|\.root())" --include='*.rs' crates/biorouter-server/src crates/biorouter/src \
+  | grep -i knowledge
+echo "expect: exactly 7 lines, all in crates/biorouter-server/src/routes/knowledge.rs"
+echo "        (:496 :522 :543 :570 :1522 :1604 :1636). An EIGHTH is a new reader of"
+echo "        the knowledge root; if it is on a tool path it is a hole — see Open"
+echo "        question 21, which is open precisely because this is a grep and not a"
+echo "        private function."
+awk '/pub async fn kb_export/,/^    }/' crates/biorouter-mcp/src/knowledge/server.rs \
+  | grep -n "RequestContext\|assert_reachable"
+echo "expect: two lines, RequestContext on the SMALLER — the check precedes the read"
+
+# (5) The session store gains no fourth reader.
+grep -rn "\.storage()" --include='*.rs' crates/ | grep -v "mod tests" | grep -v "src/session/"
+echo "expect: only crates/biorouter-server/src/ hits (the user's own HTTP routes)."
+echo "        A hit under crates/biorouter/src/agents/ or crates/biorouter-mcp/ is a"
+echo "        tool-side reader of the session store that bypasses Gates D and G."
+
+# (6) The tier is not in the manifest, so it cannot ride an exported archive.
+grep -c "privacy_tier\|app_tier" crates/biorouter-mcp/src/agent_drafter/store.rs
+echo "expect: 0 — the tier lives in the sidecar, exactly as the KB tier does"
+
+# (7) The list filters in the STORE, not in the tool. Filtering in `list_apps`
+#     leaves `ArtifactStore::list` leaking to every other caller, including the
+#     preview card builder and the catalog.
+awk '/pub fn list\(/,/^    }/' crates/biorouter-mcp/src/agent_drafter/store.rs \
+  | grep -c "may_reach\|assert_may_reach\|tier::"
+echo "expect: >= 1"
+awk '/pub async fn list_apps/,/^    }/' crates/biorouter-mcp/src/agent_drafter/mod.rs \
+  | grep -c "tier::"
+echo "expect: 0 — the tool asks the store; it does not re-derive the rule"
+
+# (8) …and the list does not narrate what it omitted.
+grep -rniE '"[0-9]* (app|apps) (hidden|omitted|filtered)|hidden by privacy' \
+  crates/biorouter-mcp/src/agent_drafter/
+echo "expect: no output"
+```
+
+**What wrong implementation each rejects.**
+
+| # | Rejects |
+|---|---|
+| (1) | The enumeration, again — this time as "the drafter tools that read an app". Step 1(1) fails it behaviourally; this fails it by reading. |
+| (2) | A leak like `list()`'s `read_dir(&self.root)` reappearing in a new method. It is a **property over the type**, so it covers methods nobody has written. |
+| (3) | The single most likely wrong implementation: a `Default` caller, or an `ArtifactStore::new(root)` kept "for convenience", which makes every forgotten site unrestricted. And a tool path spelling itself `UserChannel` to make a test pass. |
+| (4) | An eighth reader of the knowledge root, and a `kb_export` that checks after it has already read the base. |
+| (5) | A fourth reader of the session store, built with `SessionManager::storage()` because it is `pub`. |
+| (6) | The tier riding an archive as an authority — export-private / import-public, the laundering Task 10A closed for knowledge bases. |
+| (7) | The filter placed in `list_apps` rather than in `list()`, which leaves the private ids reaching the preview-card builder and `Catalog::discover`. |
+| (8) | A helpful "3 apps hidden" line, which discloses the count and, with two calls, the identity. |
+
+And Step 1(5) rejects the base case no structural gate can: a guard in `dir()` that fires for the
+user's own GUI, breaking the Applications tab for the person the feature exists to protect.
+
+- [ ] **Step 6: Commit**
+
+```bash
+cargo check --workspace --all-targets
+git add crates/biorouter-mcp/src/agent_drafter/ crates/biorouter-mcp/src/knowledge/server.rs \
+        crates/biorouter-mcp/src/memory/mod.rs crates/biorouter-server/src/routes/apps.rs
+git commit -m "feat(privacy): put the read-deny in each private root's own resolver (#56)"
+```
+
+---
+
+
+### Task 14F: `export_app`'s write target — a tool that reads a root and writes anywhere is a copy primitive
+
+Task 14E's door decides **whether** `export_app` may read the app. This task decides **where** it may
+put the result, and it is a separate rule for a reason the round-3 review states exactly:
+
+> `export_app` is a stronger exfiltration: it recursively reads the implicit app root, builds the
+> scaffold, then writes it to an ordinary caller target. `target_dir=/tmp/out` passes Layer A and
+> copies the denied root somewhere public tools can read.
+
+Measured on the tree: `export_app` (`agent_drafter/mod.rs:2740`) takes `p.target_dir`, builds
+`let target = PathBuf::from(&p.target_dir)` and writes `target.join(rel)` for every scaffold entry
+(`:2763`), creating parents as it goes. `export_scaffold` preserves the app's **extra** files
+(`render.rs:939`), so anything `update_app` wrote (`mod.rs:2126`, `:2220`) is copied verbatim.
+
+Two distinct problems, and only one of them is about tiers:
+
+1. **A tier bypass.** A private app read by a private session and written into a public location is
+   the laundering Task 10A closed for knowledge-base archives (*"a MODEL's export of a private base
+   cannot be aimed outside the deny root"*). The identical rule applies here.
+2. **A write primitive, at any tier.** `target_dir=<config dir>` plus an app file named `config.yaml`
+   overwrites the master switch. Layer A does **not** catch this: its `config.yaml` entry is a *file*
+   entry and `is_under_any` matches `p == e || p.starts_with(e)`, so the config **directory** as a
+   destination is not a hit. Round 3 found the plan's own test and its containment algorithm to be
+   incompatible on precisely this point.
+
+**The rule, and it is deliberately blunt:**
+
+| Caller | Destination |
+|---|---|
+| a **model**, i.e. any `agent_drafter__export_app` tool call | a directory **under the session working directory**, or the app's own `exports/` under the drafter root. Nothing else. |
+| the **user**, i.e. `POST /apps/{id}/export` over the authenticated API | wherever they say — it is their machine and their file dialog |
+
+**Why not "anywhere except the private roots".** That is the read/write split this design has twice
+refused to make: it needs a per-tool answer to *which argument is a destination*, and it fails open
+on every location a future entry does not name. An allow-list of two locations is unfailable, and the
+cost is one sentence in a refusal telling the model to export into the workspace and then move the
+folder. Task 10A made the same call for `kb_export`'s `dest_path`, with the same reasoning; making a
+different one here would leave two rules to keep in step.
+
+⚠ **This is not a jail.** `developer__shell` can still `cp -r` the exported folder anywhere the user's
+own filesystem permissions allow, in a public session or a private one. The rule stops `export_app`
+from being a **one-call** copy of a directory the caller cannot otherwise open, and stops it being a
+write primitive aimed at the master switch. It does not pretend to stop a determined copy.
+
+**Files:**
+
+| Action | Path | Anchor |
+|---|---|---|
+| Modify | `crates/biorouter-mcp/src/agent_drafter/mod.rs` | `export_app` `:2740`; `let target = PathBuf::from(&p.target_dir)` and the write loop `:2763-2769`; `stage_full_payload`'s target |
+| Modify | `crates/biorouter-server/src/routes/apps.rs` | the export route — takes the user-channel destination unchanged |
+| Reference | `crates/biorouter-mcp/src/agent_drafter/render.rs` | `:939` — extra files are preserved into the scaffold |
+
+- [ ] **Step 1: Write the failing tests** — Task 14E Step 1(3) is one of them; add the tier half and
+the escape attempts:
+
+```rust
+#[tokio::test]
+async fn a_models_export_cannot_be_aimed_outside_the_workspace() {
+    let (mgr, ws) = manager_on_with_workspace(public_provider()).await;
+    let app = app_created_by(public_provider(), "notes").await;
+    for bad in ["/tmp/out", "../../elsewhere", "~/Desktop", &home_config_dir_str(),
+                &format!("{}/../escape", ws.display())] {
+        let e = dispatch(&mgr, "agent_drafter__export_app",
+                         json!({"id": app.id, "target_dir": bad})).await.unwrap_err();
+        assert!(format!("{e:?}").contains("cannot export"), "{bad}: {e:?}");
+    }
+    // The two permitted shapes, and nothing was written by the refusals above.
+    assert!(dispatch(&mgr, "agent_drafter__export_app",
+                     json!({"id": app.id, "target_dir": ws.join("out").display().to_string()}))
+            .await.is_ok());
+    assert!(!std::path::Path::new("/tmp/out").exists());
+}
+
+#[tokio::test]
+async fn the_users_own_export_route_is_unconstrained() {
+    // The mirror. This rule constrains MODELS, not people — the same split
+    // Task 10A draws for kb_export's dest_path.
+    let app = app_created_by(private_provider(), "cohort-viewer").await;
+    let out = tempfile::tempdir().unwrap();
+    assert_eq!(http_post(&format!("/apps/{}/export", app.id),
+                         json!({"target_dir": out.path()})).await.status(), 200);
+    assert!(out.path().join("manifest.json").exists());
+}
+```
+
+⚠ **`../escape` from inside the workspace must be refused, and that is why the check is on the
+CANONICALIZED, composed destination** — the deepest-existing-ancestor technique
+`privacy::path_policy::is_under_any` already uses (Task 14B (d)), not `starts_with` on the raw
+string. A `target_dir` of `<ws>/../elsewhere` is textually "under the workspace" and is not.
+
+- [ ] **Step 2: Run** → **FAIL** (every destination is currently accepted).
+
+- [ ] **Step 3: Implement.** In `export_app`, before `export_scaffold` runs — so a refused export
+does no reading either:
+
+```rust
+        // Issue #56. A tool that recursively reads a directory and writes it
+        // wherever it is told is a copy primitive, whatever the tier. Two
+        // permitted destinations, resolved and canonicalized; everything else
+        // is refused with a message that tells the model what to do instead.
+        //
+        // BEFORE export_scaffold: a refused export must not have read the app.
+        let target = export_destination(&p.target_dir, cap, &self.workspace, &self.root)?;
+```
+
+with `export_destination` returning the composed absolute path or the refusal, and the refusal
+naming the workspace so the model's next attempt succeeds:
+
+> `export_app` can only write into this chat's working directory. Export to a folder there — for
+> example `./<app-id>-export` — and then move it wherever you want, or use the Applications tab to
+> export it yourself. Do not retry with a different absolute path; every path outside the working
+> directory is refused the same way.
+
+- [ ] **Step 4: Run** → the two tests above, plus `cargo test -p biorouter-mcp --lib agent_drafter::`
+(pre-count MEASURED; assert `pre + N`).
+
+- [ ] **Step 5: Gate**
+
+```bash
+# The check precedes the read. After it, a refused export has already walked the
+# app root — which is the thing this task exists to stop.
+awk '/pub async fn export_app/,/^    }/' crates/biorouter-mcp/src/agent_drafter/mod.rs \
+  | grep -n "export_destination\|export_scaffold\|artifact_dir"
+echo "expect: export_destination on the SMALLEST line number"
+
+# There is ONE destination resolver, and the raw argument is not used anywhere else.
+grep -c "PathBuf::from(&p.target_dir)\|PathBuf::from(p.target_dir" \
+  crates/biorouter-mcp/src/agent_drafter/mod.rs
+echo "expect: 0 — the raw argument must not survive as a path"
+grep -c "fn export_destination" crates/biorouter-mcp/src/agent_drafter/mod.rs
+echo "expect: 1"
+
+# `stage_full_payload` writes under the SAME resolved target, not a second one.
+awk '/fn stage_full_payload/,/^}/' crates/biorouter-mcp/src/agent_drafter/mod.rs \
+  | grep -c "target_dir"
+echo "expect: 0 — it takes the already-resolved &Path"
+
+# It is not a jail: the shell is untouched.
+grep -c "export_destination" crates/biorouter-mcp/src/developer/shell.rs
+echo "expect: 0"
+```
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add crates/biorouter-mcp/src/agent_drafter/mod.rs crates/biorouter-server/src/routes/apps.rs
+git commit -m "fix(privacy): stop export_app being a one-call copy of a root it may not open (#56)"
+```
+
+---
 
 ### Task 15: Gate C's siblings — the eight other ways to reach an MCP server
 
@@ -15967,9 +16779,10 @@ safe once the app socket no longer treats an app id as an authenticator.
 | **17** | **Should Linux get a Landlock read-deny by granting the complement?** Landlock has no deny rule, so hiding a subpath means handling read accesses and granting read to every sibling of every ancestor of every deny root. Task 14A declines it in v1 for three measured reasons, the disqualifying one being that anything created in an enumerated ancestor *after* the ruleset is built is unreadable for that command's lifetime — `cd ~ && mkdir out && echo x > out/f && cat out/f` fails. | Task 14A makes `bubblewrap` the only Linux mechanism that can express the read-deny, and the refusal names `apt install bubblewrap` as the fix. A Landlock complement would remove that dependency; it needs a real ergonomics trial on a populated `$HOME` before it is worth the failure mode. |
 | **18** | **Should the per-app agent WebSocket be authenticated by something a shell cannot obtain?** `GET /apps/{id}` and `GET /apps/{id}/agent` are deliberately unauthenticated (`auth.rs:52-78`), and `serve_index` (`apps.rs:168-184`) embeds the socket token in the page it serves, so any loopback client that knows an app id can read the token and drive that app's agent. DR-14 removes the two local sources of app ids (`GET /apps` needs the secret; the app tree is deny root #4) but does not close the path for an id the model already has. | Nothing in this plan; the residual is stated in [AR-6](#ar-6--on-a-host-that-cannot-express-the-read-deny-a-public-session-loses-the-shell-and-two-costs-come-with-the-sandbox-itself) and pinned by Task 14C's `the_unauthenticated_app_surface_does_not_grow_by_accident`. |
 | **20** | **Should the daemon's HTTP API authenticate a caller that is on the same machine?** [AR-11](#ar-11--the-daemons-own-api-secret-is-recoverable-so-the-second-door-is-held-by-layer-a-and-not-by-the-environment-strip): the secret is recoverable from the daemon's own environment (`ps -Ewww -p $PPID` on macOS, `/proc/self/environ` in-process on Linux), so `check_token`'s header comparison stops a remote caller and not a local one. Layer A covers the biggest local route, `POST /agent/call_tool`, because that route dispatches through the same choke point. It does **not** cover the routes that return private content without running a tool: `GET /sessions/{id}/export` and the rest of the transcript family, the `/knowledge/*` read routes, `GET /apps/{id}/export`, and `GET /diagnostics/{id}` — which returns a zip of `session.json`, recent `logs/*.jsonl` and a verbatim `config.yaml`, and is the widest single route in the API. | Nothing in this plan. Task 14C states the residual instead of the old "no way to authenticate" claim, and pins the strip so the *remote* half stays closed. Closing the local half needs a per-caller credential the daemon does not hand to its own children — the same shape as [Open question 18](#open-questions), and probably the same fix. |
-| **19** | **Should DR-14's Agent Drafter root narrow to `.vault/` plus other sessions' apps?** Denying the whole root means a public-capability chat cannot `cat` its own app's source from the shell, which is a real ergonomic loss for the drafter workflow (AR-6(3)). The whole root is on the list because it is also the only on-disk source of app **ids**, which Open question 18 shows are load-bearing. | Task 14B denies the whole root. Narrowing it is safe only after 18 is closed. |
+| **19** | **Should DR-14's Agent Drafter root narrow to `.vault/` plus other sessions' apps on the FILESYSTEM channel too?** Task 14E has now answered the *tool* channel: apps carry a tier, and a public session may read a public app and not a private one. The filesystem channel still denies the whole root, so a public-capability chat cannot `cat` even its **own** public app's source from the shell (AR-6(3)) — a real ergonomic loss, and now an asymmetry a user can see (`read_app` works, `cat` does not). Narrowing it means teaching Layer A which app a raw path belongs to, which is the per-object resolution the filesystem channel deliberately does not have. | Task 14B denies the whole root on the filesystem channel; Task 14E resolves per app on the tool channel. Narrowing the filesystem side is a follow-up, and it is no longer blocked on 18 — Task 14E's `list_apps` filter already removes a **private** app's id from a public model's reach, which was 18's dependency. |
 | **16** | **`--text-subtle` on `--background-medium` is sub-AA in three of the six family×mode scopes, and #56 is not the right owner of the fix.** Measured with `ui/desktop/scripts/lib/theme-tokens.mjs`: parchment:dark **3.75**, alma-mater:light **4.45**, alma-mater:dark **4.28**, against a 4.5 floor. `--background-medium` is the row-hover ground that `biorouter-list-row`, `SessionItem` and `ExtensionItem` all paint, so this affects every subtle label on a hovered row **today** — it is a pre-existing gap, not something the privacy badge introduces, and `check-contrast.mjs` has never asserted it. Task 26 therefore audits only `--text-default` and `--text-muted` on that ground (the two the badge actually uses) and the total is **288**, not 294. Auditing the third token as well makes the run exit 1 with three failures whose only fix is a theme-token edit — precisely the "Zero theme work" Task 26 Step 5 forbids, and a scope the privacy feature has no business taking. | Nothing in this plan. Open it as a theme/a11y follow-up at Task 40 Step 6, alongside the deferred findings from the 2026-07 theme redesign. Do **not** close it by lowering the threshold in `check-contrast.mjs`. |
 | **21** | **`bin/knowledge_ingest_probe.rs` is the one macro caller with no behavioural row.** It is a `[[bin]]` target, so `cargo test -p biorouter-server --lib` never compiles it and no harness in the repo executes it. Task 10B closes it *by construction* instead — `ProviderCompleter::paired` hands back the completer and the tier from one `Arc`, and Step 5 asserts zero surviving production uses of `ProviderCompleter::new` — but if a future edit re-derives the probe's tier from `cli.provider` rather than from the instance, nothing fails. | Nothing in this plan. **Accepted risk, in the operator's terms:** the probe is a developer diagnostic run by hand with `--root` and a default `probe` KB; a wrong tier there mis-stamps one developer's own scratch base on their own machine, and no model can reach it. If the probe ever becomes something a model or a route invokes, it needs a behavioural row before that lands. |
+| **22** | **The knowledge root's door is a convention enforced by a grep, not by a private function.** The other three roots have a resolver the type system can hide: `ArtifactStore::dir` is already private (`agent_drafter/store.rs:447`), `MemoryRouter::get_memory_file` is private (`memory/mod.rs:336`), and the session store is a sqlx pool nobody outside `session/` should hold. Knowledge has none — `resolve_readable_path` (`knowledge/store.rs:121`) has **3** call sites against roughly **40** direct filesystem reads in the same module, and `KnowledgeService::root()` is `pub` (`service.rs:415`) because `routes/knowledge.rs` legitimately joins off it at 7 sites. So CP1–CP4 are the door and Task 14E Step 5 (4) is what stops an eighth reader appearing beside them. | Nothing in this plan. **Accepted risk, in the operator's terms:** a future reader of the knowledge tree added inside `biorouter-mcp` would bypass the barrier and only a grep would notice. The fix is to make `root()` `pub(crate)` and give `biorouter-server` a narrower accessor that returns a *base's* directory rather than the tree's — a mechanical change across 7 call sites, deliberately not bundled into a task whose subject is something else. |
 
 ---
 
