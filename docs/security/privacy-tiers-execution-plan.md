@@ -9061,7 +9061,7 @@ carry the capability *with the call*:
 
 | | How the capability travels | Why it cannot be raced |
 |---|---|---|
-| **Layer A** | a **local** in `dispatch_tool_call`'s own stack frame: the same `caller_tier` Gate C computes at `:1607-1614`, used to build a `PrivatePathPolicy` and consumed before the function returns | the refusal is returned from the synchronous portion, **before** `let fut = async move` is constructed at `:1544`. A concurrent dispatch cannot reach into this frame; the worst it can do is change what the *next* call reads |
+| **Layer A** | a **local** in `dispatch_tool_call`'s own stack frame: the same `caller_tier` binding [Task 14](#task-14-gate-c--the-dispatch-choke-point-and-the-refusal-as-a-pure-function) introduces for Gate C (`let caller_tier = self.capability_tier().await;`), used to build a `PrivatePathPolicy` and consumed before the function returns | the refusal is returned from the synchronous portion, **before** `let fut = async move` is constructed at `:1544`. A concurrent dispatch cannot reach into this frame; the worst it can do is change what the *next* call reads |
 | **Layer B** | the per-call **`_meta`** map — the same channel `biorouter-session-id` already rides in (`mcp_client.rs:864-880`), read server-side from `RequestContext` (`knowledge/server.rs:222-224`) | two overlapping dispatches build two `McpMeta`s from two locals. There is no cell for a second call to clear |
 
 This also kills the round-1 note about task-locals. That note was right about `spawn_and_serve`'s
