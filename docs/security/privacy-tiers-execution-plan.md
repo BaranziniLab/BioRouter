@@ -18253,6 +18253,272 @@ git commit -m "feat(privacy): one master toggle for the whole privacy-tier featu
 ---
 
 
+### Task 30A: The non-private-model disclosure
+
+**This task is requirement 3 of
+[DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store), and it is the term on which
+that ruling's accepted risks are acceptable.** The operator descoped the general filesystem barrier
+*"for now"* and, in the same breath, required that users *"understand the risks of using non-private
+models"* — that a model which is not HIPAA-compliant, not hosted on-premise and not local *"can
+potentially gather information from them"*. An accepted risk the user is told about is a tradeoff the
+user makes. The same risk undisclosed is a misrepresentation. **If this task does not ship, the
+narrowing is not defensible**, which is why it is a task with a gate rather than a paragraph in
+§14 and why [Task 32](#task-32-phase-4-gate) runs its assertions.
+
+⚠ **This is the one part of the feature that must work with the master toggle OFF.** DR-15 turns off
+gates, ratchet and refusals; it does not turn off the truth. With enforcement off the exposure is
+*larger*, so the disclosure is shown identically and the settings strip says both things. Wiring the
+disclosure behind `privacy_tiers_enabled()` is the plausible wrong implementation and Step 5 fails it.
+
+⚠ **One copy, one definition, served to every surface.** The sentence exists in the GUI, in the CLI,
+in `docs/`, and on the landing site. Four hand-written copies drift within one release and the
+drifted one is always the one a user reads. The text lives in **Rust**, the renderer fetches it, and
+the docs surfaces quote the same constant. A grep gate asserts there is exactly one definition.
+
+⚠ **It says what is *not* protected, and it says it first.** The temptation is to describe the
+guarantee — locked transcripts, no private extensions — because that is the flattering half. A user
+who reads only the guarantee concludes the machine is opaque to a public model, which is precisely
+what DR-17 says it must not imply. The order is: what this model can reach → what BioRouter does stop
+→ what to use instead.
+
+**Files:**
+
+| Action | Path | Anchor |
+|---|---|---|
+| Create | `crates/biorouter/src/privacy/disclosure.rs` | new — the **one** copy constant, the three-property predicate (`is_hipaa_eligible` / `is_on_premise` / `is_local`, all three false ⇒ disclose), and the acknowledgement record |
+| Modify | `crates/biorouter-server/src/routes/config_management.rs` | `GET /privacy/disclosure` (the copy plus whether it has been acknowledged) and `POST /privacy/disclosure/ack`; register beside Task 30's toggle routes |
+| Create | `ui/desktop/src/components/privacy/NonPrivateModelDisclosure.tsx` | new — the one-time blocking dialog, built on Task 29's `DangerousConfirmDialog` focus discipline (Cancel-equivalent holds focus, Enter does not acknowledge) |
+| Modify | `ui/desktop/src/components/settings/privacy/PrivacyPanel.tsx` | Task 30's panel; the permanent long-form statement lives here, above the master toggle |
+| Modify | `ui/desktop/src/components/settings/providers/ProviderGrid.tsx` | ⚠ this file hardcodes its three section labels (`"Local Models"` `:208`, `"Institutional Models"` `:218`, `"Commercial Models"` `:227`) and ignores `providerOrdering.ts`'s `label`/`accentClassName` — the Commercial section's one-line form goes **here**, not in the ordering module, or nothing renders |
+| Modify | `ui/desktop/src/components/bottom_menu/` model chip | the short form as the Public badge's tooltip (Task 28 places the badge; this adds its text) |
+| Modify | `crates/biorouter-cli/src/commands/configure.rs` | printed when a public provider is selected, and on first public bind — R10 makes the CLI a required surface (Task 31) |
+| Modify | `docs/security/data-privacy-and-phi.md` | the same words, quoted from the constant (Task 39 owns the sweep) |
+| Modify | `landing/docs.html` | the same words (Task 36 owns the drift check) |
+
+- [ ] **Step 1: Write the failing tests**
+
+```rust
+#[test]
+fn the_disclosure_names_all_three_properties_the_ruling_names() {
+    // Not a spelling test. The operator's sentence has three conditions —
+    // "not HIPAA compliant", "not hosted on-premise", "not local" — and a copy
+    // edit that drops one turns a specific warning into a vague one. Each is
+    // asserted separately so the failure names which was lost.
+    let c = disclosure::COPY_LONG;
+    assert!(c.contains("HIPAA"));
+    assert!(c.contains("on-premise") || c.contains("on premises"));
+    assert!(c.to_lowercase().contains("local"));
+    // …and the thing at risk is named concretely, not as "your data".
+    assert!(c.contains("files on this computer"));
+}
+
+#[test]
+fn the_disclosure_states_the_limit_of_the_protection_not_only_the_protection() {
+    // DR-17's honest consequence, in the copy: the barrier stops the
+    // agent-mediated path, the transcript path and tier escalation. It does NOT
+    // make the machine opaque. A copy that omits this is the failure mode this
+    // whole task exists to prevent.
+    let c = disclosure::COPY_LONG;
+    assert!(c.contains("does not"));
+    assert!(c.contains("shell") || c.contains("read files"));
+}
+
+#[test]
+fn only_a_model_that_is_none_of_the_three_triggers_it() {
+    assert!(disclosure::required_for(&meta("openai")));          // public
+    assert!(disclosure::required_for(&meta("anthropic")));       // public
+    assert!(!disclosure::required_for(&meta("llamacpp")));       // local
+    assert!(!disclosure::required_for(&meta("ollama")));         // local
+    assert!(!disclosure::required_for(&meta("versa_azure")));    // institutional
+    assert!(!disclosure::required_for(&meta("versa_bedrock")));  // institutional
+    // The predicate is the tier, not a second list. A provider added to the
+    // private set in Task 5 must stop triggering this with no edit here.
+    assert_eq!(
+        disclosure::required_for(&meta("versa_azure")),
+        !matches!(ProviderTier::Private, t if t == meta("versa_azure").tier())
+    );
+}
+
+#[test]
+fn the_disclosure_is_independent_of_the_master_toggle() {
+    // DR-15 turns enforcement off. It does not turn the truth off, and with
+    // enforcement off the exposure is larger, not smaller.
+    for enabled in [true, false] {
+        set_privacy_tiers_enabled(enabled);
+        assert!(disclosure::required_for(&meta("openai")));
+    }
+}
+```
+
+```rust
+#[tokio::test]
+async fn the_acknowledgement_is_recorded_once_and_is_not_agent_writable() {
+    // Once per install, not once per session: a dialog on every chat is clicked
+    // through, which is exactly the outcome this task exists to avoid.
+    assert!(!get_disclosure(&app).await.acknowledged);
+    post_ack(&app).await;
+    assert!(get_disclosure(&app).await.acknowledged);
+
+    // And it is a user act. A model that could acknowledge on the user's behalf
+    // would silently remove the only thing making DR-17's risks acceptable.
+    assert_eq!(post_ack_with(secret_key_only()).await.status(), 403);
+}
+```
+
+```tsx
+it('a public model gets the dialog before the first turn, and a local model never does', async () => {
+  const { rerender } = render(<App provider="openai" disclosureAcknowledged={false} />);
+  expect(await screen.findByRole('dialog', { name: /not hosted by your institution/i })).toBeVisible();
+  // BEFORE, not after: an acknowledgement collected once the transcript already
+  // went out is a receipt, not a disclosure.
+  expect(sendTurn).not.toHaveBeenCalled();
+
+  rerender(<App provider="llamacpp" disclosureAcknowledged={false} />);
+  expect(screen.queryByRole('dialog')).toBeNull();
+});
+
+it('the dialog cannot be dismissed by Escape or an overlay click', async () => {
+  render(<NonPrivateModelDisclosure open onAcknowledge={onAck} />);
+  await user.keyboard('{Escape}');
+  expect(screen.getByRole('dialog')).toBeVisible();
+  await user.click(screen.getByTestId('dialog-overlay'));
+  expect(screen.getByRole('dialog')).toBeVisible();
+  expect(onAck).not.toHaveBeenCalled();
+});
+
+it('the panel states the limit even when enforcement is off', () => {
+  render(<PrivacyPanel enabled={false} />);
+  expect(screen.getByText(/enforcement off/i)).toBeInTheDocument();
+  expect(screen.getByText(/can read files on this computer/i)).toBeInTheDocument();
+});
+
+it('the renderer does not carry its own copy of the sentence', () => {
+  // The dialog renders server-supplied text. A hardcoded English string here is
+  // the drift this task exists to prevent, and it is invisible until the two
+  // disagree.
+  render(<NonPrivateModelDisclosure open copy={{ long: 'SERVED-COPY-MARKER' }} onAcknowledge={vi.fn()} />);
+  expect(screen.getByText(/SERVED-COPY-MARKER/)).toBeInTheDocument();
+});
+```
+
+- [ ] **Step 2: Run** → Rust **COMPILE ERROR** (`unresolved module disclosure`); TS **FAIL**.
+
+- [ ] **Step 3: Implement**
+
+**The copy.** Long form (the dialog and the settings panel), with the provider name interpolated:
+
+> **{Provider} is not hosted by your institution.**
+>
+> It is not HIPAA-compliant, is not hosted on-premise, and does not run on this computer. Anything a
+> chat on this model can reach, it can send there — **files on this computer**, the contents of your
+> working directory, and whatever a command you approve prints.
+>
+> BioRouter does stop three things: this model cannot read another chat's transcript, cannot read a
+> knowledge base marked private, and cannot use the private data extensions (**UCSF OMOP**, **CDW**)
+> or switch this chat to a private model to reach them.
+>
+> It **does not** stop it reading ordinary files on this computer — including files an earlier
+> private chat wrote outside BioRouter's own storage. If the work involves patient data, use a local
+> model or an institutional one.
+
+Short form (the model chip's Public badge tooltip, and the CLI's one-liner):
+
+> Not HIPAA-compliant, not on-premise, not local — this model can see files on this computer. Private
+> chats and private knowledge bases stay out of its reach.
+
+**When it is shown.**
+
+| Surface | Trigger | Blocking? |
+|---|---|---|
+| Dialog | the first time a public-tier provider is bound **in this install**, before the first turn on it | yes, once |
+| Provider grid, Commercial section | always | no |
+| Model chip badge tooltip | always, on a public model | no |
+| Settings → Privacy | always, above the master toggle, and restated when the toggle is off | no |
+| CLI | `biorouter configure` on selecting a public provider, and once on first public bind | no |
+| `docs/` + `landing/docs.html` | always | no |
+
+**Why once per install rather than once per session.** A confirmation a user sees daily is a
+confirmation they stop reading, and this one has no *action* to gate — there is no safe alternative
+being offered at that moment, only a fact to convey. So it is shown once, forcefully, and is then
+carried permanently by a badge, a section header and a settings panel that anyone can go back to.
+That is the same reasoning DR-8 uses for grading a session's declassification rather than confirming
+every read.
+
+**The predicate is the tier, not a third list.** `disclosure::required_for` is
+`provider.tier() == ProviderTier::Public`. Task 5 owns the membership, DR-1 owns the rule, and adding
+a fourth private provider must switch this off with no edit here. A hand-written provider list in
+`disclosure.rs` is the wrong implementation Step 5 greps for.
+
+- [ ] **Step 4: Run**
+
+```bash
+cargo test -p biorouter --lib privacy::disclosure
+cargo test -p biorouter-server --lib routes::config_management
+just generate-openapi && (cd ui/desktop && npm run generate-api)
+cd ui/desktop && npx vitest run NonPrivateModelDisclosure PrivacyPanel ProviderGrid 2>&1 | tail -6
+```
+
+- [ ] **Step 5: Gate**
+
+```bash
+# (1) ONE definition of the sentence. The failure this catches is four
+#     hand-written copies that drift, and it is invisible until a user reads the
+#     stale one. Anchored on a distinctive phrase from the copy, not on the word
+#     "HIPAA" — which legitimately appears in docs/security/data-privacy-and-phi.md
+#     as prose.
+grep -rn "is not HIPAA-compliant, is not hosted on-premise" --include='*.rs' --include='*.ts' --include='*.tsx' crates/ ui/desktop/src/
+echo "expect: exactly 1 hit, in crates/biorouter/src/privacy/disclosure.rs"
+
+# (2) The renderer holds no copy of its own — it renders what the route served.
+cd ui/desktop && grep -rn "HIPAA" src/components/ | grep -v "\.test\."
+echo "expect: no output (the string arrives over the API)"
+cd ..
+
+# (3) The disclosure does NOT read the master toggle. This is the plausible
+#     wrong implementation — every other privacy surface reads it, so wiring
+#     this one the same way is the natural mistake, and it silences the
+#     disclosure in exactly the configuration where the risk is highest.
+awk '/mod disclosure|^pub fn required_for|^pub const COPY/,0' crates/biorouter/src/privacy/disclosure.rs \
+  | grep -c "privacy_tiers_enabled"
+echo "expect: 0"
+
+# (4) The predicate is the tier, not a second provider list. A list here goes
+#     stale the first time Task 5's private set changes, and it goes stale
+#     silently in the unsafe direction.
+grep -cE '"openai"|"anthropic"|"llamacpp"|"ollama"|"versa_' crates/biorouter/src/privacy/disclosure.rs \
+  | grep -v '^0$' && echo "FAIL: disclosure.rs names providers" || echo "OK: no provider names outside tests"
+
+# (5) It is on every surface R10 requires. Enumerated, because a count is
+#     satisfied by four hits on one surface.
+for f in ui/desktop/src/components/privacy/NonPrivateModelDisclosure.tsx \
+         ui/desktop/src/components/settings/privacy/PrivacyPanel.tsx \
+         ui/desktop/src/components/settings/providers/ProviderGrid.tsx \
+         crates/biorouter-cli/src/commands/configure.rs ; do
+  test -e "$f" && grep -qi "disclosure" "$f" && echo "OK   $f" || echo "MISS $f"
+done
+echo "expect: OK on all four"
+```
+
+**What this catches.** Four wrong implementations, each of which leaves the feature looking finished.
+(1) A disclosure gated on `privacy_tiers_enabled()`, which goes quiet exactly when it matters most —
+gate (3). (2) Four hand-written copies of the sentence, one of which is already stale — gate (1)+(2).
+(3) A copy that describes only the guarantee and never the limit, which is the reading DR-17 forbids —
+`the_disclosure_states_the_limit_of_the_protection_not_only_the_protection`. (4) An acknowledgement
+collected *after* the first turn, which records consent for something that already happened — the
+`sendTurn` assertion in the first TSX test.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add crates/biorouter/src/privacy/disclosure.rs crates/biorouter-server/src/routes/config_management.rs \
+        crates/biorouter-cli/src/commands/configure.rs ui/desktop/src/components/privacy \
+        ui/desktop/src/components/settings ui/desktop/openapi.json ui/desktop/src/api \
+        docs/security/data-privacy-and-phi.md landing/docs.html
+git commit -m "feat(privacy): disclose what a non-private model can reach (#56, DR-17 req. 3)"
+```
+
+---
+
 ### Task 31: The CLI is a required R10 surface
 
 Every repair affordance in Phase 4 so far is a GUI card. `biorouter-cli/src/session/builder.rs:479-484`
