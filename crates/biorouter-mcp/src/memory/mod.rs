@@ -169,7 +169,10 @@ const GLOBAL_INDEX_HEADER: &str = "\n\nGlobal Memories — categories only, cont
      These were saved by other sessions and are shared by every project on this machine, so their\n\
      contents are deliberately kept out of this prompt. If one of the categories below looks\n\
      relevant to what the user is asking, read it with\n\
-     `retrieve_memories(category=\"<category>\", is_global=true)` — a tool call the user can see.\n\
+     `retrieve_memories(category=\"<category>\", is_global=true)` — one category at a time, which\n\
+     the user is asked to approve before it runs. There is no all-categories global read; asking\n\
+     for `category=\"*\"` with `is_global=true` is refused. Do not read a category on the chance it\n\
+     might be useful: each read costs the user an approval prompt.\n\
      Never guess at, or claim to know, the contents of a category you have not retrieved.\n";
 
 /// Heads the inlined local memories.
@@ -181,11 +184,14 @@ impl Default for MemoryServer {
     }
 }
 
-#[tool_router(router = tool_router)]
-impl MemoryServer {
-    #[allow(clippy::too_many_lines)]
-    pub fn new() -> Self {
-        let instructions = formatdoc! {r#"
+/// The memory protocol handed to the model, before either store's contents are
+/// appended by [`MemoryServer::compose_instructions`].
+///
+/// Extracted from `new()` so a test can compose the *real* prompt rather than an
+/// empty base — otherwise "the prompt no longer says X" passes vacuously.
+#[allow(clippy::too_many_lines)]
+fn base_instructions() -> String {
+    formatdoc! {r#"
              This extension allows storage and retrieval of categorized information with tagging support. It's designed to help
              manage important information across sessions in a systematic and organized manner.
              Capabilities:
@@ -257,7 +263,8 @@ impl MemoryServer {
                - Provides all memories within the specified context.
                - Use: `retrieve_memories(category="development", is_global=False)`
                - Note: If you want to retrieve all local memories, use `retrieve_memories(category="*", is_global=False)`
-               - Note: If you want to retrieve all global memories, use `retrieve_memories(category="*", is_global=True)`
+               - Note: there is NO all-global equivalent. Reading the machine-wide store one category at a time is what lets the user see and approve each disclosure, so `category="*"` together with `is_global=True` is refused. Name the category: `retrieve_memories(category="<name>", is_global=True)`. The global category names are listed for you further down this prompt.
+               - Note: a global read is shown to the user for approval before it runs, and they may deny it. Do not fire speculative global reads to see what is there — read a category only when the user's request actually calls for it, and say why you are reading it.
              - **Filter by Tags**:
                - Enables targeted retrieval based on specific tags.
                - Use: Provide tag filters to refine search.
@@ -266,7 +273,7 @@ impl MemoryServer {
               - Removes all memories within the specified category.
               - Use: `remove_memory_category(category="development", is_global=False)`
               - Note: If you want to remove all local memories, use `remove_memory_category(category="*", is_global=False)`
-              - Note: If you want to remove all global memories, use `remove_memory_category(category="*", is_global=True)`
+              - Note: If you want to remove all global memories, use `remove_memory_category(category="*", is_global=True)` — the user is asked to confirm first, because it wipes every global category on the machine and cannot be undone.
             The Protocol is:
              1. Confirm what kind of information the user seeks by category or keyword.
              2. Suggest categories or relevant tags based on the user's request.
@@ -286,9 +293,16 @@ impl MemoryServer {
              - Propose suitable categories and tag suggestions.
              - Discuss storage scope thoroughly to align with user needs.
              - Never save globally something the user has not asked to be remembered across projects. When in doubt, save locally — a local memory can be re-saved globally later, but a global one has already crossed into every other session.
+             - Every global read and every global write is put to the user for approval before it runs. That is deliberate: the machine-wide store is shared by every project on this computer. Prefer local memory, and when you do need a global one, say which category and why so the user has something to decide on.
              - Global memory contents are not loaded into your context automatically; only the category names are. Retrieve a category before relying on what is in it.
              - Acknowledge the user about what is stored and where, for transparency and ease of future retrieval.
-            "#};
+            "#}
+}
+
+#[tool_router(router = tool_router)]
+impl MemoryServer {
+    pub fn new() -> Self {
+        let instructions = base_instructions();
 
         // Check for .biorouter/memory in current directory
         let local_memory_dir = std::env::var("BIOROUTER_WORKING_DIR")
@@ -337,22 +351,35 @@ impl MemoryServer {
     /// already on disk stop being injected the moment this ships, which a
     /// write-side gate could not achieve.
     ///
-    /// What this deliberately does **not** do, and so remains for #56:
-    /// 1. The *write* is still ungated. An in-process MCP server has no channel
-    ///    to the user, so it cannot ask before a memory is marked global; all it
-    ///    can do is name the scope in the tool result (see `remember_memory`) so
-    ///    the transcript shows it. A real confirmation needs the permission
-    ///    path in `biorouter::permission`, not this crate.
-    /// 2. The line is drawn by *store* — global vs local — not by the
+    /// Issue #63 closed the other half: the *tool call* is now gated too, by
+    /// `biorouter::security::global_memory`, which reads `is_global`/`category`
+    /// and routes every machine-wide read and write through the user's approval
+    /// — in Auto mode, past an `AlwaysAllow`, past a SmartApprove read-only
+    /// grade. So the index below leads to a call the user sees *and decides*,
+    /// not merely one they could have seen.
+    ///
+    /// **The category index itself is kept, ungated, and that is a decision.**
+    /// Category names are model-chosen text that crosses sessions, so this is
+    /// not free. But there is no consent flow available at this layer at all:
+    /// the prompt is composed when the extension starts, with no session and no
+    /// user to ask — which is exactly why #58 could only downgrade bodies to
+    /// names rather than ask about them. That leaves keep or drop, and dropping
+    /// is worse in both directions: the model could no longer name a category,
+    /// so the only remaining way to use global memory would be the whole-store
+    /// read that is now refused — i.e. removing the small leak would force the
+    /// large one, or kill the feature. The index is what makes the gate
+    /// *specific*: "may this conversation read `clinical`?" instead of "may it
+    /// read everything?". It is the consent affordance, not a leftover.
+    ///
+    /// What this still does **not** do, and so remains for #56:
+    /// 1. The line is drawn by *store* — global vs local — not by the
     ///    sensitivity of the session that wrote the entry. A sensitive note
     ///    saved locally still lands in the prompt of every session opened in
     ///    that directory. Only classification can draw the finer line.
-    /// 3. A category *name* is model-chosen text and still crosses sessions.
-    ///    It is a short label rather than a body, and it is what lets the model
-    ///    fetch one category instead of `category="*"`, so it is kept — but it
-    ///    is not zero.
-    /// 4. Nothing surfaces the global store in the UI, so a user still cannot
-    ///    see or prune what accumulated there without asking the agent.
+    /// 2. Nothing surfaces the global store in the UI, so a user still cannot
+    ///    see or prune what accumulated there without asking the agent. This is
+    ///    also why the whole-store read is refused rather than merely asked
+    ///    about: an approval card cannot show what it is about to disclose.
     fn compose_instructions(&self, base: &str) -> String {
         let retrieved_global_memories = self.retrieve_all(true);
         let retrieved_local_memories = self.retrieve_all(false);
@@ -693,13 +720,46 @@ impl MemoryServer {
     /// Retrieves all memories from a specified category
     #[tool(
         name = "retrieve_memories",
-        description = "Retrieves all memories from a specified category"
+        description = "Retrieves all memories from a specified category. is_global=false reads \
+                       this project's .biorouter/memory; is_global=true reads the machine-wide \
+                       store every Biorouter session shares, one named category at a time (the \
+                       user approves each such read). category=\"*\" reads every category, and is \
+                       accepted only for the local store."
     )]
     pub async fn retrieve_memories(
         &self,
         params: Parameters<RetrieveMemoriesParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let params = params.0;
+
+        // Issue #63 — the floor under the consent gate. The gate in
+        // `biorouter::security::global_memory` refuses this shape before
+        // dispatch, but it cannot see the tool calls an `execute_code` script
+        // makes: those go straight through the extension manager, and the
+        // gate's scan of the script is static, so a call assembled at runtime
+        // escapes it. This shape is unambiguous wherever it arrives from, so it
+        // is refused here as well.
+        //
+        // This is *not* the blanket server-side rejection the #63 audit ruled
+        // out. That was unacceptable because there was no consent flow to fall
+        // back on — refusing every shape disabled global memory, refusing some
+        // left the rest ungated. Every other shape now carries real consent, so
+        // this refusal closes the floor rather than opening a hole: the whole
+        // store stays reachable, one approved category at a time.
+        if params.category == "*" && params.is_global {
+            return Err(ErrorData::new(
+                ErrorCode::INVALID_PARAMS,
+                "Reading the entire machine-wide memory store in one call is not allowed: it \
+                 would disclose every global memory written by every other session on this \
+                 computer, and the user cannot be shown what that is in order to consent to it. \
+                 Read one category at a time — retrieve_memories(category=\"<name>\", \
+                 is_global=true) — which asks the user about that category by name. The global \
+                 category names are listed in your system prompt. Local bulk retrieval \
+                 (is_global=false) is unaffected."
+                    .to_string(),
+                None,
+            ));
+        }
 
         let memories = if params.category == "*" {
             self.retrieve_all(params.is_global)
@@ -1419,6 +1479,123 @@ mod tests {
         assert!(
             !local.to_lowercase().contains("every session"),
             "a local write must not claim cross-session reach, got: {local}"
+        );
+    }
+
+    /// #63. The consent gate in `biorouter::security::global_memory` cannot see
+    /// the tool calls a script makes: `execute_code` dispatches them straight
+    /// through the extension manager, and its static scan cannot resolve a call
+    /// assembled at runtime. So the one shape that is refused outright — the
+    /// whole machine-wide store in a single read — is refused *here* too, where
+    /// it is unambiguous whatever route reached it.
+    ///
+    /// This is not the blanket server-side rejection the #63 audit ruled out.
+    /// That was unacceptable because it had no consent flow to fall back on:
+    /// refusing every shape disabled the feature, and refusing some preserved
+    /// the bypass for the rest. The rest are now gated with real consent, so
+    /// refusing this one shape closes the floor instead of opening a hole —
+    /// every global memory stays reachable, one approved category at a time.
+    #[tokio::test]
+    async fn the_whole_store_global_read_is_refused_at_the_tool() {
+        let temp = tempdir().unwrap();
+        let server = server_at(temp.path());
+
+        server
+            .remember("context", "clinical", "cohort 4217 responded", &[], true)
+            .unwrap();
+        server
+            .remember("context", "development", "formats with black", &[], false)
+            .unwrap();
+
+        let refused = server
+            .retrieve_memories(Parameters(RetrieveMemoriesParams {
+                category: "*".into(),
+                is_global: true,
+            }))
+            .await
+            .expect_err("the whole-store global read must be refused");
+        assert_eq!(
+            refused.code,
+            ErrorCode::INVALID_PARAMS,
+            "the caller can fix this by naming a category, so it is their \
+             mistake, not a broken server: {refused:?}"
+        );
+        assert!(
+            !refused.message.contains("cohort 4217"),
+            "the refusal must not itself disclose what it refused: {}",
+            refused.message
+        );
+        assert!(
+            refused.message.contains("is_global=true"),
+            "the refusal has to name the per-category call that still works, or \
+             it reads as the feature being off: {}",
+            refused.message
+        );
+
+        // The feature is not disabled: a named global category still reads.
+        let named = result_text(
+            &server
+                .retrieve_memories(Parameters(RetrieveMemoriesParams {
+                    category: "clinical".into(),
+                    is_global: true,
+                }))
+                .await
+                .expect("a named global read is the shape the feature is for"),
+        );
+        assert!(
+            named.contains("cohort 4217 responded"),
+            "a named global read must still return the memory: {named}"
+        );
+
+        // And the local store — which crosses no session boundary — is untouched.
+        let local = result_text(
+            &server
+                .retrieve_memories(Parameters(RetrieveMemoriesParams {
+                    category: "*".into(),
+                    is_global: false,
+                }))
+                .await
+                .expect("local bulk retrieval is unaffected"),
+        );
+        assert!(
+            local.contains("formats with black"),
+            "local bulk retrieval must keep working: {local}"
+        );
+    }
+
+    /// The system prompt told every session to call
+    /// `retrieve_memories(category="*", is_global=True)`. Now that the call is
+    /// refused, leaving that line in would make the model spend a turn on a
+    /// refusal the *user* sees as a denial — and it would still be advertising
+    /// the bulk read as the way to use the feature.
+    ///
+    /// The index of category names stays (see `compose_instructions`): it is
+    /// what lets the gate ask about one named category instead of everything,
+    /// so removing it would force the very bulk shape being refused.
+    #[test]
+    fn the_prompt_no_longer_advertises_the_refused_bulk_global_read() {
+        let temp = tempdir().unwrap();
+        let server = server_at(temp.path());
+        server
+            .remember("context", "clinical", "cohort 4217 responded", &[], true)
+            .unwrap();
+
+        let instructions = server.compose_instructions(&base_instructions());
+
+        assert!(
+            !instructions.contains("retrieve_memories(category=\"*\", is_global=True)"),
+            "the prompt still tells the model to make the refused call:\n{instructions}"
+        );
+        assert!(
+            instructions.contains("clinical"),
+            "the category index has to survive — it is what makes a per-category \
+             read possible at all:\n{instructions}"
+        );
+        assert!(
+            instructions.to_lowercase().contains("approv"),
+            "the prompt has to say a global read is shown to the user for \
+             approval, or the model fires speculative reads and every prompt the \
+             user sees is noise:\n{instructions}"
         );
     }
 
