@@ -8881,11 +8881,18 @@ files two different ways, and only one of them is a child process.**
 | Covers | every tool call, because the check is in the daemon's own dispatch path | processes the daemon spawns |
 | Mechanism | a synchronous refusal at `ExtensionManager::dispatch_tool_call` (`extension_manager.rs:1438`) | Seatbelt / bubblewrap, wrapping the child |
 | Enforced by | BioRouter | the kernel |
-| Defeated by | nothing that is still a tool call | nothing, once the child is wrapped |
-| Role | **PRIMARY** | **defence in depth** |
-| Task | 14B (barrier) + 14D (seams) | 14A (mechanism) + 14B step (h) (wiring) |
+| Defeated by | a read whose path the HANDLER supplies rather than the caller (round 3) — which is why [Task 14E](#task-14e-the-roots-own-doors--where-the-handler-not-the-caller-supplies-the-path) puts a guard in each root's own resolver | a **pre-planted hardlink** (both kernels match paths, not inodes — AR-9); and on Linux a root that did not exist when the job started (AR-10) |
+| Role | the caller's paths | the child's kernel view |
+| Task | 14B (arguments) + 14D (seams) + **14E (the roots' doors)** | 14A (mechanism) + 14B step (h) (wiring) |
 
-**Why Layer A has to be primary.** `computercontroller__cache` reads a caller-supplied path with
+⚠ **The "Defeated by" row used to read *"nothing that is still a tool call"* and *"nothing, once the
+child is wrapped"*, and both were false in this plan's own measurements.** Round 3 found the first
+(`read_app` is still a tool call and Layer A cannot see its root); AR-9's pre-planted hardlink and
+AR-10's absent-root race were already recorded three sections down while this table claimed the
+opposite. A summary table that contradicts the accepted-risk list is worse than no table, because it
+is the part a reader quotes.
+
+**Why an in-process check has to exist at all.** `computercontroller__cache` reads a caller-supplied path with
 `tokio::fs::read_to_string` at `computercontroller/mod.rs:1482`. `agent_drafter__read_app` reads app
 bytes with `std::fs::read_to_string` at `agent_drafter/store.rs:637`. `developer__text_editor` opens
 files at `text_editor.rs:641`. None of them spawns anything. **They are the daemon.** No sandbox the
@@ -9342,6 +9349,22 @@ pub struct SandboxPolicy {
     /// DR-14 roots are under it), and a read-only-by-omission rule would leave
     /// the user's knowledge base deletable by the model it was hidden from.
     pub deny_read_roots: Vec<PathBuf>,
+    /// Individual FILES the sandboxed process may neither read nor write.
+    ///
+    /// ⚠ **Separate from `deny_read_roots`, and it is not a stylistic split.**
+    /// The two need different treatment on both kernels: Linux overmounts a
+    /// directory with `--tmpfs`, which requires a **directory** mountpoint, and
+    /// binds a file from `/dev/null`; macOS emits `subpath` for one and
+    /// `literal` for the other. And `wrap_bubblewrap`'s AR-10 mitigation calls
+    /// `create_dir_all` over `deny_read_roots` — pointed at `config.yaml` that
+    /// replaces the file with a directory and bricks the install. Keeping them
+    /// apart at the type level is what stops that, rather than a convention.
+    ///
+    /// Today its only member is `<config>/config.yaml`, DR-14's fifth entry.
+    /// An earlier draft of Task 14B assigned `policy.deny_write_files` while
+    /// this field did not exist — round 3 §4 found it, and this is where it
+    /// gets defined.
+    pub deny_write_files: Vec<PathBuf>,
     /// When false (the default), outbound network is denied.
     pub allow_network: bool,
 }
@@ -9357,6 +9380,7 @@ impl SandboxPolicy {
         Self {
             writable_roots: vec![PathBuf::from(std::path::MAIN_SEPARATOR_STR)],
             deny_read_roots: Vec::new(),
+            deny_write_files: Vec::new(),
             allow_network: true,
         }
     }
@@ -9419,6 +9443,11 @@ impl ShellSandbox for NullSandbox {
 pub struct SeatbeltPolicy {
     pub writable_roots: Vec<PathBuf>,
     pub deny_read_roots: Vec<PathBuf>,
+    /// Mirrors `SandboxPolicy::deny_write_files`; emitted as `literal` rather
+    /// than `subpath`, with BOTH `file-read*` and `file-write*` denied — see
+    /// Task 14B (h), where both kernels' behaviour is measured. A `subpath`
+    /// spelling of a file matches nothing and the profile still compiles.
+    pub deny_write_files: Vec<PathBuf>,
     pub allow_network: bool,
 }
 
@@ -9542,7 +9571,22 @@ fn run_read_deny_selftest() -> bool {
     if !available() {
         return false;
     }
-    let Ok(dir) = tempfile::tempdir() else { return false };
+    // ⚠ NOT `tempfile`. This function is PRODUCTION code in
+    // `crates/biorouter-sandbox/src/seatbelt.rs`, and `tempfile` is a
+    // **dev-dependency** of that crate (`Cargo.toml:31`) — the earlier draft
+    // did not compile. Promoting it to a real dependency for a probe is the
+    // wrong trade: it lands in every shipped binary and in the cross-compiled
+    // Linux/Windows graphs for a macOS-only self-test. Roll the directory by
+    // hand and clean it up; the name is pid+nanos so two daemons cannot collide.
+    let dir = std::env::temp_dir().join(format!(
+        "biorouter-sbprobe-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos()).unwrap_or(0)
+    ));
+    if std::fs::create_dir_all(&dir).is_err() { return false; }
+    let _cleanup = scopeguard_like(&dir);   // remove_dir_all on every exit path
+    let dir = Dir(dir);
     // CANONICALIZE. `/var/folders/...` is a symlink to `/private/var/folders/...`
     // on macOS, and an uncanonicalized `subpath` denies nothing — which is
     // broken-host class (iii), i.e. the probe would be testing its own bug.
@@ -9603,13 +9647,50 @@ exists on every macOS this app supports and is what makes the sentinel-byte asse
     }
 
     fn wrap(&self, policy: &SandboxPolicy, program: &str) -> Result<Wrapped, ShellSandboxError> {
+        // ⚠ This arm is REQUIRED, and its absence is a defect round 3 found:
+        // the unsupported-backend test demands `PolicyUnsupported`, and a
+        // `wrap` that always returns `Ok` cannot produce it. macOS must fail
+        // the same way Linux does when the policy asks for something the host
+        // cannot express — otherwise a stripped or MDM-restricted Mac emits a
+        // profile that compiles, runs, and denies nothing.
+        if !policy.deny_read_roots.is_empty() && !self.supports_read_deny() {
+            return Err(ShellSandboxError::PolicyUnsupported(
+                "this host's Seatbelt cannot subtract a read: the two-legged \
+                 self-test could not establish a working deny (sandbox-exec is \
+                 missing, or `sandbox_apply` is refused here)"
+                    .to_string(),
+            ));
+        }
         let p = SeatbeltPolicy::new(policy.writable_roots.clone())
             .with_deny_read_roots(policy.deny_read_roots.clone())
             .with_network(policy.allow_network);
         let (program, prefix_args) = p.wrap(program);
         Ok(Wrapped { program, prefix_args })
     }
+
+    fn probe(&self) -> SandboxReport {
+        // ⚠ `probe()` and `supports_read_deny()` must not disagree. Today
+        // `probe()` is `seatbelt::available()` — a file-existence check
+        // (`macos.rs:19` -> `seatbelt.rs:166`) — so on a host where
+        // `sandbox_apply` is refused (measured live during round 3: every
+        // execution returned status 71, `Operation not permitted`) the STATUS
+        // says `Full` while the privacy branch refuses the tool. A user reading
+        // "sandbox: Full" and being told the shell is unavailable has no way to
+        // reconcile the two.
+        let mut report = /* …the existing shape… */;
+        if !seatbelt::read_deny_selftest() {
+            report.tier = SandboxTier::Partial;
+            report.degradations.push("cannot subtract reads on this host".into());
+        }
+        report
+    }
 ```
+
+⚠ **`NullSandbox` gets the same treatment.** Its `wrap` returns `Unavailable` today, which is a
+different variant from the one the unsupported-backend test asserts. Either it returns
+`PolicyUnsupported` when `deny_read_roots` is non-empty, or the test accepts both — **pick one and
+say which here**, because "the test and the implementation use different variants" is the exact
+shape round 3 rejected in Task 14A.
 
 ⚠ The existing `golden_argv_matches_seatbelt_policy` test (`macos.rs:56-73`) still passes
 byte-for-byte, because a policy with no deny roots emits no deny block and no `-DDENY_ROOT_`. **Do
@@ -10585,6 +10666,13 @@ impl PrivatePathPolicy {
             return None;
         }
         biorouter_mcp::secret_guard::find_path_candidate(arguments, |candidate| {
+            // `expand_tilde` is `crate::security::policy::command::expand_tilde`
+            // (`command.rs:833`), which is PRIVATE today: widen it to
+            // `pub(crate)` and import it. ⚠ Do not copy the twelve lines here —
+            // two spellings of "what does `~` mean" is exactly the drift this
+            // plan refuses everywhere else, and a barrier that expands tilde
+            // differently from the command policy has a hole nobody will find
+            // by reading. Same crate, so `pub(crate)` is the whole change.
             let resolved = cwd.join(expand_tilde(candidate));
             is_under_any(&resolved, &self.entries)
         })
@@ -15566,11 +15654,17 @@ pub use biorouter_mcp::privacy_toggle::privacy_tiers_enabled;
 /// Because the authoritative value lives in daemon memory, the read is a
 /// relaxed atomic load and is safe inside a hot gate.
 pub fn load_privacy_tiers_from_config() {
+    // ⚠ `all_values()` returns `Result<HashMap<String, Value>, ConfigError>`
+    // (`config/base.rs:390`), NOT a map. An earlier draft wrote
+    // `.all_values().get(..)` and does not compile. A load error must resolve
+    // to ON, for the same reason absence does: the failure of the loader must
+    // not be a way to disable the control.
     let on = Config::global()
         .all_values()                       // the loaded map, not get_param
-        .get("BIOROUTER_PRIVACY_TIERS")
+        .ok()
+        .and_then(|m| m.get("BIOROUTER_PRIVACY_TIERS").cloned())
         .and_then(|v| v.as_str().map(|s| !s.eq_ignore_ascii_case("off")))
-        .unwrap_or(true);                   // absent => on, the fail-safe default
+        .unwrap_or(true);                   // absent OR unreadable => on
     biorouter_mcp::privacy_toggle::set_privacy_tiers_enabled(on);
 }
 ```
