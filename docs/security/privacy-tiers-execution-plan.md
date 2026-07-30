@@ -7413,6 +7413,29 @@ echo "  being pinned to a private base as its KB-less write target."
 # it. MEASURED: on this tree the two patterns return the identical 49 hits (no
 # UFCS call exists today), so closing the evasion costs nothing.
 #
+# ⚠ AND IT ENDS AT A WORD BOUNDARY, NOT AT `(`. Round 3 §7:
+# `let f = KnowledgeService::list_bases; f(&svc)` is a FUNCTION ITEM — the same
+# read, no paren after the name — and `\(` was blind to it. MEASURED, both ways:
+# widening `\(` to `\b` takes the tree from 49 hits to 52; two of the three new
+# ones are intra-doc links (`[`Self::selection`]`) that the `///` filter below
+# removes, and the third is REAL and already in the tree —
+# `openapi.rs:433: super::routes::knowledge::list_bases,` is a function item
+# passed to utoipa. So the evasion is not hypothetical, the widening costs one
+# baseline row, and the doc-comment strip is what keeps it from costing more.
+#
+# ⚠ AND THE ONE ESCAPE THAT STAYS OPEN, NAMED SO IT IS NOT MISTAKEN FOR
+# COVERAGE: a reader that never names any of the three methods. Loading the
+# registry file directly, walking `<knowledge-root>` with `read_dir`, or opening
+# a base's `index.md` all yield the same base ids and match no pattern this gate
+# could write, because there is no token in common with a call site. **Task 10C
+# is what covers that**, and it is not a fallback — it is the primary control,
+# and this inventory is the cheap drift alarm beside it. Concretely:
+# `a_public_session_sees_no_trace_of_a_private_base` (Task 10C) drives the real
+# tool surface and fails on the id appearing in ANY response, whatever produced
+# it, and `every_drafter_tool_that_builds_a_catalog_scopes_it` (this task) does
+# the same for the catalog. If a reviewer is choosing between deleting one of
+# those tests and deleting this gate, delete this gate.
+#
 # ⚠ TWO sweeps. The previous version was ONE sweep ending in
 # `grep -v "src/knowledge/"`, which made it structurally unable to see the
 # largest metadata surface in the tree: `kb_get_active`
@@ -7421,11 +7444,25 @@ echo "  being pinned to a private base as its KB-less write target."
 # name. The exclusion had a real purpose — keeping the service's own internal
 # reads out of the reviewed list — so it is kept as sweep (1) and paired with
 # sweep (2) rather than deleted.
-META_RE="(\.|::)(list_bases|session_kb_ids|selection)\("
+META_RE="(\.|::)(list_bases|session_kb_ids|selection)\b"
+# Doc comments are not call sites. `[`Self::selection`]` is an intra-doc link and
+# would otherwise land in the baseline as two rows that move whenever anyone
+# rewords a doc comment — a gate that goes red on prose is a gate that is
+# deleted. Applied to every sweep and to the baseline, identically.
+# The doc-comment strip is spelled out at each of the three sweeps rather than
+# hidden in a variable, because a variable holding a command is one more thing to
+# get subtly wrong and this block is already the longest in the plan.
 # (1) OUTSIDE knowledge/ — measured at 9558c346: 27 hits, 18 production.
-grep -rnE "$META_RE" --include='*.rs' crates/*/src/ | grep -v "src/knowledge/" | sort
-echo "expect: 27 hits / 18 production, every one accounted for:"
+grep -rnE "$META_RE" --include='*.rs' crates/*/src/ | grep -vE ':[0-9]+: *///' \
+  | grep -v "src/knowledge/" | sort
+echo "expect: 28 hits / 19 production, every one accounted for:"
 echo "  agent_drafter/catalog.rs:130               CP5 — THIS TASK"
+echo "  biorouter-server/src/openapi.rs:433        the utoipa route registration — a"
+echo "                                             FUNCTION ITEM, no call, no id ever"
+echo "                                             read; it is here because the widened"
+echo "                                             pattern that catches the evasion also"
+echo "                                             catches this, and a row is cheaper than"
+echo "                                             an exception"
 echo "  biorouter/src/agents/knowledge_tool.rs:149 the id LIST — Task 11 (same class as"
 echo "                                             kb_id_or_primary, second file)"
 echo "  biorouter/src/agents/knowledge_tool.rs:134 :141  existence of a SUPPLIED id, AR-5"
@@ -7445,7 +7482,8 @@ echo "                      :1077 :1080; routes/reset.rs (:387) :418; routes/app
 echo "                      :4661 :4673 :4734; routes/agent.rs (:1379) :1489"
 # (2) INSIDE knowledge/ — measured: 22 hits, 5 production. This is the sweep that
 # would have caught the pointer tools.
-grep -rnE "$META_RE" --include='*.rs' crates/*/src/ | grep "src/knowledge/" | sort
+grep -rnE "$META_RE" --include='*.rs' crates/*/src/ | grep -vE ':[0-9]+: *///' \
+  | grep "src/knowledge/" | sort
 echo "expect: 22 hits / 5 production, every one accounted for:"
 echo "  knowledge/server.rs:246  visible_bases_for_session — filtered, Task 10C (1st filter)"
 echo "  knowledge/server.rs:325  kb_id_or_primary's candidate list — Task 10C (3rd filter)"
@@ -7468,6 +7506,7 @@ cat > /tmp/56-meta-baseline.txt <<'ROWS'
 1	crates/biorouter-mcp/src/knowledge/brkb.rs
 3	crates/biorouter-mcp/src/knowledge/server.rs
 17	crates/biorouter-mcp/src/knowledge/service.rs
+1	crates/biorouter-server/src/openapi.rs
 1	crates/biorouter-server/src/routes/agent.rs
 3	crates/biorouter-server/src/routes/apps.rs
 2	crates/biorouter-server/src/routes/knowledge.rs
@@ -7476,11 +7515,12 @@ cat > /tmp/56-meta-baseline.txt <<'ROWS'
 3	crates/biorouter/src/agents/knowledge_tool.rs
 1	crates/biorouter/src/knowledge/soul.rs
 ROWS
-grep -rnE "$META_RE" --include='*.rs' crates/*/src/ | cut -d: -f1 | sort | uniq -c \
+grep -rnE "$META_RE" --include='*.rs' crates/*/src/ | grep -vE ':[0-9]+: *///' \
+  | cut -d: -f1 | sort | uniq -c \
   | awk '{ printf "%s\t%s\n", $1, $2 }' | sort -k2 > /tmp/56-meta-now.txt
 sort -k2 /tmp/56-meta-baseline.txt > /tmp/56-meta-base-sorted.txt
 if diff -u /tmp/56-meta-base-sorted.txt /tmp/56-meta-now.txt; then
-  echo "ok    metadata-surface inventory unchanged (49 hits / 14 files)"
+  echo "ok    metadata-surface inventory unchanged (50 hits / 15 files)"
 else
   echo "FAIL  the metadata-surface inventory moved — see the diff above."
   echo "      A '+' line in a file NOT in the baseline is a NEW metadata surface:"
