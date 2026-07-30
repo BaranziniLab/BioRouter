@@ -199,12 +199,47 @@
 > a structural assertion that no `SELECT` precedes `.execute`. And Task 30's toggle matrix covered ten
 > of **twenty** enforcement points — Gate F's two channels, the spawn matrix, Layer A's insertion
 > points, the catalog, the export location, session copy and the visibility predicate could all stay
-> armed with the feature "off". It is twenty rows now, closed at both ends by two inventory diffs, the
+> armed with the feature "off". It is twenty rows now — nineteen enforcement points plus the
+> session-copy invariant — closed at both ends by two inventory diffs, the
 > second of which starts from the *refusals* so a gate nobody wired still fails. That work surfaced a
 > crate-graph fact the plan had not noticed: **`biorouter-mcp` cannot see `biorouter`**, so a
 > `privacy_tiers_enabled()` defined in `biorouter` is unreachable from five of the nineteen points; the
 > atomic moves to `biorouter-mcp` with a `biorouter` re-export.
 
+> **Revision note (tenth round — the snippets that could not compile, and the gates that could not
+> fail).** No new architecture. The reviewer accepted the ninth round's per-root doors and attacked
+> two other things: five prescribed snippets that do not compile, and six gates for which it
+> *constructed a passing wrong implementation*. Four of the five snippets were already repaired
+> before this round began (`Agent::capability_tier`/`working_dir` deleted as a shape, `expand_tilde`
+> widened to `pub(crate)` with a note, `Config::all_values()`'s `Result` handled, `tempfile` refused
+> in production code); the fifth — the Developer re-check reading a `self.private_data` that does not
+> exist — becomes a per-call `private_data_deny` **parameter**, because a field on a poolable
+> built-in would recreate the cross-call race. Fixing it exposed that Task 14D carried **two anchor
+> bases for the same file at once**, so `rmcp_developer.rs` is now on `9558c346` throughout with the
+> three-way drift measured at the top. Two more snippet-level defects were still live and are closed:
+> `deny_write_files` was *defined* and emitted by nothing (so DR-14's fifth entry — the master switch
+> file — was unprotected on both kernels while every type assertion passed), and `NullSandbox`'s
+> variant was left as "pick one and say which here", which is not a specification.
+>
+> **The six gates, and what each now rejects.** Task 4b's evidence column witnessed itself inside its
+> own heredoc, and its loop treated any positive count as success — so the exact pre-counts it exists
+> to establish, including the `knowledge:: = 190` correction, were decorative; the evidence is now
+> searched over the plan minus the table (measured: 18 rows stripped, all eighteen still resolve, a
+> fabricated row drops to 0) and the 41 counts are asserted by equality. Task 10B's CLI rows tested
+> `build_completer`'s tuple, so a handler could call `paired`, discard the tier and key on the
+> provider name; the new row drives `handle_ingest` with the name `ollama` in **both** legs and varies
+> only `OLLAMA_HOST`. Task 10D's `META_RE` ended at `(` and missed function items — widened to `\b`,
+> which costs one baseline row and catches one that is **already in the tree** (`openapi.rs:433`) —
+> and what only Task 10C can cover is now named. Task 10A's private-export row could not see a
+> write-outside-then-move, so the target directory is read-only for the call; and its user-route
+> mirror asserted a `dest_path` query the real handler does not have, on a `TempDir` it had already
+> dropped. Task 12's SQL checks were case-sensitive and its seam only had to be *somewhere* before
+> the write; both directions are now run against real text. Task 30 rested on a helper this plan
+> never defines for its **only** enforcement point with no refusal string, contradicted DR-15 on
+> session copy (resolved in the matrix's favour: propagating a stamp is not classifying, and the
+> other reading makes "copy the chat" a launder that survives re-enabling), and mutated a global with
+> no restoration.
+>
 > **Revision note (ninth round — the barrier was on the arguments, and it needed to be on the
 > doors).** The reviewer's central finding: **Layer A guards path-shaped *arguments*, not the reads
 > the handlers perform.** Three concrete bypasses, all of which pass this plan's own "surprise tool"
@@ -231,7 +266,8 @@
 > `O_RESOLVE_BENEATH` and `O_NOFOLLOW_ANY`**, both measured refusing a symlink traversal and a `..`
 > escape, so the swap window closes at the open on both platforms. Round 3's five non-compiling
 > snippets are all fixed against measured signatures, and `deny_write_files` — assigned in one task
-> and defined in none — is defined. What is **not** closed and is now stated: a credential-free
+> and defined in none — is defined. (⚠ *Defined* was as far as that fix went; nothing emitted the
+> field until the tenth round below.) What is **not** closed and is now stated: a credential-free
 > `POST /agent/update_provider {provider:"llamacpp"}` raises any session to private capability
 > (AR-15), because the rule that would stop it forbids *"switch this chat to a private model"* —
 > step 1 of every refusal this feature ships.
@@ -248,7 +284,7 @@
 >
 > | # | Blocker | Fixed by | Mirror check |
 > |---|---|---|---|
-> | **B1** | `list_platform_catalog` (`agent_drafter/mod.rs:2626`) serialises `{id, name}` for **every** base, and `validate::check_*` renders the same list into three rejection strings — an enumeration oracle needing no valid input. Neither of Task 10C's new-surface detectors can see it: both key on `store::`/service **content** calls and this goes through `list_bases` | **New [Task 10D](#task-10d-the-metadata-surface--cp5-because-a-barrier-that-names-what-it-refused-has-not-refused-it)** — CP5 at `Catalog::discover`, a measured 6-production-caller choke point, plus a metadata new-surface detector (two sweeps: 27 hits / 18 production outside `knowledge/`, 22 / 5 inside) | Swept every `list_bases`/`session_kb_ids` caller outside `knowledge/` by hand — 20, all classified. Found the **third** instance, `resolve_target_kb` (below) |
+> | **B1** | `list_platform_catalog` (`agent_drafter/mod.rs:2626`) serialises `{id, name}` for **every** base, and `validate::check_*` renders the same list into three rejection strings — an enumeration oracle needing no valid input. Neither of Task 10C's new-surface detectors can see it: both key on `store::`/service **content** calls and this goes through `list_bases` | **New [Task 10D](#task-10d-the-metadata-surface--cp5-because-a-barrier-that-names-what-it-refused-has-not-refused-it)** — CP5 at `Catalog::discover`, a measured 6-production-caller choke point, plus a metadata new-surface detector (two sweeps: 28 hits / 19 production outside `knowledge/`, 22 / 5 inside) | Swept every `list_bases`/`session_kb_ids` caller outside `knowledge/` by hand — 20, all classified. Found the **third** instance, `resolve_target_kb` (below) |
 > | **B2** | `gated_kb_id`'s deliberate fall-through lets `kb_id_or_primary` (`server.rs:323-341`) answer with `"Pass kb_id explicitly (one of: default, omop)"`, built from a list filtered on `hidden` only — while the same task asserts `kb_list_bases` returns `["default"]` | **Task 10C** gains a third filter and two tests | The mirror is `resolve_target_kb` (`knowledge_tool.rs:149`), the same shape in `biorouter`, which Task 10C cannot reach. **Fixed in Task 11**, with its own test |
 > | **B3** | `crates/biorouter-mcp/tests/knowledge_macros_e2e.rs` constructs `IngestArgs`/`QueryArgs` and was in no Files table, no `git add` and no run step; every `cargo test -p biorouter-mcp` here is `--lib` | **Task 10B** adds the file, a `--test` line and `cargo check --workspace --all-targets`; **O13** states the rule | Swept `crates/*/tests/` for every changed type: that file is the only out-of-lib constructor of the three macro `Args`, and Task 10D's `Catalog::discover` has two more (`catalog_write_boundary.rs`, `testdrive_corpus_relint.rs`) — both now listed |
 > | **B4** | 10B made `IngestArgs.caller_is_private` required, which makes `conversation_ingest.rs:205` a compile error with nothing to pass; the field was reserved for Task 11. The only compiling answer was a hardcoded `false`, which reproduces §10A ⚠(3) verbatim — *"every per-file gate reported green"* | **`caller_capability` moves to Task 10B**, together with all three callers; Task 11 keeps only the guard, and its Step 2 now expects FAIL rather than COMPILE ERROR | Checked the inverse: 10B's gate now also greps for a hardcoded `ProviderTier::Private` / `caller_is_private: true`, which is the way to compile while disabling the ratchet |
