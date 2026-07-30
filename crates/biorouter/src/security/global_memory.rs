@@ -221,11 +221,102 @@ fn code_touches_global_memory(code: &str) -> bool {
         && sets_global_true(&lowercased)
 }
 
+/// Every spelling of the machine-wide store's path a tool argument might carry:
+/// the absolute path, and — when the store is under the user's home — the `~`,
+/// `$HOME` and `${HOME}` abbreviations a shell command normally uses.
+fn global_store_path_forms() -> Vec<String> {
+    let store = biorouter_mcp::global_memory_dir();
+    let mut forms = vec![store.to_string_lossy().into_owned()];
+    if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
+        if let Ok(tail) = store.strip_prefix(std::path::Path::new(&home)) {
+            let tail = tail.to_string_lossy();
+            forms.push(format!("~/{tail}"));
+            forms.push(format!("$HOME/{tail}"));
+            forms.push(format!("${{HOME}}/{tail}"));
+        }
+    }
+    forms
+}
+
+/// Does `text` name `store` *as a path*, rather than merely start with its
+/// characters?
+///
+/// The distinction is the whole difference between a fix and an outage:
+/// `<store>-archive.txt` and `<store>notes` are ordinary files a plain
+/// `contains` would deny, while `<store>/clinical.txt`, a bare `<store>`, and
+/// `"<store>"` inside a quoted command are the store. So the match has to end on
+/// a path boundary.
+fn names_path(text: &str, store: &str) -> bool {
+    let mut rest = text;
+    while let Some(at) = rest.find(store) {
+        let after = &rest[at + store.len()..];
+        let ends_here = after.chars().next().is_none_or(|c| {
+            c == '/' || c == '\\' || c.is_whitespace() || "\"'`)];,;:&|".contains(c)
+        });
+        if ends_here {
+            return true;
+        }
+        rest = &rest[at + store.len()..];
+    }
+    false
+}
+
+/// Does any string anywhere in `args` name the machine-wide memory store?
+///
+/// Walks nested objects and arrays, because a path can arrive as
+/// `{"opts": {"paths": ["…"]}}` as readily as a top-level `path`.
+fn references_global_store(args: &Map<String, Value>) -> bool {
+    fn walk(value: &Value, forms: &[String]) -> bool {
+        match value {
+            Value::String(s) => forms.iter().any(|form| names_path(s, form)),
+            Value::Array(items) => items.iter().any(|v| walk(v, forms)),
+            Value::Object(map) => map.values().any(|v| walk(v, forms)),
+            _ => false,
+        }
+    }
+    let forms = global_store_path_forms();
+    args.values().any(|v| walk(v, &forms))
+}
+
 /// Classify a tool call against the global memory store.
 ///
 /// `None` means "this call does not touch the machine-wide store" — a local
 /// memory call, or any other tool at all.
 pub fn global_memory_gate(tool_name: &str, args: &Map<String, Value>) -> Option<GlobalMemoryGate> {
+    // Issue #63 review, finding 2. The gate below matches four tool *names*, but
+    // the store is a directory of text files: `cat <store>/clinical.txt` is the
+    // same disclosure the card exists for, and `rm -rf <store>` the same
+    // destruction, with a tool this gate does not recognise.
+    //
+    // The developer and computer-controller servers now refuse the store at the
+    // filesystem boundary, which is the unforgeable half. The shell resolves no
+    // path, so its *literal* references are caught here — refused rather than
+    // asked, because approving "run this shell command" is not consent to
+    // disclose a memory category, and there is a call that is.
+    //
+    // Checked before everything else so it covers every tool, `execute_code`
+    // bodies included. It does **not** close the general hole: an obfuscated or
+    // computed shell command still reads any file on the machine. That is the
+    // filesystem barrier of issue #56, deliberately not built here.
+    if references_global_store(args) {
+        return Some(GlobalMemoryGate::Refuse(format!(
+            "Refused: this call names Biorouter's machine-wide memory store by path. That store \
+             is shared by every Biorouter session on this computer, and reading, changing or \
+             deleting it has to be shown to the user and approved by category — which a file \
+             path cannot be. Use the memory tools instead: \
+             retrieve_memories(category=\"<name>\", is_global=true) to read a category, \
+             remember_memory(...) to add to one, remove_memory_category / \
+             remove_specific_memory to delete. Each is put to the user by name. To browse or \
+             prune the store themselves the user can open Settings → Chat → Memory. \
+             Project-local memory (.biorouter/memory) is not affected.{}",
+            if is_execute_code(tool_name) {
+                " Note this call is a script: make the memory call directly, outside execute_code."
+            } else {
+                ""
+            }
+        )));
+    }
+
     if is_execute_code(tool_name) {
         let code = args.get("code").and_then(Value::as_str)?;
         return code_touches_global_memory(code).then(|| {
@@ -373,7 +464,12 @@ pub fn uninspected_boundary_refusal(
     args: Option<&Map<String, Value>>,
     boundary: UninspectedBoundary,
 ) -> Option<String> {
-    if !args.is_some_and(|a| is_global_store_call(tool_name, a)) {
+    // Two ways to reach the store, both closed here: as a memory tool call
+    // against it, and — since a boundary sees no inspector either — as any tool
+    // at all naming its path (finding 2's shell case, arriving through a script
+    // rather than through the agent loop).
+    let args = args?;
+    if !is_global_store_call(tool_name, args) && !references_global_store(args) {
         return None;
     }
     tracing::warn!(
@@ -751,6 +847,115 @@ record_result(all);"#;
         );
     }
 
+    // --- generic tools that name the store's path -------------------------
+
+    /// Every spelling a model might use, built independently of the production
+    /// helper so the test does not agree with the code by construction.
+    fn store_path_spellings() -> Vec<String> {
+        let store = biorouter_mcp::global_memory_dir();
+        let mut forms = vec![store.to_string_lossy().into_owned()];
+        if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
+            if let Ok(tail) = store.strip_prefix(std::path::Path::new(&home)) {
+                let tail = tail.to_string_lossy();
+                forms.push(format!("~/{tail}"));
+                forms.push(format!("$HOME/{tail}"));
+                forms.push(format!("${{HOME}}/{tail}"));
+            }
+        }
+        forms
+    }
+
+    /// #63 review, finding 2. The gate matches four tool *names*; the store is a
+    /// directory of text files. `cat <store>/clinical.txt` is the same
+    /// disclosure the consent card exists for, and `rm -rf <store>` is the same
+    /// destruction, taken with a tool the gate does not recognise.
+    ///
+    /// The developer and computer-controller servers refuse the store at the
+    /// filesystem boundary, which is unforgeable — but the shell resolves no
+    /// path, so its literal references have to be caught here. Denied, not
+    /// asked: an approval card for "run this shell command" is not consent to
+    /// disclose a memory category, and there is a call that *is*.
+    #[test]
+    fn a_tool_that_names_the_store_path_is_refused() {
+        for store in store_path_spellings() {
+            for (tool, arguments) in [
+                (
+                    "developer__shell",
+                    json!({"command": format!("cat {store}/clinical.txt")}),
+                ),
+                (
+                    "developer__shell",
+                    json!({"command": format!("rm -rf {store}")}),
+                ),
+                (
+                    "developer__text_editor",
+                    json!({"command": "view", "path": format!("{store}/clinical.txt")}),
+                ),
+                (
+                    "computercontroller__cache",
+                    json!({"command": "delete", "path": format!("{store}/clinical.txt")}),
+                ),
+                // Nested inside a structure, and inside a script body.
+                (
+                    "some__tool",
+                    json!({"opts": {"paths": [format!("{store}/clinical.txt")]}}),
+                ),
+                (
+                    "code_execution__execute_code",
+                    json!({"code": format!("shell({{command: 'cat {store}/clinical.txt'}})")}),
+                ),
+            ] {
+                let gate = global_memory_gate(tool, &args(arguments.clone()));
+                let Some(GlobalMemoryGate::Refuse(reason)) = gate else {
+                    panic!("{tool} {arguments} reached the machine-wide store, got {gate:?}");
+                };
+                assert!(
+                    reason.contains("retrieve_memories"),
+                    "the refusal must name the call that does work: {reason}"
+                );
+            }
+        }
+    }
+
+    /// Denying by path must not deny by resemblance. A sibling of the store, the
+    /// store's *parent*, and the project-local store are all ordinary paths.
+    #[test]
+    fn only_the_store_itself_is_refused_by_path() {
+        let store = biorouter_mcp::global_memory_dir();
+        let store = store.to_string_lossy();
+        let parent = biorouter_mcp::global_memory_dir();
+        let parent = parent.parent().unwrap().to_string_lossy().into_owned();
+
+        for (tool, arguments) in [
+            // A sibling whose name merely starts with the store's.
+            (
+                "developer__shell",
+                json!({"command": format!("cat {store}-archive.txt")}),
+            ),
+            (
+                "developer__shell",
+                json!({"command": format!("cat {store}notes")}),
+            ),
+            // The config directory the store lives in — backing up ~/.config is
+            // an ordinary thing to ask for.
+            (
+                "developer__shell",
+                json!({"command": format!("tar czf backup.tgz {parent}")}),
+            ),
+            // Project-local memory: under the directory the user opened.
+            (
+                "developer__text_editor",
+                json!({"command": "view", "path": ".biorouter/memory/development.txt"}),
+            ),
+            ("developer__shell", json!({"command": "ls -la /tmp"})),
+        ] {
+            assert!(
+                global_memory_gate(tool, &args(arguments.clone())).is_none(),
+                "{tool} {arguments} is not the machine-wide store and must not be refused"
+            );
+        }
+    }
+
     // --- the uninspected dispatch boundaries ------------------------------
 
     /// #63 review, finding 3. The scan above reads *source text*, so it can
@@ -853,6 +1058,37 @@ record_result(all);"#;
             )
             .is_none(),
             "a call with no arguments cannot be a global one"
+        );
+    }
+
+    /// A boundary sees no inspector either, so finding 2's other shape has to be
+    /// caught here as well: a script that skips the memory tools entirely and
+    /// asks the shell to read the store's files.
+    #[test]
+    fn a_boundary_also_refuses_a_tool_that_names_the_store_path() {
+        let store = biorouter_mcp::global_memory_dir();
+        let store = store.to_string_lossy();
+        assert!(
+            uninspected_boundary_refusal(
+                "developer__shell",
+                Some(&args(
+                    json!({"command": format!("cat {store}/clinical.txt")})
+                )),
+                UninspectedBoundary::ExecuteCodeScript,
+            )
+            .is_some(),
+            "a script read the machine-wide store with the shell"
+        );
+        assert!(
+            uninspected_boundary_refusal(
+                "developer__shell",
+                Some(&args(
+                    json!({"command": format!("cat {store}-archive.txt")})
+                )),
+                UninspectedBoundary::ExecuteCodeScript,
+            )
+            .is_none(),
+            "a sibling of the store is an ordinary file"
         );
     }
 
