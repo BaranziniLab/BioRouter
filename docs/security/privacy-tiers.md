@@ -2,8 +2,9 @@
 
 > **What this is.** The design for a privacy-tier system that keeps conversations touched by
 > private models or private data sources from ever reaching a model hosted outside the user's
-> institution. It classifies models, sessions and MCP extensions, and enforces the boundary at
-> five choke points in the agent loop.
+> institution. It classifies models, sessions and MCP extensions, enforces the boundary at
+> five choke points in the agent loop, and puts BioRouter's own private data out of reach of a
+> public session's tools with a two-layer read-deny (§9.5).
 > **Status:** Proposed — needs operator rulings on §17 before implementation.
 > **Audience:** developers working on the agent loop, `biorouter-server`, the session store, and
 > the desktop GUI.
@@ -12,7 +13,7 @@
 
 ## 1. Summary
 
-Two independent lattices, one column, one predicate, five gates **and one sandbox**.
+Two independent lattices, one column, one predicate, five gates **and one two-layer read-deny**.
 
 - **Capability** — what a session may *do* — is the **least** privileged model currently bound to
   it. A mixed lead/worker configuration therefore has public reach, because its transcript already
@@ -25,9 +26,13 @@ converse is unrestricted: a private model may read anything.
 
 The five gates sit on *tool calls*, which is not where the boundary ends. A public-capability
 session also holds tools that run arbitrary commands and read arbitrary paths, and the private
-material is ordinary files on disk. So a sixth control, **on by default**, hides four directories
-from those tools for the duration of a public-capability session (§9.5), and one **master toggle**
-turns the whole feature — gates, ratchet and sandbox — off for a user who does not want it (§10.6).
+material is ordinary files on disk. So a sixth control, **on by default**, puts four directories and
+one file out of reach of those tools for the duration of a public-capability session (§9.5). It is
+**two layers**, because BioRouter reads files two different ways: an in-process barrier at the one
+function every tool call passes through — the primary defence, needing no kernel support — and an OS
+sandbox behind it for the five tools that hand the work to a child process. One **master toggle**
+turns the whole feature — gates, ratchet and read-deny — off for a user who does not want it
+(§10.6).
 
 The system is not expressible with what exists today. `provider_class` in
 `crates/biorouter-server/src/routes/apps.rs:2089` is the only thing in the tree that resembles it,
@@ -105,7 +110,7 @@ Each verified by reading the code, each fixed as a by-product of this design:
 | R4 | A private session may spawn public children; a public session may never gain private reach. |
 | R5 | Children inherit the parent's model and lead/worker mode unless the user says otherwise. |
 | R6 | Lineage decides write access: sessions the caller spawned get full control, everything else is read-only. |
-| R7 | A global opt-out exists, off by default. It is a **master** switch: with it off there is no gate, no ratchet and no sandbox anywhere (§10.6). |
+| R7 | A global opt-out exists, off by default. It is a **master** switch: with it off there is no gate, no ratchet and no read-deny anywhere (§10.6). |
 | R8 | A public model must never reach a private session. |
 | R9 | Only the user can deprivatise a session, from history settings, with a warning. Nothing automatic, nothing agent-invocable. |
 | R10 | Badges are visible everywhere — models, sessions, MCP servers. |
@@ -722,9 +727,14 @@ close the read in any case: `candidate_is_denied` (`secret_guard.rs:278-292`) is
 existence-gated, so a computed path or a shell expression walks past it. Stated honestly, it raises
 the cost and does not close the read.
 
-**The answer is §9.5** — a read-deny sandbox on the tools, conditioned on the session's capability.
-Adding the patterns anyway remains worthwhile as defence in depth for the credential half, but it is
-not the control.
+**The answer is §9.5** — a read-deny on the tools, conditioned on the session's capability. Note
+which half of §9.5 answers which half of the objection: the *capability-conditional* part is what
+makes it scoped rather than an always-on floor, and the *in-process barrier at the dispatch choke
+point* is what makes it a barrier rather than a cost increase, because it evaluates the argument the
+tool was actually given instead of pattern-matching a string. The OS sandbox behind it covers the one
+case an in-process check cannot: a shell that constructs the path at runtime, after the daemon has
+already handed over the command. Adding the patterns anyway remains worthwhile as defence in depth
+for the credential half, but it is not the control.
 
 **B1 — three copy paths, not one.** `copy_session` (`:4138-4168`) is called only by
 `diverge_session_for_edit`. The **primary GUI diverge** is `diverge_session` (`:4204-4265`), which
@@ -838,39 +848,122 @@ holds).
 
 ---
 
-### 9.5 The sixth control — a read-deny sandbox for public capability, on by default
+### 9.5 The sixth control — a private-data read-deny for public capability, on by default
 
-**Ruling.** When a session's capability is **public**, the tools that spawn a process or resolve a
-caller-supplied path run under an OS sandbox that **denies reads** of BioRouter's own private data
-roots. Private-capability sessions are unaffected: this is not a general jail and must not become
-one. Everything outside those roots stays readable and writable, so ordinary work is untouched.
+**Ruling.** When a session's capability is **public**, its tools may not reach BioRouter's own
+private data. Private-capability sessions are unaffected: this is not a general jail and must not
+become one. Everything outside the named entries stays readable and writable, so ordinary work is
+untouched.
 
-**The four roots**, and nothing else:
+#### 9.5.1 It is two layers, and the OS sandbox is the second one
 
-| Root | Resolved by | Why |
+BioRouter reads files two different ways, and only one of them is a child process. That is a
+structural fact about the product, not an implementation detail, so it belongs in the design:
+
+| | **Layer A — the in-process path barrier** | **Layer B — the OS sandbox** |
+|---|---|---|
+| Covers | every tool call, because the check is in the daemon's own dispatch path | the processes the daemon spawns |
+| Mechanism | a synchronous refusal at `ExtensionManager::dispatch_tool_call` | Seatbelt / bubblewrap wrapping the child |
+| Enforced by | BioRouter | the kernel |
+| Needs kernel support | **no** | yes |
+| Role | **PRIMARY** | defence in depth |
+
+**Why Layer A has to be primary.** `computercontroller__cache` reads a caller-supplied path with
+`tokio::fs::read_to_string`; `agent_drafter__read_app` reads app bytes with `std::fs::read_to_string`;
+`developer__text_editor` opens files directly. **None of them spawns anything — they are the
+daemon.** No sandbox the daemon installs on its children can constrain the daemon, so on every
+platform, including the two where Layer B works perfectly, those reads are governed by a check in the
+code path or by nothing at all. Two successive adversarial reviews found a public tool reading a
+private root without spawning a process; the second found one *inside* an extension the first had
+already named.
+
+**Why the check must sit at a choke point rather than on a list of tools.** The readers cannot be
+found by grep — `xlsx_tool` reads through `umya_spreadsheet`, `pdf_tool` through `lopdf`,
+`data_query` through `sqlx`, none of which contains an `fs::` token — and there are 125 tool
+declarations in `biorouter-mcp` with 48 path-shaped parameters, a count that both over- and
+under-states the real set. **Any control phrased as "the tools that read files" is unmaintainable by
+construction. It must be phrased as "every tool call passes through symbol X", and the test for it
+must be a tool the production code has never heard of.**
+
+**What the two layers buy, and it changes the cost of this feature.** Because Layer A holds
+everywhere, Layer B's platform gaps stop being feature-killers. Landlock cannot subtract a read and
+Windows has no unprivileged confinement — but that no longer means *"a public session cannot read
+files on those hosts"*, it means *"a public session cannot spawn a shell on those hosts"*. The
+fail-closed refusal narrows from **every file tool** to the five that spawn a child:
+`developer__shell` and its background jobs, `computercontroller__automation_script`,
+`computer_control`, and `compute_run`/`compute_python`. `text_editor`, `analyze`, `image_processor`,
+`cache`, `xlsx_tool`, `pdf_tool`, `docx_tool` and every knowledge / memory / drafter tool keep
+working on Windows.
+
+#### 9.5.2 The entries
+
+**Four roots**, and one file:
+
+| Entry | Resolved by | Why |
 |---|---|---|
 | `<data>/sessions` | `Paths::data_dir()` + `SESSIONS_FOLDER` | `sessions.db` and its FTS mirror — §9.3 A2 |
 | `<config>/knowledge` | `knowledge::paths::knowledge_root()` | the tree the KB barrier gates |
 | `<config>/memory` | `memory::global_memory_dir()` | the global store §9.3 B3 is about |
 | `<config>/agent_drafter` | `agent_drafter::default_root()` | app source, `.vault/`, **and app ids** |
+| `<config>/config.yaml` | `Paths::config_dir()` + `CONFIG_YAML_NAME` | **the master switch itself.** §10.6's toggle is loaded from this file at startup, and it is an ordinary non-`SecretGuard` file: a public model can edit it and the next restart has privacy tiers off. Five tools can write it — `text_editor`, `shell`, `cache` **delete**, `kb_export`'s `dest_path` and `export_app`'s `target_dir` — so protecting one of them protects nothing |
 
-Note the two different directories: the session store is under `data_dir`, the other three under
-`config_dir`. A deny list written against one prefix misses three of the four.
+Note the two different directories: the session store is under `data_dir`, the other four under
+`config_dir`. A deny list written against one prefix misses most of them, and every test that
+relocates both with `BIOROUTER_PATH_ROOT` still passes.
 
-**The surfaces it covers:** `developer__shell` and its background jobs, `developer`'s file tools,
-`computercontroller__automation_script` and `computer_control`, and any future tool that spawns a
-process or reads an arbitrary path. The shell surfaces get a kernel answer; the in-process file
-tools get a check where the path is resolved, because they never spawn anything for a kernel to
-confine.
+Two properties of the entry list, both learned the hard way:
 
-**What each platform can express**, measured against `crates/biorouter-sandbox` rather than assumed:
+- **The `config.yaml` entry denies reads as well as writes,** because telling a read from a write
+  means knowing which argument of which tool is a destination — the per-tool knowledge this design
+  has just finished abandoning. The cost is stated in §16: a public chat cannot view `config.yaml`
+  through a tool. The user can still open it.
+- **The verdict is not existence-gated.** `<config>/memory` is created lazily on first write and does
+  not exist on a fresh install, so a containment test that requires the path to exist fails open on
+  it — while every test written against a populated fixture passes.
 
-- **macOS (Seatbelt) — yes, directly.** SBPL is last-match-wins, so a `(deny file-read* (subpath …))`
-  appended *after* the base profile's `(allow file-read*)` subtracts the subtree. Effectively free.
-- **Linux (bubblewrap) — yes, directly.** `--tmpfs <root>` after `--ro-bind / /` overmounts the
-  directory with an empty tmpfs in the child's own mount namespace: a real subtraction, no
-  enumeration, no race. Requires `bwrap` installed and unprivileged user namespaces enabled, so the
-  capability must be a **live probe**, not a `PATH` check.
+#### 9.5.3 What each layer covers
+
+**Layer A** refuses any tool call whose arguments name a path inside an entry, at the one dispatch
+choke point, plus the seven branches the agent short-circuits before that choke point is reached (one
+of which, `platform__manage_schedule`, reads an arbitrary `workflow_path` in-process). The capability
+that decides it is a **local** in that call's own stack frame — there is no shared cell, so two
+overlapping calls cannot swap each other's answer, and a mid-session model change takes effect on the
+next call with nothing to re-admit.
+
+**Layer B** wraps the five spawning tools, carrying the same decision as a per-call flag in the MCP
+request metadata rather than in session state, for the same reason.
+
+**What Layer A does *not* cover, deliberately:** the tools that own these roots and reach them
+through their own resolvers — `kb_read_page`, `retrieve_memories`, `read_app`, `list_apps`. Those are
+the **tool channel**, governed by §10.3's classification and by each server's own gates (CP1–CP5 for
+knowledge, §9.3 B3 for memory). DR-14 governs the **filesystem channel**: a path a caller names. If a
+tool-channel classification is wrong, the fix is to change the classification, not to add a
+filesystem rule that contradicts it.
+
+#### 9.5.4 What each platform can express, for Layer B
+
+Measured by execution against `crates/biorouter-sandbox` rather than assumed — macOS on a real host,
+Linux in a real `bubblewrap 0.8.0` container:
+
+- **macOS (Seatbelt) — yes, directly.** A `(deny file-read* (subpath …))` appended to the base
+  profile subtracts the subtree, verified in the production shape where the writable root is `/` and
+  is therefore an ancestor of every entry: read, write and `rm` inside the entry all fail while
+  writes elsewhere all succeed. A single file uses `literal` rather than `subpath`. Effectively free.
+  **Every path must be canonicalized into the profile**: a deny declared with an uncanonicalized
+  spelling matches *nothing at all*, in both directions, and the profile still compiles and runs.
+- **Linux (bubblewrap) — yes, with `--tmpfs <root> --remount-ro <root>`.** `--tmpfs` after
+  `--ro-bind / /` overmounts the directory with an empty tmpfs in the child's own mount namespace —
+  but a bare `--tmpfs` is **writable**, so the read-only remount is what makes the policy true as
+  stated. A single file is bound read-only from `/dev/null`. Requires `bwrap` installed **and**
+  unprivileged user namespaces enabled — and the first does not imply the second: under default
+  Docker seccomp `bwrap` is present, executable, and fails on every invocation. **The capability must
+  be a live probe, on both platforms, and the probe needs two legs** — one asserting the deny bites,
+  one asserting an unrelated read still succeeds — because a host where the sandbox cannot start any
+  process passes a one-legged probe.
+- **Ordering is load-bearing on Linux and fails open silently.** A `--tmpfs` (or a file's
+  `--ro-bind`) emitted *before* the writable `--bind` of its parent is defeated with no error and no
+  diagnostic. Three of the four roots live under `$HOME`, which is routinely the session working
+  directory and therefore a writable bind root, so this is the common case rather than a corner.
 - **Linux (Landlock) — no, and not because of this host.** A Landlock ruleset is a set of *grants*
   with no deny rule and no way to subtract a subpath from a broader grant; the implementation
   deliberately leaves read accesses unhandled so reads stay open. Expressing a deny means granting
@@ -882,31 +975,64 @@ confine.
   developer command without breaking it; the sandbox module's own header works through the five
   candidates and why each fails.
 
-**The fail direction is closed.** A public-capability session on a host where the read-deny cannot
-be established does **not** get an unsandboxed arbitrary-execution tool. Those specific tools are
-refused, with a deterministic error that names the state, the reason, and the two ways out — switch
-this chat to a private model, or turn privacy tiers off for this machine (§10.6) — and forecloses
-the retry. On Linux the message names a third fix for the machine itself (`install bubblewrap`).
-The refused tools are **not** hidden from the model's tool list: hiding them makes a model invent
-workarounds, while a refusal that forecloses the retry makes it stop.
+**The fail direction is closed, for the five spawning tools.** A public-capability session on a host
+where the kernel deny cannot be established does **not** get an unsandboxed arbitrary-execution tool.
+Those specific tools are refused, with a deterministic error that names the state, the reason, and
+the two ways out — switch this chat to a private model, or turn privacy tiers off for this machine
+(§10.6) — and forecloses the retry. On Linux the message names a third fix for the machine itself
+(`install bubblewrap`). The refused tools are **not** hidden from the model's tool list: hiding them
+makes a model invent workarounds, while a refusal that forecloses the retry makes it stop. Every
+other tool keeps working on such a host, because Layer A is not what failed.
 
 **The costs, stated rather than discovered.** On Windows, and on Linux without bubblewrap, a
 public-capability chat loses the shell — which for a commercial model on a Windows laptop is the
 common configuration, and is a large part of why R7's opt-out is a master switch. A
 public-capability chat also cannot read its own history through the `biorouter` CLI (that reads the
-session store), nor `cat` its own drafted app's source (that is the fourth root). All three are the
-control working as specified.
+session store), cannot `cat` its own drafted app's source (that is the fourth root), and cannot view
+`config.yaml` through a tool (that is the fifth entry). All four are the control working as
+specified.
 
-**The second-order path stays closed by a different mechanism.** A sandboxed child cannot open
-`sessions.db`, but the daemon's HTTP API is another read path: `GET /sessions/{id}/export` returns a
-transcript to anyone holding `BIOROUTER_SERVER__SECRET_KEY`. That secret is stripped from every
-child spawned on an agent's behalf — `strip_daemon_private_env`, the fix for §9.3 A1, applied last
-in each command builder — while `BIOROUTER_PORT` is deliberately kept. So a sandboxed child knows
-where the daemon is and cannot authenticate to it. One residual: `GET /apps/{id}` and
-`GET /apps/{id}/agent` are deliberately unauthenticated, and the served page carries the app's
-socket token, so a client that already knows an **app id** can drive that app's agent. Denying the
-Agent Drafter root removes the only on-disk source of app ids and `GET /apps` still requires the
-secret; authenticating the app socket against a shell is a separate change (open question).
+#### 9.5.5 The second-order path, stated honestly
+
+The daemon's HTTP API is another read path: `GET /sessions/{id}/export` returns a transcript to
+anyone holding `BIOROUTER_SERVER__SECRET_KEY`. An earlier version of this section concluded that the
+child-environment strip closed it — *"a sandboxed child knows where the daemon is and cannot
+authenticate to it."* **That conclusion is withdrawn.** Measured: on macOS a child reads its parent's
+environment with `ps -Ewww -p $PPID`, and the protection people assume (SIP withholding process
+environments) applies only to Apple *platform* binaries — a locally compiled binary leaks, and so
+does the shipped, notarized, hardened-runtime `biorouterd`. Nor is it `ps`'s setuid bit: a plain
+non-setuid `sysctl(KERN_PROCARGS2)` reader recovers it, including under a Seatbelt profile carrying
+the deny entries. On Linux the daemon's own `/proc/self/environ` is readable in-process by any tool
+that reads a caller-supplied path.
+
+**So: the daemon's API secret is not defensible against a tool running inside the daemon, and no
+sandbox this feature installs changes that.** What remains true, and what it costs:
+
+- The strip (`strip_daemon_private_env`, the fix for §9.3 A1, applied last in each command builder)
+  is still correct and still required. It keeps the secret out of the child's own environment, where
+  a careless `env` dump or log would find it, and it keeps every **remote** caller out.
+  `BIOROUTER_PORT` and `BIOROUTER_APP_BASE_URL` are deliberately kept, so locating the daemon is free
+  and meant to be.
+- **The biggest local route is held by Layer A, not by the secret.** `POST /agent/call_tool` executes
+  any tool of any extension with no capability check and no approval prompt — and it dispatches
+  through the same choke point Layer A and Gate C sit at. A caller holding the secret therefore gets
+  exactly what the chat already had. This is the concrete reason the barrier belongs in the extension
+  manager and not one frame up in the agent.
+- **What is left exposed** is the set of routes that return private content without running a tool:
+  the transcript family, the `/knowledge/*` read routes, `GET /apps/{id}/export`, and
+  `GET /diagnostics/{id}` — which returns a zip of `session.json`, recent logs and a verbatim
+  `config.yaml`, and is the widest single route in the API. Closing that needs a per-caller
+  credential the daemon does not hand to its own children (open question).
+
+One further residual, and it is larger than previously stated: `GET /apps/{id}` and
+`GET /apps/{id}/agent` are deliberately unauthenticated, and the served page carries the app's socket
+token, so a client that knows an **app id** can drive that app's agent — including any knowledge base
+the app's manifest granted it, private ones included. It was previously argued that denying the Agent
+Drafter root removed the only local source of app ids. **That is false:** `agent_drafter__list_apps`
+is a Public tool that enumerates every id in-process, takes no path argument, and is therefore
+untouched by both layers. A public model does not need to already know an app id — it can ask for
+one. `GET /apps` still requires the secret, and that is now the only thing standing there.
+Authenticating the app socket against a local client is a separate change (open question).
 
 ---
 
@@ -1043,8 +1169,8 @@ Hence v2, opt-in, and never a correction to the ruling.
 Global, explicit, on by default: `BIOROUTER_PRIVACY_TIERS` (default `on`), and it is a **master**
 switch over the whole feature. With it off there is no bind gate, no turn gate, no dispatch gate, no
 discovery filter, no `chatrecall` filter, no knowledge-base barrier, no spawn matrix, no
-classification ratchet and **no read-deny sandbox** (§9.5). Nothing is refused and nothing is
-sandboxed.
+classification ratchet and **no read-deny at all** (§9.5) — neither the in-process barrier nor the
+OS sandbox. Nothing is refused, nothing is sandboxed, and no path is out of reach.
 
 **An earlier draft of this section scoped the opt-out to Gate C** — turning off the tool gate
 decides what a model may *call*, whereas turning off the session barrier retroactively exposes data
@@ -1771,6 +1897,13 @@ Where this annoys someone who has done nothing wrong:
 6. **Declassification is one chat at a time** for `mcp:`-reason sessions.
 7. **A shared workflow pinning a public provider stops working in private sessions** with nothing
    explaining why, unless §14.7(d) ships.
+8. **A public chat cannot view `config.yaml` through a tool**, so "why isn't my extension loading"
+   debugging moves to a private chat or to Settings. This is the cost of the §9.5.2 decision to deny
+   reads as well as writes on that one file, and it is paid to keep the master switch out of a
+   public model's reach.
+9. **On Windows and on Linux without bubblewrap, a public chat loses the five tools that spawn a
+   child process** — but nothing else. This cost used to be "every file tool", and the two-layer
+   structure in §9.5.1 is what shrank it.
 
 If these are not budgeted, the honest prediction is that the first user with 900 private chats and
 a commercial subscription tries to turn the feature off — and discovers the R7 opt-out covers only
@@ -1794,7 +1927,7 @@ Gate C, i.e. not the part annoying them. They file a bug instead.
    `.biorouter/hooks.yaml` in the working directory, both writable by an agent with `text_editor`.
    An operator wanting zero risk makes it a `Deny`.
 3. ~~**Does the R7 opt-out really stop at Gate C?**~~ **RULED — it stops nowhere.**
-   `BIOROUTER_PRIVACY_TIERS=off` disables every gate, the ratchet and the read-deny sandbox
+   `BIOROUTER_PRIVACY_TIERS=off` disables every gate, the ratchet and both read-deny layers
    (§10.6). The cost is that nothing is recorded while it is off and re-enabling does not
    reclassify the gap; the typed confirmation states it.
 4. **Is the first cross-tier write approval remembered per (caller, target) or per call?**
@@ -1831,6 +1964,19 @@ Gate C, i.e. not the part annoying them. They file a bug instead.
 11. **`POST /agent/call_tool` remains inspector-free.** This design is correct either way because
     the barrier is in the extension manager, but the route is a standing hazard for every *future*
     inspector-based control, including BR-71's.
+12. **Should the daemon's HTTP API authenticate a caller that is on the same machine?** §9.5.5: the
+    API secret is recoverable from the daemon's own environment, so the header check stops a remote
+    caller and not a local one. §9.5's barrier covers the largest local route because that route
+    dispatches through the same choke point; it does not cover the routes that return private
+    content without running a tool, of which `GET /diagnostics/{id}` is the widest. A per-caller
+    credential the daemon does not hand to its own children is the shape of the fix, and it is
+    probably the same fix as the app socket's.
+13. **Should the Agent Drafter app socket be authenticated by something a local client cannot
+    obtain?** §9.5.5: `agent_drafter__list_apps` hands a public model every app id, and an app id is
+    all the unauthenticated `GET /apps/{id}/` page needs to yield that app's socket token. The
+    alternative — reclassifying `agent_drafter` as Private in §10.3 — closes it at Gate C and takes
+    the whole drafter workflow out of every public chat, which is a much larger behaviour change and
+    needs a ruling rather than an implementation decision.
 
 ---
 
