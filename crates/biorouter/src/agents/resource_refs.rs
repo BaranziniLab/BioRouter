@@ -172,22 +172,22 @@ pub fn decode_ref_value(value: &str) -> String {
     let mut rest = value;
 
     while let Some(amp) = rest.find('&') {
-        out.push_str(&rest[..amp]);
-        let tail = &rest[amp..];
+        out.push_str(slice_to(rest, amp));
+        let tail = slice_from(rest, amp);
         match REF_ENTITIES
             .iter()
             .find(|(_, entity)| tail.starts_with(*entity))
         {
             Some((decoded, entity)) => {
                 out.push(*decoded);
-                rest = &tail[entity.len()..];
+                rest = slice_from(tail, entity.len());
             }
             // Not an entity we emit: keep the `&` verbatim and carry on from
             // the next character, so `&amp;` inside `&amp;amp;` still decodes
             // exactly once.
             None => {
                 out.push('&');
-                rest = &tail['&'.len_utf8()..];
+                rest = slice_from(tail, '&'.len_utf8());
             }
         }
     }
@@ -226,9 +226,7 @@ pub fn labelled_ref_tag(kind: RefKind, value: &str, label: &str) -> String {
 pub(crate) fn extract_resource_refs(text: &str) -> ResourceRefs {
     let mut refs = ResourceRefs::default();
 
-    extract_tag_refs(text, "skill", "name", &mut refs.skills);
-    extract_tag_refs(text, "extension", "name", &mut refs.extensions);
-    extract_kb_tag_refs(text, &mut refs.knowledge_bases);
+    extract_tag_refs(text, &mut refs);
 
     extract_legacy_resource_phrases(text, "skill", &mut refs.skills);
     extract_legacy_resource_phrases(text, "extension", &mut refs.extensions);
@@ -252,37 +250,178 @@ pub(crate) fn extract_resource_refs(text: &str) -> ResourceRefs {
 // id *and* the registry that owns it. This module only extracts the raw
 // reference text from the message.
 
-fn extract_tag_refs(text: &str, tag_type: &str, attr: &str, out: &mut Vec<String>) {
-    let needle = format!("<biorouter-ref type=\"{tag_type}\" {attr}=\"");
-    let mut rest = text;
-    while let Some(start) = rest.find(&needle) {
-        let value_start = start + needle.len();
-        let value_rest = slice_from(rest, value_start);
-        let Some(end) = value_rest.find('"') else {
-            break;
+/// One parsed tag's attributes, in source order, values still escaped.
+type TagAttrs = Vec<(String, String)>;
+
+/// Pull every `<biorouter-ref …>` out of `text`.
+///
+/// Tags are honoured wherever they appear, **including inside a code fence**.
+/// Skipping fenced regions would mean carrying a Markdown parser here for a
+/// message that is not necessarily Markdown, and it would single out this one
+/// syntax: `/skill:`, `kb_id:` and the quoted legacy phrases have never been
+/// fence-aware either. The cost of honouring one is bounded and visible — the
+/// user sees the resource announced in the reply — whereas dropping a chip a
+/// user deliberately placed inside a fenced block is silent.
+fn extract_tag_refs(text: &str, refs: &mut ResourceRefs) {
+    for attrs in parse_ref_tags(text) {
+        // The raw value is trimmed *before* decoding, so surrounding slop in a
+        // hand-written tag is forgiven while an encoded `&#10;` at either end
+        // is not mistaken for slop and survives.
+        let attr = |key: &str| {
+            attrs
+                .iter()
+                .find(|(name, _)| name == key)
+                .map(|(_, value)| value.trim())
         };
-        push_trimmed(out, slice_to(value_rest, end));
-        rest = slice_from(value_rest, end);
+
+        // `type` is compared raw: it is a closed keyword set, so a keyword
+        // never needs escaping and decoding here would only invent a second
+        // spelling for each type.
+        match attr("type").unwrap_or_default() {
+            "skill" => push_decoded(&mut refs.skills, attr(RefKind::Skill.value_attr())),
+            "extension" => {
+                push_decoded(&mut refs.extensions, attr(RefKind::Extension.value_attr()))
+            }
+            "knowledge_base" => {
+                let id = attr(RefKind::KnowledgeBase.value_attr())
+                    .map(decode_ref_value)
+                    .unwrap_or_default();
+                if id.is_empty() {
+                    continue;
+                }
+                refs.knowledge_bases.push(KnowledgeBaseRef {
+                    id,
+                    label: attr("label")
+                        .map(decode_ref_value)
+                        .filter(|label| !label.is_empty()),
+                });
+            }
+            // An unknown `type` is ignored rather than guessed at, so a newer
+            // composer can add one without this build mis-filing it.
+            _ => {}
+        }
     }
 }
 
-fn extract_kb_tag_refs(text: &str, out: &mut Vec<KnowledgeBaseRef>) {
-    let needle = "<biorouter-ref type=\"knowledge_base\" id=\"";
-    let mut rest = text;
-    while let Some(start) = rest.find(needle) {
-        let id_start = start + needle.len();
-        let id_rest = slice_from(rest, id_start);
-        let Some(id_end) = id_rest.find('"') else {
-            break;
+/// Scan `text` for reference tags and return each one's attributes.
+///
+/// Deliberately permissive about shape — attributes in any order, extra
+/// attributes, a valueless attribute, `/>` or `>`, whitespace anywhere — because
+/// the alternative is losing a reference the user explicitly attached over a
+/// cosmetic difference in how some emitter serialises it. It is strict about
+/// exactly two things: the value's quoting (double quotes, entity-escaped) and
+/// that the tag is closed.
+fn parse_ref_tags(text: &str) -> Vec<TagAttrs> {
+    let mut tags = Vec::new();
+    let mut idx = 0usize;
+
+    while let Some(offset) = text.get(idx..).and_then(|rest| rest.find('<')) {
+        let start = idx + offset;
+        // Advance past this `<` before doing anything else. Every failure below
+        // resumes from here, which is what stops a malformed tag from either
+        // spinning forever or eating the tags that follow it.
+        idx = start + '<'.len_utf8();
+
+        let Some(after_name) = text.get(idx..).and_then(|r| r.strip_prefix(REF_TAG_NAME)) else {
+            continue;
         };
-        let id = slice_to(id_rest, id_end).trim();
-        if !id.is_empty() {
-            out.push(KnowledgeBaseRef {
-                id: id.to_string(),
-                label: None,
-            });
+        // `<biorouter-reference …>` is a different element: the name has to end
+        // here, not merely start here.
+        if !after_name.starts_with(|c: char| c.is_whitespace() || c == '>' || c == '/') {
+            continue;
         }
-        rest = slice_from(id_rest, id_end);
+
+        // A tag never spans a raw `<`. A correctly encoded value carries `&lt;`
+        // instead, so a raw one means this tag is malformed and another is
+        // starting — and bounding the scan is also what keeps a single
+        // unterminated `<biorouter-ref` from costing a scan of the whole
+        // message.
+        let bounded = match after_name.find('<') {
+            Some(end) => slice_to(after_name, end),
+            None => after_name,
+        };
+
+        let Some((attrs, consumed)) = parse_tag_attrs(bounded) else {
+            continue;
+        };
+        tags.push(attrs);
+        idx += REF_TAG_NAME.len() + consumed;
+    }
+
+    tags
+}
+
+/// Parse the attribute list that follows the tag name, up to and including the
+/// closing `>`.
+///
+/// Returns the attributes and how many bytes were consumed, or `None` if the
+/// tag never closes — an unterminated tag is dropped rather than honoured,
+/// because a truncated message may have been cut mid-attribute and acting on
+/// half a tag is how the wrong resource gets loaded.
+fn parse_tag_attrs(input: &str) -> Option<(TagAttrs, usize)> {
+    let mut attrs: TagAttrs = Vec::new();
+    let mut pos = 0usize;
+
+    loop {
+        pos += leading_whitespace_len(input.get(pos..)?);
+        let rest = input.get(pos..)?;
+
+        if let Some(width) = rest
+            .starts_with("/>")
+            .then_some(2)
+            .or_else(|| rest.starts_with('>').then_some(1))
+        {
+            return Some((attrs, pos + width));
+        }
+        if rest.is_empty() {
+            return None;
+        }
+
+        let name_len = rest
+            .find(|c: char| c.is_whitespace() || c == '=' || c == '>' || c == '/')
+            .unwrap_or(rest.len());
+        if name_len == 0 {
+            // A stray `=` or `/` where an attribute name belongs: not a shape
+            // we understand, so leave the whole tag alone.
+            return None;
+        }
+        let name = slice_to(rest, name_len).to_string();
+        pos += name_len;
+
+        pos += leading_whitespace_len(input.get(pos..)?);
+        let Some(after_eq) = input.get(pos..)?.strip_prefix('=') else {
+            // A valueless attribute (`<biorouter-ref … hidden>`). Record it
+            // empty and keep going rather than discarding an otherwise good
+            // tag over a decoration.
+            attrs.push((name, String::new()));
+            continue;
+        };
+        pos += '='.len_utf8();
+        pos += leading_whitespace_len(after_eq);
+
+        // Double quotes only. Accepting `'` too would need `'` in the escape
+        // table to be safe, and one quoting style is one fewer way for an
+        // emitter to drift from this parser.
+        let value = input.get(pos..)?.strip_prefix('"')?;
+        pos += '"'.len_utf8();
+        // Scanning to the next raw `"` is correct *because* of the escaping: an
+        // escaped quote is `&quot;`, which contains no quote at all, so the
+        // first one found is always the closing one.
+        let end = value.find('"')?;
+        attrs.push((name, slice_to(value, end).to_string()));
+        pos += end + '"'.len_utf8();
+    }
+}
+
+fn leading_whitespace_len(input: &str) -> usize {
+    input.len() - input.trim_start().len()
+}
+
+fn push_decoded(out: &mut Vec<String>, raw: Option<&str>) {
+    let Some(raw) = raw else { return };
+    let value = decode_ref_value(raw);
+    if !value.is_empty() {
+        out.push(value);
     }
 }
 
@@ -561,6 +700,235 @@ mod tests {
         assert_eq!(
             labelled_ref_tag(RefKind::KnowledgeBase, "soul", "Soul & Body"),
             r#"<biorouter-ref type="knowledge_base" id="soul" label="Soul &amp; Body">"#
+        );
+    }
+
+    /// Issue #65. A name may contain any character, including the `"` that
+    /// delimits the attribute it travels in, so the tag carries values
+    /// entity-escaped and the parser has to decode them.
+    #[test]
+    fn tag_values_are_entity_decoded() {
+        let refs = extract_resource_refs(
+            r#"<biorouter-ref type="skill" name="say &quot;hi&quot; &amp; bye"> <biorouter-ref type="extension" name="Chat Recall"> <biorouter-ref type="knowledge_base" id="a &lt;b&gt; c">"#,
+        );
+
+        assert_eq!(refs.skills, vec![r#"say "hi" & bye"#]);
+        assert_eq!(refs.extensions, vec!["Chat Recall"]);
+        assert_eq!(refs.knowledge_bases[0].id, "a <b> c");
+    }
+
+    /// A tag that never closes its attribute must be abandoned at the next `<`,
+    /// not scanned onwards until it finds some unrelated quote — which is how
+    /// the old first-quote scan turned one broken tag into a bogus reference
+    /// *and* ate the good tag that followed it.
+    #[test]
+    fn a_malformed_tag_does_not_swallow_the_next_one() {
+        let refs = extract_resource_refs(
+            r#"<biorouter-ref type="skill" name="broken <biorouter-ref type="skill" name="good">"#,
+        );
+
+        assert_eq!(refs.skills, vec!["good"]);
+    }
+
+    /// The composer will add presentation-only attributes (a chip label, an
+    /// icon) and a serializer is free to reorder them. Neither may cost the
+    /// reference.
+    #[test]
+    fn tag_attributes_may_appear_in_any_order_with_extras() {
+        let refs =
+            extract_resource_refs(r#"<biorouter-ref name="rna-qc" label="RNA QC" type="skill" />"#);
+
+        assert_eq!(refs.skills, vec!["rna-qc"]);
+    }
+
+    /// `KnowledgeBaseRef::label` exists for the chip's display string; the tag
+    /// is where it comes from.
+    #[test]
+    fn knowledge_base_tag_carries_its_label() {
+        let refs = extract_resource_refs(
+            r#"<biorouter-ref type="knowledge_base" id="soul" label="Soul &amp; Body">"#,
+        );
+
+        assert_eq!(
+            refs.knowledge_bases,
+            vec![KnowledgeBaseRef {
+                id: "soul".to_string(),
+                label: Some("Soul & Body".to_string()),
+            }]
+        );
+    }
+
+    /// The end-to-end contract: whatever a composer puts into `ref_tag`, the
+    /// extractor hands back byte for byte. This is the guarantee the compact
+    /// markers cannot make, and the reason the tag exists.
+    #[test]
+    fn every_hostile_name_survives_a_round_trip_through_a_tag() {
+        for name in HOSTILE_NAMES.iter().filter(|n| !n.trim().is_empty()) {
+            let message = format!("please use {} on this", ref_tag(RefKind::Skill, name));
+            assert_eq!(
+                extract_resource_refs(&message).skills,
+                vec![name.to_string()],
+                "lost `{name}` in `{message}`"
+            );
+
+            let message = format!("{} thanks", ref_tag(RefKind::Extension, name));
+            assert_eq!(
+                extract_resource_refs(&message).extensions,
+                vec![name.to_string()],
+                "lost `{name}`"
+            );
+
+            let message = ref_tag(RefKind::KnowledgeBase, name);
+            assert_eq!(
+                extract_resource_refs(&message)
+                    .knowledge_bases
+                    .into_iter()
+                    .map(|kb| kb.id)
+                    .collect::<Vec<_>>(),
+                vec![name.to_string()],
+                "lost `{name}`"
+            );
+        }
+    }
+
+    /// Chips sit flush against each other in a composer, so the tags they
+    /// serialise to have no separator between them.
+    #[test]
+    fn adjacent_tags_with_no_separator_are_all_found() {
+        let refs = extract_resource_refs(&format!(
+            "{}{}{}",
+            ref_tag(RefKind::Skill, "a"),
+            ref_tag(RefKind::Skill, "b"),
+            ref_tag(RefKind::Extension, "c"),
+        ));
+
+        assert_eq!(refs.skills, vec!["a", "b"]);
+        assert_eq!(refs.extensions, vec!["c"]);
+    }
+
+    /// An element whose name merely *starts* with ours is not ours.
+    #[test]
+    fn a_longer_element_name_is_not_a_reference_tag() {
+        let refs = extract_resource_refs(
+            r#"<biorouter-reference type="skill" name="nope"> <biorouter-refs type="skill" name="also-nope">"#,
+        );
+
+        assert!(refs.is_empty(), "matched a prefix: {refs:?}");
+    }
+
+    /// Malformed input must terminate, must not consume the message, and must
+    /// not invent a reference. The last case is the adversarial one: a tag with
+    /// no `>` at all, followed by text containing quotes.
+    #[test]
+    fn malformed_tags_are_dropped_without_hanging() {
+        for text in [
+            r#"<biorouter-ref type="skill" name="oops"#,
+            r#"<biorouter-ref type="skill" name="oops">"#.trim_end_matches('>'),
+            r#"<biorouter-ref type="skill" name=oops>"#,
+            r#"<biorouter-ref type="skill" name='oops'>"#,
+            r#"<biorouter-ref type="skill" name="oops but the message rambles on with "quotes" in it"#,
+            r#"<biorouter-ref"#,
+            "<biorouter-ref ",
+            r#"<biorouter-ref = "x">"#,
+            "<<<<<biorouter-ref<<<<",
+        ] {
+            let refs = extract_resource_refs(text);
+            assert!(
+                refs.skills.is_empty() && refs.extensions.is_empty(),
+                "`{text}` produced {refs:?}"
+            );
+        }
+    }
+
+    /// A broken tag must not cost the good ones on either side of it.
+    #[test]
+    fn a_good_tag_survives_a_broken_neighbour() {
+        let refs = extract_resource_refs(&format!(
+            r#"{} <biorouter-ref type="skill" name="broken {}"#,
+            ref_tag(RefKind::Skill, "before"),
+            ref_tag(RefKind::Skill, "after"),
+        ));
+
+        assert_eq!(refs.skills, vec!["before", "after"]);
+    }
+
+    /// Deliberate: a tag inside a code fence still counts. See `extract_tag_refs`
+    /// for why fence-awareness is not worth a Markdown parser here.
+    #[test]
+    fn a_tag_inside_a_code_fence_is_still_honoured() {
+        let refs = extract_resource_refs(&format!(
+            "here is the syntax:\n```\n{}\n```\n",
+            ref_tag(RefKind::Skill, "rna-qc")
+        ));
+
+        assert_eq!(refs.skills, vec!["rna-qc"]);
+    }
+
+    /// Shape tolerance a serialiser may impose, none of which may cost the
+    /// reference.
+    #[test]
+    fn tag_shape_variations_are_tolerated() {
+        for text in [
+            r#"<biorouter-ref type="skill" name="rna-qc">"#,
+            r#"<biorouter-ref type="skill" name="rna-qc"/>"#,
+            r#"<biorouter-ref type="skill" name="rna-qc" />"#,
+            r#"<biorouter-ref    type = "skill"    name = "rna-qc"   >"#,
+            r#"<biorouter-ref name="rna-qc" type="skill">"#,
+            r#"<biorouter-ref type="skill" name="rna-qc" data-chip>"#,
+            r#"<biorouter-ref type="skill" name="rna-qc" label="RNA QC" icon="beaker">"#,
+            "<biorouter-ref\n  type=\"skill\"\n  name=\"rna-qc\"\n>",
+        ] {
+            assert_eq!(
+                extract_resource_refs(text).skills,
+                vec!["rna-qc"],
+                "rejected `{text}`"
+            );
+        }
+    }
+
+    /// A `type` this build does not know is ignored, not guessed at, so a newer
+    /// composer can add one without an older backend mis-filing it.
+    #[test]
+    fn an_unknown_tag_type_is_ignored() {
+        let refs = extract_resource_refs(
+            r#"<biorouter-ref type="workflow" name="nightly"> <biorouter-ref name="orphan">"#,
+        );
+
+        assert!(refs.is_empty(), "{refs:?}");
+    }
+
+    /// Issue #65's compatibility half: the compact markers predate the tag and
+    /// still appear in persisted sessions, saved workflows and skill documents,
+    /// so they must keep resolving — whitespace limitation and all.
+    #[test]
+    fn compact_markers_still_resolve_alongside_tags() {
+        let refs = extract_resource_refs(&format!(
+            "/skill:rna-qc /ext:developer /kb:soul /skill(rna-qc-v2) {}",
+            ref_tag(RefKind::Skill, "my skill"),
+        ));
+
+        // Tags are collected before the compact forms, so they lead — the
+        // ordering `explicit_resource_context` renders them in.
+        assert_eq!(refs.skills, vec!["my skill", "rna-qc", "rna-qc-v2"]);
+        assert_eq!(refs.extensions, vec!["developer"]);
+        assert_eq!(refs.knowledge_bases[0].id, "soul");
+    }
+
+    /// The limitation the tag exists to route around, stated as a test so the
+    /// tradeoff is a decision on the record rather than a latent surprise: a
+    /// compact marker still truncates at the first space, and a producer that
+    /// needs to carry such a name must emit the tag instead.
+    #[test]
+    fn a_compact_marker_still_truncates_at_whitespace() {
+        assert_eq!(
+            extract_resource_refs("/skill:my skill").skills,
+            vec!["my"],
+            "the compact form's whitespace split is load-bearing for every \
+             already-persisted message; changing it here is not the fix"
+        );
+        assert_eq!(
+            extract_resource_refs(&ref_tag(RefKind::Skill, "my skill")).skills,
+            vec!["my skill"]
         );
     }
 }
