@@ -14359,8 +14359,8 @@ tier raise that any caller can perform with nothing but the daemon secret and no
 extension's *tools* arrive in a session Task 18's F1 already refuses to let the model enable through
 `extensionmanager__manage_extensions`.
 
-**And the daemon cannot tell the user from the model.** `check_token` (`auth.rs:80-126`) compares one
-machine-wide bearer against the `X-Secret-Key` header (`:114-121`) and has **no principal**: every
+**And the daemon cannot tell the user from the model.** `check_token` (`auth.rs:80-127`) compares one
+machine-wide bearer against the `X-Secret-Key` header (`:115-118`) and has **no principal**: every
 authenticated request is indistinguishable, whoever sent it, and [AR-11](#ar-11--the-daemons-own-api-secret-is-recoverable-so-the-second-door-is-held-by-layer-a-and-not-by-the-environment-strip)
 measured that bearer to be recoverable from inside the daemon. That is exactly why DR-16 rejected
 *treat identity-free routes as public*: refusing every raise takes the **user's** model picker away
@@ -14398,14 +14398,14 @@ model, and the plan must not read as though it did.
 
 | Action | Path | Anchor (re-verified at `0d37998e`) |
 |---|---|---|
-| Modify | `crates/biorouter-server/src/auth.rs` | `secret_matches` `:14-24` (the constant-time compare to copy); `check_token` `:80`, its `X-Secret-Key` read `:114-117`; the existing `FAILED_ATTEMPTS: OnceLock` `:26-30` (the storage pattern this file already uses); test mod `:127` |
+| Modify | `crates/biorouter-server/src/auth.rs` | `secret_matches` `:14-24` (the constant-time compare to copy); `check_token` `:80-127`, its `X-Secret-Key` read `:115-118`; the existing `FAILED_ATTEMPTS: OnceLock` `:26-30` (the storage pattern this file already uses); test mod `:130` |
 | Modify | `crates/biorouter-server/src/commands/agent.rs` | `run` `:30`; the `BIOROUTER_SERVER__SECRET_KEY` read `:35-42` — the digest install goes **immediately after** it and **before** `AppState::new()` `:44` and the `check_token` layer `:53-56` |
 | Modify | `crates/biorouter-server/src/routes/agent.rs` | `update_agent_provider` `:686-731` (`create` `:713`, `agent.update_provider` `:721`); `agent_add_extension` `:744-762`; both `responses(..)` blocks; registrations `:1270`, `:1272` |
-| Modify | `crates/biorouter-server/src/routes/config_management.rs` | `upsert_config` `:183-193` (`config.set(&query.key, ..)` `:187`); `set_config_provider` `:876-891` (`set_biorouter_provider` `:883`); `UpsertConfigQuery` `:47-51`; `SetProviderRequest` `:105-108`; registrations `:895`, `:923`; `.with_state(state)` `:924` |
+| Modify | `crates/biorouter-server/src/routes/config_management.rs` | `upsert_config` `:183-193` (`config.set(&query.key, ..)` `:187`); `set_config_provider` `:876-890` (`set_biorouter_provider` `:884`); `UpsertConfigQuery` `:47-51`; `SetProviderRequest` `:105-108`; `routes` `:892`; registrations `:895`, `:923`; `.with_state(state)` `:924` |
 | Modify | `crates/biorouter-server/Cargo.toml` | add `sha2 = "0.10"` — **it is not a dependency today**; there is no `[workspace.dependencies] sha2`, so pin the same `0.10` `crates/biorouter/Cargo.toml:59` and `crates/biorouter-mcp/Cargo.toml:87` already use. `hex` and `rand` are already in (`commands/agent.rs:36-37` uses both) |
 | Create | `crates/biorouter/src/privacy/config_keys.rs` | new — the capability-key list and the scan that keeps it honest; declared in `privacy/mod.rs` |
 | Modify | `crates/biorouter/src/privacy/refusal.rs` | created by Task 12; gains three variants and the one shared instruction constant |
-| Modify | `ui/desktop/src/biorouterd.ts` | `BiorouterProcessEnv` `:243-252`; `additionalEnv` `:299-318`; `processEnv` `:320-323`; `spawnOptions` `:332-338` — **`stdio: ['ignore','pipe','pipe']` at `:335`**; `safeArgs` `:341`; `spawn` `:343`. The `BIOROUTER_EXTERNAL_BACKEND` early return `:274-276` never reaches any of it |
+| Modify | `ui/desktop/src/biorouterd.ts` | `BiorouterProcessEnv` `:242-253`; `additionalEnv` `:299-318`; `processEnv` `:320-323`; `spawnOptions` `:332-339` — **`stdio: ['ignore','pipe','pipe']` at `:335`**; `safeArgs` `:341`; `spawn` `:343`. The `BIOROUTER_EXTERNAL_BACKEND` early return `:275-277` never reaches any of it |
 | Modify | `ui/desktop/src/main.ts` | `getServerSecret` `:902-910` (the three-branch shape `getUserActionKey` mirrors); `GENERATED_SECRET` `:909`; `serverSecret` `:1009`; the `get-secret-key` IPC handler `:1934-1937` |
 | Modify | `ui/desktop/src/preload.ts` | `getSecretKey` type `:240`, binding `:468` |
 | Modify | `ui/desktop/src/renderer.tsx` | `client.setConfig` `:450-456` — ⚠ **the header does NOT go here.** A default header is sent on every request; this one is sent on three |
@@ -14414,7 +14414,7 @@ model, and the plan must not read as though it did.
 | Reference | `crates/biorouter/src/agents/agent.rs` | `provider()` `:2511-2516` (`Result<Arc<dyn Provider>>`, `Err` when unset); `update_provider` `:5655`; `restore_provider_from_session` `:5679-5704`, config fallback at **`:5685`** |
 | Reference | `crates/biorouter/src/providers/factory.rs` | `create` `:139-149`; the `BIOROUTER_LEAD_MODEL` intercept `:142-146`, **before** the registry lookup |
 | Reference | `crates/biorouter/src/config/base.rs` | `get_param` `:755-773` — **env wins over the config file** (`:764-767`), which is why a config write is a *default* change and not an immediate one; `set_param` `:788-793`; `config_value!` `:236-250`; `BIOROUTER_PROVIDER` `:1147` |
-| Reference | `crates/biorouter-server/src/routes/agent.rs` | `mod working_dir_lock_tests` `:1278-1288` — its doc comment is the constraint that shapes Step 1: *"`AppState::new()` opens the REAL user session database … so a mutating route test must never go through it"* |
+| Reference | `crates/biorouter-server/src/routes/agent.rs` | `mod working_dir_lock_tests` `:1279` (`#[cfg(test)]` `:1278`; its doc comment `:1280-1286`) — its doc comment is the constraint that shapes Step 1: *"`AppState::new()` opens the REAL user session database … so a mutating route test must never go through it"* |
 
 **Why the guard is a pure function and not a middleware.** Two measured reasons. (a) The route test
 that would otherwise be the obvious home is forbidden by the comment in the last row — an
@@ -14427,7 +14427,7 @@ proves all four handlers compose them.
 - [ ] **Step 1: Write the failing tests**
 
 ```rust
-// crates/biorouter-server/src/auth.rs — in the existing `mod tests` at :127.
+// crates/biorouter-server/src/auth.rs — in the existing `mod tests` at :130.
 #[test]
 fn a_daemon_with_no_user_action_key_refuses_every_raise() {
     // Open question 23, as an assertion. `just run-server`, a hand-run
@@ -14451,7 +14451,7 @@ fn the_daemon_stores_a_digest_and_never_the_key() {
 #[test]
 fn all_four_raise_channels_call_the_guard() {
     // A source scan, because the alternative — four HTTP tests — has to build
-    // `AppState`, which opens the user's real session DB (routes/agent.rs:1278).
+    // `AppState`, which opens the user's real session DB (routes/agent.rs:1280-1286).
     // This is the test that fails a PARTIAL implementation: covering
     // `update_provider` and leaving `add_extension` or the config routes open.
     let agent_rs = include_str!("routes/agent.rs");
@@ -14614,7 +14614,7 @@ biorouterdProcess.stdin?.write(sha256Hex(userActionKey) + '\n');
 biorouterdProcess.stdin?.end();
 ```
 
-`BiorouterProcessEnv` (`:243-252`) gains **nothing**, and `additionalEnv` (`:299-318`) gains
+`BiorouterProcessEnv` (`:242-253`) gains **nothing**, and `additionalEnv` (`:299-318`) gains
 **nothing** — that omission is the point, and Step 5 asserts it.
 
 In `commands/agent.rs`, immediately after the secret is resolved (`:35-42`) and before
@@ -14695,7 +14695,7 @@ pub fn is_user_action(headers: &axum::http::HeaderMap) -> bool {
 ```
 
 `check_token` is **not** touched: the proof is a per-route requirement, not a second gate on every
-request. CORS already passes it — the daemon's layer is `.allow_headers(Any)` (`commands/agent.rs:49`).
+request. CORS already passes it — the daemon's layer is `.allow_headers(Any)` (`commands/agent.rs:51`).
 
 **(b) `POST /agent/update_provider`.** The handler gains a `HeaderMap` extractor — it must sit
 **before** `Json`, which consumes the body and must be last — and three lines between `create` (`:713`)
@@ -14741,8 +14741,8 @@ authorize either; the user's route is to switch the model first and then attach.
 ⚠ `ExtensionConfig`'s name accessor is Task 8's dependency, not this task's invention — Task 8 owns
 `classify_extension`'s input shape. If it is a field rather than a method, this is a field read.
 
-**(d) The two config routes — open question 24, closed.** `set_config_provider` (`:876-891`) writes
-`BIOROUTER_PROVIDER` via `set_biorouter_provider` (`:883`), and `upsert_config` (`:183-193`) writes
+**(d) The two config routes — open question 24, closed.** `set_config_provider` (`:876-890`) writes
+`BIOROUTER_PROVIDER` via `set_biorouter_provider` (`:884`), and `upsert_config` (`:183-193`) writes
 **any** key via `config.set(&query.key, ..)` (`:187`). `restore_provider_from_session` falls back to
 `config.get_biorouter_provider()` (`agent.rs:5685` — confirmed present on the tree), so a session
 opened afterwards comes up private-capability with **no `/agent/update_provider` call at all**.
