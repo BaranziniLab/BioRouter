@@ -22,7 +22,7 @@
 //! govern this door exactly as they govern the four MCP tools. A refused
 //! category is a `400`, because it is the caller's mistake.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use axum::{
@@ -110,11 +110,11 @@ fn local_store_for(working_dir: &str) -> PathBuf {
 /// on it has already been refused by [`require_project`], and a directory that
 /// cannot exist keeps a future caller from silently operating on the wrong
 /// project's memories.
-fn server_for(global: &PathBuf, working_dir: Option<&str>) -> MemoryServer {
+fn server_for(global: &Path, working_dir: Option<&str>) -> MemoryServer {
     let local = working_dir
         .map(local_store_for)
         .unwrap_or_else(|| PathBuf::from("\0no-project"));
-    MemoryServer::with_stores(global.clone(), local)
+    MemoryServer::with_stores(global.to_path_buf(), local)
 }
 
 /// A local operation must say which project. Guessing would list — or delete —
