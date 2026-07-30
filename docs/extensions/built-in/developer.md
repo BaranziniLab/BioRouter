@@ -117,6 +117,23 @@ python run_analysis.py --cohort data/cohort.csv --step qc
 Would you like me to add any additional features or make other improvements to the setup?
 ```
 
+## Foreground and background commands
+
+The `shell` tool runs a command one of two ways, and the difference matters more than it looks.
+
+**Foreground** is the default: the command blocks the turn until it finishes, and its output comes back as the tool result. It carries a wall-clock budget, 240 seconds by default. When the budget expires BioRouter kills the command's **whole process group** — not just the shell it launched — and the call fails with an error that names the command, how long it ran, and what to do instead. Nothing is left running.
+
+**Background** is `background=true`. The call returns a `job_id` immediately and the job keeps running across tool calls, watched with `shell_wait`, peeked at with `shell_output`, and stopped with `shell_kill`. There is no budget. This is where a dev server, a build, a test suite or a long training run belongs.
+
+The budget exists because a foreground command that turns out to be far more expensive than it looked — a `find` over a whole home directory, a query with no index — blocks the turn for minutes with nothing to show for it. Two things make that visible while it happens:
+
+- The tool card in chat reports the elapsed time every 15 seconds ("shell: still running after 45s — …"), so a silent command is distinguishable from a stuck agent.
+- The command is listed in the active-work view (`GET /active_work`) for as long as it runs, alongside background jobs, subagents and scheduled runs, and `POST /active_work/{id}/cancel` stops it on its own without ending the turn.
+
+Raise, lower or disable the budget with [`BIOROUTER_SHELL_FOREGROUND_TIMEOUT_SECS`](../../configuration/environment-variables.md#foreground-shell-budget) (seconds; `0` disables it).
+
+> **Stop reaps the whole tree.** Pressing Stop, cancelling the turn, or hitting the budget terminates the command's process group, so anything the command itself spawned goes with it. This holds for a command the model runs directly and for one it runs from inside a [Code Execution](code-execution.md) script.
+
 ## Configuring access controls
 
 By default, BioRouter can run system commands with your user privileges and edit any accessible file **without your approval**. This is because BioRouter runs in Autonomous permission mode by default and has access to the Developer extension's shell and file editing tools. While this configuration lets BioRouter work quickly and independently, there is potential for unexpected outcomes. Understanding the available access control features helps you configure BioRouter to match your comfort level and specific needs.
