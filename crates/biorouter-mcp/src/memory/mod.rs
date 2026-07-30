@@ -132,6 +132,36 @@ fn validated_category(category: &str) -> io::Result<&str> {
     }
 }
 
+/// Canonicalize `p` as far as the filesystem allows: the deepest ancestor that
+/// resolves is canonicalized and the not-yet-existing tail re-appended, so a
+/// file that does not exist yet is still checked against where it *would* land.
+///
+/// The same shape as [`biorouter_sandbox::resolve_in_workspace`]'s
+/// `canonicalize_existing_ancestor` and `developer::jail`'s `canonical_realish`,
+/// but total: the memory store is created lazily on first write, so both the
+/// candidate and the base routinely do not exist yet, and "cannot resolve" has
+/// to fall back to the literal path rather than fail.
+fn canonical_realish(p: &Path) -> PathBuf {
+    let mut cur: &Path = p;
+    loop {
+        if cur.exists() {
+            if let Ok(real) = cur.canonicalize() {
+                if cur == p {
+                    return real;
+                }
+                if let Ok(tail) = p.strip_prefix(cur) {
+                    return real.join(tail);
+                }
+            }
+            return p.to_path_buf();
+        }
+        match cur.parent() {
+            Some(parent) => cur = parent,
+            None => return p.to_path_buf(),
+        }
+    }
+}
+
 /// Heads the *index* of global memory categories in the system prompt.
 ///
 /// Bodies deliberately do not appear — see [`MemoryServer::compose_instructions`].
@@ -384,6 +414,23 @@ impl MemoryServer {
 
     /// The single point every memory tool reaches the filesystem through — and
     /// therefore the one place a category has to be proved a name (issue #73).
+    ///
+    /// Two checks, because neither covers the other. [`validated_category`]
+    /// rules out a category that *spells* an escape (`..`, a separator, an
+    /// absolute path). The containment re-check then rules out one that
+    /// *resolves* to an escape: a symlink at `<base>/<category>.txt`, where the
+    /// category itself is a perfectly ordinary name. That is the same two-step
+    /// `developer::jail::Jail::resolve` makes — reject before touching the FS,
+    /// then re-check the canonicalized path.
+    ///
+    /// The order matters and the containment check is **not** a fallback for a
+    /// missing name check. The memory store is created lazily on first write,
+    /// so when it does not exist yet nothing along `<base>/../../x.txt`
+    /// resolves; [`canonical_realish`] then falls back to the literal path with
+    /// the `..` components still in it, and `starts_with` compares components,
+    /// so `<base>/../../x.txt` *does* start with `<base>`. Traversal is caught
+    /// by [`validated_category`] alone — measured by deleting each half in turn
+    /// and watching which test goes red.
     fn get_memory_file(&self, category: &str, is_global: bool) -> io::Result<PathBuf> {
         let category = validated_category(category)?;
         // Defaults to local memory if no is_global flag is provided
@@ -392,7 +439,32 @@ impl MemoryServer {
         } else {
             &self.local_memory_dir
         };
-        Ok(base_dir.join(format!("{}.txt", category)))
+        let path = base_dir.join(format!("{}.txt", category));
+
+        let escaped = |detail: &str| {
+            Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "memory category {category:?} resolves outside the memory store {}: {detail}",
+                    base_dir.display()
+                ),
+            ))
+        };
+
+        // Both sides get the same treatment so the comparison is apples to
+        // apples: on macOS a store under /var canonicalizes to /private/var,
+        // and resolving only one side would reject every legitimate write.
+        if !canonical_realish(&path).starts_with(canonical_realish(base_dir)) {
+            return escaped("it resolves out of the store, most likely through a symlink");
+        }
+        // A dangling symlink resolves to nothing, so the check above cannot see
+        // where it points — and `remember`'s create-write through one would
+        // bring that outside target into existence.
+        if fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()) && !path.exists() {
+            return escaped("it is a dangling symlink, whose target cannot be shown to be inside");
+        }
+
+        Ok(path)
     }
 
     /// Surface a store error to the model. A refused category is the *caller's*
@@ -1053,6 +1125,65 @@ mod tests {
         assert!(
             err.message.contains("category"),
             "the message has to name what was wrong so the model can fix it: {err:?}"
+        );
+    }
+
+    /// Name validation alone is not containment. The category here *is* a plain
+    /// name; what escapes is the file it resolves to — a symlink planted in the
+    /// store. Re-resolving the path before use is what catches it, exactly as
+    /// `developer::jail::Jail::resolve` re-checks the canonicalized path.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_symlinked_category_file_cannot_redirect_a_write_out_of_the_store() {
+        let temp = tempdir().unwrap();
+        let outside = temp.path().join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        let victim = outside.join("victim.txt");
+        fs::write(&victim, UNTOUCHED).unwrap();
+
+        let server = server_at(&temp.path().join("store"));
+        fs::create_dir_all(&server.local_memory_dir).unwrap();
+        std::os::unix::fs::symlink(&victim, server.local_memory_dir.join("notes.txt")).unwrap();
+
+        let wrote = server
+            .remember_memory(Parameters(RememberMemoryParams {
+                category: "notes".into(),
+                data: "smuggled".into(),
+                tags: vec![],
+                is_global: false,
+            }))
+            .await;
+        assert!(
+            wrote.is_err(),
+            "a category file symlinked out of the store was written through"
+        );
+        assert_eq!(
+            fs::read_to_string(&victim).unwrap(),
+            UNTOUCHED,
+            "remember_memory appended through a symlink to a file outside the store"
+        );
+
+        // A *dangling* symlink resolves to nothing, so it can never be shown to
+        // land inside the store — and a create-write through it would bring the
+        // outside target into existence.
+        let not_yet = outside.join("not-yet.txt");
+        std::os::unix::fs::symlink(&not_yet, server.local_memory_dir.join("fresh.txt")).unwrap();
+        let wrote = server
+            .remember_memory(Parameters(RememberMemoryParams {
+                category: "fresh".into(),
+                data: "smuggled".into(),
+                tags: vec![],
+                is_global: false,
+            }))
+            .await;
+        assert!(
+            wrote.is_err(),
+            "a dangling symlink pointing out of the store was written through"
+        );
+        assert!(
+            !not_yet.exists(),
+            "a write through a dangling symlink created {} outside the store",
+            not_yet.display()
         );
     }
 
