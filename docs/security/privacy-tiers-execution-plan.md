@@ -4562,7 +4562,7 @@ stated plainly so no one discovers them later:
    also holds the shell can copy the artifact out of the deny root. That is not new and not
    specific to archives — a private model with a shell can copy the whole knowledge tree — and this
    design constrains what the *public* model can reach. Recorded as
-   [AR-8](#ar-8--a-private-model-with-a-shell-can-still-carry-a-knowledge-base-out-of-the-deny-root).
+   [AR-8](#ar-8--amended-by-dr-17--a-private-model-with-a-shell-can-still-carry-a-knowledge-base-anywhere-on-disk).
 3. **Three fail directions, and they differ on purpose** (DR-10's pattern, one module over).
    *Migration* → **public** (fail open; AR-2). *A kb id with no entry, in a store that exists, for a
    directory that does exist on disk* → **private** (fail closed: a base that appeared without
