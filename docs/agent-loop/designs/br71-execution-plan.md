@@ -22707,8 +22707,11 @@ Expected: `test result: ok. 3 passed`.
 ```bash
 cargo test -p biorouter --lib agents::subagent_tool
 ```
-Expected: green, **including** `a_subagent_session_is_named_after_its_own_task`. Note the
-count, and that it is larger than before this task.
+Expected: green, **including** `a_subagent_session_is_named_after_its_own_task`. The
+module held **10** tests at `aad74e79` (`grep -c '#\[test\]\|#\[tokio::test\]'
+crates/biorouter/src/agents/subagent_tool.rs`), so **11** here — but re-measure the
+pre-task figure rather than trusting this line, because a "pre + 1" assertion against a
+stale baseline reads a shortfall as a pass.
 
 ```bash
 cargo test -p biorouter-server --lib routes::session
@@ -24595,6 +24598,7 @@ error list, not the exit code.
 //! reports as unclaimed. A variant omitted here that describes NOTHING is
 //! already dead code.
 
+#[cfg(test)]
 use std::collections::BTreeSet;
 
 /// Every capability of BR-71 workspace control, at the granularity a user cares
@@ -24695,6 +24699,14 @@ pub fn resolve<'a>(root: &'a clap::Command, path: &[&str]) -> Option<&'a clap::C
 /// error rather than a test that silently sees an empty set. The document is
 /// kept current by `just generate-openapi` and by Task 44's
 /// `git diff --exit-code ui/desktop/openapi.json`.
+///
+/// ⚠ **`#[cfg(test)]`, and that is not tidiness.** `ui/desktop/openapi.json` is
+/// **275 KB** (measured 2026-07-30). The capability table above is production
+/// code because it is a contract, but embedding a quarter-megabyte document into
+/// the shipped `biorouter` binary to satisfy a test is not — and a reviewer who
+/// notices the size later will delete the wrong half. Keep the table public and
+/// the reader test-only.
+#[cfg(test)]
 pub fn workspace_tagged_operations() -> BTreeSet<(String, String)> {
     const DOC: &str =
         include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../ui/desktop/openapi.json"));
