@@ -266,20 +266,35 @@ mod tests {
         assert_eq!(waiter.await.unwrap().unwrap()["ok"], true);
 
         // A parked request must not hang forever on disconnect.
+        //
+        // The timeout here is deliberately far longer than the test can run:
+        // with the 5s the plan originally specified, `emit_and_wait`'s OWN
+        // timeout returns `Err` and satisfies a bare `is_err()`, so the
+        // assertion held even with `cancel_all` deleted from `detach` — the
+        // exact regression this test exists to catch. Two things make it
+        // discriminating: an unreachable timeout, and asserting on WHICH error.
         let waiter2 = {
             let bridge = bridge.clone();
             tokio::spawn(async move {
                 bridge
                     .emit_and_wait(
                         json!({"cmd": "open_tab"}),
-                        std::time::Duration::from_secs(5),
+                        std::time::Duration::from_secs(600),
                     )
                     .await
             })
         };
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         bridge.detach(token); // cancel_all unparks
-        assert!(waiter2.await.unwrap().is_err());
+        let err = tokio::time::timeout(std::time::Duration::from_secs(5), waiter2)
+            .await
+            .expect("detach must unpark the parked request, not leave it to time out")
+            .unwrap()
+            .unwrap_err();
+        assert!(
+            err.contains("disconnected"),
+            "must be the disconnect error, not a timeout: {err}"
+        );
     }
 
     #[test]
