@@ -247,18 +247,14 @@ fn global_store_path_forms() -> Vec<String> {
 /// `"<store>"` inside a quoted command are the store. So the match has to end on
 /// a path boundary.
 fn names_path(text: &str, store: &str) -> bool {
-    let mut rest = text;
-    while let Some(at) = rest.find(store) {
-        let after = &rest[at + store.len()..];
-        let ends_here = after.chars().next().is_none_or(|c| {
-            c == '/' || c == '\\' || c.is_whitespace() || "\"'`)];,;:&|".contains(c)
-        });
-        if ends_here {
-            return true;
-        }
-        rest = &rest[at + store.len()..];
-    }
-    false
+    text.match_indices(store).any(|(at, matched)| {
+        text.get(at + matched.len()..)
+            .and_then(|after| after.chars().next())
+            // Nothing after the match is the bare store path, which counts.
+            .is_none_or(|c| {
+                c == '/' || c == '\\' || c.is_whitespace() || "\"'`)];,;:&|".contains(c)
+            })
+    })
 }
 
 /// Does any string anywhere in `args` name the machine-wide memory store?
