@@ -1,0 +1,561 @@
+//! Consent gate for the **machine-wide (global) memory store** (issue #63).
+//!
+//! # The hole this closes
+//!
+//! Issue #58 stopped global memory *bodies* being injected into every session's
+//! system prompt: the prompt now carries only the category index, and reading a
+//! category takes an explicit `retrieve_memories(…, is_global=true)` call. That
+//! changed the delivery but not the reachability. Nothing gated the tool call,
+//! and in [`BioRouterMode::Auto`] the permission inspector approves every tool
+//! deterministically — so a session could still read every global memory any
+//! other session ever wrote, with no prompt and nothing shown to the user.
+//! `category="*"` returned the entire store in one call.
+//!
+//! The write side was never gated at all. An in-process MCP server has no
+//! channel to the user, so `remember_memory` could only *name* the scope in its
+//! result text; the decision to write machine-wide was the model's alone.
+//!
+//! # The mechanism
+//!
+//! An **argument-aware** [`ToolInspector`], modelled on
+//! [`crate::security::sensitive_ops`]: it reads the memory tools' `is_global`
+//! and `category` arguments, not just the tool name, and returns a verdict the
+//! escalation-only merge in [`crate::tool_inspection`] applies *over* whatever
+//! the permission inspector decided. That is what makes it survive Auto mode —
+//! and a user `AlwaysAllow`, and a `SmartApprove` read-only grade — because the
+//! merge can raise a verdict but never lower one.
+//!
+//! Unlike `SensitiveOpsInspector` this gate is **not** inert outside Auto. Auto
+//! is merely the loudest case. `SmartApprove` can grade `retrieve_memories` as
+//! read-only from its annotations and auto-approve it, and an `AlwaysAllow` the
+//! user granted for project-local recall silently covers a machine-wide read
+//! too — both are the same undisclosed cross-session read. Only `Chat` is
+//! skipped, and only because it dispatches no tools at all.
+//!
+//! # What it decides, and why the two verdicts differ
+//!
+//! * A global read/write/delete naming **one category** →
+//!   [`InspectionAction::RequireApproval`]. The user is told which category, in
+//!   which direction, and approves or denies it. The feature keeps working;
+//!   consent is the point.
+//! * `retrieve_memories(category="*", is_global=true)` — the whole-store read —
+//!   → [`InspectionAction::Deny`], with a reason that names the itemised call to
+//!   use instead.
+//!
+//! Refusing the bulk *read* while merely asking about the bulk *delete*
+//! (`remove_memory_category(category="*", is_global=true)`) is deliberate:
+//!
+//! 1. **A bulk read cannot be meaningfully consented to.** The approval card
+//!    can only say "every global memory"; neither it nor the user can enumerate
+//!    what is about to cross, because nothing in the UI surfaces the global
+//!    store's contents. Approving it is a blank cheque over text the user has
+//!    not seen. A bulk *delete* is the opposite — the user knows exactly what
+//!    "wipe my global memories" means without seeing them, so an ask is real
+//!    consent.
+//! 2. **It is never necessary.** The system prompt already carries every global
+//!    category name, so a named read is always available. `"*"` buys one round
+//!    trip and spends it on precisely the disclosure that ought to be itemised.
+//! 3. **It is not a refusal of the feature.** Every byte remains reachable —
+//!    one approved category at a time — which is exactly the bar issue #58 set
+//!    and the reason the audit would not accept a blanket server-side refusal.
+//!
+//! # Boundary
+//!
+//! `execute_code` dispatches its inner tool calls straight through the extension
+//! manager, so they never reach an agent-layer inspector (the same R2-01 gap
+//! `sensitive_ops` documents). Its JS body is therefore scanned for an embedded
+//! global-memory call and the whole `execute_code` call escalated to approval.
+//! The scan is static, so a call assembled at runtime
+//! (`memory[name]({is_global: flag})`) is not caught — which is why the
+//! whole-store read is *also* refused inside the memory server itself, where the
+//! shape is unambiguous whatever route reached it.
+
+use rmcp::model::CallToolRequestParams;
+use serde_json::{Map, Value};
+
+use crate::config::BioRouterMode;
+use crate::conversation::message::{Message, ToolRequest};
+use crate::tool_inspection::{InspectionAction, InspectionResult, ToolInspector};
+use anyhow::Result;
+use async_trait::async_trait;
+use uuid::Uuid;
+
+/// This inspector's name, as it appears on an [`InspectionResult`]. Also the key
+/// [`crate::agents::Agent::handle_denied_tools`] matches on so a refusal reaches
+/// the model as its real reason instead of "the user declined".
+pub const GLOBAL_MEMORY_INSPECTOR_NAME: &str = "global_memory";
+
+/// The verdict for one tool call against the global memory store.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GlobalMemoryGate {
+    /// Route to the standard approval flow, showing this message.
+    Ask(String),
+    /// Refuse outright, telling the model this reason (and how to proceed).
+    Refuse(String),
+}
+
+/// Classify a tool call against the global memory store.
+///
+/// `None` means "this call does not touch the machine-wide store" — a local
+/// memory call, or any other tool at all.
+pub fn global_memory_gate(_tool_name: &str, _args: &Map<String, Value>) -> Option<GlobalMemoryGate> {
+    None
+}
+
+/// Inspector that routes global-memory access through the user, in every mode
+/// that runs tools. See the module docs for the policy.
+pub struct GlobalMemoryInspector;
+
+#[async_trait]
+impl ToolInspector for GlobalMemoryInspector {
+    fn name(&self) -> &'static str {
+        GLOBAL_MEMORY_INSPECTOR_NAME
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    async fn inspect(
+        &self,
+        tool_requests: &[ToolRequest],
+        _messages: &[Message],
+        biorouter_mode: BioRouterMode,
+        _session: &crate::session::Session,
+    ) -> Result<Vec<InspectionResult>> {
+        // Chat dispatches no tools; the agent splices a canned response.
+        if biorouter_mode == BioRouterMode::Chat {
+            return Ok(vec![]);
+        }
+
+        let mut results = Vec::new();
+        for request in tool_requests {
+            let Ok(tool_call) = &request.tool_call else {
+                continue;
+            };
+            let Some(args) = tool_call.arguments.as_ref() else {
+                continue;
+            };
+            let Some(gate) = global_memory_gate(&tool_call.name, args) else {
+                continue;
+            };
+            let (action, reason) = match gate {
+                GlobalMemoryGate::Ask(message) => (
+                    InspectionAction::RequireApproval(Some(message.clone())),
+                    message,
+                ),
+                GlobalMemoryGate::Refuse(reason) => (InspectionAction::Deny, reason),
+            };
+            tracing::warn!(
+                counter.biorouter.global_memory_gated = 1,
+                tool_name = %tool_call.name,
+                tool_request_id = %request.id,
+                denied = matches!(action, InspectionAction::Deny),
+                "Global memory access routed through the user"
+            );
+            results.push(InspectionResult {
+                tool_request_id: request.id.clone(),
+                action,
+                reason,
+                confidence: 1.0,
+                inspector_name: self.name().to_string(),
+                finding_id: Some(format!("GMEM-{}", Uuid::new_v4().simple())),
+            });
+        }
+        Ok(results)
+    }
+}
+
+/// Convenience for callers that hold a whole [`CallToolRequestParams`].
+pub fn gate_for_tool_call(tool_call: &CallToolRequestParams) -> Option<GlobalMemoryGate> {
+    global_memory_gate(&tool_call.name, tool_call.arguments.as_ref()?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn args(v: Value) -> Map<String, Value> {
+        v.as_object().unwrap().clone()
+    }
+
+    // --- classification: the reads ----------------------------------------
+
+    /// The issue's exact demonstration: `category="*"` + `is_global=true` hands
+    /// back the entire machine-wide store in one call. It is refused, not asked
+    /// about — see the module docs for why a bulk read cannot be consented to.
+    #[test]
+    fn the_whole_store_read_is_refused() {
+        let gate = global_memory_gate(
+            "memory__retrieve_memories",
+            &args(json!({"category": "*", "is_global": true})),
+        );
+        let Some(GlobalMemoryGate::Refuse(reason)) = gate else {
+            panic!("retrieve_memories(\"*\", is_global=true) must be refused, got {gate:?}");
+        };
+        assert!(
+            reason.contains("retrieve_memories") && reason.contains("category"),
+            "the refusal must name the itemised call that still works, or the \
+             feature is dead: {reason}"
+        );
+    }
+
+    /// A named global category is the shape the feature is *for*. It is asked
+    /// about, never refused, and the card names the category.
+    #[test]
+    fn a_named_global_read_is_asked_about() {
+        let gate = global_memory_gate(
+            "memory__retrieve_memories",
+            &args(json!({"category": "clinical", "is_global": true})),
+        );
+        let Some(GlobalMemoryGate::Ask(message)) = gate else {
+            panic!("a named global read must ask, got {gate:?}");
+        };
+        assert!(
+            message.contains("clinical"),
+            "the approval card must name the category being disclosed: {message}"
+        );
+    }
+
+    // --- classification: the writes ---------------------------------------
+
+    /// CLAUDE.md records the write as the gap #58 could not close from inside an
+    /// MCP server ("a real confirmation needs the permission path"). This is it.
+    #[test]
+    fn a_global_write_is_asked_about() {
+        let gate = global_memory_gate(
+            "memory__remember_memory",
+            &args(json!({
+                "category": "clinical",
+                "data": "cohort 4217 had 12 responders",
+                "is_global": true
+            })),
+        );
+        let Some(GlobalMemoryGate::Ask(message)) = gate else {
+            panic!("a global write must ask, got {gate:?}");
+        };
+        assert!(
+            message.contains("clinical"),
+            "the card must name the category being written: {message}"
+        );
+        assert!(
+            !message.contains("cohort 4217"),
+            "the card is a consent prompt, not a second copy of the payload: {message}"
+        );
+    }
+
+    #[test]
+    fn a_global_delete_is_asked_about() {
+        for (tool, arguments) in [
+            (
+                "memory__remove_memory_category",
+                json!({"category": "clinical", "is_global": true}),
+            ),
+            (
+                "memory__remove_specific_memory",
+                json!({"category": "clinical", "memory_content": "x", "is_global": true}),
+            ),
+        ] {
+            assert!(
+                matches!(
+                    global_memory_gate(tool, &args(arguments)),
+                    Some(GlobalMemoryGate::Ask(_))
+                ),
+                "{tool} against the global store must ask"
+            );
+        }
+    }
+
+    /// Wiping the whole global store is asked about rather than refused: unlike a
+    /// bulk read, a user knows exactly what they are consenting to without being
+    /// shown the contents.
+    #[test]
+    fn the_whole_store_delete_is_asked_about_not_refused() {
+        let gate = global_memory_gate(
+            "memory__remove_memory_category",
+            &args(json!({"category": "*", "is_global": true})),
+        );
+        let Some(GlobalMemoryGate::Ask(message)) = gate else {
+            panic!("clearing the whole global store must ask, got {gate:?}");
+        };
+        assert!(
+            message.contains("every"),
+            "the card has to say the blast radius is every global category: {message}"
+        );
+    }
+
+    // --- the feature is not disabled --------------------------------------
+
+    /// Local memory is untouched by this gate — including the bulk read, which
+    /// crosses no session boundary because `.biorouter/memory` lives under the
+    /// working directory the user opened.
+    #[test]
+    fn local_memory_is_never_gated() {
+        for (tool, arguments) in [
+            (
+                "memory__retrieve_memories",
+                json!({"category": "*", "is_global": false}),
+            ),
+            (
+                "memory__retrieve_memories",
+                json!({"category": "development", "is_global": false}),
+            ),
+            (
+                "memory__remember_memory",
+                json!({"category": "development", "data": "x", "is_global": false}),
+            ),
+            (
+                "memory__remove_memory_category",
+                json!({"category": "*", "is_global": false}),
+            ),
+        ] {
+            assert!(
+                global_memory_gate(tool, &args(arguments)).is_none(),
+                "{tool} on the local store must not be gated"
+            );
+        }
+    }
+
+    /// Nothing else in the tool surface is touched.
+    #[test]
+    fn unrelated_tools_are_not_gated() {
+        for (tool, arguments) in [
+            ("developer__shell", json!({"command": "ls"})),
+            (
+                "developer__text_editor",
+                json!({"command": "write", "path": "/tmp/x"}),
+            ),
+            // A different extension that happens to carry an `is_global` flag.
+            (
+                "workflow__save_workflow",
+                json!({"name": "x", "is_global": true}),
+            ),
+        ] {
+            assert!(
+                global_memory_gate(tool, &args(arguments)).is_none(),
+                "{tool} is not a memory tool and must not be gated"
+            );
+        }
+    }
+
+    // --- robustness of the argument read ----------------------------------
+
+    /// The extension prefix is configuration, not a contract: the gate keys off
+    /// the tool's own name so a memory server mounted under another name is
+    /// still gated.
+    #[test]
+    fn the_extension_prefix_is_not_load_bearing() {
+        for tool in [
+            "retrieve_memories",
+            "memory__retrieve_memories",
+            "personal_memory__retrieve_memories",
+        ] {
+            assert!(
+                global_memory_gate(tool, &args(json!({"category": "c", "is_global": true})))
+                    .is_some(),
+                "{tool} must be recognised as a memory retrieval"
+            );
+        }
+    }
+
+    /// Models send booleans as strings often enough that a strict `as_bool`
+    /// would be a silent bypass. Anything that reads as true counts as global;
+    /// a missing flag does not (the tool's own default, and its schema, is
+    /// local).
+    #[test]
+    fn a_stringly_typed_global_flag_still_gates() {
+        for flag in [json!(true), json!("true"), json!("True"), json!(1)] {
+            assert!(
+                global_memory_gate(
+                    "memory__retrieve_memories",
+                    &args(json!({"category": "c", "is_global": flag}))
+                )
+                .is_some(),
+                "is_global={flag} must gate"
+            );
+        }
+        for flag in [json!(false), json!("false"), json!(0), json!(null)] {
+            assert!(
+                global_memory_gate(
+                    "memory__retrieve_memories",
+                    &args(json!({"category": "c", "is_global": flag}))
+                )
+                .is_none(),
+                "is_global={flag} is not a global call"
+            );
+        }
+        assert!(
+            global_memory_gate("memory__retrieve_memories", &args(json!({"category": "c"})))
+                .is_none(),
+            "an absent is_global is a local call"
+        );
+    }
+
+    /// `"*"` is the sentinel only when it is exactly `"*"` — that is how the
+    /// memory server dispatches it (issue #73 keeps it a legal plain name too),
+    /// so a padded `" * "` is an ordinary category and must be asked about, not
+    /// reported to the user as a whole-store read.
+    #[test]
+    fn only_the_exact_star_is_the_bulk_sentinel() {
+        assert!(
+            matches!(
+                global_memory_gate(
+                    "memory__retrieve_memories",
+                    &args(json!({"category": " * ", "is_global": true}))
+                ),
+                Some(GlobalMemoryGate::Ask(_))
+            ),
+            "a padded star is a plain category name, not the sentinel"
+        );
+    }
+
+    // --- the execute_code bypass ------------------------------------------
+
+    /// `execute_code`'s inner tool calls are dispatched straight through the
+    /// extension manager and never reach an inspector, so a global read hidden
+    /// in the script would otherwise run unseen (the same gap `sensitive_ops`
+    /// documents as R2-01).
+    #[test]
+    fn a_global_read_hidden_in_execute_code_is_escalated() {
+        let code = r#"import { retrieve_memories } from "memory";
+const all = retrieve_memories({ category: "*", is_global: true });
+record_result(all);"#;
+        assert!(
+            matches!(
+                global_memory_gate("code_execution__execute_code", &args(json!({"code": code}))),
+                Some(GlobalMemoryGate::Ask(_))
+            ),
+            "an embedded global memory read must escalate the execute_code call"
+        );
+    }
+
+    #[test]
+    fn execute_code_without_global_memory_is_not_escalated() {
+        for code in [
+            // Local memory work inside a script is ordinary.
+            r#"import { retrieve_memories } from "memory";
+retrieve_memories({ category: "*", is_global: false });"#,
+            // No memory at all.
+            r#"import { shell } from "developer";
+shell({ command: "ls -la /tmp" });"#,
+            // `is_global` belonging to something that is not a memory call.
+            r#"import { save_workflow } from "workflow";
+save_workflow({ name: "x", is_global: true });"#,
+        ] {
+            assert!(
+                global_memory_gate("code_execution__execute_code", &args(json!({"code": code})))
+                    .is_none(),
+                "must not escalate:\n{code}"
+            );
+        }
+    }
+
+    // --- the inspector, end to end ----------------------------------------
+
+    fn request(id: &str, name: &str, arguments: Value) -> ToolRequest {
+        ToolRequest {
+            id: id.to_string(),
+            tool_call: Ok(CallToolRequestParams {
+                task: None,
+                name: name.to_string().into(),
+                arguments: Some(args(arguments)),
+                meta: None,
+            }),
+            metadata: None,
+            tool_meta: None,
+        }
+    }
+
+    /// Auto mode is the whole point: the permission inspector approves every
+    /// tool there deterministically, so the gate has to fire anyway.
+    #[tokio::test]
+    async fn auto_mode_still_gates_a_global_read() {
+        let results = GlobalMemoryInspector
+            .inspect(
+                &[request(
+                    "r1",
+                    "memory__retrieve_memories",
+                    json!({"category": "clinical", "is_global": true}),
+                )],
+                &[],
+                BioRouterMode::Auto,
+                &crate::session::Session::default(),
+            )
+            .await
+            .unwrap();
+        let r = results.first().expect("a global read must be gated in Auto");
+        assert!(matches!(r.action, InspectionAction::RequireApproval(Some(_))));
+        assert_eq!(r.inspector_name, GLOBAL_MEMORY_INSPECTOR_NAME);
+        assert!(r.finding_id.as_deref().unwrap_or("").starts_with("GMEM-"));
+    }
+
+    /// Unlike `sensitive_ops`, this gate is **not** inert outside Auto: a
+    /// `SmartApprove` read-only grade would otherwise auto-approve the very same
+    /// undisclosed cross-session read.
+    #[tokio::test]
+    async fn every_tool_running_mode_gates_a_global_read() {
+        for mode in [
+            BioRouterMode::Auto,
+            BioRouterMode::Approve,
+            BioRouterMode::SmartApprove,
+        ] {
+            let results = GlobalMemoryInspector
+                .inspect(
+                    &[request(
+                        "r1",
+                        "memory__retrieve_memories",
+                        json!({"category": "clinical", "is_global": true}),
+                    )],
+                    &[],
+                    mode,
+                    &crate::session::Session::default(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(results.len(), 1, "{mode:?} must gate the global read");
+        }
+    }
+
+    #[tokio::test]
+    async fn chat_mode_is_inert() {
+        let results = GlobalMemoryInspector
+            .inspect(
+                &[request(
+                    "r1",
+                    "memory__retrieve_memories",
+                    json!({"category": "clinical", "is_global": true}),
+                )],
+                &[],
+                BioRouterMode::Chat,
+                &crate::session::Session::default(),
+            )
+            .await
+            .unwrap();
+        assert!(results.is_empty(), "Chat dispatches no tools at all");
+    }
+
+    #[tokio::test]
+    async fn the_whole_store_read_reaches_the_pipeline_as_a_deny() {
+        let results = GlobalMemoryInspector
+            .inspect(
+                &[request(
+                    "r1",
+                    "memory__retrieve_memories",
+                    json!({"category": "*", "is_global": true}),
+                )],
+                &[],
+                BioRouterMode::Auto,
+                &crate::session::Session::default(),
+            )
+            .await
+            .unwrap();
+        let r = results.first().expect("the bulk read must be gated");
+        assert_eq!(r.action, InspectionAction::Deny);
+        assert!(
+            !r.reason.trim().is_empty(),
+            "a refusal with no reason reaches the model as \"the user declined\", \
+             which is both untrue and unactionable"
+        );
+    }
+}

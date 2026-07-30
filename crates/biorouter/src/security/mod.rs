@@ -1,4 +1,5 @@
 pub mod classification_client;
+pub mod global_memory;
 pub mod patterns;
 pub mod policy;
 pub mod scanner;
