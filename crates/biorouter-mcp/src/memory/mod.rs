@@ -17,6 +17,15 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
+/// Listing and pruning the stores from the *user's* side — what Settings shows
+/// and what its delete buttons call. See [`inventory`] for why it does not go
+/// through the four MCP tools.
+pub mod inventory;
+
+pub use inventory::{
+    EntryDeletion, MemoryCategoryInventory, MemoryEntry, MemoryScope, MemoryStoreInventory,
+};
+
 /// Parameters for the remember_memory tool
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct RememberMemoryParams {
