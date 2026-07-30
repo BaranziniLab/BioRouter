@@ -1622,7 +1622,7 @@ impl WorkspaceClient {
         caller_session_id: &str,
         arguments: Option<JsonObject>,
     ) -> Result<Vec<Content>, String> {
-        use crate::session_events::{self, SessionBusEvent};
+        use crate::session_events;
 
         let args: WorkspaceWatchParams = parse_args(arguments)?;
         if args.session_ids.is_empty() {
@@ -1682,35 +1682,6 @@ impl WorkspaceClient {
             !completed.is_empty()
         };
         if !done_now && !receivers.is_empty() {
-            let deadline = tokio::time::Instant::now() + timeout;
-            // One task per watched session, all feeding one channel: simpler
-            // and more obviously correct than a hand-rolled select over a Vec,
-            // and 32 short-lived tasks is nothing.
-            let (tx, mut rx) = tokio::sync::mpsc::channel::<(String, String)>(WATCH_MAX_SESSIONS);
-            for (id, mut receiver) in receivers.drain(..) {
-                let tx = tx.clone();
-                tokio::spawn(async move {
-                    loop {
-                        match receiver.recv().await {
-                            Ok(SessionBusEvent::TurnFinished { reason, .. }) => {
-                                let _ = tx.send((id, reason)).await;
-                                return;
-                            }
-                            Ok(SessionBusEvent::TurnError { message, .. }) => {
-                                let _ = tx.send((id, format!("error: {message}"))).await;
-                                return;
-                            }
-                            Ok(_) => {}
-                            // A lagged watcher has certainly not missed the
-                            // *last* event yet; keep listening.
-                            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-                            Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
-                        }
-                    }
-                });
-            }
-            drop(tx); // so `rx.recv()` ends if every watcher exits
-
             // `want` counts entries in `completed`, which already holds the
             // sessions the pre-check found idle — so "all" is the full id list
             // and "any" is one more than we already have.
@@ -1719,15 +1690,7 @@ impl WorkspaceClient {
             } else {
                 completed.len() + 1
             };
-            let _ = tokio::time::timeout_at(deadline, async {
-                while completed.len() < want {
-                    match rx.recv().await {
-                        Some(entry) => completed.push(entry),
-                        None => break,
-                    }
-                }
-            })
-            .await;
+            Self::park_for_completions(receivers, &mut completed, want, timeout).await;
         }
 
         let still_running: Vec<&String> = args
@@ -1736,6 +1699,73 @@ impl WorkspaceClient {
             .filter(|id| !completed.iter().any(|(done, _)| done == *id))
             .collect();
 
+        Ok(vec![Content::text(Self::watch_report(
+            &completed,
+            &still_running,
+            timeout,
+            unknown_liveness,
+        ))])
+    }
+
+    /// Park until `want` conversations have published a terminal event, or the
+    /// deadline passes — whichever comes first. A timeout is not an error; the
+    /// caller reports whatever arrived.
+    async fn park_for_completions(
+        receivers: Vec<(String, crate::session_events::Subscription)>,
+        completed: &mut Vec<(String, String)>,
+        want: usize,
+        timeout: std::time::Duration,
+    ) {
+        use crate::session_events::SessionBusEvent;
+
+        let deadline = tokio::time::Instant::now() + timeout;
+        // One task per watched session, all feeding one channel: simpler
+        // and more obviously correct than a hand-rolled select over a Vec,
+        // and 32 short-lived tasks is nothing.
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<(String, String)>(WATCH_MAX_SESSIONS);
+        for (id, mut receiver) in receivers {
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                loop {
+                    match receiver.recv().await {
+                        Ok(SessionBusEvent::TurnFinished { reason, .. }) => {
+                            let _ = tx.send((id, reason)).await;
+                            return;
+                        }
+                        Ok(SessionBusEvent::TurnError { message, .. }) => {
+                            let _ = tx.send((id, format!("error: {message}"))).await;
+                            return;
+                        }
+                        Ok(_) => {}
+                        // A lagged watcher has certainly not missed the
+                        // *last* event yet; keep listening.
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                    }
+                }
+            });
+        }
+        drop(tx); // so `rx.recv()` ends if every watcher exits
+
+        let _ = tokio::time::timeout_at(deadline, async {
+            while completed.len() < want {
+                match rx.recv().await {
+                    Some(entry) => completed.push(entry),
+                    None => break,
+                }
+            }
+        })
+        .await;
+    }
+
+    /// The `workspace_watch` reply: what finished, what is still running, and —
+    /// when nothing finished — whether we were even able to tell.
+    fn watch_report(
+        completed: &[(String, String)],
+        still_running: &[&String],
+        timeout: std::time::Duration,
+        unknown_liveness: usize,
+    ) -> String {
         let mut report = String::new();
         if completed.is_empty() {
             report.push_str(&format!(
@@ -1759,7 +1789,7 @@ impl WorkspaceClient {
             }
         } else {
             report.push_str("Completed:\n");
-            for (id, reason) in &completed {
+            for (id, reason) in completed {
                 report.push_str(&format!("- {id} ({reason})\n"));
             }
             if !still_running.is_empty() {
@@ -1777,7 +1807,7 @@ impl WorkspaceClient {
                  (view:\"summary\" for its outcome, view:\"tool_calls\" for what it did).",
             );
         }
-        Ok(vec![Content::text(report)])
+        report
     }
 }
 
