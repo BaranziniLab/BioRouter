@@ -75,16 +75,37 @@
 //!    one approved category at a time — which is exactly the bar issue #58 set
 //!    and the reason the audit would not accept a blanket server-side refusal.
 //!
-//! # Boundary
+//! # Boundary: the routes an inspector never sees
 //!
-//! `execute_code` dispatches its inner tool calls straight through the extension
-//! manager, so they never reach an agent-layer inspector (the same R2-01 gap
-//! `sensitive_ops` documents). Its JS body is therefore scanned for an embedded
-//! global-memory call and the whole `execute_code` call escalated to approval.
-//! The scan is static, so a call assembled at runtime
-//! (`memory[name]({is_global: flag})`) is not caught — which is why the
-//! whole-store read is *also* refused inside the memory server itself, where the
-//! shape is unambiguous whatever route reached it.
+//! Two production routes dispatch tool calls without going through the agent
+//! loop, so no [`ToolInspector`] — this gate included — ever sees them: the
+//! calls a script makes from inside `execute_code`, and `POST /agent/call_tool`.
+//! A third has no agent at all: `biorouter mcp memory` serves the memory server
+//! straight over stdio to any MCP client.
+//!
+//! The first version of this gate answered the `execute_code` case by **scanning
+//! the script text** for an embedded memory call. That was the wrong shape and
+//! the #63 review broke it in one line: `const flag = true;
+//! retrieve_memories({category:"clinical", is_global:flag})` has no truthy
+//! literal after `is_global`, so the scan sees nothing. Source text can always
+//! be out-computed.
+//!
+//! So the decision moved to where there is nothing left to compute:
+//!
+//! * [`uninspected_boundary_refusal`] is applied at each of the two dispatch
+//!   boundaries, reading the *dispatched* tool name and the *evaluated*
+//!   arguments. Every global read, write and delete is refused there, and the
+//!   model is told to make an ordinary itemised memory call instead — which is
+//!   gated, and works.
+//! * The memory server itself refuses global operations unless it was built by
+//!   the one constructor that states a consent path
+//!   (`MemoryServer::behind_consent_gate`), which closes the standalone case
+//!   and makes consent a property of the store rather than of one caller.
+//!
+//! The script scan is **kept**, but it is no longer load-bearing: it is now a
+//! warning — deliberately over-inclusive, and harmless when it is wrong because
+//! the worst outcome is one approval card — and the card says plainly that the
+//! script's memory calls will be refused either way.
 
 use serde_json::{Map, Value};
 
@@ -209,13 +230,15 @@ pub fn global_memory_gate(tool_name: &str, args: &Map<String, Value>) -> Option<
         let code = args.get("code").and_then(Value::as_str)?;
         return code_touches_global_memory(code).then(|| {
             GlobalMemoryGate::Ask(
-                "🔒 Cross-session memory access inside a script.\n\
-                 This code_execution call reads or writes the global memory store — the \
-                 machine-wide store shared by every Biorouter session on this computer, in every \
-                 project. Tool calls made from inside a script are not itemised, so the exact \
-                 categories cannot be shown here.\n\
-                 Approve it, or deny it and ask for the memory calls to be made directly so each \
-                 one can be shown to you."
+                "🔒 This script looks like it wants cross-session memory.\n\
+                 It appears to read or write the global memory store — the machine-wide store \
+                 shared by every Biorouter session on this computer, in every project. Tool \
+                 calls made from inside a script are not itemised, so there is nothing here for \
+                 you to approve one by one, and Biorouter therefore refuses global memory \
+                 operations attempted from inside a script whatever you decide now.\n\
+                 So this asks about the rest of what the script does. Approve it to run it — its \
+                 global memory calls will fail with an explanation — or deny it and ask for the \
+                 memory calls to be made directly, where each one is shown to you by category."
                     .to_string(),
             )
         });
@@ -292,6 +315,80 @@ pub fn global_memory_gate(tool_name: &str, args: &Map<String, Value>) -> Option<
              Approve it, or deny it."
         )),
     })
+}
+
+/// A production route that dispatches tool calls without passing them through
+/// the agent loop — and therefore without passing them through any
+/// [`ToolInspector`], this gate included (issue #63 review, finding 3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UninspectedBoundary {
+    /// The tool calls a script makes from inside `execute_code`. The JS host
+    /// hands them straight to `ExtensionManager::dispatch_tool_call`.
+    ExecuteCodeScript,
+    /// `POST /agent/call_tool`, which does the same from an HTTP handler.
+    AgentCallToolRoute,
+}
+
+impl UninspectedBoundary {
+    /// How the refusal names where the call came from, and what to do instead.
+    fn remedy(self) -> &'static str {
+        match self {
+            Self::ExecuteCodeScript => {
+                "Tool calls made from inside a script are not shown to the user one by one, so \
+                 there is nothing for them to approve. Make the memory call directly, outside \
+                 execute_code — retrieve_memories / remember_memory / remove_memory_category / \
+                 remove_specific_memory with is_global=true — and the user will be shown that \
+                 exact operation and asked to approve it."
+            }
+            Self::AgentCallToolRoute => {
+                "This route dispatches a tool without the agent loop, so nothing here can put \
+                 the operation to the user. Issue the memory call in a conversation instead, \
+                 where it is inspected and approved."
+            }
+        }
+    }
+}
+
+/// Is this a memory-tool call against the machine-wide store?
+///
+/// Unlike [`code_touches_global_memory`], which reads *source text* and can
+/// therefore always be out-computed, this reads the dispatched call: the real
+/// tool name and the real, already-evaluated arguments. There is nothing left to
+/// hide behind — `is_global: flag` and `is_global: true` arrive here identically.
+fn is_global_store_call(tool_name: &str, args: &Map<String, Value>) -> bool {
+    memory_tool(tool_name).is_some() && targets_global_store(args)
+}
+
+/// The refusal a dispatch boundary that cannot ask the user must return for a
+/// machine-wide memory operation, or `None` if the call is not one.
+///
+/// This is the answer to "the static `execute_code` scan can be evaded". It is
+/// not a better scan; it is the check moved to where evasion is impossible.
+/// Every global read, write and delete is refused at these boundaries — a
+/// boundary that cannot obtain consent does not act without it — and the model
+/// is told to make an ordinary itemised memory call, which *is* gated and does
+/// work. Local memory is untouched.
+pub fn uninspected_boundary_refusal(
+    tool_name: &str,
+    args: Option<&Map<String, Value>>,
+    boundary: UninspectedBoundary,
+) -> Option<String> {
+    if !args.is_some_and(|a| is_global_store_call(tool_name, a)) {
+        return None;
+    }
+    tracing::warn!(
+        counter.biorouter.global_memory_uninspected_refused = 1,
+        tool_name = %tool_name,
+        boundary = ?boundary,
+        "Refused a machine-wide memory operation at a boundary that cannot ask the user"
+    );
+    Some(format!(
+        "Refused: this call would read, write or delete the global memory store — the \
+         machine-wide store shared by every Biorouter session on this computer, in every \
+         project — and every such operation has to be shown to the user and approved first. \
+         {}",
+        boundary.remedy()
+    ))
 }
 
 /// Inspector that routes global-memory access through the user, in every mode
@@ -651,6 +748,141 @@ record_result(all);"#;
                 Some(GlobalMemoryGate::Ask(_))
             ),
             "an embedded global memory read must escalate the execute_code call"
+        );
+    }
+
+    // --- the uninspected dispatch boundaries ------------------------------
+
+    /// #63 review, finding 3. The scan above reads *source text*, so it can
+    /// always be out-computed — the review's one-liner is `const flag = true;
+    /// retrieve_memories({category:"clinical", is_global:flag})`, which has no
+    /// truthy literal after `is_global`. The boundary check reads the
+    /// *dispatched call*, where `flag` has already become `true`, so the shape
+    /// of the source is irrelevant to it.
+    #[test]
+    fn a_boundary_refusal_does_not_depend_on_how_the_call_was_written() {
+        for boundary in [
+            UninspectedBoundary::ExecuteCodeScript,
+            UninspectedBoundary::AgentCallToolRoute,
+        ] {
+            for (tool, arguments) in [
+                (
+                    "memory__retrieve_memories",
+                    json!({"category": "clinical", "is_global": true}),
+                ),
+                (
+                    "memory__retrieve_memories",
+                    json!({"category": "*", "is_global": true}),
+                ),
+                (
+                    "memory__remember_memory",
+                    json!({"category": "clinical", "data": "x", "is_global": true}),
+                ),
+                (
+                    "memory__remove_memory_category",
+                    json!({"category": "clinical", "is_global": true}),
+                ),
+                (
+                    "memory__remove_memory_category",
+                    json!({"category": "*", "is_global": true}),
+                ),
+                (
+                    "memory__remove_specific_memory",
+                    json!({"category": "clinical", "memory_content": "x", "is_global": true}),
+                ),
+                // Mounted under another name, and stringly-typed flag: the same
+                // leniencies the gate itself applies.
+                (
+                    "personal_memory__retrieve_memories",
+                    json!({"category": "clinical", "is_global": "true"}),
+                ),
+            ] {
+                let refusal =
+                    uninspected_boundary_refusal(tool, Some(&args(arguments.clone())), boundary);
+                let message = refusal.unwrap_or_else(|| {
+                    panic!("{boundary:?} let {tool} {arguments} through unasked")
+                });
+                assert!(
+                    message.contains("machine-wide"),
+                    "the refusal has to say what it protects: {message}"
+                );
+            }
+        }
+    }
+
+    /// The boundary refuses machine-wide memory, not memory and not the
+    /// boundary. Everything else keeps working, or the fix is an outage.
+    #[test]
+    fn a_boundary_leaves_local_memory_and_every_other_tool_alone() {
+        for (tool, arguments) in [
+            (
+                "memory__retrieve_memories",
+                json!({"category": "*", "is_global": false}),
+            ),
+            (
+                "memory__remember_memory",
+                json!({"category": "dev", "data": "x", "is_global": false}),
+            ),
+            (
+                "memory__remove_memory_category",
+                json!({"category": "*", "is_global": false}),
+            ),
+            // No flag at all is a local call, exactly as the gate reads it.
+            ("memory__retrieve_memories", json!({"category": "dev"})),
+            ("developer__shell", json!({"command": "ls"})),
+            (
+                "workflow__save_workflow",
+                json!({"name": "x", "is_global": true}),
+            ),
+        ] {
+            assert!(
+                uninspected_boundary_refusal(
+                    tool,
+                    Some(&args(arguments.clone())),
+                    UninspectedBoundary::ExecuteCodeScript
+                )
+                .is_none(),
+                "{tool} {arguments} must pass the boundary"
+            );
+        }
+        assert!(
+            uninspected_boundary_refusal(
+                "memory__retrieve_memories",
+                None,
+                UninspectedBoundary::ExecuteCodeScript
+            )
+            .is_none(),
+            "a call with no arguments cannot be a global one"
+        );
+    }
+
+    /// A refusal that only says no is a dead end: the model retries, or tells
+    /// the user the feature is broken. Each boundary names the route that does
+    /// work.
+    #[test]
+    fn each_boundary_names_the_way_through() {
+        let global = args(json!({"category": "clinical", "is_global": true}));
+
+        let script = uninspected_boundary_refusal(
+            "memory__retrieve_memories",
+            Some(&global),
+            UninspectedBoundary::ExecuteCodeScript,
+        )
+        .unwrap();
+        assert!(
+            script.contains("execute_code") && script.contains("retrieve_memories"),
+            "the script refusal must say to make the call directly instead: {script}"
+        );
+
+        let route = uninspected_boundary_refusal(
+            "memory__retrieve_memories",
+            Some(&global),
+            UninspectedBoundary::AgentCallToolRoute,
+        )
+        .unwrap();
+        assert!(
+            route.contains("conversation"),
+            "the route refusal must point at the inspected path: {route}"
         );
     }
 

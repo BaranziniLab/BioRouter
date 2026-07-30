@@ -1141,14 +1141,38 @@ async fn call_tool(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<CallToolRequest>,
 ) -> Result<Json<CallToolResponse>, StatusCode> {
-    let agent = state
-        .get_agent_for_route(payload.session_id.clone())
-        .await?;
-
     let arguments = match payload.arguments {
         Value::Object(map) => Some(map),
         _ => None,
     };
+
+    // Issue #63 review, finding 3. This route hands a tool call straight to the
+    // extension manager, bypassing the agent loop and therefore every
+    // `ToolInspector` — including the machine-wide memory consent gate. Nothing
+    // in an HTTP handler can put an operation to the user and wait, so a global
+    // memory operation is refused here rather than performed unasked. It is
+    // returned as a tool error, not a status code, because the caller is a tool
+    // caller and the remedy is in the text.
+    //
+    // Ahead of resolving the agent on purpose: whether this call is allowed does
+    // not depend on any session state, and a decision that cannot be reached
+    // without one is a decision that can be skipped by arriving without one.
+    if let Some(refusal) = biorouter::security::global_memory::uninspected_boundary_refusal(
+        &payload.name,
+        arguments.as_ref(),
+        biorouter::security::global_memory::UninspectedBoundary::AgentCallToolRoute,
+    ) {
+        return Ok(Json(CallToolResponse {
+            content: vec![Content::text(refusal)],
+            structured_content: None,
+            is_error: true,
+            _meta: None,
+        }));
+    }
+
+    let agent = state
+        .get_agent_for_route(payload.session_id.clone())
+        .await?;
 
     let tool_call = CallToolRequestParams {
         task: None,

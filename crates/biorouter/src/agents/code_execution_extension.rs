@@ -1845,6 +1845,34 @@ impl CodeExecutionClient {
                 let _ = response_tx.send(Err(error));
                 continue;
             }
+            // Issue #63 review, finding 3. A script's tool calls go straight to
+            // the extension manager below, so no `ToolInspector` — the
+            // global-memory consent gate included — ever sees them. The gate
+            // compensated by scanning the *script text* for an embedded memory
+            // call, which a runtime-assembled call walks past
+            // (`is_global: flag`). This is the same decision taken where there
+            // is nothing left to compute: the dispatched name and the evaluated
+            // arguments. A boundary that cannot ask the user refuses.
+            if let Some(refusal) = crate::security::global_memory::uninspected_boundary_refusal(
+                &tool_name,
+                serde_json::from_str::<serde_json::Value>(&arguments)
+                    .ok()
+                    .as_ref()
+                    .and_then(serde_json::Value::as_object),
+                crate::security::global_memory::UninspectedBoundary::ExecuteCodeScript,
+            ) {
+                collected_artifacts
+                    .lock()
+                    .await
+                    .push_tool_call(ToolCallRecord::failed(
+                        &tool_name,
+                        &arguments,
+                        None,
+                        "global_memory_consent",
+                    ));
+                let _ = response_tx.send(Err(refusal));
+                continue;
+            }
             // Telemetry may only carry USER-audience error text (Codex review
             // of #28): the script-facing error strings below are built from
             // assistant-audience content. `user_error` is the sole verbatim
