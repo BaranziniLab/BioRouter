@@ -51,7 +51,7 @@ without asking would be irreversible, or would move your data somewhere you cann
 | Saving or deleting a **global** memory | *"Cross-session memory write"* / *"Cross-session memory change"*, naming the category | Marking a note global is what makes it follow you into every other project. |
 | Clearing **all** global memories | *"Deletes every global memory"* | It cannot be undone. |
 
-Three related notes on memory:
+Four related notes on memory:
 
 - **You can read the store yourself.** These approvals name a category; **Settings → Chat →
   Memory** is where you see what is in it, and delete anything you would rather BioRouter did
@@ -62,6 +62,13 @@ Three related notes on memory:
   read one named category at a time, precisely so each approval names something you can decide
   about — an approval covering the whole store would be a prompt you cannot answer informedly.
   Every global memory is still reachable, one approved category at a time.
+- **There is no way round the card, either.** The global store is a directory of text files, so
+  the approval would be worth little if the same files could simply be opened. They cannot:
+  the file tools refuse any path inside the store and point at the memory tools instead; a
+  script running under `execute_code` and the `/agent/call_tool` API are both refused, because
+  neither can show you the operation; and BioRouter's memory server started on its own — outside
+  the app, for another program — serves project-local memory only. In each case the machine-wide
+  store is reached the one way that asks you first.
 
 Two things these approvals are guaranteed against, so that "put to you" means what it says:
 

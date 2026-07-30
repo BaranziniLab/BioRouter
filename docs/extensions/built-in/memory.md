@@ -52,7 +52,18 @@ Memories are plain files on your machine, organized by category. There are two s
 | Global (user-wide) | `~/.config/biorouter/memory/` on macOS and Linux; `~\AppData\Roaming\BaranziniLab\Biorouter\config\memory` on Windows |
 | Local (project-specific) | `.biorouter/memory/` inside the working directory |
 
-Because they are ordinary files, you can inspect, edit or delete them directly when you want to audit or reset what BioRouter has learned. You do not have to, though — the desktop app lists both stores and lets you prune them.
+Because they are ordinary files, **you** can inspect, edit or delete them directly when you want to audit or reset what BioRouter has learned. You do not have to, though — the desktop app lists both stores and lets you prune them.
+
+BioRouter itself cannot take that shortcut on the global store. Reading, changing or deleting a machine-wide memory is put to you for approval by category, and that approval would be worth little if the same files could just be opened by other means — so the global store is closed to everything but the memory tools:
+
+- The file tools (`text_editor`, the computer-controller cache) refuse any path inside it and point at the memory tool to use instead.
+- Tool calls made from inside an `execute_code` script are refused: a script's calls are not shown to you one at a time, so there is nothing for you to approve. The model is told to make the memory call directly.
+- The `/agent/call_tool` API is refused for the same reason.
+- BioRouter's memory server run on its own — `biorouter mcp memory`, for another MCP client outside the app — serves the project-local store only. Nothing there can ask you, so nothing there reaches the machine-wide store.
+
+The project-local store is unaffected by all of this: it lives under the directory you opened, so it never crosses into another session.
+
+A stray file in the global store directory is ignored rather than fatal, and a category name is treated as a label — no control characters, and bounded in length — because those names are listed in every later session's system prompt.
 
 ## Seeing and deleting what was remembered
 
