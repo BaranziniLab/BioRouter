@@ -8,6 +8,8 @@ import MessageCopyLink from './MessageCopyLink';
 import { formatMessageTimestamp } from '../utils/timeUtils';
 import { Edit } from './icons/app-icons';
 import { Button } from './ui/button';
+import { ResourceRefChip, ResourceRefText } from './ResourceRefChip';
+import { joinComposerText, removeComposerRefAt, splitComposerText } from '../utils/composerRefs';
 
 interface UserMessageProps {
   message: Message;
@@ -42,6 +44,13 @@ export default function UserMessage({ message, onMessageUpdate }: UserMessagePro
         .trim(),
     [textContent, imagePaths]
   );
+
+  // Issue #65 — the edit box is a second composer, so it follows the same rule:
+  // prose in the textarea, references as chips. Without this, "Edit" would be
+  // the one place the `<biorouter-ref …>` markup still leaks, and a user tidying
+  // their sentence would delete half a tag and silently lose the reference.
+  const editRefs = useMemo(() => splitComposerText(editContent).refs, [editContent]);
+  const editBody = useMemo(() => splitComposerText(editContent).body, [editContent]);
 
   // Memoize the timestamp
   const timestamp = useMemo(() => formatMessageTimestamp(message.created), [message.created]);
@@ -87,11 +96,19 @@ export default function UserMessage({ message, onMessageUpdate }: UserMessagePro
   }, [isEditing, initializeEditMode, message.id]);
 
   // Handle content changes in edit mode
-  const handleContentChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    const newContent = e.target.value;
-    setEditContent(newContent);
-    setError(null); // Clear any previous errors
-    window.electron.logInfo(`Content changed: ${newContent}`);
+  const handleContentChange = useCallback(
+    (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+      // The textarea holds the prose; the references ride along untouched.
+      const newContent = joinComposerText(e.target.value, editRefs);
+      setEditContent(newContent);
+      setError(null); // Clear any previous errors
+      window.electron.logInfo(`Content changed: ${newContent}`);
+    },
+    [editRefs]
+  );
+
+  const handleRemoveEditReference = useCallback((index: number) => {
+    setEditContent((current) => removeComposerRefAt(current, index));
   }, []);
 
   const handleSave = useCallback(
@@ -156,9 +173,23 @@ export default function UserMessage({ message, onMessageUpdate }: UserMessagePro
         {isEditing ? (
           // Truly wide, centered, in-place edit box replacing the bubble
           <div className="w-full max-w-4xl mx-auto bg-background-default text-text-default rounded-xl border border-border-subtle py-4 px-4 my-2 transition-all duration-200 ease-in-out">
+            {editRefs.length > 0 && (
+              <div
+                data-testid="edit-reference-rail"
+                className="mb-2 flex flex-wrap items-center gap-1.5"
+              >
+                {editRefs.map((ref, index) => (
+                  <ResourceRefChip
+                    key={`${ref.kind}:${ref.value}`}
+                    refSpan={ref}
+                    onRemove={() => handleRemoveEditReference(index)}
+                  />
+                ))}
+              </div>
+            )}
             <textarea
               ref={textareaRef}
-              value={editContent}
+              value={editBody}
               onChange={handleContentChange}
               onKeyDown={handleKeyDown}
               className="w-full resize-none bg-transparent text-text-default placeholder:text-text-muted border border-border-subtle rounded-lg focus:border-border-strong transition-all duration-200 text-base leading-relaxed"
@@ -228,11 +259,18 @@ export default function UserMessage({ message, onMessageUpdate }: UserMessagePro
                       (e.g. a comma-separated number list with no spaces) keeps the
                       flex item at full-token width and bleeds past the bubble. min-w-0
                       lets the item shrink so the break can happen. */}
+                  {/* A sent message keeps its `<biorouter-ref …>` tags — they
+                      are what the agent read, what a reload replays and what an
+                      edit re-sends — so the transcript draws them as chips
+                      rather than letting the user watch their own message come
+                      back as XML. Anything the parser refuses stays visible as
+                      the text it is, which is honest: the backend ignored it
+                      too. */}
                   <div
                     ref={contentRef}
                     className="min-w-0 text-sm text-text-default whitespace-pre-wrap break-words leading-relaxed"
                   >
-                    {displayText}
+                    <ResourceRefText text={displayText} />
                   </div>
                 </div>
 

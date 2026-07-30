@@ -10,6 +10,8 @@ import {
 } from './icons/app-icons';
 import { Button } from './ui/button';
 import type { UserAttachment } from '../types/message';
+import { ResourceRefText } from './ResourceRefChip';
+import { joinComposerText, splitComposerText } from '../utils/composerRefs';
 
 const STEER_TITLE = 'Add to current turn without stopping';
 const STOP_AND_SEND_TITLE = 'Stop current turn, then send as a new turn';
@@ -137,9 +139,15 @@ export const MessageQueue: React.FC<MessageQueueProps> = ({
 
   const nextMessage = queuedMessages[0];
   const remainingCount = queuedMessages.length - 1;
+  // Issue #65 — the queue draws inside the composer, so the same rule holds:
+  // never the raw `<biorouter-ref …>` markup. This builds the *string* form,
+  // for `title` and aria; the visible row renders the same content through
+  // `ResourceRefText`, which draws the references as chips.
   const messageLabel = (message: QueuedMessage) => {
     const attachmentCount = message.attachments?.length ?? 0;
-    const text = message.content.trim();
+    const { body, refs } = splitComposerText(message.content);
+    const named = refs.map((ref) => ref.label?.trim() || ref.value);
+    const text = [body.trim(), ...named].filter(Boolean).join(' · ');
     if (text && attachmentCount > 0)
       return `${text} (${attachmentCount} attachment${attachmentCount === 1 ? '' : 's'})`;
     if (text) return text;
@@ -177,7 +185,7 @@ export const MessageQueue: React.FC<MessageQueueProps> = ({
             className="flex-1 min-w-0 text-xs text-text-default truncate"
             title={messageLabel(nextMessage)}
           >
-            {messageLabel(nextMessage)}
+            <ResourceRefText text={nextMessage.content.trim()} />
           </p>
 
           {remainingCount > 0 && (
@@ -308,8 +316,12 @@ export const MessageQueue: React.FC<MessageQueueProps> = ({
               {editingMessage === message.id ? (
                 <div className="space-y-1.5">
                   <textarea
-                    value={editContent}
-                    onChange={(e) => setEditContent(e.target.value)}
+                    value={splitComposerText(editContent).body}
+                    onChange={(e) =>
+                      setEditContent(
+                        joinComposerText(e.target.value, splitComposerText(editContent).refs)
+                      )
+                    }
                     className="w-full text-xs bg-background-default border border-border-subtle rounded-md px-2 py-1 resize-none focus:border-border-strong"
                     rows={Math.min(Math.ceil(editContent.length / 60), 4)}
                     autoFocus
@@ -360,7 +372,14 @@ export const MessageQueue: React.FC<MessageQueueProps> = ({
                     setEditContent(message.content);
                   }}
                 >
-                  {messageLabel(message)}
+                  <ResourceRefText text={message.content.trim()} />
+                  {(message.attachments?.length ?? 0) > 0 && (
+                    <span className="text-text-muted">
+                      {` (${message.attachments!.length} attachment${
+                        message.attachments!.length === 1 ? '' : 's'
+                      })`}
+                    </span>
+                  )}
                 </p>
               )}
             </div>
