@@ -347,7 +347,7 @@ product creates and maintains — not an incidental file a session happened to l
 **DR-13's tier ratchet stays, every guardrail applies to a KB, and the ruling adds a control this
 plan did not have**: the user may move a base between private and public. That is
 **[DR-18](#dr-18--the-knowledge-base-tier-is-user-controllable-and-a-private-session-creates-a-private-base)**,
-and it resolves [AR-1](#ar-1) — the accepted cost that a base one private chat touched was
+and it resolves [AR-1](#ar-1--resolved-by-dr-18--a-knowledge-base-that-one-private-session-touched-becomes-unreadable-from-every-public-chat-including-the-users-own-ordinary-work) — the accepted cost that a base one private chat touched was
 unreadable from every public chat with no way back.
 
 ### The ruling, verbatim
@@ -826,7 +826,21 @@ plain language because each one is a way a *correct* implementation of this plan
 something a user might expect to have. **Do not treat any of them as a bug report**; each is a
 ruling. What is *not* on this list is a defect.
 
-### AR-1 — A knowledge base that one private session touched becomes unreadable from every public chat, including the user's own ordinary work
+⚠ **Six of these changed on 2026-07-30.** The operator's scope ruling [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store) retired
+**AR-6**, **AR-9** and **AR-10** — they existed only to support the general filesystem barrier, which
+is descoped — and amended **AR-8** and **AR-11**. The knowledge-base ruling [DR-18](#dr-18--the-knowledge-base-tier-is-user-controllable-and-a-private-session-creates-a-private-base)
+resolved **AR-1**. None was deleted: each says in place what happened to it and why, because an
+accepted cost that simply disappears from a document is indistinguishable from one nobody noticed.
+
+### AR-1 — RESOLVED by DR-18 — A knowledge base that one private session touched becomes unreadable from every public chat, including the user's own ordinary work
+
+> ✅ **RESOLVED by [DR-18](#dr-18--the-knowledge-base-tier-is-user-controllable-and-a-private-session-creates-a-private-base), 2026-07-30.** The operator ruled that *"users can change the kb to be private
+> or public"*. AR-1 was entirely a statement of **the missing way back** — a base ratcheted by one
+> private page was unreadable from every public chat for ever. That way back now exists, is user-only,
+> and is specified in [Task 29A](#task-29a-knowledge-base-publicize--privatize--user-only-graded-audited).
+> The text below is kept because it is the clearest description of what the ratchet costs a user
+> *until they publicize*, and every one of its bullets is still true of a base the user has not acted
+> on. What is no longer true is the last one, and it is corrected in place.
 
 The ruling (Tasks 10A–10C): **a knowledge base takes the tier of the most sensitive session that has
 ingested into it, and a public-capability session may not read a private KB.** The alternative the
@@ -857,14 +871,22 @@ The cost, stated plainly:
   — and it is discoverable, because the refusal string names it. It is still a real loss of
   ergonomics for a user whose default model is commercial and whose knowledge base has one private
   page in it.
-- **There is no declassification path for a KB in v1.** Sessions get one (Task 29, user-only, graded,
-  audited). A KB does not, and the CLI escape hatch (Task 31) does not cover KBs either. A user who
-  ratchets their only knowledge base by accident has no in-product exit short of `kb_export` →
-  `kb_import` into a fresh id from a public chat, which Task 10A explicitly does **not** launder
-  (an import stamps the importing session's tier and cannot lower an existing one). Follow-up, and
-  [Open question 15](#open-questions) records it.
+- ~~**There is no declassification path for a KB in v1.**~~ **CORRECTED — there is one, and it is the
+  whole of [DR-18](#dr-18--the-knowledge-base-tier-is-user-controllable-and-a-private-session-creates-a-private-base).** The user publicizes the base from the Knowledge view: user-only, never the model,
+  routed through the same user-proof DR-16 requires and confirmed against a count of the pages it
+  releases ([Task 29A](#task-29a-knowledge-base-publicize--privatize--user-only-graded-audited)). The
+  sentence this replaces was true of every draft before 2026-07-30 and is the reason AR-1 existed;
+  it is struck rather than deleted so a reader who remembers the old constraint can see it lift.
+  [Open question 15](#open-questions) is answered with it.
 
 ### AR-2 — Every knowledge base that exists today starts **public** at migration, even if a private session fed it
+
+> ⚠ **AMENDED by [DR-18](#dr-18--the-knowledge-base-tier-is-user-controllable-and-a-private-session-creates-a-private-base).** Still accepted, and still fail-**open** for the reason below. What changed is
+> the repair: a user who knows a pre-upgrade base holds private material can now **privatize it
+> directly** ([Task 29A](#task-29a-knowledge-base-publicize--privatize--user-only-graded-audited))
+> instead of waiting for the next private ingest to ratchet it. The residual is therefore "public
+> until the user acts or a private session ingests", not "public until a private session ingests".
+> Task 38's day-one notice must name the new control, not just the exposure.
 
 `.kb-tiers` does not exist before Task 10A, and the tree keeps no record of which session wrote which
 page — the git author is `Biorouter`, not a session id. So the migration writes `public` for every
@@ -929,7 +951,21 @@ the first place (CP5 and the two error lists). Closing the last inch needs const
 on `kb_create_base`, which DR-7 declines and which would cost the user a truthful error on the
 overwhelmingly common non-adversarial case.
 
-### AR-6 — On a host that cannot express the read-deny a public session loses the shell, and two costs come with the sandbox itself
+### AR-6 — RETIRED by DR-17 — On a host that cannot express the read-deny a public session loses the shell, and two costs come with the sandbox itself
+
+> ✅ **RETIRED by [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store), 2026-07-30. This cost is not paid.** DR-14's read-deny is descoped for v1, so a
+> public-capability session **keeps `developer__shell` and its background jobs,
+> `computercontroller__automation_script`, `computer_control` and `compute__compute_run` /
+> `compute_python` on every platform** — Windows and bubblewrap-less Linux included. Consequences (2)
+> and (3) go with it: a public session can read its own chat history from the shell, and can reach an
+> Agent Drafter app's files.
+>
+> **What that costs, stated rather than hidden:** the shell is exactly the channel that reaches the
+> session database, so requirement 1 is now held on the **agent-mediated** channels only and a public
+> model with a shell can `cat` a private transcript out of `sessions.db`. That is DR-17's accepted
+> risk, and it is the single largest thing the disclosure in
+> [Task 30A](#task-30a-the-non-private-model-disclosure) exists to tell the user about. The text below
+> is kept intact for whoever revives the barrier.
 
 DR-14 fails **closed**. Three consequences were put to the operator and accepted.
 
@@ -1007,7 +1043,18 @@ says" and "the toggle secretly keeps a ledger", the operator's ruling picks the 
 sentence before the switch flips, and the persistent strip repeats it while the toggle is off. A
 user who accepts that sentence has accepted AR-7.
 
-### AR-8 — A private model with a shell can still carry a knowledge base out of the deny root
+### AR-8 — AMENDED by DR-17 — A private model with a shell can still carry a knowledge base anywhere on disk
+
+> ⚠ **AMENDED by [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store).** The framing "out of the deny root" no longer applies — there is no deny root
+> in v1. Two halves survive and one is withdrawn. **Withdrawn:** the claim that a model's export of a
+> private base lands somewhere a public session cannot read, which depended on deny root #2; Task 10A
+> still forces the export location, and it is now a provenance control rather than a barrier.
+> **Survives, and is now the general case:** a private-capability model with a shell can copy its
+> base's markdown, its `.brkb` archive or `sessions.db` anywhere, and a public chat opened afterwards
+> may read it. Under DR-17 that is no longer a knowledge-base-specific residual — it is accepted risk
+> 4 for every root, and the reasoning below (a private model is *being sent* the private material, so
+> constraining what it writes is an egress control and a different feature) is why it is accepted
+> rather than closed.
 
 Task 10A decision (2) closes the archive-laundering path in the two directions that matter: an
 imported base takes `max(archive marker, importer)` so a `.brkb` can only ever over-classify itself,
@@ -1031,7 +1078,15 @@ somewhere a public chat can read them, and it will.** The controls that bear on 
 already in the product — approval mode for shell commands, `.biorouterignore`, and the fact that a
 private chat is running the user's own institutional model on the user's own machine.
 
-### AR-9 — Layer A is check-then-use, so a concurrently running shell can still race one in-process reader
+### AR-9 — RETIRED by DR-17 — Layer A is check-then-use, so a concurrently running shell can still race one in-process reader
+
+> ✅ **RETIRED by [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store), 2026-07-30.** Layer A is descoped, so there is no check-then-use window to race
+> and no deny root to race into. Kept intact for one reason: its measurements are the expensive part
+> and none of them expires — `symlink(2)` never resolves its target, a **pre-planted hardlink** defeats
+> a path-matching deny on both kernels, macOS ships `O_RESOLVE_BENEATH` (`0x1000`) and
+> `O_NOFOLLOW_ANY` (`0x20000000`) and both refuse a symlink traversal and a `..` escape at open time,
+> and `/tmp` is itself a symlink so resolve-and-open must anchor a canonical directory fd. Anyone
+> reviving the barrier starts from these, not from a fresh investigation.
 
 [Layer A](#dr-14-is-two-layers-and-the-os-sandbox-is-the-second-one) refuses a tool call whose
 arguments name a path inside a deny root. It decides that by resolving the path *at check time* —
@@ -1093,7 +1148,14 @@ symlink case is closed at the open, on both platforms, wherever the reader is on
 where the reader hands a **path** to a third-party crate (`umya_spreadsheet::reader::xlsx::read`,
 `lopdf::Document::load`) it is not, and Task 14D (c) says which those are.
 
-### AR-10 — On Linux, a deny root that does not exist when a job starts stays visible to that job for its whole life
+### AR-10 — RETIRED by DR-17 — On Linux, a deny root that does not exist when a job starts stays visible to that job for its whole life
+
+> ✅ **RETIRED by [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store), 2026-07-30.** There is no bubblewrap wrapper and no deny root in v1, so the race
+> has no subject. Kept for its two measured facts, both of which a revival needs on day one:
+> `--tmpfs` on a destination that does not exist **aborts bubblewrap** (`bwrap: Can't mkdir …: Read-only
+> file system`, exit 1), and an SBPL deny of a path that does not yet exist still applies once another
+> process creates it — so the skip-absent-roots workaround is a Linux necessity and must never be
+> hoisted into a shared helper.
 
 `--tmpfs` on a destination that does not exist **aborts bubblewrap** — measured,
 `bwrap: Can't mkdir …/memory: Read-only file system`, exit 1, even when the parent directory exists.
@@ -1131,7 +1193,19 @@ measured, an SBPL deny of a path that does not yet exist still applies once anot
 it (`Operation not permitted`), because SBPL is a path-pattern match. That asymmetry is why the
 `is_dir()` skip must stay inside `wrap_bubblewrap` and must not be hoisted into a shared helper.
 
-### AR-11 — The daemon's own API secret is recoverable, so the second door is held by Layer A and not by the environment strip
+### AR-11 — AMENDED by DR-17 — The daemon's own API secret is recoverable
+
+> ⚠ **AMENDED by [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store).** The measurements stand and are unaffected: a child recovers its parent's
+> environment with `ps -Ewww -p $PPID` on macOS — under a hardened, notarized binary, and under every
+> sandbox profile that can be constructed, because `sysctl-read` is not gated — and
+> `computercontroller__cache view /proc/self/environ` returns it in-process on Linux. **What is
+> withdrawn is the title's second half.** The second door is no longer "held by Layer A", because
+> Layer A is descoped: `POST /agent/call_tool` is still covered by **Gate C** (a private extension is
+> refused there, and that is requirement 2), but the path-barrier half of that coverage is gone. So a
+> caller holding the daemon secret can read `GET /sessions/{id}/export`, the `/knowledge/*` read
+> routes and `GET /diagnostics/{id}` — which DR-17 accepts and
+> [Task 30A](#task-30a-the-non-private-model-disclosure) discloses.
+> [Open question 20](#open-questions) still carries the real fix.
 
 Issue #57's `strip_daemon_private_env` removes `BIOROUTER_SERVER__SECRET_KEY` from every child
 BioRouter spawns, and it does that correctly (Task 14C's audit). The design then concluded that a
@@ -1174,6 +1248,12 @@ that.** What that costs, and what still holds:
   do. [Open question 20](#open-questions) carries it.
 
 ### AR-12 — The approval card's file preview reads a model-chosen path before anyone approves it
+
+> ⚠ **Unchanged by [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store), but its pin moved.** AR-12 is not a filesystem-barrier risk — nothing crosses
+> to the model, because the preview message is `.user_only()` — so the ruling does not touch it. Its
+> guard test `the_approval_preview_never_reaches_the_model` was written into the now-deferred
+> [Task 14D](#task-14d-layer-as-seams--the-readers-that-never-reach-the-choke-point); if that pin is
+> wanted in v1, lift the single test out rather than reviving the task.
 
 `ToolPreview::for_tool_call` (`agents/tool_execution.rs:310`) runs on the **approval** path — before
 the tool is dispatched and before the user has approved anything. For a `write`/`str_replace`/`insert`
@@ -1229,6 +1309,14 @@ swap, which is a change to `update_provider`'s contract for every session and is
 
 ### AR-14 — Every Biorouter app that exists today starts **public** at migration, even if it was built in a private chat
 
+> ⛔ **DEFERRED with Task 14E by [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store).** Agent Drafter apps get no tier in v1, so there is no migration
+> to fail open and this risk has no subject yet. It is kept verbatim because it is the argument for
+> *why* the migration must fail open when the app tier is built — `Manifest.session_id` is
+> `Option<String>`, the session it names may be deleted, and nothing else on disk says which model
+> built the app. Note the asymmetry the ruling creates and do not read it as an oversight: **knowledge
+> bases get a tier and a user control ([DR-18](#dr-18--the-knowledge-base-tier-is-user-controllable-and-a-private-session-creates-a-private-base)); apps do not.** A KB is a store of ingested
+> content; an app's source is code the user asked for.
+
 [Task 14E](#task-14e-the-roots-own-doors--where-the-handler-not-the-caller-supplies-the-path) gives
 each app in `<config>/agent_drafter` a tier, and migrates everything already on disk as **public**.
 This is AR-2's twin and it is accepted for the same reasons plus one more:
@@ -1268,7 +1356,7 @@ user clicking the model chip from a tool call issuing the same POST, because `ch
 origin binding.
 
 **Bounding it honestly.** This is a *credential* escalation, not a *model* escalation. Reaching it
-requires the daemon secret, and [AR-11](#ar-11--the-daemons-own-api-secret-is-recoverable-so-the-second-door-is-held-by-layer-a-and-not-by-the-environment-strip)
+requires the daemon secret, and [AR-11](#ar-11--amended-by-dr-17--the-daemons-own-api-secret-is-recoverable)
 already concedes that a caller holding the secret reads `GET /sessions/{id}/export`, the
 `/knowledge/*` read routes and `GET /diagnostics/{id}` (a zip containing a verbatim `config.yaml`)
 **without any of this**. AR-15 adds the tool channel to a set of HTTP channels the same credential
@@ -9804,7 +9892,7 @@ The sandboxed child cannot forge the link (creating it needs read access to the 
 denied). It is only reachable through an **unsandboxed in-process writer** — a public model asking
 the daemon to `ln <deny-root>/page.md ./x` through a file tool, then reading `./x` from the shell.
 That is a second, independent reason Layer A is the primary: with Layer A refusing the `ln`
-argument, the hardlink is never planted. Recorded as [AR-9](#ar-9--layer-a-is-check-then-use-so-a-concurrently-running-shell-can-still-race-one-in-process-reader).
+argument, the hardlink is never planted. Recorded as [AR-9](#ar-9--retired-by-dr-17--layer-a-is-check-then-use-so-a-concurrently-running-shell-can-still-race-one-in-process-reader).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -11811,7 +11899,7 @@ as the directory overmounts — after every `--bind` — and Task 14A's ordering
 **(i) Create the four directory roots at startup — the AR-10 mitigation, and never the fifth.**
 
 `--tmpfs` on a destination that does not exist aborts bubblewrap outright (Task 14A ⚑, measured), so
-absent roots must be skipped, and a skipped root is [AR-10](#ar-10--on-linux-a-deny-root-that-does-not-exist-when-a-job-starts-stays-visible-to-that-job-for-its-whole-life)'s
+absent roots must be skipped, and a skipped root is [AR-10](#ar-10--retired-by-dr-17--on-linux-a-deny-root-that-does-not-exist-when-a-job-starts-stays-visible-to-that-job-for-its-whole-life)'s
 race. Shrink the window by creating them: in `wrap_bubblewrap`, immediately before the deny loop,
 
 ```rust
@@ -11846,7 +11934,7 @@ so issue #57 holds there, but nothing else does. Route it through the same
 
 ⚠ **`computer_control` on Windows is refused for a public-capability session** along with
 `automation_script`, because Windows cannot express the read-deny at all — and *only* those, per
-[AR-6](#ar-6--on-a-host-that-cannot-express-the-read-deny-a-public-session-loses-the-shell-and-two-costs-come-with-the-sandbox-itself)(1).
+[AR-6](#ar-6--retired-by-dr-17--on-a-host-that-cannot-express-the-read-deny-a-public-session-loses-the-shell-and-two-costs-come-with-the-sandbox-itself)(1).
 Layer A keeps every in-process tool working there.
 
 
@@ -12048,7 +12136,7 @@ conclusion drawn from it. Measured for this round:
   path.
 
 **So the plan no longer claims the secret is out of reach.** The residual is
-[AR-11](#ar-11--the-daemons-own-api-secret-is-recoverable-so-the-second-door-is-held-by-layer-a-and-not-by-the-environment-strip)
+[AR-11](#ar-11--amended-by-dr-17--the-daemons-own-api-secret-is-recoverable)
 and [Open question 20](#open-questions). What the strip still buys is real and is what (a)–(b) pin:
 it keeps the secret out of the *child's own* environment, which is where a careless `env | grep` or a
 leaked log finds it, and it keeps every **remote** caller out.
@@ -12095,7 +12183,7 @@ inside a *private* chat is evaluated as public — which is the safe direction a
 the user resolves the same way as any other.
 
 ⚠ **This is a narrowing, not a closure.** It closes "borrow another session's capability". It does
-not close "issue any tool call at all with the daemon secret", which is [AR-11](#ar-11--the-daemons-own-api-secret-is-recoverable-so-the-second-door-is-held-by-layer-a-and-not-by-the-environment-strip)
+not close "issue any tool call at all with the daemon secret", which is [AR-11](#ar-11--amended-by-dr-17--the-daemons-own-api-secret-is-recoverable)
 and stays true.
 
 **(3) The dependency, stated in the words the operator needs.** With `public_enforced()` in place,
@@ -12246,7 +12334,7 @@ ones**. `GET /apps/{id}/runstate` additionally returns a pending tool's `name`, 
    include a **private** knowledge base, so it is not a general read of the user's data and it is not
    nothing either.
 
-**So the residual is larger than [AR-6](#ar-6--on-a-host-that-cannot-express-the-read-deny-a-public-session-loses-the-shell-and-two-costs-come-with-the-sandbox-itself)'s
+**So the residual is larger than [AR-6](#ar-6--retired-by-dr-17--on-a-host-that-cannot-express-the-read-deny-a-public-session-loses-the-shell-and-two-costs-come-with-the-sandbox-itself)'s
 last paragraph said, and its size is now known:** a public-capability model does not need to *already
 know* an app id — it can list the **public** ones (Task 14E filters the private ones out) and drive
 each of their agents over the unauthenticated socket, including any knowledge base that app's
@@ -12588,7 +12676,7 @@ plan that stops at 14B leaves each of them exactly as open as it was:
 2. **`ToolPreview::for_tool_call`**, which reads the file a `write` is about to clobber — *before*
    dispatch and *before* the user approves.
 3. **The tool bodies themselves**, which open the file some microseconds after Layer A approved the
-   argument. That window is [AR-9](#ar-9--layer-a-is-check-then-use-so-a-concurrently-running-shell-can-still-race-one-in-process-reader),
+   argument. That window is [AR-9](#ar-9--retired-by-dr-17--layer-a-is-check-then-use-so-a-concurrently-running-shell-can-still-race-one-in-process-reader),
    and it can be narrowed even though it cannot be closed.
 
 Plus one pre-existing traversal that the same insertion point fixes for free.
@@ -12935,7 +13023,7 @@ pub fn safe_open(dir: &Path, rel: &Path) -> io::Result<File> {
 ```
 
 ⚠ **Windows has no equivalent, and that is consistent rather than a gap:** Windows also has no
-Layer B ([AR-6](#ar-6--on-a-host-that-cannot-express-the-read-deny-a-public-session-loses-the-shell-and-two-costs-come-with-the-sandbox-itself)(1))
+Layer B ([AR-6](#ar-6--retired-by-dr-17--on-a-host-that-cannot-express-the-read-deny-a-public-session-loses-the-shell-and-two-costs-come-with-the-sandbox-itself)(1))
 and the five spawning tools are already refused there. On Windows `safe_open` falls back to the
 lexical + canonicalize check, and the residual is the swap window — which needs a concurrently
 running writer, which needs one of the tools Windows already refuses.
@@ -14599,7 +14687,7 @@ extension's *tools* arrive in a session Task 18's F1 already refuses to let the 
 
 **And the daemon cannot tell the user from the model.** `check_token` (`auth.rs:80-127`) compares one
 machine-wide bearer against the `X-Secret-Key` header (`:115-118`) and has **no principal**: every
-authenticated request is indistinguishable, whoever sent it, and [AR-11](#ar-11--the-daemons-own-api-secret-is-recoverable-so-the-second-door-is-held-by-layer-a-and-not-by-the-environment-strip)
+authenticated request is indistinguishable, whoever sent it, and [AR-11](#ar-11--amended-by-dr-17--the-daemons-own-api-secret-is-recoverable)
 measured that bearer to be recoverable from inside the daemon. That is exactly why DR-16 rejected
 *treat identity-free routes as public*: refusing every raise takes the **user's** model picker away
 along with the model's, and the picker is what the entire refusal vocabulary points at. So this task
@@ -19054,7 +19142,7 @@ Nine more this plan surfaced. Twelve and thirteen need a ruling before the phase
 fourteen, fifteen and sixteen are follow-ups whose *residual* is already accepted (AR-3, AR-1, and —
 for sixteen — a pre-existing theme gap this feature neither creates nor is scoped to fix).
 Seventeen, eighteen and nineteen came out of DR-14 and each has its residual recorded in
-[AR-6](#ar-6--on-a-host-that-cannot-express-the-read-deny-a-public-session-loses-the-shell-and-two-costs-come-with-the-sandbox-itself).
+[AR-6](#ar-6--retired-by-dr-17--on-a-host-that-cannot-express-the-read-deny-a-public-session-loses-the-shell-and-two-costs-come-with-the-sandbox-itself).
 ⚠ **The ordering constraint that used to be stated here — "nineteen must not be actioned before
 eighteen" — is withdrawn, and nineteen's own Blocks cell already said so while this sentence still
 said the opposite.** It rested on the premise that narrowing the Agent Drafter root would hand a
@@ -19071,8 +19159,8 @@ independent follow-ups.
 | **14** | **How does `memory`'s local store get a tier?** AR-3: `compose_instructions` (`memory/mod.rs:277`) inlines local memories in full (`:310-322`) into every session opened in that directory, including one on a public model, and Task 19 ships only a disclosure. The design's §9.3 B3 names the fix — "classify memory entries and filter `retrieve_all` by the session's capability tier at init" — but the on-disk format carries no provenance (`:387-388` writes a `# {tags}` line and bare lines; `:414-418` reads them back keyed by the *tag string*), and `compose_instructions` runs once at `MemoryServer::new` (`:108`) rather than per turn, so a naive capability filter there freezes across a mid-session model swap — the O6 hazard. A real fix needs per-entry provenance **and** a per-turn recompute. | Nothing in this plan. Open it as a follow-up issue at Task 40 Step 6. |
 | **15** | **Does a knowledge base need a declassification path, and does the barrier belong on the GUI's own read routes?** Two halves of the same scope question. (a) AR-1: a session can be declassified (Task 29, user-only, graded, audited) and a KB cannot, so a user who ratchets their only base by accident has no in-product exit. (b) Task 10C gates the four `/knowledge/*` **macro** routes (they run a model) and deliberately leaves the GUI's read routes alone (the Knowledge view is the user, not a model) — a defensible line, but it means the *app* shows a private base that the *agent* in the next tab cannot read, and nobody has decided whether that asymmetry should be visible in the UI. | Nothing in this plan; both are follow-ups. (a) is the one a user will hit first. |
 | **17** | **Should Linux get a Landlock read-deny by granting the complement?** Landlock has no deny rule, so hiding a subpath means handling read accesses and granting read to every sibling of every ancestor of every deny root. Task 14A declines it in v1 for three measured reasons, the disqualifying one being that anything created in an enumerated ancestor *after* the ruleset is built is unreadable for that command's lifetime — `cd ~ && mkdir out && echo x > out/f && cat out/f` fails. | Task 14A makes `bubblewrap` the only Linux mechanism that can express the read-deny, and the refusal names `apt install bubblewrap` as the fix. A Landlock complement would remove that dependency; it needs a real ergonomics trial on a populated `$HOME` before it is worth the failure mode. |
-| **18** | **Should the per-app agent WebSocket be authenticated by something a shell cannot obtain?** `GET /apps/{id}` and `GET /apps/{id}/agent` are deliberately unauthenticated (`auth.rs:52-78`), and `serve_index` (`apps.rs:168-184`) embeds the socket token in the page it serves, so any loopback client that knows an app id can read the token and drive that app's agent. ⚠ **There are THREE local sources of app ids, not two, and this row said two until this round.** DR-14 removes the first two — `GET /apps` needs the secret, and the app tree is deny root #4 — but the third is `agent_drafter__list_apps` (`agent_drafter/mod.rs:2636` → `ArtifactStore::list`, `store.rs:606`), a tool on a **public** extension that takes no path argument, so neither Layer A nor a filesystem deny can see it. Task 14C withdrew that premise; this row had not caught up. What Task 14E changes is narrower than "removes": a public-capability session's `list_apps` no longer returns a **private** app's id, so what stays reachable is that any loopback client — including a public-capability session — can drive a **public** app's agent socket with no credential at all. | Nothing in this plan; the residual is stated in [AR-6](#ar-6--on-a-host-that-cannot-express-the-read-deny-a-public-session-loses-the-shell-and-two-costs-come-with-the-sandbox-itself) and pinned by Task 14C's `the_unauthenticated_app_surface_does_not_grow_by_accident`. |
-| **20** | **Should the daemon's HTTP API authenticate a caller that is on the same machine?** [AR-11](#ar-11--the-daemons-own-api-secret-is-recoverable-so-the-second-door-is-held-by-layer-a-and-not-by-the-environment-strip): the secret is recoverable from the daemon's own environment (`ps -Ewww -p $PPID` on macOS, `/proc/self/environ` in-process on Linux), so `check_token`'s header comparison stops a remote caller and not a local one. Layer A covers the biggest local route, `POST /agent/call_tool`, because that route dispatches through the same choke point. It does **not** cover the routes that return private content without running a tool: `GET /sessions/{id}/export` and the rest of the transcript family, the `/knowledge/*` read routes, `GET /apps/{id}/export`, and `GET /diagnostics/{id}` — which returns a zip of `session.json`, recent `logs/*.jsonl` and a verbatim `config.yaml`, and is the widest single route in the API. | Nothing in this plan. Task 14C states the residual instead of the old "no way to authenticate" claim, and pins the strip so the *remote* half stays closed. Closing the local half needs a per-caller credential the daemon does not hand to its own children — the same shape as [Open question 18](#open-questions), and probably the same fix. |
+| **18** | **Should the per-app agent WebSocket be authenticated by something a shell cannot obtain?** `GET /apps/{id}` and `GET /apps/{id}/agent` are deliberately unauthenticated (`auth.rs:52-78`), and `serve_index` (`apps.rs:168-184`) embeds the socket token in the page it serves, so any loopback client that knows an app id can read the token and drive that app's agent. ⚠ **There are THREE local sources of app ids, not two, and this row said two until this round.** DR-14 removes the first two — `GET /apps` needs the secret, and the app tree is deny root #4 — but the third is `agent_drafter__list_apps` (`agent_drafter/mod.rs:2636` → `ArtifactStore::list`, `store.rs:606`), a tool on a **public** extension that takes no path argument, so neither Layer A nor a filesystem deny can see it. Task 14C withdrew that premise; this row had not caught up. What Task 14E changes is narrower than "removes": a public-capability session's `list_apps` no longer returns a **private** app's id, so what stays reachable is that any loopback client — including a public-capability session — can drive a **public** app's agent socket with no credential at all. | Nothing in this plan; the residual is stated in [AR-6](#ar-6--retired-by-dr-17--on-a-host-that-cannot-express-the-read-deny-a-public-session-loses-the-shell-and-two-costs-come-with-the-sandbox-itself) and pinned by Task 14C's `the_unauthenticated_app_surface_does_not_grow_by_accident`. |
+| **20** | **Should the daemon's HTTP API authenticate a caller that is on the same machine?** [AR-11](#ar-11--amended-by-dr-17--the-daemons-own-api-secret-is-recoverable): the secret is recoverable from the daemon's own environment (`ps -Ewww -p $PPID` on macOS, `/proc/self/environ` in-process on Linux), so `check_token`'s header comparison stops a remote caller and not a local one. Layer A covers the biggest local route, `POST /agent/call_tool`, because that route dispatches through the same choke point. It does **not** cover the routes that return private content without running a tool: `GET /sessions/{id}/export` and the rest of the transcript family, the `/knowledge/*` read routes, `GET /apps/{id}/export`, and `GET /diagnostics/{id}` — which returns a zip of `session.json`, recent `logs/*.jsonl` and a verbatim `config.yaml`, and is the widest single route in the API. | Nothing in this plan. Task 14C states the residual instead of the old "no way to authenticate" claim, and pins the strip so the *remote* half stays closed. Closing the local half needs a per-caller credential the daemon does not hand to its own children — the same shape as [Open question 18](#open-questions), and probably the same fix. |
 | **19** | **Should DR-14's Agent Drafter root narrow to `.vault/` plus other sessions' apps on the FILESYSTEM channel too?** Task 14E has now answered the *tool* channel: apps carry a tier, and a public session may read a public app and not a private one. The filesystem channel still denies the whole root, so a public-capability chat cannot `cat` even its **own** public app's source from the shell (AR-6(3)) — a real ergonomic loss, and now an asymmetry a user can see (`read_app` works, `cat` does not). Narrowing it means teaching Layer A which app a raw path belongs to, which is the per-object resolution the filesystem channel deliberately does not have. | Task 14B denies the whole root on the filesystem channel; Task 14E resolves per app on the tool channel. Narrowing the filesystem side is a follow-up, and it is no longer blocked on 18 — Task 14E's `list_apps` filter already removes a **private** app's id from a public model's reach, which was 18's dependency. |
 | **16** | **`--text-subtle` on `--background-medium` is sub-AA in three of the six family×mode scopes, and #56 is not the right owner of the fix.** Measured with `ui/desktop/scripts/lib/theme-tokens.mjs`: parchment:dark **3.75**, alma-mater:light **4.45**, alma-mater:dark **4.28**, against a 4.5 floor. `--background-medium` is the row-hover ground that `biorouter-list-row`, `SessionItem` and `ExtensionItem` all paint, so this affects every subtle label on a hovered row **today** — it is a pre-existing gap, not something the privacy badge introduces, and `check-contrast.mjs` has never asserted it. Task 26 therefore audits only `--text-default` and `--text-muted` on that ground (the two the badge actually uses) and the total is **288**, not 294. Auditing the third token as well makes the run exit 1 with three failures whose only fix is a theme-token edit — precisely the "Zero theme work" Task 26 Step 5 forbids, and a scope the privacy feature has no business taking. | Nothing in this plan. Open it as a theme/a11y follow-up at Task 40 Step 6, alongside the deferred findings from the 2026-07 theme redesign. Do **not** close it by lowering the threshold in `check-contrast.mjs`. |
 | **21** | **`bin/knowledge_ingest_probe.rs` is the one macro caller with no behavioural row.** It is a `[[bin]]` target, so `cargo test -p biorouter-server --lib` never compiles it and no harness in the repo executes it. Task 10B closes it *by construction* instead — `ProviderCompleter::paired` hands back the completer and the tier from one `Arc`, and Step 5 asserts zero surviving production uses of `ProviderCompleter::new` — but if a future edit re-derives the probe's tier from `cli.provider` rather than from the instance, nothing fails. | Nothing in this plan. **Accepted risk, in the operator's terms:** the probe is a developer diagnostic run by hand with `--root` and a default `probe` KB; a wrong tier there mis-stamps one developer's own scratch base on their own machine, and no model can reach it. If the probe ever becomes something a model or a route invokes, it needs a behavioural row before that lands. |
@@ -19085,7 +19173,7 @@ and is a scope question the ruling does not reach.
 
 | # | Question | Blocks |
 |---|---|---|
-| **23** | **What should a daemon that was handed no user-action key do?** DR-16's refusal is conditioned on a per-launch key the Electron main process mints and hands `biorouterd` on stdin ([Task 18A](#task-18a-the-two-http-channels-that-raise-a-sessions-own-tier-and-the-user-proof-neither-of-them-has)). Four shipping ways to start the daemon supply no such key: `just run-server`, `just debug-server` (the external backend `just debug-ui` talks to), a hand-run `biorouterd agent`, and any headless/server deployment. In all four the raise is refused **for every caller, including the human at the keyboard** — a private model cannot be bound to a session over HTTP at all. That is the only direction consistent with DR-16 ("the model may never do it" cannot be relaxed by *how the daemon was started*, which a model can influence), and it is a real ergonomic loss on the dev path that this repo's own `just debug-ui` workflow uses daily. The alternative — an env-var escape hatch — is not an alternative: the daemon's environment is exactly what [AR-11](#ar-11--the-daemons-own-api-secret-is-recoverable-so-the-second-door-is-held-by-layer-a-and-not-by-the-environment-strip) measured to be recoverable, so a key delivered that way is a key the model has. | **Answered in part by [Task 18A](#task-18a-the-two-http-channels-that-raise-a-sessions-own-tier-and-the-user-proof-neither-of-them-has) Step 3(a) and 3(f); the last third stays open.** **Closed:** *fail closed* is now specified, not merely preferred — `read_user_action_digest` returns `None` when stdin is a terminal or carries no digest, `install_user_action_digest(None)` is a legal state, and `user_action_matches(_, None)` is `false` for every caller, asserted by `a_daemon_with_no_user_action_key_refuses_every_raise`. **Closed:** the dev path, by *supplying a key* rather than by opening a hatch — `just debug-server` pipes `sha256('biorouter-dev-user-action')` on stdin and `getUserActionKey` returns the same published constant under `BIOROUTER_EXTERNAL_BACKEND`, mirroring `getServerSecret`'s `'test'` branch (`main.ts:906-908`). That key is deliberately public: a daemon's user-proof is whatever the person who launched it chose, and on that path the launcher *is* the developer. It weakens nothing shipped, where the key is 32 random bytes per launch that never leave the Electron main process. `just run-server` is left keyless on purpose, so the fail-closed path stays reachable by hand, and the gate asserts it stays that way. **Still open, and needing an operator ruling rather than an implementation: the headless deployment.** A server install has no GUI, so there is no process that can mint a key on the user's behalf and no picker for the proof to come from; deciding what "the user" means there is the same shape as [Open question 8](#open-questions) and is not something Task 18A can invent. Until it is ruled on, a headless daemon cannot bind a private model over HTTP at all. |
+| **23** | **What should a daemon that was handed no user-action key do?** DR-16's refusal is conditioned on a per-launch key the Electron main process mints and hands `biorouterd` on stdin ([Task 18A](#task-18a-the-two-http-channels-that-raise-a-sessions-own-tier-and-the-user-proof-neither-of-them-has)). Four shipping ways to start the daemon supply no such key: `just run-server`, `just debug-server` (the external backend `just debug-ui` talks to), a hand-run `biorouterd agent`, and any headless/server deployment. In all four the raise is refused **for every caller, including the human at the keyboard** — a private model cannot be bound to a session over HTTP at all. That is the only direction consistent with DR-16 ("the model may never do it" cannot be relaxed by *how the daemon was started*, which a model can influence), and it is a real ergonomic loss on the dev path that this repo's own `just debug-ui` workflow uses daily. The alternative — an env-var escape hatch — is not an alternative: the daemon's environment is exactly what [AR-11](#ar-11--amended-by-dr-17--the-daemons-own-api-secret-is-recoverable) measured to be recoverable, so a key delivered that way is a key the model has. | **Answered in part by [Task 18A](#task-18a-the-two-http-channels-that-raise-a-sessions-own-tier-and-the-user-proof-neither-of-them-has) Step 3(a) and 3(f); the last third stays open.** **Closed:** *fail closed* is now specified, not merely preferred — `read_user_action_digest` returns `None` when stdin is a terminal or carries no digest, `install_user_action_digest(None)` is a legal state, and `user_action_matches(_, None)` is `false` for every caller, asserted by `a_daemon_with_no_user_action_key_refuses_every_raise`. **Closed:** the dev path, by *supplying a key* rather than by opening a hatch — `just debug-server` pipes `sha256('biorouter-dev-user-action')` on stdin and `getUserActionKey` returns the same published constant under `BIOROUTER_EXTERNAL_BACKEND`, mirroring `getServerSecret`'s `'test'` branch (`main.ts:906-908`). That key is deliberately public: a daemon's user-proof is whatever the person who launched it chose, and on that path the launcher *is* the developer. It weakens nothing shipped, where the key is 32 random bytes per launch that never leave the Electron main process. `just run-server` is left keyless on purpose, so the fail-closed path stays reachable by hand, and the gate asserts it stays that way. **Still open, and needing an operator ruling rather than an implementation: the headless deployment.** A server install has no GUI, so there is no process that can mint a key on the user's behalf and no picker for the proof to come from; deciding what "the user" means there is the same shape as [Open question 8](#open-questions) and is not something Task 18A can invent. Until it is ruled on, a headless daemon cannot bind a private model over HTTP at all. |
 | **24** | **Does DR-16 extend to the config routes that set the *default* provider?** The ruling names two routes. Two more reach the same outcome one step later and are not covered: `POST /config/set_provider` (`config_management.rs:876-889`, registered `:923`) writes `BIOROUTER_PROVIDER`/`BIOROUTER_MODEL`, and `POST /config/upsert` (`:183-193`) writes **any** key including `BIOROUTER_PROVIDER`, both with nothing but the secret. `restore_provider_from_session` (`agent.rs:5682-5688`) falls back to `config.get_biorouter_provider()` for a row with no `provider_name`, so a session started after such a write comes up private-capability with no `/agent/update_provider` call at all. ⚠ **DR-14 does not cover this.** It makes `<config>/config.yaml` deny entry #5 on the *filesystem* channel precisely because *"a master switch a public model can edit is not a switch"* — and `POST /config/upsert` is the **HTTP** channel to the same file, which no layer of DR-14 sees. By DR-14's own argument, a default provider a public model can edit is a tier raise. It is a raise of every *future* session rather than of the caller's own, which is why it is a scope question and not a bug report. | **Answered by [Task 18A](#task-18a-the-two-http-channels-that-raise-a-sessions-own-tier-and-the-user-proof-neither-of-them-has) Step 3(d).** **Ruled:** the `X-User-Action` requirement extends to both handlers, for a **named key set only** — a blanket rule on `/config/upsert` would make every programmatic config write a user act, and a rule that fires constantly is one people route around. The set is `CAPABILITY_CONFIG_KEYS` in the new `crates/biorouter/src/privacy/config_keys.rs`, and it is five: `BIOROUTER_PROVIDER` (the default itself, read through `config_value!` at `config/base.rs:1147`); `BIOROUTER_LEAD_MODEL` (its mere presence diverts `create()` to the lead/worker path at `factory.rs:142-146`, **before** the registry lookup, changing the tier of every provider name rather than of one); `BIOROUTER_LEAD_PROVIDER` (names the lead half, one of the two tiers `least()` takes); and `OLLAMA_HOST` + `LLAMACPP_EXTERNAL_HOST` (Task 5's third test makes a self-hosted provider Private only while its base URL is loopback, so these two keys *are* that boundary). `set_config_provider` is guarded unconditionally, since it writes `BIOROUTER_PROVIDER` by construction; `upsert_config` is guarded by `is_capability_key(&query.key)`. `/config/remove` is deliberately unguarded — deleting the key cannot raise anything, because `restore_provider_from_session` then fails with *"Could not configure agent: missing provider"* (`agent.rs:5686`). **How a future capability-determining key avoids being forgotten:** not by a rule someone must remember, but by `every_config_key_the_tier_resolver_reads_is_classified`, which scans the five files Task 5 touches to define `tier()` for `get_param("KEY")` literals — 22 today — and fails unless each appears in **exactly one** of `CAPABILITY_CONFIG_KEYS` or `NOT_CAPABILITY_CONFIG_KEYS`, the latter carrying a one-line reason per key. Adding a config read to any of those files fails the test until someone classifies it. A companion test forbids computed keys (`get_param(&format!(..))`), which the scan could not see; measured, there are none today. Related: Task 30's `/config/upsert` confirmation phrase, which is a UX guard and not an authorization boundary, and which Task 18A's key now can promote to one. |
 | **25** | **Does DR-16 reach the app runtime, which binds a provider the model itself authored?** Measured while writing Task 18A, and not covered by it. `configure_main_provider` (`routes/apps.rs:809`, called `:1259`) and `configure_worker_provider` (`:1480`, called `:1553`) both read `AgentConfig.model` — a `{provider, model}` pair — out of the app's stored manifest (`agent_drafter/store.rs:76-79`) and bind it with `agent.update_provider` **in process**, at `:820` and `:1492`, never through `POST /agent/update_provider`. That manifest is agent-authored: `agent_drafter__declare_profiles` (`agent_drafter/mod.rs:2497-2528`) takes a per-profile `model` straight from `ProfileParam` (`:699-712`) — tool arguments the model writes — and `agent_drafter` is **Public** by design. So a public model can name `llamacpp` in a profile and the app runtime will bind it, with Task 18A's guard nowhere on that path. **What is NOT claimed:** a worker profile gets its own session (`worker_session_key` → `app:{id}:{cid}:{profile}`, `:1450-1452`), so that is a session *created* at a tier, which is the same shape as any new session and not a raise. The sharp case is the app's **main** session, which is long-lived: a manifest edit followed by a reconnect re-runs `configure_main_provider` against a session that already exists. | Nothing in this plan. **The question is scope, not mechanism:** whether an app session's capability is fixed for its lifetime or re-derived per connection is [Task 22](#task-22-session-copy--three-hand-rolled-builders-become-one-derived-session-helper)'s and [Task 23](#task-23-spawn--reorder-stamp-filter-and-the-spawn-matrix)' to answer, and the answer decides whether this is a raise at all. Extending Task 18A here is not mechanical the way open question 24 was: these are in-process calls with no HTTP request to carry a header, so the proof would have to be a manifest-level grant rather than a request-level one — the *scoped permission* shape DR-16 names as the right answer if the local-model handoff turns out to be a routine agent step. |
 
