@@ -9,7 +9,7 @@ use crate::knowledge::{
     subagent::{
         events::{DoneReason, SubAgentEvent},
         kb_tools::{tool_specs, KbToolDispatch},
-        loop_::{Completer, SubAgent, SubAgentBounds},
+        loop_::{Completer, SubAgent, SubAgentBounds, SubAgentResult},
         procedures::INGEST_PROCEDURE,
     },
     types::ChangeKind,
@@ -99,6 +99,33 @@ pub async fn ingest(svc: &KnowledgeService, args: IngestArgs) -> Result<IngestRe
                 DoneReason::CompleteSentinel | DoneReason::NoMoreToolCalls
             ) =>
         {
+            // A clean exit is not the same as a digest. `INGEST_PROCEDURE`
+            // requires the run to write `knowledge/sources/<source-id>.md`, so a
+            // transaction that left `knowledge/` exactly as it found it produced
+            // no knowledge — and committing it would hand the caller a commit sha
+            // for work that never happened (issue #71). The most common cause is
+            // a provider that failed mid-request: the turn comes back as a bare
+            // apology, or (Google, candidate with no `parts`) as a wholly empty
+            // message, and both look exactly like "the agent has no more tool
+            // calls". It is `knowledge/` and not the whole tree because the
+            // procedure's other steps — the `raw/` source, the `index.md` entry,
+            // the `log.md` line — each move the tree without adding knowledge, so
+            // a run cut short after one of them would otherwise pass.
+            //
+            // A failure to *answer* the question aborts too: leaving HEAD parked
+            // on the txn branch is how the next write to this KB lands somewhere
+            // nobody is looking.
+            let wrote_knowledge = match repo.txn_wrote_knowledge_pages(&txn) {
+                Ok(changed) => changed,
+                Err(e) => {
+                    let _ = repo.abort_txn(&txn);
+                    return Err(e.context("checking whether the ingest wrote anything"));
+                }
+            };
+            if !wrote_knowledge {
+                let _ = repo.abort_txn(&txn);
+                anyhow::bail!(no_pages_written_error(&raw.source_id, &r));
+            }
             let sha = repo.commit_txn(
                 &txn,
                 ChangeKind::Ingest,
@@ -126,6 +153,62 @@ pub async fn ingest(svc: &KnowledgeService, args: IngestArgs) -> Result<IngestRe
             Err(e)
         }
     }
+}
+
+/// The message a digest that wrote nothing fails with.
+///
+/// It has to answer the only question the user has — *what failed* — so it
+/// carries the model's own last words and every tool call that errored. Without
+/// them a silent model produces a silent failure, which is barely better than
+/// the false success it replaces.
+fn no_pages_written_error(source_id: &str, result: &SubAgentResult) -> String {
+    let mut msg = format!(
+        "ingest wrote no knowledge pages for source {source_id} \
+         ({} step(s), ended: {:?}). Nothing was added to the knowledge base",
+        result.steps_used, result.reason
+    );
+
+    let failures: Vec<String> = result
+        .events
+        .iter()
+        .filter_map(|e| match e {
+            SubAgentEvent::ToolResult {
+                name,
+                ok: false,
+                summary,
+            } => Some(format!("{name}: {}", clip(summary, 160))),
+            _ => None,
+        })
+        .rev()
+        .take(3)
+        .collect();
+    if !failures.is_empty() {
+        msg.push_str(&format!("; failed tool calls: {}", failures.join(" | ")));
+    }
+
+    let final_text = result.final_text.trim();
+    if final_text.is_empty() {
+        msg.push_str(
+            "; the model returned no final message, which usually means the \
+             provider request failed or was cut short",
+        );
+    } else {
+        msg.push_str(&format!(
+            "; the model's last message was: {}",
+            clip(final_text, 400)
+        ));
+    }
+    msg
+}
+
+/// Keep the failure message readable: it travels through an SSE frame and lands
+/// in a single line of the digest panel, where a few thousand characters of
+/// model output would bury the part that explains what happened.
+fn clip(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    format!("{}…", s.chars().take(max).collect::<String>())
 }
 
 // ---------------------------------------------------------------------------
@@ -319,6 +402,363 @@ mod tests {
         assert!(
             !has_macro_ingest_commit,
             "no macro ingest commit (with 'steps' delta) should appear after budget exceeded; log: {log:?}"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // Test 2b: the sub-agent ended cleanly but wrote nothing → must NOT succeed
+    //
+    // Issue #71: a provider that fails mid-request commonly ends the turn with a
+    // plain sentence and no tool calls, and Google's decoder returns a *content
+    // free* assistant message when a candidate carries no parts (finishReason
+    // MAX_TOKENS / SAFETY). Both land on `DoneReason::NoMoreToolCalls`, which the
+    // macro read as "the agent is finished" — squash-committing an unchanged tree
+    // and handing the caller a commit sha. The digest reported "completed" while
+    // the KB gained no knowledge page at all.
+    // -------------------------------------------------------------------------
+
+    /// The reply carries an error sentence and no tool calls.
+    #[tokio::test]
+    async fn ingest_fails_when_the_subagent_writes_nothing() {
+        let (_dir, svc) = fresh_svc();
+
+        let completer = MockCompleter::new(vec![text_reply(
+            "I'm sorry - the model provider returned an error and I cannot continue.",
+        )]);
+
+        let result = ingest(
+            &svc,
+            IngestArgs {
+                kb_id: "k".into(),
+                source: SourceInput::Text {
+                    text: "Note about HRV.".into(),
+                    title: Some("HRV note".into()),
+                },
+                completer: Box::new(completer),
+                focus: None,
+                bounds: SubAgentBounds::default(),
+                event_sink: None,
+                cancel: None,
+            },
+        )
+        .await;
+
+        let err = result
+            .expect_err("a digest that wrote no knowledge page must not report success")
+            .to_string();
+        assert!(
+            err.contains("no knowledge"),
+            "the error must say the digest wrote nothing, got: {err}"
+        );
+        assert!(
+            err.contains("model provider returned an error"),
+            "the error must carry the model's own last words so the user learns \
+             what failed, got: {err}"
+        );
+
+        // Nothing may be committed on top of the raw source.
+        let log = svc.list_history("k", 10).unwrap();
+        assert!(
+            !log.iter().any(|e| e
+                .delta
+                .as_deref()
+                .map(|d| d.contains("steps"))
+                .unwrap_or(false)),
+            "no macro ingest commit may exist after an empty digest; log: {log:?}"
+        );
+    }
+
+    /// The provider hands back a completely empty assistant message — no text and
+    /// no tool calls. Google produces exactly this when the candidate has no
+    /// `parts` (thinking budget exhausted, safety stop).
+    #[tokio::test]
+    async fn ingest_fails_when_the_provider_returns_an_empty_reply() {
+        let (_dir, svc) = fresh_svc();
+
+        let completer = MockCompleter::new(vec![text_reply("")]);
+
+        let err = ingest(
+            &svc,
+            IngestArgs {
+                kb_id: "k".into(),
+                source: SourceInput::Text {
+                    text: "Note about HRV.".into(),
+                    title: Some("HRV note".into()),
+                },
+                completer: Box::new(completer),
+                focus: None,
+                bounds: SubAgentBounds::default(),
+                event_sink: None,
+                cancel: None,
+            },
+        )
+        .await
+        .expect_err("an empty provider reply must not report a completed digest")
+        .to_string();
+
+        assert!(
+            err.contains("no knowledge"),
+            "the error must say the digest wrote nothing, got: {err}"
+        );
+    }
+
+    /// Every tool call failed, then the model gave up with a text reply. The
+    /// error must name the tool failures — "what failed" is the whole point.
+    #[tokio::test]
+    async fn ingest_failure_names_the_failed_tool_calls() {
+        let (_dir, svc) = fresh_svc();
+
+        let completer = MockCompleter::new(vec![
+            tool_call_reply(
+                "kb_write_page",
+                serde_json::json!({
+                    "path": "knowledge/../escape.md",
+                    "content": "evil",
+                    "commit_message": "escape"
+                }),
+            ),
+            text_reply("I could not write the page."),
+        ]);
+
+        let err = ingest(
+            &svc,
+            IngestArgs {
+                kb_id: "k".into(),
+                source: SourceInput::Text {
+                    text: "Note about HRV.".into(),
+                    title: Some("HRV note".into()),
+                },
+                completer: Box::new(completer),
+                focus: None,
+                bounds: SubAgentBounds::default(),
+                event_sink: None,
+                cancel: None,
+            },
+        )
+        .await
+        .expect_err("a digest whose every tool call failed must not report success")
+        .to_string();
+
+        assert!(
+            err.contains("kb_write_page"),
+            "the error must name the tool that failed, got: {err}"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // Test 2c: the run touched the transaction, but never wrote knowledge
+    //
+    // "The tree changed" is not the same as "a digest happened". Three of the
+    // sub-agent's tools write outside `knowledge/`: `kb_append_log` appends to
+    // `log.md`, `kb_add_raw_source` materialises under `raw/`, and `kb_write_page`
+    // accepts the top-level `index.md`. Each commits on the transaction branch,
+    // so each on its own moves the txn tree away from main's while the KB gains
+    // no knowledge at all.
+    //
+    // This is not a hypothetical: `INGEST_PROCEDURE` asks for the source page
+    // (step 4), the index update (step 9) and the log line (step 10), so a
+    // provider that dies part-way through — the reported failure — routinely
+    // leaves exactly this state behind.
+    // -------------------------------------------------------------------------
+
+    /// Only `log.md` was touched: the run announced a digest it never performed.
+    #[tokio::test]
+    async fn ingest_fails_when_the_run_only_appended_a_log_line() {
+        let (_dir, svc) = fresh_svc();
+
+        let completer = MockCompleter::new(vec![
+            tool_call_reply(
+                "kb_append_log",
+                serde_json::json!({ "summary": "digested the HRV note", "kind": "ingest" }),
+            ),
+            text_reply("The provider failed before I could write the page."),
+        ]);
+
+        let err = ingest(
+            &svc,
+            IngestArgs {
+                kb_id: "k".into(),
+                source: SourceInput::Text {
+                    text: "Note about HRV.".into(),
+                    title: Some("HRV note".into()),
+                },
+                completer: Box::new(completer),
+                focus: None,
+                bounds: SubAgentBounds::default(),
+                event_sink: None,
+                cancel: None,
+            },
+        )
+        .await
+        .expect_err("a log line is not a digest and must not report success")
+        .to_string();
+
+        assert!(
+            err.contains("no knowledge"),
+            "the error must say the digest wrote no knowledge, got: {err}"
+        );
+
+        // The claim has to hold on disk: nothing under knowledge/.
+        let pages = crate::knowledge::store::list_pages(
+            &paths::kb_root(svc.root(), "k"),
+            Some("knowledge/"),
+        )
+        .unwrap();
+        assert!(
+            pages.is_empty(),
+            "no knowledge page may exist after a log-only run; pages: {pages:?}"
+        );
+    }
+
+    /// Only `raw/` was touched: a second source was materialised and nothing was
+    /// ever integrated into the wiki.
+    #[tokio::test]
+    async fn ingest_fails_when_the_run_only_added_another_raw_source() {
+        let (_dir, svc) = fresh_svc();
+
+        let completer = MockCompleter::new(vec![
+            tool_call_reply(
+                "kb_add_raw_source",
+                serde_json::json!({ "type": "text", "text": "A second note.", "title": "Second" }),
+            ),
+            text_reply("I stashed the source but could not integrate it."),
+        ]);
+
+        let err = ingest(
+            &svc,
+            IngestArgs {
+                kb_id: "k".into(),
+                source: SourceInput::Text {
+                    text: "Note about HRV.".into(),
+                    title: Some("HRV note".into()),
+                },
+                completer: Box::new(completer),
+                focus: None,
+                bounds: SubAgentBounds::default(),
+                event_sink: None,
+                cancel: None,
+            },
+        )
+        .await
+        .expect_err("stashing a raw source is not a digest and must not report success")
+        .to_string();
+
+        assert!(
+            err.contains("no knowledge"),
+            "the error must say the digest wrote no knowledge, got: {err}"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // Test 2d: the provider itself fails mid-run
+    //
+    // `ProviderCompleter` now *fails* a completion when the provider hands back a
+    // tool call Biorouter cannot decode, rather than dropping it and letting the
+    // run look finished. That turns a provider error into an `Err` travelling out
+    // of the sub-agent loop — a route through this macro that nothing exercised
+    // before, and the one the reported failure takes.
+    //
+    // What it must leave behind is a usable knowledge base. `abort_txn` moves HEAD
+    // back to main and deletes the transaction branch; if it ever stopped doing
+    // so, every later write to this KB would commit onto a branch nobody reads
+    // while the Knowledge view kept reading main. The user would digest the next
+    // source "successfully" and still see nothing — issue #70's symptom, arrived
+    // at from the other end.
+    // -------------------------------------------------------------------------
+
+    /// Fails once the canned replies run out, the way `ProviderCompleter` does.
+    struct FailsWhenRepliesRunOut {
+        replies: Mutex<Vec<LlmReply>>,
+    }
+
+    #[async_trait]
+    impl Completer for FailsWhenRepliesRunOut {
+        async fn complete(
+            &self,
+            _system: &str,
+            _messages: &[crate::knowledge::subagent::loop_::LlmMessage],
+            _tools: &[Tool],
+        ) -> anyhow::Result<LlmReply> {
+            let mut q = self.replies.lock().await;
+            match q.is_empty() {
+                true => anyhow::bail!(
+                    "the model requested a tool call Biorouter could not decode: \
+                     The provided function name 'kb.write page' had invalid characters"
+                ),
+                false => Ok(q.remove(0)),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_provider_error_aborts_the_txn_and_leaves_head_on_main() {
+        let (dir, svc) = fresh_svc();
+
+        // The run gets one real page written before the provider dies, so the
+        // abort has actual work to undo.
+        let completer = FailsWhenRepliesRunOut {
+            replies: Mutex::new(vec![tool_call_reply(
+                "kb_write_page",
+                serde_json::json!({
+                    "path": "knowledge/sources/half-done.md",
+                    "content": "---\ntitle: half\nkind: source\n---\n\nHalf.",
+                    "commit_message": "half a digest"
+                }),
+            )]),
+        };
+
+        let err = ingest(
+            &svc,
+            IngestArgs {
+                kb_id: "k".into(),
+                source: SourceInput::Text {
+                    text: "Note about HRV.".into(),
+                    title: Some("HRV note".into()),
+                },
+                completer: Box::new(completer),
+                focus: None,
+                bounds: SubAgentBounds::default(),
+                event_sink: None,
+                cancel: None,
+            },
+        )
+        .await
+        .expect_err("a provider error must fail the digest")
+        .to_string();
+
+        assert!(
+            err.contains("could not decode"),
+            "the provider's own explanation must reach the caller, got: {err}"
+        );
+
+        // HEAD is back on main and the transaction branch is gone — otherwise
+        // every later write to this KB lands somewhere nobody is looking.
+        let repo = git2::Repository::open(dir.path().join("k")).unwrap();
+        assert_eq!(
+            repo.head().unwrap().shorthand(),
+            Some("main"),
+            "a failed digest must leave HEAD on main"
+        );
+        let leftover: Vec<String> = repo
+            .branches(Some(git2::BranchType::Local))
+            .unwrap()
+            .filter_map(|b| b.ok()?.0.name().ok()?.map(str::to_string))
+            .filter(|n| n.starts_with("txn/"))
+            .collect();
+        assert!(
+            leftover.is_empty(),
+            "the transaction branch must be deleted; found: {leftover:?}"
+        );
+
+        // And the half-written page must not be visible in the knowledge base.
+        let pages = crate::knowledge::store::list_pages(
+            &paths::kb_root(svc.root(), "k"),
+            Some("knowledge/"),
+        )
+        .unwrap();
+        assert!(
+            pages.is_empty(),
+            "an aborted digest must leave no page behind; pages: {pages:?}"
         );
     }
 

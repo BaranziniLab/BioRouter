@@ -311,4 +311,75 @@ mod tests {
         let r = render_conversation(&s);
         assert_eq!(r.rendered_messages, 0);
     }
+
+    /// A completer whose single reply carries text and no tool calls — what a
+    /// model hands back when its request failed, or when it simply decides the
+    /// transcript is not worth writing up.
+    struct SilentCompleter;
+
+    #[async_trait::async_trait]
+    impl Completer for SilentCompleter {
+        async fn complete(
+            &self,
+            _system: &str,
+            _messages: &[biorouter_mcp::knowledge::subagent::loop_::LlmMessage],
+            _tools: &[rmcp::model::Tool],
+        ) -> anyhow::Result<biorouter_mcp::knowledge::subagent::loop_::LlmReply> {
+            Ok(biorouter_mcp::knowledge::subagent::loop_::LlmReply {
+                text: "The provider request failed.".into(),
+                tool_calls: Vec::new(),
+            })
+        }
+    }
+
+    /// Issue #70. The Meditation workflow's whole write path is
+    /// `platform__ingest_conversation` → this function → the `ingest` macro, and
+    /// the macro used to squash-commit an unchanged tree and hand back a commit
+    /// sha. `ingest_summary` then told the agent "Ingested 1 conversation(s) into
+    /// knowledge base 'soul'. … commit: <sha>", the workflow reported success,
+    /// and the Soul knowledge base had gained nothing but a raw transcript. It is
+    /// the same defect as #71, reached through a different door, so it is pinned
+    /// from this side too.
+    #[tokio::test]
+    async fn a_conversation_digest_that_wrote_nothing_is_not_reported_as_ingested() {
+        let tmp = tempfile::tempdir().unwrap();
+        let svc = KnowledgeService::new(tmp.path().to_path_buf());
+        svc.create_base("soul", "Soul", None).unwrap();
+
+        let mut session = base_session();
+        session.conversation = Some(Conversation::new_unvalidated(vec![
+            Message::user().with_text("I always reach for ggplot2 before base R."),
+            Message::assistant().with_text("Noted."),
+        ]));
+
+        let err = ingest_conversation(
+            &svc,
+            ConversationIngestArgs {
+                kb_id: "soul".into(),
+                sessions: vec![session],
+                completer: Box::new(SilentCompleter),
+                focus: None,
+                bounds: SubAgentBounds::default(),
+                event_sink: None,
+                cancel: None,
+            },
+        )
+        .await
+        .expect_err("a Meditation that wrote no Soul page must not report an ingest")
+        .to_string();
+
+        assert!(
+            err.contains("no knowledge pages"),
+            "the failure must say the digest wrote nothing, got: {err}"
+        );
+
+        // And the claim must hold: the Soul has no knowledge page.
+        let sources = tmp.path().join("soul/knowledge/sources");
+        assert!(
+            std::fs::read_dir(&sources)
+                .map(|mut d| d.next().is_none())
+                .unwrap_or(true),
+            "no Soul page may exist after a failed Meditation"
+        );
+    }
 }

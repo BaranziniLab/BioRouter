@@ -54,7 +54,7 @@ impl Completer for ProviderCompleter {
 
         // 4. Extract assistant text and tool calls from the returned Message.
         let text = reply_msg.as_concat_text();
-        let tool_calls = extract_tool_calls(&reply_msg);
+        let tool_calls = extract_tool_calls(&reply_msg)?;
 
         Ok(LlmReply { text, tool_calls })
     }
@@ -138,30 +138,43 @@ fn llm_to_provider_message(m: &LlmMessage) -> Message {
 
 /// Walk a provider-returned `Message` and collect any `ToolRequest` content
 /// blocks into `LlmToolCall` values.
-fn extract_tool_calls(msg: &Message) -> Vec<LlmToolCall> {
-    msg.content
-        .iter()
-        .filter_map(|c| {
-            if let MessageContent::ToolRequest(req) = c {
-                if let Ok(params) = &req.tool_call {
-                    let args = params
-                        .arguments
-                        .as_ref()
-                        .map(|obj| serde_json::Value::Object(obj.clone()))
-                        .unwrap_or(serde_json::Value::Null);
-                    Some(LlmToolCall {
-                        id: req.id.clone(),
-                        name: params.name.to_string(),
-                        args,
-                    })
-                } else {
-                    None
-                }
-            } else {
-                None
+///
+/// A `ToolRequest` whose `tool_call` is `Err` is a call the model asked for and
+/// the provider adapter could not decode — Google mints one for every
+/// `functionCall` whose name breaks its character rule, and the streaming
+/// decoders do the same for unparseable arguments. Skipping those quietly
+/// emptied `tool_calls`, and an empty `tool_calls` is precisely the sub-agent
+/// loop's signal that the agent has finished: the digest stopped early and was
+/// reported as a success (issue #71). Refusing the whole completion is the only
+/// answer that stays honest — the run failed, and the user is told why.
+fn extract_tool_calls(msg: &Message) -> Result<Vec<LlmToolCall>> {
+    let mut out = Vec::new();
+    for c in &msg.content {
+        let MessageContent::ToolRequest(req) = c else {
+            continue;
+        };
+        match &req.tool_call {
+            Ok(params) => {
+                let args = params
+                    .arguments
+                    .as_ref()
+                    .map(|obj| serde_json::Value::Object(obj.clone()))
+                    .unwrap_or(serde_json::Value::Null);
+                out.push(LlmToolCall {
+                    id: req.id.clone(),
+                    name: params.name.to_string(),
+                    args,
+                });
             }
-        })
-        .collect()
+            Err(e) => {
+                anyhow::bail!(
+                    "the model requested a tool call Biorouter could not decode: {}",
+                    e.message
+                );
+            }
+        }
+    }
+    Ok(out)
 }
 
 // ---------------------------------------------------------------------------
@@ -174,7 +187,7 @@ mod tests {
     use crate::model::ModelConfig;
     use crate::providers::base::{ProviderMetadata, ProviderUsage, Usage};
     use crate::providers::errors::ProviderError;
-    use rmcp::model::Tool;
+    use rmcp::model::{ErrorCode, ErrorData, Tool};
     use std::sync::Arc;
     use tokio::sync::Mutex;
 
@@ -290,6 +303,76 @@ mod tests {
         assert_eq!(reply.tool_calls.len(), 1);
         assert_eq!(reply.tool_calls[0].name, "kb_search");
         assert_eq!(reply.tool_calls[0].args["query"], "x");
+    }
+
+    /// Issue #71. A provider can hand back a `ToolRequest` it could not decode —
+    /// Google emits one for every `functionCall` whose name fails its character
+    /// rule, and the streaming decoders do the same for unparseable arguments.
+    /// Dropping it left `tool_calls` empty, which the sub-agent loop reads as
+    /// "the agent is finished": the digest ended early and reported success. A
+    /// tool call the model asked for and Biorouter could not run is a failed
+    /// completion, and must be reported as one.
+    #[tokio::test]
+    async fn an_undecodable_tool_request_fails_the_completion() {
+        let broken = ErrorData {
+            code: ErrorCode::INVALID_REQUEST,
+            message: std::borrow::Cow::from(
+                "The provided function name 'kb.write page' had invalid characters",
+            ),
+            data: None,
+        };
+        let response = Message::assistant()
+            .with_text("writing the page now")
+            .with_tool_request("req-1", Err(broken));
+
+        let provider = Arc::new(MockProvider { response });
+        let completer = ProviderCompleter::new(provider);
+
+        let err = completer
+            .complete("sys", &[LlmMessage::User("hi".into())], &[])
+            .await
+            .expect_err("an undecodable tool request must not look like a finished turn")
+            .to_string();
+
+        assert!(
+            err.contains("invalid characters"),
+            "the provider's own explanation must reach the user, got: {err}"
+        );
+    }
+
+    /// The mirror image: a well-formed tool request alongside a broken one must
+    /// still fail rather than silently running only half of what the model asked
+    /// for.
+    #[tokio::test]
+    async fn one_broken_tool_request_fails_even_beside_a_good_one() {
+        let good = CallToolRequestParams {
+            name: "kb_search".into(),
+            arguments: None,
+            task: None,
+            meta: None,
+        };
+        let broken = ErrorData {
+            code: ErrorCode::INVALID_REQUEST,
+            message: std::borrow::Cow::from("arguments were not valid JSON"),
+            data: None,
+        };
+        let response = Message::assistant()
+            .with_tool_request("ok-1", Ok(good))
+            .with_tool_request("bad-1", Err(broken));
+
+        let provider = Arc::new(MockProvider { response });
+        let completer = ProviderCompleter::new(provider);
+
+        let err = completer
+            .complete("sys", &[LlmMessage::User("hi".into())], &[])
+            .await
+            .expect_err("a partially undecodable turn must not be executed as if intact")
+            .to_string();
+
+        assert!(
+            err.contains("not valid JSON"),
+            "the provider's own explanation must reach the user, got: {err}"
+        );
     }
 
     #[tokio::test]
