@@ -32,6 +32,22 @@
 //! too — both are the same undisclosed cross-session read. Only `Chat` is
 //! skipped, and only because it dispatches no tools at all.
 //!
+//! Two properties the rest of the pipeline owes this verdict, each the subject
+//! of its own regression suite because each was once missing:
+//!
+//! * **The ask cannot *lower* a denial.** The merge is a strict
+//!   `Deny > RequireApproval > Allow` lattice
+//!   ([`crate::tool_inspection::apply_inspection_results_to_permissions`]), so a
+//!   call already refused — by a user `NeverAllow`, a managed policy, the
+//!   catastrophic-command block — is not also queued for a card. It briefly was,
+//!   and since "Allow once" *dispatches* the tool, that card would have run
+//!   something already refused.
+//! * **No automation may answer the card.** The gate's name is in
+//!   [`crate::tool_inspection::NON_DELEGABLE_APPROVAL_INSPECTORS`], so a
+//!   `PermissionRequest` hook returning `allow` is dropped and the user is asked
+//!   anyway. A hook is one more automated grant, and it runs downstream of the
+//!   merge where the lattice can no longer defend the verdict.
+//!
 //! # What it decides, and why the two verdicts differ
 //!
 //! * A global read/write/delete naming **one category** →

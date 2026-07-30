@@ -63,6 +63,17 @@ Three related notes on memory:
   about — an approval covering the whole store would be a prompt you cannot answer informedly.
   Every global memory is still reachable, one approved category at a time.
 
+Two things these approvals are guaranteed against, so that "put to you" means what it says:
+
+- **Nothing can answer them for you.** In particular a `PermissionRequest`
+  [hook](../agent-loop/hooks/hooks-reference.md) returning `allow` — the automation you write to
+  stop being prompted for routine calls — is ignored on these, and the card is shown anyway. A
+  hook can still *deny* anything.
+- **They never reopen a refusal.** If the same call was already refused — by your own "never
+  allow" for that tool, by an administrator's [managed policy](managed-policy.md), or by the
+  always-on catastrophic-command block — it stays refused and no card appears. An approval prompt
+  is never a second chance at something that was already denied.
+
 An administrator's [managed policy](managed-policy.md) can add further tools to this list.
 
 ## Changing the mode in the desktop app
