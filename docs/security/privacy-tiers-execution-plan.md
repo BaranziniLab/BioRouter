@@ -7290,19 +7290,33 @@ async fn a_bind_is_never_accepted_against_a_row_that_is_already_private() {
     // Interleaving (A), FORCED: the ratchet commits strictly BEFORE the bind's
     // UPDATE runs. This is the case the conditional UPDATE exists for, and the
     // one nothing could previously produce.
+    //
+    // ⚠ THE SEAM'S POSITION IS THE TEST. `before_bind_write` is called INSIDE
+    //   `bind_provider_if_allowed`, as the last statement before `.execute`.
+    //   Its previous position — in `update_provider`, before the helper was
+    //   even entered — is why this test used to pass against the defect it
+    //   names: a helper written as `SELECT privacy_tier` + an unconditional
+    //   `UPDATE` had not run its SELECT yet when the park happened, so the
+    //   forced ratchet committed, the SELECT then read Private, and the wrong
+    //   implementation refused for the right-looking reason. Parked between the
+    //   read and the write instead, that implementation reads Public, parks,
+    //   lets the ratchet commit, and then writes anyway — which is the bug, and
+    //   this assertion is what sees it.
     let (agent, s) = agent_on(private_provider()).await;
 
-    let reached = seams::arm_before_bind_update();
+    let reached = seams::arm_before_bind_write();
     let bind = tokio::spawn({ let a = agent.clone(); let id = s.id.clone();
                               async move { a.update_provider(public_provider(), &id).await } });
-    let release = reached.await.unwrap();      // update_provider is parked at the seam
+    let release = reached.await.unwrap();      // parked INSIDE the helper, after any read
     ratchet_to_private(&s.id).await;           // runs alone, to completion
     release.send(()).unwrap();
 
     let err = bind.await.unwrap().unwrap_err();
     assert!(matches!(err.downcast_ref::<PrivacyRefusal>(),
                      Some(PrivacyRefusal::PublicModelOnPrivateSession { .. })),
-            "the WHERE clause did not see a ratchet that committed before it");
+            "the WHERE clause did not see a ratchet that committed before it — \
+             either the predicate is evaluated in Rust before the UPDATE, or the \
+             seam drifted back out of bind_provider_if_allowed");
     let row = reread(&s.id).await;
     assert_eq!(row.provider_name.as_deref(), Some("versa_azure"), "a refused bind wrote anyway");
     assert_eq!(agent.provider().await.unwrap().get_name(), "versa_azure");
@@ -7413,6 +7427,16 @@ it('does not report success when the session bind is refused', async () => {
     /// The predicate is in the `WHERE`, not in Rust, so a concurrent ratchet
     /// cannot interleave into "private session, public provider bound".
     ///
+    /// ⚠ **`seams::before_bind_write()` belongs HERE, immediately before
+    /// `.execute`, and nowhere else.** Its contract is *"after every read this
+    /// function performs, before the statement that writes"*, and that is the
+    /// only position from which it can distinguish this implementation from the
+    /// wrong one. In `update_provider` — where it used to be — it parks before
+    /// the helper is entered, so a `SELECT privacy_tier` + unconditional
+    /// `UPDATE` helper passes: the forced ratchet commits first and its SELECT
+    /// dutifully refuses. If a future refactor gives this function a read of
+    /// its own, the seam call moves down below it; it never moves up.
+    ///
     /// ⚠ `rows_affected == 0` is NOT the refusal on its own: a nonexistent
     /// `session_id` produces exactly the same zero, so returning
     /// `Ok(Refused)` there would surface a stale or mistyped id as a 409
@@ -7428,7 +7452,7 @@ it('does not report success when the session bind is refused', async () => {
         incoming_is_private: bool,
     ) -> Result<BindOutcome> {
         let pool = self.pool().await?;
-        let res = sqlx::query(
+        let write = sqlx::query(
             r#"
             UPDATE sessions
                SET provider_name = ?, model_config_json = ?, updated_at = datetime('now')
@@ -7439,9 +7463,12 @@ it('does not report success when the session bind is refused', async () => {
         .bind(provider_name)
         .bind(model_config_json)
         .bind(session_id)
-        .bind(i64::from(incoming_is_private))
-        .execute(pool)
-        .await?;
+        .bind(i64::from(incoming_is_private));
+        // ⚠ The last statement before the write, and test-only. Read the ⚠ in
+        //    this function's doc comment before moving it.
+        #[cfg(test)]
+        crate::agents::agent::seams::before_bind_write().await;
+        let res = write.execute(pool).await?;
         if res.rows_affected() > 0 {
             return Ok(BindOutcome::Bound);
         }
@@ -7502,8 +7529,13 @@ async fn a_nonexistent_session_is_not_reported_as_a_privacy_refusal() {
         // commits after a legal bind produces (private, public provider), and
         // that residual is Gate B's (Task 13), not this gate's. Overstating it
         // is what made Step 1's race test assert something false.
-        #[cfg(test)]
-        seams::before_bind_update().await;
+        //
+        // ⚠ There is NO seam here. `before_bind_write` lives inside
+        // `bind_provider_if_allowed`, between any read that function does and
+        // the statement that writes — see its doc comment. A seam at THIS line
+        // parks before the helper is entered and therefore cannot tell a
+        // conditional UPDATE from a SELECT-then-UPDATE, which is the exact
+        // implementation Gate A exists to reject.
         match self
             .config
             .session_manager
@@ -7539,13 +7571,23 @@ default and therefore cannot preempt them at all. The seams are `#[cfg(test)]`, 
 exists in a shipped binary:
 
 ```rust
-/// Test-only rendezvous points inside `update_provider` (issue #56).
+/// Test-only rendezvous points on the bind path (issue #56).
 ///
-/// `arm_*` returns a receiver that fires when `update_provider` reaches the
-/// seam, carrying the sender that releases it — so a test can run a whole
-/// ratchet *inside* the window instead of hoping a spawn lands there. Two
-/// channels and not a `Barrier`: a 2-party `Barrier::wait` releases both sides
-/// at the rendezvous, which is the one thing this must not do.
+/// `arm_*` returns a receiver that fires when the bind path reaches the seam,
+/// carrying the sender that releases it — so a test can run a whole ratchet
+/// *inside* the window instead of hoping a spawn lands there. Two channels and
+/// not a `Barrier`: a 2-party `Barrier::wait` releases both sides at the
+/// rendezvous, which is the one thing this must not do.
+///
+/// ⚠ **The two seams sit in different functions, on purpose.**
+/// `before_bind_write` is inside `SessionStorage::bind_provider_if_allowed`
+/// (`session_manager.rs`), between any read that function performs and the
+/// statement that writes — hence `pub(crate)` rather than `pub(super)`, and
+/// hence the name: it is *before the WRITE*, not merely before the call.
+/// `after_bind_before_swap` is in `Agent::update_provider`, between the persist
+/// and the in-memory swap. The first was previously called `before_bind_update`
+/// and lived beside the second, which made it unable to distinguish a
+/// conditional `UPDATE` from a `SELECT` followed by an unconditional one.
 #[cfg(test)]
 pub(crate) mod seams {
     use std::sync::{Mutex, OnceLock};
@@ -7577,13 +7619,14 @@ pub(crate) mod seams {
         }
     }
 
-    pub(crate) fn arm_before_bind_update() -> oneshot::Receiver<oneshot::Sender<()>> {
+    pub(crate) fn arm_before_bind_write() -> oneshot::Receiver<oneshot::Sender<()>> {
         arm(&BEFORE_BIND)
     }
     pub(crate) fn arm_after_bind_before_swap() -> oneshot::Receiver<oneshot::Sender<()>> {
         arm(&AFTER_BIND)
     }
-    pub(super) async fn before_bind_update() { park(&BEFORE_BIND).await }
+    /// Called from `session_manager.rs`, hence `pub(crate)`.
+    pub(crate) async fn before_bind_write() { park(&BEFORE_BIND).await }
     pub(super) async fn after_bind_before_swap() { park(&AFTER_BIND).await }
 }
 ```
@@ -7702,15 +7745,52 @@ grep -c "PrivacyBarrierBody" ui/desktop/src/api/types.gen.ts ; echo "expect: >= 
 # The client throws.
 awk '/const changeModel/,/^  \);/' ui/desktop/src/components/ModelAndProviderContext.tsx \
   | grep -c "throwOnError" ; echo "expect: 2 (updateAgentProvider AND setConfigProvider); 1 today"
-# The concurrency gate can FORCE its interleavings, and its seams ship in no
-# binary. A `#[cfg(test)]` that drifted off the module is a rendezvous point in
-# production code.
+# ── THE PREDICATE IS IN THE SQL, AND NOTHING READS BEFORE THE WRITE. ──────────
+# This is the structural half of the fix Codex round 2 required: the seam alone
+# cannot be trusted to stay in the right place, because where it is called is
+# the implementer's choice. These three assertions pin the shape directly, and
+# they FAIL — they are not prints.
+bind_rc=0
+awk '/async fn bind_provider_if_allowed/,/^    }/' \
+  crates/biorouter/src/session/session_manager.rs > /tmp/56-bind.txt
+[ "$(wc -l < /tmp/56-bind.txt)" -gt 1 ] \
+  || { echo "FAIL  bind_provider_if_allowed not found — every check below is vacuous"; bind_rc=1; }
+# (1) The refusal is a WHERE clause, not an `if`.
+n=$(grep -c "privacy_tier = 'public' OR ? = 1" /tmp/56-bind.txt) || n=0
+[ "$n" -eq 1 ] || { echo "FAIL  the conditional predicate is not in the UPDATE (found $n)"; bind_rc=1; }
+n=$(grep -c "UPDATE sessions" /tmp/56-bind.txt) || n=0
+[ "$n" -eq 1 ] || { echo "FAIL  expected exactly one UPDATE sessions, found $n"; bind_rc=1; }
+# (2) NO READ PRECEDES THE WRITE. The wrong implementation is `SELECT
+#     privacy_tier` followed by an unconditional UPDATE; the follow-up
+#     `SELECT EXISTS` is legitimate and comes AFTER. Compare line numbers.
+w=$(grep -n "\.execute(pool)" /tmp/56-bind.txt | head -1 | cut -d: -f1)
+r=$(grep -n "SELECT" /tmp/56-bind.txt | head -1 | cut -d: -f1)
+if [ -n "$r" ] && [ -n "$w" ] && [ "$r" -lt "$w" ]; then
+  echo "FAIL  a SELECT precedes the write (line $r before $w) — the predicate is"
+  echo "      being evaluated in Rust, and the race is open"
+  bind_rc=1
+fi
+# (3) The seam is INSIDE this function, immediately before the write, and
+#     test-only. Outside it, the forced-interleaving test cannot fail the
+#     read-then-write implementation at all.
+s=$(grep -n "seams::before_bind_write()" /tmp/56-bind.txt | head -1 | cut -d: -f1)
+if [ -z "$s" ]; then
+  echo "FAIL  before_bind_write is not called inside bind_provider_if_allowed"; bind_rc=1
+elif [ -n "$w" ] && [ "$s" -ge "$w" ]; then
+  echo "FAIL  the seam is at line $s, at or after the write at $w"; bind_rc=1
+elif [ "$(sed -n "$((s-1))p" /tmp/56-bind.txt | grep -c 'cfg(test)')" -ne 1 ]; then
+  echo "FAIL  the seam is not under #[cfg(test)] — a rendezvous point shipped"; bind_rc=1
+fi
+grep -c "seams::before_bind_write()" crates/biorouter/src/agents/agent.rs
+echo "expect: 0 — the seam moved OUT of update_provider this round; a copy left"
+echo "  behind parks before the helper is entered and re-opens the hole."
+# The rest of update_provider's ordering is unchanged: persist, then swap.
 awk '/pub async fn update_provider/,/^    }/' crates/biorouter/src/agents/agent.rs \
   | grep -n "cfg(test)\|seams::\|bind_provider_if_allowed\|\*current_provider = Some"
-echo "Expected FOUR lines, in this order: seams::before_bind_update (under a"
-echo "  cfg(test) on the line above it), bind_provider_if_allowed,"
-echo "  seams::after_bind_before_swap (likewise), *current_provider = Some."
-echo "  A seam call NOT preceded by #[cfg(test)] fails this gate."
+echo "Expected THREE lines, in this order: bind_provider_if_allowed,"
+echo "  seams::after_bind_before_swap (under a cfg(test) on the line above it),"
+echo "  *current_provider = Some. A seam call NOT preceded by #[cfg(test)] fails"
+echo "  this gate, and a before_bind_* seam appearing here fails it too."
 grep -c "pub(crate) mod seams" crates/biorouter/src/agents/agent.rs ; echo "expect: 1"
 grep -n -B1 "pub(crate) mod seams" crates/biorouter/src/agents/agent.rs | grep -c "cfg(test)"
 echo "expect: 1 — the module itself is test-only"
@@ -7722,6 +7802,12 @@ grep -n -A1 'flavor = "multi_thread"' crates/biorouter/src/agents/agent.rs \
 # …and it asserts it actually raced, rather than reporting a one-sided loop as a pass.
 awk '/async fn the_unconstrained_race_observes_both_outcomes/,/^    }/' \
   crates/biorouter/src/agents/agent.rs | grep -c "bound > 0 && refused > 0" ; echo "expect: 1"
+# ── LAST LINE. The four SQL/seam assertions above set `bind_rc`; this block's
+#    exit status is their verdict. Everything above this line that ends in
+#    `echo "expect: …"` still needs a reader — these four do not.
+if [ "${bind_rc:-0}" -eq 0 ]; then echo "Task 12 SQL/seam gate: PASS"
+else echo "Task 12 SQL/seam gate: FAIL (see the FAIL lines above)"; fi
+( exit "${bind_rc:-0}" )
 ```
 
 **What this catches.** The wrong implementation adds the check to `Agent::update_provider` as an
@@ -7740,11 +7826,26 @@ other and interleave only at `.await` points, in the same order on every one of 
 checked, and the ratchet always wins the row, so the guard skipped the assertion in the only branch
 that could have caught something. (iii) The assertion was **false for a correct implementation**: a
 ratchet that commits after a legal bind produces (private, public provider), and that is the
-residual Gate B owns, not a violation of Gate A. **This gate rejects: an implementation in which the
-`WHERE` predicate is evaluated in Rust between two statements instead of inside the UPDATE** —
-`a_bind_is_never_accepted_against_a_row_that_is_already_private` parks `update_provider` at a seam,
-runs the whole ratchet inside the window, releases it, and requires a `PrivacyRefusal`; a
-read-then-write implementation binds instead, and no amount of looping would have shown it. It also
+residual Gate B owns, not a violation of Gate A.
+
+**This gate rejects: `bind_provider_if_allowed` implemented as `SELECT privacy_tier` followed by an
+unconditional `UPDATE`.** That is the natural implementation — it is what "check, then write" looks
+like in Rust — and until this round it passed every test here. The reason is worth recording,
+because it is the general lesson about seams: *the seam was outside and before the helper.*
+`arm_before_bind_update` parked `update_provider` at a line the wrong helper had not reached yet, so
+the forced ratchet committed, the helper then ran its `SELECT`, read Private, and refused — the right
+answer, produced by an implementation that races. The seam is now
+**`before_bind_write`, called inside `bind_provider_if_allowed`, between any read and the write**;
+from there the same wrong helper reads Public, parks, lets the ratchet commit, and writes anyway,
+which is exactly the defect and exactly what
+`a_bind_is_never_accepted_against_a_row_that_is_already_private` now fails on. Because *where* a seam
+is called is the implementer's choice and not the plan's, Step 5 pins the shape structurally as well:
+the predicate string must appear inside the `UPDATE`, there must be exactly one `UPDATE sessions`,
+**no `SELECT` may appear before `.execute`** (the follow-up `SELECT EXISTS` is after it, and the
+line-number comparison is what separates them), and the seam must be inside the function, under
+`#[cfg(test)]`, above the write — with `agent.rs` asserted to contain **zero** `before_bind_write`
+calls so a copy cannot be left behind at the old, useless position. Those four assertions set
+`bind_rc` and the block exits non-zero; they are not prints. It also
 rejects a fuzz loop that races nothing, because `bound > 0 && refused > 0` is now asserted.
 
 - [ ] **Step 6: Commit**
