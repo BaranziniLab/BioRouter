@@ -346,6 +346,27 @@ contradict R11(i); a new field there costs seven match arms plus an OpenAPI cycl
 carries no session id, so one `ucsfomopagent` child process is shared across sessions — the badge
 cannot live on the process.
 
+### 5.4 Knowledge bases
+
+Added by [DR-18](privacy-tiers-execution-plan.md#dr-18--the-knowledge-base-tier-is-user-controllable-and-a-private-session-creates-a-private-base) (R16). A base is not an incidental file — it is *"a piece of biorouter
+component"* — so it carries a tier of its own, in a machine-local `<knowledge-root>/.kb-tiers` store
+rather than in the session database (`biorouter-mcp` cannot depend on `biorouter`, so it cannot name
+`ProviderTier`; the store carries a boolean and the crossing happens one layer up).
+
+Three rules, and the third is the one this design did not have before:
+
+1. **At creation.** A base a **private-capability model** creates is private from birth, before any
+   ingest — the tool handler raises it immediately after `create_base` returns. A base a **user**
+   creates from the Knowledge view or the CLI starts public: the user is not a model, and inheriting a
+   tier from whatever chat happens to be open is the same mis-click hazard §6.1 refuses for sessions.
+2. **On ingest.** The base takes the tier of the most sensitive session that has ingested into it, at
+   all five choke points, and a public-capability session may neither read nor write a private base.
+3. **The user may move it, in both directions, and only the user.** Publicizing is graded — a typed
+   confirmation naming how many pages it releases, and the statement that it cannot be undone for
+   content already read. Privatizing is one click, because nothing is disclosed by it. The control
+   uses the **same** proof-of-user as §12, not a second mechanism, and there is no MCP tool that sets
+   a tier. [Task 29A](privacy-tiers-execution-plan.md#task-29a-knowledge-base-publicize--privatize--user-only-graded-audited).
+
 ---
 
 ## 6. The ratchet
@@ -1473,6 +1494,13 @@ reachable from any `workspace_*` handler or MCP server, and explicitly not added
 exemption list. **Per §9.3 A1, secret-key auth alone is not sufficient** — bind it to a one-shot
 token minted by the renderer over Electron IPC.
 
+**The same mechanism, for knowledge bases.** [DR-18](privacy-tiers-execution-plan.md#dr-18--the-knowledge-base-tier-is-user-controllable-and-a-private-session-creates-a-private-base) adds a second user-only tier change —
+publicize / privatize a base (§5.4) — and it reuses this section's proof-of-user, this section's
+dialog primitive and this section's "exactly one lowering writer in the tree" rule. **Two mechanisms
+for one idea is how the two confirmations diverge**, so a `POST /knowledge/bases/{id}/tier` that
+accepts the secret key alone, or a `kb_set_tier` MCP tool, is the wrong implementation of §5.4 and
+not a shortcut. [Task 29A](privacy-tiers-execution-plan.md#task-29a-knowledge-base-publicize--privatize--user-only-graded-audited).
+
 ### 12.2 Why no agent can invoke it
 
 ```rust
@@ -1742,6 +1770,8 @@ Mater and Roche Limit in both modes with no generator run and cannot fail `check
 | Extensions settings | Badge + provenance line, **and a third state computed against the focused session** (§14.5) | extensions settings |
 | BAAM Browse (in-app) | Badge per entry, Private/Public facet, and the `live: false` staleness line | `components/baam/` |
 | `.brxt` install modal | The resulting badge, above the Install button | `BrxtInstallModal.tsx` |
+| **Knowledge view + KB palette** | Base tier chip, and the publicize / privatize control (§5.4) | `components/knowledge/` |
+| **The non-private-model disclosure (R15)** | Once, blocking, on the first public bind in an install; then permanently as the Commercial section's line, the model chip's tooltip, and the Settings → Privacy statement | [Task 30A](privacy-tiers-execution-plan.md#task-30a-the-non-private-model-disclosure) |
 | `workspace_list` rows and the GUI workspace panel | Badge per row | BR-71 Tasks 12 / 22-27 |
 | Landing `baam.html`, `docs.html` | `.tag.private` on the navy ramp; Privacy column | `landing/` |
 
