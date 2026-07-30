@@ -23745,6 +23745,36 @@ drift amendment; both taken on this worktree at `ea15a4de`, before Phase 2 start
   spawn a subagent whose task needs a gated tool; verify the
   `ToolConfirmationRequest` renders in the child's tab and answering it resumes the
   child.
+- [ ] ⚠ **The CLI half of the same flagship, with the GUI CLOSED** (Tasks 38b/38c —
+  the operator's 2026-07-30 requirement). Every step above is a *GUI* verification, so
+  none of them can see a terminal-side regression, and "the CLI inherits it" is precisely
+  the claim that rots silently. In a terminal against `just debug-server`:
+
+  ```bash
+  cargo test -p biorouter-cli --lib -- commands::session_grouping commands::session_watch
+  ```
+  Expected: green, with a **non-zero** count on both filters — Task 38b's 3 plus Task
+  38c's 5 alongside Task 20's 3. ⚠ Note the `--`: `cargo test --lib a b` is
+  `error: unexpected argument`, exit 1, and the obvious repair silently turns a
+  two-module sweep into a one-module one (Ground rules, "Gate mechanics").
+
+  Then, by hand, delegating a long-running fan-out from a `biorouter session` and with no
+  desktop app running:
+  1. `biorouter sessions list --subagents` shows the children nested under their parent,
+     with **different labels** and a `● live` marker. Two identical `Subagent: …` labels
+     mean Task 38b Step 4 did not land;
+  2. `biorouter sessions attach <child-id>` prints the child's conversation **so far** as
+     a transcript and then follows it — one line reading
+     `[snapshot] conversation resynced` means Task 38c Step 3 did not land;
+  3. a line typed into that attach returns `[steered turn <id>]` and lands in the same
+     turn. **A `409` here is the same Task 33 control-plane regression the harness's live
+     tier hunts, arriving on the other surface** — the child agent is not registered, so
+     `/interrupt` resolves a different one;
+  4. `biorouter sessions cancel <child-id>` stops it and reports the turn id; a second
+     call reports `cancelled: false` and still exits 0;
+  5. Ctrl-C out of the attach and confirm with `biorouter sessions list --subagents` that
+     the sibling children are **still running** — detaching an observer must not cancel
+     anything.
 - [ ] Update the design-doc status header (Slice 3 shipped); commit:
 
 ```bash
@@ -25070,6 +25100,55 @@ See reconciliation #14.
 
 **d. Theme control: OUT OF SCOPE.** Explicitly deferred; no task, no tool field, no
 mention in the instruction block.
+
+**e. CLI parity is a standing requirement, not a feature** (operator, 2026-07-30):
+*"whatever changes we applied to the Graphic User Interface and the server side will be
+inherited in the CLI as well. The CLI will be able to spin up sub-agents, monitor the
+sub-agents, and potentially inject problems into sub-agents. The users will be able to use
+either a session ID or some other ways to spin up the conversation so that the
+conversation within the terminal is started exactly at the position of the sub-agents.
+Users have the same ways of monitoring the data of different sub-agents and injecting
+problems into them if needed, but just without the graphic user interface."*
+→ **Tasks 38b, 38c and 42b.**
+
+*Reading of record:* **"inject problems" is read as "inject prompts"** — the act
+`workspace_send_prompt` performs and that `biorouter sessions send` already performs.
+Nothing in the design has a notion of injecting a *fault*, and the phrase sits between
+"monitoring" and "if needed", where a steer belongs. Recorded so it can be corrected: if
+fault injection was meant, Task 38c is mis-scoped and needs re-specifying.
+
+*Three gaps, one confirmation, all measured at `aad74e79` rather than assumed:*
+- **Discovery was impossible from a terminal.** `handle_session_list` → `list_sessions()`
+  → `list_sessions_by_types(&[User, Scheduled])`: `sub_agent` rows are filtered out in
+  SQL, and `lookup_session_id`'s `--name` branch reads the same list. → Task 38b, which
+  also fixes the fact that `create_subagent_session` named **every** child the literal
+  `"Subagent task"`, so no surface — CLI, History, or `workspace_list` — could tell two
+  siblings apart.
+- **`--resume` cannot be made into "attach".** It builds a second `Agent` in the CLI
+  process over the shared store, and the turn lock (`AppState::active_turns`) is an
+  in-process map, so nothing coordinates the two writers. Attaching to a *live* session is
+  a different problem. → Task 38c, which reuses the GUI's own two routes (`/interrupt`,
+  `/reply`) and invents no second steering path.
+- **The property needed a mechanism.** → Task 42b: a capability table whose
+  `cli_counterpart` match has no wildcard arm (a new capability with no CLI row is
+  `E0004`, a build failure), checked for exact-set equality against
+  `WorkspaceClient::get_tools()` and against the `workspace`-tagged OpenAPI operations.
+- **Spawning from the CLI already works, and this was verified rather than assumed.** The
+  CLI links the agent library directly and drives `Agent::reply` →
+  `prepare_tools_and_prompt` → `list_tools` → `ensure_spawn_extension`, the same chain the
+  daemon uses; `subagent_tool_enabled` initialises to `true` and the CLI's `AgentConfig`
+  takes `biorouter_mode` from the global config (default `Auto`), so `subagents_enabled`
+  holds for any CLI session with at least one real extension loaded. Task 33's turn lease
+  is explicitly optional (`match workspace_services::get() { Some(..) => …, None => … }`),
+  so Phase 3 does not break the headless spawn. **No fourth task is needed** — the gap was
+  never spawning, it was seeing and steering what was spawned.
+
+*One asymmetry that remains, deliberately.* `workspace_services::get()` is `None` in a CLI
+process — `install_workspace_services` is called only from `biorouter-server`'s
+`commands/agent.rs` — so an agent running **inside** `biorouter` can `note` into another
+session but cannot `turn` or `steer` it. That bounds an *agent's* reach in a headless
+process; it does not bound the *human's*, who reaches the daemon through Task 38c. Task
+42b records it as a declared row rather than letting it pass unnoticed.
 
 ## Other decisions
 
