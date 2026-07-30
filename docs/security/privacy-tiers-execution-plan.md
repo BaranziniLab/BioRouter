@@ -788,6 +788,18 @@ the signature churn from the control. 10D adds a **fifth** choke point of its ow
 metadata and never touches base content — the reason both of 10C's new-surface detectors are blind
 to it.
 
+**O17 — Task 29A follows Task 29 and Task 10A; Task 30A follows neither and must not wait for
+Task 30.**
+Task 29A reuses Task 29's `DangerousConfirmDialog`, its focus discipline and its "one lowering writer"
+gate, and it writes into Task 10A's `.kb-tiers` store — writing it first means inventing a second
+confirmation primitive and a second tier writer, which is the divergence both gates exist to prevent.
+It also needs Task 18A's user-proof; where that does not exist yet it fails **closed** and says so,
+per [Open question 23](#open-questions). **Task 30A is different and the difference matters.** It is
+the term on which [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store)'s accepted risks are acceptable, it is independent
+of the master toggle by construction, and it shares nothing with Task 30 but a settings panel. Making
+it a step inside Task 30 is how a scope narrowing ships without the disclosure that justifies it — so
+it is its own task, with its own gate, and Task 32 asserts it.
+
 **O13 — Every task's commit leaves `cargo test` green, and where it cannot, the task says what red
 to expect.**
 Not a style rule: the previous draft left **nine consecutive commits** (10B through 19) failing
@@ -805,8 +817,14 @@ state, which is the condition under which people stop reading failures. Three ru
    caller. "Task N adds this field" in a Files table, for a field task N−1 makes required, is a task
    that cannot compile — see Task 10B's ⚠ on `conversation_ingest.rs:205`.
 
-**O14 — Every read-deny is emitted AFTER the allow it subtracts from, and every capability check
-runs BEFORE the early return it would otherwise sit behind.**
+**O14 — ⛔ DEFERRED with Tasks 14A–14F ([DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store)). Every read-deny is emitted AFTER the allow it
+subtracts from, and every capability check runs BEFORE the early return it would otherwise sit
+behind.**
+There is no read-deny in v1, so nothing here constrains an ordering. Kept because all four failures
+are silent and a revival needs them on day one: in SBPL the **last** matching rule wins, in
+bubblewrap the **later** filesystem option wins, `shell_sandbox_wrap`'s DR-14 arm must precede the
+`SandboxMode::Off` early return, and `resolve_path_jailed`'s must precede the `jail_relaxed` return —
+because relaxed **is** Auto mode, which is the mode agents run in.
 Four places, one shape, and all four failures are silent. In SBPL the last matching rule wins, so a
 `(deny file-read* …)` emitted before `BASE_POLICY`'s `(allow file-read*)` (`seatbelt.rs:35`) or
 before the writable-roots block produces a profile that compiles, runs, reports `Full`, and denies
@@ -832,7 +850,12 @@ of an unbounded dispatch queue), and `PrivatePathPolicy::for_call` must **not** 
 [AR-13](#ar-13--the-capability-is-sampled-at-permit-time-so-a-model-swap-mid-tool-call-is-honoured-on-the-next-call-not-this-one)
 for what this deliberately does not close.
 
-**O16 — Task 14E's doors land with or after Task 14B, and before Phase 2's gate (Task 20).**
+**O16 — ⛔ Its first half is DEFERRED with Tasks 14A–14F ([DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store)); its second half is NOT.**
+⚠ Read the whole item: the *"fifth and sixth"* paragraph below belongs to **Task 10D**, which is in
+scope and unchanged, and it is one of the plan's few orderings a count-based gate cannot see. Only
+the 14B/14E/14F sentence is deferred.
+
+**Task 14E's doors land with or after Task 14B, and before Phase 2's gate (Task 20).**
 Task 14B guards the arguments; Task 14E guards the roots' own resolvers. Shipping 14B alone leaves
 every id-keyed reader open (`read_app`, `export_app`, `list_apps`) while the plan's own coverage
 claim reads as satisfied, which is precisely the state round 3 rejected. Task 14E depends on Task 10
