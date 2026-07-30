@@ -650,6 +650,119 @@ mod tests {
     }
 
     // -------------------------------------------------------------------------
+    // Test 2d: the provider itself fails mid-run
+    //
+    // `ProviderCompleter` now *fails* a completion when the provider hands back a
+    // tool call Biorouter cannot decode, rather than dropping it and letting the
+    // run look finished. That turns a provider error into an `Err` travelling out
+    // of the sub-agent loop — a route through this macro that nothing exercised
+    // before, and the one the reported failure takes.
+    //
+    // What it must leave behind is a usable knowledge base. `abort_txn` moves HEAD
+    // back to main and deletes the transaction branch; if it ever stopped doing
+    // so, every later write to this KB would commit onto a branch nobody reads
+    // while the Knowledge view kept reading main. The user would digest the next
+    // source "successfully" and still see nothing — issue #70's symptom, arrived
+    // at from the other end.
+    // -------------------------------------------------------------------------
+
+    /// Fails once the canned replies run out, the way `ProviderCompleter` does.
+    struct FailsWhenRepliesRunOut {
+        replies: Mutex<Vec<LlmReply>>,
+    }
+
+    #[async_trait]
+    impl Completer for FailsWhenRepliesRunOut {
+        async fn complete(
+            &self,
+            _system: &str,
+            _messages: &[crate::knowledge::subagent::loop_::LlmMessage],
+            _tools: &[Tool],
+        ) -> anyhow::Result<LlmReply> {
+            let mut q = self.replies.lock().await;
+            match q.is_empty() {
+                true => anyhow::bail!(
+                    "the model requested a tool call Biorouter could not decode: \
+                     The provided function name 'kb.write page' had invalid characters"
+                ),
+                false => Ok(q.remove(0)),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_provider_error_aborts_the_txn_and_leaves_head_on_main() {
+        let (dir, svc) = fresh_svc();
+
+        // The run gets one real page written before the provider dies, so the
+        // abort has actual work to undo.
+        let completer = FailsWhenRepliesRunOut {
+            replies: Mutex::new(vec![tool_call_reply(
+                "kb_write_page",
+                serde_json::json!({
+                    "path": "knowledge/sources/half-done.md",
+                    "content": "---\ntitle: half\nkind: source\n---\n\nHalf.",
+                    "commit_message": "half a digest"
+                }),
+            )]),
+        };
+
+        let err = ingest(
+            &svc,
+            IngestArgs {
+                kb_id: "k".into(),
+                source: SourceInput::Text {
+                    text: "Note about HRV.".into(),
+                    title: Some("HRV note".into()),
+                },
+                completer: Box::new(completer),
+                focus: None,
+                bounds: SubAgentBounds::default(),
+                event_sink: None,
+                cancel: None,
+            },
+        )
+        .await
+        .expect_err("a provider error must fail the digest")
+        .to_string();
+
+        assert!(
+            err.contains("could not decode"),
+            "the provider's own explanation must reach the caller, got: {err}"
+        );
+
+        // HEAD is back on main and the transaction branch is gone — otherwise
+        // every later write to this KB lands somewhere nobody is looking.
+        let repo = git2::Repository::open(dir.path().join("k")).unwrap();
+        assert_eq!(
+            repo.head().unwrap().shorthand(),
+            Some("main"),
+            "a failed digest must leave HEAD on main"
+        );
+        let leftover: Vec<String> = repo
+            .branches(Some(git2::BranchType::Local))
+            .unwrap()
+            .filter_map(|b| b.ok()?.0.name().ok()?.map(str::to_string))
+            .filter(|n| n.starts_with("txn/"))
+            .collect();
+        assert!(
+            leftover.is_empty(),
+            "the transaction branch must be deleted; found: {leftover:?}"
+        );
+
+        // And the half-written page must not be visible in the knowledge base.
+        let pages = crate::knowledge::store::list_pages(
+            &paths::kb_root(svc.root(), "k"),
+            Some("knowledge/"),
+        )
+        .unwrap();
+        assert!(
+            pages.is_empty(),
+            "an aborted digest must leave no page behind; pages: {pages:?}"
+        );
+    }
+
+    // -------------------------------------------------------------------------
     // Test 3: dispatch fails with invalid path → KB not corrupted
     // -------------------------------------------------------------------------
 
