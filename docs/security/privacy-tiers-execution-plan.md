@@ -2,16 +2,21 @@
 
 > **What this is.** The task-by-task execution plan for the privacy-tier capability system
 > designed in [`privacy-tiers.md`](privacy-tiers.md) ([issue #56](https://github.com/BaranziniLab/biorouter/issues/56)):
-> forty-eight tasks in seven phases — forty numbered, plus **4b** (resolve every test filter against a
+> fifty tasks in seven phases — forty numbered, plus **4b** (resolve every test filter against a
 > real `cargo --list`), **10A, 10B, 10C and 10D**, the knowledge-base tier the operator ruled on
-> after the first adversarial review, and **14A–14D**, the read-deny the operator
+> after the first adversarial review, and **14A–14F**, the read-deny the operator
 > ruled on after the fifth — each with a Files table, a failing test, complete
 > implementation code, a run step, a gate that fails a plausible wrong implementation, and one commit.
 > **Status:** Proposed — ready to execute. The design's rulings are settled (see
 > [Decisions of record](#decisions-of-record)); the costs the operator knowingly accepted are in
-> [Accepted risks](#accepted-risks); **eighteen** questions remain open (see
+> [Accepted risks](#accepted-risks); **nineteen** questions remain open (see
 > [Open questions](#open-questions)) — the design's eleven minus the one the fifth-round ruling
-> closed (question 3), plus eight this plan surfaced — and none of them blocks Phase 0–3.
+> closed (question 3), plus nine this plan surfaced — and none of them blocks Phase 0–3.
+> **One dependency is stated rather than closed:** #56's tool-channel barrier holds on
+> `POST /agent/call_tool` either way, but a caller holding the daemon secret can still run tools
+> inside another session (issue #47) and can raise its own session's capability with no credentials
+> ([AR-15](#ar-15--a-caller-holding-the-daemon-secret-can-raise-its-own-sessions-capability-with-no-credentials));
+> both need a caller identity in the daemon's auth model, which this plan does not add.
 > **Audience:** the engineer or agent implementing issue #56, and the reviewer of its PRs.
 
 > **For agentic workers:** follow the subagent-driven-development or executing-plans skill and
@@ -199,6 +204,37 @@
 > crate-graph fact the plan had not noticed: **`biorouter-mcp` cannot see `biorouter`**, so a
 > `privacy_tiers_enabled()` defined in `biorouter` is unreachable from five of the twenty points; the
 > atomic moves to `biorouter-mcp` with a `biorouter` re-export.
+
+> **Revision note (ninth round — the barrier was on the arguments, and it needed to be on the
+> doors).** The reviewer's central finding: **Layer A guards path-shaped *arguments*, not the reads
+> the handlers perform.** Three concrete bypasses, all of which pass this plan's own "surprise tool"
+> test — `read_app` (an app id plus a relative path; `ArtifactStore` supplies the root via
+> `self.root.join(id)`), `export_app` (reads the app root implicitly, writes to a caller-named
+> destination), and `computercontroller__cache` (resolves relative paths against the **daemon**
+> process cwd, because only the Developer server receives the session cwd — `biorouter-mcp/src/lib.rs:49`,
+> `:77`). Enumeration has now lost three times: by **tool name** (round 1), by **tool list**
+> (round 2), and by **argument shape** (round 3). So the plan stops enumerating: **Task 14E** puts a
+> guard in each root's own resolver, and Task 14B is rescoped to the channel it actually covers. The
+> design's §9.5.3 carve-out — *"what Layer A does not cover, deliberately: `kb_read_page`,
+> `retrieve_memories`, `read_app`, `list_apps`"* — redefined the ruling rather than implementing it,
+> and is replaced by a per-root door table; **Agent Drafter apps gain a classification** (migrating
+> public, AR-14) because a root with no per-object tier has only two possible rules, and both are
+> wrong. Second finding: **the capability was sampled four times, not three**, and the master toggle
+> three or four times more, so one call could pass Gate C with tiers ON and build an empty path
+> policy with tiers OFF; `CallCapability` is now sampled once at each of four outermost entries and
+> threaded, `capability_tier()` is deleted as a *shape* rather than relocated (the gate is a
+> whole-tree count of absence, the only kind that fails "threaded it but kept the sampler"), and the
+> forced-interleaving test parks at the **Agent** seam under a multi-thread runtime — the old one
+> fired after the manager had already sampled and structurally could not see the window. AR-9's
+> contradiction with Task 14D is resolved in Task 14D's favour and by measurement (`symlink(2)` never
+> resolves its target), and its excuse for check-then-use is withdrawn: **macOS ships
+> `O_RESOLVE_BENEATH` and `O_NOFOLLOW_ANY`**, both measured refusing a symlink traversal and a `..`
+> escape, so the swap window closes at the open on both platforms. Round 3's five non-compiling
+> snippets are all fixed against measured signatures, and `deny_write_files` — assigned in one task
+> and defined in none — is defined. What is **not** closed and is now stated: a credential-free
+> `POST /agent/update_provider {provider:"llamacpp"}` raises any session to private capability
+> (AR-15), because the rule that would stop it forbids *"switch this chat to a private model"* —
+> step 1 of every refusal this feature ships.
 
 > **Revision note (fourth round — the barrier's edges, and the first real `cargo` run).** A verifier
 > re-derived the four choke points independently and could not break them on content: it read
@@ -464,6 +500,24 @@ three of DR-14's four roots sit under `$HOME`, which is routinely the working di
 Auto mode, the mode agents run in. Each of the four is gated by an ordering assertion in Task 14A or
 14B rather than by a test that could pass either way.
 
+**O15 — The capability is sampled at the OUTERMOST entry and threaded; no gate samples for itself.**
+Four production entries reach a tool call (the agent loop, `POST /agent/call_tool`, the
+`execute_code` bridge, `Agent::call_prefetch_tool`) and each captures one `CallCapability` — the
+provider tier *and* the master toggle, in one instant. Everything downstream takes it as a parameter.
+Two consequences that are orderings rather than preferences: `McpMeta` must be built **above** the
+`async move` in `ExtensionManager::dispatch_tool_call` (inside it is execution time, on the far side
+of an unbounded dispatch queue), and `PrivatePathPolicy::for_call` must **not** re-read
+`privacy_tiers_enabled()`. Gated by Task 10 Step 5's whole-tree count of `capability_tier(` (must be
+0) and Task 30's two-list toggle inventory. See
+[AR-13](#ar-13--the-capability-is-sampled-at-permit-time-so-a-model-swap-mid-tool-call-is-honoured-on-the-next-call-not-this-one)
+for what this deliberately does not close.
+
+**O16 — Task 14E's doors land with or after Task 14B, and before Phase 2's gate (Task 20).**
+Task 14B guards the arguments; Task 14E guards the roots' own resolvers. Shipping 14B alone leaves
+every id-keyed reader open (`read_app`, `export_app`, `list_apps`) while the plan's own coverage
+claim reads as satisfied, which is precisely the state round 3 rejected. Task 14E depends on Task 10
+(`CallCapability`) and on Task 10A's tier-store shape, which it mirrors; Task 14F depends on 14E.
+
 **A fifth and a sixth, in the same shape, found in the round that added Task 10D.** A capability read
 must also run **after** the bind that decides it. `configure_agent` (`routes/apps.rs`) computes
 `capability_report(cfg)` at `:1257` and binds the manifest's own provider at `:1259`, so the natural
@@ -501,6 +555,7 @@ New files this plan creates, in the order they appear:
 
 ```
 crates/biorouter/src/privacy/mod.rs                    Task 4  — the two enums + floor()
+crates/biorouter/src/privacy/capability.rs             Task 10 — CallCapability: ONE sample per call
 crates/biorouter/src/providers/tier_tests.rs           Task 5  — `#[cfg(test)] mod tier_tests;`
 crates/biorouter/src/privacy/registry_private.rs       Task 8  — @generated from landing/
 crates/biorouter/src/privacy/extensions.rs             Task 8  — classify_extension(name)
@@ -510,6 +565,8 @@ crates/biorouter-sandbox/tests/read_deny.rs            Task 14A — Layer B, the
 crates/biorouter-mcp/src/private_roots.rs              Task 14B — the five entries, the ONE resolver
 crates/biorouter/src/privacy/path_policy.rs            Task 14B — Layer A, the barrier's verdict
 crates/biorouter/src/privacy/private_roots.rs          Task 14B — a re-export of the resolver, plus its tests
+crates/biorouter-mcp/src/agent_drafter/tier.rs         Task 14E — the per-app tier store + migration
+crates/biorouter-mcp/src/privacy_open.rs               Task 14D — safe_open: resolve AND open, per platform
 crates/biorouter/src/privacy/refusal.rs                Task 12 — PrivacyRefusal; Tasks 13/14/23 add to it
 crates/biorouter/src/privacy/alt_provider.rs           Task 19 — assert_alt_provider_allowed
 crates/biorouter/src/privacy/visibility.rs             Task 21 — the §7 matrix as one predicate
