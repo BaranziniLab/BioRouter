@@ -113,4 +113,42 @@ describe('useIngestStream terminal frames', () => {
     expect(run.status).toBe('error');
     expect(result.current.status).toBe('error');
   });
+
+  // The other side of the same change. A stream with no terminal frame is now a
+  // failure — but the user pressing Stop produces exactly that shape, and it is
+  // not a failure. `IngestPanel` distinguishes them only by the returned status:
+  // 'aborted' puts the source back to pending with "Stopped before completion",
+  // while 'error' would tell someone who stopped a digest on purpose that the
+  // connection to the backend had dropped.
+  it('reports a user-initiated stop as aborted, not as a failure', async () => {
+    // Faithful to what an aborted fetch does, on whichever side of the abort the
+    // request happens to be: reject outright if the signal already fired,
+    // otherwise deliver a body that errors the moment it does.
+    const abortError = () => Object.assign(new Error('aborted'), { name: 'AbortError' });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (_url: string, init: RequestInit) => {
+        const signal = init.signal!;
+        if (signal.aborted) throw abortError();
+        const body = new ReadableStream<Uint8Array>({
+          start(controller) {
+            signal.addEventListener('abort', () => controller.error(abortError()));
+          },
+        });
+        return { ok: true, status: 200, body } as unknown as Response;
+      })
+    );
+
+    const { result } = renderHook(() => useIngestStream());
+
+    let run!: Awaited<ReturnType<typeof result.current.start>>;
+    await act(async () => {
+      const pending = result.current.start('/knowledge/bases/kb/ingest', {});
+      result.current.abort();
+      run = await pending;
+    });
+
+    expect(run.status).toBe('aborted');
+    expect(result.current.status).not.toBe('error');
+  });
 });
