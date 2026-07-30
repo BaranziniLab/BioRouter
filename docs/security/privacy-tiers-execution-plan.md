@@ -288,11 +288,33 @@ worktree at `9558c346` on 2026-07-28, and every Files table below says so. The d
 carries a banner saying its anchors are historical; Task 1 Step 2 replaces its §20 anchor list with
 a pointer to the drift table below.
 
-**Confirmed still valid at `main` = `89c1f026`** (2026-07-28, one day after the fork). `main` moved
-four commits past the fork point, and `git diff --stat 9558c346 89c1f026` touches exactly six files,
-all of them in the Developer MCP server: `crates/biorouter-mcp/src/developer/rmcp_developer.rs`,
+**Confirmed still valid at `main` = `89c1f026`** (2026-07-28, one day after the fork), **with one
+exception that matters, added this round.** `main` moved four commits past the fork point, and
+`git diff --stat 9558c346 89c1f026` touches exactly six files, all of them in the Developer MCP
+server: `crates/biorouter-mcp/src/developer/rmcp_developer.rs`,
 `crates/biorouter-mcp/src/secret_guard.rs`, and four new `crates/biorouter-mcp/tests/developer_*.rs`
-files (issues #64, #67, #68 — the file-tool jail). **No file this plan anchors into changed**:
+files (issues #64, #67, #68 — the file-tool jail).
+
+⚠ **`rmcp_developer.rs` IS a file this plan anchors into — heavily, in Task 14D — and it moved by
+about +120 lines.** An earlier version of this note said "no file this plan anchors into changed",
+which was true of the *directories* it went on to list and false of this one file, and Task 14D
+consequently carried **two anchor bases at once**: its Files table used `89c1f026` numbers
+(`resolve_path_jailed` `:2066`) while its call-site table used `9558c346` numbers
+(`self.resolve_path` `:1142`). Both are now `9558c346`, the base every other anchor in this document
+uses. Measured drift, so a near miss reads as a miss:
+
+| Symbol | `9558c346` (this plan) | `89c1f026` | `main` at `72dc9de2` |
+|---|---|---|---|
+| `pub struct DeveloperServer` | `:330` | `:330` | `:334` |
+| `text_editor` (`self.resolve_path`) | `:1137` (`:1142`) | `:1188` | `:1214` (`:1219`) |
+| `shell` (the one tool with a `RequestContext`) | `:1269` | — | — |
+| `analyze` (`self.resolve_path`) | `:1708` (`:1713`) | `:1759` | `:1916` (`:1921`) |
+| `image_processor` (`self.resolve_path`) | `:1730` (`:1738`) | `:1781` | `:1938` (`:1946`) |
+| `resolve_path` (forwards at +1) | `:1925` | `:2053` | `:2210` |
+| `resolve_path_jailed` | `:1938` | `:2066` | `:2223` |
+| `if jail_relaxed` early return | `:1958` | `:2086` | `:2243` |
+
+The rest of the sentence still holds — these are the *only* directories that matter:
 `crates/biorouter/src/**`, `crates/biorouter-server/src/**`, `crates/biorouter-mcp/src/knowledge/**`,
 `crates/biorouter-mcp/src/memory/**`, `crates/biorouter-mcp/src/developer/shell.rs`,
 `crates/biorouter-sandbox/src/**`, `ui/desktop/**` and `landing/**` are byte-identical between the
@@ -496,7 +518,7 @@ three of DR-14's four roots sit under `$HOME`, which is routinely the working di
 `shell_sandbox_wrap` the DR-14 arm must precede the `mode == SandboxMode::Off` early return
 (`developer/shell.rs:168-170`), or the whole control is dead for every user who never set
 `BIOROUTER_SHELL_SANDBOX` — which is every user. And in `resolve_path_jailed` it must precede the
-`if jail_relaxed { return Ok(resolved) }` at `rmcp_developer.rs:2084-2087`, because relaxed **is**
+`if jail_relaxed { return Ok(resolved) }` at `rmcp_developer.rs:1958-1960`, because relaxed **is**
 Auto mode, the mode agents run in. Each of the four is gated by an ordering assertion in Task 14A or
 14B rather than by a test that could pass either way.
 
@@ -10859,12 +10881,26 @@ The refusal is a sibling of Task 12's, in the same register — name the state, 
 foreclose the workaround, name the human action — and it names **which** private area was touched, so
 the model stops rather than trying the other four:
 
+⚠ **The TEXT lives one crate down, in `biorouter-mcp`, and this is a wrapper.** `path_policy` is in
+`biorouter`; `rmcp_developer.rs` (Task 14D's relaxed-path re-check) is in `biorouter-mcp`, which
+cannot see `biorouter` — the dependency runs the other way (`biorouter/Cargo.toml:97`). So
+`biorouter_mcp::private_roots::refusal_text(tool, hit) -> String` is the single source of the words,
+beside the roots it is about, and both crates wrap it in their own `ErrorData`. Two hand-written
+copies of a refusal is two answers to the same question.
+
 ```rust
 pub fn refusal(tool: &str, hit: &str) -> ErrorData {
     ErrorData::new(
         ErrorCode::INVALID_PARAMS,
-        format!(
-            "`{tool}` cannot open `{hit}`.\n\n\
+        biorouter_mcp::private_roots::refusal_text(tool, hit),
+        None,
+    )
+}
+
+// …and in crates/biorouter-mcp/src/private_roots.rs, the words themselves:
+pub fn refusal_text(tool: &str, hit: &str) -> String {
+    format!(
+        "`{tool}` cannot open `{hit}`.\n\n\
              That path is inside Biorouter's own private data — your saved chats, your knowledge \
              bases, your saved memories, your Biorouter apps, or this machine's Biorouter \
              settings file. This chat is running on a public model, hosted outside the \
@@ -10877,8 +10913,6 @@ pub fn refusal(tool: &str, hit: &str) -> ErrorData {
              every privacy guardrail here, not just this one.\n\n\
              Do not retry this path, rewrite it, or route it through another tool: the answer is \
              the same everywhere and will not change."
-        ),
-        None,
     )
 }
 ```
@@ -11844,7 +11878,7 @@ seven; the branches stay where they are.
 |---|---|---|
 | Modify | `crates/biorouter/src/agents/agent.rs` | `dispatch_tool_call` `:2624`; the first short-circuit at `:2632`; the `else` that reaches the manager `:2760-2772` |
 | Modify | `crates/biorouter-mcp/src/memory/mod.rs` | `get_memory_file` `:336-344`; the four callers `:383`, `:405`, `:445`, `:464`; `global_memory_dir` `:82-84` |
-| Modify | `crates/biorouter-mcp/src/developer/rmcp_developer.rs` | `resolve_path_jailed` `:2066`, the `if jail_relaxed { return Ok(resolved); }` early return at `:2084-2087`; `resolve_path` `:2053` |
+| Modify | `crates/biorouter-mcp/src/developer/rmcp_developer.rs` | `resolve_path_jailed` `:1938`, the `if jail_relaxed { return Ok(resolved); }` early return at `:1958-1960`; `resolve_path` `:1925` (forwards at `:1926`). ⚠ **These are `9558c346` anchors, and this file is the one exception to the "nothing this plan anchors into moved" note at the top** — see the drift row there |
 | Reference | `crates/biorouter-mcp/src/developer/jail.rs` | `Jail::resolve` `:76-94` — deny-components pre-check `:82`, `resolve_in_workspace` `:85`, **canonicalized re-check** `:90`; `denies_symlink_into_vault` `:212`. Its module doc `:9-10` says wiring it into the Developer server is "the next sequenced step" |
 | Reference | `crates/biorouter/src/conversation/tool_preview.rs` | `existing_file_contents` `:202-207` — `metadata` then `read_to_string` on the **raw** `path` argument |
 | Reference | `crates/biorouter/src/agents/tool_execution.rs` | `ToolPreview::for_tool_call` `:310`; the `.user_only()` at `:328` |
@@ -11942,7 +11976,10 @@ async fn a_symlink_planted_before_the_call_does_not_resolve() {
     std::os::unix::fs::symlink(private_roots().knowledge, ws.path().join("kb")).unwrap();
     let server = developer_on(ws.path(), Restricted::Yes);
     for relaxed in [true, false] {
-        assert!(server.resolve_path_jailed("kb/page.md", relaxed).is_err());
+        // The third argument IS the capability: `true` = this call was admitted
+        // as public-capability. See Step 3(c) — the resolver takes the decision,
+        // it does not own one.
+        assert!(server.resolve_path_jailed("kb/page.md", relaxed, true).is_err());
     }
 }
 
@@ -11996,17 +12033,24 @@ fn safe_open_anchors_a_canonical_dirfd_and_not_an_absolute_path() {
 #[tokio::test]
 async fn the_file_tools_refuse_a_private_root_even_when_the_jail_is_relaxed() {
     // `resolve_path_jailed` returns EARLY when the jail is relaxed
-    // (rmcp_developer.rs:2084-2087), and relaxed IS BioRouterMode::Auto — the
+    // (rmcp_developer.rs:1958-1960), and relaxed IS BioRouterMode::Auto — the
     // mode agents run in. A check placed after that return never fires in
     // production while every jailed-mode test still passes.
     let (server, roots) = developer_with_private_roots().await;
+    let p = roots.knowledge.join("page.md").display().to_string();
     for relaxed in [true, false] {
         let err = server
-            .resolve_path_jailed(&roots.knowledge.join("page.md").display().to_string(), relaxed)
+            .resolve_path_jailed(&p, relaxed, true)
             .expect_err("a private root must not resolve");
         assert!(format!("{err:?}").contains("private"), "{err:?}");
+        // …and the SAME path resolves when the call was admitted as private.
+        // Without this leg the whole suite passes against a resolver that
+        // ignores its third argument and refuses the roots unconditionally,
+        // which would take Biorouter's own knowledge base away from the private
+        // sessions the feature exists to serve.
+        assert!(server.resolve_path_jailed(&p, relaxed, false).is_ok());
     }
-    assert!(server.resolve_path_jailed("notes.txt", false).is_ok());
+    assert!(server.resolve_path_jailed("notes.txt", false, true).is_ok());
 }
 ```
 
@@ -12151,7 +12195,7 @@ running writer, which needs one of the tools Windows already refuses.
 
 | Reader | Opens with | Can take a `File`? |
 |---|---|---|
-| `developer__text_editor` | `std::fs::read_to_string(resolved)` after `resolve_path_jailed` (`rmcp_developer.rs:2066`) | **yes** |
+| `developer__text_editor` | `std::fs::read_to_string(resolved)` after `resolve_path_jailed` (`rmcp_developer.rs:1938`) | **yes** |
 | `computercontroller__cache` `View` | `tokio::fs::read_to_string(path)` (`computercontroller/mod.rs:1482`) | **yes** |
 | `computercontroller__xlsx_tool` | `umya_spreadsheet::reader::xlsx::read(path)` (`xlsx_tool.rs:37`) | **measure it.** If the crate exposes a reader-taking entry point, use it; if not, this reader keeps the check-then-use window and says so here |
 | `computercontroller__pdf_tool` | `lopdf::Document::load(path)` (`pdf_tool.rs:34`) | **measure it** — same rule |
@@ -12161,37 +12205,93 @@ running writer, which needs one of the tools Windows already refuses.
 residual; a row asserted to take a reader and silently left path-based is the shape this plan keeps
 punishing.
 
-**And the check still goes before the relaxed-jail early return.** In `resolve_path_jailed`,
-immediately after `let resolved = …` (`:2076-2081`) and **before**
-`if jail_relaxed { return Ok(resolved); }` at `:2084-2087`:
+**And the check still goes before the relaxed-jail early return — which means the resolver takes the
+decision as a PARAMETER.** This is the part an earlier draft of this task got wrong, and the wrongness
+was invisible because the snippet read well: it wrote `cap.restricts_private_data()` inside
+`resolve_path_jailed`, where there is no `cap` and no way to get one.
+
+**The signature change, measured.** Three facts fix the shape, and none of them is negotiable:
+
+1. **`CallCapability` cannot come here.** It lives in `biorouter`
+   (`crates/biorouter/src/privacy/capability.rs`, Task 10) and `crates/biorouter/Cargo.toml:97`
+   depends on `biorouter-mcp` — the dependency runs that way and only that way. What crosses is the
+   **boolean**, `private_data_deny`, exactly as Task 14B (f) already specifies for Layer B, read out
+   of `RequestContext.meta` with the helper Task 14B defines.
+2. **`DeveloperServer` has no `private_data` field and must not grow one** (`rmcp_developer.rs:330`).
+   Built-ins are poolable (`agents/extension.rs:524`), so one server can serve several sessions of
+   differing tiers, and `Agent::update_provider` does not respawn extensions — a construction-time
+   field is stale-by-design. The decision is per **call**, so it is a parameter.
+3. **The resolver is two functions, not one**, and both take it:
 
 ```rust
-        // Issue #56 DR-14. BEFORE the relaxed-jail early return: relaxed IS
-        // Auto mode, the mode agents run in, and a check placed after that
-        // return never fires in production while every jailed-mode test passes.
-        //
-        // `cap` is the CallCapability this call was admitted on (Task 10),
-        // arriving through `RequestContext.meta` — NOT a `self.private_data`
-        // field. `DeveloperServer` has no such field (`rmcp_developer.rs:330`)
-        // and adding one would recreate the cross-call race Task 10 removed:
-        // built-ins are poolable (`agents/extension.rs:524`), so one server can
-        // serve several sessions of differing tiers.
+    /// `resolve_path` (`rmcp_developer.rs:1925`) is the convenience wrapper; it
+    /// gains the same parameter and forwards it, because its three production
+    /// callers are the three tools that read a caller-named path.
+    fn resolve_path(&self, path_str: &str, private_data_deny: bool) -> Result<PathBuf, ErrorData> {
+        self.resolve_path_jailed(path_str, path_jail_relaxed(), private_data_deny)
+    }
+
+    fn resolve_path_jailed(
+        &self,
+        path_str: &str,
+        jail_relaxed: bool,
+        // Issue #56 DR-14. The wire form of the capability this call was
+        // admitted on: `McpMeta.private_data_deny` (Task 14B (f)), lifted out of
+        // `RequestContext.meta` by `private_data_deny(&context)` in the `#[tool]`
+        // method and passed down. NOT a field, NOT a re-sample — see (2) above.
+        private_data_deny: bool,
+    ) -> Result<PathBuf, ErrorData> {
+```
+
+and then, immediately after `let resolved = …` (`:1946-1951`) and **before**
+`if jail_relaxed { return Ok(resolved); }` (`:1958`):
+
+```rust
+        // BEFORE the relaxed-jail early return: relaxed IS Auto mode, the mode
+        // agents run in, and a check placed after that return never fires in
+        // production while every jailed-mode test still passes.
         //
         // This is a second evaluation of a decision Layer A already made at the
         // choke point. It is here for COVERAGE of the relaxed path; the TOCTOU
         // is closed one layer down, by `safe_open`.
-        if cap.restricts_private_data() && is_under_any(&resolved, &private_roots::all()) {
+        if private_data_deny && is_under_any(&resolved, &private_roots::all()) {
             return Err(ErrorData::new(
                 rmcp::model::ErrorCode::INVALID_PARAMS,
-                private_root_refusal("developer__text_editor", &resolved),
+                // ⚠ The refusal TEXT, not a second copy of it. `path_policy::refusal`
+                // lives in `biorouter` and is unreachable from here (see (1)), so
+                // the string builder lives one crate down — in
+                // `biorouter_mcp::private_roots` beside the roots themselves —
+                // and `biorouter`'s `refusal()` wraps THAT. One text, two
+                // wrappers; two texts is how a user gets two different answers
+                // to the same refusal depending on which tool asked.
+                biorouter_mcp::private_roots::refusal_text("developer__text_editor", &resolved),
                 None,
             ));
         }
 ```
 
-⚠ **`text_editor` takes no `RequestContext` today** (`rmcp_developer.rs:1185`; only `shell` does, at
-`:1323`). It gains one, along with the other eight Developer tools — the same mechanical change
-Task 14E makes across `agent_drafter`, `knowledge` and `memory`, and for the same reason.
+**The call sites, enumerated — three production and six in tests.** `--lib` compiles the test module
+in the same file, so a change that "compiles" without them does not exist:
+
+| Call site | Anchor | Change |
+|---|---|---|
+| `text_editor` | `:1142` (`self.resolve_path(&params.path)?`) | gains `RequestContext`, passes `private_data_deny(&context)` |
+| `analyze` | `:1713` | same |
+| `image_processor` | `:1738` | same |
+| `resolve_path` → `resolve_path_jailed` | `:1926` | forwards its own parameter |
+| six `#[cfg(test)]` calls | measured: 6 of the 8 occurrences of `resolve_path_jailed(` in this file are in the test module | pass `false`, except this task's own tests, which pass `true` |
+
+⚠ **`text_editor` takes no `RequestContext` today** (`rmcp_developer.rs:1137`; only `shell` does, at
+`:1269`). It gains one, along with `analyze` and `image_processor` — the same mechanical change
+Task 14E makes across `agent_drafter`, `knowledge` and `memory`, and for the same reason. The other
+six Developer tools do **not** need one: they reach no path through this resolver, and adding a
+parameter nothing reads is how a reviewer concludes the guard is wired when it is not.
+
+⚠ **Then Step 1(3)'s tests must construct the decision, not inherit it.**
+`server.resolve_path_jailed(path, relaxed)` in those tests becomes
+`server.resolve_path_jailed(path, relaxed, true)` — the `true` is the test *being* a public-capability
+call. A test that passes `false` and still expects a refusal is asserting the wrong thing and will
+pass against a guard that ignores its argument entirely.
 
 ⚠ **`Jail` already exists and is better than anything written for this task.**
 `crates/biorouter-mcp/src/developer/jail.rs` does deny-components before touching the filesystem
@@ -12247,9 +12347,23 @@ PY
 #     another accepts.
 grep -rn "PrivatePathPolicy::for_call" --include='*.rs' crates/ | grep -v "mod tests" \
   | grep -v "^crates/biorouter/src/privacy/path_policy.rs:"
-echo "expect: exactly 3 lines — extension_manager.rs (Task 14B), agent.rs (this task),"
-echo "        rmcp_developer.rs (the relaxed-path re-check). No fourth, and no hand-rolled"
-echo "        starts_with anywhere:"
+echo "expect: exactly 2 lines — extension_manager.rs (Task 14B) and agent.rs (this task)."
+echo "        ⚠ NOT three. rmcp_developer.rs CANNOT be the third: PrivatePathPolicy lives"
+echo "        in \`biorouter\` and rmcp_developer.rs is in \`biorouter-mcp\`, which biorouter"
+echo "        depends on (Cargo.toml:97) — the dependency runs one way only. The Developer"
+echo "        re-check therefore uses the LOWER-crate primitives, and this is the pair that"
+echo "        keeps the two spellings from becoming two policies:"
+awk '/fn resolve_path_jailed/,/^    fn [a-z_]+\(/' crates/biorouter-mcp/src/developer/rmcp_developer.rs \
+  | grep -c "is_under_any(&resolved, &private_roots::all())" ; echo "expect: 1"
+grep -c "private_roots::refusal_text(" crates/biorouter-mcp/src/developer/rmcp_developer.rs
+echo "expect: 1 — the SHARED text, not a second copy of the words"
+# One text, one definition, and biorouter's ErrorData wrapper delegates to it.
+grep -rn "fn refusal_text" --include='*.rs' crates/ ; echo "expect: exactly 1 — private_roots.rs"
+grep -A4 "pub fn refusal(tool" crates/biorouter/src/privacy/path_policy.rs | grep -c "refusal_text("
+echo "expect: 1 — the wrapper delegates; a second literal 'cannot open' is a second answer"
+grep -rn "cannot open \`" --include='*.rs' crates/*/src/ | grep -v "private_roots.rs"
+echo "expect: no output"
+# …and no hand-rolled containment test anywhere:
 grep -rn "starts_with(&private_roots\|starts_with(private_roots" --include='*.rs' crates/
 echo "expect: no output"
 
@@ -12290,11 +12404,22 @@ echo "expect: >= 1 and >= 1 - the two readers whose open we control"
 # (4c) NO capability FIELD on any server. A field would recreate the cross-call
 #      race Task 10 removed: built-ins are poolable (agents/extension.rs:524),
 #      so one server object can serve several sessions of differing tiers.
-grep -c "private_data" crates/biorouter-mcp/src/developer/rmcp_developer.rs
-echo "expect: 0 - the capability arrives per call in RequestContext.meta"
-awk '/pub struct DeveloperServer/,/^}/' crates/biorouter-mcp/src/developer/rmcp_developer.rs \
-  | grep -cE "capability|private_data|restricted"
-echo "expect: 0"
+#
+# ⚠ NOT `grep -c private_data <file>; expect: 0`, which is what this gate used to
+# be. The correct implementation NAMES its parameter `private_data_deny` at four
+# places (Step 3(c)), so a file-wide zero fails the fix and passes the field. The
+# assertion is on the STRUCT and on the absence of any stored copy.
+awk '/pub struct DeveloperServer \{/,/^\}/' crates/biorouter-mcp/src/developer/rmcp_developer.rs \
+  | grep -cE "capability|private_data|restricted|tier"
+echo "expect: 0 - the decision arrives per call, in RequestContext.meta"
+grep -nE "self\.private_data|private_data_deny:.*(Arc|Cell|Mutex|RwLock|OnceLock)|static .*PRIVATE_DATA" \
+  crates/biorouter-mcp/src/developer/rmcp_developer.rs
+echo "expect: no output - no field, no static, no interior-mutability smuggling"
+# …and it is a real PARAMETER on both halves of the resolver, not a default.
+grep -A5 "fn resolve_path_jailed" crates/biorouter-mcp/src/developer/rmcp_developer.rs \
+  | grep -c "private_data_deny: bool" ; echo "expect: 1"
+grep -A2 "fn resolve_path(" crates/biorouter-mcp/src/developer/rmcp_developer.rs \
+  | grep -c "private_data_deny" ; echo "expect: 2 - the parameter and the forward"
 
 # (4d) The path-taking third-party readers are ENUMERATED, not forgotten. Each
 #      is either routed through a reader-taking API or annotated as a residual.
@@ -12318,7 +12443,8 @@ echo "        bytes became model-visible and AR-12 is a leak, not a risk."
 | # | Rejects |
 |---|---|
 | (1) | The barrier added where it reads most naturally — just above the `else` that dispatches to the manager. Every Task 14B test passes, `manage_schedule` still reads whatever it is pointed at, and the plan's own coverage claim reads as satisfied. |
-| (2) | A second, hand-rolled containment test at this seam, which will disagree with the first the moment either is touched. |
+| (2) | A second, hand-rolled containment test at this seam, which will disagree with the first the moment either is touched — and a second hand-written copy of the refusal words, which is the same drift wearing a user-visible face. |
+| (4c) | **The capability stored on `DeveloperServer` instead of passed.** It compiles, every single-session test passes, and it is wrong twice over: poolable built-ins (`agents/extension.rs:524`) let one server serve two tiers, and `update_provider` never respawns extensions so the field goes stale mid-session. ⚠ It also rejects the *previous version of this gate*, which was `grep -c private_data … ; expect: 0` — a zero the correct implementation cannot produce, because its parameter is named `private_data_deny`. |
 | (3) | The traversal fixed per-tool. `remember_memory` and `retrieve_memories` are the two anyone thinks of; `remove_specific_memory` (`:445`) and `remove_memory_category` (`:464`) **delete**, and they are the two that get missed. |
 | (4) | The developer-side check placed after the relaxed-jail return — dead in Auto mode, which is the only mode that matters here, with every jailed-mode test green. |
 | (5) | A refactor of the approval path that makes the preview agent-visible, which converts AR-12 from an accepted risk into an unguarded read of any file the model names. |
@@ -12452,7 +12578,7 @@ capability is per **call**, and the door takes it as an argument.
 | `agent_drafter` | 18 | 1 — `create_app` (`mod.rs:1978`) | 17 |
 | `memory` | 4 | 0 | 4 |
 | `computercontroller` | 11 | 0 (`:1578`,`:1601` are `ServerHandler` methods, not tools) | 11 |
-| `developer` | 10 | 1 — `shell` (`rmcp_developer.rs:1323`); `text_editor` (`:1185`) has none | 9 |
+| `developer` | 10 | 1 — `shell` (`rmcp_developer.rs:1269`); `text_editor` (`:1137`) has none | 9 |
 
 Adding the parameter is mechanical — rmcp's `#[tool]` accepts it as an extra argument, and `shell` /
 `kb_list_bases` are shipping examples.
