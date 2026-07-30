@@ -9529,6 +9529,13 @@ is not part of this commit.
 
 ### DR-14 is two layers, and the OS sandbox is the second one
 
+> ⛔ **Background for a DEFERRED series ([DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store)).** DR-14's two-layer
+> read-deny is out of scope for v1. This section is retained because it is the clearest statement
+> of *why* enumerating file readers cannot work — a structural fact about BioRouter that outlives
+> the barrier and that any future filesystem control must start from. **It specifies no work in
+> v1.**
+
+
 Read this before Tasks 14A, 14B, 14D. The first two rounds of this plan treated the OS sandbox as
 *the* mechanism, and both times a reviewer found a public tool that reads a private root without ever
 spawning a process. That is not a gap in the list of tools; it is a category error. **BioRouter reads
@@ -9601,6 +9608,16 @@ Windows, because Layer A does not need a kernel.
 ---
 
 ### Task 14A: Layer B — the read-deny sandbox policy, and what each platform can actually express
+
+> ⛔ **DEFERRED — out of scope for v1 by operator ruling ([DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store)).**
+> The general filesystem barrier is descoped: *"we don't have to enforce and encrypt every
+> single step along the way. for now."* **Do not implement this task, do not let a phase gate
+> run it, and do not ask for it in review. Do not delete it either** — what follows is four
+> review rounds of measured analysis that stays true, and a revival would otherwise pay for it
+> a second time.
+>
+> **Why this one especially is kept:** its platform findings are the most expensive facts in this document — Seatbelt expresses a path deny directly, bubblewrap *aborts* on an absent `--tmpfs` destination, Landlock has no deny rule at all, and Windows offers no unprivileged confinement. DR-17 retires [AR-6](#ar-6--retired-by-dr-17--on-a-host-that-cannot-express-the-read-deny-a-public-session-loses-the-shell-and-two-costs-come-with-the-sandbox-itself) along with this task, so **a public-capability session on Windows or on bubblewrap-less Linux keeps `developer__shell` and its four siblings.** That was the largest usability price in the design and it is no longer paid.
+
 
 **Why this task exists.** Gates A–H, and CP1–CP5 over knowledge bases, all sit on *tool calls*. A
 public-capability model does not have to defeat any of them: `developer__shell` runs an arbitrary
@@ -10739,6 +10756,16 @@ git commit -m "feat(sandbox): a read-deny policy, and each backend's honest answ
 
 
 ### Task 14B: Layer A — the barrier at the dispatch choke point, and the policy it hands to Layer B
+
+> ⛔ **DEFERRED — out of scope for v1 by operator ruling ([DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store)).**
+> The general filesystem barrier is descoped: *"we don't have to enforce and encrypt every
+> single step along the way. for now."* **Do not implement this task, do not let a phase gate
+> run it, and do not ask for it in review. Do not delete it either** — what follows is four
+> review rounds of measured analysis that stays true, and a revival would otherwise pay for it
+> a second time.
+>
+> **If the filesystem channel is ever revived, this is the task to revive** — narrowed to the one root DR-17 names, the session store, with Layer B left off. That is a small fraction of what 14A–14F specify, and it is the reason the series is kept rather than deleted.
+
 
 Task 14A gave `biorouter-sandbox` a read-deny it can express and an honest answer about where it
 cannot. That is Layer B, and it only ever covers a **child process**. This task builds **Layer A**: a
@@ -11989,6 +12016,16 @@ git commit -m "feat(privacy): refuse a public session's tools any path inside Bi
 
 ### Task 14C: The other door — the daemon's own HTTP API, pinned rather than assumed
 
+> ⛔ **DEFERRED — out of scope for v1 by operator ruling ([DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store)).**
+> The general filesystem barrier is descoped: *"we don't have to enforce and encrypt every
+> single step along the way. for now."* **Do not implement this task, do not let a phase gate
+> run it, and do not ask for it in review. Do not delete it either** — what follows is four
+> review rounds of measured analysis that stays true, and a revival would otherwise pay for it
+> a second time.
+>
+> **What is not deferred with it:** `strip_daemon_private_env` itself already shipped in issue #57 and Task 2 pins it; nothing here withdraws that. What defers is the barrier posture built on top of it. [AR-11](#ar-11--amended-by-dr-17--the-daemons-own-api-secret-is-recoverable)'s measurements — a child recovers its parent's environment through `sysctl` on macOS under every constructible profile, and `/proc/self/environ` is readable in-process on Linux — stand, and are now part of the residual DR-17 discloses rather than mechanises.
+
+
 A sandboxed child cannot open `sessions.db`. It can still talk to the process that can:
 `GET /sessions/{id}/export` returns a transcript as JSON to anyone holding
 `BIOROUTER_SERVER__SECRET_KEY` (design §9.3 A1). This task pins the half of that door that **is**
@@ -12531,6 +12568,16 @@ git commit -m "test(privacy): pin the daemon-secret strip and the route the barr
 
 
 ### Task 14D: Layer A's seams — the readers that never reach the choke point
+
+> ⛔ **DEFERRED — out of scope for v1 by operator ruling ([DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store)).**
+> The general filesystem barrier is descoped: *"we don't have to enforce and encrypt every
+> single step along the way. for now."* **Do not implement this task, do not let a phase gate
+> run it, and do not ask for it in review. Do not delete it either** — what follows is four
+> review rounds of measured analysis that stays true, and a revival would otherwise pay for it
+> a second time.
+>
+> **One pin inside it does not belong to the barrier:** `the_approval_preview_never_reaches_the_model` guards [AR-12](#ar-12--the-approval-cards-file-preview-reads-a-model-chosen-path-before-anyone-approves-it), which is about the daemon reading a file it was not asked to read and rendering it **to the user**, not about a tier crossing. AR-12 stays an accepted risk on its own terms; if that pin is wanted without the barrier, lift it out of this task rather than reviving the task.
+
 
 Task 14B's barrier covers every **MCP tool call**, because `ExtensionManager::dispatch_tool_call` is
 the one function they all pass through. Three kinds of in-process read are not MCP tool calls, and a
@@ -13164,6 +13211,16 @@ git commit -m "feat(privacy): cover the four in-process readers that never reach
 
 ### Task 14E: The roots' own doors — where the handler, not the caller, supplies the path
 
+> ⛔ **DEFERRED — out of scope for v1 by operator ruling ([DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store)).**
+> The general filesystem barrier is descoped: *"we don't have to enforce and encrypt every
+> single step along the way. for now."* **Do not implement this task, do not let a phase gate
+> run it, and do not ask for it in review. Do not delete it either** — what follows is four
+> review rounds of measured analysis that stays true, and a revival would otherwise pay for it
+> a second time.
+>
+> **The knowledge half of this task is NOT deferred.** A public-capability model still may not read or write a private knowledge base — that is CP1–CP4 in [Task 10C](#task-10c-the-knowledge-base-barrier--one-line-at-each-of-the-four-choke-points), which [DR-18](#dr-18--the-knowledge-base-tier-is-user-controllable-and-a-private-session-creates-a-private-base) keeps and extends. What defers here is the **Agent Drafter app tier** (and [AR-14](#ar-14--every-biorouter-app-that-exists-today-starts-public-at-migration-even-if-it-was-built-in-a-private-chat) with it), the memory funnel, and the resolver-privacy work that [Open question 22](#open-questions) records.
+
+
 Task 14B refuses a tool call whose **arguments** name a path inside a private root. Round 3's central
 finding is that this is a different thing from refusing the **reads the handlers perform**:
 
@@ -13773,6 +13830,16 @@ git commit -m "feat(privacy): put the read-deny in each private root's own resol
 
 
 ### Task 14F: `export_app`'s write target — a tool that reads a root and writes anywhere is a copy primitive
+
+> ⛔ **DEFERRED — out of scope for v1 by operator ruling ([DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store)).**
+> The general filesystem barrier is descoped: *"we don't have to enforce and encrypt every
+> single step along the way. for now."* **Do not implement this task, do not let a phase gate
+> run it, and do not ask for it in review. Do not delete it either** — what follows is four
+> review rounds of measured analysis that stays true, and a revival would otherwise pay for it
+> a second time.
+>
+> Its knowledge-base twin is **not** deferred: Task 10A's forced model-export location inside the knowledge root, and the raise-only provenance marker on `.brkb` import, are part of the KB gates DR-18 keeps.
+
 
 Task 14E's door decides **whether** `export_app` may read the app. This task decides **where** it may
 put the result, and it is a separate rule for a reason the round-3 review states exactly:
