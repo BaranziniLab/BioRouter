@@ -17,9 +17,19 @@ pub struct WorkspaceBridge {
 }
 
 struct BridgeInner {
-    tx: Mutex<Option<mpsc::UnboundedSender<Value>>>,
-    /// Guards attach/detach: only the connection that owns the current
-    /// generation can tear it down (control.rs `UiBridge::detach` rationale).
+    /// The live connection **and the generation that owns it, under one lock**.
+    ///
+    /// Only the connection owning the current generation may tear it down
+    /// (control.rs `UiBridge::detach` rationale). Keeping the generation beside
+    /// the sender — rather than in a separate atomic, as `UiBridge` does — is
+    /// what makes `detach`'s compare-and-clear a single critical section. With
+    /// the two split, a `detach` that had passed the check could be descheduled
+    /// and then null a *newer* connection installed in the meantime — severing
+    /// a live window. The window is narrow (0/4000 unaided) but structural:
+    /// widening it with a 5 ms sleep between the check and the lock reproduced
+    /// it 200/200, and the fused form 0/200 under the same injection.
+    conn: Mutex<Option<(u64, mpsc::UnboundedSender<Value>)>>,
+    /// Mints generations. It never decides ownership — `conn` does.
     generation: AtomicU64,
     pending: Mutex<HashMap<String, oneshot::Sender<Value>>>,
     last_echo: Mutex<Option<Value>>,
@@ -41,7 +51,7 @@ impl WorkspaceBridge {
     pub fn new() -> Self {
         Self {
             inner: Arc::new(BridgeInner {
-                tx: Mutex::new(None),
+                conn: Mutex::new(None),
                 generation: AtomicU64::new(0),
                 pending: Mutex::new(HashMap::new()),
                 last_echo: Mutex::new(None),
@@ -59,33 +69,44 @@ impl WorkspaceBridge {
     /// owns unparking the old connection's requests, which are waiting on
     /// `request_id`s the fresh page has never seen. Mirrors `UiBridge::attach`.
     pub fn attach(&self) -> (mpsc::UnboundedReceiver<Value>, ConnToken) {
-        // Claim the next generation first: any concurrent stale detach now sees
-        // a newer generation and becomes a no-op.
-        let generation = self.inner.generation.fetch_add(1, Ordering::AcqRel) + 1;
+        // Unpark the outgoing connection's requests BEFORE the new sender is
+        // installed, so this can never cancel something the fresh connection
+        // parked (mirrors `UiBridge::attach`'s cancel-then-install order).
         self.cancel_all();
-        let (tx, rx) = mpsc::unbounded_channel();
-        *lock(&self.inner.tx) = Some(tx);
         *lock(&self.inner.last_attach) = Some(Instant::now());
+        let (tx, rx) = mpsc::unbounded_channel();
+        let mut conn = lock(&self.inner.conn);
+        // Mint and install in ONE critical section. A concurrent `detach` then
+        // sees either the old generation (and is its rightful owner) or the new
+        // one (and is a no-op) — never a torn in-between state. It also keeps
+        // installed generations monotonic when two sockets attach at once.
+        let generation = self.inner.generation.fetch_add(1, Ordering::Relaxed) + 1;
+        *conn = Some((generation, tx));
+        drop(conn);
         (rx, ConnToken(generation))
     }
 
-    /// No-op unless `token` owns the current generation, so a slow old socket
+    /// No-op unless `token` owns the current connection, so a slow old socket
     /// unwinding cannot sever its replacement.
     pub fn detach(&self, token: ConnToken) {
-        if self.inner.generation.load(Ordering::Acquire) != token.0 {
+        let mut conn = lock(&self.inner.conn);
+        // Compare AND clear under the one lock. `matches!` ends the borrow of
+        // `conn` before the assignment.
+        if !matches!(conn.as_ref(), Some((generation, _)) if *generation == token.0) {
             return;
         }
-        *lock(&self.inner.tx) = None;
+        *conn = None;
+        drop(conn);
         self.cancel_all();
     }
 
     pub fn is_attached(&self) -> bool {
-        lock(&self.inner.tx).is_some()
+        lock(&self.inner.conn).is_some()
     }
 
     pub fn emit(&self, frame: Value) -> Result<(), String> {
-        let guard = lock(&self.inner.tx);
-        let tx = guard.as_ref().ok_or("no GUI window attached")?;
+        let guard = lock(&self.inner.conn);
+        let (_, tx) = guard.as_ref().ok_or("no GUI window attached")?;
         tx.send(frame)
             .map_err(|_| "GUI window channel closed".to_string())
     }
