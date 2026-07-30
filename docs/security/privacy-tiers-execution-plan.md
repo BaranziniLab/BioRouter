@@ -129,6 +129,45 @@
 > implementation**; it is now two forced interleavings behind `#[cfg(test)]` seams, plus a
 > multi-threaded fuzz loop that must prove it raced.
 
+> **Revision note (seventh round — the read-deny was one layer and needed two).** The reviewer's
+> verdict on the sixth round's DR-14 amendment was that it *"only describes a closure"* and that
+> following it literally *"would still leave filesystem/API channels open."* That is correct, and the
+> cause is architectural rather than an enumeration miss. **BioRouter reads files two different ways
+> and only one of them is a child process.** `computercontroller__cache`, `agent_drafter__read_app`
+> and `developer__text_editor` read caller-supplied paths with `tokio::fs` *inside biorouterd*; they
+> **are** the daemon, and no sandbox the daemon installs on its children can constrain them. Round 1
+> named `developer` and `computercontroller`; round 2 found `cache` **inside** `computercontroller`.
+> A third list would lose the same way — the readers go through `umya_spreadsheet`, `lopdf` and
+> `sqlx` and contain no `fs::` token, and a mechanical extractor written for this round silently
+> dropped the entire developer server.
+>
+> DR-14 is now **[two layers](#dr-14-is-two-layers-and-the-os-sandbox-is-the-second-one)**: Layer A,
+> an in-process path barrier at `ExtensionManager::dispatch_tool_call` — the choke point BR-23's
+> `SecretGuard` scan has run at for months — as the **primary** defence, and Layer B, the OS sandbox,
+> as defence in depth for spawned children only. The gate that makes "every tool call" checkable
+> registers an in-process server **at test time** and asserts its invented `read_thing(path)` tool is
+> refused; no list-based implementation passes it. The reframing also *shrinks* this feature's largest
+> cost: because Layer A needs no kernel, an unsupported platform loses the five spawning tools rather
+> than every file tool (AR-6(1)).
+>
+> The eight new defects are closed as follows. The `Arc<RwLock<Vec<PathBuf>>>` race (1) is answered by
+> having no shared state: Layer A reads Gate C's own local and returns before the boxed future exists,
+> Layer B carries a per-call boolean in `_meta` — the channel `biorouter-session-id` already uses, and
+> which `developer__shell`'s handler already receives a `RequestContext` for. The symlink TOCTOU (2)
+> is closed for a link planted *before* the call and recorded as **AR-9** for the swap window, which
+> `openat2(RESOLVE_BENEATH)` could close on Linux and nothing can on macOS. `cache` and the drafter
+> tools (3) are covered by construction. Linux's absent roots (4) are **AR-10**, with the roots
+> created at startup to shrink it — and measured live on this machine, where
+> `~/.config/biorouter/memory` does not exist. The bubblewrap write claim and its `rm -f` test (5) are
+> rewritten against execution: `--tmpfs` is writable, and `rm -f` on an absent path exits 0, so the
+> old assertion could not pass on Linux under any correct implementation. `config.yaml` (7) joins the
+> entry list as a **file**, after measuring that **five** tools can write it. And Task 14C's app-id
+> premise (8) is withdrawn — `agent_drafter__list_apps` enumerates ids in-process — along with the
+> claim that a child has "no way to authenticate" to the daemon, which is false on both platforms and
+> is now **AR-11**. New **Task 14D** covers the four in-process readers that never reach the choke
+> point, including the seven branches `Agent::dispatch_tool_call` short-circuits and a pre-existing
+> `memory` category traversal.
+
 > **Revision note (fourth round — the barrier's edges, and the first real `cargo` run).** A verifier
 > re-derived the four choke points independently and could not break them on content: it read
 > `rmcp-macros-0.14.0/src/tool_handler.rs` and confirmed the hand-written `call_tool` body is
@@ -7995,15 +8034,22 @@ mirror of every message by design (`session_manager.rs:14-28`, `MESSAGES_FTS_DDL
 is lexical and existence-gated (`candidate_is_denied` `:278-292`), so a computed path or a shell
 expression walks past it. The design named this channel in §9.3 A2 and the plan never closed it.
 
-**The operator has ruled** (DR-14): a public-capability session's process-spawning and path-reading
-tools run under a **read-deny sandbox that is on by default**, hiding four directories — the session
-store, the knowledge roots, the global memory root and the Agent Drafter app root — and nothing else.
-Private-capability sessions are untouched; this is not a general jail and must not become one.
+**The operator has ruled** (DR-14): a public-capability session's tools may not reach Biorouter's own
+private data, **on by default** — the session store, the knowledge roots, the global memory root, the
+Agent Drafter app root, and nothing else. Private-capability sessions are untouched; this is not a
+general jail and must not become one.
 
-This task is the **mechanism half**, in `biorouter-sandbox` alone, with no privacy concepts in it:
-teach `SandboxPolicy` to express a read-deny, make each backend say honestly whether it *can*, and
-prove enforcement with a live kernel test. Task 14B wires it to capability. Splitting them this way
-is deliberate: a reviewer of 14B should be reading one `if`, not a Seatbelt profile.
+⚠ **A shell is the one channel where the kernel has to do it**, which is what this task is for. Every
+*other* channel is Layer A's, and Layer A is primary — see
+[DR-14 is two layers](#dr-14-is-two-layers-and-the-os-sandbox-is-the-second-one) before reading on.
+The reason the shell is different is in the attack above: `sqlite3 "$(printf '%s' ~/...)"` builds the
+path at runtime, inside a process the daemon has already handed the command to. An argument scan sees
+`printf`, not a path, and no in-process check can see further.
+
+This task is the **mechanism half** of Layer B, in `biorouter-sandbox` alone, with no privacy concepts
+in it: teach `SandboxPolicy` to express a read-deny, make each backend say honestly whether it *can*,
+and prove enforcement with a live kernel test. Task 14B wires it to capability. Splitting them this
+way is deliberate: a reviewer of 14B should be reading one `if`, not a Seatbelt profile.
 
 **Files:**
 
@@ -8388,8 +8434,8 @@ impl SandboxPolicy {
     /// A policy that confines nothing: writes allowed everywhere, network
     /// allowed. Only useful with `deny_read_roots` — it is the shape the
     /// privacy read-deny (DR-14) needs, because that sandbox exists to subtract
-    /// four directories and must change nothing else about how the shell
-    /// behaves. `writable_roots = ["/"]` rather than a new boolean, so every
+    /// four directories and one file and must change nothing else about how the
+    /// shell behaves. `writable_roots = ["/"]` rather than a new boolean, so every
     /// backend's existing writable-root path carries it with no new branch.
     pub fn unconfined() -> Self {
         Self {
