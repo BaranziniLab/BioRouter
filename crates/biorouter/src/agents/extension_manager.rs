@@ -1369,14 +1369,34 @@ impl ExtensionManager {
         prompt_template::render_global_file("plan.md", &context).expect("Prompt should render")
     }
 
-    /// Find and return a reference to the appropriate client for a tool call
-    async fn get_client_for_tool(&self, prefixed_name: &str) -> Option<(String, McpClientBox)> {
+    /// Resolve a prefixed tool name to the extension that owns it: its key, its
+    /// client, and — from the SAME snapshot — the config that says whether the
+    /// tool may be called at all.
+    ///
+    /// The config is returned here rather than looked up again by the caller
+    /// because the two lookups could disagree. `dispatch_tool_call` used to
+    /// re-read the entry to check `available_tools` and, finding nothing,
+    /// skipped the check instead of failing it — so an extension removed
+    /// between the two lookups let a forbidden tool through on a client that
+    /// had already been cloned. Resolving both together makes that window
+    /// disappear: absence at this point is answered with "not found", presence
+    /// carries its own authority.
+    async fn get_client_for_tool(
+        &self,
+        prefixed_name: &str,
+    ) -> Option<(String, McpClientBox, ExtensionConfig)> {
         self.extensions
             .lock()
             .await
             .iter()
             .find(|(key, _)| prefixed_name.starts_with(*key))
-            .map(|(name, extension)| (name.clone(), extension.get_client()))
+            .map(|(name, extension)| {
+                (
+                    name.clone(),
+                    extension.get_client(),
+                    extension.config.clone(),
+                )
+            })
     }
 
     // Function that gets executed for read_resource tool
@@ -1646,17 +1666,19 @@ impl ExtensionManager {
             tool_name_str
         };
 
-        // Dispatch tool call based on the prefix naming convention
-        let (client_name, client) =
-            self.get_client_for_tool(&prefixed_name)
-                .await
-                .ok_or_else(|| {
-                    ErrorData::new(
-                        ErrorCode::RESOURCE_NOT_FOUND,
-                        format!("Tool '{}' not found", tool_call.name),
-                        None,
-                    )
-                })?;
+        // Dispatch tool call based on the prefix naming convention. The client
+        // and the config that authorizes it come out of ONE snapshot — see
+        // `get_client_for_tool`.
+        let (client_name, client, client_config) = self
+            .get_client_for_tool(&prefixed_name)
+            .await
+            .ok_or_else(|| {
+            ErrorData::new(
+                ErrorCode::RESOURCE_NOT_FOUND,
+                format!("Tool '{}' not found", tool_call.name),
+                None,
+            )
+        })?;
 
         let tool_name = prefixed_name
             .strip_prefix(client_name.as_str())
@@ -1670,18 +1692,19 @@ impl ExtensionManager {
             })?
             .to_string();
 
-        if let Some(extension) = self.extensions.lock().await.get(&client_name) {
-            if !extension.config.is_tool_available(&tool_name) {
-                return Err(ErrorData::new(
-                    ErrorCode::RESOURCE_NOT_FOUND,
-                    format!(
-                        "Tool '{}' is not available for extension '{}'",
-                        tool_name, client_name
-                    ),
-                    None,
-                )
-                .into());
-            }
+        // Unconditional: the config was resolved with the client, so there is no
+        // "the extension has gone" branch that could skip the check rather than
+        // fail it.
+        if !client_config.is_tool_available(&tool_name) {
+            return Err(ErrorData::new(
+                ErrorCode::RESOURCE_NOT_FOUND,
+                format!(
+                    "Tool '{}' is not available for extension '{}'",
+                    tool_name, client_name
+                ),
+                None,
+            )
+            .into());
         }
 
         // BR-23: central secret-redaction boundary. The `.biorouterignore`/secret
@@ -2758,6 +2781,60 @@ mod tests {
             .await;
 
         assert!(result.is_ok());
+    }
+
+    /// The authorization input must travel WITH the client, out of one snapshot
+    /// of the map.
+    ///
+    /// `dispatch_tool_call` used to resolve the client under one lock and then
+    /// take a second lock to read the entry's `available_tools` — inside an
+    /// `if let Some(extension) = …get(&client_name)`, so when that second
+    /// lookup missed, the check was not failed but SKIPPED, and the client
+    /// resolved a moment earlier went on to execute. Any removal landing in
+    /// that window turned a forbidden tool into an authorized one, and removals
+    /// are ordinary: disabling an extension in Settings, `manage_extensions
+    /// disable`, and (BR-71) an explicit enable displacing an auto-injection.
+    ///
+    /// With the config resolved alongside the client there is no second lookup
+    /// to miss: an entry that is gone at resolve time already answers "not
+    /// found", and one that was present is judged by its own config. The
+    /// interleaving is unrepresentable rather than unlikely, which is why this
+    /// pins the contract instead of racing a barrier against it.
+    #[tokio::test]
+    async fn dispatch_authorization_is_resolved_with_the_client_not_looked_up_again() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let extension_manager =
+            ExtensionManager::new_without_provider(temp_dir.path().to_path_buf());
+
+        extension_manager
+            .add_mock_extension_with_tools(
+                "guarded".to_string(),
+                Arc::new(MockClient {}),
+                vec!["allowed".to_string()],
+            )
+            .await;
+
+        let (name, _client, config) = extension_manager
+            .get_client_for_tool("guarded__forbidden")
+            .await
+            .expect("the extension resolves");
+        assert_eq!(name, "guarded");
+        assert!(
+            !config.is_tool_available("forbidden"),
+            "the resolved config is the one the dispatch must be judged by"
+        );
+        assert!(config.is_tool_available("allowed"));
+
+        // And once it is gone, resolution itself fails — a removal can only
+        // ever deny, never skip.
+        extension_manager.remove_extension("guarded").await.unwrap();
+        assert!(
+            extension_manager
+                .get_client_for_tool("guarded__forbidden")
+                .await
+                .is_none(),
+            "a disappeared extension must deny, not fall through"
+        );
     }
 
     #[tokio::test]
