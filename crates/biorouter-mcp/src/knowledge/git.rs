@@ -181,6 +181,29 @@ impl GitRepo {
         Ok(oid.to_string())
     }
 
+    /// Did anything actually change on this transaction branch?
+    ///
+    /// `commit_txn` squash-commits the txn branch's *tree* onto main, and git is
+    /// happy to record a commit whose tree is byte-identical to its parent's. So
+    /// a sub-agent that wrote nothing still produced a commit sha, and every
+    /// caller downstream read that sha as proof the work happened (issue #71).
+    /// Comparing the two tree oids is the cheapest honest answer: equal trees
+    /// mean the transaction contributed no content.
+    pub fn txn_has_changes(&self, txn: &Txn) -> Result<bool> {
+        let main = self
+            .inner
+            .find_branch("main", git2::BranchType::Local)
+            .or_else(|_| self.inner.find_branch("master", git2::BranchType::Local))?;
+        let main_tree = main.get().peel_to_commit()?.tree_id();
+        let txn_tree = self
+            .inner
+            .find_branch(&txn.branch, git2::BranchType::Local)?
+            .get()
+            .peel_to_commit()?
+            .tree_id();
+        Ok(main_tree != txn_tree)
+    }
+
     pub fn commit_txn(
         &self,
         txn: &Txn,

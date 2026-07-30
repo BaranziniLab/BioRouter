@@ -9,7 +9,7 @@ use crate::knowledge::{
     subagent::{
         events::{DoneReason, SubAgentEvent},
         kb_tools::{tool_specs, KbToolDispatch},
-        loop_::{Completer, SubAgent, SubAgentBounds},
+        loop_::{Completer, SubAgent, SubAgentBounds, SubAgentResult},
         procedures::INGEST_PROCEDURE,
     },
     types::ChangeKind,
@@ -99,6 +99,18 @@ pub async fn ingest(svc: &KnowledgeService, args: IngestArgs) -> Result<IngestRe
                 DoneReason::CompleteSentinel | DoneReason::NoMoreToolCalls
             ) =>
         {
+            // A clean exit is not the same as a digest. `INGEST_PROCEDURE`
+            // requires the run to write `knowledge/sources/<source-id>.md`, so a
+            // transaction whose tree still equals main's produced no knowledge —
+            // and committing it would hand the caller a commit sha for work that
+            // never happened (issue #71). The most common cause is a provider
+            // that failed mid-request: the turn comes back as a bare apology, or
+            // (Google, candidate with no `parts`) as a wholly empty message, and
+            // both look exactly like "the agent has no more tool calls".
+            if !repo.txn_has_changes(&txn)? {
+                let _ = repo.abort_txn(&txn);
+                anyhow::bail!(no_pages_written_error(&raw.source_id, &r));
+            }
             let sha = repo.commit_txn(
                 &txn,
                 ChangeKind::Ingest,
@@ -126,6 +138,47 @@ pub async fn ingest(svc: &KnowledgeService, args: IngestArgs) -> Result<IngestRe
             Err(e)
         }
     }
+}
+
+/// The message a digest that wrote nothing fails with.
+///
+/// It has to answer the only question the user has — *what failed* — so it
+/// carries the model's own last words and every tool call that errored. Without
+/// them a silent model produces a silent failure, which is barely better than
+/// the false success it replaces.
+fn no_pages_written_error(source_id: &str, result: &SubAgentResult) -> String {
+    let mut msg = format!(
+        "ingest wrote no knowledge pages for source {source_id} \
+         ({} step(s), ended: {:?}). Nothing was added to the knowledge base",
+        result.steps_used, result.reason
+    );
+
+    let failures: Vec<String> = result
+        .events
+        .iter()
+        .filter_map(|e| match e {
+            SubAgentEvent::ToolResult {
+                name,
+                ok: false,
+                summary,
+            } => Some(format!("{name}: {summary}")),
+            _ => None,
+        })
+        .collect();
+    if !failures.is_empty() {
+        msg.push_str(&format!("; failed tool calls: {}", failures.join(" | ")));
+    }
+
+    let final_text = result.final_text.trim();
+    if final_text.is_empty() {
+        msg.push_str(
+            "; the model returned no final message, which usually means the \
+             provider request failed or was cut short",
+        );
+    } else {
+        msg.push_str(&format!("; the model's last message was: {final_text}"));
+    }
+    msg
 }
 
 // ---------------------------------------------------------------------------
@@ -319,6 +372,149 @@ mod tests {
         assert!(
             !has_macro_ingest_commit,
             "no macro ingest commit (with 'steps' delta) should appear after budget exceeded; log: {log:?}"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // Test 2b: the sub-agent ended cleanly but wrote nothing → must NOT succeed
+    //
+    // Issue #71: a provider that fails mid-request commonly ends the turn with a
+    // plain sentence and no tool calls, and Google's decoder returns a *content
+    // free* assistant message when a candidate carries no parts (finishReason
+    // MAX_TOKENS / SAFETY). Both land on `DoneReason::NoMoreToolCalls`, which the
+    // macro read as "the agent is finished" — squash-committing an unchanged tree
+    // and handing the caller a commit sha. The digest reported "completed" while
+    // the KB gained no knowledge page at all.
+    // -------------------------------------------------------------------------
+
+    /// The reply carries an error sentence and no tool calls.
+    #[tokio::test]
+    async fn ingest_fails_when_the_subagent_writes_nothing() {
+        let (_dir, svc) = fresh_svc();
+
+        let completer = MockCompleter::new(vec![text_reply(
+            "I'm sorry - the model provider returned an error and I cannot continue.",
+        )]);
+
+        let result = ingest(
+            &svc,
+            IngestArgs {
+                kb_id: "k".into(),
+                source: SourceInput::Text {
+                    text: "Note about HRV.".into(),
+                    title: Some("HRV note".into()),
+                },
+                completer: Box::new(completer),
+                focus: None,
+                bounds: SubAgentBounds::default(),
+                event_sink: None,
+                cancel: None,
+            },
+        )
+        .await;
+
+        let err = result
+            .err()
+            .expect("a digest that wrote no knowledge page must not report success")
+            .to_string();
+        assert!(
+            err.contains("no knowledge"),
+            "the error must say the digest wrote nothing, got: {err}"
+        );
+        assert!(
+            err.contains("model provider returned an error"),
+            "the error must carry the model's own last words so the user learns \
+             what failed, got: {err}"
+        );
+
+        // Nothing may be committed on top of the raw source.
+        let log = svc.list_history("k", 10).unwrap();
+        assert!(
+            !log.iter().any(|e| e
+                .delta
+                .as_deref()
+                .map(|d| d.contains("steps"))
+                .unwrap_or(false)),
+            "no macro ingest commit may exist after an empty digest; log: {log:?}"
+        );
+    }
+
+    /// The provider hands back a completely empty assistant message — no text and
+    /// no tool calls. Google produces exactly this when the candidate has no
+    /// `parts` (thinking budget exhausted, safety stop).
+    #[tokio::test]
+    async fn ingest_fails_when_the_provider_returns_an_empty_reply() {
+        let (_dir, svc) = fresh_svc();
+
+        let completer = MockCompleter::new(vec![text_reply("")]);
+
+        let err = ingest(
+            &svc,
+            IngestArgs {
+                kb_id: "k".into(),
+                source: SourceInput::Text {
+                    text: "Note about HRV.".into(),
+                    title: Some("HRV note".into()),
+                },
+                completer: Box::new(completer),
+                focus: None,
+                bounds: SubAgentBounds::default(),
+                event_sink: None,
+                cancel: None,
+            },
+        )
+        .await
+        .err()
+        .expect("an empty provider reply must not report a completed digest")
+        .to_string();
+
+        assert!(
+            err.contains("no knowledge"),
+            "the error must say the digest wrote nothing, got: {err}"
+        );
+    }
+
+    /// Every tool call failed, then the model gave up with a text reply. The
+    /// error must name the tool failures — "what failed" is the whole point.
+    #[tokio::test]
+    async fn ingest_failure_names_the_failed_tool_calls() {
+        let (_dir, svc) = fresh_svc();
+
+        let completer = MockCompleter::new(vec![
+            tool_call_reply(
+                "kb_write_page",
+                serde_json::json!({
+                    "path": "knowledge/../escape.md",
+                    "content": "evil",
+                    "commit_message": "escape"
+                }),
+            ),
+            text_reply("I could not write the page."),
+        ]);
+
+        let err = ingest(
+            &svc,
+            IngestArgs {
+                kb_id: "k".into(),
+                source: SourceInput::Text {
+                    text: "Note about HRV.".into(),
+                    title: Some("HRV note".into()),
+                },
+                completer: Box::new(completer),
+                focus: None,
+                bounds: SubAgentBounds::default(),
+                event_sink: None,
+                cancel: None,
+            },
+        )
+        .await
+        .err()
+        .expect("a digest whose every tool call failed must not report success")
+        .to_string();
+
+        assert!(
+            err.contains("kb_write_page"),
+            "the error must name the tool that failed, got: {err}"
         );
     }
 
