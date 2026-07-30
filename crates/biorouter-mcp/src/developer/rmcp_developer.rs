@@ -1573,19 +1573,6 @@ impl DeveloperServer {
         Ok(())
     }
 
-    /// Execute a shell command and return the combined output plus the exit
-    /// code the command finished with.
-    ///
-    /// PAR-02: the exit code is part of the return value because the tool's own
-    /// contract ("There will also be an indication of if the command succeeded
-    /// or failed") depends on it. It used to be discarded, which made a command
-    /// that failed silently (`exit 7`, a build that dies with no stderr)
-    /// indistinguishable from one that succeeded quietly — both surfaced as an
-    /// `Ok` result with empty text and a green card.
-    ///
-    /// `None` means the process was terminated by a signal and reported no code.
-    ///
-    /// Streams output in real-time to the client using logging notifications.
     /// The shell to run commands in, plus the `BASH_ENV` this server was
     /// configured with when that shell is bash.
     fn shell_config_for_run(&self) -> ShellConfig {
@@ -1615,6 +1602,24 @@ impl DeveloperServer {
         }
     }
 
+    /// Execute a shell command and return the combined output plus the exit
+    /// code the command finished with.
+    ///
+    /// PAR-02: the exit code is part of the return value because the tool's own
+    /// contract ("There will also be an indication of if the command succeeded
+    /// or failed") depends on it. It used to be discarded, which made a command
+    /// that failed silently (`exit 7`, a build that dies with no stderr)
+    /// indistinguishable from one that succeeded quietly — both surfaced as an
+    /// `Ok` result with empty text and a green card.
+    ///
+    /// `None` means the process was terminated by a signal and reported no code.
+    ///
+    /// Streams output in real-time to the client using logging notifications.
+    ///
+    /// #72: the command runs under foreground supervision — a process-group
+    /// reaper, an active-work entry, a heartbeat, and an explicit budget. Every
+    /// exit path from here must leave nothing of the command's process tree
+    /// running.
     async fn execute_shell_command(
         &self,
         command: &str,
