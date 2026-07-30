@@ -552,56 +552,10 @@ impl WorkspaceClient {
                     // page-local.
                     continue;
                 }
-                // §4.1 required row fields: enabled extension names + active
-                // KBs. Read per INCLUDED row only (the summary row has no
-                // extension_data), exactly the GET /sessions/{id}/extensions
-                // fallback logic — `get_session_extensions`, whose two lines are
-                // `EnabledExtensionsState::from_extension_data(&session.extension_data)`
-                // `.unwrap_or_else(biorouter::config::get_enabled_extensions)`.
-                // Best-effort: a read failure yields an empty list, never fails
-                // the listing.
-                let extensions: Vec<String> =
-                    match self.context.session_manager.get_session(&s.id, false).await {
-                        Ok(full) => {
-                            EnabledExtensionsState::from_extension_data(&full.extension_data)
-                                .map(|st| st.extensions.iter().map(|e| e.name()).collect())
-                                .unwrap_or_else(|| {
-                                    // No session-specific state → global config, the
-                                    // exact fallback GET /sessions/{id}/extensions
-                                    // performs (`from_extension_data` returns Option).
-                                    crate::config::get_enabled_extensions()
-                                        .iter()
-                                        .map(|e| e.name())
-                                        .collect()
-                                })
-                        }
-                        Err(_) => Vec::new(),
-                    };
-                // Post-#45: ONE call returning set + write target together
-                // (Task 9). `primary_kb` is on the row because a model that can
-                // SET a write target and cannot READ it back will thrash — it
-                // has no way to tell "already correct" from "not applied".
-                let kbs = services
-                    .as_ref()
-                    .map(|svc| svc.knowledge_selection(&s.id))
-                    .unwrap_or_default();
-                rows.push(json!({
-                    "session_id": s.id,
-                    "name": s.name,
-                    "session_type": s.session_type,
-                    "working_dir": s.working_dir,
-                    "running": running,
-                    "parent_session_id": s.parent_session_id,
-                    "extensions": extensions,
-                    "knowledge_bases": kbs.kb_ids,
-                    // `null` means "no write target chosen", which is a real and
-                    // distinct state from "no knowledge bases" — a session can
-                    // have several bases and no primary, and a KB-less write then
-                    // fails. Do not collapse it to the first id here; the service
-                    // owns promotion (`repair_primary_unlocked`).
-                    "primary_kb": kbs.primary_kb,
-                    "gui": gui_placement,
-                }));
+                rows.push(
+                    self.list_session_row(&s, running, gui_placement, services.as_ref())
+                        .await,
+                );
             }
         }
 
@@ -632,6 +586,67 @@ impl WorkspaceClient {
         Ok(vec![Content::text(
             serde_json::to_string_pretty(&payload).unwrap(),
         )])
+    }
+
+    /// One row of the `workspace_list` payload.
+    ///
+    /// Split out of [`Self::handle_list`]'s scan loop: everything the summary
+    /// row already carries is copied straight through, and the two fields §4.1
+    /// requires that it does NOT carry are read here, per included row.
+    async fn list_session_row(
+        &self,
+        s: &crate::session::session_manager::SessionSummary,
+        running: bool,
+        gui_placement: Option<serde_json::Value>,
+        services: Option<&std::sync::Arc<dyn workspace_services::WorkspaceServices>>,
+    ) -> serde_json::Value {
+        // §4.1 required row fields: enabled extension names + active
+        // KBs. Read per INCLUDED row only (the summary row has no
+        // extension_data), exactly the GET /sessions/{id}/extensions
+        // fallback logic — `get_session_extensions`, whose two lines are
+        // `EnabledExtensionsState::from_extension_data(&session.extension_data)`
+        // `.unwrap_or_else(biorouter::config::get_enabled_extensions)`.
+        // Best-effort: a read failure yields an empty list, never fails
+        // the listing.
+        let extensions: Vec<String> =
+            match self.context.session_manager.get_session(&s.id, false).await {
+                Ok(full) => EnabledExtensionsState::from_extension_data(&full.extension_data)
+                    .map(|st| st.extensions.iter().map(|e| e.name()).collect())
+                    .unwrap_or_else(|| {
+                        // No session-specific state → global config, the
+                        // exact fallback GET /sessions/{id}/extensions
+                        // performs (`from_extension_data` returns Option).
+                        crate::config::get_enabled_extensions()
+                            .iter()
+                            .map(|e| e.name())
+                            .collect()
+                    }),
+                Err(_) => Vec::new(),
+            };
+        // Post-#45: ONE call returning set + write target together
+        // (Task 9). `primary_kb` is on the row because a model that can
+        // SET a write target and cannot READ it back will thrash — it
+        // has no way to tell "already correct" from "not applied".
+        let kbs = services
+            .map(|svc| svc.knowledge_selection(&s.id))
+            .unwrap_or_default();
+        json!({
+            "session_id": s.id,
+            "name": s.name,
+            "session_type": s.session_type,
+            "working_dir": s.working_dir,
+            "running": running,
+            "parent_session_id": s.parent_session_id,
+            "extensions": extensions,
+            "knowledge_bases": kbs.kb_ids,
+            // `null` means "no write target chosen", which is a real and
+            // distinct state from "no knowledge bases" — a session can
+            // have several bases and no primary, and a KB-less write then
+            // fails. Do not collapse it to the first id here; the service
+            // owns promotion (`repair_primary_unlocked`).
+            "primary_kb": kbs.primary_kb,
+            "gui": gui_placement,
+        })
     }
 
     async fn handle_read_conversation(
