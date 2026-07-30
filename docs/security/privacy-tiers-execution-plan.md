@@ -3724,6 +3724,83 @@ fn the_refusal_names_no_base_and_no_page() {
 }
 ```
 
+⚠ **Decision (2)(b) — the forced export location — needs its own behavioural rows, and the previous
+version of this task had none.** The three tests above pin the *marker*: they fail an implementation
+with no provenance entry, and they fail one that reads the marker as a value rather than a floor.
+They do **not** fail the implementation that keeps the marker *and* keeps honouring an outside
+`dest_path` for a private model's export — which passes every archive test in this task while
+leaving the whole laundering path open one step further along: a public shell reads that outside
+archive directly (`unzip -p`; a `.brkb` is a zip and needs no Biorouter), or strips the marker and
+imports it. Until this round the forced location was pinned by a `grep -n "is_private|dest_path|exports"`
+whose output a human was asked to read, which is not a gate.
+`kb_export` is on the MCP server, so these rows run through the same
+`call_tool_as(&srv, tool, args, tier)` harness as CP1's:
+
+```rust
+// crates/biorouter-mcp/src/knowledge/server.rs, in its #[cfg(test)] mod tests
+
+#[tokio::test]
+async fn a_models_export_of_a_private_base_lands_inside_the_knowledge_root() {
+    // Decision (2)(b) as behaviour. The exporter is PRIVATE — a public one is
+    // refused outright by Task 10C's barrier — so this is the caller the
+    // location rule exists for: permitted to export, not permitted to choose
+    // where the bytes come to rest.
+    let (srv, root) = migrated_server_with_base("omop");
+    tier::raise_unlocked(&root, "omop", true).unwrap();
+    seed_page(&root, "omop", "knowledge/x.md", "SENTINEL-COHORT-N-412");
+    let elsewhere = tempfile::tempdir().unwrap();
+    let asked = elsewhere.path().join("omop.brkb");
+
+    let out = call_tool_as(&srv, "kb_export",
+                           json!({ "kb_id": "omop", "dest_path": asked.display().to_string() }),
+                           Private).await.unwrap();
+
+    // (a) nothing was written where the model aimed it.
+    assert!(!asked.exists(), "a private base was exported outside the deny root");
+    assert_eq!(std::fs::read_dir(elsewhere.path()).unwrap().count(), 0);
+    // (b) the tool REPORTED the real location, and it is under <root>/exports/.
+    let written = reported_export_path(&out);
+    assert!(written.starts_with(root.join("exports")),
+            "reported {}, which is not inside the knowledge root", written.display());
+    assert!(written.exists());
+    // (c) …and it is the archive, not an empty file that satisfies (a) and (b).
+    //     Without this, "write nothing anywhere" passes.
+    assert!(zip_names(&std::fs::read(&written).unwrap())
+                .iter().any(|n| n.ends_with("knowledge/x.md")));
+}
+
+#[tokio::test]
+async fn a_models_export_of_a_PUBLIC_base_still_honours_dest_path() {
+    // The mirror, and the reason the rule is scoped to private bases: forcing
+    // the location for EVERY model export breaks `kb_export` as a feature, and
+    // whoever hits that next will "fix" it by deleting the rule.
+    let (srv, root) = migrated_server_with_base("notes");     // registers public
+    let elsewhere = tempfile::tempdir().unwrap();
+    let asked = elsewhere.path().join("notes.brkb");
+    let out = call_tool_as(&srv, "kb_export",
+                           json!({ "kb_id": "notes", "dest_path": asked.display().to_string() }),
+                           Public).await.unwrap();
+    assert!(asked.exists(), "a public base's export was relocated");
+    assert_eq!(reported_export_path(&out), asked);
+    assert!(!root.join("exports").join("notes.brkb").exists());
+}
+
+#[tokio::test]
+async fn the_users_own_export_route_may_still_write_anywhere() {
+    // Task 10C's scope line, asserted rather than described: the seven
+    // `/knowledge/*` read handlers and this export are the USER in the
+    // Knowledge view, not a model, and DR-14 governs what a MODEL can reach.
+    // Driven through the route, because the defect would be a rule applied in
+    // the service and therefore to everyone.
+    let (app, root) = knowledge_app_with_base("omop").await;
+    tier::raise_unlocked(&root, "omop", true).unwrap();
+    let asked = tempfile::tempdir().unwrap().path().join("omop.brkb");
+    let r = app.get(&format!("/knowledge/bases/omop/export?dest_path={}", asked.display())).await;
+    assert_eq!(r.status(), 200);
+    assert!(asked.exists(), "the user's own export was forced into the knowledge root");
+}
+```
+
 ```rust
 // crates/biorouter-mcp/src/knowledge/service.rs, in its existing #[cfg(test)] mod tests
 
@@ -4070,25 +4147,33 @@ with `let caller_capability_for_builtin = if biorouter_mcp::BUILTIN_EXTENSIONS.c
 
 ```bash
 cargo test -p biorouter-mcp --lib knowledge::tier
-cargo test -p biorouter-mcp --lib knowledge::          # 190 today (MEASURED, Task 4b); assert 190 + 13
+cargo test -p biorouter-mcp --lib knowledge::server    # 11 today (MEASURED, Task 4b); assert 11 + 2
+cargo test -p biorouter-mcp --lib knowledge::          # 190 today (MEASURED, Task 4b); assert 190 + 16
 cargo test -p biorouter --lib agents::mcp_client
 cargo test -p biorouter --lib agents::extension_manager
-cargo test -p biorouter-server --test knowledge_routes # ~19 today; must be unchanged
+cargo test -p biorouter-server --test knowledge_routes # ~19 today; assert unchanged + 1
 cargo test -p biorouter-cli --lib commands::knowledge  # must be unchanged: no signature moved
 ```
 
 Expected: **PASS**. `knowledge::` is the count that matters — this task adds a module to it, and the
 per-module filter `knowledge::tier` proves the new tests are in the module the filter names rather
-than somewhere that happens to compile. The last two lines are the evidence for decision (5a): if
-`create_base`'s signature had changed, they would not compile.
+than somewhere that happens to compile. `knowledge::server` is named separately for the same reason:
+decision (2)(b)'s two export-location rows live in `server.rs`, not in `tier.rs`, and a `knowledge::`
+total alone cannot tell "they landed in the right module" from "they landed anywhere". The
+`--test knowledge_routes` line gains the user's-export row and is therefore `+ 1`, not "unchanged" —
+an integration test, because the route is the thing under test. The last two lines are the evidence
+for decision (5a): if `create_base`'s signature had changed, they would not compile.
 
 ⚠ **190, not "~122".** An earlier draft carried the figure from `CLAUDE.md`, which is stale.
 [Task 4b](#task-4b-resolve-every-test-filter-against-a-real-cargo---list-docs-only) ran
 `cargo test -p biorouter-mcp --lib -- --list` and measured **190** matching `knowledge::`, across 35
 submodules (`knowledge::service::tests` alone is 38, `knowledge::store::tests` 14,
 `knowledge::server::tests` 11). A `pre + 10` assertion built on 122 would have read a **68-test
-shortfall** as a pass. The `+ 13` is 10 for the tier store and its two service tests, plus the
-three archive-provenance tests decision (2) added.
+shortfall** as a pass. The `+ 16` is 10 for the tier store and its two service tests, three
+archive-provenance tests from decision (2)(a), and the two `server.rs` export-location rows decision
+(2)(b) gained this round — the third of those, the user's own route, is in `--test knowledge_routes`
+and so is outside the `--lib` count. Re-derive this arithmetic if a test is added or dropped; a `+ N`
+whose N nobody recomputed is the same defect as a stale pre-count.
 
 - [ ] **Step 5: Gate**
 
@@ -4121,6 +4206,19 @@ grep -n "provenance.*||\|||.*provenance" crates/biorouter-mcp/src/knowledge/serv
 echo "expect: 1 — `marker || importer_is_private`. A bare `marker` is the (b) row of"
 echo "  the_provenance_marker_can_only_raise_and_a_foreign_archive_is_unaffected."
 # A MODEL's export of a private base cannot be aimed outside the deny root.
+# ⚠ The BEHAVIOURAL gate for this is Step 1's three
+# `a_models_export_of_*` / `the_users_own_export_route_*` tests. Until this round
+# the ONLY gate here was the `awk | grep -n` print below, which a human had to
+# read — so an implementation that kept the provenance marker and went on
+# honouring an outside `dest_path` passed every archive test in this task. The
+# print is kept because it names WHERE the ordering must be, but it is no longer
+# what fails.
+#
+# Assert the awk range is NON-EMPTY first: `kb_export` is a `#[tool]` method and
+# if the signature is spelled any other way the range is 0 lines, every grep
+# under it prints nothing, and "no output" reads as "ordering is right".
+awk '/pub async fn kb_export/,/^    }/' crates/biorouter-mcp/src/knowledge/server.rs | wc -l
+echo "expect: > 1 — a 0 here means the awk found no function, not a clean result"
 awk '/pub async fn kb_export/,/^    }/' crates/biorouter-mcp/src/knowledge/server.rs \
   | grep -n "is_private\|dest_path\|exports" | head -4
 echo "Expected: the tier check BEFORE dest_path is honoured. The user's own export"
@@ -4184,7 +4282,23 @@ plausible over-corrections, both in
 `the_provenance_marker_can_only_raise_and_a_foreign_archive_is_unaffected`: reading the marker as a
 *value* rather than a floor (row (b) — a hostile archive claiming "public" then lowers a private
 importer's base), and treating an absent marker as private (row (c) — every foreign `.brkb` on the
-internet imports private, into a state AR-1 says has no declassification path). (2) A migration that runs on
+internet imports private, into a state AR-1 says has no declassification path).
+(1c) **The marker *and* an outside `dest_path`.** This is the one the previous round left open, and
+it is not a subtle variant — it is what an implementer produces by reading decision (2) and stopping
+at (a), because (a) is the interesting half. Every archive test above passes: the marker is written,
+it is read as a floor, a foreign archive is unaffected, and export→import inside Biorouter is
+refused. The bytes still land wherever the model asked, outside all four DR-14 roots, where the same
+session's shell reads them with `unzip -p` — no import, no marker to strip, no Biorouter involved.
+**This gate rejects: `kb_export` honouring `dest_path` for a private base when the caller is a
+model.** `a_models_export_of_a_private_base_lands_inside_the_knowledge_root` asserts all three
+halves — nothing at the requested path, the reported path under `<knowledge-root>/exports/`, and the
+archive genuinely containing the page, so "write nothing at all" does not pass —
+`a_models_export_of_a_PUBLIC_base_still_honours_dest_path` rejects the over-correction that forces
+every export and would be reverted by whoever hits it, and
+`the_users_own_export_route_may_still_write_anywhere` rejects the version implemented in the service,
+which would apply the rule to the Knowledge view's own export button. Until this round all three
+were one `awk … | grep -n … | head -4` whose output a human was asked to interpret.
+(2) A migration that runs on
 every startup "to pick up new bases", which silently lowers a base the day after a private session
 raised it; test 1's second `ensure_migrated_unlocked` is what fails it, and no grep would. (3) A store
 shaped like `.hidden-kbs` — a list of private ids — which cannot distinguish *known public* from
