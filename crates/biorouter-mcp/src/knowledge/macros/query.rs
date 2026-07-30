@@ -101,18 +101,42 @@ pub async fn query(svc: &KnowledgeService, args: QueryArgs) -> Result<QueryResul
                 DoneReason::CompleteSentinel | DoneReason::NoMoreToolCalls
             ) =>
         {
-            // Commit the txn if we were filing the answer as a page.
+            // Commit the txn if we were filing the answer as a page — and only
+            // if a page was actually filed.
+            //
+            // `commit_txn` squash-commits the transaction *tree*, and git records
+            // a commit whose tree equals its parent's without complaint, so a run
+            // that answered the question but never called `kb_write_page` still
+            // produced a sha. `biorouter knowledge query --save` prints
+            // "✓ saved as a page (<sha>)" off exactly that value, and the page is
+            // not there — issue #71's false success, one macro over.
+            //
+            // Unlike an ingest this does not fail the call: the answer is the
+            // deliverable and it is perfectly good. Only the claim that it was
+            // filed goes.
             let commit_sha = if let Some(branch) = txn_branch {
                 let repo = GitRepo::open(&kb_root)?;
                 let txn = Txn { branch };
-                let sha = repo.commit_txn(
-                    &txn,
-                    ChangeKind::Query,
-                    "query filed",
-                    Some(&format!("+1 note · {} steps", r.steps_used)),
-                )?;
-                svc.rebuild_graph_cache(&args.kb_id)?;
-                Some(sha)
+                let filed = match repo.txn_wrote_knowledge_pages(&txn) {
+                    Ok(filed) => filed,
+                    Err(e) => {
+                        let _ = repo.abort_txn(&txn);
+                        return Err(e.context("checking whether the query filed a page"));
+                    }
+                };
+                if filed {
+                    let sha = repo.commit_txn(
+                        &txn,
+                        ChangeKind::Query,
+                        "query filed",
+                        Some(&format!("+1 note · {} steps", r.steps_used)),
+                    )?;
+                    svc.rebuild_graph_cache(&args.kb_id)?;
+                    Some(sha)
+                } else {
+                    let _ = repo.abort_txn(&txn);
+                    None
+                }
             } else {
                 None
             };
@@ -344,6 +368,65 @@ mod tests {
             result.cited_pages.contains(&"HRV".to_string()),
             "citations should be extracted: {:?}",
             result.cited_pages
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // Test 2b: file_as_page=true but the run filed nothing → no commit sha
+    //
+    // The same false success as issue #71, one macro over. `commit_txn` squash
+    // commits the transaction *tree*, and git records a commit whose tree equals
+    // its parent's without complaint — so a run that answered the question but
+    // never wrote the note still produced a sha. `biorouter knowledge query
+    // --save` prints "✓ saved as a page (<sha>)" off exactly that value, and the
+    // page is not there.
+    //
+    // Unlike an ingest, this does not fail the call: the answer is the
+    // deliverable and it is perfectly good. Only the claim that it was filed has
+    // to go.
+    // -------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn a_query_that_filed_no_page_reports_no_commit() {
+        let (_dir, svc) = fresh_svc();
+
+        // The model answers in prose and never calls kb_write_page.
+        let completer = MockCompleter::new(vec![text_reply_with_citation(
+            "Zone-2 raises HRV over weeks [[HRV]].",
+        )]);
+
+        let result = query(
+            &svc,
+            QueryArgs {
+                kb_id: "k".into(),
+                question: "What is the zone-2 HRV effect?".into(),
+                completer: Box::new(completer),
+                file_as_page: true,
+                bounds: SubAgentBounds::default(),
+                event_sink: None,
+                cancel: None,
+            },
+        )
+        .await
+        .expect("the answer itself is still good and must be returned");
+
+        assert!(
+            result.commit_sha.is_none(),
+            "a query that filed no page must not hand back a commit sha, got: {:?}",
+            result.commit_sha
+        );
+        assert!(
+            result.answer.contains("Zone-2"),
+            "the answer must survive the missing page, got: {}",
+            result.answer
+        );
+
+        let notes = svc.root().join("k").join("knowledge/notes");
+        assert!(
+            std::fs::read_dir(&notes)
+                .map(|mut d| d.next().is_none())
+                .unwrap_or(true),
+            "no note page may exist when none was filed"
         );
     }
 

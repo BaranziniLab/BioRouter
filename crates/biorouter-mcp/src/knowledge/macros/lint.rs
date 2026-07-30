@@ -286,6 +286,28 @@ pub async fn lint(svc: &KnowledgeService, args: LintArgs) -> Result<LintResult> 
                         if name == "kb_write_page")
                 })
                 .count();
+            // An autofix run that fixed nothing must not commit. `commit_txn`
+            // squash-commits the transaction *tree* and git records a commit
+            // whose tree equals its parent's without complaint, so every clean
+            // KB used to gain an empty `[lint] lint autofix` entry — visible in
+            // the Knowledge change-log drawer as work that never happened, and
+            // a `commit_sha` callers read as proof of it. Same false success as
+            // issue #71, one macro over.
+            let fixed = match repo.txn_wrote_knowledge_pages(&txn) {
+                Ok(fixed) => fixed,
+                Err(e) => {
+                    let _ = repo.abort_txn(&txn);
+                    return Err(e.context("checking whether the lint fixed anything"));
+                }
+            };
+            if !fixed {
+                let _ = repo.abort_txn(&txn);
+                return Ok(LintResult {
+                    report,
+                    commit_sha: None,
+                    fixes_applied,
+                });
+            }
             let sha = repo.commit_txn(&txn, ChangeKind::Lint, "lint autofix", None)?;
             svc.rebuild_graph_cache(&args.kb_id)?;
             Ok(LintResult {
@@ -476,5 +498,74 @@ mod tests {
             "scan-only must not produce a commit"
         );
         assert_eq!(result.fixes_applied, 0);
+    }
+
+    /// An autofix run that fixed nothing must not commit either.
+    ///
+    /// Every clean knowledge base used to gain an empty `[lint] lint autofix`
+    /// entry from a `--fix` pass with nothing to do, because `commit_txn` will
+    /// happily record a commit whose tree equals its parent's. The user sees it
+    /// in the Knowledge change-log drawer as work that never happened, and the
+    /// `commit_sha` invites callers to say so — issue #71's false success, one
+    /// macro over.
+    #[tokio::test]
+    async fn an_autofix_that_fixed_nothing_does_not_commit() {
+        use crate::knowledge::subagent::loop_::{Completer, LlmMessage, LlmReply};
+
+        /// Reports there is nothing to fix, without calling a tool.
+        struct NothingToFix;
+
+        #[async_trait::async_trait]
+        impl Completer for NothingToFix {
+            async fn complete(
+                &self,
+                _system: &str,
+                _messages: &[LlmMessage],
+                _tools: &[rmcp::model::Tool],
+            ) -> anyhow::Result<LlmReply> {
+                Ok(LlmReply {
+                    text: "Nothing needed fixing.".into(),
+                    tool_calls: Vec::new(),
+                })
+            }
+        }
+
+        let (_dir, svc) = fresh_svc();
+        let kb = svc.root().join("k");
+        write_page(
+            &kb,
+            "knowledge/entities/a.md",
+            "---\ntitle: A\nkind: entity\n---\n\nA body.",
+            "add a",
+            None,
+        )
+        .unwrap();
+
+        let result = lint(
+            &svc,
+            LintArgs {
+                kb_id: "k".into(),
+                completer: Some(Box::new(NothingToFix)),
+                autofix: true,
+                bounds: SubAgentBounds::default(),
+                event_sink: None,
+                cancel: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            result.commit_sha.is_none(),
+            "an autofix that changed nothing must not hand back a commit sha, got: {:?}",
+            result.commit_sha
+        );
+        assert_eq!(result.fixes_applied, 0);
+
+        let log = svc.list_history("k", 10).unwrap();
+        assert!(
+            !log.iter().any(|e| e.kind == ChangeKind::Lint),
+            "no lint commit may appear in the change log; log: {log:?}"
+        );
     }
 }
