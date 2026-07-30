@@ -62,6 +62,17 @@ interface ResourceRefChipProps {
  *
  * Colour comes only from semantic tokens, so the chip follows all three theme
  * families across light and dark with no per-theme branch here.
+ *
+ * **The name is `--text-default`, not the tone's `--text-accent`.** Measured in
+ * a browser on the real composite, accent ink on the 12% accent fill fell under
+ * AA for 11px text in five of eighteen theme/surface combinations — worst
+ * `alma-mater:light` inside a user bubble at 3.08:1, where the bubble's own
+ * `--background-medium` sits under the tint. Nothing caught it: the shipped
+ * contrast guard only measured opaque token pairs, and jsdom neither applies
+ * Tailwind nor composites alpha. The accent now carries the *fill and the
+ * glyph*, which are decoration and afford 3:1, while the label — the part that
+ * has to be read — uses the ink the audit already guarantees on every ground.
+ * `check-contrast.mjs` asserts the blended pair for every discovered family.
  */
 export function ResourceRefChip({ refSpan, onRemove, className }: ResourceRefChipProps) {
   const Icon = ENTITY_ICONS[REF_KIND_ENTITY[refSpan.kind]];
@@ -88,7 +99,7 @@ export function ResourceRefChip({ refSpan, onRemove, className }: ResourceRefChi
       {/* The glyph carries the kind visually; a screen reader gets it in words,
           because "rna-qc" alone does not say what was attached. */}
       <span className="sr-only">{kindLabel}: </span>
-      <span data-testid="resource-ref-chip-name" className="min-w-0 truncate">
+      <span data-testid="resource-ref-chip-name" className="min-w-0 truncate text-text-default">
         {name}
       </span>
       {onRemove && (
@@ -96,7 +107,7 @@ export function ResourceRefChip({ refSpan, onRemove, className }: ResourceRefChi
           type="button"
           onClick={onRemove}
           aria-label={`Remove ${kindLabel.toLowerCase()} ${name}`}
-          className="-mr-0.5 ml-0.5 shrink-0 cursor-pointer rounded-sm p-0.5 text-text-accent/70 transition-colors duration-[var(--motion-fast)] hover:bg-background-accent/15 hover:text-text-accent"
+          className="-mr-0.5 ml-0.5 shrink-0 cursor-pointer rounded-sm p-0.5 text-text-muted transition-colors duration-[var(--motion-fast)] hover:bg-background-accent/15 hover:text-text-default"
         >
           <X className="h-2.5 w-2.5" />
         </button>

@@ -128,6 +128,33 @@ export function resolveHex(name, scope) {
   return v && /^#[0-9a-f]{6}$/i.test(v) ? v.toLowerCase() : null;
 }
 
+/**
+ * The hex a translucent fill actually paints when composited over `groundHex`.
+ *
+ * Tailwind's `/12`-style opacity modifiers (`bg-background-accent/12`, the
+ * `Badge` accent tone) never reach the cascade as a token, so a guard that only
+ * resolves opaque token pairs cannot see them — and what the eye reads is the
+ * blend, not the token. Issue #65's reference chip shipped accent ink on a 12%
+ * accent fill that measured 3.08:1 inside a user bubble with every existing
+ * assertion green.
+ *
+ * `alpha` is the fill's opacity in 0..1. Both inputs must be 6-digit hex, for
+ * the same fail-closed reason as `luminance`.
+ */
+export function blend(fillHex, alpha, groundHex) {
+  const channels = (h) => {
+    if (typeof h !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(h.trim())) {
+      throw new TypeError(`blend() needs a 6-digit hex, got ${JSON.stringify(h)}`);
+    }
+    return [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+  };
+  const [f, g] = [channels(fillHex), channels(groundHex)];
+  return `#${f
+    .map((v, i) => Math.round(v * alpha + g[i] * (1 - alpha)))
+    .map((v) => v.toString(16).padStart(2, '0'))
+    .join('')}`;
+}
+
 /* ── WCAG maths — the single implementation ── */
 
 export const luminance = (h) => {

@@ -75,6 +75,26 @@ describe('ResourceRefChip', () => {
     expect(chip.title).toContain(long);
   });
 
+  // Found in a browser, not here: accent ink on the accent tone's 12% fill
+  // measured 3.08:1 in `alma-mater:light` inside a user bubble — under AA for
+  // 11px text — while every existing gate stayed green, because no token names
+  // the composited colour and jsdom neither applies Tailwind nor blends alpha.
+  // The accent now carries the fill and the glyph (affordances, 3:1); the label
+  // uses the ink the audit guarantees on every ground. The ratios themselves
+  // are gated by `scripts/check-contrast.mjs`; this stops the component from
+  // drifting back while that gate stays green.
+  it('reads the name in the default ink, not the accent tone', () => {
+    render(<ResourceRefChip refSpan={span('skill', 'rna-qc')} onRemove={() => {}} />);
+
+    expect(screen.getByTestId('resource-ref-chip-name').className).toContain('text-text-default');
+    expect(screen.getByTestId('resource-ref-chip-name').className).not.toContain(
+      'text-text-accent'
+    );
+    expect(screen.getByRole('button', { name: /remove/i }).className).not.toContain(
+      'text-text-accent'
+    );
+  });
+
   it('offers no remove control unless the caller can act on it', () => {
     const { unmount } = render(<ResourceRefChip refSpan={span('skill', 'rna-qc')} />);
     expect(screen.queryByRole('button')).not.toBeInTheDocument();
