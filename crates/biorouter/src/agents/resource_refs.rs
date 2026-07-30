@@ -223,6 +223,70 @@ pub fn labelled_ref_tag(kind: RefKind, value: &str, label: &str) -> String {
     )
 }
 
+/// The compact marker for `value` — `/skill:rna-qc`, `/ext:developer`,
+/// `/kb:soul`.
+///
+/// Readable, but only able to carry a value that contains no whitespace and no
+/// trailing `,` `.` `;`. Use [`reference_marker`], which checks.
+pub fn inline_marker(kind: RefKind, value: &str) -> String {
+    let prefix = match kind {
+        RefKind::Skill => "/skill:",
+        RefKind::Extension => "/ext:",
+        RefKind::KnowledgeBase => "/kb:",
+    };
+    format!("{prefix}{value}")
+}
+
+/// Whether [`inline_marker`] can carry `value` without losing anything.
+///
+/// Answered by running the real extractor over the marker and comparing, rather
+/// than by restating the extractor's rules — a restatement is a second copy
+/// that drifts, and the drift is silent by construction: the marker still looks
+/// fine, it just names a different resource.
+pub fn inline_marker_round_trips(kind: RefKind, value: &str) -> bool {
+    !value.is_empty() && extracted_refs(kind, &inline_marker(kind, value)) == [value]
+}
+
+/// The reference to insert into a message for `value`: the compact marker when
+/// it provably survives, the canonical tag otherwise.
+///
+/// The tag is always correct and is what the desktop composer emits, because it
+/// renders the tag as a chip and the user never sees the markup. A terminal has
+/// no chip to render into, so the CLI keeps the readable form for the names it
+/// can represent — which is almost all of them — and reaches for the tag exactly
+/// when the alternative is the silent truncation of issue #65. Both front-ends
+/// therefore agree on the guarantee that matters: whatever the user picked is
+/// what the agent resolves.
+///
+/// Flip this to always return [`ref_tag`] once the CLI can render a chip of its
+/// own; nothing else needs to change.
+pub fn reference_marker(kind: RefKind, value: &str) -> String {
+    if inline_marker_round_trips(kind, value) {
+        inline_marker(kind, value)
+    } else {
+        ref_tag(kind, value)
+    }
+}
+
+/// What the agent will extract from `text` for one kind of resource.
+///
+/// The narrow public view over the extractor. A front-end uses it to assert
+/// that what it inserts into a message is what the agent reads back out, which
+/// is the only definition of "the interfaces agree" that survives contact with
+/// a name nobody anticipated.
+pub fn extracted_refs(kind: RefKind, text: &str) -> Vec<String> {
+    let refs = extract_resource_refs(text);
+    match kind {
+        RefKind::Skill => refs.skills,
+        RefKind::Extension => refs.extensions,
+        RefKind::KnowledgeBase => refs
+            .knowledge_bases
+            .into_iter()
+            .map(|base| base.id)
+            .collect(),
+    }
+}
+
 pub(crate) fn extract_resource_refs(text: &str) -> ResourceRefs {
     let mut refs = ResourceRefs::default();
 
@@ -912,6 +976,55 @@ mod tests {
         assert_eq!(refs.skills, vec!["my skill", "rna-qc", "rna-qc-v2"]);
         assert_eq!(refs.extensions, vec!["developer"]);
         assert_eq!(refs.knowledge_bases[0].id, "soul");
+    }
+
+    /// `reference_marker` is the one rule both front-ends follow. Whatever it
+    /// returns must come back out of the extractor as the exact value, for
+    /// every name in the hostile corpus — that is the guarantee, and the
+    /// compact/tag choice is an implementation detail beneath it.
+    #[test]
+    fn reference_marker_always_round_trips() {
+        for kind in [RefKind::Skill, RefKind::Extension, RefKind::KnowledgeBase] {
+            for name in HOSTILE_NAMES.iter().filter(|n| !n.trim().is_empty()) {
+                let marker = reference_marker(kind, name);
+                assert_eq!(
+                    extracted_refs(kind, &marker),
+                    vec![name.to_string()],
+                    "`{marker}` does not read back as `{name}`"
+                );
+            }
+        }
+    }
+
+    /// ...and it reaches for the tag only when it has to, so a terminal keeps
+    /// showing the readable form for the names that can carry it.
+    #[test]
+    fn reference_marker_prefers_the_compact_form_when_it_survives() {
+        for (kind, name, expected) in [
+            (RefKind::Skill, "rna-qc", "/skill:rna-qc"),
+            (RefKind::Skill, "my_skill-v2", "/skill:my_skill-v2"),
+            (RefKind::Extension, "developer", "/ext:developer"),
+            (RefKind::KnowledgeBase, "soul", "/kb:soul"),
+        ] {
+            assert_eq!(reference_marker(kind, name), expected);
+            assert!(inline_marker_round_trips(kind, name));
+        }
+
+        for (kind, name) in [
+            (RefKind::Skill, "my skill"),
+            (RefKind::Extension, "Chat Recall"),
+            (RefKind::KnowledgeBase, "two words"),
+            // Trailing `.` `,` `;` are stripped by the compact extractor, so a
+            // name that ends in one cannot use it either.
+            (RefKind::Skill, "step 1."),
+            (RefKind::Skill, "v1,"),
+        ] {
+            assert!(
+                !inline_marker_round_trips(kind, name),
+                "`{name}` was thought safe for the compact marker"
+            );
+            assert_eq!(reference_marker(kind, name), ref_tag(kind, name));
+        }
     }
 
     /// The limitation the tag exists to route around, stated as a test so the
