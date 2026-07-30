@@ -89,7 +89,7 @@ pub struct MemoryServer {
 /// This used to hand-roll `choose_app_strategy(…).in_config_dir("memory")`, a
 /// fourth resolver that ignored the override — so a sandboxed run (test drive,
 /// worktree, per-app jail) read *and rewrote* the user's real global memories.
-fn global_memory_dir() -> PathBuf {
+pub fn global_memory_dir() -> PathBuf {
     crate::paths::in_config_dir("memory")
 }
 
@@ -333,6 +333,34 @@ impl MemoryServer {
         memory_router.set_instructions(updated_instructions);
 
         memory_router
+    }
+
+    /// A server bound to two explicit stores, for a caller that **manages** the
+    /// memories rather than serving them to a model — the `/memory` HTTP routes
+    /// behind the Settings surface (issue #63).
+    ///
+    /// Two differences from [`MemoryServer::new`], both deliberate:
+    ///
+    /// * the stores are arguments, because the daemon is one process serving
+    ///   many sessions and the local store belongs to whichever project the
+    ///   window is open in — `new()`'s `BIOROUTER_WORKING_DIR`/`current_dir()`
+    ///   would silently manage the *daemon's* cwd instead;
+    /// * no instructions are composed. `compose_instructions` reads both stores
+    ///   in full to build a system prompt nobody here will send, and the prompt
+    ///   is what #58 was about — a management call has no business assembling
+    ///   one.
+    ///
+    /// Callers that want the real machine-wide store pass
+    /// [`global_memory_dir`], the one resolver that honours
+    /// `BIOROUTER_PATH_ROOT`; passing anything else is how a sandboxed run
+    /// ended up rewriting the user's real memories before that was centralised.
+    pub fn with_stores(global_memory_dir: PathBuf, local_memory_dir: PathBuf) -> Self {
+        Self {
+            tool_router: Self::tool_router(),
+            instructions: String::new(),
+            global_memory_dir,
+            local_memory_dir,
+        }
     }
 
     /// Assemble what this extension contributes to the agent's system prompt:

@@ -145,14 +145,51 @@ pub enum EntryDeletion {
 /// body that itself contains a blank line was already two entries as far as
 /// every existing reader is concerned, and a management view that silently
 /// re-joined them would show the user something the store does not contain.
-fn parse_entries(_content: &str) -> Vec<MemoryEntry> {
-    Vec::new() // STUB
+fn parse_entries(content: &str) -> Vec<MemoryEntry> {
+    let mut entries = Vec::new();
+    for chunk in content.split("\n\n") {
+        let mut lines = chunk.lines();
+        let Some(first) = lines.next() else {
+            // The trailing blank line every write leaves behind.
+            continue;
+        };
+        let (tags, body) = match first.strip_prefix('#') {
+            Some(tag_line) => (
+                tag_line.split_whitespace().map(String::from).collect(),
+                lines.collect::<Vec<_>>().join("\n"),
+            ),
+            None => (
+                Vec::new(),
+                std::iter::once(first)
+                    .chain(lines)
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            ),
+        };
+        entries.push(MemoryEntry {
+            index: entries.len(),
+            tags,
+            content: body,
+        });
+    }
+    entries
 }
 
 /// Re-serialize entries into the on-disk format, so a delete leaves a file the
 /// memory tools still parse identically.
-fn render_entries(_entries: &[MemoryEntry]) -> String {
-    String::new() // STUB
+fn render_entries(entries: &[MemoryEntry]) -> String {
+    let mut out = String::new();
+    for entry in entries {
+        if !entry.tags.is_empty() {
+            out.push('#');
+            out.push(' ');
+            out.push_str(&entry.tags.join(" "));
+            out.push('\n');
+        }
+        out.push_str(&entry.content);
+        out.push_str("\n\n");
+    }
+    out
 }
 
 fn modified_secs(meta: &fs::Metadata) -> Option<i64> {
@@ -174,8 +211,11 @@ impl MemoryServer {
 
     /// Every entry in one category, in file order.
     pub fn list_entries(&self, category: &str, scope: MemoryScope) -> io::Result<Vec<MemoryEntry>> {
-        let _ = (category, scope);
-        Ok(Vec::new()) // STUB
+        let path = self.get_memory_file(category, scope.is_global())?;
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        Ok(parse_entries(&fs::read_to_string(path)?))
     }
 
     /// Everything in one store: what the Settings surface lists.
@@ -186,13 +226,44 @@ impl MemoryServer {
     /// (permissions) is an error, because that is not an empty store and must
     /// not be shown as one.
     pub fn inventory(&self, scope: MemoryScope) -> io::Result<MemoryStoreInventory> {
-        // STUB
-        Ok(MemoryStoreInventory {
+        let base = self.store_dir(scope).to_path_buf();
+        let mut inventory = MemoryStoreInventory {
             scope,
-            path: String::new(),
-            exists: false,
+            path: base.display().to_string(),
+            exists: base.exists(),
             categories: Vec::new(),
-        })
+        };
+        if !inventory.exists {
+            return Ok(inventory);
+        }
+
+        for entry in fs::read_dir(&base)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_file() {
+                continue;
+            }
+            let file_name = entry.file_name();
+            let Some(category) = file_name.to_str().and_then(|n| n.strip_suffix(".txt")) else {
+                continue;
+            };
+            if validated_category(category).is_err() {
+                continue;
+            }
+            let meta = entry.metadata()?;
+            inventory.categories.push(MemoryCategoryInventory {
+                name: category.to_string(),
+                entries: self.list_entries(category, scope)?,
+                size_bytes: meta.len(),
+                modified: modified_secs(&meta),
+            });
+        }
+
+        // `read_dir` order is whatever the filesystem feels like; the user gets
+        // a stable list.
+        inventory
+            .categories
+            .sort_unstable_by(|a, b| a.name.cmp(&b.name));
+        Ok(inventory)
     }
 
     /// Delete exactly one entry, identified by its position **and** by the body
@@ -211,15 +282,51 @@ impl MemoryServer {
         index: usize,
         expected_content: &str,
     ) -> io::Result<EntryDeletion> {
-        let _ = (category, scope, index, expected_content);
-        Ok(EntryDeletion::OutOfRange) // STUB
+        let path = self.get_memory_file(category, scope.is_global())?;
+        if !path.exists() {
+            return Ok(EntryDeletion::OutOfRange);
+        }
+        let mut entries = parse_entries(&fs::read_to_string(&path)?);
+        let Some(found) = entries.get(index) else {
+            return Ok(EntryDeletion::OutOfRange);
+        };
+        if found.content != expected_content {
+            return Ok(EntryDeletion::ContentMismatch);
+        }
+
+        entries.remove(index);
+        if entries.is_empty() {
+            // An emptied category file would keep its name in the system prompt
+            // for every future session — the category index #58 kept is exactly
+            // what a global category name still leaks. Deleting the last memory
+            // in a category has to take the category with it.
+            fs::remove_file(&path)?;
+            return Ok(EntryDeletion::Deleted {
+                remaining: 0,
+                category_removed: true,
+            });
+        }
+
+        for (position, entry) in entries.iter_mut().enumerate() {
+            entry.index = position;
+        }
+        fs::write(&path, render_entries(&entries))?;
+        Ok(EntryDeletion::Deleted {
+            remaining: entries.len(),
+            category_removed: false,
+        })
     }
 
     /// Delete a whole category. Reports how many entries went with it, so the
     /// caller can tell the user what they actually lost.
     pub fn delete_category(&self, category: &str, scope: MemoryScope) -> io::Result<Option<usize>> {
-        let _ = (category, scope);
-        Ok(None) // STUB
+        let path = self.get_memory_file(category, scope.is_global())?;
+        if !path.exists() {
+            return Ok(None);
+        }
+        let removed = parse_entries(&fs::read_to_string(&path)?).len();
+        fs::remove_file(&path)?;
+        Ok(Some(removed))
     }
 }
 
@@ -259,7 +366,9 @@ mod tests {
             "# phi cohort\nfirst memory\n\n# phi cohort\nsecond memory\n\n",
         );
 
-        let entries = server.list_entries("clinical", MemoryScope::Global).unwrap();
+        let entries = server
+            .list_entries("clinical", MemoryScope::Global)
+            .unwrap();
         let bodies: Vec<&str> = entries.iter().map(|e| e.content.as_str()).collect();
         assert_eq!(
             bodies,
@@ -282,7 +391,9 @@ mod tests {
             "we use black\n\nwe pin rust 1.92\n\n",
         );
 
-        let entries = server.list_entries("development", MemoryScope::Local).unwrap();
+        let entries = server
+            .list_entries("development", MemoryScope::Local)
+            .unwrap();
         assert_eq!(entries.len(), 2, "two memories, two rows");
         assert!(entries.iter().all(|e| e.tags.is_empty()));
         assert_eq!(entries[1].content, "we pin rust 1.92");
@@ -364,11 +475,19 @@ mod tests {
         let global = server.inventory(MemoryScope::Global).unwrap();
         let local = server.inventory(MemoryScope::Local).unwrap();
         assert_eq!(
-            global.categories.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            global
+                .categories
+                .iter()
+                .map(|c| c.name.as_str())
+                .collect::<Vec<_>>(),
             vec!["shared"]
         );
         assert_eq!(
-            local.categories.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            local
+                .categories
+                .iter()
+                .map(|c| c.name.as_str())
+                .collect::<Vec<_>>(),
             vec!["project"]
         );
     }
@@ -398,7 +517,9 @@ mod tests {
             }
         );
 
-        let left = server.list_entries("development", MemoryScope::Local).unwrap();
+        let left = server
+            .list_entries("development", MemoryScope::Local)
+            .unwrap();
         assert_eq!(
             left.iter().map(|e| e.content.as_str()).collect::<Vec<_>>(),
             vec!["we use black for formatting"],
@@ -458,7 +579,11 @@ mod tests {
             !dir.join("clinical.txt").exists(),
             "an emptied category must not linger as a name in the prompt index"
         );
-        assert!(server.inventory(MemoryScope::Global).unwrap().categories.is_empty());
+        assert!(server
+            .inventory(MemoryScope::Global)
+            .unwrap()
+            .categories
+            .is_empty());
     }
 
     /// The store is appended to by a running agent. If the file changed between
@@ -480,7 +605,10 @@ mod tests {
             .unwrap();
         assert_eq!(outcome, EntryDeletion::ContentMismatch);
         assert_eq!(
-            server.list_entries("clinical", MemoryScope::Global).unwrap().len(),
+            server
+                .list_entries("clinical", MemoryScope::Global)
+                .unwrap()
+                .len(),
             2,
             "nothing may be deleted when the guard fails"
         );
@@ -499,7 +627,10 @@ mod tests {
             EntryDeletion::OutOfRange
         );
         assert_eq!(
-            server.list_entries("development", MemoryScope::Local).unwrap().len(),
+            server
+                .list_entries("development", MemoryScope::Local)
+                .unwrap()
+                .len(),
             1
         );
     }
@@ -514,14 +645,49 @@ mod tests {
         write_store(&dir, "clinical", "one\n\ntwo\n\nthree\n\n");
 
         assert_eq!(
-            server.delete_category("clinical", MemoryScope::Global).unwrap(),
+            server
+                .delete_category("clinical", MemoryScope::Global)
+                .unwrap(),
             Some(3)
         );
         assert!(!dir.join("clinical.txt").exists());
         assert_eq!(
-            server.delete_category("clinical", MemoryScope::Global).unwrap(),
+            server
+                .delete_category("clinical", MemoryScope::Global)
+                .unwrap(),
             None,
             "deleting a category that is already gone is not an error"
+        );
+    }
+
+    /// The daemon is one process serving every window, so the store a
+    /// management call operates on has to be the one it was handed — never the
+    /// daemon's own working directory, and never a prompt-composing
+    /// constructor that reads both stores to build a system prompt nobody sends.
+    #[test]
+    fn with_stores_manages_exactly_the_directories_it_was_given() {
+        let temp = tempdir().unwrap();
+        let global = temp.path().join("elsewhere-global");
+        let local = temp.path().join("some-project/.biorouter/memory");
+        write_store(&global, "clinical", "machine wide\n\n");
+        write_store(&local, "development", "this project\n\n");
+
+        let server = MemoryServer::with_stores(global.clone(), local.clone());
+        assert_eq!(server.store_dir(MemoryScope::Global), global.as_path());
+        assert_eq!(server.store_dir(MemoryScope::Local), local.as_path());
+        assert_eq!(
+            server
+                .inventory(MemoryScope::Local)
+                .unwrap()
+                .categories
+                .iter()
+                .map(|c| c.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["development"]
+        );
+        assert!(
+            server.get_instructions().is_empty(),
+            "a management server must not compose a system prompt out of the stores"
         );
     }
 
@@ -542,7 +708,9 @@ mod tests {
                 "list_entries accepted {escaping:?}"
             );
             assert!(
-                server.delete_category(escaping, MemoryScope::Global).is_err(),
+                server
+                    .delete_category(escaping, MemoryScope::Global)
+                    .is_err(),
                 "delete_category accepted {escaping:?}"
             );
             assert!(
@@ -573,7 +741,11 @@ mod tests {
 
         let inventory = server.inventory(MemoryScope::Global).unwrap();
         assert_eq!(
-            inventory.categories.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            inventory
+                .categories
+                .iter()
+                .map(|c| c.name.as_str())
+                .collect::<Vec<_>>(),
             vec!["real"]
         );
     }
@@ -589,12 +761,18 @@ mod tests {
 
         let inventory = server.inventory(MemoryScope::Global).unwrap();
         assert_eq!(
-            inventory.categories.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            inventory
+                .categories
+                .iter()
+                .map(|c| c.name.as_str())
+                .collect::<Vec<_>>(),
             vec!["a.txt.b"]
         );
         assert_eq!(inventory.categories[0].entries.len(), 1);
         assert_eq!(
-            server.delete_category("a.txt.b", MemoryScope::Global).unwrap(),
+            server
+                .delete_category("a.txt.b", MemoryScope::Global)
+                .unwrap(),
             Some(1)
         );
     }

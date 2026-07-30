@@ -44,6 +44,12 @@ pub use computercontroller::ComputerControllerServer;
 pub use developer::rmcp_developer::{set_path_jail_relaxed, DeveloperServer};
 pub use knowledge::KnowledgeServer;
 pub use memory::MemoryServer;
+// The user-facing half of the memory feature (issue #63): what the Settings
+// surface lists, and the two deletions it offers.
+pub use memory::{
+    global_memory_dir, EntryDeletion, MemoryCategoryInventory, MemoryEntry, MemoryScope,
+    MemoryStoreInventory,
+};
 pub use tutorial::TutorialServer;
 
 /// Spawns a builtin MCP server onto the given duplex transport. The optional
