@@ -224,6 +224,98 @@ struct WorkspaceCloseParams {
     scope: String,
 }
 
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct WorkspaceWatchParams {
+    /// The conversations to watch (1-32). Typically the ids of subagents you
+    /// spawned with `background: true`, or of sessions you started a turn in.
+    session_ids: Vec<String>,
+    /// "any" (default): return as soon as ONE finishes. "all": wait for all of
+    /// them (or the timeout).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mode: Option<String>,
+    /// How long to wait, in seconds. Default 120, max 600. A timeout is NOT an
+    /// error — the sessions keep running and you can watch again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    timeout_s: Option<u64>,
+    /// Skip the "is it already idle?" pre-check and park unconditionally.
+    /// Used when you know a turn is starting but the lock may not be claimed
+    /// yet, and by the tests. Default false.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    assume_running: Option<bool>,
+}
+
+/// Max sessions one watch call may subscribe to. Each id costs one broadcast
+/// receiver for the duration of the park.
+const WATCH_MAX_SESSIONS: usize = 32;
+
+/// Whether a session is running, idle, or not knowable from here.
+///
+/// The third variant is the load-bearing one. Collapsing it into `Idle` — which
+/// is what `services.is_some_and(|s| s.is_turn_active(id))` does — makes
+/// `workspace_watch` report "already idle" for every session in every headless
+/// process, because `workspace_services::get()` is `None` there. That is the
+/// one configuration decision 21 exists to keep working (reconciliation #12).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionLiveness {
+    Running,
+    Idle,
+    Unknown,
+}
+
+/// Resolve liveness from the best source available.
+///
+/// The handle registry is checked **FIRST and is a veto**, not a fallback the
+/// daemon pre-empts:
+///
+/// 1. the background-subagent handle registry, scoped to the CALLING session
+///    (`subagent_handle::list_for_session`, deliberately parent-scoped so one
+///    chat can never inspect another's children). It is the same registry
+///    `subagent_status { wait: true }` blocked on, read through the child's
+///    session id instead of a handle id (`BackgroundSubagent.child_session_id`
+///    is public). A handle that `is_running()` means the run exists and has not
+///    completed — full stop;
+/// 2. otherwise the daemon, when installed — authoritative for every session it
+///    knows about;
+/// 3. otherwise Unknown.
+///
+/// **Why the registry outranks the daemon, and not the other way round.**
+/// `spawn_background_subagent` registers its handle SYNCHRONOUSLY
+/// (`BackgroundSubagent::register`) and only then `tokio::spawn`s the run, whose
+/// FIRST await is `SUBAGENT_SEMAPHORE.acquire()` (cap 8 by default,
+/// `max_concurrent_subagents()`). Task 33 takes the server turn lease *inside*
+/// `run_complete_subagent_task`, i.e. after that permit. So a queued child — one
+/// the parent has definitely started and is waiting on — has no `ActiveTurn`,
+/// and `AppState::is_turn_active` answers `false` for it. With the daemon
+/// consulted first, a parent that fans out 10 background children gets 8 leased
+/// and 2 queued, and `workspace_watch` in the default `mode: "any"` returns
+/// IMMEDIATELY reporting two children as "already idle" that have not begun.
+/// That is F1 relocated from headless into the daemon configuration, which is
+/// the normal desktop and `biorouterd` case.
+fn session_liveness(
+    services: Option<&std::sync::Arc<dyn crate::workspace_services::WorkspaceServices>>,
+    caller_session_id: &str,
+    session_id: &str,
+) -> SessionLiveness {
+    for handle in crate::agents::subagent_handle::list_for_session(caller_session_id) {
+        if handle.child_session_id == session_id {
+            if handle.is_running() {
+                // VETO: registered and not yet complete. The daemon may not have
+                // a lease for it yet (semaphore queue) — that is not idleness.
+                return SessionLiveness::Running;
+            }
+            return SessionLiveness::Idle;
+        }
+    }
+    if let Some(services) = services {
+        return if services.is_turn_active(session_id) {
+            SessionLiveness::Running
+        } else {
+            SessionLiveness::Idle
+        };
+    }
+    SessionLiveness::Unknown
+}
+
 /// The tools [`INSTRUCTIONS`] names whose handler is still a placeholder, each
 /// with the task that lands it.
 ///
@@ -236,10 +328,7 @@ struct WorkspaceCloseParams {
 /// The task that implements a tool deletes its row here — it must, or its own
 /// dispatch arm is shadowed by nothing and the surface test fails — and adds it
 /// to `get_tools()` in the same commit.
-const PENDING_TOOLS: &[(&str, &str)] = &[
-    ("workspace_watch", "Task 17"),
-    ("workspace_open", "Task 24"),
-];
+const PENDING_TOOLS: &[(&str, &str)] = &[("workspace_open", "Task 24")];
 
 pub struct WorkspaceClient {
     info: InitializeResult,
@@ -331,8 +420,17 @@ impl WorkspaceClient {
                 serde_json::to_value(schema_for!(WorkspaceCloseParams)).unwrap(),
                 false,
             ),
-            // Tasks 17 and 19/24 append:
-            // workspace_watch, workspace_open, and `subagent`
+            Self::tool(
+                "workspace_watch",
+                "Wait until one (or all) of the named conversations finishes its \
+                 current turn, and report why it ended. Use after spawning \
+                 background subagents or injecting turns instead of polling. A \
+                 timeout is not an error.",
+                serde_json::to_value(schema_for!(WorkspaceWatchParams)).unwrap(),
+                true,
+            ),
+            // Tasks 19/24 append:
+            // workspace_open and `subagent`
             // (advertised only; the spawn dispatch lives in agent.rs — see
             // Task 19).
         ]
@@ -1402,6 +1500,169 @@ impl WorkspaceClient {
             other => Err(format!("unknown scope '{other}' (tab | turn | agent)")),
         }
     }
+
+    async fn handle_watch(
+        &self,
+        caller_session_id: &str,
+        arguments: Option<JsonObject>,
+    ) -> Result<Vec<Content>, String> {
+        use crate::session_events::{self, SessionBusEvent};
+
+        let args: WorkspaceWatchParams = parse_args(arguments)?;
+        if args.session_ids.is_empty() {
+            return Err("session_ids must name at least one conversation".into());
+        }
+        if args.session_ids.len() > WATCH_MAX_SESSIONS {
+            return Err(format!(
+                "watching {} conversations at once exceeds the cap of {WATCH_MAX_SESSIONS}",
+                args.session_ids.len()
+            ));
+        }
+        let wait_all = match args.mode.as_deref() {
+            None | Some("any") => false,
+            Some("all") => true,
+            Some(other) => return Err(format!("unknown mode '{other}' (any | all)")),
+        };
+        let timeout = std::time::Duration::from_secs(args.timeout_s.unwrap_or(120).clamp(1, 600));
+        let assume_running = args.assume_running.unwrap_or(false);
+
+        // Subscribe FIRST, then pre-check. Reversing this loses a completion
+        // that lands between the check and the subscribe.
+        //
+        // `session_events::subscribe` hands back a `Subscription`, not a bare
+        // `broadcast::Receiver`: the receiver is deliberately not exposed,
+        // because only the wrapper's `Drop` reclaims the session's 1024-slot
+        // ring. Holding `Subscription` here is what keeps a watch on an idle or
+        // made-up id from pinning that ring for the life of the process.
+        let mut receivers: Vec<(String, session_events::Subscription)> = args
+            .session_ids
+            .iter()
+            .map(|id| (id.clone(), session_events::subscribe(id)))
+            .collect();
+
+        let services = workspace_services::get();
+        let mut completed: Vec<(String, String)> = Vec::new();
+        // How many watched ids we could not resolve at all — reported at the end
+        // so a headless timeout does not read as "they are all still working".
+        let mut unknown_liveness = 0usize;
+        if !assume_running {
+            for (id, _) in &receivers {
+                match session_liveness(services.as_ref(), caller_session_id, id) {
+                    // Only a POSITIVE idle answer short-circuits. `Unknown`
+                    // parks — see `SessionLiveness`.
+                    SessionLiveness::Idle => {
+                        completed.push((id.clone(), "already idle".to_string()));
+                    }
+                    SessionLiveness::Running => {}
+                    SessionLiveness::Unknown => unknown_liveness += 1,
+                }
+            }
+            receivers.retain(|(id, _)| !completed.iter().any(|(done, _)| done == id));
+        }
+
+        let done_now = if wait_all {
+            receivers.is_empty()
+        } else {
+            !completed.is_empty()
+        };
+        if !done_now && !receivers.is_empty() {
+            let deadline = tokio::time::Instant::now() + timeout;
+            // One task per watched session, all feeding one channel: simpler
+            // and more obviously correct than a hand-rolled select over a Vec,
+            // and 32 short-lived tasks is nothing.
+            let (tx, mut rx) = tokio::sync::mpsc::channel::<(String, String)>(WATCH_MAX_SESSIONS);
+            for (id, mut receiver) in receivers.drain(..) {
+                let tx = tx.clone();
+                tokio::spawn(async move {
+                    loop {
+                        match receiver.recv().await {
+                            Ok(SessionBusEvent::TurnFinished { reason, .. }) => {
+                                let _ = tx.send((id, reason)).await;
+                                return;
+                            }
+                            Ok(SessionBusEvent::TurnError { message, .. }) => {
+                                let _ = tx.send((id, format!("error: {message}"))).await;
+                                return;
+                            }
+                            Ok(_) => {}
+                            // A lagged watcher has certainly not missed the
+                            // *last* event yet; keep listening.
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                        }
+                    }
+                });
+            }
+            drop(tx); // so `rx.recv()` ends if every watcher exits
+
+            // `want` counts entries in `completed`, which already holds the
+            // sessions the pre-check found idle — so "all" is the full id list
+            // and "any" is one more than we already have.
+            let want = if wait_all {
+                args.session_ids.len()
+            } else {
+                completed.len() + 1
+            };
+            let _ = tokio::time::timeout_at(deadline, async {
+                while completed.len() < want {
+                    match rx.recv().await {
+                        Some(entry) => completed.push(entry),
+                        None => break,
+                    }
+                }
+            })
+            .await;
+        }
+
+        let still_running: Vec<&String> = args
+            .session_ids
+            .iter()
+            .filter(|id| !completed.iter().any(|(done, _)| done == *id))
+            .collect();
+
+        let mut report = String::new();
+        if completed.is_empty() {
+            report.push_str(&format!(
+                "No conversation finished within {}s. Still running: {}. \
+                 They keep running — watch again or read them later.\n",
+                timeout.as_secs(),
+                still_running
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+            if unknown_liveness > 0 {
+                // Honest about the headless case rather than implying we
+                // observed them working.
+                report.push_str(
+                    "(No BioRouter daemon is attached, so whether they had started \
+                     could not be checked — some of these may never have been \
+                     running.)\n",
+                );
+            }
+        } else {
+            report.push_str("Completed:\n");
+            for (id, reason) in &completed {
+                report.push_str(&format!("- {id} ({reason})\n"));
+            }
+            if !still_running.is_empty() {
+                report.push_str(&format!(
+                    "Still running: {}\n",
+                    still_running
+                        .iter()
+                        .map(|s| s.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
+            report.push_str(
+                "\nRead a completed conversation with workspace_read_conversation \
+                 (view:\"summary\" for its outcome, view:\"tool_calls\" for what it did).",
+            );
+        }
+        Ok(vec![Content::text(report)])
+    }
 }
 
 /// True in every permission mode that can ACTUALLY raise a tool confirmation.
@@ -1761,6 +2022,7 @@ impl McpClientTrait for WorkspaceClient {
             "workspace_send_prompt" => self.handle_send_prompt(caller, arguments).await,
             "workspace_set_tools" => self.handle_set_tools(caller, arguments).await,
             "workspace_close" => self.handle_close(caller, arguments).await,
+            "workspace_watch" => self.handle_watch(caller, arguments).await,
             // BR-71 decision 22: the spawn tool is advertised here but
             // dispatched by the agent loop (it needs the parent's TaskConfig).
             // Reachable only if that interception is ever removed.
@@ -4107,5 +4369,397 @@ mod tests {
         assert_eq!(annotations.read_only_hint, Some(false));
         assert_eq!(annotations.destructive_hint, Some(true));
         assert_eq!(annotations.idempotent_hint, Some(false));
+    }
+
+    // ---- Task 17: workspace_watch ------------------------------------------
+
+    /// The resolver itself, over all three sources. Pure enough to test without
+    /// a daemon, which is the point — the daemon is the source that is ABSENT in
+    /// the configuration this whole helper exists for.
+    #[tokio::test]
+    async fn liveness_prefers_the_handle_registry_then_the_daemon_then_unknown() {
+        use crate::agents::subagent_handle::BackgroundSubagent;
+        use crate::agents::subagent_result::SubagentResult;
+
+        // No daemon and no handle: UNKNOWN, never Idle. This is the assertion
+        // that stops `workspace_watch` from silently no-opping headless.
+        assert_eq!(
+            session_liveness(None, "caller-1", "s-unrelated"),
+            SessionLiveness::Unknown
+        );
+
+        // A running background child of THIS caller: Running, with no daemon.
+        let running = BackgroundSubagent::register(
+            "caller-1",
+            "child-running",
+            "count files",
+            CancellationToken::new(),
+        );
+        assert_eq!(
+            session_liveness(None, "caller-1", "child-running"),
+            SessionLiveness::Running
+        );
+
+        // …and once it completes, Idle — so a watch on a finished child still
+        // returns immediately headless, which is the deadlock the table forbids.
+        running.complete(SubagentResult::from_error("done"));
+        assert_eq!(
+            session_liveness(None, "caller-1", "child-running"),
+            SessionLiveness::Idle
+        );
+
+        // Handles are scoped to their parent (`list_for_session`), so another
+        // session's child is Unknown to me, not Idle.
+        assert_eq!(
+            session_liveness(None, "caller-2", "child-running"),
+            SessionLiveness::Unknown
+        );
+    }
+
+    /// The headless regression, end to end through the tool: a genuinely
+    /// running background child must NOT be reported "already idle".
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn watch_parks_on_a_running_headless_child_instead_of_claiming_it_is_idle() {
+        use crate::agents::subagent_handle::BackgroundSubagent;
+        // NO daemon. Declared, not assumed: another test in this binary may
+        // have pinned one, and `set_for_tests(None)` is the only way to say
+        // "there is no daemon" once anything has.
+        crate::workspace_services::set_for_tests(None);
+
+        let c = client();
+        let _running = BackgroundSubagent::register(
+            "caller",
+            "child-live",
+            "long job",
+            CancellationToken::new(),
+        );
+
+        let args: rmcp::model::JsonObject = serde_json::from_value(serde_json::json!({
+            "session_ids": ["child-live"], "timeout_s": 1
+        }))
+        .unwrap();
+        let result = c
+            .call_tool(
+                "workspace_watch",
+                Some(args),
+                test_meta(),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let text = result.content[0].as_text().unwrap().text.clone();
+        crate::workspace_services::clear_test_override();
+        assert!(
+            !text.contains("already idle"),
+            "a running child must never be reported idle: {text}"
+        );
+        assert!(text.contains("Still running"), "got: {text}");
+    }
+
+    /// The SAME regression in the DAEMON configuration, which is the normal
+    /// desktop and `biorouterd` case and which the headless test above cannot
+    /// reach.
+    ///
+    /// `spawn_background_subagent` registers its handle synchronously and only
+    /// then spawns a task whose first await is `SUBAGENT_SEMAPHORE.acquire()`
+    /// (cap 8). Task 33 takes the server turn lease INSIDE the run, i.e. after
+    /// that permit. So a queued child is registered-and-running from the
+    /// parent's point of view while `is_turn_active` is still false for it —
+    /// exactly what `NullServices` models. If `session_liveness` asks the daemon
+    /// first, a 10-way fan-out reports the two queued children "already idle"
+    /// and `mode:"any"` returns immediately with work that has not started.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn watch_does_not_trust_the_daemon_over_a_running_handle() {
+        use crate::agents::subagent_handle::BackgroundSubagent;
+        crate::workspace_services::set_for_tests(Some(std::sync::Arc::new(
+            crate::workspace_services::NullServices, // is_turn_active -> false
+        )));
+
+        let c = client();
+        let _queued = BackgroundSubagent::register(
+            "caller",
+            "child-queued",
+            "waiting on the semaphore",
+            CancellationToken::new(),
+        );
+
+        let args: rmcp::model::JsonObject = serde_json::from_value(serde_json::json!({
+            "session_ids": ["child-queued"], "timeout_s": 1
+        }))
+        .unwrap();
+        let result = c
+            .call_tool(
+                "workspace_watch",
+                Some(args),
+                test_meta(),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let text = result.content[0].as_text().unwrap().text.clone();
+        crate::workspace_services::clear_test_override();
+        assert!(
+            !text.contains("already idle"),
+            "a registered, not-yet-complete child must never be reported idle \
+             just because the daemon has no lease for it yet: {text}"
+        );
+    }
+
+    /// The other half: a FINISHED background child returns immediately, with no
+    /// daemon and with no 120-second park.
+    #[tokio::test]
+    async fn watch_returns_immediately_for_a_finished_background_child() {
+        use crate::agents::subagent_handle::BackgroundSubagent;
+        use crate::agents::subagent_result::SubagentResult;
+        let c = client();
+        let handle = BackgroundSubagent::register(
+            "caller",
+            "child-done",
+            "short job",
+            CancellationToken::new(),
+        );
+        handle.complete(SubagentResult::from_error("finished"));
+
+        let args: rmcp::model::JsonObject = serde_json::from_value(serde_json::json!({
+            "session_ids": ["child-done"], "timeout_s": 30
+        }))
+        .unwrap();
+        let started = std::time::Instant::now();
+        let result = c
+            .call_tool(
+                "workspace_watch",
+                Some(args),
+                test_meta(),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "must not block on a finished child"
+        );
+        assert_ne!(result.is_error, Some(true));
+        let text = result.content[0].as_text().unwrap().text.clone();
+        assert!(text.contains("child-done"));
+        assert!(text.contains("already idle"));
+    }
+
+    /// `Unknown` must PARK, and say it could not check.
+    ///
+    /// Added beyond the task's own test list, which leaves this branch
+    /// unpinned: the resolver test asserts `session_liveness(None, …) ==
+    /// Unknown` in isolation, and both end-to-end "must not say already idle"
+    /// tests register a handle first — so they resolve `Running`, and nothing
+    /// exercised `Unknown` THROUGH the tool. Rewriting `handle_watch`'s
+    /// `Unknown` arm to push "already idle" (exactly the `is_some_and` collapse
+    /// this whole helper exists to prevent, just moved one level out of the
+    /// resolver) kept all of the task's tests green. The elapsed-time assertion
+    /// pins the park positively, not merely by the absence of a phrase.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn watch_parks_on_an_unknown_session_and_admits_it_could_not_check() {
+        // No daemon, and an id no handle in this process knows: the headless
+        // "watching something that is not one of my background children" row.
+        crate::workspace_services::set_for_tests(None);
+        let c = client();
+        let target_id = unique_id("never-seen");
+
+        let args: rmcp::model::JsonObject = serde_json::from_value(serde_json::json!({
+            "session_ids": [target_id], "timeout_s": 1
+        }))
+        .unwrap();
+        let started = std::time::Instant::now();
+        let result = c
+            .call_tool(
+                "workspace_watch",
+                Some(args),
+                test_meta(),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let elapsed = started.elapsed();
+        let text = result.content[0].as_text().unwrap().text.clone();
+        crate::workspace_services::clear_test_override();
+
+        assert_ne!(result.is_error, Some(true), "a timeout is not a tool error");
+        assert!(
+            !text.contains("already idle"),
+            "an UNKNOWN session must never be reported idle: {text}"
+        );
+        assert!(text.contains("Still running"), "got: {text}");
+        assert!(
+            text.contains("No BioRouter daemon is attached"),
+            "the report must admit liveness was unverifiable: {text}"
+        );
+        assert!(
+            elapsed >= std::time::Duration::from_millis(900),
+            "it must actually park for the bound, not short-circuit: {elapsed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn watch_wakes_on_a_terminal_bus_event() {
+        use crate::session_events::{self, SessionBusEvent};
+        let c = client();
+        // `unique_id`, NOT `session_manager::create_session`. Session ids are
+        // `YYYYMMDD_N` counted within one SQLite file, and every `client()` here
+        // gets a fresh temp DB — so the first session of EVERY test in this
+        // binary is `<today>_1`, while `session_events` is a process-global bus
+        // keyed by that id. Two such tests then publish onto each other's bus:
+        // this test's `TurnFinished{reason:"stop"}` was arriving inside
+        // `watch_timeout_is_not_an_error_…`, turning its timeout into a
+        // completion. Production mints ids from one manager per process, so the
+        // collision is a fixture artifact — and `handle_watch` never consults
+        // the session manager at all, it only subscribes by id, so a plain
+        // unique id exercises exactly the same path.
+        let target_id = unique_id("watched");
+
+        // Make the session look busy to the watcher, then finish it.
+        session_events::publish(
+            &target_id,
+            SessionBusEvent::TurnStarted {
+                turn_id: "turn-w".into(),
+            },
+        );
+        let sid = target_id.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            session_events::publish(
+                &sid,
+                SessionBusEvent::TurnFinished {
+                    reason: "stop".into(),
+                    token_state: None,
+                },
+            );
+        });
+
+        let args: rmcp::model::JsonObject = serde_json::from_value(serde_json::json!({
+            "session_ids": [target_id], "timeout_s": 20, "assume_running": true
+        }))
+        .unwrap();
+        let result = c
+            .call_tool(
+                "workspace_watch",
+                Some(args),
+                test_meta(),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let text = result.content[0].as_text().unwrap().text.clone();
+        assert!(
+            text.contains("stop"),
+            "the completion reason is reported: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn watch_timeout_is_not_an_error_and_names_what_is_still_running() {
+        use crate::session_events::{self, SessionBusEvent};
+        let c = client();
+        // Unique id rather than a minted session id — see
+        // `watch_wakes_on_a_terminal_bus_event` for why `<today>_1` is shared by
+        // every test in this binary and what that cost this test specifically.
+        let target_id = unique_id("slow");
+        session_events::publish(
+            &target_id,
+            SessionBusEvent::TurnStarted {
+                turn_id: "turn-slow".into(),
+            },
+        );
+
+        let args: rmcp::model::JsonObject = serde_json::from_value(serde_json::json!({
+            "session_ids": [target_id], "timeout_s": 1, "assume_running": true
+        }))
+        .unwrap();
+        let result = c
+            .call_tool(
+                "workspace_watch",
+                Some(args),
+                test_meta(),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_ne!(result.is_error, Some(true), "a timeout is not a tool error");
+        let text = result.content[0].as_text().unwrap().text.clone();
+        // Capital S: `str::contains` is case-sensitive and the report says
+        // "Still running:" in both of its branches.
+        assert!(text.contains("Still running"), "got: {text}");
+        assert!(text.contains(&target_id));
+    }
+
+    #[tokio::test]
+    async fn watch_rejects_an_empty_or_oversized_id_list() {
+        let c = client();
+        for ids in [serde_json::json!([]), serde_json::json!(vec!["s"; 33])] {
+            let args: rmcp::model::JsonObject = serde_json::from_value(serde_json::json!({
+                "session_ids": ids
+            }))
+            .unwrap();
+            let result = c
+                .call_tool(
+                    "workspace_watch",
+                    Some(args),
+                    test_meta(),
+                    CancellationToken::new(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(result.is_error, Some(true));
+        }
+    }
+
+    /// Tasks 12-17 together register the six headless tools.
+    ///
+    /// **Membership, not equality.** `get_tools()` keeps growing after this
+    /// task: Task 18 appends `subagent` and Task 24 appends `workspace_open`,
+    /// and BOTH re-run this test under `--lib agents::workspace_extension` with
+    /// "Expected: PASS". An `assert_eq!` on the sorted vector here would go red
+    /// at Task 18 Step 6 and stay red. The plan holds exactly ONE exact-surface
+    /// assertion, in Task 24 — the last task that touches `get_tools()`.
+    #[tokio::test]
+    async fn advertises_every_slice1_tool() {
+        let c = client();
+        let tools = c
+            .list_tools(None, CancellationToken::new())
+            .await
+            .unwrap()
+            .tools;
+        let names: Vec<String> = tools.iter().map(|t| t.name.to_string()).collect();
+        for expected in [
+            "workspace_close",
+            "workspace_list",
+            "workspace_read_conversation",
+            "workspace_send_prompt",
+            "workspace_set_tools",
+            "workspace_watch",
+        ] {
+            assert!(
+                names.iter().any(|n| n == expected),
+                "the Slice-1 surface must include {expected}: {names:?}"
+            );
+        }
+        assert!(
+            !names.iter().any(|n| n == "workspace_open"),
+            "workspace_open is Phase 2 (Task 24): {names:?}"
+        );
+        // And every one of the six is named in the instruction block (§6).
+        let info = c.get_info().unwrap();
+        let instructions = info.instructions.as_deref().unwrap();
+        for name in &names {
+            assert!(
+                instructions.contains(name.as_str()),
+                "instructions omit {name}"
+            );
+        }
+        assert!(
+            !instructions.contains("workspace_open"),
+            "not advertised until Task 24"
+        );
+        assert!(instructions.len() <= 2500, "injection budget (§6)");
     }
 }
