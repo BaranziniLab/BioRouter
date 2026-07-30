@@ -2602,18 +2602,23 @@ biorouter|privacy::extensions|8|crates/biorouter/src/privacy/extensions.rs
 biorouter|agents::chatrecall_extension|10,17|crates/biorouter/src/agents/chatrecall_extension.rs
 biorouter-mcp|knowledge::tier|10A|crates/biorouter-mcp/src/knowledge/tier.rs
 biorouter|privacy::refusal|12|crates/biorouter/src/privacy/refusal.rs
-biorouter-mcp|private_roots|14B|crates/biorouter-mcp/src/private_roots.rs
-biorouter|privacy::private_roots|14B|crates/biorouter/src/privacy/private_roots.rs
-biorouter|privacy::path_policy|14B|crates/biorouter/src/privacy/path_policy.rs
-biorouter-mcp|agent_drafter::tier|14E|crates/biorouter-mcp/src/agent_drafter/tier.rs
-biorouter-server|call_tool_dispatches_through_the_barrier|14C|fn call_tool_dispatches_through_the_barrier
 biorouter|session::chat_history_search|17|crates/biorouter/src/session/chat_history_search.rs
 biorouter|privacy::alt_provider|19|crates/biorouter/src/privacy/alt_provider.rs
 biorouter|privacy::visibility|21|crates/biorouter/src/privacy/visibility.rs
 biorouter|every_copy_path_carries_the_tier_and_the_provider|22|fn every_copy_path_carries_the_tier_and_the_provider
 biorouter|privacy::declassify|29|crates/biorouter/src/privacy/declassify.rs
+biorouter-mcp|knowledge::tier_user|29A|crates/biorouter-mcp/src/knowledge/tier_user.rs
+biorouter|privacy::disclosure|30A|crates/biorouter/src/privacy/disclosure.rs
 ROWS
-want "deferred rows" 18 "$(wc -l < /tmp/56-filters/deferred.txt | tr -d ' ')"
+# ⚠ FIFTEEN, not eighteen, and the difference is DR-17. Five rows left with the
+# deferred barrier — `private_roots` (14B), `privacy::private_roots` (14B),
+# `privacy::path_policy` (14B), `agent_drafter::tier` (14E) and
+# `call_tool_dispatches_through_the_barrier` (14C) — because nothing in v1
+# creates them, and a deferred entry nothing creates is a filter that stays
+# green for ever, which assertion (b) below exists to reject. Two arrived with
+# Tasks 29A and 30A. If this number moves again, the table three sections up
+# moved with it or one of them is wrong.
+want "deferred rows" 15 "$(wc -l < /tmp/56-filters/deferred.txt | tr -d ' ')"
 # ⚠ AND THE OTHER 41. Step 3's first table claims an EXACT measured count for
 # every filter that resolves, and every `pre + N` assertion in this plan is
 # arithmetic on one of those numbers. Until this round the loop below treated
@@ -2789,9 +2794,11 @@ while IFS='|' read -r pkg filter task evidence; do
 done < /tmp/56-filters/deferred.txt
 want "UNBACKED rows" 0 "$unbacked"
 # (c) Re-runnable, and the phase gates re-run it: after Task 20 the DEFERRED set
-#     must have lost knowledge::tier, agent_drafter::tier, privacy::extensions
-#     and privacy::refusal;
-#     after Task 40 it must be EMPTY. Those runs edit the heredoc above — which
+#     must have lost knowledge::tier, privacy::extensions and privacy::refusal
+#     (⚠ NOT agent_drafter::tier — DR-17 defers Task 14E, and that row is struck
+#     from the table along with the other four barrier rows);
+#     after Task 40 it must be EMPTY — which it can only be because the five
+#     deferred rows were REMOVED, not because they resolved. Those runs edit the heredoc above — which
 #     assertion (2) then re-checks — rather than relaxing anything here.
 #
 # ── LAST LINE. This block's exit status IS the verdict.
@@ -14168,9 +14175,11 @@ async fn the_users_own_export_route_is_unconstrained() {
 ```
 
 ⚠ **`../escape` from inside the workspace must be refused, and that is why the check is on the
-CANONICALIZED, composed destination** — the deepest-existing-ancestor technique
-`privacy::path_policy::is_under_any` already uses (Task 14B (d)), not `starts_with` on the raw
-string. A `target_dir` of `<ws>/../elsewhere` is textually "under the workspace" and is not.
+CANONICALIZED, composed destination** — the deepest-existing-ancestor technique, not `starts_with` on
+the raw string. ⚠ **[DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store) defers Task 14B, so `privacy::path_policy::is_under_any` does not
+exist in v1 and this task must not import it.** The technique is three lines (canonicalize the
+deepest existing ancestor of the composed destination, then compare); write it here rather than
+reviving a deferred module for one helper. A `target_dir` of `<ws>/../elsewhere` is textually "under the workspace" and is not.
 
 - [ ] **Step 2: Run** → **FAIL** (every destination is currently accepted).
 
@@ -18178,12 +18187,20 @@ crates/biorouter-mcp/src/knowledge/tier.rs	assert_reachable
 crates/biorouter-mcp/src/knowledge/server.rs	kb_export
 crates/biorouter-mcp/src/knowledge/server.rs	call_tool
 crates/biorouter-mcp/src/agent_drafter/catalog.rs	discover
-crates/biorouter/src/privacy/path_policy.rs	for_call
-crates/biorouter-mcp/src/developer/shell.rs	build_sandbox_policy
 ROWS
+# ⚠ TWO ROWS REMOVED BY DR-17, and the count below moved with them:
+#   crates/biorouter/src/privacy/path_policy.rs      for_call
+#   crates/biorouter-mcp/src/developer/shell.rs      build_sandbox_policy
+# Both are Layer A / Layer B, which Tasks 14A-14F defer. Leaving them in makes
+# this inventory demand two enforcement points that a CORRECT v1 tree does not
+# have — the exact "gate that fails a correct implementation" class this task's
+# own preamble is about. The matrix loses the same two rows.
 sort -u /tmp/56-toggle-A.txt > /tmp/56-toggle-want.txt
 sort -u /tmp/56-toggle-B.txt > /tmp/56-cap-want.txt
 n=$(( $(wc -l < /tmp/56-toggle-want.txt) + $(wc -l < /tmp/56-cap-want.txt) ))
+# ⚠ SEVENTEEN under DR-17, against a matrix of EIGHTEEN rows. It was 19/20
+# before the two Layer A / Layer B rows above were removed; the arithmetic and
+# the reason are unchanged, only the total. What follows is that reason.
 # ⚠ NINETEEN, against a matrix of TWENTY rows, and the difference is named
 # rather than fudged: matrix row 17 (session copy) is an INVARIANT asserted
 # identically in both columns, not an enforcement point. It refuses nothing and
@@ -18191,7 +18208,7 @@ n=$(( $(wc -l < /tmp/56-toggle-want.txt) + $(wc -l < /tmp/56-cap-want.txt) ))
 # session's stamp to public, durably, because re-enabling does not revisit it.
 # See DR-15's ⚠. If a later task makes the copy paths conditional on the toggle,
 # that is the change that adds the twentieth row here, and it should not.
-[ "$n" -eq 19 ] || { echo "FAIL  inventory has $n rows; expected 19 (matrix 20 - the copy invariant)"; tog_rc=1; }
+[ "$n" -eq 17 ] || { echo "FAIL  inventory has $n rows; expected 17 (matrix 18 - the copy invariant)"; tog_rc=1; }
 scan 'privacy_tiers_enabled[(][)]' | grep -v '/privacy/mod\.rs' > /tmp/56-toggle-have.txt
 scan '[.](enforced|restricts_private_data)[(][)]' \
   | grep -v '/privacy/capability\.rs' > /tmp/56-cap-have.txt
