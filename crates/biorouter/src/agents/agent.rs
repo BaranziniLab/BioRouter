@@ -3350,12 +3350,37 @@ impl Agent {
         ) {
             return false;
         }
-        !self
-            .extension_manager
-            .list_extensions()
-            .await
-            .map(|ext| ext.is_empty())
-            .unwrap_or(true)
+        // "Is anything loaded at all" — but NOT counting the extension this
+        // gate's own answer causes to be loaded. `ensure_spawn_extension` puts
+        // `workspace` in the map, so counting it would make one turn's `true`
+        // the reason for the next turn's `true`: an agent that removed its last
+        // real extension would keep delegating forever off a grant it derived
+        // from itself. See `ExtensionManager::has_non_injected_extensions`.
+        self.extension_manager.has_non_injected_extensions().await
+    }
+
+    /// Drop an injection this agent made, once the session state that justified
+    /// it is gone. Only ever removes an [`ExtensionOrigin::AutoInjected`] entry
+    /// — an explicitly enabled Workspace Control is the user's and stays.
+    ///
+    /// This is what makes the grant genuinely derived rather than sticky.
+    /// Merely skipping the next injection changes nothing: the extension is
+    /// already loaded and `get_prefixed_tools` reads the manager
+    /// unconditionally, so the tool would keep being advertised — and remain
+    /// dispatchable, since the spawn gate keys on `session_type`, never on
+    /// `subagents_enabled`.
+    ///
+    /// One `Agent` can serve sessions that disagree about this (ACP shares an
+    /// agent across all of its sessions), so an eligible and an ineligible
+    /// session interleaving will load and unload the extension in turn. That is
+    /// the price of a per-session answer from an agent-wide extension map, and
+    /// it is paid in the right direction: each `list_tools` returns a list
+    /// correct for the session that asked, and `workspace` is a cheap
+    /// in-process platform extension.
+    async fn revoke_spawn_extension(&self) {
+        self.extension_manager
+            .remove_if_auto_injected(Self::SPAWN_EXTENSION)
+            .await;
     }
 
     /// The extension key the spawn tool is advertised under. Already canonical:
@@ -3410,9 +3435,15 @@ impl Agent {
         // after it would produce a tool list with no spawn tool on that turn,
         // i.e. "the first turn of every session cannot delegate", and for a
         // one-shot `biorouter run` every turn is the first turn.
+        //
+        // The `else` is the same statement read backwards, and it is not
+        // optional: the injection is derived state, so when its cause is gone
+        // the grant must go with it. See `revoke_spawn_extension`.
         let subagents_enabled = self.subagents_enabled(session_id).await;
         if subagents_enabled {
             self.ensure_spawn_extension(session_id).await;
+        } else {
+            self.revoke_spawn_extension().await;
         }
 
         let mut prefixed_tools = self
@@ -3420,6 +3451,18 @@ impl Agent {
             .get_prefixed_tools(extension_name.clone())
             .await
             .unwrap_or_default();
+
+        // Revoking the injection is necessary but not sufficient. `subagent` is
+        // one of the workspace extension's OWN tools now, so a user who enabled
+        // Workspace Control explicitly gets the spawn tool advertised whatever
+        // the gate says — and that entry is the user's, so it must not be
+        // revoked. The invariant is about the tool, not about how the extension
+        // arrived: no spawn tool, under any name, from any source, in a session
+        // whose gate says delegation is off.
+        if !subagents_enabled {
+            let prefixed_spawn_tool = format!("{}__{}", Self::SPAWN_EXTENSION, SUBAGENT_TOOL_NAME);
+            prefixed_tools.retain(|tool| tool.name != prefixed_spawn_tool);
+        }
 
         if (extension_name.is_none() || extension_name.as_deref() == Some("platform"))
             && self.config.scheduler_service.is_some()
@@ -7700,6 +7743,169 @@ mod tests {
             inherited.contains(&"todo".to_string()),
             "…while the extensions the user really has still propagate: \
              {inherited:?}"
+        );
+    }
+
+    /// The injection is DERIVED state, so it has to go when its cause goes.
+    ///
+    /// Skipping the injection on a later turn is not enough: the extension is
+    /// already loaded, and `get_prefixed_tools` reads the manager
+    /// unconditionally. Without a revocation the grant is permanent — an
+    /// Agent-Drafter app that turns delegation off (so `consult` is the one
+    /// delegation mechanism, the whole point of `set_subagent_tool_enabled`),
+    /// a switch to a Gemini model, or a mode change to Chat all leave
+    /// `workspace__subagent` advertised, and the dispatch gate keys on
+    /// `session_type`, not on `subagents_enabled`.
+    #[tokio::test]
+    async fn the_injection_is_revoked_when_delegation_stops_being_enabled() {
+        let (agent, session_id) = agent_with_one_extension_for_tests().await;
+        let names: Vec<String> = agent
+            .list_tools(&session_id, None)
+            .await
+            .iter()
+            .map(|t| t.name.to_string())
+            .collect();
+        assert!(
+            names.iter().any(|n| n == "workspace__subagent"),
+            "precondition: the injection happened: {names:?}"
+        );
+
+        // An app with declared worker profiles takes the generic spawn tool away.
+        agent.set_subagent_tool_enabled(false);
+        assert!(
+            !agent.subagents_enabled(&session_id).await,
+            "precondition: delegation is off"
+        );
+
+        let names: Vec<String> = agent
+            .list_tools(&session_id, None)
+            .await
+            .iter()
+            .map(|t| t.name.to_string())
+            .collect();
+        assert!(
+            !names.iter().any(|n| n.contains("subagent")),
+            "no spawn tool may survive its own precondition: {names:?}"
+        );
+        assert!(
+            !agent
+                .extension_manager
+                .is_extension_enabled("workspace")
+                .await,
+            "…and the derived grant itself is gone, not merely unadvertised"
+        );
+    }
+
+    /// The gate must not hold itself open.
+    ///
+    /// `subagents_enabled` refuses when no extension is loaded — and the
+    /// extension it causes to be loaded is an extension. Counted naively, one
+    /// turn's injection satisfies the precondition for every later turn, so a
+    /// session that removed its last real extension would keep delegating
+    /// forever off the back of a grant it derived from itself.
+    #[tokio::test]
+    async fn the_injection_does_not_keep_the_subagent_gate_open_by_itself() {
+        let (agent, session_id) = agent_with_one_extension_for_tests().await;
+        let _ = agent.list_tools(&session_id, None).await; // injects
+
+        agent.remove_extension("todo").await.unwrap(); // the last real one
+        assert!(
+            !agent.subagents_enabled(&session_id).await,
+            "an agent whose only remaining extension is its own injection has \
+             no extensions in the sense the gate means"
+        );
+
+        let names: Vec<String> = agent
+            .list_tools(&session_id, None)
+            .await
+            .iter()
+            .map(|t| t.name.to_string())
+            .collect();
+        assert!(!names.iter().any(|n| n.contains("subagent")), "{names:?}");
+    }
+
+    /// ACP loads the user's extensions onto ONE `Agent` and serves every
+    /// session from it, so a grant recorded per extension name rather than per
+    /// session is visible to sessions that were never eligible for it. The
+    /// session type is the only axis of `subagents_enabled` that varies between
+    /// two sessions of one agent, and it is the axis that says "subagents
+    /// cannot create other subagents".
+    #[tokio::test]
+    async fn an_ineligible_session_on_a_shared_agent_is_not_offered_the_injection() {
+        let (agent, eligible) = agent_with_one_extension_for_tests().await;
+        let _ = agent.list_tools(&eligible, None).await; // the eligible session injects
+
+        let working_dir = agent
+            .config
+            .session_manager
+            .get_session(&eligible, false)
+            .await
+            .unwrap()
+            .working_dir;
+        let other = agent
+            .config
+            .session_manager
+            .create_session(
+                working_dir,
+                "child".into(),
+                crate::session::session_manager::SessionType::SubAgent,
+            )
+            .await
+            .unwrap()
+            .id;
+        assert!(
+            !agent.subagents_enabled(&other).await,
+            "precondition: a subagent session may not delegate"
+        );
+
+        let names: Vec<String> = agent
+            .list_tools(&other, None)
+            .await
+            .iter()
+            .map(|t| t.name.to_string())
+            .collect();
+        assert!(
+            !names.iter().any(|n| n.contains("subagent")),
+            "a grant another session derived must not be offered here: {names:?}"
+        );
+    }
+
+    /// Revoking the injection is necessary but not sufficient: `subagent` is
+    /// one of the workspace extension's own tools now, so a user who enabled
+    /// Workspace Control explicitly is advertised the spawn tool whatever the
+    /// gate says. The rule has to be about the TOOL, not about how the
+    /// extension got loaded — no spawn tool, by any name, from any source,
+    /// when delegation is off.
+    #[tokio::test]
+    async fn an_explicit_workspace_entry_still_hides_the_spawn_tool_when_delegation_is_off() {
+        let (agent, session_id) = agent_in_chat_mode_for_tests().await;
+        agent
+            .add_extension(crate::agents::extension::ExtensionConfig::Platform {
+                name: "workspace".into(),
+                description: "Workspace Control".into(),
+                bundled: Some(true),
+                available_tools: vec![],
+            })
+            .await
+            .unwrap();
+        assert!(!agent.subagents_enabled(&session_id).await, "precondition");
+
+        let names: Vec<String> = agent
+            .list_tools(&session_id, None)
+            .await
+            .iter()
+            .map(|t| t.name.to_string())
+            .collect();
+        assert!(
+            names
+                .iter()
+                .any(|n| n == "workspace__workspace_send_prompt"),
+            "the user's own entry keeps its cross-session surface: {names:?}"
+        );
+        assert!(
+            !names.iter().any(|n| n.contains("subagent")),
+            "…but not a spawn tool the gate says this session may not have: \
+             {names:?}"
         );
     }
 
