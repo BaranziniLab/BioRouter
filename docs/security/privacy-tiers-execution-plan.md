@@ -9361,18 +9361,33 @@ fn a_backend_that_cannot_express_it_refuses_instead_of_dropping_it() {
         eprintln!("host CAN express a read-deny; covered by the sibling tests");
         return;
     }
-    let policy = SandboxPolicy::unconfined()
-        .with_deny_read_roots(vec![PathBuf::from("/nonexistent-private-root")]);
-    assert!(
-        matches!(
-            backend.wrap(&policy, "/bin/sh"),
-            Err(ShellSandboxError::PolicyUnsupported(_))
-        ),
-        "a backend that cannot subtract reads must say PolicyUnsupported, not \
-         Unavailable and not Ok — the caller's fail-closed branch keys on it"
-    );
+    // BOTH lists, separately. A backend that checks only `deny_read_roots`
+    // returns Ok for a policy whose sole entry is the config FILE — and that
+    // policy is exactly what a host with the four roots absent produces.
+    for policy in [
+        SandboxPolicy::unconfined()
+            .with_deny_read_roots(vec![PathBuf::from("/nonexistent-private-root")]),
+        SandboxPolicy::unconfined()
+            .with_deny_write_files(vec![PathBuf::from("/nonexistent-private-root/config.yaml")]),
+    ] {
+        assert!(
+            matches!(
+                backend.wrap(&policy, "/bin/sh"),
+                Err(ShellSandboxError::PolicyUnsupported(_))
+            ),
+            "a backend that cannot subtract reads must say PolicyUnsupported, not \
+             Unavailable and not Ok — the caller's fail-closed branch keys on it"
+        );
+    }
 }
 ```
+
+**This gate rejects: a backend that reports the deny as unavailable rather than unexpressible.** The
+variant is the whole assertion. `Unavailable` is what a backend that *dropped* the deny and then
+found no sandbox also returns, so a test written as `Err(_)` — or as
+`PolicyUnsupported(_) | Unavailable(_)` — passes the base case this task exists for. It also rejects
+the half-fix that checks `deny_read_roots` and not `deny_write_files`: on a machine where none of the
+four directories exists yet, the config file is the *only* entry, and the half-fix returns `Ok`.
 
 and, in `seatbelt.rs`'s own `mod tests`, the profile-shape half:
 
@@ -9418,6 +9433,34 @@ fn a_deny_root_is_named_in_both_its_literal_and_canonical_spelling() {
     // profile() and wrap() must agree on the count, or a `(param "DENY_ROOT_1")`
     // references a parameter that was never passed and sandbox-exec errors out.
     assert_eq!(policy.profile().matches("DENY_ROOT_").count(), params.len());
+}
+
+#[test]
+fn the_config_file_is_denied_as_a_literal_and_is_actually_emitted() {
+    // Round 3 §4: `deny_write_files` was DECLARED on both policy types and read
+    // by no emitter, so DR-14's fifth entry — the master switch file — was
+    // unprotected on macOS while every type-level assertion in this task passed.
+    // This is the test that fails that state.
+    let cfg = PathBuf::from("/tmp/biorouter-test-config.yaml");
+    let policy = SeatbeltPolicy::new(vec![PathBuf::from("/work")])
+        .with_deny_write_files(vec![cfg.clone()]);
+    let p = policy.profile();
+    // (1) EMITTED AT ALL, and under BOTH operations. Read matters as much as
+    //     write: a model that can read the file learns nothing secret, but
+    //     `deny file-write*` alone leaves `cp config.yaml.bak config.yaml`.
+    assert_eq!(p.matches("(literal (param \"DENY_FILE_0\"))").count(), 2, "{p}");
+    // (2) `literal`, NEVER `subpath`. A `subpath` spelling of a file matches
+    //     nothing and the profile still compiles — the silent no-op.
+    assert!(!p.contains("(subpath (param \"DENY_FILE_"), "a file was denied as a subpath: {p}");
+    // (3) The parameter is passed, or sandbox-exec fails to start the command.
+    let (_prog, args) = policy.wrap("/bin/sh");
+    assert_eq!(p.matches("DENY_FILE_").count(),
+               2 * args.iter().filter(|a| a.starts_with("-DDENY_FILE_")).count());
+    // (4) …and the file list did NOT leak into the root namespace, which is the
+    //     way the two get "simplified" into one — and the way `create_dir_all`
+    //     (the AR-10 mitigation, Task 14B (i)) ends up replacing config.yaml
+    //     with a directory and bricking the install.
+    assert!(!p.contains("DENY_ROOT_"), "{p}");
 }
 ```
 
@@ -9491,6 +9534,15 @@ impl SandboxPolicy {
         self.deny_read_roots = roots;
         self
     }
+
+    /// The file half. A separate builder rather than a second argument to the
+    /// one above, because the two lists are consumed by different primitives on
+    /// both kernels and a caller that means "the config file" must not be able
+    /// to reach the `create_dir_all` loop by passing it to the wrong one.
+    pub fn with_deny_write_files(mut self, files: Vec<PathBuf>) -> Self {
+        self.deny_write_files = files;
+        self
+    }
 }
 ```
 
@@ -9535,7 +9587,8 @@ impl ShellSandbox for NullSandbox {
     fn supports_read_deny(&self) -> bool {
         false
     }
-    // probe() and wrap() unchanged.
+    // probe() unchanged; wrap() gains ONE arm — see step 3 (c′)'s ⚠, which
+    // settles the variant rather than leaving it to the implementer.
 }
 ```
 
@@ -9580,6 +9633,30 @@ impl SeatbeltPolicy {
         }
         out
     }
+
+    /// The same treatment for the FILE list, and a separate function rather
+    /// than a flag on the one above, because the two feed different SBPL
+    /// filters (`literal` vs `subpath`) and different `-D` namespaces.
+    /// ⚠ Round 3 §4 found this field declared with nothing reading it. A field
+    /// no emitter consumes is `config.yaml` unprotected on macOS while every
+    /// type-level assertion in this task passes.
+    fn deny_file_params(&self) -> Vec<PathBuf> {
+        let mut out: Vec<PathBuf> = Vec::new();
+        for file in &self.deny_write_files {
+            let canonical = file.canonicalize().unwrap_or_else(|_| file.clone());
+            for candidate in [file.clone(), canonical] {
+                if !out.contains(&candidate) {
+                    out.push(candidate);
+                }
+            }
+        }
+        out
+    }
+
+    pub fn with_deny_write_files(mut self, files: Vec<PathBuf>) -> Self {
+        self.deny_write_files = files;
+        self
+    }
 }
 ```
 
@@ -9610,23 +9687,38 @@ the final `p.push('\n')`:
         // grant, so denying exactly those two is a complete subtraction of what
         // was granted. (There is no need to reach for a broader `file*`.)
         let deny_roots = self.deny_root_params();
-        if !deny_roots.is_empty() {
+        let deny_files = self.deny_file_params();
+        if !deny_roots.is_empty() || !deny_files.is_empty() {
             p.push_str("\n\n; Private data roots (issue #56 DR-14): no read, no write.\n");
             for op in ["file-read*", "file-write*"] {
                 p.push_str(&format!("(deny {op}"));
                 for i in 0..deny_roots.len() {
                     p.push_str(&format!("\n  (subpath (param \"DENY_ROOT_{i}\"))"));
                 }
+                // ⚠ `literal`, not `subpath`. DR-14's fifth entry is a FILE, and
+                // a `subpath` spelling of a file matches nothing while the
+                // profile still compiles and `sandbox-exec` still starts — the
+                // silent-no-op shape this task exists to keep out. Measured in
+                // Task 14B (h): with `literal`, read / `echo >` / `rm -f` all
+                // return `Operation not permitted` and a sibling file in the
+                // same directory stays readable.
+                for i in 0..deny_files.len() {
+                    p.push_str(&format!("\n  (literal (param \"DENY_FILE_{i}\"))"));
+                }
                 p.push_str(")\n");
             }
         }
 ```
 
-and in `wrap()`, beside the `-DWRITABLE_ROOT_n=` loop:
+and in `wrap()`, beside the `-DWRITABLE_ROOT_n=` loop — **both** loops, or the profile references a
+`(param "DENY_FILE_0")` that was never passed and `sandbox-exec` fails to start the command:
 
 ```rust
         for (i, root) in self.deny_root_params().iter().enumerate() {
             args.push(format!("-DDENY_ROOT_{i}={}", root.display()));
+        }
+        for (i, file) in self.deny_file_params().iter().enumerate() {
+            args.push(format!("-DDENY_FILE_{i}={}", file.display()));
         }
 ```
 
@@ -9755,7 +9847,9 @@ exists on every macOS this app supports and is what makes the sentinel-byte asse
         // the same way Linux does when the policy asks for something the host
         // cannot express — otherwise a stripped or MDM-restricted Mac emits a
         // profile that compiles, runs, and denies nothing.
-        if !policy.deny_read_roots.is_empty() && !self.supports_read_deny() {
+        if (!policy.deny_read_roots.is_empty() || !policy.deny_write_files.is_empty())
+            && !self.supports_read_deny()
+        {
             return Err(ShellSandboxError::PolicyUnsupported(
                 "this host's Seatbelt cannot subtract a read: the two-legged \
                  self-test could not establish a working deny (sandbox-exec is \
@@ -9765,6 +9859,10 @@ exists on every macOS this app supports and is what makes the sentinel-byte asse
         }
         let p = SeatbeltPolicy::new(policy.writable_roots.clone())
             .with_deny_read_roots(policy.deny_read_roots.clone())
+            // ⚠ BOTH lists cross. Carrying only the roots is how `config.yaml`
+            // ends up unprotected on macOS while `SandboxPolicy` still declares
+            // it — the field exists, the builder exists, and nothing joins them.
+            .with_deny_write_files(policy.deny_write_files.clone())
             .with_network(policy.allow_network);
         let (program, prefix_args) = p.wrap(program);
         Ok(Wrapped { program, prefix_args })
@@ -9788,11 +9886,39 @@ exists on every macOS this app supports and is what makes the sentinel-byte asse
     }
 ```
 
-⚠ **`NullSandbox` gets the same treatment.** Its `wrap` returns `Unavailable` today, which is a
-different variant from the one the unsupported-backend test asserts. Either it returns
-`PolicyUnsupported` when `deny_read_roots` is non-empty, or the test accepts both — **pick one and
-say which here**, because "the test and the implementation use different variants" is the exact
-shape round 3 rejected in Task 14A.
+⚠ **`NullSandbox` gets the same treatment, and the choice is made here rather than left to the
+implementer.** Its `wrap` returns `Unavailable` today, which is a different variant from the one the
+unsupported-backend test asserts. **The implementation changes; the test does not.**
+
+```rust
+impl ShellSandbox for NullSandbox {
+    fn supports_read_deny(&self) -> bool { false }
+
+    fn wrap(&self, policy: &SandboxPolicy, _program: &str) -> Result<Wrapped, ShellSandboxError> {
+        // Issue #56 DR-14. FIRST, before the existing Unavailable return, and
+        // for exactly the reason `windows.rs` does the same: the caller's
+        // fail-closed branch keys on the variant, and the two say different
+        // things. `Unavailable` means "there is no sandbox here" — which for a
+        // BR-69 caller is a warn-and-run-anyway. `PolicyUnsupported` means "a
+        // sandbox decision was required and could not be made", which must
+        // never be reachable by the warn-and-run path.
+        if !policy.deny_read_roots.is_empty() || !policy.deny_write_files.is_empty() {
+            return Err(ShellSandboxError::PolicyUnsupported(
+                "no shell sandbox backend is available on this host, so a \
+                 private-data read-deny cannot be expressed"
+                    .to_string(),
+            ));
+        }
+        Err(ShellSandboxError::Unavailable(/* …unchanged… */))
+    }
+}
+```
+
+**Why not the other way round** (relax the test to `matches!(.., PolicyUnsupported(_) | Unavailable(_))`):
+because `Unavailable` is exactly what a *dropped* deny looks like. A backend that ignored
+`deny_read_roots` entirely, found no sandbox, and returned `Unavailable` would satisfy the relaxed
+test while denying nothing — which is the base case this whole task exists for. One variant, asserted
+exactly, is the only version of this test that can fail.
 
 ⚠ The existing `golden_argv_matches_seatbelt_policy` test (`macos.rs:56-73`) still passes
 byte-for-byte, because a policy with no deny roots emits no deny block and no `-DDENY_ROOT_`. **Do
@@ -9899,6 +10025,25 @@ In `wrap_bubblewrap`, **after** the writable-root `--bind` loop and before `--un
             args.push(root.display().to_string());
         }
     }
+    // The FILE half, in the SAME loop position and for the same measured
+    // reason: emitted before the `--bind` of its parent directory, the
+    // protection evaporates with rc=0 and nothing reports it (Task 14B (h)).
+    // `--ro-bind /dev/null` rather than `--tmpfs`, because `--tmpfs` needs a
+    // directory mountpoint. Measured on `debian:bookworm-slim` /
+    // `bubblewrap 0.8.0`: cat -> Permission denied, `echo >` / `echo >>` ->
+    // Permission denied, `rm -f` -> Device or resource busy, host file unchanged.
+    //
+    // ⚠ `is_file()`, and it is the same NECESSITY as `is_dir()` above: a
+    // `--ro-bind` whose SOURCE exists but whose DESTINATION does not aborts
+    // bwrap the same way. A fresh install with no `config.yaml` yet must still
+    // produce a runnable wrapper.
+    for file in &policy.deny_write_files {
+        if file.is_file() {
+            args.push("--ro-bind".to_string());
+            args.push("/dev/null".to_string());
+            args.push(file.display().to_string());
+        }
+    }
 ```
 
 ⚠ **Do not hoist the `is_dir()` skip into a shared helper.** macOS is strictly better here and a
@@ -9925,10 +10070,10 @@ namespace set here would change BR-69 behaviour under a privacy commit.
     }
 
     fn wrap(&self, policy: &SandboxPolicy, _program: &str) -> Result<Wrapped, ShellSandboxError> {
-        if !policy.deny_read_roots.is_empty() {
+        if !policy.deny_read_roots.is_empty() || !policy.deny_write_files.is_empty() {
             return Err(ShellSandboxError::PolicyUnsupported(
-                "Windows has no unprivileged sandbox that can hide a directory from an \
-                 arbitrary command"
+                "Windows has no unprivileged sandbox that can hide a directory or a file \
+                 from an arbitrary command"
                     .to_string(),
             ));
         }
@@ -9944,7 +10089,8 @@ namespace set here would change BR-69 behaviour under a privacy commit.
 cargo test -p biorouter-sandbox --lib 2>&1 | tail -5
 # The pre-count is measurable and non-zero, so assert the delta, not "no failures".
 # Measured at 9558c346: `cargo test -p biorouter-sandbox --lib -- --list` is the
-# number to record here before Step 3, and this task adds 2 (both in seatbelt.rs).
+# number to record here before Step 3, and this task adds 3 (all in seatbelt.rs:
+# the two profile-shape tests plus `the_config_file_is_denied_as_a_literal_and_is_actually_emitted`).
 cargo test -p biorouter-sandbox --test read_deny 2>&1 | tail -5
 # Expect: `3 passed` on macOS and on a Linux host with bubblewrap; on a host
 # without, still `3 passed` — one asserts enforcement, two assert the refusal.
