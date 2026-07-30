@@ -494,6 +494,28 @@ enum SessionCommand {
         )]
         format: String,
     },
+    #[command(about = "Stream a session's live events (requires a running daemon)")]
+    Watch {
+        /// Session id to observe.
+        session_id: String,
+        #[arg(
+            long,
+            help = "Keep watching after the current turn ends (default: exit on Finish/Error)"
+        )]
+        follow: bool,
+    },
+    #[command(about = "Send a prompt into a session and stream its turn")]
+    Send {
+        /// Session id to send to.
+        session_id: String,
+        /// The prompt text.
+        text: String,
+        #[arg(
+            long,
+            help = "Return as soon as the turn starts instead of streaming it"
+        )]
+        no_wait: bool,
+    },
     #[command(name = "diagnostics")]
     Diagnostics {
         /// Session identifier for generating diagnostics
@@ -1533,6 +1555,17 @@ async fn handle_session_subcommand(command: SessionCommand) -> Result<()> {
                 }
             };
             crate::commands::session::handle_session_export(session_identifier, output, format)
+                .await?;
+        }
+        SessionCommand::Watch { session_id, follow } => {
+            crate::commands::session_watch::handle_session_watch(&session_id, follow).await?;
+        }
+        SessionCommand::Send {
+            session_id,
+            text,
+            no_wait,
+        } => {
+            crate::commands::session_watch::handle_session_send(&session_id, &text, !no_wait)
                 .await?;
         }
         SessionCommand::Diagnostics { identifier, output } => {

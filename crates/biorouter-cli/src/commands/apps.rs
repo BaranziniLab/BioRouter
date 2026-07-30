@@ -203,11 +203,11 @@ pub async fn handle_apps_list(json: bool) -> Result<()> {
 // daemon plumbing (open / serve)
 // ──────────────────────────────────────────────────────────────────────────────
 
-const DAEMON_HOST: &str = "127.0.0.1";
+pub(crate) const DAEMON_HOST: &str = "127.0.0.1";
 
 /// The port `biorouterd agent` binds by default (`BIOROUTER_PORT`, else 3000 —
 /// the same default `biorouter-server`'s `Settings` uses).
-fn configured_port() -> u16 {
+pub(crate) fn configured_port() -> u16 {
     std::env::var("BIOROUTER_PORT")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -217,7 +217,7 @@ fn configured_port() -> u16 {
 /// True if a Biorouter daemon answers `GET /status` on `host:port`. `/status` is
 /// auth-exempt, so this needs no secret key. Implemented with a raw socket to
 /// avoid pulling in an HTTP client dependency.
-async fn daemon_ok(host: &str, port: u16) -> bool {
+pub(crate) async fn daemon_ok(host: &str, port: u16) -> bool {
     let addr = format!("{host}:{port}");
     let connect = tokio::net::TcpStream::connect(&addr);
     let mut stream = match tokio::time::timeout(Duration::from_millis(600), connect).await {
