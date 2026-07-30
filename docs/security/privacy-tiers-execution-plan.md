@@ -12774,7 +12774,7 @@ sessions already carry `privacy_tier` (Task 6), and the KB tier is the same prob
 tasks earlier. The tier is the smaller, more explicable rule: *an app built in a private chat stays
 in private chats.*
 
-**(d) `export_app`'s destination is constrained — see [Task 14F](#task-14f-export_apps-write-target-a-tool-that-reads-a-root-and-writes-anywhere-is-a-copy-primitive).**
+**(d) `export_app`'s destination is constrained — see [Task 14F](#task-14f-export_apps-write-target--a-tool-that-reads-a-root-and-writes-anywhere-is-a-copy-primitive).**
 
 **(e) Knowledge: the two ends that bypass CP1–CP4.** `kb_export` (`server.rs:735`) and `kb_import`
 (`:765`) gain the `RequestContext` and call `tier::assert_reachable` — the same CP4 check Task 10C
