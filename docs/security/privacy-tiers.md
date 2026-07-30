@@ -1168,9 +1168,23 @@ Hence v2, opt-in, and never a correction to the ruling.
 
 Global, explicit, on by default: `BIOROUTER_PRIVACY_TIERS` (default `on`), and it is a **master**
 switch over the whole feature. With it off there is no bind gate, no turn gate, no dispatch gate, no
-discovery filter, no `chatrecall` filter, no knowledge-base barrier, no spawn matrix, no
-classification ratchet and **no read-deny at all** (§9.5) — neither the in-process barrier nor the
-OS sandbox. Nothing is refused, nothing is sandboxed, and no path is out of reach.
+discovery filter, no `chatrecall` filter and no `chatrecall` LOAD guard, no knowledge-base barrier,
+no scoping of the Agent Drafter catalog, no forced export location for a model's `.brkb`, **no
+refusal when a public session enables a private extension and no stripping of a private server's
+instructions from a public system prompt** (both of which are tool-call-shaped only by analogy and
+are the two channels an enumeration is most likely to miss), no spawn matrix, no classification on a
+copied session, no visibility predicate, no classification ratchet and **no read-deny at all**
+(§9.5) — neither the in-process barrier nor the OS sandbox. Nothing is refused, nothing is
+sandboxed, and no path is out of reach.
+
+**The enumeration above is the specification, and it is checked mechanically rather than read.** A
+master toggle wired to *some* of the enforcement points is the failure mode here, and it is invisible
+to any textual check: the execution plan therefore asserts every point in both toggle positions, and
+closes the list at both ends — every place that reads the switch must have a row, and **every place
+that refuses on privacy grounds must read the switch**. The second half is what catches an
+enforcement point added later that nobody thought to wire, because a new enforcement point is a new
+refusal. The one exception is the OS sandbox, which refuses nothing — it hands the kernel a policy —
+and so is carried by its own row and its own paired assertion.
 
 **An earlier draft of this section scoped the opt-out to Gate C** — turning off the tool gate
 decides what a model may *call*, whereas turning off the session barrier retroactively exposes data
