@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
-import ToolCallWithResponse, { summarizeToolCall } from './ToolCallWithResponse';
-import type { ToolRequestMessageContent } from '../types/message';
+import ToolCallWithResponse, { logToString, summarizeToolCall } from './ToolCallWithResponse';
+import type { NotificationEvent, ToolRequestMessageContent } from '../types/message';
 
 describe('summarizeToolCall', () => {
   it('summarizes file editing tools as natural reading and editing actions', () => {
@@ -837,5 +837,42 @@ describe('ToolCallWithResponse renders delegations distinguishably', () => {
     expect(screen.getByText(/Count the \.rs files/)).toBeInTheDocument();
     expect(screen.getByText(/Read Cargo\.toml/)).toBeInTheDocument();
     expect(screen.queryByText(/Subagent with instructions/)).not.toBeInTheDocument();
+  });
+});
+
+describe('logToString renders developer shell notifications', () => {
+  const logNotification = (data: unknown): NotificationEvent =>
+    ({
+      type: 'Notification',
+      request_id: 'r1',
+      message: { method: 'notifications/message', params: { data } },
+    }) as unknown as NotificationEvent;
+
+  it('keeps rendering streamed shell output with its stream tag', () => {
+    expect(
+      logToString(logNotification({ type: 'shell_output', stream: 'stdout', output: 'hi' }))
+    ).toBe('[stdout] hi');
+  });
+
+  // Issue #72: a foreground command that prints nothing left the card saying
+  // "Working through the tool call" forever, which reads as a hung agent. The
+  // heartbeat carries a ready-made sentence; showing raw JSON instead would be
+  // worse than showing nothing.
+  it('shows the foreground heartbeat sentence, not its JSON envelope', () => {
+    const rendered = logToString(
+      logNotification({
+        type: 'shell_progress',
+        message: 'shell: still running after 45s — find "$HOME" -type d',
+        elapsed_seconds: 45,
+        command: 'find "$HOME" -type d',
+      })
+    );
+    expect(rendered).toBe('shell: still running after 45s — find "$HOME" -type d');
+    expect(rendered).not.toContain('elapsed_seconds');
+  });
+
+  it('still falls back to the raw payload when there is nothing readable in it', () => {
+    expect(logToString(logNotification('plain text'))).toBe('plain text');
+    expect(logToString(logNotification({ unknown: 1 }))).toBe('{"unknown":1}');
   });
 });
