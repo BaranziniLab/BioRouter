@@ -437,8 +437,8 @@ and a GUI is attached):
    start a new child turn or leave a `note`. Human interventions carry provenance
    `{ kind: "user_direct" }`; the parent, on resolving its tool call, is told whether the
    human intervened so it can weigh the summary accordingly.
-5. **Both sides can end it.** The parent aborts via `workspace_close { scope:"turn"|"agent" }`
-   or the existing `subagent_status` cancel; the human via a Stop control on the tab.
+5. **Both sides can end it.** The parent aborts via `workspace_close { scope:"turn"|"agent" }`;
+   the human via a Stop control on the tab.
    Closing the tab alone never kills the child (consistent with existing tab semantics);
    stopping the child resolves the parent's tool call with `SubagentStatus::Incomplete` +
    whatever partial summary exists.
@@ -562,7 +562,7 @@ Each slice ships independently and is verifiable on its own.
    `include_subagents` in History grouped by parent. E2E: a scripted parent spawns a
    child, the harness asserts the child tab streams tool frames and a human `steer`
    reaches it (pattern: `scripts/agent-drafter/ui-control-harness.mjs`).
-4. **Polish + docs.** `subagent_status`/active-work cross-links, instruction-text tuning
+4. **Polish + docs.** `workspace_list`/active-work cross-links, instruction-text tuning
    against real model behavior, user docs under `docs/agent-loop/subagents.md` +
    `docs/extensions/built-in/workspace.md`, and an update to
    [tool-routing](../tool-routing.md) for the chatrecall/workspace split.
