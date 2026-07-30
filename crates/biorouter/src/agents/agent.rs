@@ -3139,45 +3139,56 @@ impl Agent {
     /// Save current extension state to session metadata
     /// Should be called after any extension add/remove operation
     pub async fn save_extension_state(&self, session: &SessionConfig) -> Result<()> {
-        let extensions_state =
-            EnabledExtensionsState::new(self.persistable_extension_configs().await);
-
-        let session_manager = self.config.session_manager.clone();
-        let mut session_data = session_manager.get_session(&session.id, false).await?;
-
-        if let Err(e) = extensions_state.to_extension_data(&mut session_data.extension_data) {
-            warn!("Failed to serialize extension state: {}", e);
-            return Err(anyhow!("Extension state serialization failed: {}", e));
-        }
-
-        session_manager
-            .update(&session.id)
-            .extension_data(session_data.extension_data)
-            .apply()
-            .await?;
-
-        Ok(())
+        self.write_enabled_extensions(&session.id).await
     }
 
     /// Save current extension state to session by session_id
     pub async fn persist_extension_state(&self, session_id: &str) -> Result<()> {
+        self.write_enabled_extensions(session_id).await
+    }
+
+    /// Record the session's enabled extensions, touching NO other key of
+    /// `extension_data`.
+    ///
+    /// Both callers above used to read the session, mutate the whole
+    /// [`ExtensionData`] object in a local copy, and write that whole object
+    /// back — two statements, so a writer of a *different* key that committed
+    /// in between (`todo.v1`, `goal.v0`, `run_state.*`, `workspace_skills.v1`
+    /// all share this one JSON column) was silently erased by the second one.
+    /// `SessionManager::update_extension_state` exists for exactly this: it
+    /// does the read and the write inside one transaction that opens with a
+    /// write, so writers serialize and no merge basis can be stale.
+    ///
+    /// Both of these paths are tool-triggered — the GUI extension toggle and
+    /// `workspace_set_tools` on one, the reply loop's `manage_extensions` save
+    /// on the other — and tool calls overlap by construction, so the window was
+    /// reachable rather than theoretical.
+    async fn write_enabled_extensions(&self, session_id: &str) -> Result<()> {
         let extensions_state =
             EnabledExtensionsState::new(self.persistable_extension_configs().await);
+        let value = extensions_state
+            .to_value()
+            .map_err(|e| anyhow!("Extension state serialization failed: {}", e))?;
 
-        let session_manager = self.config.session_manager.clone();
-        let session = session_manager.get_session(session_id, false).await?;
-        let mut extension_data = session.extension_data.clone();
-
-        extensions_state
-            .to_extension_data(&mut extension_data)
-            .map_err(|e| anyhow!("Failed to serialize extension state: {}", e))?;
-
-        session_manager
-            .update(session_id)
-            .extension_data(extension_data)
-            .apply()
+        let written = self
+            .config
+            .session_manager
+            .update_extension_state(
+                session_id,
+                EnabledExtensionsState::EXTENSION_NAME,
+                EnabledExtensionsState::VERSION,
+                move |_| Ok(value),
+            )
             .await?;
 
+        // `update_extension_state` reports a missing session as `Ok(None)`
+        // rather than writing; the old `get_session` first line failed loudly
+        // in that case and callers log on `Err`, so keep it loud.
+        if written.is_none() {
+            return Err(anyhow!(
+                "cannot record extension state: no session {session_id}"
+            ));
+        }
         Ok(())
     }
 
@@ -7906,6 +7917,83 @@ mod tests {
             !names.iter().any(|n| n.contains("subagent")),
             "…but not a spawn tool the gate says this session may not have: \
              {names:?}"
+        );
+    }
+
+    /// `extension_data` is ONE json column shared by every per-session
+    /// extension — `enabled_extensions.v0` next to `todo.v1`, `goal.v0`,
+    /// `run_state.*`, `workspace_skills.v1`. Both persist paths used to read
+    /// the whole object, mutate their key in a local copy, and write the whole
+    /// object back as two separate statements, so a writer of a DIFFERENT key
+    /// that committed in between was silently erased by the later whole-column
+    /// write. `SessionManager::update_extension_state` exists precisely for
+    /// this and documents the hazard; these two paths were not using it.
+    ///
+    /// Tool calls overlap by construction (the loop drives them through
+    /// `select_all`) and both of these paths are tool-triggered — the GUI
+    /// extension toggle and `workspace_set_tools` on one, the reply loop's
+    /// `manage_extensions` save on the other — so this is reachable, not
+    /// theoretical.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn persisting_extension_state_does_not_erase_another_key_of_the_column() {
+        let (agent, session_id) = agent_with_one_extension_for_tests().await;
+        let agent = std::sync::Arc::new(agent);
+
+        let session_manager = agent.config.session_manager.clone();
+        let todo_session = session_id.clone();
+        let todos = tokio::spawn(async move {
+            for i in 0..40 {
+                session_manager
+                    .update_extension_state(
+                        &todo_session,
+                        crate::session::extension_data::TodoState::EXTENSION_NAME,
+                        crate::session::extension_data::TodoState::VERSION,
+                        move |_| Ok(serde_json::json!({ "items": [], "plan": format!("p{i}") })),
+                    )
+                    .await
+                    .unwrap();
+            }
+        });
+
+        let extension_agent = agent.clone();
+        let extension_session = session_id.clone();
+        let extensions = tokio::spawn(async move {
+            for _ in 0..40 {
+                extension_agent
+                    .persist_extension_state(&extension_session)
+                    .await
+                    .unwrap();
+            }
+        });
+
+        todos.await.unwrap();
+        extensions.await.unwrap();
+
+        let session = agent
+            .config
+            .session_manager
+            .get_session(&session_id, false)
+            .await
+            .unwrap();
+        assert!(
+            crate::session::EnabledExtensionsState::from_extension_data(&session.extension_data)
+                .is_some(),
+            "the extension state this test drives must be there"
+        );
+        assert!(
+            session
+                .extension_data
+                .get_extension_state(
+                    crate::session::extension_data::TodoState::EXTENSION_NAME,
+                    crate::session::extension_data::TodoState::VERSION
+                )
+                .is_some(),
+            "…and so must the unrelated key a concurrent writer owns: {:?}",
+            session
+                .extension_data
+                .extension_states
+                .keys()
+                .collect::<Vec<_>>()
         );
     }
 
