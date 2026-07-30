@@ -303,10 +303,12 @@ code does what its author believed.
   `just generate-openapi && cd ui/desktop && npm run generate-api` before the frontend
   tasks that consume the route (called out explicitly where required).
 - **Permission-relevant code requires human review** (`.github/copilot-instructions.md`):
-  Tasks 6, 8, 10, 14, 15, 16, 18, 19, 19b, 23, 33, 35 and 36 touch cross-session
+  Tasks 6, 8, 10, 14, 15, 16, 18, 19, 19b, 23, 33, 35, 36 and **36b** touch cross-session
   injection/mutation/control, the always-confirm hook, the merged spawn surface, the
   extension-persistence path, or the `/reply` hot path, and must be flagged for operator
-  review in their PR description.
+  review in their PR description. **36b is the sharpest of them**: it is the only task in
+  this plan that lets a non-human answer a permission prompt, and its two bounds
+  (decisions 30 and 31) are what keep that from becoming an escalation ladder.
 - **The `/reply` refactor (Task 8) is the highest-risk change in this plan.** It carries
   its own rollback note and an enlarged test matrix; do not batch it with unrelated work
   in one commit.
@@ -458,7 +460,8 @@ code does what its author believed.
 - **Task 19 is two commits, `19` and `19b`.** The advertisement move and the
   `subagent_status` deletion are independently revertible (the deletion is the breaking
   half). Downstream task numbers are unchanged — the split is `19` → `19` + `19b`, not a
-  renumbering.
+  renumbering. **Task 36b is inserted the same way** (added 2026-07-30, between Tasks 36
+  and 37): a letter suffix, no renumbering, same convention as `13c` and `19b`.
 - **On step granularity, deliberately.** The writing-plans skill's unit is "one action,
   2-5 minutes", and several tasks here exceed it — Tasks 6, 8, 12, 15, 20 and 36 each
   land 300-550 lines, usually as one "Step 3: Implement" over one or two files. That is a
@@ -1141,6 +1144,7 @@ crates/biorouter/src/workspace_services.rs                 # WorkspaceServices t
 crates/biorouter/src/agents/workspace_extension.rs         # The `workspace` platform extension (6 workspace_* tools in Phase 1, + workspace_open in Phase 2, + the merged `subagent`)
 crates/biorouter/src/agents/workspace_inspector.rs         # WorkspaceMutationInspector: always-confirm hook (Task 10)
 crates/biorouter/src/agents/session_skills.rs              # Session-scoped skill overrides (Task 11)
+crates/biorouter/src/agents/approval_relay.rs              # Approval delegation relay + DelegationPolicy, the one policy point for decisions 30/31 (Task 36b)
 crates/biorouter-server/src/workspace/mod.rs               # Module root
 crates/biorouter-server/src/workspace/turn.rs              # THE turn runner: /reply + detached turns both consume it (Tasks 6, 8)
 crates/biorouter-server/src/workspace/bridge.rs            # WorkspaceBridge + per-window registry (UiBridge sibling)
@@ -1181,7 +1185,9 @@ crates/biorouter/src/session/session_manager.rs            # migration 17, Sessi
 crates/biorouter/src/conversation/message.rs               # MessageProvenance; MessageMetadata loses Copy
 crates/biorouter/src/agents/agent.rs                       # soft-interrupt provenance; merged `subagent` dispatch; subagent_status removal; workspace guard; inspector registration
 crates/biorouter/src/agents/extension.rs                   # PLATFORM_EXTENSIONS entry (count test 5→6)
-crates/biorouter/src/agents/mod.rs                         # pub mod workspace_extension, workspace_inspector, session_skills
+crates/biorouter/src/agents/mod.rs                         # pub mod workspace_extension, workspace_inspector, session_skills, approval_relay
+crates/biorouter/src/agents/tool_execution.rs              # the one delegation call site, beside register_confirmation (Task 36b)
+crates/biorouter/src/permission/permission_store.rs        # exact_call_key: the ask identity, lifted out of check_permission/record_permission (Task 36b)
 crates/biorouter/src/agents/skills_extension.rs            # consult the session-scoped skill override (Task 11)
 crates/biorouter/src/agents/reply_parts.rs                 # code-execution retain filter: prefixed `workspace__subagent`, no subagent_status
 crates/biorouter/src/agents/subagent_tool.rs               # SubagentParams gains visible/placement; create_subagent_status_tool deleted; spawn-context + announce
@@ -1198,6 +1204,7 @@ crates/biorouter-server/src/routes/mod.rs                  # merge new routes
 crates/biorouter-server/src/routes/reply.rs                # THE REFACTOR (Task 8): handler becomes lock + spawn runner + bus subscription; user_direct stamping
 crates/biorouter-server/src/routes/apps.rs                 # consult over workspace primitives (Task 41)
 crates/biorouter-server/src/routes/session.rs              # include_subagents query params; SessionSummary additions
+crates/biorouter-server/src/routes/action_required.rs      # confirm_tool_action consults the approval relay, so either surface resolves the one ask (Task 36b)
 crates/biorouter-server/src/openapi.rs                     # new paths/schemas
 crates/biorouter-cli/src/cli.rs                            # SessionCommand::Watch / Send (Task 20)
 ui/desktop/src/contexts/ChatGroupsContext.tsx              # register workspace command handler; annotations; layout echo
@@ -9422,6 +9429,30 @@ impl WorkspaceClient {
     }
 }
 ```
+
+⚠ **The `None => true` branch is SUPERSEDED by Task 36b (operator ruling, 2026-07-30).
+Implement it exactly as written here — but do not read it as final.**
+
+That branch is why headless `mode:"turn"` refuses most of the time in practice: a
+conversation the user has not opened this run has no live agent, so the check takes the
+conservative arm and `send_prompt_turn` returns its refusal, leaving `mode:"note"` as the
+only real headless story. The branch was correct *given its premise* — that an approval
+prompt raised in a conversation nobody is watching parks until it times out. The ruling
+removes the premise: **an agent-created session's approvals belong to the agent that
+created it**, so those prompts now route up the `parent_session_id` chain and reach a
+human only at its root. See
+[Task 36b](#task-36b-approval-delegation-and-single-grant-propagation) and decisions
+29-31.
+
+Two consequences for a reader of *this* task:
+
+- **The code below is still what Task 14 ships**, and Task 36b does not edit it. Task 14 is
+  implemented and committed; the narrowing — refusing only when the target has **no
+  parent** — is a change to a shipped refusal and belongs in its own commit with its own
+  test, not retrofitted here.
+- **Do not "fix" this branch to `false`.** A target with no live agent *and* no parent is
+  exactly the case the refusal is right about: nobody is watching, and there is no
+  delegating agent to ask. The conservative arm stays; it just stops being the only answer.
 
 `peek_agent` is a small addition beside `get_or_create_agent` in
 `crates/biorouter/src/execution/manager.rs` — **add it in THIS task** (Task 33 is 19
@@ -19624,6 +19655,1498 @@ git commit -m "feat(subagent): visible-by-default children with a 4-tab fan-out 
 
 ---
 
+### Task 36b: Approval delegation and single-grant propagation
+
+**Operator ruling, 2026-07-30.** Verbatim:
+
+> If it is the agent that spun up a certain conversation, then all of the requirements
+> and all of the approval should be done by the agent itself. The agent should be able to
+> handle most of the approval status, given its context of the task. If things are out of
+> their level, then they should relay this approval to its own layer and then ask the user
+> for approval. Alternatively, the users can also see it in the actual conversation tab of
+> the sub-agent and approve it from there. Either way, the users only need to approve once
+> in either place, and then the approval for that very specific ask will be propagated
+> throughout.
+
+**What it replaces.** Task 14 shipped `target_mode_requires_approval`
+(`agents/workspace_extension.rs`, `:891` at `95176cd0`), whose `None => true` branch —
+*"No live agent: its mode is not yet fixed, so there is nothing to read. Take the
+conservative branch rather than minting one"* — makes `send_prompt_turn` **refuse**
+whenever the target has no live agent. That is the normal case for a conversation the user
+has not opened this run, so in practice headless `mode:"turn"` refuses most of the time
+and `mode:"note"` is the only real headless story. It was the right call while an
+agent-created session's approvals had nowhere to go. This task gives them somewhere: the
+agent that created the session. See the note added to Task 14, which says the same thing
+from the other end.
+
+**Why it sits between Tasks 36 and 37.** Task 36 establishes the parent/child relationship
+this routes along (`is_workspace_tool_refused_for`, the visible-tab cap, and — through
+Task 32 — the `parent_session_id` stamp). Task 37 builds the subagent tab, which is one of
+the two approval surfaces. The routing must exist before the tab that renders it, and
+after the relationship it follows. **Letter suffix, no renumbering** — same convention as
+Tasks 13c and 19b.
+
+**Depends on:**
+- **Task 32** for `Session.parent_session_id` being stamped at spawn
+  (`persist_spawn_context` → `SessionUpdateBuilder::parent_session_id`). Without the stamp
+  every session looks like a root and this task is inert.
+- **Task 33** for `AgentManager::peek_agent` consulting the pinned sidecar. A glass-box
+  child is never in the `sessions` LRU, so the pre-Task-33 `peek_agent`
+  (`execution/manager.rs:153` at `95176cd0` — `self.sessions.write().await.get(…)`)
+  cannot find a live *ancestor* either when the ancestor is itself a registered child.
+  Depth-2 delegation is a no-op until Task 33 lands; depth-1 works either way.
+- **Task 10** for `WorkspaceMutationInspector` and its `"workspace_mutation"` inspector
+  name (`agents/workspace_inspector.rs:317-319` — exact). Already shipped on this branch.
+
+**Files:**
+- Create: `crates/biorouter/src/agents/approval_relay.rs` (the relay, the policy point,
+  the escalation walk)
+- Modify: `crates/biorouter/src/agents/mod.rs` — one `pub mod approval_relay;`. It goes
+  **between `pub(crate) mod agent;` and the `budget` doc comment**: `rustfmt`'s
+  `reorder_modules` sorts each contiguous `mod` group (the file says so itself, in the
+  comment above `pub mod workspace_extension`), so sorted position is the only stable one,
+  and putting it there leaves the `budget` comment attached to `budget`.
+- Modify: `crates/biorouter/src/permission/permission_store.rs` — lift the exact-args key
+  the store has always built into one named function, `exact_call_key`
+- Modify: `crates/biorouter/src/agents/tool_execution.rs` — the one call site, in
+  `handle_approval_tool_requests` (`:176`), immediately after
+  `let confirmation_rx = self.register_confirmation(&request.id);` (`:317`)
+- Modify: `crates/biorouter-server/src/routes/action_required.rs` — `confirm_tool_action`
+  consults the relay, so a decision from **either** surface resolves the **one** ask
+
+⚠ **Anchors, as everywhere in this plan: the SYMBOL is the anchor.** Every line number
+above was read at `95176cd0` (2026-07-30, Phase-1 head). `agent.rs`, `tool_execution.rs`
+and `session_manager.rs` are all still moving under Phase 1's own commits — grep the
+symbol before you trust a number.
+
+#### The requirements, and where each one lives
+
+| # | Requirement (from the ruling) | Realized by |
+|---|---|---|
+| A-1 | An agent-created session's approval authority is its creating agent | `begin_delegated_approval` walking `Session.parent_session_id` |
+| A-2 | The parent decides within its own authority, using its task context | `DelegationPolicy::ask_ancestor` — the ancestor's *own* inspection pipeline, in the ancestor's *own* mode |
+| A-3 | Escalation is one level at a time | the `for ancestor_id in &chain` loop: one hop, one verdict, `Escalate` ⇒ next hop |
+| A-4 | Two surfaces, one pending request | `Relay::surfaces` — the origin's tab plus the session where a human was asked; both carry the **same** tool request id |
+| A-5 | Approving once resolves it everywhere | `resolve` is first-writer-wins under one lock and returns the *other* surfaces to dismiss; a second decision is `AlreadyResolved`, not a second grant |
+| A-6 | The grant is scoped to "that very specific ask" | `AskKey` = the permission store's existing exact-args key |
+
+**A-6, the identity choice, stated once because it is the question the ruling turns on.**
+There are already two identities in this codebase and this task adds **neither**:
+
+- The **routing** identity — *which parked prompt does this decision resolve* — is the tool
+  **request id**. `Agent::pending_confirmations` is keyed on it (`agent.rs:642`), BR-62
+  made `handle_confirmation` route by it (`:3432`), and `ConfirmationOutcome::Unknown`
+  already exists precisely so a decision for an id nobody is waiting on is dropped rather
+  than applied to some other call. Task 36b uses it unchanged, paired with the session so
+  ids from different agents cannot collide: `AskId { session_id, request_id }`.
+- The **grant** identity — *what was approved* — is the permission store's exact-args key,
+  `format!("{}:{}", tool_call.name, blake3(arguments))`, built today in **two** places
+  (`permission_store.rs:135` in `check_permission` and `:161` in `record_permission`) and
+  lifted here into one `exact_call_key`. That is literally "that very specific ask": this
+  tool, with these exact arguments. It is the narrowest identity the permission layer has —
+  narrower than BR-24's directory/command-prefix scopes (`permission_scope.rs`) and far
+  narrower than a tool-name-wide `PermissionLevel::AlwaysAllow`, whose whole failure mode
+  the BR-24 module docs open with ("always allow `shell` blessed every future shell
+  command the model could think of, `rm -rf` included").
+
+Inventing a third identity is what the ruling most invites and what would break it: a grant
+that is broader than the ask silently becomes a blanket permission, and a grant that is
+narrower than the ask never fires twice, so "propagated throughout" would be a lie.
+
+**Where the memo lives, and why not in the store.** A resolved ask is remembered in the
+relay, in memory, keyed `(root_session_id, AskKey)` — the delegation *tree*, for the life
+of the process. It is deliberately **not** written to `ToolPermissionStore`, whose
+`permissions` map is machine-wide and permanent. "Propagated throughout" is about the chain
+and the two surfaces, not about every future conversation on this machine. If the human
+wants the permanent form they already have it: `Permission::AlwaysAllow` on the card, which
+`handle_approval_tool_requests` turns into a stored `PermissionLevel::AlwaysAllow`
+(`tool_execution.rs:409-413`) exactly as it does today.
+
+---
+
+#### The two bounds — decisions 30 and 31
+
+Neither is in the operator's words; both were added on the implementer's judgement, and
+**both were approved on 2026-07-30 with the qualifier that they may be adjusted once real
+users exercise this feature**. They are recorded as decisions 30 and 31 in
+[Round 3](#round-3--approval-delegation-for-agent-created-sessions-operator-ruling-2026-07-30),
+with what would justify loosening each. **They are not one dial** — see that section.
+
+The reason they exist at all: if a parent agent can approve its child's requests, then a
+long enough chain of agents can approve anything, and the human leaves the loop by
+construction.
+
+- **Bound 30 — no amplification.** An agent may grant only what it already holds. A parent
+  cannot confer authority it does not itself have, so delegation *narrows* down the chain
+  and never widens. **Structural, not a tuning knob.**
+- **Bound 31 — always-confirm inspectors still reach a human at any depth.** Task 10's
+  `WorkspaceMutationInspector` is specified to confirm *"regardless of mode"*; a parent
+  agent must not be able to satisfy it on the user's behalf. Same for anything
+  `SensitiveOpsInspector` or `SecurityInspector` flags. **Plausibly tunable.**
+
+**Both live at ONE policy point: `DelegationPolicy`.** Whoever loosens either must have a
+single place to change and a single place to test. Concretely, and gated in Step 5b:
+
+- `DelegationPolicy::class_of` is the only reader of `HUMAN_ONLY_INSPECTORS` (bound 31).
+- `DelegationPolicy::ask_ancestor` is the only place that reads an ancestor's authority —
+  `grep -c "\.tool_inspection_manager" approval_relay.rs` is **1** (bound 30).
+- `DelegationPolicy::agent_decision` is the only place that turns an agent's verdict into a
+  `Permission` (bound 30's ceiling: `AllowOnce`/`DenyOnce`, never `AlwaysAllow`).
+
+**How bound 30 is enforced, and why the mechanism matters more than the rule.** It would be
+easy to write a parallel policy — "the parent may grant tools of risk ≤ X" — and easy for
+that policy to drift from what the parent is actually allowed to do. Instead
+`ask_ancestor` runs the child's request through **the ancestor's own
+`ToolInspectionManager`, in the ancestor's own `BioRouterMode`**, and reads the answer out
+of `process_inspection_results_with_permission_inspector` — the same combining function
+(`tool_inspection.rs:175`, over `apply_inspection_results_to_permissions` at `:205`) that
+decides whether the *ancestor itself* may run a tool. `approved` ⇒ Grant, `denied` ⇒
+Refuse, `needs_approval` (and every failure mode) ⇒ Escalate. Non-amplification is then a
+property of construction rather than a rule someone has to keep true.
+
+Two consequences worth stating rather than rediscovering:
+
+- **An Auto-mode parent grants freely, and that is correct.** It could have run the tool
+  itself without being asked; conferring that on a child it spawned adds nothing. Bound 30
+  is about authority the parent *lacks*, not about the parent being cautious.
+- **Facts come from the call, authority comes from the ancestor.** `ask_ancestor` passes
+  the **child's** `Session`, not the ancestor's. BR-24 directory grants are matched against
+  the paths the call actually names (`CallFacts::for_tool_call`, resolved against
+  `session.working_dir` — `permission_inspector.rs:457`), so passing the ancestor's session
+  would let a parent's `/work/a` grant authorize a child writing somewhere else entirely.
+  That is amplification along the directory axis, and it is exactly the hole a careless
+  reading produces.
+
+**How bound 31 is enforced, and why it does not weaken what exists.** A security
+inspector's `RequireApproval` already beats a user `always_allow` today — the permission
+inspector emits `InspectionAction::Allow`, and
+`apply_inspection_results_to_permissions`'s `RequireApproval` arm removes the request from
+`approved` and pushes it to `needs_approval` (`tool_inspection.rs:261-276`), while its
+`Allow` arm explicitly *"allows it, but don't override other inspectors' decisions"*
+(`:277-280`). Task 36b must not become a way around that. So:
+
+1. `ask_ancestor` checks `may_decide(class)` **first**, before it looks at the ancestor at
+   all. A `HumanOnly` ask returns `Escalate` even for an Auto-mode ancestor — the one case
+   where every other path grants.
+2. `agent_decision` returns `None` for `Escalate`, so there is no `Permission` for an
+   agent-side path to deliver.
+3. A `HumanOnly` ask is **never memoized** (`resolve` records only `Delegable` asks). Each
+   one reaches a person. That costs a repeat prompt on a byte-identical repeat call, and
+   that is the trade: memoizing it would quietly convert "confirms regardless of mode" into
+   "confirms once per tree per process".
+
+The three inspectors in `HUMAN_ONLY_INSPECTORS` are named from their own `name()` impls —
+`"workspace_mutation"` (`agents/workspace_inspector.rs:318`), `"sensitive_ops"`
+(`security/sensitive_ops.rs:484`), `"security"` (`security/security_inspector.rs:64`). Not
+`"managed"` (`permission/managed_inspector.rs:44`): a managed **Ask** is an org policy that
+an ancestor inside the same org policy is entitled to answer, and `ManagedVerdict::Deny`
+already produces a `Deny`, which `ask_ancestor` maps to `Refuse` without asking anybody.
+
+---
+
+- [ ] **Step 1: Write the failing tests**
+
+In the new `approval_relay.rs`:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::BioRouterMode;
+    use crate::conversation::message::ToolRequest;
+    use crate::session::session_manager::SessionType;
+    use std::sync::Arc;
+
+    fn request(id: &str, tool: &str, args: serde_json::Value) -> ToolRequest {
+        ToolRequest {
+            id: id.to_string(),
+            tool_call: Ok(rmcp::model::CallToolRequestParams {
+                meta: None,
+                name: tool.to_string().into(),
+                arguments: Some(args.as_object().unwrap().clone()),
+                task: None,
+            }),
+            // `ToolRequest` has FOUR fields (`conversation/message.rs:65-76`);
+            // omitting the last two is E0063. Same shape as Task 10's tests.
+            metadata: None,
+            tool_meta: None,
+        }
+    }
+
+    /// A real `Agent` with a real inspection manager, in a chosen mode, plus a
+    /// child session for it to be asked about. The `TempDir` is returned
+    /// because the `SessionManager` outlives the call, and ONE `SessionManager`
+    /// is shared rather than two opened over the same directory.
+    async fn ancestor_and_child(
+        mode: BioRouterMode,
+    ) -> (
+        tempfile::TempDir,
+        Arc<crate::agents::Agent>,
+        crate::session::Session,
+    ) {
+        let temp = tempfile::TempDir::new().unwrap();
+        let sm = Arc::new(crate::session::SessionManager::new(temp.path().to_path_buf()));
+        let child = sm
+            .create_session(
+                temp.path().to_path_buf(),
+                "child".into(),
+                SessionType::SubAgent,
+            )
+            .await
+            .unwrap();
+        let agent = Arc::new(crate::agents::Agent::with_config(
+            crate::agents::AgentConfig::new(
+                Arc::clone(&sm),
+                crate::config::permission::PermissionManager::instance(),
+                None,
+                mode,
+            ),
+        ));
+        (temp, agent, child)
+    }
+
+    fn required_by(inspector: &str, request_id: &str) -> InspectionResult {
+        InspectionResult {
+            tool_request_id: request_id.to_string(),
+            action: InspectionAction::RequireApproval(Some("because".into())),
+            reason: "because".into(),
+            confidence: 1.0,
+            inspector_name: inspector.to_string(),
+            finding_id: None,
+        }
+    }
+
+    // ------------------------------------------------- A-6: the ask's identity
+
+    #[test]
+    fn an_ask_is_identified_by_the_permission_stores_own_exact_args_key() {
+        let a = request("call-1", "acme__widget", serde_json::json!({"n": 1}));
+        // Same tool, same arguments, DIFFERENT tool-request id: one ask.
+        let same = request("call-2", "acme__widget", serde_json::json!({"n": 1}));
+        // Same tool, different arguments: a different ask.
+        let other = request("call-3", "acme__widget", serde_json::json!({"n": 2}));
+        // Same arguments, different tool: a different ask.
+        let elsewhere = request("call-4", "other__widget", serde_json::json!({"n": 1}));
+
+        let key = AskKey::for_request(&a).unwrap();
+        assert_eq!(key, AskKey::for_request(&same).unwrap());
+        assert_ne!(key, AskKey::for_request(&other).unwrap());
+        assert_ne!(key, AskKey::for_request(&elsewhere).unwrap());
+        // …and it IS the store's key, not a lookalike.
+        assert_eq!(
+            key.as_str(),
+            crate::permission::permission_store::exact_call_key(&a).unwrap()
+        );
+    }
+
+    // ------------------------------------- bound 30 (decision 30): structural
+
+    /// **Bound 30.** An ancestor whose own authority would stop the call must
+    /// not grant it to a descendant.
+    ///
+    /// ⚠ `AskClass::Delegable` is passed EXPLICITLY, and that is the point:
+    /// narrowing `HUMAN_ONLY_INSPECTORS` (bound 31, the tunable half) can never
+    /// make this test pass for the wrong reason, because this test never
+    /// consults that set. Do not "simplify" it into deriving the class from an
+    /// inspection result — the two bounds must fail independently.
+    #[tokio::test]
+    async fn an_ancestor_cannot_grant_what_its_own_authority_would_stop() {
+        let (_temp, parent, child) = ancestor_and_child(BioRouterMode::Approve).await;
+        let req = request("call-1", "acme__widget", serde_json::json!({"n": 1}));
+
+        let verdict =
+            DelegationPolicy::ask_ancestor(&parent, &req, &child, AskClass::Delegable).await;
+        assert!(
+            matches!(verdict, DelegatedVerdict::Escalate(_)),
+            "an Approve-mode ancestor holds no silent grant to confer; got {verdict:?}"
+        );
+        assert_eq!(DelegationPolicy::agent_decision(&verdict), None);
+    }
+
+    /// The mirror, plus bound 30's ceiling: the strongest thing an AGENT may
+    /// ever produce is `AllowOnce`. `AlwaysAllow` is a machine-wide, permanent
+    /// grant (`tool_execution.rs:409-413` writes it into the permission
+    /// manager); only a human may make one.
+    #[tokio::test]
+    async fn an_ancestor_grants_only_once_never_always() {
+        let (_temp, parent, child) = ancestor_and_child(BioRouterMode::Auto).await;
+        let req = request("call-1", "acme__widget", serde_json::json!({"n": 1}));
+
+        let verdict =
+            DelegationPolicy::ask_ancestor(&parent, &req, &child, AskClass::Delegable).await;
+        assert!(
+            matches!(verdict, DelegatedVerdict::Grant(_)),
+            "an Auto-mode ancestor could have run this itself; got {verdict:?}"
+        );
+        assert_eq!(
+            DelegationPolicy::agent_decision(&verdict),
+            Some(crate::permission::Permission::AllowOnce)
+        );
+    }
+
+    // --------------------------------------- bound 31 (decision 31): tunable
+
+    /// **Bound 31.** Auto mode is where every other path grants, so it is the
+    /// only mode this test is worth running in.
+    #[tokio::test]
+    async fn an_always_confirm_ask_is_not_delegable_even_to_an_auto_mode_ancestor() {
+        let (_temp, parent, child) = ancestor_and_child(BioRouterMode::Auto).await;
+        let req = request(
+            "call-1",
+            "workspace__workspace_set_tools",
+            serde_json::json!({"session_id": "s-target", "add_extensions": ["developer"]}),
+        );
+
+        let verdict =
+            DelegationPolicy::ask_ancestor(&parent, &req, &child, AskClass::HumanOnly).await;
+        assert!(
+            matches!(verdict, DelegatedVerdict::Escalate(_)),
+            "no agent may satisfy an always-confirm inspector; got {verdict:?}"
+        );
+        assert_eq!(DelegationPolicy::agent_decision(&verdict), None);
+    }
+
+    #[test]
+    fn the_always_confirm_inspectors_classify_as_human_only() {
+        // Names taken from the inspectors' own `name()` impls.
+        for inspector in ["workspace_mutation", "sensitive_ops", "security"] {
+            assert_eq!(
+                DelegationPolicy::class_of("call-1", &[required_by(inspector, "call-1")]),
+                AskClass::HumanOnly,
+                "{inspector} must not be satisfiable by an agent"
+            );
+        }
+        // The ordinary permission prompt is delegable…
+        assert_eq!(
+            DelegationPolicy::class_of("call-1", &[required_by("permission", "call-1")]),
+            AskClass::Delegable
+        );
+        // …and a finding about a DIFFERENT request must not contaminate this one.
+        assert_eq!(
+            DelegationPolicy::class_of("call-1", &[required_by("workspace_mutation", "call-2")]),
+            AskClass::Delegable
+        );
+    }
+
+    // ------------------------------------ A-4 / A-5: two surfaces, one grant
+
+    #[test]
+    fn approving_at_one_surface_dismisses_the_other_and_never_grants_twice() {
+        let origin = AskId {
+            session_id: "child-1".into(),
+            request_id: "call-1".into(),
+        };
+        register(
+            origin.clone(),
+            AskKey::for_request(&request("call-1", "acme__widget", serde_json::json!({}))).unwrap(),
+            AskClass::Delegable,
+            "root-1".to_string(),
+        );
+        add_surface(&origin, "child-1"); // the subagent's own tab
+        add_surface(&origin, "root-1"); // where the escalation surfaced
+
+        // The user clicks Allow in the ROOT's chat.
+        let first = resolve(&origin, crate::permission::Permission::AllowOnce, "root-1");
+        match first {
+            ResolveOutcome::Resolved { decision, notify } => {
+                assert_eq!(decision, crate::permission::Permission::AllowOnce);
+                // ⚠ The child's card must be named for dismissal. An
+                // implementation that grants without propagating returns an
+                // empty `notify` and leaves the other surface pending forever.
+                assert_eq!(notify, vec!["child-1".to_string()]);
+            }
+            other => panic!("the first decision must resolve; got {other:?}"),
+        }
+
+        // The same user then clicks Allow in the child's tab (or double-clicks).
+        assert_eq!(
+            resolve(&origin, crate::permission::Permission::DenyOnce, "child-1"),
+            ResolveOutcome::AlreadyResolved(crate::permission::Permission::AllowOnce),
+            "a second decision is a no-op, not a second grant and not a panic"
+        );
+
+        // A-5: satisfied for the whole chain, by ask identity.
+        assert_eq!(
+            remembered(
+                "root-1",
+                &AskKey::for_request(&request("call-9", "acme__widget", serde_json::json!({})))
+                    .unwrap()
+            ),
+            Some(crate::permission::Permission::AllowOnce)
+        );
+        forget(&origin);
+    }
+
+    /// A `HumanOnly` ask is deliberately NOT memoized: decision 31's guarantee
+    /// is per-call, and a tree-wide memo would quietly turn "confirms in every
+    /// mode" into "confirms once per tree per process".
+    #[test]
+    fn a_human_only_ask_is_never_memoized() {
+        let origin = AskId {
+            session_id: "child-2".into(),
+            request_id: "call-2".into(),
+        };
+        let key =
+            AskKey::for_request(&request("call-2", "acme__gadget", serde_json::json!({}))).unwrap();
+        register(origin.clone(), key.clone(), AskClass::HumanOnly, "root-2".into());
+        add_surface(&origin, "child-2");
+        assert!(matches!(
+            resolve(&origin, crate::permission::Permission::AllowOnce, "root-2"),
+            ResolveOutcome::Resolved { .. }
+        ));
+        assert_eq!(remembered("root-2", &key), None);
+        forget(&origin);
+    }
+
+    /// Both surfaces, at once. `resolve` takes the registry lock exactly once
+    /// per call, so first-writer-wins is a property of the critical section
+    /// rather than of the ordering. A check-then-set implementation passes the
+    /// sequential test above and fails this one.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_decisions_from_both_surfaces_resolve_exactly_once() {
+        let origin = AskId {
+            session_id: "child-3".into(),
+            request_id: "call-3".into(),
+        };
+        register(
+            origin.clone(),
+            AskKey::for_request(&request("call-3", "acme__widget", serde_json::json!({}))).unwrap(),
+            AskClass::Delegable,
+            "root-3".into(),
+        );
+        add_surface(&origin, "child-3");
+        add_surface(&origin, "root-3");
+
+        let mut handles = Vec::new();
+        for surface in ["child-3", "root-3", "child-3", "root-3", "child-3", "root-3"] {
+            let origin = origin.clone();
+            handles.push(tokio::spawn(async move {
+                resolve(&origin, crate::permission::Permission::AllowOnce, surface)
+            }));
+        }
+        let mut resolved = 0;
+        for handle in handles {
+            if matches!(handle.await.unwrap(), ResolveOutcome::Resolved { .. }) {
+                resolved += 1;
+            }
+        }
+        assert_eq!(resolved, 1, "exactly one of six concurrent decisions may win");
+        forget(&origin);
+    }
+
+    /// A decision may only be routed by a session that is actually showing the
+    /// ask. Fail closed: a request id from another tree resolves nothing.
+    #[test]
+    fn a_decision_from_a_session_that_is_not_a_surface_finds_nothing() {
+        let origin = AskId {
+            session_id: "child-4".into(),
+            request_id: "call-4".into(),
+        };
+        register(
+            origin.clone(),
+            AskKey::for_request(&request("call-4", "acme__widget", serde_json::json!({}))).unwrap(),
+            AskClass::Delegable,
+            "root-4".into(),
+        );
+        add_surface(&origin, "child-4");
+        assert_eq!(lookup("call-4", "child-4"), Some(origin.clone()));
+        assert_eq!(lookup("call-4", "a-stranger"), None);
+        assert_eq!(lookup("call-nope", "child-4"), None);
+        forget(&origin);
+        assert_eq!(lookup("call-4", "child-4"), None);
+    }
+}
+```
+
+(Every `AskId`/root key above is distinct per test — `child-1`…`child-4`, `root-1`…`root-4`
+— because `RELAY` is a process-wide static and libtest runs unit tests concurrently in one
+process. Sharing a key across tests would make them flake. Same rule, same reason, as
+Task 36's `VISIBLE_CHILDREN` keys.)
+
+- [ ] **Step 2: Run to verify failure**
+
+```bash
+cargo test -p biorouter --lib agents::approval_relay
+```
+
+Expected: **COMPILE ERROR**, not FAIL — `crates/biorouter/src/agents/approval_relay.rs`
+does not exist, so `agents::approval_relay` resolves to nothing and the whole `biorouter`
+lib test target fails to build. (`AskId`, `AskKey`, `AskClass`, `DelegationPolicy`,
+`DelegatedVerdict`, `register`, `add_surface`, `resolve`, `lookup`, `remembered`, `forget`
+and `permission_store::exact_call_key` are all undefined.)
+
+⚠ A single `cargo test` filter that matches nothing prints `0 passed` and **exits 0** (see
+Ground rules, "Gate mechanics"). This step must produce a compiler diagnostic; a green
+no-op means you ran it against a tree where the module already exists.
+
+- [ ] **Step 3: Lift the ask identity into one function**
+
+In `permission_store.rs`. `hash_tool_context` never read `self`, and there are now three
+callers, one of which has no store.
+
+```rust
+/// The identity of one **specific** ask: this tool, with these exact arguments.
+///
+/// This is the key `check_permission` and `record_permission` have always built
+/// (`"{tool_name}:{blake3(args)}"`). BR-71 Task 36b lifted it out so the
+/// approval relay keys a delegated grant on exactly the same thing the
+/// remembered-permission tier does, rather than inventing a second identity for
+/// "that very specific ask".
+///
+/// `None` for a malformed request (an `Err` `tool_call`) — the same fail-closed
+/// degradation `check_permission` already performs.
+pub fn exact_call_key(tool_request: &ToolRequest) -> Option<String> {
+    let tool_call = tool_request.tool_call.as_ref().ok()?;
+    Some(format!(
+        "{}:{}",
+        tool_call.name,
+        hash_tool_context(tool_request)
+    ))
+}
+
+/// Hash of the tool's arguments, to differentiate similar calls. A malformed
+/// request (`Err` `tool_call`) hashes as empty rather than panicking, so it
+/// degrades to a stable, argument-less key.
+///
+/// A free function since Task 36b: it never read `self`.
+pub(crate) fn hash_tool_context(tool_request: &ToolRequest) -> String {
+    let mut hasher = Hasher::new();
+    let serialized = tool_request
+        .tool_call
+        .as_ref()
+        .ok()
+        .and_then(|tool_call| serde_json::to_string(&tool_call.arguments).ok())
+        .unwrap_or_default();
+    hasher.update(serialized.as_bytes());
+    hasher.finalize().to_hex().to_string()
+}
+```
+
+Delete the `fn hash_tool_context(&self, …)` method and drop the `self.` from its two
+callers (`check_permission` `:134`, `record_permission` `:160` at `95176cd0`). **The
+existing test `hash_tool_context_is_stable_for_malformed_request` (`:343`) calls it as a
+method** and must lose its receiver too:
+
+```rust
+        let a = hash_tool_context(&malformed_request());
+        let b = hash_tool_context(&malformed_request());
+```
+
+Add one test beside it, so the lifted function is pinned to the key the store actually
+uses rather than to a reimplementation of it:
+
+```rust
+    #[test]
+    fn exact_call_key_is_the_key_the_store_looks_up() {
+        let store = ToolPermissionStore::new();
+        let request = ToolRequest {
+            id: "call-1".to_string(),
+            tool_call: Ok(rmcp::model::CallToolRequestParams {
+                meta: None,
+                name: "developer__shell".into(),
+                arguments: Some(object!({"command": "ls"})),
+                task: None,
+            }),
+            metadata: None,
+            tool_meta: None,
+        };
+        assert_eq!(
+            exact_call_key(&request).unwrap(),
+            format!("developer__shell:{}", hash_tool_context(&request))
+        );
+        // Fail-closed on a request that carries no recoverable identity.
+        assert_eq!(exact_call_key(&malformed_request()), None);
+        // And the store still finds nothing for it (unchanged behaviour).
+        assert_eq!(store.check_permission(&malformed_request()), None);
+    }
+```
+
+- [ ] **Step 4: Implement the relay, the policy point, and the escalation walk**
+
+Create `crates/biorouter/src/agents/approval_relay.rs`:
+
+```rust
+//! BR-71 Task 36b: approval delegation for agent-created sessions.
+//!
+//! **The ruling (2026-07-30).** If an agent spun up a conversation, that
+//! agent owns its approvals: it decides what it can, relays what it cannot to
+//! *its* layer, and only the layer with no layer above it asks the human. The
+//! user may then answer either in the chat where the escalation surfaced or in
+//! the sub-agent's own tab — once, in either place, for that very specific ask.
+//!
+//! **What this replaces.** Task 14's `target_mode_requires_approval` refuses a
+//! `mode:"turn"` injection whenever the target has no live agent, because an
+//! approval prompt raised in a conversation nobody is watching parks until it
+//! times out. That is no longer the only option: an agent-created session's
+//! prompts now route to the agent that created it, and only reach a human at
+//! the root of the chain.
+//!
+//! # The two bounds (plan decisions 30 and 31)
+//!
+//! If a parent may approve for its child, a long enough chain approves anything
+//! and the human is out of the loop by construction. Two limits close that, and
+//! **both live in [`DelegationPolicy`] and nowhere else**, so that loosening
+//! either is a single edit with a single test:
+//!
+//! * **Decision 30 — no amplification (structural).** An agent may grant only
+//!   what it already holds. Enforced by construction rather than by policy:
+//!   [`DelegationPolicy::ask_ancestor`] runs the call through the *ancestor's
+//!   own* [`crate::tool_inspection::ToolInspectionManager`], in the ancestor's
+//!   own [`crate::config::BioRouterMode`], and reads the answer out of the same
+//!   combining function that decides whether the ancestor itself may run a tool.
+//!   [`DelegationPolicy::agent_decision`] caps what an agent can produce at
+//!   `AllowOnce`/`DenyOnce` — the persistent `AlwaysAllow`/`AlwaysDeny` forms
+//!   are a human's to make.
+//! * **Decision 31 — always-confirm still reaches a human (tunable).** An ask
+//!   an always-confirm inspector raised is [`AskClass::HumanOnly`] and no agent
+//!   may satisfy it at any depth, checked *before* the ancestor is consulted so
+//!   no inspector configuration can reach past it. Such an ask is also never
+//!   memoized.
+//!
+//! Both were approved with the qualifier that they may be adjusted once real
+//! users exercise the feature. They are **not one dial**: decision 31 narrows a
+//! set, decision 30 is the security model. See the plan's Round 3 section.
+//!
+//! # Identity
+//!
+//! Two identities, both pre-existing, neither invented here:
+//!
+//! * [`AskId`] — *which parked prompt does this decision resolve*: the tool
+//!   request id [`crate::agents::Agent::handle_confirmation`] already routes by
+//!   (BR-62), paired with the session that owns it.
+//! * [`AskKey`] — *what was approved*: the permission store's exact-args key
+//!   ([`crate::permission::permission_store::exact_call_key`]). "That very
+//!   specific ask" is this tool with these exact arguments — the narrowest
+//!   identity the permission layer has.
+
+use std::collections::{HashMap, HashSet};
+use std::sync::{LazyLock, Mutex};
+
+use crate::agents::Agent;
+use crate::conversation::message::ToolRequest;
+use crate::permission::permission_confirmation::PrincipalType;
+use crate::permission::permission_store::exact_call_key;
+use crate::permission::{Permission, PermissionConfirmation};
+use crate::session::{Session, SessionManager};
+use crate::tool_inspection::{InspectionAction, InspectionResult};
+
+/// How far up a delegation chain the walk will climb. Bounds the work and, with
+/// the visited set in [`ancestor_chain`], makes a corrupted `parent_session_id`
+/// cycle impossible to spin on.
+const MAX_DELEGATION_DEPTH: usize = 16;
+
+/// Inspectors whose `RequireApproval` **no agent may satisfy on the user's
+/// behalf**, at any depth (decision 31). Names are each inspector's own
+/// `ToolInspector::name()`.
+///
+/// `"managed"` is deliberately absent: a managed *Ask* is an org policy that an
+/// ancestor inside the same org policy is entitled to answer, and a managed
+/// *Deny* already arrives as [`InspectionAction::Deny`], which
+/// [`DelegationPolicy::ask_ancestor`] turns into a refusal without asking
+/// anybody.
+///
+/// ⚠ **This is the tunable half.** Narrowing it is a product decision about
+/// approval fatigue. Do not narrow it by deleting the check in `ask_ancestor` —
+/// that is decision 30's half and a different security model.
+pub const HUMAN_ONLY_INSPECTORS: &[&str] = &["workspace_mutation", "sensitive_ops", "security"];
+
+/// Which parked prompt a decision resolves.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct AskId {
+    /// The session whose agent is parked on this prompt — the **origin**.
+    pub session_id: String,
+    /// The tool request id, the key `Agent::pending_confirmations` uses.
+    pub request_id: String,
+}
+
+/// The identity of the ask **itself** — this tool, these exact arguments.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct AskKey(String);
+
+impl AskKey {
+    /// `None` for a request that carries no recoverable identity; the caller
+    /// then leaves the ask undelegated, exactly as before this task.
+    pub fn for_request(request: &ToolRequest) -> Option<Self> {
+        exact_call_key(request).map(Self)
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Whether **any** agent may answer this ask on the user's behalf.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AskClass {
+    /// Only a person may answer it, at any depth (decision 31).
+    HumanOnly,
+    /// An ancestor may answer it within its own authority (decision 30).
+    Delegable,
+}
+
+/// What one ancestor concluded about a descendant's ask.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DelegatedVerdict {
+    /// The ancestor holds this authority itself and confers it.
+    Grant(String),
+    /// The ancestor's own authority stops this call.
+    Refuse(String),
+    /// Beyond this ancestor's authority: relay to its own layer.
+    Escalate(String),
+}
+
+/// **The single policy point for decisions 30 and 31.**
+///
+/// Every question of the form "may an ancestor answer this, and with what?"
+/// goes through this type. Nothing else in the tree reads
+/// [`HUMAN_ONLY_INSPECTORS`], reads an ancestor's `tool_inspection_manager`, or
+/// turns an agent's verdict into a [`Permission`]. That is deliberate: the
+/// bounds are expected to be revisited after real use, and a bound enforced in
+/// three places is a bound that will be relaxed in two.
+pub struct DelegationPolicy;
+
+impl DelegationPolicy {
+    /// Decision 31: classify an ask from the inspection round that raised it.
+    pub fn class_of(request_id: &str, inspection_results: &[InspectionResult]) -> AskClass {
+        let human_only = inspection_results.iter().any(|result| {
+            result.tool_request_id == request_id
+                && matches!(result.action, InspectionAction::RequireApproval(_))
+                && HUMAN_ONLY_INSPECTORS.contains(&result.inspector_name.as_str())
+        });
+        if human_only {
+            AskClass::HumanOnly
+        } else {
+            AskClass::Delegable
+        }
+    }
+
+    /// Decision 31, as a predicate, so the one check has one name.
+    pub fn may_decide(class: AskClass) -> bool {
+        class == AskClass::Delegable
+    }
+
+    /// Decision 30's ceiling: the strongest decision an **agent** may produce.
+    ///
+    /// `AlwaysAllow` and `AlwaysDeny` write a machine-wide, permanent
+    /// `PermissionLevel` (`agents/tool_execution.rs:409-413` / `:418-422`).
+    /// Those are a human's to make; an agent grants for this call only.
+    /// `None` for `Escalate` — there is nothing to deliver.
+    pub fn agent_decision(verdict: &DelegatedVerdict) -> Option<Permission> {
+        match verdict {
+            DelegatedVerdict::Grant(_) => Some(Permission::AllowOnce),
+            DelegatedVerdict::Refuse(_) => Some(Permission::DenyOnce),
+            DelegatedVerdict::Escalate(_) => None,
+        }
+    }
+
+    /// Ask ONE ancestor what it would decide, using only authority it holds.
+    ///
+    /// `call_session` is the **descendant's** session, not the ancestor's:
+    /// authority comes from the ancestor, facts come from the call. BR-24
+    /// directory grants are matched against the paths the call actually names
+    /// (`CallFacts::for_tool_call`, resolved against `session.working_dir`), so
+    /// passing the ancestor's session would let a parent's `/work/a` grant
+    /// authorize a child writing somewhere else — amplification along the
+    /// directory axis.
+    pub async fn ask_ancestor(
+        ancestor: &Agent,
+        request: &ToolRequest,
+        call_session: &Session,
+        class: AskClass,
+    ) -> DelegatedVerdict {
+        // Decision 31, FIRST — before the ancestor is consulted at all, so no
+        // inspector configuration and no permission mode can reach past it.
+        if !Self::may_decide(class) {
+            return DelegatedVerdict::Escalate(
+                "this ask must be answered by a person, in every permission mode".to_string(),
+            );
+        }
+
+        // Decision 30: the ancestor's authority IS its own inspection pipeline,
+        // run in its own mode. Reusing it — rather than restating it as a
+        // parallel policy — is what makes non-amplification a property of
+        // construction instead of a rule someone has to keep true.
+        let results = match ancestor
+            .tool_inspection_manager
+            .inspect_tools(
+                std::slice::from_ref(request),
+                &[],
+                ancestor.config.biorouter_mode,
+                call_session,
+            )
+            .await
+        {
+            Ok(results) => results,
+            // An inspection round we could not complete is not an approval.
+            Err(e) => {
+                return DelegatedVerdict::Escalate(format!(
+                    "could not evaluate this call against the ancestor's policy: {e}"
+                ))
+            }
+        };
+
+        let Some(outcome) = ancestor
+            .tool_inspection_manager
+            .process_inspection_results_with_permission_inspector(
+                std::slice::from_ref(request),
+                &results,
+            )
+        else {
+            // No permission inspector on that agent: no authority to read.
+            return DelegatedVerdict::Escalate(
+                "the ancestor has no permission inspector to consult".to_string(),
+            );
+        };
+
+        if outcome.denied.iter().any(|r| r.id == request.id) {
+            return DelegatedVerdict::Refuse(
+                "the delegating agent's own policy denies this call".to_string(),
+            );
+        }
+        if outcome.approved.iter().any(|r| r.id == request.id) {
+            return DelegatedVerdict::Grant(
+                "the delegating agent holds this authority itself".to_string(),
+            );
+        }
+        // `needs_approval`, or an id the combiner never saw. Both mean the same
+        // thing: not this ancestor's to give.
+        DelegatedVerdict::Escalate(
+            "beyond the delegating agent's own authority".to_string(),
+        )
+    }
+}
+
+// ---------------------------------------------------------------- the relay
+
+struct Pending {
+    key: AskKey,
+    class: AskClass,
+    /// Root of the delegation chain — the memo's scope (A-5).
+    root_session_id: String,
+    /// Sessions currently rendering a card for this ask (A-4). At most two: the
+    /// origin's own tab, and wherever a human was asked.
+    surfaces: Vec<String>,
+    /// `Some` once anybody has decided. First writer wins.
+    decision: Option<Permission>,
+}
+
+#[derive(Default)]
+struct Relay {
+    pending: HashMap<AskId, Pending>,
+    /// A-5: decisions already made in a delegation tree, keyed by
+    /// `(root_session_id, AskKey)`. In memory and for this process only —
+    /// deliberately NOT `ToolPermissionStore`, whose grants are machine-wide
+    /// and permanent.
+    memo: HashMap<(String, AskKey), Permission>,
+}
+
+static RELAY: LazyLock<Mutex<Relay>> = LazyLock::new(|| Mutex::new(Relay::default()));
+
+/// Poisoning cannot leave the relay logically inconsistent — every mutation is
+/// a single map operation — so a panic elsewhere must not turn approval routing
+/// into a process-wide outage. Same reasoning as `session_events::bus()`.
+fn lock() -> std::sync::MutexGuard<'static, Relay> {
+    RELAY
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// What [`resolve`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResolveOutcome {
+    /// This decision won. `notify` is every OTHER surface still showing the ask
+    /// — they must be dismissed, or the second card stays pending forever.
+    Resolved {
+        decision: Permission,
+        notify: Vec<String>,
+    },
+    /// Somebody already decided. A no-op: not a second grant, not a panic.
+    AlreadyResolved(Permission),
+    /// No live ask with that id.
+    Unknown,
+}
+
+pub fn register(origin: AskId, key: AskKey, class: AskClass, root_session_id: String) {
+    lock().pending.insert(
+        origin,
+        Pending {
+            key,
+            class,
+            root_session_id,
+            surfaces: Vec::new(),
+            decision: None,
+        },
+    );
+}
+
+/// Record that `session_id` is rendering a card for this ask.
+pub fn add_surface(origin: &AskId, session_id: &str) {
+    if let Some(entry) = lock().pending.get_mut(origin) {
+        if !entry.surfaces.iter().any(|s| s.as_str() == session_id) {
+            entry.surfaces.push(session_id.to_string());
+        }
+    }
+}
+
+/// Find the ask a decision addresses. **Fails closed**: the posting session must
+/// itself be a surface, so a request id from another tree resolves nothing.
+pub fn lookup(request_id: &str, from_session_id: &str) -> Option<AskId> {
+    let relay = lock();
+    relay
+        .pending
+        .iter()
+        .find(|(id, entry)| {
+            id.request_id == request_id
+                && entry
+                    .surfaces
+                    .iter()
+                    .any(|s| s.as_str() == from_session_id)
+        })
+        .map(|(id, _)| id.clone())
+}
+
+/// A-5. First writer wins, in one critical section — a check-then-set would let
+/// two surfaces both believe they granted.
+pub fn resolve(origin: &AskId, decision: Permission, decided_by: &str) -> ResolveOutcome {
+    let mut relay = lock();
+    let (notify, memo_key) = {
+        let Some(entry) = relay.pending.get_mut(origin) else {
+            return ResolveOutcome::Unknown;
+        };
+        if let Some(existing) = entry.decision.clone() {
+            return ResolveOutcome::AlreadyResolved(existing);
+        }
+        entry.decision = Some(decision.clone());
+        let notify: Vec<String> = entry
+            .surfaces
+            .iter()
+            .filter(|s| s.as_str() != decided_by)
+            .cloned()
+            .collect();
+        entry.surfaces.clear();
+        // Decision 31: an always-confirm ask is answered once per call, never
+        // remembered for the tree.
+        let memo_key = (entry.class == AskClass::Delegable)
+            .then(|| (entry.root_session_id.clone(), entry.key.clone()));
+        (notify, memo_key)
+    };
+    if let Some(key) = memo_key {
+        relay.memo.insert(key, decision.clone());
+    }
+    ResolveOutcome::Resolved { decision, notify }
+}
+
+/// A-5: a decision already made for this exact ask, anywhere in this tree.
+pub fn remembered(root_session_id: &str, key: &AskKey) -> Option<Permission> {
+    lock()
+        .memo
+        .get(&(root_session_id.to_string(), key.clone()))
+        .cloned()
+}
+
+/// Drop a finished ask. Idempotent — called once per prompt beside
+/// `Agent::forget_confirmation`, whatever the outcome.
+pub fn forget(origin: &AskId) {
+    lock().pending.remove(origin);
+}
+
+// ------------------------------------------------------- the escalation walk
+
+/// What [`begin_delegated_approval`] concluded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Delegation {
+    /// No parent, or no recoverable ask identity: the card the caller is about
+    /// to yield is the human's, exactly as before Task 36b.
+    NotDelegated,
+    /// An ancestor decided within its own authority. The decision has already
+    /// been delivered to the waiting prompt, so **no card is shown**.
+    DecidedByAncestor(Permission),
+    /// The chain was exhausted: a person is being asked, in `surfaced_in`, and
+    /// the origin's own tab shows the same ask.
+    AwaitingHuman { surfaced_in: String },
+}
+
+/// A-1/A-2/A-3. Called from `handle_approval_tool_requests` *after* the prompt's
+/// channel is registered and *before* the card would be yielded.
+pub async fn begin_delegated_approval(
+    agent: &Agent,
+    request: &ToolRequest,
+    session: &Session,
+    inspection_results: &[InspectionResult],
+) -> Delegation {
+    // A-1: only an agent-CREATED session delegates. A root conversation's
+    // approvals were always the user's.
+    if session.parent_session_id.is_none() {
+        return Delegation::NotDelegated;
+    }
+    let Some(key) = AskKey::for_request(request) else {
+        // No identity, so no grant that could be scoped to "that very specific
+        // ask". Fail closed to the pre-Task-36b behaviour.
+        return Delegation::NotDelegated;
+    };
+
+    let chain = ancestor_chain(&agent.config.session_manager, session).await;
+    let Some(root) = chain.last().cloned() else {
+        return Delegation::NotDelegated;
+    };
+    let class = DelegationPolicy::class_of(&request.id, inspection_results);
+    let origin = AskId {
+        session_id: session.id.clone(),
+        request_id: request.id.clone(),
+    };
+
+    // A-5: the same ask, already answered in this tree.
+    if DelegationPolicy::may_decide(class) {
+        if let Some(decision) = remembered(&root, &key) {
+            deliver(agent, &origin, decision.clone()).await;
+            return Delegation::DecidedByAncestor(decision);
+        }
+    }
+
+    register(origin.clone(), key, class, root.clone());
+    // A-4, surface one: the sub-agent's own conversation tab.
+    add_surface(&origin, &session.id);
+
+    // A-3: one level at a time. A depth-3 agent asks depth 2, not the user.
+    for ancestor_id in &chain {
+        let Some(ancestor) = peek_ancestor(ancestor_id).await else {
+            // That layer has no live agent in this process, so it cannot be
+            // asked. Climb — do NOT treat silence as an approval.
+            continue;
+        };
+        let verdict =
+            DelegationPolicy::ask_ancestor(&ancestor, request, session, class).await;
+        let Some(decision) = DelegationPolicy::agent_decision(&verdict) else {
+            continue; // Escalate: relay to its own layer.
+        };
+        if let ResolveOutcome::Resolved { .. } = resolve(&origin, decision.clone(), ancestor_id) {
+            deliver(agent, &origin, decision.clone()).await;
+            return Delegation::DecidedByAncestor(decision);
+        }
+        // Raced with a human at one of the surfaces; their decision stands.
+        return Delegation::AwaitingHuman {
+            surfaced_in: root.clone(),
+        };
+    }
+
+    // Chain exhausted: ask the person, at the root of the tree. A-4, surface
+    // two. Registering the surface is what authorizes a decision POSTED from
+    // that session (`lookup` fails closed otherwise); the caller then publishes
+    // the very same card there, so the two surfaces are one ask on the wire.
+    add_surface(&origin, &root);
+    Delegation::AwaitingHuman { surfaced_in: root }
+}
+
+/// Hand a decision to the prompt that is parked on it. Reuses BR-62's routing
+/// wholesale: `handle_confirmation` finds the `oneshot` `register_confirmation`
+/// created and `await_confirmation` is already waiting on it, so the turn loop
+/// needs no new plumbing for the agent-decided path.
+async fn deliver(origin_agent: &Agent, origin: &AskId, permission: Permission) {
+    let _ = origin_agent
+        .handle_confirmation(
+            origin.request_id.clone(),
+            PermissionConfirmation {
+                principal_type: PrincipalType::Tool,
+                permission,
+            },
+        )
+        .await;
+}
+
+async fn peek_ancestor(session_id: &str) -> Option<std::sync::Arc<Agent>> {
+    let manager = crate::execution::manager::AgentManager::instance().await.ok()?;
+    manager.peek_agent(session_id).await
+}
+
+/// The delegation chain above `session`: immediate parent first, root last.
+///
+/// Bounded by [`MAX_DELEGATION_DEPTH`] and by a visited set, so a corrupted
+/// `parent_session_id` cycle cannot spin. A parent row we cannot read ends the
+/// chain there rather than aborting the walk — the ancestors we *did* find are
+/// still the right ones to ask.
+async fn ancestor_chain(session_manager: &SessionManager, session: &Session) -> Vec<String> {
+    let mut chain: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::from([session.id.clone()]);
+    let mut next = session.parent_session_id.clone();
+
+    while let Some(id) = next {
+        if chain.len() >= MAX_DELEGATION_DEPTH || !seen.insert(id.clone()) {
+            break;
+        }
+        // Metadata only — `false` skips loading the conversation.
+        next = match session_manager.get_session(&id, false).await {
+            Ok(parent) => parent.parent_session_id.clone(),
+            Err(_) => None,
+        };
+        chain.push(id);
+    }
+    chain
+}
+```
+
+Register the module in `agents/mod.rs`, in sorted position:
+
+```rust
+pub(crate) mod agent;
+// BR-71 Task 36b: approval routing for agent-created sessions — the relay, the
+// single policy point for the two delegation bounds, and the escalation walk.
+pub mod approval_relay;
+```
+
+**The one call site**, in `tool_execution.rs`'s `handle_approval_tool_requests`, replacing
+the unconditional yield. Anchor on `let confirmation_rx = self.register_confirmation(&request.id);`
+(`:317` at `95176cd0`) and `yield confirmation;` (`:329`):
+
+```rust
+                // BR-62: register this prompt's own channel BEFORE the card is
+                // yielded, so an instant answer cannot arrive before there is a
+                // sender to route it to.
+                let confirmation_rx = self.register_confirmation(&request.id);
+
+                // BR-71 Task 36b: an agent-created session's approvals belong to
+                // the agent that created it. This decides within the chain's own
+                // authority where it can, and otherwise surfaces the ask to a
+                // person — in which case the card below is one of its two
+                // surfaces and carries the same request id.
+                let ask = crate::agents::approval_relay::AskId {
+                    session_id: session.id.clone(),
+                    request_id: request.id.clone(),
+                };
+                let delegation = crate::agents::approval_relay::begin_delegated_approval(
+                    self,
+                    request,
+                    session,
+                    inspection_results,
+                )
+                .await;
+
+                // A card for an ask an ancestor already answered would flash and
+                // vanish. `deliver` has already sent the decision into
+                // `confirmation_rx`, so the wait below returns immediately.
+                if !matches!(
+                    delegation,
+                    crate::agents::approval_relay::Delegation::DecidedByAncestor(_)
+                ) {
+                    let confirmation = Message::assistant()
+                        .with_action_required_with_context(
+                            request.id.clone(),
+                            tool_call.name.to_string().clone(),
+                            arguments,
+                            security_message,
+                            Some(risk),
+                            preview,
+                        )
+                        .user_only();
+                    // A-4, surface TWO. The chat where the escalation landed
+                    // sees the SAME card value, carrying the SAME request id —
+                    // which is what lets `approval_relay::lookup` route a
+                    // decision posted from there back to this parked prompt.
+                    //
+                    // PUBLISHED, never persisted: it is another conversation's
+                    // ask, and writing it into that session's history would put
+                    // a foreign tool call in someone else's transcript
+                    // permanently. `session_events::publish` is the ephemeral
+                    // path and creates no ring of its own — a session nobody is
+                    // observing simply drops it, and the card still shows in the
+                    // origin's own tab.
+                    //
+                    // This does NOT touch reconciliation #23's ordering
+                    // invariant: that is about the ORIGIN session's stream, and
+                    // this publishes to a different session's bus.
+                    if let crate::agents::approval_relay::Delegation::AwaitingHuman {
+                        surfaced_in,
+                    } = &delegation
+                    {
+                        crate::session_events::publish(
+                            surfaced_in,
+                            crate::session_events::SessionBusEvent::Agent(
+                                crate::agents::AgentEvent::Message(confirmation.clone()),
+                            ),
+                        );
+                    }
+                    yield confirmation;
+                }
+```
+
+and beside the existing forget, so the relay entry never outlives its prompt:
+
+```rust
+                // Answered, expired, or cancelled — either way this id is no
+                // longer accepting a decision.
+                self.forget_confirmation(&request.id);
+                crate::agents::approval_relay::forget(&ask);
+```
+
+⚠ **Two things about the block above that a reader will want to "tidy" and must not.**
+
+1. `arguments`, `security_message`, `risk` and `preview` are consumed by the builder, so
+   they must stay declared **above** the `if`, where they already are (`:294-313`). Moving
+   their construction inside the branch is tempting and wrong: `arguments` is
+   `tool_call.arguments.clone().unwrap_or_default()` and the clone is the point.
+2. `confirmation.clone()` is a real clone of a `Message`, and it is the only way the two
+   surfaces are provably showing the *same* card. Building a second, "equivalent" message
+   for the parent's bus is how the two drift — a different risk grade, a different preview,
+   a different id — and a different id makes `lookup` fail, which turns the second surface
+   into a card that does nothing when clicked.
+
+**The route**, `crates/biorouter-server/src/routes/action_required.rs`. This is what makes
+A-4/A-5 true on the wire: a decision from *either* surface addresses the *one* ask.
+
+```rust
+use biorouter::agents::approval_relay::{self, ResolveOutcome};
+
+pub async fn confirm_tool_action(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<ConfirmToolActionRequest>,
+) -> Result<Json<Value>, StatusCode> {
+    let permission = match request.action.as_str() {
+        "always_allow" => Permission::AlwaysAllow,
+        "allow_once" => Permission::AllowOnce,
+        "deny" => Permission::DenyOnce,
+        _ => Permission::DenyOnce,
+    };
+
+    // BR-71 Task 36b: two surfaces, ONE pending ask. The escalation card in the
+    // parent's chat carries the origin's tool request id, so a decision posted
+    // from either session resolves the same relay entry — and the OTHER surface
+    // is dismissed rather than left pending.
+    if let Some(ask) = approval_relay::lookup(&request.id, &request.session_id) {
+        return match approval_relay::resolve(&ask, permission, &request.session_id) {
+            ResolveOutcome::Resolved { decision, notify } => {
+                let origin = state.get_agent_for_route(ask.session_id.clone()).await?;
+                let outcome = origin
+                    .handle_confirmation(
+                        ask.request_id.clone(),
+                        PermissionConfirmation {
+                            principal_type: request.principal_type,
+                            permission: decision,
+                        },
+                    )
+                    .await;
+                dismiss_on(&notify, &ask.request_id).await;
+                Ok(Json(serde_json::json!({
+                    "status": match outcome {
+                        ConfirmationOutcome::Delivered => "delivered",
+                        ConfirmationOutcome::Unknown => "unknown",
+                    },
+                    "dismissed": notify,
+                })))
+            }
+            // The other surface got there first. 200 and the truth: a
+            // double-click is a no-op, and the client reconciles its card from
+            // the decision rather than re-posting.
+            ResolveOutcome::AlreadyResolved(decision) => Ok(Json(serde_json::json!({
+                "status": "already_resolved",
+                "decision": decision,
+            }))),
+            ResolveOutcome::Unknown => Ok(Json(serde_json::json!({ "status": "unknown" }))),
+        };
+    }
+
+    // Not a delegated ask: the pre-Task-36b path, unchanged.
+    let agent = state.get_agent_for_route(request.session_id).await?;
+    let outcome = agent
+        .handle_confirmation(
+            request.id.clone(),
+            PermissionConfirmation {
+                principal_type: request.principal_type,
+                permission,
+            },
+        )
+        .await;
+
+    let status = match outcome {
+        ConfirmationOutcome::Delivered => "delivered",
+        ConfirmationOutcome::Unknown => "unknown",
+    };
+
+    Ok(Json(serde_json::json!({ "status": status })))
+}
+
+/// A-5: tell every other surface the ask is answered, so its card stops showing
+/// as pending. Best-effort — the relay is the truth, and a client that misses
+/// the frame learns on its next POST (`already_resolved`).
+async fn dismiss_on(session_ids: &[String], request_id: &str) {
+    let Some(services) = biorouter::workspace_services::get() else {
+        return;
+    };
+    if !services.gui_attached() {
+        return;
+    }
+    for session_id in session_ids {
+        let _ = services
+            .gui_command(
+                serde_json::json!({
+                    "type": "workspace",
+                    "cmd": "resolve_confirmation",
+                    "session_id": session_id,
+                    "request_id": request_id,
+                }),
+                false,
+            )
+            .await;
+    }
+}
+```
+
+Add the `resolve_confirmation` case to Task 25's `workspaceCommandRegistry` when that task
+runs; until then the frame is a no-op the renderer ignores, and the `already_resolved`
+response is the whole consistency mechanism. **This route change does not alter any
+request or response *type*, so `just generate-openapi` produces no diff** — the handler
+returns `Json<Value>` and always has.
+
+- [ ] **Step 5: Run tests**
+
+```bash
+cargo test -p biorouter --lib agents::approval_relay
+# Expected: test result: ok. 9 passed
+
+cargo test -p biorouter --lib permission::permission_store
+# Expected: PASS — 12 tests (11 before this task, + exact_call_key_is_the_key_the_store_looks_up).
+# Re-measure the "before" number at YOUR head rather than trusting this line:
+#   awk '/^mod tests/,0' crates/biorouter/src/permission/permission_store.rs \
+#     | grep -cE '^\s+#\[(tokio::)?test\]'
+
+cargo test -p biorouter --lib agents::tool_execution
+# Expected: PASS, unchanged. The delegation branch is inert for a session with
+# no parent, which every test in that module uses.
+
+cargo test -p biorouter-server --lib routes::action_required
+# Expected: PASS — the existing endpoint test still 200s on the non-delegated path.
+```
+
+- [ ] **Step 5b: Gate**
+
+⚠ Step 5's tests are all tests of pure functions and of one policy type. Every one of them
+passes against an implementation that **nothing calls** — a relay no turn registers with, a
+route that ignores it, a policy consulted by no walk. So the gate anchors the call sites,
+and each entry below says which wrong implementation it rejects.
+
+```bash
+R=crates/biorouter/src/agents/approval_relay.rs
+T=crates/biorouter/src/agents/tool_execution.rs
+A=crates/biorouter-server/src/routes/action_required.rs
+
+# --- (a) grants but never propagates ------------------------------------------
+# This gate rejects: an implementation that resolves the ask and leaves the other
+# surface's card pending forever — the exact failure the ruling's "only need to
+# approve once in either place" forbids.
+grep -c "ResolveOutcome::Resolved { decision, notify }" "$A"      # Expected: 1
+grep -c "dismiss_on(&notify, &ask.request_id).await" "$A"         # Expected: 1
+grep -c "ResolveOutcome::AlreadyResolved(decision) => Ok(Json(" "$A"   # Expected: 1
+# …and the relay is consulted BEFORE the single-agent path, or a decision posted
+# from the parent's chat 404s into the parent's own empty prompt table.
+grep -c "if let Some(ask) = approval_relay::lookup(&request.id, &request.session_id)" "$A"  # Expected: 1
+# The second surface must actually EXIST. `AwaitingHuman` that registers a surface
+# and never renders a card there is the subtler half of the same failure: nothing
+# is shown in the parent's chat, so "approve in either place" has one place.
+grep -c "Delegation::AwaitingHuman {" "$T"                        # Expected: 1
+grep -c "crate::session_events::publish(" "$T"                    # Expected: 1
+grep -c "AgentEvent::Message(confirmation.clone())" "$T"          # Expected: 1
+# ⚠ and it must be PUBLISHED, not persisted into the other session's history.
+grep -c "add_message_adopting_uid" "$T"                           # Expected: 0
+
+# --- (b) a parent grants more than it holds -----------------------------------
+# This gate rejects: a parallel authority policy that can drift from what the
+# ancestor may actually do, and any agent-side path that produces a permanent
+# grant. All three arms are anchored, so adding a test that MENTIONS
+# `Permission::AlwaysAllow` cannot move the numbers.
+grep -c "DelegatedVerdict::Grant(_) => Some(Permission::AllowOnce)" "$R"   # Expected: 1
+grep -c "DelegatedVerdict::Refuse(_) => Some(Permission::DenyOnce)" "$R"   # Expected: 1
+grep -c "DelegatedVerdict::Escalate(_) => None" "$R"                       # Expected: 1
+# ONE place reads an ancestor's authority. A 2 means bound 30 has two homes and
+# the next person to loosen it will miss one.
+grep -c "\.tool_inspection_manager" "$R"                                   # Expected: 1
+grep -rc "tool_inspection_manager" "$A"                                    # Expected: 0
+
+# --- (c) a parent satisfies an always-confirm inspector -----------------------
+# This gate rejects: a `may_decide` check placed AFTER the inspection round (where
+# an Auto-mode ancestor's blanket Allow reaches it first), or removed entirely.
+grep -c "if !Self::may_decide(class) {" "$R"                               # Expected: 1
+grep -c "fn may_decide" "$R"                                               # Expected: 1
+# ONE reader of the tunable set.
+grep -c "HUMAN_ONLY_INSPECTORS" "$R"                                       # Expected: 2 (the const + class_of)
+grep -rc "HUMAN_ONLY_INSPECTORS" crates/ --include=*.rs | grep -v ":0$"    # Expected: only $R
+
+# --- the turn loop actually delegates -----------------------------------------
+# This gate rejects: a relay that exists, is tested, and is never entered — the
+# failure mode Task 36 Step 5b records at length.
+grep -c "let delegation = crate::agents::approval_relay::begin_delegated_approval(" "$T"  # Expected: 1
+grep -c "crate::agents::approval_relay::forget(&ask);" "$T"                # Expected: 1
+grep -c "Delegation::DecidedByAncestor(_)" "$T"                            # Expected: 1
+```
+
+Each anchored pattern matches the production site **only**, so its expectation is `1` (or
+`0`) and stays there however many tests are added later. The one bare-symbol sweep is
+`HUMAN_ONLY_INSPECTORS`, and it is deliberately expressed as "no other file matches" rather
+than as a count.
+
+**Mutation checks — run each and confirm the named test goes RED.** A gate that stays green
+under these is not testing the invariant.
+
+| Mutation | Must fail |
+|---|---|
+| Move the `if !Self::may_decide(class)` check to *after* the `inspect_tools` call | `an_always_confirm_ask_is_not_delegable_even_to_an_auto_mode_ancestor` |
+| Change `DelegatedVerdict::Grant(_)` to `Some(Permission::AlwaysAllow)` | `an_ancestor_grants_only_once_never_always` |
+| In `ask_ancestor`, pass `ancestor.config.biorouter_mode` as `BioRouterMode::Auto` instead | `an_ancestor_cannot_grant_what_its_own_authority_would_stop` |
+| Make `resolve` return `notify: Vec::new()` | `approving_at_one_surface_dismisses_the_other_and_never_grants_twice` |
+| Drop the `session_events::publish` on the `AwaitingHuman` branch | *(no unit test can see this — it is a call site. The gate's three anchored greps in `$T` are the only net, which is why they are there and why this row says so instead of naming a test.)* |
+| Make `resolve` overwrite `entry.decision` unconditionally | `concurrent_decisions_from_both_surfaces_resolve_exactly_once` |
+| Memoize `HumanOnly` asks too | `a_human_only_ask_is_never_memoized` |
+
+Note the third row: it is what proves the bound-30 test is testing *authority* and not
+merely "Approve mode prompts". And note that **narrowing `HUMAN_ONLY_INSPECTORS` to `&[]`
+must leave both bound-30 tests green** — they pass `AskClass::Delegable` explicitly and
+never read that set. If narrowing it turns a bound-30 test green that was red, the gate has
+been coupled to the tunable half and has rotted; fix the test, not the bound.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add crates/biorouter/src/agents/approval_relay.rs \
+        crates/biorouter/src/agents/mod.rs \
+        crates/biorouter/src/agents/tool_execution.rs \
+        crates/biorouter/src/permission/permission_store.rs \
+        crates/biorouter-server/src/routes/action_required.rs
+git commit -m "feat(agent-loop): approval delegation and single-grant propagation (BR-71)"
+```
+
+No `Co-Authored-By` trailer. **Flag this task for operator review in the PR description** —
+it is permission-relevant code under the Ground rules' review bullet, and it is the only
+task in this plan that lets a non-human answer a permission prompt.
+
+**What Task 37 may now assume:** a subagent tab that renders a `ToolConfirmationRequest`
+card is rendering one of *two* surfaces for the same ask, and a POST from it goes through
+the relay. The header's Stop control is unaffected; the card is not the tab's to own.
+
+**What Task 14 no longer needs to promise:** see the note added to its Step 3 — the
+`None => true` branch of `target_mode_requires_approval` is superseded here, and
+`send_prompt_turn`'s refusal should be narrowed to the case where the target has **no
+parent** (a root conversation nobody is watching) once this task lands. That narrowing is
+deliberately **not** done in this task: it changes a shipped, committed refusal and belongs
+in its own commit with its own test.
+
+**Unresolved without another operator decision, stated rather than hidden:**
+
+1. **Does an intermediate agent that escalates leave a card?** The plan implements **no** —
+   only the origin's tab and the root render one, because A-4 says "the parent's chat,
+   where the escalation surfaced", singular, and a card at every hop of a depth-4 chain is
+   four cards for one ask. If the operator wants each layer to see what passed through it,
+   the fix is an `add_surface` inside the walk plus a "relayed, not yours to answer" flag on
+   the card.
+2. **Should the tree memo survive a daemon restart?** It does not: `Relay::memo` is
+   in-memory and per-process. Persisting it would make "approve once" survive a crash but
+   would also make it a durable grant with no revocation UI, which is what keeping it out of
+   `ToolPermissionStore` was avoiding.
+3. **`Permission::AlwaysAllow` clicked at an escalation surface still writes a
+   machine-wide `PermissionLevel::AlwaysAllow`**, exactly as it does today
+   (`tool_execution.rs:409-413`). That is unchanged button semantics, but it is now
+   reachable from a *different conversation* than the one the tool will run in. If the
+   operator wants the permanent form restricted to the session that raised the ask, that is
+   a change to the card, not to this relay.
+
+---
+
 ### Task 37: Subagent tab header + Stop control (renderer)
 
 **Files:**
@@ -21938,6 +23461,13 @@ the turn runner to pick up. No live agent ⇒ take the conservative branch; (iii
 (`permission/permission_inspector.rs:449-452`) and the agent loop skips every tool call
 (`agent.rs:4355-4371`), so refusing there would block the safest configuration there is
 with a message that is false for it.
+*Half of this is SUPERSEDED by decision 29 (2026-07-30).* Refinement (ii)'s "no live agent
+⇒ take the conservative branch" is what makes headless `mode:"turn"` refuse most of the
+time in practice, and Task 36b removes its premise: an agent-created session's prompts now
+route to the agent that created it and reach a human only at the root of the chain. The
+refusal is right for a target with **no parent** and nobody watching, and wrong for a
+child. Task 14's code is unchanged — the narrowing is its own commit, and Task 14's Step 3
+says so at the branch itself. Refinements (i) and (iii) are untouched.
 
 **5. `workspace_open.new.working_dir` DEFAULTS to the caller's directory.** A different
 directory is allowed but never silent: the tool result names it and a GUI toast shows it.
@@ -22215,6 +23745,84 @@ is precisely the shape this cap exists for.
 Implementation does not start on the summary alone; the operator reviews the revised plan
 first. (Process decision; it governs how this document reached you, not what it builds.)
 
+## Round 3 — approval delegation for agent-created sessions (operator ruling, 2026-07-30)
+
+**29. An agent-created session's approvals belong to the agent that created it.** The
+parent decides what it can from its own task context; what is beyond it it relays to *its*
+layer, one hop at a time, until the root asks a person. The user may answer at the
+escalation surface **or** in the sub-agent's own tab — once, in either place — and the
+grant is satisfied for the whole chain, scoped to that one specific ask (this tool, these
+exact arguments; the permission store's existing key). → **Task 36b**.
+*Supersedes* Task 14's `target_mode_requires_approval` `None => true` branch, which
+refused headless `mode:"turn"` whenever the target had no live agent — the normal case.
+Task 14's code is unchanged; the narrowing is its own commit.
+
+The next two decisions are **bounds the operator did not state**, added on the
+implementer's judgement and **approved on 2026-07-30 with an explicit qualifier**:
+
+> that sounds good. we can potentially adjust it as the users test use this functionality
+
+So both are a deliberately conservative **launch setting**, not a permanent invariant.
+They are **not one dial**, and the difference is the whole point of recording them
+separately: decision 31 narrows a *set*, decision 30 *is* the security model. Both are
+enforced at one place — `DelegationPolicy` in
+`crates/biorouter/src/agents/approval_relay.rs` — precisely so that whoever revisits them
+has a single edit and a single test, rather than three checks in three functions of which
+the first relaxation will miss one.
+
+**30. NO AMPLIFICATION: an agent may grant only what it already holds. STRUCTURAL.**
+A parent cannot confer authority it does not itself have, so delegation narrows down the
+chain and never widens. Enforced by construction rather than by policy:
+`DelegationPolicy::ask_ancestor` runs the descendant's call through the **ancestor's own**
+`ToolInspectionManager`, in the ancestor's own `BioRouterMode`, and reads the verdict out
+of the same combining function that decides whether the ancestor itself may run a tool
+(`tool_inspection.rs:175` → `:205`). `DelegationPolicy::agent_decision` caps what an agent
+can produce at `Permission::AllowOnce`/`DenyOnce` — the persistent `AlwaysAllow` /
+`AlwaysDeny` forms write a machine-wide `PermissionLevel` and remain a human's to make.
+→ **Task 36b**, Step 4 and Step 5b gate (b).
+
+*Why conservative at launch:* an agent that can confer more than it holds turns a
+delegation chain into an escalation ladder — the failure is silent, compounding, and
+indistinguishable from correct operation until something destructive runs.
+*What would justify loosening it:* **nothing short of a different security model.** This is
+not a tuning knob. A concrete request that looks like loosening it — "a coordinator should
+be able to grant a worker the `developer` extension it was spawned without" — is really a
+request to widen what the *coordinator* holds, which is an ordinary permission decision
+made in the coordinator's own session, and leaves this bound untouched.
+*What must not be loosened even then:* the `AllowOnce` ceiling. An agent producing a
+persistent grant means one delegated decision silently rewrites machine-wide permissions.
+
+**31. ALWAYS-CONFIRM INSPECTORS STILL REACH A HUMAN, AT ANY DEPTH. TUNABLE.**
+Decision 1 specified `WorkspaceMutationInspector` to confirm *"regardless of mode"*; a
+parent agent must not be able to satisfy that on the user's behalf, and the same holds for
+anything `SensitiveOpsInspector` or `SecurityInspector` flags. Such an ask is classified
+`AskClass::HumanOnly` by `DelegationPolicy::class_of` (the only reader of
+`HUMAN_ONLY_INSPECTORS`), and `ask_ancestor` checks it **before** consulting the ancestor
+at all, so no permission mode and no inspector configuration can reach past it. A
+`HumanOnly` ask is also never memoized across the tree. This preserves the existing
+guarantee that a security inspector's `RequireApproval` beats a user `always_allow`
+(`tool_inspection.rs:261-280`) — Task 36b must not become a way around it.
+→ **Task 36b**, Step 4 and Step 5b gate (c).
+
+*Why conservative at launch:* the set was chosen before anyone had watched the feature run,
+and an always-confirm inspector firing on a delegated call is exactly the case where a
+silent auto-approval would be least recoverable.
+*What would justify loosening it:* real usage showing a specific inspector confirming
+repeatedly on calls the user approves every time — approval fatigue is a real harm, and the
+honest fix is dropping that inspector's name from `HUMAN_ONLY_INSPECTORS`, not weakening
+decision 30.
+*What must not be loosened even then:* `workspace_mutation` on a **cross-session** capability
+change — decision 1 made that a blocker for the whole plan, and delegation is not the place
+to quietly retire it. And the check's **position** must stay first in `ask_ancestor`: moving
+it after the inspection round lets an Auto-mode ancestor's blanket allow arrive first, which
+is a silent bypass rather than a narrowing. The Step 5b mutation table asserts both.
+
+⚠ **Do not couple the two in the tests.** Task 36b's bound-30 tests pass
+`AskClass::Delegable` explicitly and never read `HUMAN_ONLY_INSPECTORS`, so narrowing that
+set — even to `&[]` — cannot make them pass for the wrong reason. If a future edit makes a
+bound-30 test go green because the confirm set shrank, the gate has rotted; fix the test,
+not the bound.
+
 ## New questions this revision surfaced
 
 Ten, all small, none blocking — each is implemented one way in the plan with the choice
@@ -22371,6 +23979,14 @@ following three adversarial critic passes (decision 28's review gate is satisfie
   against today's eight-variant `AgentEvent`. Dispatching 8 before 7 produces an
   implementer under compile pressure who reaches for `_ => None` and silently turns off
   #59 for every `/reply` client. See [Execution options](#execution-options).
+- **Binding orderings inside Phase 3 — TWO** (added 2026-07-30 with Task 36b): 32 → 36b
+  and 33 → 36b. Task 36b routes along `Session.parent_session_id`, which **Task 32**
+  stamps — without it every session looks like a root and 36b is inert, with every one of
+  its unit tests still green (they construct sessions directly). And its ancestor lookup
+  is `AgentManager::peek_agent`, which **Task 33** extends to consult the pinned sidecar —
+  before that, an ancestor that is itself a registered child is invisible and depth-2
+  delegation silently degrades to "ask the human". Both are stated in 36b's own Depends
+  block so they survive a reader who never opens this section.
 - **Prerequisite 1 — issue #45 (multi-KB): SATISFIED.** Merged to `main` in `84d27fd4`
   on 2026-07-27; verification recorded in `docs/knowledge-base/multi-kb-verification.md`.
   ⚠ It shipped in a **different shape** from the one this plan predicted — a subtractive
