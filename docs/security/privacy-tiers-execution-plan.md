@@ -6561,24 +6561,43 @@ awk '/async fn configure_worker_agent/,/^}/' crates/biorouter-server/src/routes/
 echo "Expected, in this order: configure_worker_provider, agent.provider(), has_kb,"
 echo "  grant_knowledge_base. A missing has_kb line is a public worker profile"
 echo "  being pinned to a private base as its KB-less write target."
-# METADATA new-surface detector — the one Task 10C's two detectors are blind to
-# by construction, and the reason this task exists. PRINT with line numbers and
-# compare against the `#[cfg(test)]` boundaries; a bare count is the fragile shape
-# this plan has already been burned by twice.
+# METADATA-SURFACE INVENTORY — a DRIFT gate, and only a drift gate. Read the
+# ⚠ two paragraphs below before running it; what it does and does not reject is
+# the whole point, and the previous version claimed the wrong one.
 #
-# ⚠ TWO sweeps, and `.selection(` in the pattern. The previous version was ONE
-# sweep ending in `grep -v "src/knowledge/"`, which made it structurally unable
-# to see the largest metadata leak in the tree: `kb_get_active`
+# ⚠ WHAT IT REJECTS: a NEW call site of the three methods that yield a base's id
+# or name, landing anywhere in `crates/*/src/` without a row in the register
+# below. That is a real and cheap gate, it FAILS MECHANICALLY (non-zero exit,
+# nothing for a human to compare), and it is the only thing a grep over this
+# tree can honestly do.
+#
+# ⚠ WHAT IT CANNOT REJECT, stated so it is never read as coverage: whether an
+# EXISTING call site's output is filtered. The unchanged, leaking `kb_get_active`
+# produces exactly the same `service.selection(` hit at exactly the same count as
+# the fixed one — a grep cannot see a filter. The control for that is
+# behavioural and it is elsewhere: Task 10C's
+# `every_pointer_field_is_filtered_and_the_stored_primary_is_preserved` and
+# `a_public_session_sees_no_trace_of_a_private_base` fail an unfiltered
+# `kb_get_active` / `kb_set_active`, and this task's
+# `every_drafter_tool_that_builds_a_catalog_scopes_it` fails an unfiltered
+# catalog. If those tests are removed, this gate does NOT stand in for them.
+#
+# ⚠ The pattern matches `::` as well as `.`, because `KnowledgeService::list_bases(&svc)`
+# is the same read written the other way and the dot-only pattern was blind to
+# it. MEASURED: on this tree the two patterns return the identical 49 hits (no
+# UFCS call exists today), so closing the evasion costs nothing.
+#
+# ⚠ TWO sweeps. The previous version was ONE sweep ending in
+# `grep -v "src/knowledge/"`, which made it structurally unable to see the
+# largest metadata surface in the tree: `kb_get_active`
 # (`knowledge/server.rs:725`) reaches the whole set through `service.selection(`
 # at `:687`, inside the excluded directory, through a verb the pattern did not
-# name. A detector that excludes the module the surface lives in is not a
-# detector. The exclusion had a real purpose — keeping the service's own
-# internal reads out of the list — so it is kept as sweep (1) and paired with
+# name. The exclusion had a real purpose — keeping the service's own internal
+# reads out of the reviewed list — so it is kept as sweep (1) and paired with
 # sweep (2) rather than deleted.
-#
+META_RE="(\.|::)(list_bases|session_kb_ids|selection)\("
 # (1) OUTSIDE knowledge/ — measured at 9558c346: 27 hits, 18 production.
-grep -rn "\.list_bases()\|\.session_kb_ids(\|\.selection(" --include='*.rs' crates/*/src/ \
-  | grep -v "src/knowledge/" | sort
+grep -rnE "$META_RE" --include='*.rs' crates/*/src/ | grep -v "src/knowledge/" | sort
 echo "expect: 27 hits / 18 production, every one accounted for:"
 echo "  agent_drafter/catalog.rs:130               CP5 — THIS TASK"
 echo "  biorouter/src/agents/knowledge_tool.rs:149 the id LIST — Task 11 (same class as"
@@ -6600,8 +6619,7 @@ echo "                      :1077 :1080; routes/reset.rs (:387) :418; routes/app
 echo "                      :4661 :4673 :4734; routes/agent.rs (:1379) :1489"
 # (2) INSIDE knowledge/ — measured: 22 hits, 5 production. This is the sweep that
 # would have caught the pointer tools.
-grep -rn "\.list_bases()\|\.session_kb_ids(\|\.selection(" --include='*.rs' crates/*/src/ \
-  | grep "src/knowledge/" | sort
+grep -rnE "$META_RE" --include='*.rs' crates/*/src/ | grep "src/knowledge/" | sort
 echo "expect: 22 hits / 5 production, every one accounted for:"
 echo "  knowledge/server.rs:246  visible_bases_for_session — filtered, Task 10C (1st filter)"
 echo "  knowledge/server.rs:325  kb_id_or_primary's candidate list — Task 10C (3rd filter)"
@@ -6611,8 +6629,50 @@ echo "  knowledge/service.rs:1338  service-internal (effective_primary), reaches
 echo "  biorouter/src/knowledge/soul.rs:73  the user's own Soul base, out of scope"
 echo "  17 test-module hits: brkb.rs (#[cfg(test)] :132) :171; service.rs (:1841) :1879 and"
 echo "                       fifteen more between :2413 and :3039"
-echo "A hit outside these two accounted lists is a NEW metadata surface and must be"
-echo "classified — against the register below — before it lands."
+# ── The two sweeps above are for a human to READ. This is the part that FAILS.
+#    Per-file counts, diffed against the baseline, non-zero exit on any
+#    difference. Line numbers are deliberately NOT in the baseline: every task
+#    between here and Task 40 moves them, and a gate that goes red on a
+#    reformat is a gate that gets deleted.
+cat > /tmp/56-meta-baseline.txt <<'ROWS'
+9	crates/biorouter-cli/src/commands/knowledge.rs
+1	crates/biorouter-cli/src/session/completion.rs
+2	crates/biorouter-cli/src/session/tui/mod.rs
+1	crates/biorouter-mcp/src/agent_drafter/catalog.rs
+1	crates/biorouter-mcp/src/knowledge/brkb.rs
+3	crates/biorouter-mcp/src/knowledge/server.rs
+17	crates/biorouter-mcp/src/knowledge/service.rs
+1	crates/biorouter-server/src/routes/agent.rs
+3	crates/biorouter-server/src/routes/apps.rs
+2	crates/biorouter-server/src/routes/knowledge.rs
+3	crates/biorouter-server/src/routes/reset.rs
+2	crates/biorouter-server/src/routes/workflow.rs
+3	crates/biorouter/src/agents/knowledge_tool.rs
+1	crates/biorouter/src/knowledge/soul.rs
+ROWS
+grep -rnE "$META_RE" --include='*.rs' crates/*/src/ | cut -d: -f1 | sort | uniq -c \
+  | awk '{ printf "%s\t%s\n", $1, $2 }' | sort -k2 > /tmp/56-meta-now.txt
+sort -k2 /tmp/56-meta-baseline.txt > /tmp/56-meta-base-sorted.txt
+if diff -u /tmp/56-meta-base-sorted.txt /tmp/56-meta-now.txt; then
+  echo "ok    metadata-surface inventory unchanged (49 hits / 14 files)"
+else
+  echo "FAIL  the metadata-surface inventory moved — see the diff above."
+  echo "      A '+' line in a file NOT in the baseline is a NEW metadata surface:"
+  echo "      classify it in the register below and add the row IN THIS COMMIT."
+  echo "      A '+' count in a listed file is a NEW call site in a known surface:"
+  echo "      same rule. A '-' means a surface vanished and the register is stale."
+  echo "      Do NOT widen the pattern or drop a file to make this pass."
+  meta_rc=1
+fi
+# Baseline measured at 9558c346, BEFORE any task in this plan lands. Tasks 10A
+# through 10D add call sites of their own (Task 10D's own catalog test, 10C's
+# filters and their tests), so the first run after those tasks WILL differ by
+# exactly those — record each one as a register row and re-baseline here in the
+# same commit. A difference you cannot name is the defect.
+#
+# ── LAST LINE. This block's exit status IS the verdict; there is nothing here
+#    for a human to interpret. Non-zero = the inventory moved.
+( exit "${meta_rc:-0}" )
 ```
 
 **What this catches.** Four wrong implementations. (1) Fixing `list_platform_catalog` only — the
@@ -6634,14 +6694,31 @@ ordering gate and `the_app_capability_report_follows_the_MANIFESTS_provider_not_
 it, and only because that test goes through `configure_agent` — a direct `capability_report(&cfg,
 false)` passes against the defect. (6) Fixing the main agent and leaving `configure_worker_agent`'s
 grant (`:1561`) ungated, which pins a private base as a public worker profile's KB-less write target.
-(7) **A metadata detector that excludes the module the surface lives in.** Its previous form was one
-sweep ending in `grep -v "src/knowledge/"`, so it could not — by construction, not by luck — see
-`kb_get_active`, which reaches the whole set through `service.selection(` at `server.rs:687`, inside
-the excluded directory and through a verb the pattern did not name. **This gate rejects: a metadata
-leak inside `crates/*/src/knowledge/`,** via the second sweep (22 hits / 5 production, each
-accounted for) and `.selection(` added to the pattern. The register above rejects it a second time,
-at the level a leak is actually reasoned about — the *tool*, not the call site — and
-`every_drafter_tool_that_can_name_a_base_is_in_the_register` makes the same rule executable over the
+(7) **A metadata inventory that excludes the module the surface lives in, and one that cannot
+fail.** Its previous form was one sweep ending in `grep -v "src/knowledge/"`, so it could not — by
+construction, not by luck — see `kb_get_active`, which reaches the whole set through
+`service.selection(` at `server.rs:687`, inside the excluded directory and through a verb the pattern
+did not name. It was also two `grep | sort` runs followed by `echo "expect: …"`, i.e. a printout a
+human had to compare against a paragraph.
+
+**This gate rejects: a new call site of `list_bases` / `session_kb_ids` / `selection` landing in
+`crates/*/src/` with no row in the register** — mechanically, by diffing a per-file inventory
+against a checked-in baseline and exiting non-zero. It rejects three specific evasions: the
+`src/knowledge/` blind spot (sweep 2), **UFCS** — `KnowledgeService::list_bases(&svc)`, which the
+old dot-call pattern did not match and which is a one-keystroke way past it (the pattern now matches
+`::` as well; measured, the two forms return the identical 49 hits today, so the fix is free), and
+a *new file* introducing a metadata surface (baseline count 0, so any hit fails).
+
+**This gate does NOT reject an existing call site whose output is unfiltered, and must never be
+read as if it did.** The leaking `kb_get_active` produces the same hit, in the same file, at the
+same count as the fixed one; no grep over this tree can tell them apart. That is Task 10C's job —
+`every_pointer_field_is_filtered_and_the_stored_primary_is_preserved` and
+`a_public_session_sees_no_trace_of_a_private_base` — and this task's own
+`every_drafter_tool_that_builds_a_catalog_scopes_it`. Naming the boundary here is the point: the
+previous wording implied the sweeps caught leaks, which is precisely the false coverage that let the
+single-sweep version survive a round. The register below rejects the leak a second time at the level
+it is actually reasoned about — the *tool*, not the call site — and
+`every_drafter_tool_that_can_name_a_base_is_in_the_register` makes that rule executable over the
 drafter's whole router rather than over the five tools this task happens to know about.
 
 - [ ] **Step 6: Commit**
