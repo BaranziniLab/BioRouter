@@ -202,7 +202,7 @@
 > armed with the feature "off". It is twenty rows now, closed at both ends by two inventory diffs, the
 > second of which starts from the *refusals* so a gate nobody wired still fails. That work surfaced a
 > crate-graph fact the plan had not noticed: **`biorouter-mcp` cannot see `biorouter`**, so a
-> `privacy_tiers_enabled()` defined in `biorouter` is unreachable from five of the twenty points; the
+> `privacy_tiers_enabled()` defined in `biorouter` is unreachable from five of the nineteen points; the
 > atomic moves to `biorouter-mcp` with a `biorouter` re-export.
 
 > **Revision note (ninth round — the barrier was on the arguments, and it needed to be on the
@@ -16117,7 +16117,7 @@ assertion is therefore inverted, not deleted — Gates A and D must now go quiet
 | Create | `ui/desktop/src/components/settings/privacy/PrivacyPanel.tsx` | new |
 | Modify | `ui/desktop/src/components/settings/SettingsView.tsx` | the three `TabsTrigger`s at `:93`/`:100`/`:109` and their `TabsContent`s |
 | Modify | `ui/desktop/src/components/ui/PrivacyBadge.tsx` | **created by Task 26**; this task adds the `enforcementOff` presentation |
-| Create | `crates/biorouter-mcp/src/privacy_toggle.rs` | new — the `AtomicBool` and its two functions. ⚠ **In `biorouter-mcp`, not `biorouter`**: `biorouter` depends on `biorouter-mcp` (`crates/biorouter/Cargo.toml:97`) and not the reverse, and five of the twenty enforcement points are in `biorouter-mcp` |
+| Create | `crates/biorouter-mcp/src/privacy_toggle.rs` | new — the `AtomicBool` and its two functions. ⚠ **In `biorouter-mcp`, not `biorouter`**: `biorouter` depends on `biorouter-mcp` (`crates/biorouter/Cargo.toml:97`) and not the reverse, and five of the nineteen enforcement points are in `biorouter-mcp` |
 | Modify | `crates/biorouter/src/privacy/mod.rs` | `privacy_tiers_enabled()` — a `const fn … { true }` stub since Task 14; this task turns it into a `pub use` of the `biorouter-mcp` function and adds `load_privacy_tiers_from_config()` |
 | Modify | `crates/biorouter-server/src/main.rs` (or wherever `biorouterd` builds its state) | one call to `privacy::load_privacy_tiers_from_config()` after the config loads — measure the exact site when this task runs; Step 5's two-writer assertion is what pins it |
 | Modify | `crates/biorouter/src/agents/extension_manager_extension.rs` | Gate F1 — `check_enable_allowed` gains the toggle read (Task 18 adds the tier check itself) |
@@ -16140,17 +16140,23 @@ task must reject is *a master toggle wired to some of the gates*. A textual grep
 "wired to twenty" from "wired to three"; twenty paired assertions can, and each one names the gate it
 covers so a failure points at the missing wiring rather than at "privacy is broken".
 
-⚠ **The previous version of this matrix had ten rows and the plan has twenty enforcement points.**
+⚠ **The previous version of this matrix had ten rows and the plan has nineteen enforcement points
+plus one invariant row.**
 It omitted Gate F entirely (Task 18 — a public model *enabling* `ucsfomopagent`, and a private
 server's instructions reaching a public system prompt), Task 23's spawn matrix, Task 10D's catalog
 metadata, Task 10A's forced export location, Task 22's session copy, Task 21's visibility predicate,
 Task 10's `chatrecall` LOAD guard, and both of Layer A's insertion points (Tasks 14B and 14D). Every
 one of those could stay armed with the toggle off while all ten old rows passed — and the toggle's
 whole promise, in the operator's words, is *"nothing will be impacted and everything will be out of
-the sandbox."* A matrix that misses eight enforcement points cannot state that.
+the sandbox."* A matrix that misses eight enforcement points cannot state that. ⚠ One of the eight,
+**Task 22's session copy**, turned out on inspection not to be an enforcement point at all: it is an
+invariant that must hold in both positions, and it keeps its matrix row for exactly that reason while
+appearing on neither inventory list. See DR-15's ⚠.
 
 ```rust
-/// DR-15. TWENTY enforcement points, each asserted in both toggle positions.
+/// DR-15. NINETEEN enforcement points, each asserted in both toggle positions,
+/// plus ONE invariant row (17, session copy) asserted identically in both —
+/// see its ⚠, and DR-15's own ⚠ on why propagating a stamp is not classifying.
 /// The `on` column is what every other task already tests, restated here so
 /// this test fails when a gate is wired to the toggle but broken, not only when
 /// it is unwired.
@@ -16165,7 +16171,13 @@ the sandbox."* A matrix that misses eight enforcement points cannot state that.
 #[tokio::test]
 async fn the_master_toggle_governs_every_gate_in_both_directions() {
     // ---- ON: the shipped default. Every gate refuses. -----------------------
-    set_privacy_tiers(true).await;
+    // ⚠ `set_privacy_tiers` RETURNS AN RAII GUARD and is never called for effect.
+    //   See the ⚠ on the OFF column below for why; the shape is stated once and
+    //   used identically at every call site in this task, including this one,
+    //   because a bare setter here leaves the flag true-by-luck rather than
+    //   true-by-construction and the next test in the file inherits whatever
+    //   the last one did.
+    let _on = set_privacy_tiers(true).await;
     let priv_sess = private_session().await;
     assert!(agent.update_provider(public_provider(), &priv_sess.id).await.is_err());   // 1  A   (Task 12)
     assert!(reply_on(public_provider(), &priv_sess.id).await.is_err());                 // 2  B   (Task 13)
@@ -16190,7 +16202,8 @@ async fn the_master_toggle_governs_every_gate_in_both_directions() {
                 .await.unwrap().starts_with(kb_root().join("exports")));                //        (Task 10A)
     assert!(kb_write_as(ProviderTier::Private, "notes").await.is_ok()
             && tier_is_private(&kb_root(), "notes"));                                   // 16 ratchet (10B)
-    // Session copy carries the tier; the visibility predicate hides the row.
+    // Session copy carries the tier — an INVARIANT, not a gate; the visibility
+    // predicate hides the row.
     assert_eq!(copy_of(&priv_sess).await.privacy_tier, SessionClassification::Private);  // 17 copy (Task 22)
     assert!(!visible_to(ProviderTier::Public, &priv_sess));                              // 18 VIS  (Task 21)
     //   ⚠ `visible_to` is PURE (Task 10's ⚠): the toggle reaches it through the
@@ -16200,7 +16213,23 @@ async fn the_master_toggle_governs_every_gate_in_both_directions() {
     // DR-14, both layers.
     assert!(dispatch_via_agent("developer__text_editor", &private_page_path())           // 19 Layer A
                 .await.contains("private model"));                                       //  (14B + 14D)
-    assert!(shell_requires_read_deny_sandbox_for(ProviderTier::Public));                 // 20 Layer B (14A)
+    // 20 Layer B (14A) — asserted on THE SPAWNED COMMAND, not on a predicate.
+    //   ⚠ Round 3 §7: this row used to be `shell_requires_read_deny_sandbox_for(..)`,
+    //   a helper this plan never defines. A row whose subject does not exist
+    //   cannot fail, and Layer B is the one enforcement point that emits no
+    //   refusal string, so it was the row least able to afford that.
+    //
+    //   `cat` on a seeded page inside a deny root, through the real
+    //   `developer__shell`. ONE assertion covers both host classes on purpose:
+    //   where the kernel can express the deny the command runs and fails to
+    //   read; where it cannot, the tool is refused outright (AR-6). Either way
+    //   the bytes must not come back, and asserting on the BYTES rather than on
+    //   which of the two happened is what keeps this row meaningful on a CI
+    //   runner whose sandbox capability nobody controls.
+    seed_page_in_private_root("SENTINEL-COHORT-N-412");
+    let out = shell_via_agent(&format!("cat {}", private_page_path())).await;
+    assert!(!out.contains("SENTINEL-COHORT-N-412"),
+            "a public session's shell read a private root: {out}");
 
     // ---- OFF: nothing is refused, and nothing is sandboxed. -----------------
     // ⚠ `set_privacy_tiers` mutates a PROCESS-GLOBAL atomic, and `cargo test`
@@ -16211,8 +16240,10 @@ async fn the_master_toggle_governs_every_gate_in_both_directions() {
     //   take the same process-wide guard `env_lock` uses and return an RAII
     //   handle that restores the previous value on drop — held for the whole
     //   test, exactly like `let _g = env_lock::lock_env(..)` elsewhere in this
-    //   plan. A bare setter is the defect.
-    let _g = set_privacy_tiers(false).await;
+    //   plan. A bare setter is the defect. The helper is DEFINED below, not
+    //   assumed: an undefined helper is what made row 20 vacuous.
+    drop(_on);                       // ← restores true; the guard below then owns it
+    let _off = set_privacy_tiers(false).await;
     assert!(agent.update_provider(public_provider(), &priv_sess.id).await.is_ok());
     assert!(reply_on(public_provider(), &priv_sess.id).await.is_ok());
     assert!(!call_private_tool_via_agent_loop().await.contains("private"));
@@ -16232,16 +16263,28 @@ async fn the_master_toggle_governs_every_gate_in_both_directions() {
     assert!(kb_write_as(ProviderTier::Private, "notes2").await.is_ok()
             && !tier_is_private(&kb_root(), "notes2"));      // AR-7: the ratchet stops too
     assert_eq!(copy_of(&priv_sess).await.privacy_tier, SessionClassification::Private);
-    // ⚠ Row 17 is IDENTICAL in both columns, on purpose. The toggle stops
+    // ⚠ Row 17 is IDENTICAL in both columns, on purpose, and DR-15 was
+    //   corrected to say so rather than the two contradicting each other
+    //   (round 3 §7 read the contradiction and was right to). The toggle stops
     //   ENFORCEMENT; it does not delete the columns or rewrite the stamps
-    //   already written (DR-15), and a copy that silently laundered a private
-    //   row to public while the feature was off would do exactly that. Row 16's
-    //   OFF direction differs because a ratchet *writes a new* classification,
+    //   already written, and a copy that laundered a private row to public
+    //   while the feature was off would do exactly that — durably, because
+    //   re-enabling does not revisit it (AR-7). Carrying a parent's stamp is
+    //   column propagation; it is not a classification decision, `create_derived_session`
+    //   reads no toggle, and it is on NEITHER inventory list. Row 16's OFF
+    //   direction differs because a ratchet *writes a new* classification,
     //   which is the thing AR-7 says stops happening.
     assert!(visible_to(ProviderTier::Public, &priv_sess));
     assert!(!dispatch_via_agent("developer__text_editor", &private_page_path())
                 .await.contains("private model"));
-    assert!(!shell_requires_read_deny_sandbox_for(ProviderTier::Public));
+    // …and the same `cat`, same page, now succeeds. This is the direction that
+    // fails a Layer B left armed with the toggle off — the one the operator's
+    // "everything will be out of the sandbox" is about — and it fails it on
+    // BOTH host classes: an armed deny either hides the file or refuses the
+    // tool, and neither returns the sentinel.
+    let out = shell_via_agent(&format!("cat {}", private_page_path())).await;
+    assert!(out.contains("SENTINEL-COHORT-N-412"),
+            "the shell was still sandboxed with privacy tiers off: {out}");
 }
 
 /// AR-7, as an assertion rather than a paragraph: with the toggle off the
@@ -16250,14 +16293,15 @@ async fn the_master_toggle_governs_every_gate_in_both_directions() {
 /// way, so it is pinned rather than described.
 #[tokio::test]
 async fn nothing_ratchets_while_the_toggle_is_off_and_re_enabling_does_not_backfill() {
-    set_privacy_tiers(false).await;
+    let off = set_privacy_tiers(false).await;
     let (agent, s) = agent_on(private_provider()).await;
     call_tool_via_http("ucsfomopagent__run_query", &s.id).await.unwrap();
     reply_on(private_provider(), &s.id).await.unwrap();
     assert_eq!(reread(&s.id).await.privacy_tier, SessionClassification::Public,
                "DR-4's two triggers must not fire while the feature is off");
 
-    set_privacy_tiers(true).await;
+    drop(off);
+    let _on = set_privacy_tiers(true).await;
     assert_eq!(reread(&s.id).await.privacy_tier, SessionClassification::Public,
                "re-enabling must not retro-classify; there is no content scan (AR-7)");
 }
@@ -16271,8 +16315,57 @@ async fn no_environment_variable_can_turn_protection_off() {
     assert!(privacy_tiers_enabled(), "an env var disabled the whole feature");
 }
 
+/// The one helper the tests above share, **defined rather than assumed** —
+/// round 3 §7's other finding in this task was a behavioural row resting on a
+/// helper this plan never wrote, and a fix for a missing guard must not
+/// introduce a second one.
+///
+/// ⚠ Its own mutex, NOT `env_lock`'s. Measured: `env_lock` is a third-party
+/// crate whose surface here is `lock_env(iter) -> EnvGuard` (`memory/mod.rs:1437`,
+/// `routes/audio.rs:408`, `llamacpp_routes.rs:248`); it exposes no bare
+/// process lock, and `EnvGuard` is a sync guard. Reaching for it would mean
+/// either locking a variable this has nothing to do with or holding a
+/// `std::sync` guard across an `.await`, which is not `Send` in a
+/// `#[tokio::test]`. What the serialization actually requires is only that
+/// **every** mutation of the toggle in the test binary goes through one mutex,
+/// and this is it. A test that mutates BOTH the toggle and the environment
+/// takes both guards, toggle first.
+///
+/// ⚠ Drop restores the PREVIOUS value, not `true`. Nesting has to unwind, or
+/// the last test to run decides what every test scheduled after it asserts —
+/// which is the round-3 defect (`cargo test` runs this file's tests in parallel
+/// threads of one process, and the matrix used to end with the flag false).
+///
+/// ⚠ It does NOT create a second writer of the flag. `set_privacy_tiers_enabled`
+/// is still the one setter, and Step 5 (2)'s two-writer assertion scans
+/// `crates/*/src/`, which excludes `#[cfg(test)]`-gated helpers only if this
+/// lives in a test module — put it in one.
+static PRIVACY_TIER_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+pub struct PrivacyTierGuard { prev: bool, _lock: tokio::sync::MutexGuard<'static, ()> }
+impl Drop for PrivacyTierGuard {
+    fn drop(&mut self) { biorouter_mcp::privacy_toggle::set_privacy_tiers_enabled(self.prev); }
+}
+pub async fn set_privacy_tiers(on: bool) -> PrivacyTierGuard {
+    // ⚠ NOT reentrant. A test holding one guard must `drop` it before taking
+    // another, and must never re-arm the flag by calling this again while one
+    // is live — that deadlocks rather than failing, which is the worst way for
+    // a test helper to be wrong. Re-arming mid-test is a bare
+    // `set_privacy_tiers_enabled(..)` under the guard already held.
+    let _lock = PRIVACY_TIER_LOCK.lock().await;
+    let prev = biorouter_mcp::privacy_toggle::privacy_tiers_enabled();
+    biorouter_mcp::privacy_toggle::set_privacy_tiers_enabled(on);
+    PrivacyTierGuard { prev, _lock }
+}
+
 #[tokio::test]
 async fn a_bare_config_upsert_cannot_flip_the_key_but_the_confirmed_one_can() {
+    // ⚠ Held for the WHOLE test, and this one needs it most: the second half
+    // flips the flag through `/config/upsert`, i.e. through production code and
+    // not through the helper, so without a guard this test leaves the process
+    // with privacy tiers OFF and every privacy test scheduled after it asserts
+    // nothing while passing.
+    let _g = set_privacy_tiers(true).await;
     // ⚠ THESE TWO ASSERTIONS LOOK CONTRADICTORY AND ARE NOT — round 3 §4 read
     // the earlier draft as contradictory precisely because it only wrote the
     // first half. `/config/upsert` MUST be one of the two writers (Step 5's
@@ -16291,7 +16384,10 @@ async fn a_bare_config_upsert_cannot_flip_the_key_but_the_confirmed_one_can() {
     assert!(!privacy_tiers_enabled());
 
     // A wrong phrase is refused, and the comparison is exact.
-    set_privacy_tiers(true).await;
+    // ⚠ A BARE re-arm, not a second `set_privacy_tiers(..)`: `_g` still holds
+    // the (non-reentrant) lock, so calling the helper again here would deadlock
+    // rather than fail. `_g`'s Drop still restores the value this test found.
+    biorouter_mcp::privacy_toggle::set_privacy_tiers_enabled(true);
     let r = post_config_upsert_confirmed("BIOROUTER_PRIVACY_TIERS", "off",
                                          "disable privacy tiers").await;
     assert_eq!(r.status(), 403);
@@ -16332,7 +16428,7 @@ it('badges stay visible while enforcement is off, and say so', () => {
 
 - [ ] **Step 3: Implement**
 
-⚠ **The predicate cannot live in `biorouter`, and five of the twenty enforcement points are the
+⚠ **The predicate cannot live in `biorouter`, and five of the nineteen enforcement points are the
 reason.** `biorouter` depends on `biorouter-mcp` (`crates/biorouter/Cargo.toml:97`) and **not the
 reverse** — measured, and it is the same constraint that produced the `Completer` trait and
 `ProviderCompleter`. Five inventory rows are inside `biorouter-mcp`: the knowledge-base barrier
@@ -16358,7 +16454,7 @@ pub fn set_privacy_tiers_enabled(on: bool) { TIERS_ENABLED.store(on, Ordering::R
 This is the same shape the plan already uses for `private_roots` (`biorouter-mcp` owns it,
 `crates/biorouter/src/privacy/private_roots.rs` re-exports it), and it keeps the audit patterns
 single-spelled: because `biorouter` re-exports the function rather than wrapping it, every one of the
-twenty call sites is written `privacy_tiers_enabled()` and Step 5's scan needs one pattern, not two.
+nineteen call sites is written `privacy_tiers_enabled()` and Step 5's scan needs one pattern, not two.
 
 **(a) The predicate.** One function, re-exported from `crates/biorouter/src/privacy/mod.rs`, replacing
 the `const fn … { true }` stub Task 14 introduced:
@@ -16371,7 +16467,7 @@ the `const fn … { true }` stub Task 14 introduced:
 /// none of them are.
 ///
 /// A **re-export**, not a wrapper: the storage is
-/// `biorouter_mcp::privacy_toggle`, because five of the twenty enforcement
+/// `biorouter_mcp::privacy_toggle`, because five of the nineteen enforcement
 /// points are in `biorouter-mcp` and that crate cannot see this one. Re-export
 /// rather than `fn privacy_tiers_enabled() { biorouter_mcp::…() }` so the token
 /// at every call site is identical in both crates and Step 5's audit is one
@@ -16529,7 +16625,7 @@ scan() {  # scan <extended-regex>  ->  "path<TAB>fn", production code only
     ' "$f"
   done | sort -u
 }
-# ── (3a) THE INVENTORY. Twenty enforcement points, one row each, in the
+# ── (3a) THE INVENTORY. Nineteen enforcement points, one row each, in the
 #         same order as Step 1's matrix — split across the TWO axes the toggle
 #         can travel on, because after Task 10 they are genuinely different.
 #
@@ -16567,7 +16663,6 @@ crates/biorouter/src/session/chat_history_search.rs	execute
 crates/biorouter/src/knowledge/conversation_ingest.rs	ingest_conversation
 crates/biorouter/src/privacy/alt_provider.rs	assert_alt_provider_allowed
 crates/biorouter/src/agents/subagent_tool.rs	apply_settings_overrides
-crates/biorouter/src/session/session_manager.rs	create_derived_session
 ROWS
 cat > /tmp/56-toggle-B.txt <<'ROWS'
 crates/biorouter/src/agents/extension_manager.rs	dispatch_tool_call
@@ -16586,7 +16681,14 @@ ROWS
 sort -u /tmp/56-toggle-A.txt > /tmp/56-toggle-want.txt
 sort -u /tmp/56-toggle-B.txt > /tmp/56-cap-want.txt
 n=$(( $(wc -l < /tmp/56-toggle-want.txt) + $(wc -l < /tmp/56-cap-want.txt) ))
-[ "$n" -eq 20 ] || { echo "FAIL  inventory has $n rows; Step 1's matrix has 20"; tog_rc=1; }
+# ⚠ NINETEEN, against a matrix of TWENTY rows, and the difference is named
+# rather than fudged: matrix row 17 (session copy) is an INVARIANT asserted
+# identically in both columns, not an enforcement point. It refuses nothing and
+# reads no toggle — a toggle read there would let a copy launder a private
+# session's stamp to public, durably, because re-enabling does not revisit it.
+# See DR-15's ⚠. If a later task makes the copy paths conditional on the toggle,
+# that is the change that adds the twentieth row here, and it should not.
+[ "$n" -eq 19 ] || { echo "FAIL  inventory has $n rows; expected 19 (matrix 20 - the copy invariant)"; tog_rc=1; }
 scan 'privacy_tiers_enabled[(][)]' | grep -v '/privacy/mod\.rs' > /tmp/56-toggle-have.txt
 scan '[.](enforced|restricts_private_data)[(][)]' \
   | grep -v '/privacy/capability\.rs' > /tmp/56-cap-have.txt
@@ -16636,8 +16738,9 @@ fi
 echo "⚠ Layer B (the read-deny sandbox, Task 14A) is the one enforcement point"
 echo "  that emits no refusal string — it hands the kernel a policy. Its row is"
 echo "  the last one in the inventory, and its behavioural row is the matrix's"
-echo "  \`shell_requires_read_deny_sandbox_for\`. If the function that builds the"
-echo "  policy is renamed, (3a)'s diff is what says so."
+echo "  \`cat\` of a seeded page through the real \`developer__shell\`, asserted on"
+echo "  the SENTINEL BYTES in both toggle positions. If the function that builds"
+echo "  the policy is renamed, (3a)'s diff is what says so."
 
 # (4) The badge is not conditionally unmounted. The wrong implementation is
 #     `{enforcementOn && <PrivacyBadge …/>}` at a call site — which no badge
@@ -16666,16 +16769,17 @@ reported green. Step 5 (3) named exactly `dispatch_tool_call`, `assert_extension
 `allowed_extension_keys`, so an implementation that left **Gate F's two channels** (a public model
 enabling `ucsfomopagent`, spawning its process and pulling `CLINICAL_RECORDS_*` out of the keychain;
 a private server's instructions in a public system prompt), **Task 23's spawn matrix**, **Layer A's
-four insertion points**, **Task 10D's catalog**, **Task 10A's forced export location**, **Task 22's
-session copy**, **Task 21's visibility predicate** and **Task 10's `chatrecall` LOAD guard** fully
-armed passed the whole task. The operator's sentence for this toggle is *"nothing will be impacted
+four insertion points**, **Task 10D's catalog**, **Task 10A's forced export location**, **Task 21's
+visibility predicate** and **Task 10's `chatrecall` LOAD guard** fully
+armed passed the whole task — and left **Task 22's session copy** carrying no tier at all, which
+the matrix's row 17 catches in both directions without it being a gate. The operator's sentence for this toggle is *"nothing will be impacted
 and everything will be out of the sandbox"*, and eight unreachable enforcement points is not that.
 
 **This gate rejects: an enforcement point added later with no row.** Two closures, in opposite
 directions, and neither is a hand-written list:
 
 - **(3a)** derives every `(file, enclosing fn)` that reads `privacy_tiers_enabled()` from the tree
-  and **diffs** it against the twenty-row inventory. A `+` line is a gate wired with no inventory row
+  and **diffs** it against the nineteen-row inventory. A `+` line is a gate wired with no inventory row
   and no matrix row; a `-` line is an inventory row whose gate stopped reading the toggle. Both fail.
 - **(3b)** is the half that catches a gate **nobody wired at all**, which (3a) cannot see by
   construction. It starts from the refusals: every `(file, fn)` that mentions `PrivacyRefusal`,
@@ -16684,9 +16788,12 @@ directions, and neither is a hand-written list:
   added without a toggle check fails here while appearing in neither list.
 
 The one enforcement point outside both patterns is **Layer B**, which refuses nothing — it hands the
-kernel a policy — so it is carried by its inventory row plus the matrix's
-`shell_requires_read_deny_sandbox_for`, and a rename of the policy builder surfaces as (3a)'s `-`
-line. That residual is named rather than hidden: a *second* mechanism that silently subtracts
+kernel a policy — so it is carried by its inventory row plus the matrix's **`cat` of a seeded page
+through the real `developer__shell`**, and a rename of the policy builder surfaces as (3a)'s `-`
+line. ⚠ Until this round that behavioural row was `shell_requires_read_deny_sandbox_for(..)`, a
+helper this plan never defines anywhere: the *only* enforcement point with no refusal string to
+scan for was also the only one whose behavioural assertion did not exist, so Layer B was covered by
+nothing at all in either direction. That residual is named rather than hidden: a *second* mechanism that silently subtracts
 capability without emitting a refusal string would be invisible to (3b), and the reviewer of the
 task that adds it is the control.
 
@@ -16700,7 +16807,7 @@ git add ui/desktop/src/components/settings ui/desktop/src/components/ui/PrivacyB
         crates/biorouter/src/agents/subagent_tool.rs \
         crates/biorouter/src/config/base.rs crates/biorouter-server/src/routes/config_management.rs \
         crates/biorouter-server/src/main.rs
-# The twenty enforcement points are edited by the tasks that create them; this
+# The nineteen enforcement points are edited by the tasks that create them; this
 # commit adds the toggle read to the ones whose task did not know about it
 # (F1 and the spawn matrix) and re-points the rest at the re-exported predicate.
 cargo check --workspace --all-targets
@@ -17920,7 +18027,7 @@ the implementation is wrong.
 | **DR-8** | **Declassification is the user's alone** — an explicit deprivatise action in History. Nothing automatic, nothing an agent can invoke. Graded by `privacy_reason`: `mcp:*` gets a typed confirmation, `turn:*`-only gets single-click with undo. |
 | **DR-9** | ~~**A global opt-out exists, off by default**, scoped to Gate C (the MCP tool gate) only.~~ **Superseded by DR-15.** The operator has since ruled that the opt-out is a *master* switch over the whole feature, which is the wider of the two readings [Open question 3](#open-questions) recorded. The Gate-C-scoped key is retired rather than kept alongside the master one: two switches whose scopes nest are two things a user must reason about at the moment they are least able to, and the narrower one has no remaining job. |
 | **DR-14** | **A public-capability session's tools may not reach Biorouter's own private data, on by default, and the control is TWO layers.** **Layer A (primary)** is an in-process path barrier at `ExtensionManager::dispatch_tool_call` — the one function every tool call passes through — which refuses any call whose arguments name a path inside the private entries. It needs no kernel support, so it holds on every platform, for every tool that exists and every tool added later. **Layer B (defence in depth)** is the OS read-deny sandbox (Seatbelt / bubblewrap) wrapping the five tools that spawn a child process, which Layer A cannot see into once the command is handed over. The entries are the four roots the operator named — the session store, the knowledge roots, the global memory root and the Agent Drafter app root — plus one file, `<config>/config.yaml`, because a master switch a public model can edit is not a switch. Everything else on the filesystem stays readable and writable — this is **not** a general jail and must not become one. **Private-capability sessions are unaffected.** Where the platform cannot express the kernel deny, the fail direction is **closed** for the five spawning tools only (they are refused, naming the two ways out); every in-process tool keeps working, because Layer A does not need a kernel. Tasks 14A–14D. |
-| **DR-15** | **One master toggle turns the entire privacy-tier feature off**, config key `BIOROUTER_PRIVACY_TIERS`, default `on`. Off means: no bind gate, no turn gate, no dispatch gate, no discovery filter, no `chatrecall` filter, no `chatrecall` LOAD guard, no knowledge-base barrier, no catalog scoping, no forced export location, no **extension-enablement refusal and no stripping of a private server's instructions** (Gate F), no spawn matrix, no session-copy classification, no visibility predicate, no classification ratchet, **no in-process path barrier** (DR-14 Layer A) and **no read-deny sandbox** (DR-14 Layer B) — nothing is refused and nothing is sandboxed. Task 30 enumerates all twenty enforcement points and fails if the tree contains one that is in neither its matrix nor its inventory. It does **not** delete the columns, the stamps already written, or the audit rows, so turning it back on resumes enforcement over the history that existed when it was turned off. It does **not** hide the badges either: they keep rendering, restyled and suffixed *— enforcement off*, beside a persistent strip. A guardrail that vanishes when disabled cannot be noticed by the person who disabled it six months ago; a badge that still reads plain **Private** while nothing enforces it is a false statement. Neither is acceptable, so the badge stays and changes what it says. |
+| **DR-15** | **One master toggle turns the entire privacy-tier feature off**, config key `BIOROUTER_PRIVACY_TIERS`, default `on`. Off means: no bind gate, no turn gate, no dispatch gate, no discovery filter, no `chatrecall` filter, no `chatrecall` LOAD guard, no knowledge-base barrier, no catalog scoping, no forced export location, no **extension-enablement refusal and no stripping of a private server's instructions** (Gate F), no spawn matrix, no visibility predicate, no classification ratchet, **no in-process path barrier** (DR-14 Layer A) and **no read-deny sandbox** (DR-14 Layer B) — nothing is refused and nothing is sandboxed. ⚠ **Session copy is NOT on that list, and an earlier wording of this row put it there.** A copy carrying its parent's stored tier is *propagation of an existing column*, which the sentence after this one preserves explicitly; it is not a classification decision. Reading it the other way makes "copy the chat" a laundering operation that **survives re-enabling** — the copy is stamped `public` for ever and the paragraph below promising that re-enabling "resumes enforcement over the history that existed" becomes false. For the same reason `import_session`'s fail-closed default (a transcript arriving with no tier is stamped Private) is unaffected: it is a provenance stamp on incoming data, not a runtime judgement about what a live session touched, which is what the ratchet is and what AR-7 is about. So the copy paths are not an enforcement point at all — they are the fix for §9.3 B1 (a branch of a private chat silently running on a public model), they refuse nothing, and they read no toggle. Task 30's matrix asserts them **identically in both columns** and its inventory does not list them. Task 30 enumerates all nineteen enforcement points and fails if the tree contains one that is in neither its matrix nor its inventory. It does **not** delete the columns, the stamps already written, or the audit rows, so turning it back on resumes enforcement over the history that existed when it was turned off. It does **not** hide the badges either: they keep rendering, restyled and suffixed *— enforcement off*, beside a persistent strip. A guardrail that vanishes when disabled cannot be noticed by the person who disabled it six months ago; a badge that still reads plain **Private** while nothing enforces it is a false statement. Neither is acceptable, so the badge stays and changes what it says. |
 | **DR-10** | **Fail directions differ by kind, deliberately.** Migration backfill → fail **open** (public). Runtime read of a missing/unparseable column → fail **closed** (private, with `error!`). Import with no tier → fail **closed**. Unknown provider → **Public** (fail-*safe*: less privileged). Unlisted extension → **Public** (fail-open, DR-6). Any gate's lookup failing → refuse, encoded inside `Ok(..)`, never as `Err`. |
 | **DR-11** | **`medcp` stays callable by a public model**, and that is the accepted cost of DR-6. It is enabled on the operator's machine with `CLINICAL_RECORDS_*` against a clinical MSSQL backend. The reasoning: a hand-installed extension is the user's own choice, and medcp is a *connector* rather than a data source. **The badge is a statement about provenance, not about the data behind the connector.** |
 | **DR-12** | **`spokeagent` is public.** SPOKE holds no patient data; its passcode gates the service, not private content. |
@@ -17940,7 +18047,7 @@ costs recorded in [Accepted risks](#accepted-risks) (AR-1, AR-2 and AR-5).
 |---|---|---|
 | **1** | **Does a mixed lead/worker composite ratchet the session?** R3 says "switched to a private model even once → private permanently", and a private-lead/public-worker composite *contains* a private model. The design says it does **not** ratchet, because `tier = least` and the transcript has already gone to the public worker, and because ratcheting on `max` would make the bind gate refuse that same composite on the next resume — bricking a working configuration. Using one reduction for both the gate and the ratchet is what makes `capability ≥ classification` provable by induction (Task 7). **This is the single place the letter of a requirement was not followed, and it needs a ruling.** | Implements the design: `LeadWorkerProvider::tier() = least(lead, worker)`, and `floor(Public) = Public` so no ratchet fires. Task 5's composite test and Task 7's induction test both encode this; **a ruling the other way changes both tests and the `tier()` override, and nothing else.** |
 | **2** | **Is the spawn-downgrade an approval or a refusal?** R4 permits it, so the design makes it an approval showing the task prompt. But the prompt is written by a private-context model and is the only leak vector, and it is the one control a planted `PermissionRequest` hook could bypass — hooks load from `~/.config/biorouter/config.yaml` and, with `allow_project_hooks`, from `.biorouter/hooks.yaml`, both writable by an agent with `text_editor`. | Task 23 implements the approval, behind `requires_downgrade_confirmation`. Flipping it to a `Deny` is one branch. |
-| **3** | ~~**Does the R7 opt-out really stop at Gate C?**~~ **CLOSED — the operator ruled: it stops nowhere.** `BIOROUTER_PRIVACY_TIERS=off` disables every gate, the ratchet and the sandbox (DR-15). The original wording — "opt out of the **entire** protection layer" — is now read literally. | Task 30 implements the master toggle and its Step 1 is a **twenty-row** on/off matrix over every enforcement point, closed at both ends by Step 5's two inventory diffs. The cost this closure buys is real and is recorded as [AR-7](#ar-7--while-the-tiers-are-off-nothing-is-recorded-and-turning-them-back-on-does-not-reclassify-the-gap): while the toggle is off the ratchet does not run, so sessions that handled private material during that window stay stamped `public` for ever. |
+| **3** | ~~**Does the R7 opt-out really stop at Gate C?**~~ **CLOSED — the operator ruled: it stops nowhere.** `BIOROUTER_PRIVACY_TIERS=off` disables every gate, the ratchet and the sandbox (DR-15). The original wording — "opt out of the **entire** protection layer" — is now read literally. | Task 30 implements the master toggle and its Step 1 is a **twenty-row** on/off matrix — nineteen enforcement points plus the session-copy invariant — closed at both ends by Step 5's two inventory diffs. The cost this closure buys is real and is recorded as [AR-7](#ar-7--while-the-tiers-are-off-nothing-is-recorded-and-turning-them-back-on-does-not-reclassify-the-gap): while the toggle is off the ratchet does not run, so sessions that handled private material during that window stay stamped `public` for ever. |
 | **4** | **Is the first cross-tier write approval remembered per (caller, target) or per call?** Per-pair-per-session-lifetime was chosen because a confirmation on every steer of a public worker is miserable and would be clicked through. | Task 21 exposes `requires_first_crossing_approval`; the memoisation policy lives with BR-71's inspector. |
 | **5** | **Institutional Ollama versus hosted Ollama SaaS.** R1 says self-hosted *or* institution-hosted is private, and config cannot tell a lab GPU box at `OLLAMA_HOST=gpu.lab.ucsf.edu` from a hosted SaaS. **This plan disagrees with the design on the severity**: the design rates "non-loopback stays Private" a false-private and "the one place this design is permissive". It is a live bypass — `ProviderEngine::Ollama` plus a remote `base_url` in one agent-writable JSON file mints a Private-tier provider pointing anywhere. Certainty needs a `BIOROUTER_PRIVATE_HOSTS` allowlist, a new concept deliberately not added. | Task 5 makes **loopback-only** Private and non-loopback Public, and its third test encodes the bypass. A lab GPU box therefore reads Public until an allowlist exists. **This is a real ergonomic regression for lab users and needs a ruling.** |
 | **6** | **Should `versa_azure` get its own config keys?** It shares all three `AZURE_OPENAI_*` keys with the public `azure_openai` provider, whose shipped default endpoint (`azure.rs:204`) is the same UCSF gateway. The demotion rule catches the dangerous direction, but it means a user can *lose* their private tier by configuring an unrelated provider. | Task 5 implements the endpoint-host demotion. Separate keys are a follow-up. |
