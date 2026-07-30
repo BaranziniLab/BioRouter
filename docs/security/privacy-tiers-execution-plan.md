@@ -14600,6 +14600,9 @@ const GENERATED_USER_ACTION_KEY = crypto.randomBytes(32).toString('hex');
 // the same constant, so `just debug-ui` keeps working. See Open question 23.
 const DEV_USER_ACTION_KEY = 'biorouter-dev-user-action';
 const getUserActionKey = (settings: ReturnType<typeof loadSettings>): string => {
+  // ⚠ `userActionKey` is a NEW optional field on the externalBiorouterd settings
+  //    type — it does not exist today. Absent, this returns '' and the raise
+  //    fails closed, which is the right default for a backend the app did not start.
   if (settings.externalBiorouterd?.enabled) return settings.externalBiorouterd.userActionKey ?? '';
   if (process.env.BIOROUTER_EXTERNAL_BACKEND) return DEV_USER_ACTION_KEY;
   return GENERATED_USER_ACTION_KEY;
@@ -14729,9 +14732,8 @@ branch, because attaching a private extension to a public session is not a raise
 authorize either; the user's route is to switch the model first and then attach.
 
 ```rust
-    if classify_extension(request.config.name()).is_private()
-        && session_capability(&agent).await == ProviderTier::Public
-    {
+    let capability = agent.provider().await.map(|p| p.tier()).unwrap_or(ProviderTier::Public);
+    if classify_extension(request.config.name()).is_private() && capability == ProviderTier::Public {
         return Err(ErrorResponse { status: StatusCode::CONFLICT,
             message: PrivacyRefusal::PrivateExtensionOverHttp {
                 name: request.config.name().to_string() }.to_string() });
@@ -14861,9 +14863,9 @@ speak with one voice:
 *Model-facing* (the config routes, 409 body):
 
 > '{key}' decides what privacy level new chats start at, so changing it is the user's decision, not
-> yours. The setting is unchanged. Do not retry. If this task needs a different default, ask the user
-> to switch this chat to a private model first — in the desktop app under Settings > Models, or with
-> the model chip in the composer.
+> yours. The setting is unchanged. Do not retry. If *this* task needs a private model, that is a
+> per-chat change and not a default: ask the user to switch this chat to a private model first — in
+> the desktop app under Settings > Models, or with the model chip in the composer.
 
 *User-facing* — a toast the user should ordinarily **never** see, because the picker carries the
 proof. It appears only on a backend the user started themselves (open question 23), so it names that
@@ -14937,7 +14939,8 @@ cd ui/desktop && npm run test:run -- biorouterd
 # 1. THE USER'S RAISE STILL WORKS. A guard that refuses the model by refusing
 #    everyone is the single most likely wrong implementation, and every other
 #    assertion here passes against it.
-grep -c "raise_needs_user_action" crates/biorouter-server/src/routes/agent.rs ; echo "expect: 1"
+awk '/async fn update_agent_provider/,/^}/' crates/biorouter-server/src/routes/agent.rs \
+  | grep -c "raise_needs_user_action" ; echo "expect: 1 — anchored on the enclosing fn, so the `use` line does not count"
 awk '/async fn update_agent_provider/,/^}/' crates/biorouter-server/src/routes/agent.rs \
   | grep -c "is_user_action(&headers)" ; echo "expect: 1 — a CONDITION, not an unconditional refusal"
 awk '/async fn update_agent_provider/,/^}/' crates/biorouter-server/src/routes/agent.rs \
@@ -14961,8 +14964,8 @@ awk '/interface BiorouterProcessEnv/,/^}/' ui/desktop/src/biorouterd.ts \
   | grep -ci "user.action" ; echo "expect: 0"
 awk '/const additionalEnv/,/^  } as BiorouterProcessEnv;/' ui/desktop/src/biorouterd.ts \
   | grep -ci "user.action" ; echo "expect: 0"
-grep -rn "BIOROUTER_USER_ACTION\|USER_ACTION_KEY=" ui/desktop/src crates/ | grep -c . ; echo "expect: 0 — no env var exists, by design"
-grep -rn "USER_ACTION" crates/biorouter-server/src | grep -c "env::var" ; echo "expect: 0"
+grep -rnE "env\.[A-Z_]*USER_ACTION|process\.env\[[^]]*USER_ACTION" ui/desktop/src | grep -c . ; echo "expect: 0 — no env var exists, by design"
+grep -rn "env::var" crates/biorouter-server/src | grep -c "USER_ACTION" ; echo "expect: 0 — the daemon never reads one either"
 grep -n "stdio:" ui/desktop/src/biorouterd.ts ; echo "expect: stdio[0] == 'pipe'"
 grep -n "safeArgs = " ui/desktop/src/biorouterd.ts ; echo "expect: ['agent'] — the key is not on argv either"
 # The daemon stores a digest, never the key.
