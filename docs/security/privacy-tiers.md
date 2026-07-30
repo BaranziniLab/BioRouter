@@ -855,20 +855,48 @@ private data. Private-capability sessions are unaffected: this is not a general 
 become one. Everything outside the named entries stays readable and writable, so ordinary work is
 untouched.
 
-#### 9.5.1 It is two layers, and the OS sandbox is the second one
+#### 9.5.1 It is two channels and three enforcement points
 
-BioRouter reads files two different ways, and only one of them is a child process. That is a
-structural fact about the product, not an implementation detail, so it belongs in the design:
+There are two ways a read of a private root reaches the disk, and the difference is who supplies the
+path. That is a structural fact about the product, not an implementation detail, so it belongs in the
+design.
 
-| | **Layer A — the in-process path barrier** | **Layer B — the OS sandbox** |
-|---|---|---|
-| Covers | every tool call, because the check is in the daemon's own dispatch path | the processes the daemon spawns |
-| Mechanism | a synchronous refusal at `ExtensionManager::dispatch_tool_call` | Seatbelt / bubblewrap wrapping the child |
-| Enforced by | BioRouter | the kernel |
-| Needs kernel support | **no** | yes |
-| Role | **PRIMARY** | defence in depth |
+**The filesystem channel — the *caller* names the path.** A tool argument (`text_editor` with
+`path: ~/.config/biorouter/knowledge/p.md`), or a shell command line. The name is visible before
+anything runs, so it can be refused before anything runs.
 
-**Why Layer A has to be primary.** `computercontroller__cache` reads a caller-supplied path with
+**The tool channel — the *handler* supplies the path.** `agent_drafter__read_app` receives an app id
+and a relative path, and the store joins the root itself. `knowledge__kb_read_page` receives a base
+id and a page. `memory__retrieve_memories` receives a category. **Nothing in the arguments names a
+private root**, so a barrier that inspects arguments finds nothing to refuse and the handler opens
+the file anyway. Three successive adversarial reviews found a reader the previous round's control
+could not see, and the third found this whole class.
+
+| | **Layer A — the argument barrier** | **Layer B — the OS sandbox** | **The roots' doors** |
+|---|---|---|---|
+| Channel | filesystem | filesystem | tool |
+| Covers | every tool call's arguments, at the daemon's own dispatch choke point | the processes the daemon spawns | every read that goes through a root's own resolver |
+| Mechanism | a refusal at `ExtensionManager::dispatch_tool_call`, before the tool's future exists | Seatbelt / bubblewrap wrapping the child | a capability-taking guard inside `ArtifactStore`, the knowledge service's choke points, and the memory funnel |
+| Enforced by | BioRouter | the kernel | BioRouter |
+| Needs kernel support | **no** | yes | **no** |
+| Granularity | the whole root — a raw path cannot be attributed to an object inside it | the whole root | the **object**, where the root has a per-object tier; the whole root where it has none |
+| Defeated by | a read whose path the handler supplies | a pre-planted hardlink (both kernels match paths, not inodes); on Linux, a root absent at job start | a reader that does not use the root's resolver — which is why each resolver is private and each leak around it is closed |
+
+**All three are the ruling, and none of them is optional.** An earlier draft of this section carved
+the tool channel out of the ruling entirely, on the grounds that `kb_read_page` and `read_app` are
+governed by the extension classification instead. That was a redefinition of the ruling rather than
+an implementation of it: the ruling says a public session's *tools* may not reach BioRouter's private
+data, not "unless the tool owns the directory".
+
+**A public session reaching a *public* object is not an exemption — it is the root's door
+answering.** The ruling protects BioRouter's *private* data. A knowledge base classified public, a
+session row classified public, an app built in a public chat: none of those is private data, and
+refusing them would be a general jail of exactly the kind §9.5's ruling forbids. What is not
+acceptable is a root whose contents are **undifferentiated** being handed over because no gate
+exists. That was the Agent Drafter root, which had no per-app classification at all, and §9.5.3 says
+what it gets instead.
+
+**Why an in-process check has to exist at all.** `computercontroller__cache` reads a caller-supplied path with
 `tokio::fs::read_to_string`; `agent_drafter__read_app` reads app bytes with `std::fs::read_to_string`;
 `developer__text_editor` opens files directly. **None of them spawns anything — they are the
 daemon.** No sandbox the daemon installs on its children can constrain the daemon, so on every
@@ -885,8 +913,9 @@ under-states the real set. **Any control phrased as "the tools that read files" 
 construction. It must be phrased as "every tool call passes through symbol X", and the test for it
 must be a tool the production code has never heard of.**
 
-**What the two layers buy, and it changes the cost of this feature.** Because Layer A holds
-everywhere, Layer B's platform gaps stop being feature-killers. Landlock cannot subtract a read and
+**What the in-process halves buy, and it changes the cost of this feature.** Because Layer A and the
+roots' doors hold everywhere — neither needs kernel support — Layer B's platform gaps stop being
+feature-killers. Landlock cannot subtract a read and
 Windows has no unprivileged confinement — but that no longer means *"a public session cannot read
 files on those hosts"*, it means *"a public session cannot spawn a shell on those hosts"*. The
 fail-closed refusal narrows from **every file tool** to the five that spawn a child:
@@ -921,24 +950,58 @@ Two properties of the entry list, both learned the hard way:
   not exist on a fresh install, so a containment test that requires the path to exist fails open on
   it — while every test written against a populated fixture passes.
 
-#### 9.5.3 What each layer covers
+#### 9.5.3 What each enforcement point covers
 
 **Layer A** refuses any tool call whose arguments name a path inside an entry, at the one dispatch
 choke point, plus the seven branches the agent short-circuits before that choke point is reached (one
-of which, `platform__manage_schedule`, reads an arbitrary `workflow_path` in-process). The capability
-that decides it is a **local** in that call's own stack frame — there is no shared cell, so two
-overlapping calls cannot swap each other's answer, and a mid-session model change takes effect on the
-next call with nothing to re-admit.
+of which, `platform__manage_schedule`, reads an arbitrary `workflow_path` in-process).
 
 **Layer B** wraps the five spawning tools, carrying the same decision as a per-call flag in the MCP
-request metadata rather than in session state, for the same reason.
+request metadata rather than in session state.
 
-**What Layer A does *not* cover, deliberately:** the tools that own these roots and reach them
-through their own resolvers — `kb_read_page`, `retrieve_memories`, `read_app`, `list_apps`. Those are
-the **tool channel**, governed by §10.3's classification and by each server's own gates (CP1–CP5 for
-knowledge, §9.3 B3 for memory). DR-14 governs the **filesystem channel**: a path a caller names. If a
-tool-channel classification is wrong, the fix is to change the classification, not to add a
-filesystem rule that contradicts it.
+**The roots' doors** refuse a read the handler was about to perform, inside each root's own resolver,
+consulting the object's classification where the root has one.
+
+**All three read one capability, sampled once.** The capability is captured at the entry that admits
+the tool call — the agent loop, the daemon's `call_tool` route, the code-execution bridge, or the
+pre-turn prefetch — and threaded, with the master switch's state captured in the same instant. It is
+never re-derived downstream. That matters for a reason worth stating in the design rather than in a
+task: the daemon returns a tool call as an **un-awaited future** that then queues behind a global
+concurrency limit, so "downstream" can be minutes later. A gate that re-reads the model binding at
+that point can let a call admitted under a public model run with private privileges — and a
+mid-session model change would then take effect *retroactively*, on work already permitted.
+
+The cost of that choice, stated: **switching a chat's model takes effect on the next tool call, not
+on the ones already in flight.** A call admitted as public stays public (a spurious refusal, which
+the user resolves by asking again); a call admitted as private stays private for its duration.
+
+**What Layer A does *not* cover, and what does:** the tools that own these roots reach them through
+their own resolvers, so nothing in their arguments names a root and Layer A finds nothing to refuse —
+`kb_read_page`, `retrieve_memories`, `read_app`, `list_apps`. **That is a gap in Layer A, not an
+exemption from the ruling**, and it is closed at each root's own door:
+
+| Root | Its door | What the door consults | If the object is private |
+|---|---|---|---|
+| `<config>/knowledge` | the knowledge service's four tool-facing choke points (CP1–CP4), plus the two ends that bypass them, `kb_export` and `kb_import` | the base's tier (§9.3 B4's ratchet) | refused, without naming the base |
+| `<config>/agent_drafter` | `ArtifactStore`'s private `dir()`, through which every id-keyed read passes — plus its `list()` and its raw-root accessor | **a per-app tier, which this design adds**: an app takes the tier of the most sensitive session that has written to it, exactly as a knowledge base does | refused; and the app's id and title are omitted from `list_apps` rather than reported as hidden |
+| `<config>/memory` | `get_memory_file`, the funnel all four memory tools pass through, plus `retrieve_all`'s enumeration | nothing — and it needs nothing, because §9.3 B3 refuses a **private** session's write to the global store, so the global store can only ever hold public content | n/a; the invariant is what makes this door open, and it is load-bearing |
+| `<data>/sessions` | the API, not the filesystem: it is a SQLite pool and BioRouter never reads it as files. Gate D (`chatrecall`), Gate G (`ingest_conversation`), and `read_session_blob`, which is scoped to the session's own id | the session row's classification | refused, without naming the session |
+
+**Two consequences worth stating plainly.**
+
+1. **Agent Drafter apps gain a classification they do not have today.** Without one the root is
+   undifferentiated, and the only rules available are "all readable from a public chat" (which is
+   the hole) or "none readable from a public chat" (which takes a flagship feature out of every chat
+   on a commercial model). Every app that exists at migration is classified **public** — there is no
+   evidence to classify it otherwise, `Manifest.session_id` is optional and the session it names may
+   be gone — so nothing changes on upgrade day and the rule starts applying to what happens next.
+2. **The tool channel is finer-grained than the filesystem channel, and a user can see the seam.** A
+   public chat may `read_app` its own public app and may not `cat` the same file from the shell,
+   because a raw path cannot be attributed to an object inside the root. That asymmetry is a cost of
+   having one rule that needs no per-object knowledge; narrowing the filesystem side is a follow-up.
+
+If a tool-channel classification is wrong, the fix is still to change the classification — but "there
+is no classification" is not a classification, and that is what this section changes.
 
 #### 9.5.4 What each platform can express, for Layer B
 
