@@ -26,6 +26,11 @@ pub enum ActiveWorkKind {
     BackgroundJob,
     /// A running subagent task.
     Subagent,
+    /// A **foreground** shell command, blocking the turn it was called from
+    /// (issue #72). Registered for the same reason as the other two: a command
+    /// that turned out to be far more expensive than it looked was invisible
+    /// while it ran, and there was no way to stop just it.
+    ForegroundCommand,
 }
 
 impl ActiveWorkKind {
@@ -34,6 +39,7 @@ impl ActiveWorkKind {
         match self {
             ActiveWorkKind::BackgroundJob => "background_job",
             ActiveWorkKind::Subagent => "subagent",
+            ActiveWorkKind::ForegroundCommand => "foreground_command",
         }
     }
 
@@ -41,6 +47,7 @@ impl ActiveWorkKind {
         match self {
             ActiveWorkKind::BackgroundJob => "bg",
             ActiveWorkKind::Subagent => "sub",
+            ActiveWorkKind::ForegroundCommand => "fg",
         }
     }
 }

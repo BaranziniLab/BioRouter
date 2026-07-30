@@ -38,12 +38,16 @@ use crate::secret_guard::SecretGuard;
 
 use super::analyze::{types::AnalyzeParams, CodeAnalyzer};
 use super::editor_models::{create_editor_model, EditorModel};
-use super::shell::{configure_shell_command, expand_path, is_absolute_path, kill_process_group};
+use super::shell::{
+    configure_shell_command, expand_path, first_line, foreground_timeout_message, is_absolute_path,
+    kill_process_group,
+};
 use super::text_editor::{
     save_file_history, text_editor_insert, text_editor_replace, text_editor_undo, text_editor_view,
     text_editor_write,
 };
 use super::undo_history::{self, FileHistory};
+use std::time::Duration;
 
 /// Process-global switch for the `text_editor` working-directory containment
 /// jail (see [`DeveloperServer::resolve_path`]).
@@ -353,6 +357,12 @@ pub struct DeveloperServer {
     /// bind time (it did not exist yet), in which case there is nothing to
     /// compare against and the path alone remains the boundary.
     canonical_working_dir: Option<PathBuf>,
+    /// Wall-clock budget for a **foreground** shell command (issue #72), read
+    /// once from `BIOROUTER_SHELL_FOREGROUND_TIMEOUT_SECS` at construction so
+    /// the value cannot change under a running command. `None` disables the
+    /// watchdog. Distinct from the generic per-extension MCP timeout — see
+    /// `shell::FOREGROUND_TIMEOUT_DEFAULT`.
+    foreground_timeout: Option<Duration>,
 }
 
 #[tool_handler(router = self.tool_router)]
@@ -514,6 +524,11 @@ impl ServerHandler for DeveloperServer {
             of if the command succeeded or failed.
 
             Avoid commands that produce a large amount of output, and consider piping those outputs to files.
+
+            A command run in the foreground has a wall-clock budget (240 seconds by default). When it
+            expires the command's whole process group is killed and the call fails — nothing is left
+            running. Work that may legitimately take longer belongs in background=true, where
+            shell_wait / shell_output / shell_kill let you watch it without blocking the turn.
 
             Use this shell tool directly for filesystem operations (ls, cp, mv, rm, mkdir, rg) rather than
             wrapping them in a code-execution script. To read or write a file's contents, prefer the
@@ -778,11 +793,22 @@ impl DeveloperServer {
             bash_env_file: None,
             working_dir: None,
             canonical_working_dir: None,
+            foreground_timeout: super::shell::foreground_timeout_from_env(),
         }
     }
 
     pub fn extend_path_with_shell(mut self, value: bool) -> Self {
         self.extend_path_with_shell = value;
+        self
+    }
+
+    /// Override the foreground shell budget (issue #72). Exists so tests can pin
+    /// a short budget without mutating the process environment — this workspace
+    /// has a known env-var test race, and the value is read once at construction
+    /// precisely so it cannot change under a running command.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn with_foreground_timeout(mut self, timeout: Option<Duration>) -> Self {
+        self.foreground_timeout = timeout;
         self
     }
 
@@ -1315,7 +1341,7 @@ impl DeveloperServer {
     /// appending `&`; this returns a job_id you can watch with shell_wait / shell_output / shell_kill.
     #[tool(
         name = "shell",
-        description = "Execute a command in the shell.This will return the output and error concatenated into a single string, as you would see from running on the command line. There will also be an indication of if the command succeeded or failed. Avoid commands that produce a large amount of output, and consider piping those outputs to files. For a long-lived command (dev server, build, test suite, training run) that you need to keep running and observe, set background=true instead of appending `&`: it returns a job_id immediately, and you then use shell_wait to wait for it, shell_output to peek, or shell_kill to stop it."
+        description = "Execute a command in the shell.This will return the output and error concatenated into a single string, as you would see from running on the command line. There will also be an indication of if the command succeeded or failed. Avoid commands that produce a large amount of output, and consider piping those outputs to files. For a long-lived command (dev server, build, test suite, training run) that you need to keep running and observe, set background=true instead of appending `&`: it returns a job_id immediately, and you then use shell_wait to wait for it, shell_output to peek, or shell_kill to stop it. A foreground command has a wall-clock budget (240s by default): if it exceeds it, its whole process group is killed and the call fails, so anything that may run longer belongs in background=true."
     )]
     pub async fn shell(
         &self,
@@ -1560,13 +1586,9 @@ impl DeveloperServer {
     /// `None` means the process was terminated by a signal and reported no code.
     ///
     /// Streams output in real-time to the client using logging notifications.
-    async fn execute_shell_command(
-        &self,
-        command: &str,
-        working_dir: Option<PathBuf>,
-        peer: &rmcp::service::Peer<RoleServer>,
-        cancellation_token: CancellationToken,
-    ) -> Result<(String, Option<i32>), ErrorData> {
+    /// The shell to run commands in, plus the `BASH_ENV` this server was
+    /// configured with when that shell is bash.
+    fn shell_config_for_run(&self) -> ShellConfig {
         let mut shell_config = ShellConfig::default();
         let shell_name = std::path::Path::new(&shell_config.executable)
             .file_name()
@@ -1581,6 +1603,30 @@ impl DeveloperServer {
                 ))
             }
         }
+        shell_config
+    }
+
+    /// The foreground budget's timer (issue #72). `None` disables the watchdog,
+    /// in which case this never resolves and its `select!` arm never fires.
+    async fn foreground_watchdog(budget: Option<Duration>) {
+        match budget {
+            Some(limit) => tokio::time::sleep(limit).await,
+            None => std::future::pending().await,
+        }
+    }
+
+    async fn execute_shell_command(
+        &self,
+        command: &str,
+        working_dir: Option<PathBuf>,
+        peer: &rmcp::service::Peer<RoleServer>,
+        cancellation_token: CancellationToken,
+    ) -> Result<(String, Option<i32>), ErrorData> {
+        let shell_config = self.shell_config_for_run();
+
+        // Kept for the supervision messages below, which have to name the
+        // command the user actually asked for.
+        let command_text = command.to_string();
 
         // BR-69: under `BIOROUTER_SHELL_SANDBOX=strict` on a host that cannot
         // provide a full sandbox, refuse to run rather than silently degrade.
@@ -1618,6 +1664,17 @@ impl DeveloperServer {
         // path that waits on or kills the child — see `ProcessGroupReaper`.
         let mut reaper = super::shell::ProcessGroupReaper::arm(pid);
 
+        // #72, foreground supervision. Three parts, all keyed off `started`:
+        //  - the command shows up in the process-wide active-work view for as
+        //    long as it runs, with a cancel action that kills its process group,
+        //    so a runaway foreground command is both visible and stoppable;
+        //  - a heartbeat tells the client how long it has been running, so a
+        //    silent command is not indistinguishable from a hung agent;
+        //  - an explicit budget bounds it (see `FOREGROUND_TIMEOUT_DEFAULT`).
+        let started = std::time::Instant::now();
+        let _active_work = super::shell::ForegroundWorkGuard::register(&command_text, pid);
+        let heartbeat = Self::foreground_heartbeat(peer.clone(), command_text.clone(), started);
+
         // Stream the output and wait for completion with cancellation support
         let output_task = self.stream_shell_output(
             child.stdout.take().unwrap(),
@@ -1625,7 +1682,9 @@ impl DeveloperServer {
             peer.clone(),
         );
 
-        tokio::select! {
+        let budget = self.foreground_timeout;
+
+        let outcome = tokio::select! {
             output_result = output_task => {
                 // Wait for the process to complete. PAR-02: the status is the
                 // only signal that a silent command failed — carry it out.
@@ -1664,7 +1723,67 @@ impl DeveloperServer {
                     None,
                 ))
             }
-        }
+            _ = Self::foreground_watchdog(budget) => {
+                let elapsed = started.elapsed();
+                tracing::warn!(
+                    "foreground shell command exceeded its {:?} budget after {}; killing its process group",
+                    budget,
+                    super::shell::humanize_secs(elapsed),
+                );
+                let _ = kill_process_group(&mut child, pid).await;
+                reaper.disarm();
+
+                Err(ErrorData::new(
+                    ErrorCode::INTERNAL_ERROR,
+                    foreground_timeout_message(
+                        &command_text,
+                        elapsed,
+                        budget.unwrap_or_default(),
+                    ),
+                    None,
+                ))
+            }
+        };
+
+        heartbeat.abort();
+        outcome
+    }
+
+    /// Report a still-running foreground command to the client every
+    /// [`FOREGROUND_HEARTBEAT`] (issue #72). The returned handle is aborted the
+    /// moment the command finishes, so a fast command emits nothing at all.
+    fn foreground_heartbeat(
+        peer: rmcp::service::Peer<RoleServer>,
+        command: String,
+        started: std::time::Instant,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(super::shell::FOREGROUND_HEARTBEAT).await;
+                let elapsed = super::shell::humanize_secs(started.elapsed());
+                let message = format!(
+                    "shell: still running after {elapsed} — {}",
+                    first_line(&command)
+                );
+                if peer
+                    .notify_logging_message(LoggingMessageNotificationParam {
+                        level: LoggingLevel::Info,
+                        data: serde_json::json!({
+                            "type": "shell_progress",
+                            "message": message,
+                            "elapsed_seconds": started.elapsed().as_secs(),
+                            "command": command,
+                        }),
+                        logger: Some("shell_tool".to_string()),
+                    })
+                    .await
+                    .is_err()
+                {
+                    // Nobody is listening any more; stop rather than spin.
+                    break;
+                }
+            }
+        })
     }
 
     /// Stream shell output in real-time and return the combined output.
@@ -5150,6 +5269,192 @@ mod tests {
                     "Process should be removed from tracking"
                 );
             }
+
+            cleanup_test_service(running_service, peer);
+        });
+    }
+
+    /// Issue #72, foreground supervision: the budget is the shell tool's own,
+    /// and when it fires it kills the tree rather than abandoning it.
+    ///
+    /// The generic per-extension MCP timeout that used to be the only bound is
+    /// shared by every tool the extension offers, produces an opaque
+    /// transport-level error, and only stops the command by way of a
+    /// cancellation round-trip. This asserts the three things that differ: the
+    /// tool fails on its own clock, the error is actionable, and nothing from
+    /// the tree is left running.
+    #[test]
+    #[serial]
+    #[cfg(unix)]
+    fn a_foreground_command_is_killed_when_it_blows_its_budget() {
+        run_shell_test(|| async {
+            let server =
+                create_test_server().with_foreground_timeout(Some(Duration::from_millis(500)));
+            let running_service = serve_directly(server.clone(), create_test_transport(), None);
+            let peer = running_service.peer().clone();
+
+            let dir = tempfile::tempdir().unwrap();
+            let survived = dir.path().join("survived");
+            let command = format!("sh -c 'sleep 4; touch \"{}\"' & wait", survived.display());
+
+            let context = RequestContext {
+                ct: Default::default(),
+                id: NumberOrString::Number(720),
+                meta: Default::default(),
+                extensions: Default::default(),
+                peer: peer.clone(),
+            };
+            let result = server
+                .shell(
+                    Parameters(ShellParams {
+                        working_directory: None,
+                        command,
+                        background: None,
+                        label: None,
+                    }),
+                    context,
+                )
+                .await;
+
+            let error = result.expect_err("a command over its budget must fail");
+            let message = error.message.to_string();
+            assert!(
+                message.contains("foreground limit"),
+                "the error must say the foreground budget is what stopped it: {message}"
+            );
+            assert!(
+                message.contains("background=true"),
+                "and must point at the workflow that handles work of that size: {message}"
+            );
+
+            // The tree, not just the direct child.
+            tokio::time::sleep(Duration::from_secs(6)).await;
+            assert!(
+                !survived.exists(),
+                "the budget must take the whole process group, but a grandchild \
+                 outlived it and wrote {}",
+                survived.display()
+            );
+
+            cleanup_test_service(running_service, peer);
+        });
+    }
+
+    /// …and a command that finishes inside its budget is untouched by any of it.
+    #[test]
+    #[serial]
+    #[cfg(unix)]
+    fn a_quick_command_is_unaffected_by_the_foreground_budget() {
+        run_shell_test(|| async {
+            let server =
+                create_test_server().with_foreground_timeout(Some(Duration::from_secs(30)));
+            let running_service = serve_directly(server.clone(), create_test_transport(), None);
+            let peer = running_service.peer().clone();
+
+            let context = RequestContext {
+                ct: Default::default(),
+                id: NumberOrString::Number(721),
+                meta: Default::default(),
+                extensions: Default::default(),
+                peer: peer.clone(),
+            };
+            let result = server
+                .shell(
+                    Parameters(ShellParams {
+                        working_directory: None,
+                        command: "echo budget-ok".to_string(),
+                        background: None,
+                        label: None,
+                    }),
+                    context,
+                )
+                .await
+                .expect("a quick command must still succeed");
+            assert_eq!(result.is_error, Some(false));
+
+            cleanup_test_service(running_service, peer);
+        });
+    }
+
+    /// Issue #72, the visibility half: a foreground command is listed as active
+    /// work while it runs — the one kind of long-running work that had no entry,
+    /// which is why an unexpectedly expensive one was invisible.
+    #[test]
+    #[serial]
+    #[cfg(unix)]
+    fn a_running_foreground_command_is_listed_as_active_work() {
+        use crate::active_work::{active_work, ActiveWorkKind};
+
+        run_shell_test(|| async {
+            let server = create_test_server();
+            let running_service = serve_directly(server.clone(), create_test_transport(), None);
+            let peer = running_service.peer().clone();
+
+            // A marker unique to this test, so the assertion is immune to any
+            // other work registered concurrently in the process-wide registry.
+            let marker = "br72-active-work-probe";
+            let command = format!("sleep 30 # {marker}");
+
+            let server_clone = server.clone();
+            let context = RequestContext {
+                ct: Default::default(),
+                id: NumberOrString::Number(722),
+                meta: Default::default(),
+                extensions: Default::default(),
+                peer: peer.clone(),
+            };
+            let shell_task = tokio::spawn(async move {
+                server_clone
+                    .shell(
+                        Parameters(ShellParams {
+                            working_directory: None,
+                            command,
+                            background: None,
+                            label: None,
+                        }),
+                        context,
+                    )
+                    .await
+            });
+
+            let mine = |items: Vec<crate::active_work::ActiveWorkItem>| {
+                items
+                    .into_iter()
+                    .find(|i| i.detail.as_deref().is_some_and(|d| d.contains(marker)))
+            };
+
+            let deadline = Instant::now() + Duration::from_secs(20);
+            let mut entry = None;
+            while entry.is_none() && Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                entry = mine(active_work().list());
+            }
+            let entry =
+                entry.expect("a running foreground command must appear in the active-work view");
+            assert_eq!(entry.kind, ActiveWorkKind::ForegroundCommand);
+            assert!(entry.id.starts_with("fg-"), "id: {}", entry.id);
+            assert!(
+                entry.cancellable,
+                "the entry must carry a cancel action, or the view cannot stop it"
+            );
+
+            // Cancelling through the registry kills the command's process group.
+            assert!(active_work().cancel(&entry.id));
+            let ended = timeout(Duration::from_secs(10), shell_task).await;
+            assert!(
+                ended.is_ok(),
+                "cancelling the active-work entry must stop the command"
+            );
+
+            // And the entry must not outlive the command.
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while mine(active_work().list()).is_some() && Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            assert!(
+                mine(active_work().list()).is_none(),
+                "a finished command must be deregistered, not left as a phantom entry"
+            );
 
             cleanup_test_service(running_service, peer);
         });
