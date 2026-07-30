@@ -4,7 +4,7 @@
 > designed in [`privacy-tiers.md`](privacy-tiers.md) ([issue #56](https://github.com/BaranziniLab/biorouter/issues/56)):
 > forty-eight tasks in seven phases — forty numbered, plus **4b** (resolve every test filter against a
 > real `cargo --list`), **10A, 10B, 10C and 10D**, the knowledge-base tier the operator ruled on
-> after the first adversarial review, and **14A, 14B and 14C**, the read-deny sandbox the operator
+> after the first adversarial review, and **14A–14D**, the read-deny the operator
 > ruled on after the fifth — each with a Files table, a failing test, complete
 > implementation code, a run step, a gate that fails a plausible wrong implementation, and one commit.
 > **Status:** Proposed — ready to execute. The design's rulings are settled (see
@@ -82,7 +82,7 @@
 > named this channel at `privacy-tiers.md:692` and this plan never closed it.
 >
 > **The operator ruled**, and the ruling is implemented rather than re-argued: a mandatory read-deny
-> sandbox for public-capability sessions, **on by default** (DR-14, Tasks 14A–14C), plus a single
+> read-deny for public-capability sessions, **on by default** (DR-14, Tasks 14A–14D), plus a single
 > master toggle that disables the whole feature (DR-15, Task 30 rewritten). The sandbox hides four
 > directories and nothing else, so private sessions and ordinary work are untouched; where a platform
 > cannot express the exclusion the fail direction is **closed** and the tool is refused. What the
@@ -783,6 +783,29 @@ that.** What that costs, and what still holds:
   `logs/*.jsonl`, and a verbatim copy of `config.yaml`). Authenticating those against a caller that
   is on the same machine and can read the daemon's memory is not something a header comparison can
   do. [Open question 20](#open-questions) carries it.
+
+### AR-12 — The approval card's file preview reads a model-chosen path before anyone approves it
+
+`ToolPreview::for_tool_call` (`agents/tool_execution.rs:310`) runs on the **approval** path — before
+the tool is dispatched and before the user has approved anything. For a `write`/`str_replace`/`insert`
+it calls `existing_file_contents` (`conversation/tool_preview.rs:202-207`), which does
+`std::fs::metadata(path)` and then `std::fs::read_to_string(path)` **on the raw `path` argument**: no
+`resolve_path`, no `SecretGuard`, no jail, and no Layer A. It is a fourth in-process reader of a
+model-chosen path inside the daemon, and it fires even on calls that are then denied.
+
+**It is accepted, and for exactly one reason:** the message carrying the preview is `.user_only()`
+(`tool_execution.rs:328` → `message.rs:1002-1006` → `agent_visible: false`), so the bytes reach the
+renderer and never the model. A public model asking to write to `~/.config/biorouter/knowledge/p.md`
+causes those bytes to be rendered **to the user, in the user's own approval card**, which is not a
+disclosure to anyone who did not already have them.
+
+**Stated in the operator's terms: nothing crosses to the public model, so this is not a tier
+crossing. It is a place where the daemon reads a file it was not asked to read**, and if the approval
+card is ever refactored to feed the model — a "here is what will change" summary in the transcript,
+say — it becomes a real leak silently. Task 14D's `the_approval_preview_never_reaches_the_model` is
+the pin that makes that refactor fail loudly instead. The fix (route it through the policy) is a
+change to approval rendering for every session, private included, and is a follow-up rather than part
+of this feature.
 
 ---
 
@@ -2807,7 +2830,7 @@ fn the_private_set_is_exactly_the_two_the_registry_publishes() {
 shell.** They are built-ins, R11 makes built-ins public, and reclassifying them Private would ban
 the shell from every public chat — which is a far larger change than the one the threat needs. The
 answer to "a public model can read `sessions.db` with `developer__shell`" is **DR-14**, a read-deny
-sandbox on the *tools* (Tasks 14A–14C), not a tier on the *extension*. Gate C keeps letting a public
+read-deny on the *tools* (Tasks 14A–14D), not a tier on the *extension*. Gate C keeps letting a public
 caller reach `developer`; the sandbox is what makes reaching it harmless. Do not "fix" this list.
 
 ```rust
@@ -10380,6 +10403,414 @@ git commit -m "test(privacy): pin the daemon-secret strip and the route the barr
 ---
 
 
+### Task 14D: Layer A's seams — the readers that never reach the choke point
+
+Task 14B's barrier covers every **MCP tool call**, because `ExtensionManager::dispatch_tool_call` is
+the one function they all pass through. Three kinds of in-process read are not MCP tool calls, and a
+plan that stops at 14B leaves each of them exactly as open as it was:
+
+1. **The seven branches `Agent::dispatch_tool_call` short-circuits** before the extension manager is
+   ever consulted. One of them reads a caller-supplied path.
+2. **`ToolPreview::for_tool_call`**, which reads the file a `write` is about to clobber — *before*
+   dispatch and *before* the user approves.
+3. **The tool bodies themselves**, which open the file some microseconds after Layer A approved the
+   argument. That window is [AR-9](#ar-9--layer-a-is-check-then-use-so-a-concurrently-running-shell-can-still-race-one-in-process-reader),
+   and it can be narrowed even though it cannot be closed.
+
+Plus one pre-existing traversal that the same insertion point fixes for free.
+
+#### The seven branches, measured
+
+`Agent::dispatch_tool_call` (`agent.rs:2624`) returns before reaching
+`self.extension_manager.dispatch_tool_call` (`:2772`, inside the final `else` at `:2760`) for:
+
+| Branch | Line | Constant | Reads a caller path? |
+|---|---|---|---|
+| `subagent` (from a subagent — refusal) | `:2632` | `SUBAGENT_TOOL_NAME` | no |
+| **`platform__manage_schedule`** | `:2643` | `PLATFORM_MANAGE_SCHEDULE_TOOL_NAME` | **YES** — see below |
+| `platform__ingest_conversation` | `:2660` | `PLATFORM_INGEST_CONVERSATION_TOOL_NAME` | no (session ids) |
+| `platform__read_session_blob` | `:2678` | `PLATFORM_READ_SESSION_BLOB_TOOL_NAME` | no (scoped to `session.id`) |
+| `workflow__final_output` | `:2693` | `FINAL_OUTPUT_TOOL_NAME` | no |
+| `subagent` | `:2710` | `SUBAGENT_TOOL_NAME` | no |
+| `subagent_status` | `:2744` | `SUBAGENT_STATUS_TOOL_NAME` | no |
+| frontend tools | `:2753` | `is_frontend_tool` (`:2580`) | no (executed in the browser) |
+
+**`platform__manage_schedule` takes an arbitrary `workflow_path`** and reads it in-process:
+`Path::new(workflow_path).exists()` at `schedule_tool.rs:112` and
+`std::fs::read_to_string(workflow_path)` at `:121`. It is a *narrow* oracle — the model learns
+existence plus a YAML/JSON parse error, not the bytes — but it is a real read of a caller-named path
+that no barrier in the extension manager can see.
+
+⚠ **Do not "fix" this by moving the seven branches below the barrier.** The `else` arm at `:2760`
+resolves `{{vault:NAME}}` secrets (`apply_vault`, `:2767`) and its comment at `:2760-2766` says the
+seven are excluded *deliberately*, because their arguments are re-consumed by an LLM, returned to the
+browser, or persisted — a resolved secret in any of them would leak. The barrier goes **above** all
+seven; the branches stay where they are.
+
+#### Files
+
+| Action | Path | Anchor (measured this round) |
+|---|---|---|
+| Modify | `crates/biorouter/src/agents/agent.rs` | `dispatch_tool_call` `:2624`; the first short-circuit at `:2632`; the `else` that reaches the manager `:2760-2772` |
+| Modify | `crates/biorouter-mcp/src/memory/mod.rs` | `get_memory_file` `:336-344`; the four callers `:383`, `:405`, `:445`, `:464`; `global_memory_dir` `:82-84` |
+| Modify | `crates/biorouter-mcp/src/developer/rmcp_developer.rs` | `resolve_path_jailed` `:2066`, the `if jail_relaxed { return Ok(resolved); }` early return at `:2084-2087`; `resolve_path` `:2053` |
+| Reference | `crates/biorouter-mcp/src/developer/jail.rs` | `Jail::resolve` `:76-94` — deny-components pre-check `:82`, `resolve_in_workspace` `:85`, **canonicalized re-check** `:90`; `denies_symlink_into_vault` `:212`. Its module doc `:9-10` says wiring it into the Developer server is "the next sequenced step" |
+| Reference | `crates/biorouter/src/conversation/tool_preview.rs` | `existing_file_contents` `:202-207` — `metadata` then `read_to_string` on the **raw** `path` argument |
+| Reference | `crates/biorouter/src/agents/tool_execution.rs` | `ToolPreview::for_tool_call` `:310`; the `.user_only()` at `:328` |
+
+- [ ] **Step 1: Write the failing tests**
+
+**(1) The seam is covered, and covered for all seven — not just the one that reads today.**
+
+```rust
+// crates/biorouter/src/agents/agent.rs
+#[tokio::test]
+async fn the_agent_level_short_circuits_are_covered_too() {
+    // Seven branches return before the extension manager (agent.rs:2632-2758).
+    // Only `manage_schedule` reads a path TODAY. The barrier covers all seven
+    // anyway, because "which of these reads a path" is exactly the kind of fact
+    // that changes without anyone revisiting this task — and the cost of
+    // covering a branch that names no path is zero: the scan finds no candidate
+    // and returns None.
+    let (agent, s) = agent_on(public_provider()).await;
+    let kb = private_roots().knowledge.join("wf.yaml").display().to_string();
+    for tool in [
+        "platform__manage_schedule", "platform__ingest_conversation",
+        "platform__read_session_blob", "workflow__final_output",
+        "subagent", "subagent_status", "some__frontend_tool",
+    ] {
+        let (_, res) = agent.dispatch_tool_call(
+            call(tool, json!({"workflow_path": kb.clone(), "path": kb.clone()})),
+            "req".into(), None, &s,
+        ).await;
+        let m = format!("{res:?}");
+        assert!(m.contains("private model"), "{tool} was not covered: {m}");
+    }
+}
+
+#[tokio::test]
+async fn manage_schedule_cannot_read_a_workflow_out_of_a_private_root() {
+    // The concrete one. Through the REAL Agent dispatch, and asserting on the
+    // ORACLE rather than on the bytes: schedule_tool.rs:112 reports existence
+    // and :121 reports a parse error, and both are answers the model must not
+    // get about a file it may not read.
+    let (agent, s) = agent_on(public_provider()).await;
+    let real = private_roots().knowledge.join("exists.yaml");
+    std::fs::write(&real, "not: a: workflow").unwrap();
+    let absent = private_roots().knowledge.join("absent.yaml");
+
+    let a = schedule_via_agent(&agent, &s, &real).await;
+    let b = schedule_via_agent(&agent, &s, &absent).await;
+    assert_eq!(a, b, "existence inside a private root must not be observable");
+    assert!(a.contains("private model"), "{a}");
+}
+```
+
+**This gate rejects:** a barrier added only in `ExtensionManager::dispatch_tool_call`. That is the
+*correct* place for the other 125 tools and it is invisible to all seven of these — and the tell is
+that every Task 14B test still passes.
+
+**(2) The pre-existing memory traversal, which the same insertion point closes.**
+
+```rust
+// crates/biorouter-mcp/src/memory/mod.rs
+#[test]
+fn a_memory_category_cannot_traverse_out_of_the_store() {
+    // `get_memory_file` (:336-344) is `base_dir.join(format!("{}.txt", category))`
+    // with NO validation of `category` — grep the module for
+    // `valid|sanit|reject|contains|starts_with` against it and there is nothing.
+    // All four memory tools funnel through it (:383, :405, :445, :464), so
+    // `category = "../../../x"` reads, appends to and DELETES `<anywhere>/x.txt`
+    // today. The `.txt` suffix bounds it (it cannot name `config.yaml`); it does
+    // not make it acceptable.
+    //
+    // This is a pre-existing defect, not one #56 introduces. It is fixed here
+    // because this is the single site that fixes both it and the deny-root
+    // question, and because a traversal out of the memory root is a traversal
+    // INTO the other four.
+    let r = MemoryRouter::new_for_test();
+    for bad in ["../escape", "a/../../escape", "/etc/passwd", "a/b", "..", ""] {
+        assert!(r.get_memory_file(bad, true).is_err(), "accepted {bad:?}");
+    }
+    assert!(r.get_memory_file("research-notes", true).is_ok());
+}
+```
+
+**(3) The narrowed TOCTOU — asserting what is achievable, and nothing more.**
+
+```rust
+// crates/biorouter-mcp/src/developer/rmcp_developer.rs
+#[tokio::test]
+async fn a_symlink_planted_before_the_call_does_not_resolve() {
+    // The reachable half of round 2's finding 2. A sandboxed background job
+    // CAN create `./kb -> <deny root>` (creating a symlink does not read the
+    // target). Layer A canonicalizes the deepest existing ancestor, so by the
+    // time the call arrives the link is followed and refused.
+    //
+    // ⚠ What this does NOT assert is the swap window between the check and the
+    // open. That is AR-9 and it is not closable portably: it needs
+    // openat2(RESOLVE_BENEATH), which Linux 5.6+ has and macOS does not. A test
+    // claiming to close it would be a test that passes because the race is hard
+    // to lose, which is the worst kind of green.
+    let ws = tempfile::tempdir().unwrap();
+    std::os::unix::fs::symlink(private_roots().knowledge, ws.path().join("kb")).unwrap();
+    let server = developer_on(ws.path(), Restricted::Yes);
+    for relaxed in [true, false] {
+        assert!(server.resolve_path_jailed("kb/page.md", relaxed).is_err());
+    }
+}
+
+#[tokio::test]
+async fn the_file_tools_refuse_a_private_root_even_when_the_jail_is_relaxed() {
+    // `resolve_path_jailed` returns EARLY when the jail is relaxed
+    // (rmcp_developer.rs:2084-2087), and relaxed IS BioRouterMode::Auto — the
+    // mode agents run in. A check placed after that return never fires in
+    // production while every jailed-mode test still passes.
+    let (server, roots) = developer_with_private_roots().await;
+    for relaxed in [true, false] {
+        let err = server
+            .resolve_path_jailed(&roots.knowledge.join("page.md").display().to_string(), relaxed)
+            .expect_err("a private root must not resolve");
+        assert!(format!("{err:?}").contains("private"), "{err:?}");
+    }
+    assert!(server.resolve_path_jailed("notes.txt", false).is_ok());
+}
+```
+
+**(4) The preview, pinned rather than fixed.**
+
+```rust
+// crates/biorouter/src/agents/tool_execution.rs
+#[test]
+fn the_approval_preview_never_reaches_the_model() {
+    // `existing_file_contents` (tool_preview.rs:202-207) does `metadata` then
+    // `read_to_string` on the RAW `path` argument — no resolve_path, no
+    // SecretGuard, no jail — and it runs BEFORE dispatch and BEFORE approval,
+    // including for calls that are then denied. It is a fourth in-process
+    // reader of a model-chosen path inside the daemon.
+    //
+    // It is ACCEPTED (AR-12) for exactly one reason, and this test is that
+    // reason made mechanical: the message carrying it is `.user_only()`
+    // (tool_execution.rs:328 -> message.rs:1002-1006 -> agent_visible: false),
+    // so the bytes reach the renderer and never the model. If that ever stops
+    // being true, this fails and AR-12 must be reopened as a leak.
+    let msg = preview_message_for(a_write_to("/etc/hosts"));
+    assert!(!msg.agent_visible(), "the approval preview became model-visible");
+}
+```
+
+- [ ] **Step 2: Run** → (1) and (3) **FAIL** (no refusal); (2) **FAILS** (`get_memory_file` returns
+`PathBuf`, not `Result`); (4) **PASSES** — it is a regression pin on behaviour that is already
+correct, in the same spirit as Task 2.
+
+- [ ] **Step 3: Implement**
+
+**(a) The second barrier call site, above all seven branches.**
+
+At the very top of `Agent::dispatch_tool_call` (`agent.rs:2624`), before the subagent refusal at
+`:2632`:
+
+```rust
+        // Issue #56 DR-14, Layer A's second seam. `ExtensionManager::dispatch_tool_call`
+        // is the choke point for every MCP tool call — and SEVEN branches below
+        // return before ever reaching it (:2632-:2758). One of them,
+        // `platform__manage_schedule`, reads an arbitrary `workflow_path`
+        // in-process (schedule_tool.rs:112, :121).
+        //
+        // This is the SAME policy type, evaluated the SAME way, from a local.
+        // It is not a second mechanism and it must not become one: if this
+        // block and the extension manager's ever disagree about what a path is,
+        // the answer a caller gets depends on which name it used.
+        //
+        // ⚠ Above all seven, not below: the `else` at :2760 resolves
+        // {{vault:NAME}} secrets and its comment explains why the seven are
+        // deliberately excluded from that. Reordering them to sit under one
+        // barrier would leak a resolved secret into a persisted schedule.
+        if let Some(args) = tool_call.arguments.as_ref() {
+            let policy = crate::privacy::path_policy::PrivatePathPolicy::for_caller(
+                self.capability_tier().await,
+            );
+            if let Some(hit) = policy.first_violation(args, &self.working_dir().await) {
+                return (
+                    request_id,
+                    Err(crate::privacy::path_policy::refusal(&tool_call.name, &hit)),
+                );
+            }
+        }
+```
+
+⚠ **The double evaluation for the 125 tools that DO reach the manager is deliberate and cheap.** The
+scan is IO-free until a token both looks like a path and matches an entry lexically; on an ordinary
+call it walks the arguments once and finds nothing. Making it conditional — "skip if this call will
+reach the extension manager" — means re-deriving the seven-branch list here, which is the
+enumeration this whole design refuses to depend on. Pay the second walk.
+
+**(b) `MemoryRouter::get_memory_file` validates its category.**
+
+```rust
+    /// `<base>/<category>.txt`, with `category` validated.
+    ///
+    /// It used to be `base_dir.join(format!("{}.txt", category))` with no
+    /// checks at all, so `category = "../../../x"` escaped the store from all
+    /// four memory tools. Rejecting separators and `..` here fixes that for
+    /// every caller at once — which is why this is a `Result` now, and why the
+    /// four call sites (:383, :405, :445, :464) each gain a `?`.
+    fn get_memory_file(&self, category: &str, is_global: bool) -> Result<PathBuf, ErrorData> {
+        let ok = !category.is_empty()
+            && category != "."
+            && category != ".."
+            && !category.contains('/')
+            && !category.contains('\\')
+            && !category.contains('\0');
+        if !ok {
+            return Err(ErrorData::new(
+                ErrorCode::INVALID_PARAMS,
+                format!("invalid memory category: {category:?}"),
+                None,
+            ));
+        }
+        let base_dir = if is_global { &self.global_memory_dir } else { &self.local_memory_dir };
+        Ok(base_dir.join(format!("{category}.txt")))
+    }
+```
+
+⚠ **`category = "*"` stays legal.** `retrieve_memories` uses it as the "everything" wildcard
+(`memory/mod.rs:354` takes the `read_dir(base_dir)` path for it) and never reaches `get_memory_file`
+with it. Rejecting it here would be a silent feature removal that no memory test covers.
+
+**(c) The reader-side check, adjacent to the resolve, before the relaxed early return.**
+
+In `resolve_path_jailed`, immediately after `let resolved = …` (`:2076-2081`) and **before** the
+`if jail_relaxed { return Ok(resolved); }` at `:2084-2087`:
+
+```rust
+        // Issue #56 DR-14. BEFORE the relaxed-jail early return: relaxed IS
+        // Auto mode, the mode agents run in, and a check placed after that
+        // return never fires in production while every jailed-mode test passes.
+        //
+        // This is a SECOND evaluation of a decision Layer A already made at the
+        // choke point, and it is here for the TOCTOU (AR-9), not for coverage:
+        // it runs as close to the open as the code allows, so the window in
+        // which a concurrently-running shell can swap a workspace symlink is a
+        // few instructions rather than an `.await`.
+        if self.private_data.is_restricted() && is_under_any(&resolved, &private_roots::all()) {
+            return Err(ErrorData::new(
+                rmcp::model::ErrorCode::INVALID_PARAMS,
+                private_root_refusal("developer__text_editor", &resolved),
+                None,
+            ));
+        }
+```
+
+⚠ **`Jail` already exists and is better than anything written for this task.**
+`crates/biorouter-mcp/src/developer/jail.rs` does deny-components before touching the filesystem
+(`:82`), `resolve_in_workspace` (`:85`), then **re-checks the canonicalized path** (`:90`) so a
+symlink into a denied area is caught after resolution — with `denies_symlink_into_vault` as a test
+(`:212`). Its own module doc says wiring it into the Developer server's path resolution is *"the next
+sequenced step"*. **Doing that wiring is out of scope here and is the right follow-up**: `Jail` is
+built around a single workspace root and read-only/read-write policy, and retrofitting the Developer
+server onto it is a behaviour change for every mode, not just public sessions. What this task takes
+from `Jail` is its *shape* — resolve, then re-check the canonicalized result — which is what
+`is_under_any` does. Recorded so the next reader does not conclude nobody looked.
+
+**(d) `ToolPreview` — accepted, not fixed.** See (4)'s test and
+[AR-12](#ar-12--the-approval-cards-file-preview-reads-a-model-chosen-path-before-anyone-approves-it).
+The fix would be to route `existing_file_contents` through `resolve_path` + the policy, which is
+correct and is a change to the approval card's rendering for every session, private included. It is a
+follow-up; the pin is what keeps the reason ("the bytes never reach the model") true in the meantime.
+
+- [ ] **Step 4: Run**
+
+```bash
+cargo test -p biorouter --lib -- agents::agent::tests
+cargo test -p biorouter-mcp --lib -- memory::
+cargo test -p biorouter-mcp --lib -- developer::rmcp_developer::tests
+cargo test -p biorouter --lib -- agents::tool_execution
+```
+
+⚠ **Record the pre-count for `memory::` and `agents::agent::tests` before Step 3.** Both have
+substantial existing suites; `memory::` in particular gains a `?` at four call sites, and "no
+failures" is satisfied by a run that failed to compile this task's tests in.
+
+- [ ] **Step 5: Gate**
+
+```bash
+# (1) The barrier sits ABOVE every short-circuit. Below even one of them and
+#     that branch is uncovered, with nothing else failing.
+python3 - <<'PY'
+src = open('crates/biorouter/src/agents/agent.rs').read()
+body = src[src.index('pub async fn dispatch_tool_call('):]
+body = body[:body.index('\n    pub ', 10)]
+i_bar = body.index('PrivatePathPolicy::for_caller')
+firsts = [body.index(n) for n in [
+    'SUBAGENT_TOOL_NAME', 'PLATFORM_MANAGE_SCHEDULE_TOOL_NAME',
+    'PLATFORM_INGEST_CONVERSATION_TOOL_NAME', 'PLATFORM_READ_SESSION_BLOB_TOOL_NAME',
+    'FINAL_OUTPUT_TOOL_NAME', 'SUBAGENT_STATUS_TOOL_NAME', 'is_frontend_tool(']]
+assert i_bar < min(firsts), f'barrier at {i_bar} is below a short-circuit at {min(firsts)}'
+print('OK  barrier at', i_bar, ' first short-circuit at', min(firsts))
+PY
+
+# (2) It is the SAME policy type, not a second mechanism. Two implementations of
+#     "is this path private" is how the two answers start to differ, and the
+#     difference is invisible until someone reports that one tool refuses a path
+#     another accepts.
+grep -rn "PrivatePathPolicy::for_caller" --include='*.rs' crates/ | grep -v "mod tests" \
+  | grep -v "^crates/biorouter/src/privacy/path_policy.rs:"
+echo "expect: exactly 3 lines — extension_manager.rs (Task 14B), agent.rs (this task),"
+echo "        rmcp_developer.rs (the TOCTOU re-check). No fourth, and no hand-rolled"
+echo "        starts_with anywhere:"
+grep -rn "starts_with(&private_roots\|starts_with(private_roots" --include='*.rs' crates/
+echo "expect: no output"
+
+# (3) The memory traversal is closed at the funnel, not at the four tools.
+grep -c "fn get_memory_file" crates/biorouter-mcp/src/memory/mod.rs
+echo "expect: 1"
+awk '/fn get_memory_file/,/^    }/' crates/biorouter-mcp/src/memory/mod.rs \
+  | grep -c "contains('/')\|contains('\\\\\\\\')\|== \"..\""
+echo "expect: >= 3 — separators both ways, and dot-dot"
+grep -c "get_memory_file(" crates/biorouter-mcp/src/memory/mod.rs
+echo "expect: 5 — the definition plus the four tool call sites. A sixth caller that"
+echo "        does not use the ? is a fifth tool that skipped the validation."
+
+# (4) The relaxed-jail ordering, which is the same shape as Task 14B gate (8).
+python3 - <<'PY'
+src = open('crates/biorouter-mcp/src/developer/rmcp_developer.rs').read()
+body = src[src.index('fn resolve_path_jailed'):]
+body = body[:body.index('\n    // Helper method to check if a path should be ignored')]
+i_deny  = body.index('is_under_any(')
+i_relax = body.index('if jail_relaxed {')
+assert i_deny < i_relax, 'the DR-14 check must precede the relaxed-jail early return'
+print('OK  deny at', i_deny, ' relaxed return at', i_relax)
+PY
+
+# (5) The approval preview is still user-only. AR-12 rests entirely on this.
+grep -n "user_only()" crates/biorouter/src/agents/tool_execution.rs
+echo "expect: the preview site among them (measured: :270, :328, :363). If the one"
+echo "        following ToolPreview::for_tool_call (:310) disappears, the preview's"
+echo "        bytes became model-visible and AR-12 is a leak, not a risk."
+```
+
+**What wrong implementation each rejects.**
+
+| # | Rejects |
+|---|---|
+| (1) | The barrier added where it reads most naturally — just above the `else` that dispatches to the manager. Every Task 14B test passes, `manage_schedule` still reads whatever it is pointed at, and the plan's own coverage claim reads as satisfied. |
+| (2) | A second, hand-rolled containment test at this seam, which will disagree with the first the moment either is touched. |
+| (3) | The traversal fixed per-tool. `remember_memory` and `retrieve_memories` are the two anyone thinks of; `remove_specific_memory` (`:445`) and `remove_memory_category` (`:464`) **delete**, and they are the two that get missed. |
+| (4) | The developer-side check placed after the relaxed-jail return — dead in Auto mode, which is the only mode that matters here, with every jailed-mode test green. |
+| (5) | A refactor of the approval path that makes the preview agent-visible, which converts AR-12 from an accepted risk into an unguarded read of any file the model names. |
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add crates/biorouter/src/agents/agent.rs crates/biorouter-mcp/src/memory/mod.rs \
+        crates/biorouter-mcp/src/developer/rmcp_developer.rs
+git commit -m "feat(privacy): cover the four in-process readers that never reach the choke point (#56)"
+```
+
+---
+
+
 ### Task 15: Gate C's siblings — the eight other ways to reach an MCP server
 
 `dispatch_tool_call` is a complete choke point for *tool calls*, not for *reaching an MCP server*.
@@ -14253,7 +14684,7 @@ the implementation is wrong.
 | **DR-7** | **`chatrecall` obeys the barrier** — private models recall from private and public, public models from public only. **Side channels (existence, counts, timing) are explicitly out of scope**: no count padding, no constant-time responses, no decoys. Only content must not cross. |
 | **DR-8** | **Declassification is the user's alone** — an explicit deprivatise action in History. Nothing automatic, nothing an agent can invoke. Graded by `privacy_reason`: `mcp:*` gets a typed confirmation, `turn:*`-only gets single-click with undo. |
 | **DR-9** | ~~**A global opt-out exists, off by default**, scoped to Gate C (the MCP tool gate) only.~~ **Superseded by DR-15.** The operator has since ruled that the opt-out is a *master* switch over the whole feature, which is the wider of the two readings [Open question 3](#open-questions) recorded. The Gate-C-scoped key is retired rather than kept alongside the master one: two switches whose scopes nest are two things a user must reason about at the moment they are least able to, and the narrower one has no remaining job. |
-| **DR-14** | **A public-capability session's arbitrary-execution and path-reading tools run under a mandatory read-deny sandbox, on by default.** The tools that spawn a process (`developer__shell` and its background jobs, `computercontroller__automation_script`, `computer_control`) or resolve a caller-supplied path (`developer`'s file tools) run with **four directories hidden**: the session store, the knowledge roots, the global memory root and the Agent Drafter app root. Everything else on the filesystem stays readable and writable, so ordinary work is untouched — this is **not** a general jail and must not become one. **Private-capability sessions are unaffected.** Where the platform cannot express the exclusion, the fail direction is **closed**: those specific tools are refused with an error naming the two ways out (a private model, or turning privacy tiers off), never run unsandboxed. Tasks 14A, 14B and 14C. |
+| **DR-14** | **A public-capability session's tools may not reach Biorouter's own private data, on by default, and the control is TWO layers.** **Layer A (primary)** is an in-process path barrier at `ExtensionManager::dispatch_tool_call` — the one function every tool call passes through — which refuses any call whose arguments name a path inside the private entries. It needs no kernel support, so it holds on every platform, for every tool that exists and every tool added later. **Layer B (defence in depth)** is the OS read-deny sandbox (Seatbelt / bubblewrap) wrapping the five tools that spawn a child process, which Layer A cannot see into once the command is handed over. The entries are the four roots the operator named — the session store, the knowledge roots, the global memory root and the Agent Drafter app root — plus one file, `<config>/config.yaml`, because a master switch a public model can edit is not a switch. Everything else on the filesystem stays readable and writable — this is **not** a general jail and must not become one. **Private-capability sessions are unaffected.** Where the platform cannot express the kernel deny, the fail direction is **closed** for the five spawning tools only (they are refused, naming the two ways out); every in-process tool keeps working, because Layer A does not need a kernel. Tasks 14A–14D. |
 | **DR-15** | **One master toggle turns the entire privacy-tier feature off**, config key `BIOROUTER_PRIVACY_TIERS`, default `on`. Off means: no bind gate, no turn gate, no dispatch gate, no discovery filter, no `chatrecall` filter, no knowledge-base barrier, no spawn matrix, no classification ratchet, and **no read-deny sandbox** (DR-14) — nothing is refused and nothing is sandboxed. It does **not** delete the columns, the stamps already written, or the audit rows, so turning it back on resumes enforcement over the history that existed when it was turned off. It does **not** hide the badges either: they keep rendering, restyled and suffixed *— enforcement off*, beside a persistent strip. A guardrail that vanishes when disabled cannot be noticed by the person who disabled it six months ago; a badge that still reads plain **Private** while nothing enforces it is a false statement. Neither is acceptable, so the badge stays and changes what it says. |
 | **DR-10** | **Fail directions differ by kind, deliberately.** Migration backfill → fail **open** (public). Runtime read of a missing/unparseable column → fail **closed** (private, with `error!`). Import with no tier → fail **closed**. Unknown provider → **Public** (fail-*safe*: less privileged). Unlisted extension → **Public** (fail-open, DR-6). Any gate's lookup failing → refuse, encoded inside `Ok(..)`, never as `Err`. |
 | **DR-11** | **`medcp` stays callable by a public model**, and that is the accepted cost of DR-6. It is enabled on the operator's machine with `CLINICAL_RECORDS_*` against a clinical MSSQL backend. The reasoning: a hand-installed extension is the user's own choice, and medcp is a *connector* rather than a data source. **The badge is a statement about provenance, not about the data behind the connector.** |
