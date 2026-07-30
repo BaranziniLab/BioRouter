@@ -19,6 +19,14 @@ export interface StreamRunResult {
   error?: string;
 }
 
+/**
+ * Shown when the response body ends before the backend sent `event: done` or
+ * `event: error`. It has to read as a verdict on the digest, because that is how
+ * the user will read it — the source was not digested.
+ */
+export const STREAM_ENDED_WITHOUT_TERMINAL =
+  'The digest stopped without reporting a result — the connection to the Biorouter backend ended mid-stream. Nothing was added to the knowledge base; try again.';
+
 function extractErrorMessage(raw: string): string {
   const trimmed = raw.trim();
   if (!trimmed) return '';
@@ -89,8 +97,16 @@ export function useIngestStream() {
         const reader = res.body.getReader();
         const decoder = new window.TextDecoder();
         let buf = '';
-        let terminalStatus: 'done' | 'error' = 'done';
-        let terminalError: string | undefined;
+        // The backend closes every macro stream with `event: done` or
+        // `event: error`. Until one of them arrives the outcome is unknown, and
+        // "unknown" is a failure, not a success: a body that simply stops means
+        // the digest died on the way out — the daemon exited, the socket
+        // dropped, a proxy cut it. Defaulting to 'done' told the user their
+        // source had been digested on the strength of nothing at all, and
+        // IngestPanel then marked it ingested and cleared it off the staged
+        // list, so the evidence went with it (issue #71).
+        let terminalStatus: 'done' | 'error' = 'error';
+        let terminalError: string | undefined = STREAM_ENDED_WITHOUT_TERMINAL;
 
         outer: while (true) {
           const { value, done } = await reader.read();
@@ -113,6 +129,7 @@ export function useIngestStream() {
               const parsed = data ? (JSON.parse(data) as unknown) : null;
               setState((s) => ({ ...s, status: 'done', finalResult: parsed }));
               terminalStatus = 'done';
+              terminalError = undefined;
               break outer;
             } else if (eventName === 'error') {
               const parsed = data
@@ -134,13 +151,11 @@ export function useIngestStream() {
           }
         }
 
-        // If the stream closed without an explicit done/error event, mark done
-        setState((s) => {
-          if (s.status === 'starting' || s.status === 'streaming' || s.status === 'stopping') {
-            return { ...s, status: 'done' };
-          }
-          return s;
-        });
+        // The stream closed with no terminal frame: surface it as the failure it
+        // is, naming what we know, rather than inventing a completion.
+        if (terminalStatus === 'error' && terminalError === STREAM_ENDED_WITHOUT_TERMINAL) {
+          setState((s) => ({ ...s, status: 'error', error: STREAM_ENDED_WITHOUT_TERMINAL }));
+        }
 
         return { status: terminalStatus, error: terminalError };
       } catch (e) {
