@@ -194,9 +194,13 @@ pub(crate) fn pick_target(attached: Vec<WorkspaceBridge>) -> Option<WorkspaceBri
         })
         .cloned()
         .or_else(|| {
-            attached
-                .into_iter()
-                .max_by_key(|b| b.last_attach().unwrap_or_else(Instant::now))
+            // Rank on `Option<Instant>` directly: `None` (a window registered by
+            // `bridge_for` that has never opened a socket) sorts BELOW every real
+            // timestamp. Defaulting it to `Instant::now()` instead would make a
+            // window that has never connected outrank every window the user
+            // actually has open — and would make the key non-deterministic, since
+            // it advances each time it is read.
+            attached.into_iter().max_by_key(|b| b.last_attach())
         })
 }
 
@@ -469,5 +473,32 @@ mod tests {
         // Rule 3 — no candidates is None, not a panic: that is the headless
         // degradation path every workspace tool branches on.
         assert!(pick_target(vec![]).is_none());
+    }
+
+    /// A registered-but-never-connected window must never win the recency
+    /// fallback.
+    ///
+    /// `bridge_for` mints an entry on first sight, so a window that has been
+    /// named but has never opened a socket sits in `BRIDGES` with
+    /// `last_attach == None`. Ranking that as "now" would make it beat every
+    /// window the user actually has open, and would make the ranking key
+    /// non-deterministic (it moves every time it is read). `focused_or_recent`
+    /// pre-filters on `is_attached`, but `pick_target` is called directly with
+    /// a supplied candidate list, so the rule has to hold here too.
+    #[test]
+    fn a_window_that_never_attached_never_wins_on_recency() {
+        let live = WorkspaceBridge::new();
+        let (_r, _t) = live.attach();
+        live.store_echo(json!({"window_id": "w-live", "focused_session": null}));
+
+        let never = WorkspaceBridge::new();
+        never.store_echo(json!({"window_id": "w-never", "focused_session": null}));
+
+        let picked = pick_target(vec![never.clone(), live.clone()]).expect("a target");
+        assert_eq!(
+            picked.last_echo().unwrap()["window_id"],
+            "w-live",
+            "a window that never attached must sort oldest, not newest"
+        );
     }
 }
