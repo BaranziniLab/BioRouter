@@ -51,8 +51,18 @@ impl WorkspaceBridge {
         }
     }
 
+    /// Claim the bridge for a new connection.
+    ///
+    /// On a GUI reload this is the ONLY hook that runs for the outgoing
+    /// connection: its `detach` arrives later with a stale token and the
+    /// generation guard turns it into a no-op. So `attach` — not `detach` —
+    /// owns unparking the old connection's requests, which are waiting on
+    /// `request_id`s the fresh page has never seen. Mirrors `UiBridge::attach`.
     pub fn attach(&self) -> (mpsc::UnboundedReceiver<Value>, ConnToken) {
+        // Claim the next generation first: any concurrent stale detach now sees
+        // a newer generation and becomes a no-op.
         let generation = self.inner.generation.fetch_add(1, Ordering::AcqRel) + 1;
+        self.cancel_all();
         let (tx, rx) = mpsc::unbounded_channel();
         *lock(&self.inner.tx) = Some(tx);
         *lock(&self.inner.last_attach) = Some(Instant::now());
@@ -289,6 +299,54 @@ mod tests {
         let err = tokio::time::timeout(std::time::Duration::from_secs(5), waiter2)
             .await
             .expect("detach must unpark the parked request, not leave it to time out")
+            .unwrap()
+            .unwrap_err();
+        assert!(
+            err.contains("disconnected"),
+            "must be the disconnect error, not a timeout: {err}"
+        );
+    }
+
+    /// The GUI reload path, which `detach` alone cannot cover.
+    ///
+    /// When a window reloads, the new socket's `attach` lands first and the old
+    /// socket's `detach` arrives afterwards carrying a stale token — so the
+    /// generation guard correctly makes it a no-op, and `cancel_all` never runs
+    /// for the old generation at all. Anything parked on the old connection is
+    /// then waiting on a `request_id` the fresh browser has never seen and can
+    /// never reply to, so it holds the agent's turn until the full timeout.
+    /// `attach` must unpark it, exactly as `UiBridge::attach` does.
+    #[tokio::test]
+    async fn reattach_unparks_the_previous_connections_requests() {
+        let bridge = WorkspaceBridge::new();
+        let (mut rx, _stale_token) = bridge.attach();
+
+        let waiter = {
+            let bridge = bridge.clone();
+            tokio::spawn(async move {
+                bridge
+                    .emit_and_wait(json!({"cmd": "open_tab"}), Duration::from_secs(600))
+                    .await
+            })
+        };
+        // Wait until the frame is actually on the wire, so the request is
+        // genuinely parked rather than merely spawned.
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if rx.try_recv().is_ok() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+
+        let (_rx2, _fresh_token) = bridge.attach(); // the reload
+
+        let err = tokio::time::timeout(Duration::from_secs(5), waiter)
+            .await
+            .expect("a reload must unpark the old connection's parked requests")
             .unwrap()
             .unwrap_err();
         assert!(
