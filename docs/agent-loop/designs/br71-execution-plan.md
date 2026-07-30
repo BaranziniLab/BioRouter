@@ -24382,6 +24382,15 @@ needs its own row.
   relocate a single generated symbol — but regenerate and diff, do not assume
 - Modify: `ui/desktop/openapi.json` + `ui/desktop/src/api` (regen)
 
+**Every API this task leans on was checked against the vendored source, not recalled**
+(2026-07-30): `clap_builder-4.6.0` has `Command::get_subcommands() -> impl Iterator<Item
+= &Command>`, `Command::get_arguments() -> impl Iterator<Item = &Arg>`,
+`Command::get_name() -> &str` and `Id::as_str() -> &str` (⚠ `a.get_id() == *arg` is
+`&Id == &str` and does **not** compile — `Id` implements `PartialEq<&str>` but the
+comparison is between references; use `.as_str()`); `rmcp-0.14.0`'s
+`Tool.name` is `Cow<'static, str>`, so `.to_string()` is right; and `#[derive(Parser)]`
+already supplies `clap::CommandFactory`, so `command_tree` needs only the `use`.
+
 **Placement.** Phase 4, after Task 42 and before Task 43: the table cannot be complete
 until every capability exists (Phase 3), a gate that lands red blocks the phase that
 introduced it, and Task 43's user docs should document the guarantee this task makes
@@ -24464,7 +24473,7 @@ mod tests {
                     });
                     for arg in args {
                         assert!(
-                            command.get_arguments().any(|a| a.get_id() == *arg),
+                            command.get_arguments().any(|a| a.get_id().as_str() == *arg),
                             "{capability:?}: `biorouter {}` has no --{arg}",
                             path.join(" ")
                         );
@@ -24489,8 +24498,8 @@ mod tests {
         assert!(resolve(&root, &["sessions", "teleport"]).is_none());
         assert!(resolve(&root, &["teleport"]).is_none());
         let sessions_list = resolve(&root, &["sessions", "list"]).unwrap();
-        assert!(sessions_list.get_arguments().any(|a| a.get_id() == "subagents"));
-        assert!(!sessions_list.get_arguments().any(|a| a.get_id() == "teleport"));
+        assert!(sessions_list.get_arguments().any(|a| a.get_id().as_str() == "subagents"));
+        assert!(!sessions_list.get_arguments().any(|a| a.get_id().as_str() == "teleport"));
     }
 
     /// D: at most one accepted asymmetry per capability family, and each one is
