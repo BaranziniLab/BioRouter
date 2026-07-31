@@ -43,6 +43,50 @@ pub struct QueryResult {
     pub commit_sha: Option<String>,
 }
 
+/// Commit the query's transaction, but only if it actually filed a page.
+///
+/// `commit_txn` squash-commits the transaction *tree*, and git records a commit
+/// whose tree equals its parent's without complaint, so a run that answered the
+/// question but never called `kb_write_page` still produced a sha.
+/// `biorouter knowledge query --save` prints "✓ saved as a page (<sha>)" off
+/// exactly that value, and the page is not there — issue #71's false success,
+/// one macro over.
+///
+/// Unlike an ingest this does not fail the call: the answer is the deliverable
+/// and it is perfectly good. Only the claim that it was filed goes.
+fn commit_txn_if_a_page_was_filed(
+    svc: &KnowledgeService,
+    kb_id: &str,
+    kb_root: &std::path::Path,
+    txn_branch: Option<String>,
+    steps_used: usize,
+) -> Result<Option<String>> {
+    let Some(branch) = txn_branch else {
+        return Ok(None);
+    };
+    let repo = GitRepo::open(kb_root)?;
+    let txn = Txn { branch };
+    let filed = match repo.txn_wrote_knowledge_pages(&txn) {
+        Ok(filed) => filed,
+        Err(e) => {
+            let _ = repo.abort_txn(&txn);
+            return Err(e.context("checking whether the query filed a page"));
+        }
+    };
+    if !filed {
+        let _ = repo.abort_txn(&txn);
+        return Ok(None);
+    }
+    let sha = repo.commit_txn(
+        &txn,
+        ChangeKind::Query,
+        "query filed",
+        Some(&format!("+1 note · {steps_used} steps")),
+    )?;
+    svc.rebuild_graph_cache(kb_id)?;
+    Ok(Some(sha))
+}
+
 pub async fn query(svc: &KnowledgeService, args: QueryArgs) -> Result<QueryResult> {
     let _lock = svc.lock_kb(&args.kb_id).await?;
     let kb_root = paths::kb_root(svc.root(), &args.kb_id);
@@ -102,44 +146,15 @@ pub async fn query(svc: &KnowledgeService, args: QueryArgs) -> Result<QueryResul
             ) =>
         {
             // Commit the txn if we were filing the answer as a page — and only
-            // if a page was actually filed.
-            //
-            // `commit_txn` squash-commits the transaction *tree*, and git records
-            // a commit whose tree equals its parent's without complaint, so a run
-            // that answered the question but never called `kb_write_page` still
-            // produced a sha. `biorouter knowledge query --save` prints
-            // "✓ saved as a page (<sha>)" off exactly that value, and the page is
-            // not there — issue #71's false success, one macro over.
-            //
-            // Unlike an ingest this does not fail the call: the answer is the
-            // deliverable and it is perfectly good. Only the claim that it was
-            // filed goes.
-            let commit_sha = if let Some(branch) = txn_branch {
-                let repo = GitRepo::open(&kb_root)?;
-                let txn = Txn { branch };
-                let filed = match repo.txn_wrote_knowledge_pages(&txn) {
-                    Ok(filed) => filed,
-                    Err(e) => {
-                        let _ = repo.abort_txn(&txn);
-                        return Err(e.context("checking whether the query filed a page"));
-                    }
-                };
-                if filed {
-                    let sha = repo.commit_txn(
-                        &txn,
-                        ChangeKind::Query,
-                        "query filed",
-                        Some(&format!("+1 note · {} steps", r.steps_used)),
-                    )?;
-                    svc.rebuild_graph_cache(&args.kb_id)?;
-                    Some(sha)
-                } else {
-                    let _ = repo.abort_txn(&txn);
-                    None
-                }
-            } else {
-                None
-            };
+            // if a page was actually filed. See the helper for why that
+            // distinction matters.
+            let commit_sha = commit_txn_if_a_page_was_filed(
+                svc,
+                &args.kb_id,
+                &kb_root,
+                txn_branch,
+                r.steps_used,
+            )?;
 
             Ok(QueryResult {
                 answer: r.final_text,

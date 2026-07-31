@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import type { ComponentProps } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { MessageQueue } from './MessageQueue';
+import { refTag } from '../utils/resourceRefs';
 
 const queuedMessage = {
   id: 'message-1',
@@ -85,5 +86,43 @@ describe('MessageQueue actions', () => {
       name: 'Stop the current turn and send this message as a new turn',
     });
     expect(within(stopAndSend).getByText('Stop & send')).toBeInTheDocument();
+  });
+});
+
+// Issue #65 — the queue renders inside the composer, so the same rule applies:
+// the user never sees `<biorouter-ref …>` markup, and the reference survives an
+// edit. A queued message is one the composer already built, tags and all.
+describe('MessageQueue references', () => {
+  const withRef = {
+    id: 'message-1',
+    content: `and add better comments ${refTag('skill', 'my skill')}`,
+    timestamp: Date.now(),
+  };
+
+  it('shows a chip in the queued row instead of the markup', () => {
+    renderQueue({ queuedMessages: [withRef] });
+
+    expect(screen.getByTestId('resource-ref-chip-name')).toHaveTextContent('my skill');
+    expect(document.body.textContent).not.toContain('biorouter-ref');
+  });
+
+  it('keeps the markup out of the inline editor and the reference on the message', async () => {
+    const user = userEvent.setup();
+    const onEditMessage = vi.fn();
+    renderQueue({ queuedMessages: [withRef], onEditMessage });
+
+    await user.click(screen.getByRole('button', { name: /queued\. Expand queue\./i }));
+    await user.click(screen.getByText('and add better comments'));
+    const box = screen.getByRole('textbox') as HTMLTextAreaElement;
+    expect(box.value).toBe('and add better comments');
+
+    await user.clear(box);
+    await user.type(box, 'and tidy up');
+    await user.click(screen.getByRole('button', { name: /^save$/i }));
+
+    expect(onEditMessage).toHaveBeenCalledWith(
+      'message-1',
+      `and tidy up ${refTag('skill', 'my skill')}`
+    );
   });
 });

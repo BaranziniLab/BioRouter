@@ -1174,6 +1174,89 @@ Content
         assert_eq!(tool_names, vec!["searchSkills", "listSkills", "loadSkill"]);
     }
 
+    /// Issue #65, the consumer seam. `handle_load_skill` resolves a skill by
+    /// an EXACT map key — the frontmatter `name`, which may contain anything a
+    /// YAML scalar can hold — so the whole point of the reference tag is that
+    /// the extractor hands that name back byte for byte.
+    ///
+    /// This is the assertion that makes the escaping worth anything. A decode
+    /// that happened downstream of this lookup would be worthless, and the
+    /// "normalise to a comparable id" fix that resolved `/ext:` in #60 would
+    /// arrive here as `single-cellQC&prep` and match nothing — which is why
+    /// that fix could not transfer to skills.
+    #[tokio::test]
+    async fn a_reference_tag_loads_a_skill_whose_name_needs_escaping() {
+        use crate::agents::resource_refs::{extract_resource_refs, ref_tag, RefKind};
+
+        let awkward = r#"single-cell "QC" & prep <v2>"#;
+
+        let temp_dir = TempDir::new().unwrap();
+        let skills_dir = temp_dir.path().join("skills");
+        let skill_dir = skills_dir.join("awkward");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            format!("---\nname: '{awkward}'\ndescription: An awkwardly named skill\n---\nBody of the awkward skill\n"),
+        )
+        .unwrap();
+
+        let skills = SkillsClient::discover_skills_in_directories(&[skills_dir]);
+        assert!(
+            skills.contains_key(awkward),
+            "discovery keyed it as {:?}",
+            skills.keys().collect::<Vec<_>>()
+        );
+
+        let client = SkillsClient {
+            info: InitializeResult {
+                protocol_version: ProtocolVersion::V_2025_03_26,
+                capabilities: ServerCapabilities {
+                    tasks: None,
+                    tools: Some(ToolsCapability {
+                        list_changed: Some(false),
+                    }),
+                    resources: None,
+                    prompts: None,
+                    completions: None,
+                    experimental: None,
+                    logging: None,
+                },
+                server_info: Implementation {
+                    name: EXTENSION_NAME.to_string(),
+                    title: Some("Skills".to_string()),
+                    version: "1.0.0".to_string(),
+                    icons: None,
+                    website_url: None,
+                },
+                instructions: Some(String::new()),
+            },
+            skills,
+        };
+
+        // Exactly what a composer sends, put through the real extractor.
+        let message = format!("please use {} on this", ref_tag(RefKind::Skill, awkward));
+        let extracted = extract_resource_refs(&message).skills;
+        assert_eq!(extracted, vec![awkward.to_string()]);
+
+        // ...and then through the argument `Agent::skill_resource_context`
+        // builds from it, unchanged.
+        let arguments = serde_json::json!({ "name": extracted[0].clone() })
+            .as_object()
+            .unwrap()
+            .clone();
+        let content = client
+            .handle_load_skill(Some(arguments))
+            .await
+            .expect("the selected skill must load");
+
+        let text = content
+            .iter()
+            .filter_map(|c| c.as_text().map(|t| t.text.clone()))
+            .collect::<String>();
+        assert!(text.contains(awkward), "loaded the wrong skill: {text}");
+        assert!(text.contains("Body of the awkward skill"), "{text}");
+    }
+
     #[tokio::test]
     async fn test_list_skills_is_paginated() {
         let temp_dir = TempDir::new().unwrap();

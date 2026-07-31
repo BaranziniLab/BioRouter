@@ -80,6 +80,39 @@ older successful one.
 **Found by:** the first attempt at ordering the config reads. The naive version was written,
 tested, and failed — which is the only reason it is not in the tree.
 
+## A translucent fill is invisible to both the unit suite and the contrast guard
+
+**The trap.** A surface painted with a Tailwind opacity modifier — `bg-background-accent/12`,
+the `Badge` accent tone — has **no token naming the colour it composites to**. Two gates
+therefore both miss it, for different reasons:
+
+- **jsdom** applies no Tailwind and computes no layout, so a renderer test can assert the
+  class list and nothing about the result. `expect(el.className).toContain('text-text-accent')`
+  passes whether the text is readable or invisible.
+- **`scripts/check-contrast.mjs`** resolves token pairs to hex and measures those. A colour
+  that only exists after alpha compositing is not a token, so no assertion covers it, and the
+  run reports every ratio green.
+
+The ground compounds it: the same chip is legible on `--background-default` and not on
+`--background-medium`, because the bubble's own fill sits under the tint. A single "does it
+look OK" glance at one surface in one theme proves nothing about the other eleven.
+
+**What to do instead.** Render it in a real browser across every family and mode, and measure
+the *composite* rather than the tokens — paint the layers onto a canvas and read the pixel
+back, so the browser resolves `oklab(… / 0.12)` for you. Then encode the result: `blend()` in
+`scripts/lib/theme-tokens.mjs` and `assertOverTint` in the guard turn one browser measurement
+into a permanent assertion for every family the script discovers. Keep a class-level pin in
+the unit test too, so the component cannot drift back while the guard stays green.
+
+`ui/desktop/.reference-chip-harness/` mounts the real chip and the real `UserMessage` against
+the real stylesheet with a family/mode switcher, the way `.artifact-harness` does for the
+preview panel.
+
+**Found by:** the issue #65 reference chip. Its label used the accent tone's ink on the tone's
+own 12% fill and measured **3.08:1** in `alma-mater:light` inside a user bubble — under AA for
+11px text — in five of eighteen theme/surface combinations, with 1803 renderer tests and 252
+contrast assertions all green.
+
 ## Related documentation
 
 - [Launching the dev GUI from a shell without a TTY](launching-the-dev-gui.md) — five ways the launcher makes a working app look broken

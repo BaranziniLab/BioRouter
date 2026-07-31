@@ -4,6 +4,8 @@ import { Card } from '../ui/card';
 import { Button } from '../ui/button';
 import { ScrollArea } from '../ui/scroll-area';
 import MarkdownContent from '../MarkdownContent';
+import { ResourceRefChip } from '../ResourceRefChip';
+import { splitComposerText } from '../../utils/composerRefs';
 import ToolCallWithResponse from '../ToolCallWithResponse';
 import ImagePreview from '../ImagePreview';
 import {
@@ -92,6 +94,16 @@ export const SessionMessages: React.FC<SessionMessagesProps> = ({
                       ? removeImagePathsFromText(textContent, imagePaths)
                       : textContent;
 
+                  // Issue #65 — this is the one surface that renders a user
+                  // message through `MarkdownContent`, and react-markdown runs
+                  // here without `rehype-raw`, so it DROPS unknown HTML rather
+                  // than showing it. A `<biorouter-ref …>` therefore vanished
+                  // without a trace: worse than raw markup, because a reader
+                  // reviewing the session could not tell a skill was attached.
+                  // The prose keeps its markdown; the references are drawn as
+                  // read-only chips beside it.
+                  const { body: proseText, refs: messageRefs } = splitComposerText(displayText);
+
                   // Get tool requests from the message
                   const toolRequests = message.content
                     .filter((c) => c.type === 'toolRequest')
@@ -129,11 +141,19 @@ export const SessionMessages: React.FC<SessionMessagesProps> = ({
 
                       <div className="flex flex-col w-full">
                         {/* Text content */}
-                        {displayText && (
+                        {proseText && (
                           <div
-                            className={`${toolRequests.length > 0 || imagePaths.length > 0 ? 'mb-4' : ''}`}
+                            className={`${toolRequests.length > 0 || imagePaths.length > 0 || messageRefs.length > 0 ? 'mb-4' : ''}`}
                           >
-                            <MarkdownContent content={displayText} />
+                            <MarkdownContent content={proseText} />
+                          </div>
+                        )}
+
+                        {messageRefs.length > 0 && (
+                          <div className="mb-2 flex flex-wrap items-center gap-1.5">
+                            {messageRefs.map((ref) => (
+                              <ResourceRefChip key={`${ref.kind}:${ref.value}`} refSpan={ref} />
+                            ))}
                           </div>
                         )}
 

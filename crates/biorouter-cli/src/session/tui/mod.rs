@@ -1518,25 +1518,72 @@ fn pluralize(count: usize, singular: &str) -> String {
     }
 }
 
-/// One `/ext:` entry in the TUI completion popup.
+/// One extension entry in the TUI completion popup.
 ///
-/// Issue #60, third site: the label keeps the extension's display name (with
+/// Issue #65, third site: the label keeps the extension's display name (with
 /// its space — that is what the user is picking and filtering on) while the
-/// INSERTED marker drops whitespace, because `extract_inline_refs` splits the
-/// message on whitespace and `/ext:Chat Recall` would reach the resolver as
-/// `Chat`. Shares `completion::extension_marker_name` with the rustyline
-/// completer so the two front-ends cannot drift.
+/// INSERTED reference is whatever survives the agent's extractor intact, which
+/// for a spaced name is the canonical `<biorouter-ref …>` tag rather than a
+/// compacted `/ext:` marker. Shares `completion::extension_marker` with the
+/// rustyline completer so the two front-ends cannot drift.
 fn extension_completion_item(name: &str, description: &str, builtin: bool) -> app::CompletionItem {
     app::CompletionItem {
         label: name.to_string(),
         description: description.to_string(),
-        insert: format!("/ext:{} ", super::completion::extension_marker_name(name)),
+        insert: format!("{} ", super::completion::extension_marker(name)),
         filter: if builtin {
             format!("extension builtin {}", name.to_lowercase())
         } else {
             format!("extension {}", name.to_lowercase())
         },
         kind: app::CompletionKind::Extension,
+    }
+}
+
+/// One skill entry in the TUI completion popup.
+///
+/// Sibling of [`extension_completion_item`]: the label is what the user picks
+/// and filters on, while the INSERTED reference is whatever survives the
+/// agent's extractor intact — for a name with a space, the canonical
+/// `<biorouter-ref …>` tag rather than a `/skill:` marker that would reach the
+/// resolver truncated at the first word (issue #65).
+fn skill_completion_item(name: &str) -> app::CompletionItem {
+    app::CompletionItem {
+        label: name.to_string(),
+        description: "Ask the agent to use this skill".to_string(),
+        insert: format!(
+            "{} ",
+            biorouter::agents::resource_refs::reference_marker(
+                biorouter::agents::resource_refs::RefKind::Skill,
+                name,
+            )
+        ),
+        filter: format!("skill {}", name.to_lowercase()),
+        kind: app::CompletionKind::Skill,
+    }
+}
+
+/// One knowledge-base entry in the TUI completion popup.
+///
+/// A base is picked by name and resolved by id, so the label carries the id
+/// `kb_search` takes and the filter matches on both.
+fn knowledge_completion_item(id: &str, display_name: &str) -> app::CompletionItem {
+    app::CompletionItem {
+        label: id.to_string(),
+        description: format!("Focus knowledge base · {display_name}"),
+        insert: format!(
+            "{} ",
+            biorouter::agents::resource_refs::reference_marker(
+                biorouter::agents::resource_refs::RefKind::KnowledgeBase,
+                id,
+            )
+        ),
+        filter: format!(
+            "kb knowledge {} {}",
+            id.to_lowercase(),
+            display_name.to_lowercase()
+        ),
+        kind: app::CompletionKind::Knowledge,
     }
 }
 
@@ -1562,13 +1609,7 @@ fn build_catalog(_session: &CliSession) -> Vec<app::CompletionItem> {
     items.push(cmd("/exit", "Leave the session"));
 
     for name in list_skills() {
-        items.push(CompletionItem {
-            label: name.clone(),
-            description: "Ask the agent to use this skill".to_string(),
-            insert: format!("/skill:{name} "),
-            filter: format!("skill {}", name.to_lowercase()),
-            kind: CompletionKind::Skill,
-        });
+        items.push(skill_completion_item(&name));
     }
 
     // Extensions enabled for this chat plus bundled built-ins that can be
@@ -1626,17 +1667,7 @@ fn build_catalog(_session: &CliSession) -> Vec<app::CompletionItem> {
         if let Ok(bases) = svc.list_bases() {
             let hidden = svc.get_hidden_persisted().unwrap_or_default();
             for b in bases.into_iter().filter(|b| !hidden.contains(&b.id)) {
-                items.push(CompletionItem {
-                    label: b.id.clone(),
-                    description: format!("Focus knowledge base · {}", b.name),
-                    insert: format!("/kb:{} ", b.id),
-                    filter: format!(
-                        "kb knowledge {} {}",
-                        b.id.to_lowercase(),
-                        b.name.to_lowercase()
-                    ),
-                    kind: CompletionKind::Knowledge,
-                });
+                items.push(knowledge_completion_item(&b.id, &b.name));
             }
         }
     }
@@ -2193,27 +2224,33 @@ mod tests {
             "current tool output should stay visible:\n{text}"
         );
     }
-    /// Issue #60, third site (neither the desktop fix nor the rustyline
-    /// completer covers this one): the TUI's own `/`-popup inserts the marker
-    /// for the extension the user picked. `extract_inline_refs` splits the
-    /// message on whitespace, so an inserted `/ext:Chat Recall ` reaches the
-    /// resolver as `/ext:Chat`, matches nothing, and the agent answers "not a
-    /// known built-in extension" — which reads as a policy refusal.
+    /// Issue #65, third site (neither the desktop composer nor the rustyline
+    /// completer covers this one): the TUI's own `/`-popup inserts the
+    /// reference for the extension the user picked.
     ///
     /// `chatrecall` is registered under the display string `"Chat Recall"`
     /// (`agents::chatrecall_extension::EXTENSION_NAME`) and is NOT one of the
-    /// three names `compact_extension_canonicals` swaps for an alias, so nothing
-    /// rescues it here either. The label and the filter keep the space — that is
-    /// what the user reads and types against — only the insert loses it.
+    /// three names `compact_extension_canonicals` swaps for an alias, so
+    /// nothing rescues it here either. #60 inserted `/ext:ChatRecall`, which
+    /// resolved only because `/ext:` consumers re-normalise whitespace away;
+    /// the insert now carries the name exactly, which is the guarantee skills
+    /// need and extensions may as well have. The label and the filter keep the
+    /// space either way — that is what the user reads and types against.
     #[test]
-    fn extension_popup_inserts_a_single_token_for_a_spaced_name() {
+    fn extension_popup_carries_a_spaced_name_intact() {
+        use biorouter::agents::resource_refs::{extracted_refs, RefKind};
+
         let item = extension_completion_item("Chat Recall", "Ask the agent", false);
         assert_eq!(item.label, "Chat Recall");
         assert_eq!(item.filter, "extension chat recall");
-        assert_eq!(item.insert, "/ext:ChatRecall ");
+        assert_eq!(
+            extracted_refs(RefKind::Extension, &item.insert),
+            vec!["Chat Recall".to_string()]
+        );
 
-        // Whitespace and nothing else: `_` and `-` are part of a user
-        // extension's key (`normalize` keeps them).
+        // A name the compact marker can carry keeps it: `_` and `-` are part of
+        // a user extension's key, and a terminal has no chip to render a tag
+        // into.
         let item = extension_completion_item("my_tool-v2", "Ask the agent", false);
         assert_eq!(item.insert, "/ext:my_tool-v2 ");
     }
