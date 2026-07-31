@@ -3663,6 +3663,15 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
 
+    /// One recorded `start_session` call, every argument of it.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct StartedSession {
+        working_dir: std::path::PathBuf,
+        extensions: Option<Vec<String>>,
+        knowledge_bases: Vec<String>,
+        primary: KbPrimaryChoice,
+    }
+
     /// A daemon stand-in that can be told what to answer AND publishes the bus
     /// lifecycle the real runner publishes (`workspace/turn.rs`): the events a
     /// previous turn emits inside the hydration window, then this turn's
@@ -3681,12 +3690,15 @@ mod tests {
         started: Mutex<Vec<(String, String, crate::conversation::message::Message)>>,
         /// Every `gui_command` frame.
         frames: Mutex<Vec<serde_json::Value>>,
-        /// Every `start_session(working_dir, …)`, in order. Task 24 needs the
-        /// ARGUMENT, not just the returned id: decision 5's deliverable is
+        /// Every `start_session(…)` call, whole and in order. Task 24 needs the
+        /// ARGUMENTS, not just the returned id: decision 5's deliverable is
         /// *which* directory a new conversation gets, and an implementation that
         /// hardcoded the process cwd (or `temp_dir()`, or `/`) would return the
         /// same id and satisfy every assertion that only looks at the answer.
-        sessions_started: Mutex<Vec<std::path::PathBuf>>,
+        /// The same holds for the other three: `start_session` returns `s-new`
+        /// whether or not the caller's extensions, knowledge bases and write
+        /// target ever reached it.
+        sessions_started: Mutex<Vec<StartedSession>>,
         /// Every `cancel_turn(session_id)`, in order. Task 16 needs the CALL
         /// recorded, not just its answer: a `workspace_close` that returned the
         /// right sentence without ever tripping the token is exactly the wrong
@@ -3760,8 +3772,15 @@ mod tests {
         fn clear_frames(&self) {
             self.frames.lock().unwrap().clear();
         }
-        fn sessions_started(&self) -> Vec<std::path::PathBuf> {
+        fn sessions_started(&self) -> Vec<StartedSession> {
             self.sessions_started.lock().unwrap().clone()
+        }
+        /// Just the directories, for the decision-5 assertions.
+        fn session_dirs(&self) -> Vec<std::path::PathBuf> {
+            self.sessions_started()
+                .into_iter()
+                .map(|s| s.working_dir)
+                .collect()
         }
         fn cancels(&self) -> Vec<String> {
             self.cancels.lock().unwrap().clone()
@@ -3851,11 +3870,16 @@ mod tests {
         async fn start_session(
             &self,
             working_dir: std::path::PathBuf,
-            _extensions: Option<Vec<String>>,
-            _knowledge_bases: Vec<String>,
-            _primary: KbPrimaryChoice,
+            extensions: Option<Vec<String>>,
+            knowledge_bases: Vec<String>,
+            primary: KbPrimaryChoice,
         ) -> Result<String, String> {
-            self.sessions_started.lock().unwrap().push(working_dir);
+            self.sessions_started.lock().unwrap().push(StartedSession {
+                working_dir,
+                extensions,
+                knowledge_bases,
+                primary,
+            });
             Ok("s-new".into())
         }
         fn set_knowledge_bases(
@@ -5315,7 +5339,7 @@ mod tests {
         open_as(&c, &caller_b.id, serde_json::json!({ "new": {} })).await;
 
         assert_eq!(
-            recorder.sessions_started(),
+            recorder.session_dirs(),
             vec![dir_a.clone(), dir_b.clone()],
             "each new session takes ITS caller's directory — a hardcoded default, the \
              process cwd, or temp_dir() all produce two identical entries here"
@@ -5361,7 +5385,7 @@ mod tests {
             serde_json::json!({ "new": { "working_dir": elsewhere.to_str().unwrap() } }),
         )
         .await;
-        assert_eq!(recorder.sessions_started().last().unwrap(), &elsewhere);
+        assert_eq!(recorder.session_dirs().last().unwrap(), &elsewhere);
         let notify = recorder
             .frame_with_cmd("notify")
             .expect("a caller-dir mismatch must be surfaced, not swallowed");
@@ -5371,6 +5395,118 @@ mod tests {
                 .unwrap()
                 .contains(&elsewhere.display().to_string()),
             "the notice names the directory: {notify}"
+        );
+
+        crate::workspace_services::clear_test_override();
+    }
+
+    /// The rest of what `new:` promises, none of which the returned id or the
+    /// GUI frame can show — and all of which the test above leaves green when
+    /// deleted.
+    ///
+    /// Two failures in particular are silent in production. Sending
+    /// `KbPrimaryChoice::Auto` where the caller named a target retargets every
+    /// KB-less write in the new conversation to the wrong base (post-#45 the
+    /// primary is a validated pointer, not a derived convenience). And dropping
+    /// `prompt` — or running it unstamped — falsifies the instruction block's
+    /// promise that "injections are permanently labeled as coming from you".
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn open_new_forwards_the_grants_and_runs_the_seeded_first_turn() {
+        let recorder = FakeServices::with_gui(true).install();
+
+        let c = client();
+        let dir = std::env::temp_dir().join("br71-grants");
+        std::fs::create_dir_all(&dir).unwrap();
+        let caller = c
+            .context
+            .session_manager
+            .create_session(
+                dir.clone(),
+                "planner".into(),
+                crate::session::session_manager::SessionType::User,
+            )
+            .await
+            .unwrap();
+
+        let r = open_as(
+            &c,
+            &caller.id,
+            serde_json::json!({ "new": {
+                "extensions": ["developer"],
+                "knowledge_bases": ["kb-a", "kb-b"],
+                "primary_knowledge_base": "kb-b",
+                "prompt": "start on the migration",
+            }}),
+        )
+        .await;
+        assert_ne!(r.is_error, Some(true), "got: {}", text_of(&r));
+
+        let started = recorder.sessions_started();
+        assert_eq!(started.len(), 1, "one session; got {started:?}");
+        assert_eq!(
+            started[0].extensions,
+            Some(vec!["developer".to_string()]),
+            "the granted extension set reaches the daemon"
+        );
+        assert_eq!(
+            started[0].knowledge_bases,
+            vec!["kb-a".to_string(), "kb-b".to_string()]
+        );
+        assert_eq!(
+            started[0].primary,
+            KbPrimaryChoice::Set("kb-b".into()),
+            "an explicit write target must arrive as Set: Auto would pin kb-a and \
+             every KB-less write in the new conversation would land in the wrong base"
+        );
+
+        // The seeded turn RAN, on the new session, carrying the prompt …
+        let turns = recorder.started.lock().unwrap().clone();
+        assert_eq!(
+            turns.len(),
+            1,
+            "the prompt starts exactly one detached turn"
+        );
+        let (session_id, _turn_id, message) = &turns[0];
+        assert_eq!(session_id, "s-new");
+        let body: String = message
+            .content
+            .iter()
+            .filter_map(|c| c.as_text())
+            .collect::<Vec<_>>()
+            .join("");
+        assert!(body.contains("start on the migration"), "got: {body}");
+        // … and it is LABELLED with the caller (§6).
+        let p = message
+            .metadata
+            .provenance
+            .as_ref()
+            .expect("the seeded turn is provenance-stamped");
+        assert_eq!(
+            p.kind,
+            crate::conversation::message::ProvenanceKind::AgentInjection
+        );
+        assert_eq!(p.from_session_id.as_deref(), Some(caller.id.as_str()));
+        assert_eq!(p.from_session_name.as_deref(), Some(caller.name.as_str()));
+
+        // No prompt and no named target: no turn at all, and `Auto` — which on a
+        // FRESH session resolves to "pin the first id" (Task 9), the reason
+        // `workspace_open` never leaves a KB-carrying session pointer-less.
+        recorder.started.lock().unwrap().clear();
+        recorder.sessions_started.lock().unwrap().clear();
+        open_as(
+            &c,
+            &caller.id,
+            serde_json::json!({ "new": { "knowledge_bases": ["kb-a"] } }),
+        )
+        .await;
+        assert_eq!(
+            recorder.sessions_started()[0].primary,
+            KbPrimaryChoice::Auto
+        );
+        assert!(
+            recorder.started.lock().unwrap().is_empty(),
+            "no prompt means no turn"
         );
 
         crate::workspace_services::clear_test_override();
