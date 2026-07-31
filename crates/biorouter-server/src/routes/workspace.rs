@@ -153,6 +153,20 @@ async fn workspace_ws(
     ws.on_upgrade(move |socket| handle_workspace_socket(socket, state, window_id))
 }
 
+/// ⚠ Two known gaps, recorded against Task 31's live pass in
+/// `docs/agent-loop/designs/br71-execution-plan.md` (which carries the reasoning
+/// and the live checks) rather than fixed here:
+///
+/// - **No keepalive.** This loop exits only on a close frame, a read error or a
+///   failed write, so a half-open connection (sleeping laptop, dropped Wi-Fi)
+///   leaves `is_attached()` — and therefore `gui_attached()` — true for a window
+///   nobody can see, which defeats `workspace_send_prompt`'s Decision 4 refusal
+///   and keeps `focused_or_recent()` routing into a dead socket.
+/// - **The writer blocks the reader.** `socket_tx.send(...).await` runs inside a
+///   `select!` branch, so a backpressured sink stops inbound frames — including
+///   the `workspace_result` that would unpark a round trip. Bounded (every
+///   `emit_and_wait` has a timeout), never deadlocking, but it turns one slow
+///   writer into a stalled turn.
 async fn handle_workspace_socket(socket: WebSocket, _state: Arc<AppState>, window_id: String) {
     use futures::{SinkExt, StreamExt};
     let bridge = bridge::bridge_for(&window_id);

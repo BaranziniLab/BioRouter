@@ -17100,6 +17100,37 @@ screenshots, never `screencapture`; `env -u ELECTRON_RUN_AS_NODE`)
    verify `gui_attached: false` degradation, and that `biorouter sessions watch` still
    streams.
 
+⚠ **Two known gaps in `/ui/workspace`, recorded here deliberately by Task 23's review
+rather than fixed there** (both are behaviour additions to a socket loop whose
+concurrency Task 22 spent three fix commits getting right; neither is a defect in what
+Task 23 shipped, and neither has a unit test that could be written in bounded time).
+Watch for both during this live pass, and decide then whether Phase 2 closes them or a
+follow-up does:
+
+- **No keepalive, so a half-open TCP connection is invisible.** `handle_workspace_socket`
+  only ever leaves its loop on a close frame, a read error, or a failed write. A
+  connection black-holed by a sleeping laptop, a lid close or a dropped Wi-Fi association
+  produces none of those until the OS retransmission timeout (order of minutes), so
+  `bridge.is_attached()` — and therefore `any_attached()`/`gui_attached()` — stays `true`
+  for a window nobody can see. That is not cosmetic: `workspace_send_prompt`'s Decision 4
+  guard (`crates/biorouter/src/agents/workspace_extension.rs`, the
+  `!services.gui_attached() && target_mode_requires_approval(...)` refusal) exists
+  precisely to stop a detached turn parking tool confirmations where no one can answer
+  them, and a stale `true` defeats it; `focused_or_recent()` will also keep routing
+  commands into the dead socket. The fix is a `tokio::time::interval` arm in the same
+  `select!` sending `WsMessage::Ping` and breaking on send failure — writes to a
+  black-holed connection *do* eventually fail, whereas a silent socket never will.
+  **Live check:** open a window, put the machine to sleep or pull its network, then ask
+  the agent for `workspace_list` from the CLI and see how long `gui_attached` stays true.
+- **The writer blocks the reader (head-of-line).** `socket_tx.send(...).await` sits inside
+  a `select!` branch body, so while the outbound sink is backpressured no inbound frame is
+  read — including the `workspace_result` that would unpark a round trip. It cannot
+  deadlock (every `emit_and_wait` is bounded, currently 10 s), but it converts one slow
+  writer into a stalled turn, which is the shape that produces "the GUI hung" reports. The
+  fix is to split the loop into a writer task and a reader task; that moves `detach`
+  ownership and needs an abort path on the surviving half, which is why it is not a
+  drive-by change.
+
 - [ ] **Step 3: Update the design-doc status header** (Slice 2 shipped) and commit:
 
 ```bash
