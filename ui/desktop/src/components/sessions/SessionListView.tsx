@@ -327,10 +327,7 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
     // resumed, so a subagent that ran on an earlier day sits in a different
     // bucket — grouping within each bucket would drop it back to top level,
     // which is exactly the orphaned, unexplained row this feature removes.
-    const parentGroups = useMemo(
-      () => groupSessionsByParent(filteredSessions),
-      [filteredSessions]
-    );
+    const parentGroups = useMemo(() => groupSessionsByParent(filteredSessions), [filteredSessions]);
     // Only top-level rows are dated and paginated; children ride with their
     // parent, so `visibleSessionCount` counts rendered parents, not raw rows.
     const topLevelSessions = useMemo(() => parentGroups.map((g) => g.session), [parentGroups]);
