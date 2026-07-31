@@ -30,16 +30,42 @@ export function groupSessionsByParent<T extends SessionRow>(
   rows: T[]
 ): { session: T; children: T[] }[] {
   const byId = new Map(rows.map((row) => [row.id, row]));
+
+  // Which row, if any, this one renders beneath. Only ONE level of nesting is
+  // rendered, so a row nests only under a parent that is itself top-level —
+  // resolved recursively rather than by a single lookup. In a p → c → g chain a
+  // plain lookup hangs g off c, but c is a child and is never scanned for
+  // children of its own, so g vanishes from History entirely. The backend
+  // refuses nesting inside a delegation tree today; this helper should not
+  // silently depend on an invariant enforced somewhere else.
+  const nestUnder = new Map<string, string | null>();
+  const resolve = (row: T, seen: Set<string>): string | null => {
+    const memo = nestUnder.get(row.id);
+    if (memo !== undefined) return memo;
+    // Malformed data (a parent cycle) — break out and treat this row as
+    // top-level rather than recursing forever or losing it.
+    if (seen.has(row.id)) return null;
+
+    const parentId = row.session_type === 'sub_agent' ? row.parent_session_id : null;
+    const parent = parentId ? byId.get(parentId) : undefined;
+    seen.add(row.id);
+
+    let result: string | null = null;
+    if (parentId && parent && resolve(parent, seen) === null) result = parentId;
+    nestUnder.set(row.id, result);
+    return result;
+  };
+
   const childrenOf = new Map<string, T[]>();
   const topLevel: T[] = [];
   for (const row of rows) {
-    const parent = row.session_type === 'sub_agent' ? row.parent_session_id : null;
-    if (parent && byId.has(parent)) {
-      const list = childrenOf.get(parent) ?? [];
-      list.push(row);
-      childrenOf.set(parent, list);
-    } else {
+    const parentId = resolve(row, new Set());
+    if (parentId === null) {
       topLevel.push(row);
+    } else {
+      const list = childrenOf.get(parentId) ?? [];
+      list.push(row);
+      childrenOf.set(parentId, list);
     }
   }
   return topLevel.map((session) => ({ session, children: childrenOf.get(session.id) ?? [] }));
