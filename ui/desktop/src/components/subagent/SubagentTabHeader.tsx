@@ -31,6 +31,7 @@ export function SubagentTabHeader({
   onStop: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const spawnContextId = `subagent-spawn-context-${sessionId}`;
   return (
     <div
       className="border-b border-border-subtle bg-background-muted px-4 py-2 text-sm"
@@ -67,16 +68,27 @@ export function SubagentTabHeader({
             {kb}
           </span>
         ))}
-        <button
-          className="underline"
-          onClick={() => setExpanded((e) => !e)}
-          aria-expanded={expanded}
-        >
-          spawn context
-        </button>
+        {/* Only offered when there is something to disclose. The backend's
+            `persist_spawn_context` is best-effort (a failure only warns) and
+            sessions older than it have no record, so `spawnContext` really can
+            be absent while the header itself is still worth showing — and a
+            toggle that can only ever open onto nothing is a dead control. */}
+        {spawnContext && (
+          <button
+            className="underline"
+            onClick={() => setExpanded((e) => !e)}
+            aria-expanded={expanded}
+            aria-controls={spawnContextId}
+          >
+            spawn context
+          </button>
+        )}
       </div>
       {expanded && spawnContext && (
-        <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded bg-background-code p-2 text-xs">
+        <pre
+          id={spawnContextId}
+          className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded bg-background-code p-2 text-xs"
+        >
           {spawnContext}
         </pre>
       )}

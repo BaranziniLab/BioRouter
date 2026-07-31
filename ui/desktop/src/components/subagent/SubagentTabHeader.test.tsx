@@ -57,4 +57,26 @@ describe('SubagentTabHeader', () => {
     fireEvent.click(screen.getByRole('button', { name: 'parent-1' }));
     expect(props.onOpenParent).toHaveBeenCalledOnce();
   });
+
+  it('offers no spawn-context disclosure when there is no record to disclose', () => {
+    // Reachable: `persist_spawn_context` is best-effort on the backend (a
+    // failure only warns), and sessions spawned before it landed have no such
+    // record either. The header still renders — lineage and Stop are the point —
+    // but a toggle that can only ever open onto nothing is a dead control.
+    render(<SubagentTabHeader {...props} spawnContext={undefined} />);
+    expect(screen.getByText(/spawned by/i)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /spawn context/i })).toBeNull();
+  });
+
+  it('names the region the disclosure controls', () => {
+    render(<SubagentTabHeader {...props} />);
+    const toggle = screen.getByRole('button', { name: /spawn context/i });
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    const controls = toggle.getAttribute('aria-controls');
+    expect(controls).toBeTruthy();
+
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    expect(document.getElementById(controls!)?.textContent).toContain('count the files');
+  });
 });
