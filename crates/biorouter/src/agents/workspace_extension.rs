@@ -2622,6 +2622,13 @@ mod tests {
     /// implements a tool deletes its [`PENDING_TOOLS`] row (it must, or its own
     /// dispatch is unreachable) and adds it to `get_tools()`, and the two halves
     /// stay disjoint and complete by construction.
+    ///
+    /// ⚠ **Since Task 24 the table is empty, so the first loop below iterates
+    /// nothing.** Do not cite it as coverage: what still bites today is the
+    /// SECOND half — every `workspace_*` name in the instruction block must be
+    /// advertised — and an empty table makes that the stronger claim, not a
+    /// weaker one. The first loop is a standing guard for the next phase that
+    /// stages a tool ahead of its handler.
     #[tokio::test]
     async fn advertises_no_tool_whose_handler_is_still_a_placeholder() {
         let c = client();
