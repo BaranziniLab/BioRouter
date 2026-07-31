@@ -262,10 +262,31 @@ impl AgentManager {
         self.sessions.write().await.get(session_id).map(Arc::clone)
     }
 
+    /// Evict a session from both halves of the registry.
+    ///
+    /// The unpin is **unconditional and discards the refcount**: an explicit
+    /// stop (`POST /agent/stop`, `workspace_close scope:"agent"`) outranks any
+    /// number of live registrations, so a session with `runs: 2` goes away in
+    /// one call rather than needing two. Both of the stopped run's outstanding
+    /// deregistrations then find no entry, or a successor's, and are no-ops —
+    /// `a_stale_deregistration_after_a_stop_cannot_clear_a_successor` is what
+    /// keeps that true.
+    ///
+    /// ⚠ **One shape this does not cover, for whoever writes Task 41.** Because
+    /// the count is discarded rather than remembered, an agent re-registered
+    /// under the SAME id after a stop starts again at `runs: 1` while the
+    /// stopped run's releases are still in flight — and those releases identify
+    /// their registration by `Arc` pointer alone. If the re-registered handle is
+    /// the same `Arc`, the first stale release matches and takes 1 → 0, unpinning
+    /// a *live* agent mid-turn. That needs all three of: overlapping runs on one
+    /// id, an explicit stop, and the same `Arc` re-registered before the releases
+    /// land. Unreachable from the subagent path, which mints a fresh session id
+    /// per run and so never re-registers under a stopped one — but it is exactly
+    /// the durable-worker shape the refcount was written for, where
+    /// `build_worker` hands back its cached `WorkerHandle.agent`. A consult that
+    /// can follow a stop on the same id must not reuse the cached handle (or the
+    /// pin needs an identity finer than the pointer).
     pub async fn remove_session(&self, session_id: &str) -> Result<()> {
-        // Unconditional: an explicit stop outranks any live registration, and a
-        // still-running child's own deregistration then becomes a no-op (its
-        // `Arc::ptr_eq` finds no entry).
         let was_pinned = self.pinned.write().await.remove(session_id).is_some();
         let mut sessions = self.sessions.write().await;
         // "Not found" must mean NEITHER half knew the session. A registered
@@ -679,6 +700,72 @@ mod tests {
             .await
             .unwrap();
         assert!(!Arc::ptr_eq(&child, &after));
+    }
+
+    /// The "only clear your own" rule has to survive an explicit stop, which is
+    /// the one place the refcount is thrown away rather than decremented.
+    ///
+    /// `remove_session` unpins unconditionally, so a stopped run's outstanding
+    /// deregistrations — `Deregister::drop` spawns them, they can land whenever —
+    /// arrive at an id that has since been claimed by a NEW run. They must not
+    /// touch it. Without the `Arc::ptr_eq` guard in `deregister_agent_if_same`
+    /// they would, and the symptom is the pre-BR-71 bug wearing a disguise: a
+    /// steer mid-run silently reaches a freshly minted agent no loop drains,
+    /// caused by a run that already finished.
+    ///
+    /// The residual hazard this canNOT pin — the successor being the SAME `Arc`,
+    /// where pointer identity cannot tell the registrations apart — is written
+    /// up on `remove_session` for Task 41, because it is unreachable from the
+    /// subagent path (a fresh session id per run) and closing it needs a
+    /// registration identity finer than the pointer.
+    #[tokio::test]
+    async fn a_stale_deregistration_after_a_stop_cannot_clear_a_successor() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = create_test_manager(&temp_dir).await;
+        let session_manager = Arc::new(SessionManager::new(temp_dir.path().to_path_buf()));
+        let new_agent = || {
+            Arc::new(crate::agents::Agent::with_config(
+                crate::agents::AgentConfig::new(
+                    session_manager.clone(),
+                    crate::config::permission::PermissionManager::instance(),
+                    None,
+                    crate::config::BioRouterMode::Auto,
+                ),
+            ))
+        };
+        let stopped = new_agent();
+        let successor = new_agent();
+
+        // Two overlapping runs on one agent (`runs: 2`) …
+        manager
+            .register_agent("stopped".to_string(), stopped.clone())
+            .await;
+        manager
+            .register_agent("stopped".to_string(), stopped.clone())
+            .await;
+        // … then an explicit stop, which discards the count outright.
+        manager.remove_session("stopped").await.unwrap();
+        assert!(!manager.has_session("stopped").await);
+
+        // A new run claims the id before either stopped guard has dropped.
+        manager
+            .register_agent("stopped".to_string(), successor.clone())
+            .await;
+
+        // Both stale releases land late. Neither may disturb the successor.
+        manager.deregister_agent_if_same("stopped", &stopped).await;
+        manager.deregister_agent_if_same("stopped", &stopped).await;
+
+        let resolved = manager
+            .get_or_create_agent("stopped".to_string())
+            .await
+            .unwrap();
+        assert!(
+            Arc::ptr_eq(&successor, &resolved),
+            "a finished run's deregistration must only ever clear its OWN \
+             registration — after a stop it owns nothing, and the live successor \
+             has to survive both of its releases"
+        );
     }
 
     /// A pinned agent is a live agent for `peek_agent` too. `peek_agent` is how
