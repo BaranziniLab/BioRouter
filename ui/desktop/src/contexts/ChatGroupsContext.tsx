@@ -280,6 +280,32 @@ export function ChatGroupsProvider({ children }: { children: React.ReactNode }) 
   // actions and perform its declared effects.
   const [tabAnnotations, setTabAnnotations] = useState<Record<string, TabAnnotation>>({});
 
+  // A closed tab's annotation is forgotten. The map is keyed by session id and
+  // written straight from daemon frames, so with no prune it only ever grows,
+  // for the life of the window, on input this renderer does not control.
+  //
+  // The prune is deliberately scoped to sessions that HAD a tab and no longer
+  // do, rather than to "every session without a tab right now": nothing orders
+  // the daemon's frames, so an annotation can legitimately arrive before the tab
+  // it describes, and the broader rule would delete it on the very next commit.
+  const tabbedSessionsRef = useRef<ReadonlySet<string>>(new Set<string>());
+  useEffect(() => {
+    const tabbed = new Set(
+      leafGroupIds(state.layout).flatMap((id) => state.groups[id].tabs.map((tab) => tab.sessionId))
+    );
+    const closed = [...tabbedSessionsRef.current].filter((id) => !tabbed.has(id));
+    tabbedSessionsRef.current = tabbed;
+    if (closed.length === 0) return;
+    setTabAnnotations((prev) => {
+      // Same object back when there is nothing to drop, so this never costs a
+      // render on the ordinary tab close.
+      if (!closed.some((id) => id in prev)) return prev;
+      const next = { ...prev };
+      for (const id of closed) delete next[id];
+      return next;
+    });
+  }, [state]);
+
   useEffect(() => {
     const runPlan = (cmd: WorkspaceCommand): WorkspaceCommandResult => {
       const plan = planWorkspaceCommand(cmd, stateRef.current);

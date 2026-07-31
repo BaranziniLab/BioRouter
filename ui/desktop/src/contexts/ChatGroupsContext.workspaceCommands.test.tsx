@@ -273,6 +273,53 @@ describe('ChatGroupsProvider — the workspace command executor', () => {
     expect(mocks.observeSession).not.toHaveBeenCalled();
   });
 
+  it('forgets a closed tab annotation, but keeps one whose tab has not arrived yet', async () => {
+    // `tabAnnotations` is keyed by session id and written from daemon frames, so
+    // with no prune it only ever grows for the life of the window. Closing the
+    // tab is the moment the entry stops being able to mean anything.
+    mount();
+    act(() => {
+      applyWorkspaceCommand(openTab('s-badged'));
+    });
+    await waitFor(() => expect(screen.getByTestId('sessions').textContent).toContain('s-badged'));
+    act(() => {
+      applyWorkspaceCommand({
+        type: 'workspace',
+        cmd: 'annotate_tab',
+        session_id: 's-badged',
+        badge: 'subagent',
+      });
+    });
+    await waitFor(() => expect(screen.getByTestId('badges').textContent).toContain('s-badged'));
+
+    // The other half, and the reason the prune is scoped to sessions that HAD a
+    // tab rather than to "any session with no tab right now": nothing orders the
+    // daemon's frames, so an annotation can legitimately land before its tab and
+    // must survive every commit in between.
+    act(() => {
+      applyWorkspaceCommand({
+        type: 'workspace',
+        cmd: 'annotate_tab',
+        session_id: 's-pending',
+        badge: 'subagent',
+      });
+    });
+    await waitFor(() => expect(screen.getByTestId('badges').textContent).toContain('s-pending'));
+
+    act(() => {
+      applyWorkspaceCommand({ type: 'workspace', cmd: 'close_tab', session_id: 's-badged' });
+    });
+    await waitFor(() => expect(screen.getByTestId('badges').textContent).not.toContain('s-badged'));
+    // Unrelated commits keep happening; the pending annotation is still there.
+    act(() => {
+      applyWorkspaceCommand(openTab('s-unrelated'));
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId('sessions').textContent).toContain('s-unrelated')
+    );
+    expect(screen.getByTestId('badges').textContent).toContain('s-pending');
+  });
+
   it('relays open_window to the main process instead of opening a tab', async () => {
     mount();
     act(() => {
