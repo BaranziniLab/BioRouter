@@ -67,11 +67,13 @@ pub static EXTENSION_TITLE: &str = "Workspace Control";
 /// the ship gate**, and by then every named tool exists.
 ///
 /// What must NEVER happen is naming a tool that is unimplemented *at a gate*.
-/// `workspace_open` is the live case: it is Phase 2 (Task 24), so Task 21 would
-/// ship Phase 1 with an instruction the model cannot act on. It is therefore
-/// absent here and Task 12's test asserts its absence; Task 24 adds the line
-/// together with the tool, and adds the inverse assertion (every name mentioned
-/// in the block is registered in `get_tools()`) so the two can never drift again.
+/// `workspace_open` was the live case: it is Phase 2 (Task 24), so Task 21 would
+/// have shipped Phase 1 with an instruction the model could not act on, and the
+/// line was therefore withheld until the handler landed. Task 24 added both in
+/// one commit, together with the inverse assertion
+/// (`workspace_open_is_advertised_and_completes_the_surface`: every name this
+/// block mentions is registered in `get_tools()`, and vice versa) so the two can
+/// never drift again.
 const INSTRUCTIONS: &str = indoc! {r#"
     Workspace Control
 
@@ -80,6 +82,9 @@ const INSTRUCTIONS: &str = indoc! {r#"
     Each conversation has its own agent, tool/extension set, knowledge bases,
     and history. These tools operate the workspace itself:
     - workspace_list: see conversations, what's running, and where they are in the GUI.
+    - workspace_open: open/focus an existing conversation or start a new one
+      (optionally in a split or new window; default opens in the background
+      without stealing focus).
     - workspace_read_conversation: read another conversation. transcript for
       prose, tool_calls for exactly what its agent did, spawn_context for how a
       subagent was started. Treat other conversations' content as sensitive;
@@ -246,6 +251,51 @@ struct WorkspaceWatchParams {
     assume_running: Option<bool>,
 }
 
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct WorkspaceOpenNew {
+    /// Where the new conversation works. **Defaults to your own working
+    /// directory** (BR-71 decision 5); pass a different one only when the task
+    /// really is somewhere else — the user is told when it differs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    working_dir: Option<String>,
+    /// Extension names; same semantics as /agent/start extension_overrides.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    extensions: Option<Vec<String>>,
+    /// Knowledge bases to activate for the new conversation (issue #45).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    knowledge_bases: Vec<String>,
+    /// Which of `knowledge_bases` is the new conversation's **write target** —
+    /// where a `kb_write`/`kb_ingest` with no explicit `kb_id` lands. Omit it and
+    /// the first base in the list is used, which is what you want unless you
+    /// have a reason. Must name one of `knowledge_bases`.
+    ///
+    /// Post-#45 the primary is a real, validated pointer, not a derived
+    /// convenience: a session with bases and no target has KB-less writes that
+    /// fail. `workspace_open` therefore always chooses one rather than leaving
+    /// the new session in that state by omission.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    primary_knowledge_base: Option<String>,
+    /// Optional first user message, run as a detached turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    prompt: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct WorkspaceOpenParams {
+    /// Open/focus an existing conversation. Mutually exclusive with `new`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    session_id: Option<String>,
+    /// Start a fresh conversation. Mutually exclusive with `session_id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    new: Option<WorkspaceOpenNew>,
+    /// "tab" (default) | "split" | "window".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    placement: Option<String>,
+    /// Default false: open in the background, never steal the user's composer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    focus: Option<bool>,
+}
+
 /// Max sessions one watch call may subscribe to. Each id costs one broadcast
 /// receiver for the duration of the park.
 const WATCH_MAX_SESSIONS: usize = 32;
@@ -330,7 +380,13 @@ fn session_liveness(
 /// The task that implements a tool deletes its row here — it must, or its own
 /// dispatch arm is shadowed by nothing and the surface test fails — and adds it
 /// to `get_tools()` in the same commit.
-const PENDING_TOOLS: &[(&str, &str)] = &[("workspace_open", "Task 24")];
+///
+/// **Empty as of Task 24**, which landed the last placeholder
+/// (`workspace_open`). Keep the table (and the invariant test that reads it)
+/// rather than deleting them: a later phase that stages another tool ahead of
+/// its handler gets the same guard for free, and an empty table asserts the
+/// stronger claim that nothing is currently staged.
+const PENDING_TOOLS: &[(&str, &str)] = &[];
 
 pub struct WorkspaceClient {
     info: InitializeResult,
@@ -438,7 +494,18 @@ impl WorkspaceClient {
             // puts it in the model's tool list. `&[]` = the generic description;
             // Task 19 restores the sub-workflow-enriched one.
             crate::agents::subagent_tool::create_subagent_tool(&[]),
-            // Task 24 appends `workspace_open`.
+            Self::tool(
+                "workspace_open",
+                "Open or focus a conversation. Pass session_id to bring an \
+                 existing one up, or new to start a fresh one (its working \
+                 directory defaults to yours; extensions, knowledge bases and a \
+                 first prompt are optional). placement: tab (default), split or \
+                 window; focus defaults to false so the user's composer is never \
+                 stolen. Headless, the session is still created and the result \
+                 says no tab was opened.",
+                serde_json::to_value(schema_for!(WorkspaceOpenParams)).unwrap(),
+                false,
+            ),
         ]
     }
 
@@ -827,6 +894,177 @@ impl WorkspaceClient {
                 }
             }
         });
+    }
+
+    /// `workspace_open` (§4.1): open/focus an existing conversation, or start a
+    /// fresh one and (when a GUI is attached) give it a tab.
+    ///
+    /// **It never retargets an existing session's working directory**, and that
+    /// is load-bearing rather than incidental. The new-session path sets the
+    /// directory at CREATION (`create_session(working_dir, …)`, exactly as
+    /// `POST /agent/start` does), so it takes neither of the two sanctioned
+    /// post-creation writers (`try_update_working_dir_if_empty` /
+    /// `force_update_working_dir_unguarded`) and can never race the #44 turn
+    /// guard that `PATCH /agent/update_working_dir` and the GUI's `DirSwitcher`
+    /// share. A future revision that lets this tool move an *existing*
+    /// conversation's directory inherits the whole #44 problem and must go
+    /// through `try_update_working_dir_if_empty` plus the route's turn guard.
+    async fn handle_open(
+        &self,
+        caller_session_id: &str,
+        arguments: Option<JsonObject>,
+    ) -> Result<Vec<Content>, String> {
+        let args: WorkspaceOpenParams = parse_args(arguments)?;
+        let placement = args.placement.as_deref().unwrap_or("tab").to_string();
+        let focus = args.focus.unwrap_or(false);
+        let services = workspace_services::get();
+
+        let session_id = match (args.session_id, args.new) {
+            (Some(_), Some(_)) => {
+                return Err("pass either session_id OR new, not both".into());
+            }
+            (None, None) => {
+                return Err("pass session_id (open existing) or new (start fresh)".into());
+            }
+            (Some(session_id), None) => {
+                // Validate it exists so the GUI never gets a dangling frame.
+                self.context
+                    .session_manager
+                    .get_session(&session_id, false)
+                    .await
+                    .map_err(|e| format!("no such session: {e}"))?;
+                session_id
+            }
+            (None, Some(new)) => self.open_new_session(caller_session_id, new).await?,
+        };
+
+        self.place_in_gui(&session_id, &placement, focus, services.as_ref())
+            .await
+    }
+
+    /// The `new:` half of [`Self::handle_open`]: create the session, surface a
+    /// directory that is not the caller's, and optionally seed it with a first
+    /// detached turn. Split out of `handle_open` for the `too_many_lines`
+    /// baseline, not because it has an independent contract.
+    async fn open_new_session(
+        &self,
+        caller_session_id: &str,
+        new: WorkspaceOpenNew,
+    ) -> Result<String, String> {
+        let services = workspace_services::get()
+            .ok_or("starting a new session requires the BioRouter daemon")?;
+        // Decision 5: the working dir DEFAULTS to the caller's. A different
+        // directory is allowed — an agent that has just been asked about another
+        // project should be able to open it — but it is never silent: the tool
+        // result names it and the GUI toast shows it.
+        let caller_dir = self
+            .context
+            .session_manager
+            .get_session(caller_session_id, false)
+            .await
+            .map(|s| s.working_dir)
+            .ok();
+        let working_dir = match new.working_dir.as_deref() {
+            Some(dir) => std::path::PathBuf::from(dir),
+            None => caller_dir.clone().ok_or(
+                "no working_dir given and the calling session's directory could not be \
+                 read — pass working_dir explicitly",
+            )?,
+        };
+        let differs = caller_dir
+            .as_ref()
+            .is_some_and(|caller| caller != &working_dir);
+        // Post-#45: the write target is chosen explicitly. `Auto` on a brand-new
+        // session resolves to "pin the first id", because a fresh session has no
+        // primary of its own to keep.
+        let kb_primary = match new.primary_knowledge_base.as_deref() {
+            None => workspace_services::KbPrimaryChoice::Auto,
+            Some(id) => workspace_services::KbPrimaryChoice::Set(id.to_string()),
+        };
+        let session_id = services
+            .start_session(
+                working_dir.clone(),
+                new.extensions,
+                new.knowledge_bases,
+                kb_primary,
+            )
+            .await?;
+        if differs {
+            let _ = services
+                .gui_command(
+                    json!({
+                        "type": "workspace", "cmd": "notify",
+                        "session_id": session_id,
+                        "level": "info",
+                        "message": format!(
+                            "An agent started a new conversation in {} (not this \
+                             conversation's folder).",
+                            working_dir.display()
+                        ),
+                    }),
+                    false,
+                )
+                .await;
+        }
+        if let Some(prompt) = new.prompt {
+            let provenance = self.caller_provenance(caller_session_id).await;
+            let message = crate::conversation::message::Message::user()
+                .with_text(prompt)
+                .with_provenance(provenance);
+            services.start_detached_turn(&session_id, message).await?;
+        }
+        Ok(session_id)
+    }
+
+    /// The GUI half of [`Self::handle_open`] (§4.3): `open_tab` relies on the
+    /// reducer's dedupe/adopt rules; "split" maps to `moveTabToGroup`; "window"
+    /// is its OWN frame (`open_window`, per the §4.3 vocabulary) which the
+    /// renderer relays to the create-chat-window IPC. The renderer answers via
+    /// `workspace_result` so a refused split (MAX_GROUPS) comes back as a clear
+    /// message, not silence. With no GUI attached the session still exists and
+    /// the result says exactly that rather than claiming a tab.
+    async fn place_in_gui(
+        &self,
+        session_id: &str,
+        placement: &str,
+        focus: bool,
+        services: Option<&std::sync::Arc<dyn workspace_services::WorkspaceServices>>,
+    ) -> Result<Vec<Content>, String> {
+        match services {
+            Some(s) if s.gui_attached() => {
+                let frame = if placement == "window" {
+                    json!({
+                        "type": "workspace", "cmd": "open_window",
+                        "session_id": session_id,
+                    })
+                } else {
+                    json!({
+                        "type": "workspace", "cmd": "open_tab",
+                        "session_id": session_id,
+                        "placement": placement,
+                        "focus": focus,
+                    })
+                };
+                let result = s.gui_command(frame, true).await?;
+                let ok = result
+                    .get("ok")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false);
+                let detail = result
+                    .get("detail")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("");
+                Ok(vec![Content::text(format!(
+                    "Session {session_id} {} in the GUI ({placement}{}). {detail}",
+                    if ok { "opened" } else { "NOT opened" },
+                    if focus { ", focused" } else { ", background" },
+                ))])
+            }
+            _ => Ok(vec![Content::text(format!(
+                "Session {session_id} ready (gui_attached: false — no tab opened; \
+                 the session exists headlessly)."
+            ))]),
+        }
     }
 
     async fn caller_provenance(
@@ -2175,6 +2413,7 @@ impl McpClientTrait for WorkspaceClient {
             "workspace_set_tools" => self.handle_set_tools(caller, arguments).await,
             "workspace_close" => self.handle_close(caller, arguments).await,
             "workspace_watch" => self.handle_watch(caller, arguments).await,
+            "workspace_open" => self.handle_open(caller, arguments).await,
             // BR-71 decision 22: the spawn tool is advertised here but
             // dispatched by the agent loop (it needs the parent's TaskConfig).
             // Reachable only if that interception is ever removed.
@@ -2439,14 +2678,14 @@ mod tests {
         let instructions = info.instructions.as_deref().unwrap();
         assert!(instructions.contains("chatrecall"));
         assert!(instructions.len() <= 2500, "injection budget (§6)");
-        // No tool that is unimplemented AT A PHASE GATE may be named. The block
-        // is written once for the whole Phase-1 surface (see its doc comment),
-        // but `workspace_open` is Phase 2 — Task 21 would otherwise ship Phase 1
-        // telling the model to call a tool that answers "not implemented".
-        assert!(
-            !instructions.contains("workspace_open"),
-            "workspace_open is not advertised until Task 24"
-        );
+        // The "no tool that is unimplemented AT A PHASE GATE may be named"
+        // assertion that used to live here named `workspace_open` specifically
+        // and was true only up to Task 24, which registers it. The general form
+        // of the rule is enforced without going stale by
+        // `advertises_no_tool_whose_handler_is_still_a_placeholder` (nothing in
+        // PENDING_TOOLS is advertised) and by
+        // `workspace_open_is_advertised_and_completes_the_surface` (the block
+        // names exactly what get_tools() registers).
     }
 
     /// `parallel`, not `serial`: this test READS the process-global services
@@ -3442,6 +3681,12 @@ mod tests {
         started: Mutex<Vec<(String, String, crate::conversation::message::Message)>>,
         /// Every `gui_command` frame.
         frames: Mutex<Vec<serde_json::Value>>,
+        /// Every `start_session(working_dir, …)`, in order. Task 24 needs the
+        /// ARGUMENT, not just the returned id: decision 5's deliverable is
+        /// *which* directory a new conversation gets, and an implementation that
+        /// hardcoded the process cwd (or `temp_dir()`, or `/`) would return the
+        /// same id and satisfy every assertion that only looks at the answer.
+        sessions_started: Mutex<Vec<std::path::PathBuf>>,
         /// Every `cancel_turn(session_id)`, in order. Task 16 needs the CALL
         /// recorded, not just its answer: a `workspace_close` that returned the
         /// right sentence without ever tripping the token is exactly the wrong
@@ -3507,6 +3752,16 @@ mod tests {
         }
         fn all_frames(&self) -> Vec<serde_json::Value> {
             self.frames.lock().unwrap().clone()
+        }
+        /// The first frame carrying this `cmd`, if any.
+        fn frame_with_cmd(&self, cmd: &str) -> Option<serde_json::Value> {
+            self.all_frames().into_iter().find(|f| f["cmd"] == cmd)
+        }
+        fn clear_frames(&self) {
+            self.frames.lock().unwrap().clear();
+        }
+        fn sessions_started(&self) -> Vec<std::path::PathBuf> {
+            self.sessions_started.lock().unwrap().clone()
         }
         fn cancels(&self) -> Vec<String> {
             self.cancels.lock().unwrap().clone()
@@ -3595,11 +3850,12 @@ mod tests {
         }
         async fn start_session(
             &self,
-            _working_dir: std::path::PathBuf,
+            working_dir: std::path::PathBuf,
             _extensions: Option<Vec<String>>,
             _knowledge_bases: Vec<String>,
             _primary: KbPrimaryChoice,
         ) -> Result<String, String> {
+            self.sessions_started.lock().unwrap().push(working_dir);
             Ok("s-new".into())
         }
         fn set_knowledge_bases(
@@ -4954,10 +5210,6 @@ mod tests {
                 "the Slice-1 surface must include {expected}: {names:?}"
             );
         }
-        assert!(
-            !names.iter().any(|n| n == "workspace_open"),
-            "workspace_open is Phase 2 (Task 24): {names:?}"
-        );
         // And every one of the six is named in the instruction block (§6).
         let info = c.get_info().unwrap();
         let instructions = info.instructions.as_deref().unwrap();
@@ -4967,10 +5219,288 @@ mod tests {
                 "instructions omit {name}"
             );
         }
-        assert!(
-            !instructions.contains("workspace_open"),
-            "not advertised until Task 24"
+        assert!(instructions.len() <= 2500, "injection budget (§6)");
+    }
+
+    #[tokio::test]
+    async fn workspace_open_requires_exactly_one_of_session_id_or_new() {
+        let c = client();
+        let args: rmcp::model::JsonObject = serde_json::from_value(serde_json::json!({})).unwrap();
+        let result = c
+            .call_tool(
+                "workspace_open",
+                Some(args),
+                test_meta(),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(true));
+        // The REASON, not just the flag. `CallToolResult::error` is also what
+        // the `PENDING_TOOLS` stub arm returns ("not implemented until Task
+        // 24"), so `is_error == Some(true)` alone cannot tell a validated
+        // refusal apart from an unimplemented tool and would pass before the
+        // tool existed.
+        let text = result.content[0].as_text().unwrap().text.clone();
+        assert!(text.contains("session_id"), "got: {text}");
+        assert!(text.contains("new"), "got: {text}");
+
+        let args: rmcp::model::JsonObject = serde_json::from_value(serde_json::json!({
+            "session_id": "s-x", "new": { "working_dir": "/tmp" }
+        }))
+        .unwrap();
+        let result = c
+            .call_tool(
+                "workspace_open",
+                Some(args),
+                test_meta(),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.is_error, Some(true));
+        let text = result.content[0].as_text().unwrap().text.clone();
+        assert!(text.contains("not both"), "got: {text}");
+    }
+
+    /// Call `workspace_open` as `caller`. Mirrors [`send_prompt`].
+    async fn open_as(c: &WorkspaceClient, caller: &str, args: serde_json::Value) -> CallToolResult {
+        let args: rmcp::model::JsonObject = serde_json::from_value(args).unwrap();
+        c.call_tool(
+            "workspace_open",
+            Some(args),
+            crate::agents::mcp_client::McpMeta::new(caller.to_string()),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap()
+    }
+
+    /// Decision 5: a new conversation inherits the CALLER's directory. Two
+    /// callers with different directories, because one caller cannot tell
+    /// "inherits from the caller" apart from "hardcodes this particular path".
+    ///
+    /// The second half pins the GUI frame VOCABULARY, which nothing else on
+    /// either side of the wire looks at: `open_tab` vs `open_window`,
+    /// `placement`, `focus`. Task 26's planner consumes exactly these.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn open_new_inherits_the_callers_working_dir_and_emits_the_gui_frame() {
+        let recorder = FakeServices::with_gui(true).install();
+
+        let c = client();
+        let sm = c.context.session_manager.clone();
+        let dir_a = std::env::temp_dir().join("br71-caller-a");
+        let dir_b = std::env::temp_dir().join("br71-caller-b");
+        std::fs::create_dir_all(&dir_a).unwrap();
+        std::fs::create_dir_all(&dir_b).unwrap();
+        let caller_a = sm
+            .create_session(
+                dir_a.clone(),
+                "caller-a".into(),
+                crate::session::session_manager::SessionType::User,
+            )
+            .await
+            .unwrap();
+        let caller_b = sm
+            .create_session(
+                dir_b.clone(),
+                "caller-b".into(),
+                crate::session::session_manager::SessionType::User,
+            )
+            .await
+            .unwrap();
+
+        open_as(&c, &caller_a.id, serde_json::json!({ "new": {} })).await;
+        open_as(&c, &caller_b.id, serde_json::json!({ "new": {} })).await;
+
+        assert_eq!(
+            recorder.sessions_started(),
+            vec![dir_a.clone(), dir_b.clone()],
+            "each new session takes ITS caller's directory — a hardcoded default, the \
+             process cwd, or temp_dir() all produce two identical entries here"
         );
+
+        // …and the directory is not the only thing the daemon half decides.
+        let open = recorder
+            .frame_with_cmd("open_tab")
+            .expect("an open_tab frame was sent");
+        assert_eq!(open["type"], "workspace");
+        assert_eq!(open["session_id"], "s-new");
+        assert_eq!(open["placement"], "tab", "the default placement");
+        assert_eq!(
+            open["focus"], false,
+            "§4.1: background open, never steal the composer"
+        );
+
+        // `placement: "window"` is a DIFFERENT command, not a field on open_tab —
+        // the renderer routes it to createChatWindow, and a planner that saw
+        // `open_tab {placement: "window"}` would silently open a tab instead.
+        recorder.clear_frames();
+        open_as(
+            &c,
+            &caller_a.id,
+            serde_json::json!({ "new": {}, "placement": "window" }),
+        )
+        .await;
+        assert!(
+            recorder.frame_with_cmd("open_window").is_some(),
+            "placement:\"window\" must emit open_window: {:?}",
+            recorder.all_frames()
+        );
+        assert!(recorder.frame_with_cmd("open_tab").is_none());
+
+        // An explicit, DIFFERENT working_dir is allowed but never silent
+        // (decision 5) — the notify frame is how the user finds out.
+        recorder.clear_frames();
+        let elsewhere = std::env::temp_dir().join("br71-elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        open_as(
+            &c,
+            &caller_a.id,
+            serde_json::json!({ "new": { "working_dir": elsewhere.to_str().unwrap() } }),
+        )
+        .await;
+        assert_eq!(recorder.sessions_started().last().unwrap(), &elsewhere);
+        let notify = recorder
+            .frame_with_cmd("notify")
+            .expect("a caller-dir mismatch must be surfaced, not swallowed");
+        assert!(
+            notify["message"]
+                .as_str()
+                .unwrap()
+                .contains(&elsewhere.display().to_string()),
+            "the notice names the directory: {notify}"
+        );
+
+        crate::workspace_services::clear_test_override();
+    }
+
+    /// §2.1's headless requirement: with no GUI the tool still does the
+    /// session-level half of its job and SAYS that it did only that — it does
+    /// not fail, and it does not claim a tab it never opened. The existence
+    /// check on `session_id` is the other half: the GUI must never be handed a
+    /// frame naming a session that is not there.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn open_degrades_headlessly_and_refuses_a_session_that_does_not_exist() {
+        crate::workspace_services::set_for_tests(Some(std::sync::Arc::new(
+            crate::workspace_services::NullServices,
+        )));
+
+        let c = client();
+        let existing = c
+            .context
+            .session_manager
+            .create_session(
+                std::env::temp_dir(),
+                "existing".into(),
+                crate::session::session_manager::SessionType::User,
+            )
+            .await
+            .unwrap();
+
+        let r = open_as(
+            &c,
+            "caller",
+            serde_json::json!({ "session_id": existing.id }),
+        )
+        .await;
+        assert_ne!(r.is_error, Some(true), "got: {}", text_of(&r));
+        let text = text_of(&r);
+        assert!(text.contains(&existing.id), "got: {text}");
+        assert!(text.contains("gui_attached: false"), "got: {text}");
+
+        let r = open_as(&c, "caller", serde_json::json!({ "session_id": "s-nope" })).await;
+        assert_eq!(r.is_error, Some(true));
+        assert!(
+            text_of(&r).contains("no such session"),
+            "got: {}",
+            text_of(&r)
+        );
+
+        // A new session is still created headlessly.
+        let dir = std::env::temp_dir().join("br71-headless-new");
+        std::fs::create_dir_all(&dir).unwrap();
+        let r = open_as(
+            &c,
+            "caller",
+            serde_json::json!({ "new": { "working_dir": dir.to_str().unwrap() } }),
+        )
+        .await;
+        assert_ne!(r.is_error, Some(true), "got: {}", text_of(&r));
+        assert!(text_of(&r).contains("headlessly"), "got: {}", text_of(&r));
+
+        // …but "inherit the caller's directory" cannot be guessed when the
+        // caller is unreadable, and the tool says exactly that instead of
+        // inventing a directory.
+        let r = open_as(&c, "caller", serde_json::json!({ "new": {} })).await;
+        assert_eq!(r.is_error, Some(true));
+        assert!(
+            text_of(&r).contains("pass working_dir explicitly"),
+            "got: {}",
+            text_of(&r)
+        );
+
+        crate::workspace_services::clear_test_override();
+    }
+
+    /// The complete workspace surface. This is the ONE exact-set assertion in
+    /// the plan: Tasks 12-18 each added a tool and each re-ran the extension's
+    /// tests, so an exact assertion in any of them would have been a
+    /// fail-again-every-task gate. `get_tools()` stops growing here.
+    #[tokio::test]
+    async fn workspace_open_is_advertised_and_completes_the_surface() {
+        let c = client();
+        let tools = c
+            .list_tools(None, CancellationToken::new())
+            .await
+            .unwrap()
+            .tools;
+        let mut names: Vec<String> = tools.iter().map(|t| t.name.to_string()).collect();
+        names.sort();
+        assert_eq!(
+            names,
+            vec![
+                // The merged spawn tool keeps its bare name (decision 22).
+                "subagent".to_string(),
+                "workspace_close".to_string(),
+                "workspace_list".to_string(),
+                "workspace_open".to_string(),
+                "workspace_read_conversation".to_string(),
+                "workspace_send_prompt".to_string(),
+                "workspace_set_tools".to_string(),
+                "workspace_watch".to_string(),
+            ],
+            "the complete workspace surface"
+        );
+
+        let info = c.get_info().unwrap();
+        let instructions = info.instructions.as_deref().unwrap();
+        // Every registered tool is documented …
+        for name in &names {
+            assert!(
+                instructions.contains(name.as_str()),
+                "instructions omit {name}"
+            );
+        }
+        // … and nothing is documented that is not registered. This is the
+        // direction nothing tested before: the block is written once for a whole
+        // phase, so only a check here can prove it never names a tool the model
+        // cannot call.
+        for line in instructions.lines() {
+            let Some(rest) = line.trim().strip_prefix("- ") else {
+                continue;
+            };
+            let Some((tool, _)) = rest.split_once(':') else {
+                continue;
+            };
+            let tool = tool.trim();
+            assert!(
+                names.iter().any(|n| n == tool),
+                "instructions name `{tool}`, which get_tools() does not register"
+            );
+        }
         assert!(instructions.len() <= 2500, "injection budget (§6)");
     }
 }
