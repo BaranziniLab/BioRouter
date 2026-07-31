@@ -402,6 +402,20 @@ WebSocket handshake, not `null`, so the packaged renderer is admitted. Re-measur
 renderer ever moves to a custom protocol — a scheme the gate does not name reads as
 cross-origin and takes the GUI half offline silently.
 
+**Residual, recorded rather than fixed: this handshake is the one place the server
+secret rides in a URL.** Every other renderer→daemon call sends it as an `X-Secret-Key`
+header (`auth.rs`), which no access log records; `/ui/workspace` sends `?secret=…`
+because the browser `WebSocket` constructor cannot set request headers — the route's own
+module comment opens with that constraint. Loopback, where the URL never leaves the
+machine, this is uninteresting. It becomes interesting in exactly the deployment the
+`wss:` fix above first made reachable: an external TLS daemon, where the URL is encrypted
+on the wire but is plaintext at both ends — a reverse proxy's access log, the daemon's
+request logging — and the value logged is the master key `check_token` guards. The
+conventional fix is to carry the token in `Sec-WebSocket-Protocol`, which the browser API
+*can* set; that is a change to the route's auth shape and its renderer, not a fixup, so it
+is named here rather than done. Until then: prefer loopback, and do not put a logging
+proxy in front of a `biorouterd` you have pointed the desktop app at.
+
 **Bridge.** `WorkspaceBridge`, modeled line-for-line on `UiBridge`
 (`control.rs:557-663`): a registry keyed by `window_id`, generation-guarded
 `attach`/`detach`, a pending-request map for blocking round trips, `cancel_all` on
