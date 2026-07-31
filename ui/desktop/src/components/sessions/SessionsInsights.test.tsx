@@ -1,9 +1,9 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Session } from '../../api';
 import { SessionInsights } from './SessionsInsights';
-import { clearSessionListCache } from '../../utils/sessionListCache';
+import { clearSessionListCache, updateCachedSessionList } from '../../utils/sessionListCache';
 import {
   cacheHomeActivity,
   cacheHomeRecentSessions,
@@ -49,6 +49,10 @@ function session(index: number): Session {
     message_count: index,
     working_dir: '/Users/wgu/Desktop',
   };
+}
+
+function subagent(index: number): Session {
+  return { ...session(index), session_type: 'sub_agent', parent_session_id: 'session-1' };
 }
 
 beforeEach(() => {
@@ -103,5 +107,65 @@ describe('SessionInsights', () => {
     expect(screen.queryAllByRole('progressbar')).toHaveLength(0);
     expect(mocks.getSessionActivity).toHaveBeenCalledTimes(1);
     expect(mocks.listSessions).toHaveBeenCalledTimes(1);
+  });
+
+  // BR-71: History and Home read ONE shared session cache. When History's
+  // "Show subagent runs" toggle is on, that cache holds sub_agent rows — and
+  // Home's recents are conversations the *user* started, so every one of the
+  // three places Home reads the cache has to drop them. Filtering only the
+  // fetch path leaves the other two leaking.
+  it('drops subagent runs from the recents the loader fetches', async () => {
+    mocks.listSessions.mockResolvedValue({
+      data: { sessions: [session(1), subagent(2), session(3), session(4)] },
+    });
+
+    render(
+      <MemoryRouter>
+        <SessionInsights />
+      </MemoryRouter>
+    );
+
+    await waitFor(() => expect(screen.getByText('Recent chat 1')).toBeInTheDocument());
+    expect(screen.queryByText('Recent chat 2')).not.toBeInTheDocument();
+    // Filtering must precede the slice, or dropping a subagent silently shortens
+    // Home's recents instead of promoting the next real conversation.
+    expect(screen.getByText('Recent chat 4')).toBeInTheDocument();
+  });
+
+  it('does not paint subagent runs from a warm shared cache on mount', () => {
+    // History left the cache holding subagent rows; Home then mounts.
+    updateCachedSessionList([session(1), subagent(2), session(3), session(4)]);
+    mocks.listSessions.mockReturnValue(new Promise(() => {}));
+
+    render(
+      <MemoryRouter>
+        <SessionInsights />
+      </MemoryRouter>
+    );
+
+    expect(screen.getByText('Recent chat 1')).toBeInTheDocument();
+    expect(screen.queryByText('Recent chat 2')).not.toBeInTheDocument();
+    expect(screen.getByText('Recent chat 4')).toBeInTheDocument();
+  });
+
+  it('does not adopt subagent runs when the shared cache changes under it', async () => {
+    mocks.listSessions.mockResolvedValue({ data: { sessions: [session(1)] } });
+
+    render(
+      <MemoryRouter>
+        <SessionInsights />
+      </MemoryRouter>
+    );
+
+    await waitFor(() => expect(screen.getByText('Recent chat 1')).toBeInTheDocument());
+
+    // Any create / diverge / delete / rename — or History's own refetch with the
+    // toggle on — republishes the shared list through this subscription.
+    act(() => {
+      updateCachedSessionList([session(1), subagent(2)]);
+    });
+
+    expect(screen.getByText('Recent chat 1')).toBeInTheDocument();
+    expect(screen.queryByText('Recent chat 2')).not.toBeInTheDocument();
   });
 });

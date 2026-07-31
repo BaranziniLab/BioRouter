@@ -8,6 +8,19 @@ export type SessionRow = {
   [key: string]: unknown;
 };
 
+/**
+ * Drop subagent transcripts from a list.
+ *
+ * History and Home share ONE session cache, and History's toggle decides what
+ * that cache holds — so a surface that never wants subagent runs (Home's
+ * recents) or does not want them right now (History with the toggle off) must
+ * say so at every point it reads the cache, not just where it fetches. The
+ * cache identity governs what is *fetched*; this governs what is *shown*.
+ */
+export function withoutSubagents<T extends SessionRow>(rows: T[]): T[] {
+  return rows.filter((row) => row.session_type !== 'sub_agent');
+}
+
 export function groupSessionsByParent<T extends SessionRow>(
   rows: T[]
 ): { session: T; children: T[] }[] {

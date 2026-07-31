@@ -9,6 +9,7 @@ import { resumeSession } from '../../sessions';
 import { useNavigation } from '../../hooks/useNavigation';
 import { ReadableContent } from '../Layout/ReadableContent';
 import { UsageHeatmap, UsageHeatmapLoading } from './UsageHeatmap';
+import { withoutSubagents } from './sessionGrouping';
 import {
   getCachedSessionList,
   refreshSessionList,
@@ -34,8 +35,14 @@ const FOLD_HEATMAP_BELOW_PX = 470;
 
 export function SessionInsights() {
   const initialActivity = useRef(getCachedHomeActivity()).current;
+  // BR-71: three places read the shared session cache, and History's toggle can
+  // leave subagent rows in it. All three drop them — filtering only the fetch
+  // below would still let a warm cache paint them on mount.
+  const warmSessionList = getCachedSessionList();
   const initialSessions = useRef(
-    getCachedSessionList()?.slice(0, RECENT_LIMIT) ?? getCachedRecentSessions()
+    warmSessionList
+      ? withoutSubagents(warmSessionList).slice(0, RECENT_LIMIT)
+      : getCachedRecentSessions()
   ).current;
   const [activity, setActivity] = useState<ActivityWindow | null>(initialActivity);
   const [activityFailed, setActivityFailed] = useState(false);
@@ -91,10 +98,9 @@ export function SessionInsights() {
         const sessions = await refreshSessionList();
         // BR-71: History may have asked the shared cache for subagent runs.
         // Home's recents are conversations the *user* started, so drop them
-        // here regardless of what the other surface wanted.
-        const refreshedRecentSessions = sessions
-          .filter((s) => s.session_type !== 'sub_agent')
-          .slice(0, RECENT_LIMIT);
+        // here regardless of what the other surface wanted. Filter BEFORE the
+        // slice, or a subagent row silently shortens the recents list.
+        const refreshedRecentSessions = withoutSubagents(sessions).slice(0, RECENT_LIMIT);
         cacheHomeRecentSessions(refreshedRecentSessions);
         setRecentSessions(refreshedRecentSessions);
       } catch (error) {
@@ -114,7 +120,7 @@ export function SessionInsights() {
   useEffect(() => {
     return subscribeSessionList(() => {
       const cached = getCachedSessionList();
-      if (cached) setRecentSessions(cached.slice(0, RECENT_LIMIT));
+      if (cached) setRecentSessions(withoutSubagents(cached).slice(0, RECENT_LIMIT));
     });
   }, []);
 
