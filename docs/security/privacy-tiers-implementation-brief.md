@@ -383,27 +383,6 @@ invisible to the level above it:
 | **2** | Enumerate a **tool list** — guard `developer` and `computercontroller` | The OS sandbox cannot constrain tools that read files **in-process** inside `biorouterd`. `computercontroller__cache` accepts an arbitrary path and reads it with `tokio::fs::read_to_string`; the Agent Drafter readers do the same. **They *are* the daemon.** No sandbox the daemon installs on its children can constrain the daemon. Round 1 named the two servers; round 2 found `cache` *inside* one of them. | `computercontroller/mod.rs:1482`, `agent_drafter/store.rs:637`, `developer/text_editor.rs:641` |
 | **3** | Enumerate **argument shapes** — guard any path-shaped argument at the choke point | Handlers compute their own paths. `read_app` receives an app id and a *relative* path; `ArtifactStore` supplies the denied root via `self.root.join(id)`. `export_app` reads the app root implicitly and writes to a caller-named destination — a copy primitive. And **only the Developer server receives the session cwd**, so every other built-in resolves a relative path against the *daemon's* cwd while the guard resolved it against the session's. All three pass the plan's own "surprise tool" test. | `agent_drafter/store.rs:447` (`fn dir`), `crates/biorouter-mcp/src/lib.rs:49`, `:77` |
 
-#### Round 4 is a different failure, and counting it as a fourth enumeration hides what it teaches
-
-Round 4 found a **privilege escalation**, not a fourth defeated enumeration. It belongs beside the
-table, not in it.
-
-A caller could raise its **own** session to Private with one credential-free
-`POST /agent/update_provider {provider:"llamacpp"}` (`routes/agent.rs`). No enumeration was defeated.
-The **lattice** was: every gate below can be individually correct and complete and still enforce
-nothing, because the value they all branch on is a value their subject can set. That is a different
-class of defect from "the list was short", and it needs a different kind of fix — which is why the
-answer was a ruling (DR-16) rather than a better choke point.
-
-What makes it sharper than an ordinary bypass: the rule that would stop it forbids *"switch this chat
-to a private model"*, and that is **step 1 of the two-ways-out message in every refusal this feature
-ships**. A blanket refusal would break the product's own remediation advice, so the fix has to
-distinguish the **user's** act from the **model's** — which no HTTP route can do without something
-that proves a human acted.
-
-Recorded as AR-15, ruled on as **DR-16**, and ⚠ **DR-16 still has no task written for it**; see
-[Stage 4](#stage-4--the-master-toggle-the-user-only-tier-raise-and-the-ui) and open questions 23–24.
-
 Why a mechanical fix to the enumeration problem is impossible, measured: **125 `#[tool(…)]` declarations in
 `crates/biorouter-mcp/src`**, and a `grep` for `fs::`/`File::open` structurally cannot find the
 readers — `computercontroller__xlsx_tool` goes through `umya_spreadsheet`, `pdf_tool` through `lopdf`,
@@ -417,6 +396,27 @@ comment calls it *"the single choke point every tool call flows through."* Measu
 `grep -rn "\.call_tool(" --include='*.rs' crates/ | wc -l` → **10** total, of which exactly **one** is
 a production dispatch into an MCP client, `extension_manager.rs:1562`, inside that function. That
 count is a no-growth tripwire, not a measurement of #56 — any increase is a new bypass.
+
+### Round 4 is a different failure, and counting it as a fourth enumeration hides what it teaches
+
+Round 4 found a **privilege escalation**, not a fourth defeated enumeration. It belongs beside the
+table above, not in it.
+
+A caller could raise its **own** session to Private with one credential-free
+`POST /agent/update_provider {provider:"llamacpp"}` (`routes/agent.rs`). No enumeration was defeated.
+The **lattice** was: every gate in this feature can be individually correct and complete and still
+enforce nothing, because the value they all branch on is a value their subject can set. That is a
+different class of defect from "the list was short", and it needs a different kind of fix — which is
+why the answer was a ruling (DR-16) rather than a better choke point.
+
+What makes it sharper than an ordinary bypass: the rule that would stop it forbids *"switch this chat
+to a private model"*, and that is **step 1 of the two-ways-out message in every refusal this feature
+ships**. A blanket refusal would break the product's own remediation advice, so the fix has to
+distinguish the **user's** act from the **model's** — which no HTTP route can do without something
+that proves a human acted.
+
+Recorded as AR-15, ruled on as **DR-16**, and ⚠ **DR-16 still has no task written for it**; see
+[Stage 4](#stage-4--the-master-toggle-the-user-only-tier-raise-and-the-ui) and open questions 23–24.
 
 ### Individually killed approaches
 
