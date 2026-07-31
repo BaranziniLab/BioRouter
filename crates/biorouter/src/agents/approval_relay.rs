@@ -356,18 +356,38 @@ pub fn add_surface(origin: &AskId, session_id: &str) {
     }
 }
 
-/// Find the ask a decision addresses. **Fails closed**: the posting session must
-/// itself be a surface, so a request id from another tree resolves nothing.
+/// Find the ask a decision addresses. **Fails closed**, twice over.
+///
+/// 1. The posting session must itself be a surface, so a request id from
+///    another tree resolves nothing.
+/// 2. If the pair names **more than one** live ask, it names none. [`AskId`] is
+///    (session, request id) precisely so ids from different agents cannot
+///    collide — but the root is a surface for *every* child in its tree, so a
+///    decision posted from the root has only the bare request id to go on. Two
+///    siblings parked on the same provider-assigned id (short or index-derived
+///    ids are common on toolshim and OpenAI-compatible local servers) would
+///    otherwise be separated by `HashMap` iteration order: the click lands on
+///    whichever came out first, granting one child's call from the other
+///    child's card. Returning `None` instead costs the root click — the user
+///    answers from the sub-agent's own tab, where the pair *is* unique — and
+///    never grants the wrong call.
 pub fn lookup(request_id: &str, from_session_id: &str) -> Option<AskId> {
     let relay = lock();
-    relay
-        .pending
-        .iter()
-        .find(|(id, entry)| {
-            id.request_id == request_id
-                && entry.surfaces.iter().any(|s| s.as_str() == from_session_id)
-        })
-        .map(|(id, _)| id.clone())
+    let mut matched = relay.pending.iter().filter(|(id, entry)| {
+        id.request_id == request_id && entry.surfaces.iter().any(|s| s.as_str() == from_session_id)
+    });
+    let (id, _) = matched.next()?;
+    if matched.next().is_some() {
+        tracing::warn!(
+            request_id,
+            from_session_id,
+            "Ambiguous tool-confirmation route: more than one pending ask carries this \
+             request id at this surface. Refusing to guess — answer it in the sub-agent's \
+             own tab, where the session pairing is unique."
+        );
+        return None;
+    }
+    Some(id.clone())
 }
 
 /// A-5. First writer wins, in one critical section — a check-then-set would let
@@ -909,5 +929,48 @@ mod tests {
         assert_eq!(lookup("call-nope", "child-4"), None);
         forget(&origin);
         assert_eq!(lookup("call-4", "child-4"), None);
+    }
+
+    /// Two children of one root, parked on the SAME provider-assigned request
+    /// id. The root is a surface for both, so at that surface the request id is
+    /// the only discriminator left — and it does not discriminate. `lookup` must
+    /// refuse to guess rather than grant one child's call from the other's card;
+    /// an implementation that returns the first `HashMap` hit passes every other
+    /// test here and misroutes this one nondeterministically.
+    #[test]
+    fn a_request_id_shared_by_two_children_never_routes_from_their_shared_root() {
+        let a = AskId {
+            session_id: "child-5a".into(),
+            request_id: "call_1".into(),
+        };
+        let b = AskId {
+            session_id: "child-5b".into(),
+            request_id: "call_1".into(),
+        };
+        for (origin, child) in [(&a, "child-5a"), (&b, "child-5b")] {
+            register(
+                origin.clone(),
+                AskKey::for_request(&request("call_1", "acme__widget", serde_json::json!({})))
+                    .unwrap(),
+                AskClass::Delegable,
+                "root-5".into(),
+            );
+            add_surface(origin, child);
+            add_surface(origin, "root-5");
+        }
+
+        assert_eq!(
+            lookup("call_1", "root-5"),
+            None,
+            "an ambiguous id at the shared root must resolve nothing, not the first map hit"
+        );
+        // Each child's OWN tab still pairs uniquely, so the ask stays answerable.
+        assert_eq!(lookup("call_1", "child-5a"), Some(a.clone()));
+        assert_eq!(lookup("call_1", "child-5b"), Some(b.clone()));
+
+        // And once one is gone the root is unambiguous again.
+        forget(&a);
+        assert_eq!(lookup("call_1", "root-5"), Some(b.clone()));
+        forget(&b);
     }
 }
