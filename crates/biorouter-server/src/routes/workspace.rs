@@ -155,6 +155,16 @@ pub fn routes(state: Arc<AppState>, secret_key: String) -> Router {
         })
 }
 
+/// ⚠ **These are the two pure halves only.** Nothing here reaches
+/// `workspace_ws` or `handle_workspace_socket`, so a build that calls NEITHER of
+/// them — an unauthenticated socket, or one that drops every renderer frame —
+/// keeps this module green, and so does one where `routes::configure` never
+/// merges this router or `auth::is_unauthenticated_path` drops
+/// `"/ui/workspace"`. The mounted socket is tested end to end over a real
+/// loopback connection in **`tests/workspace_socket.rs`**, which fails on all
+/// four; it cannot live here because it must name `auth::check_token`, and
+/// `src/routes/` is compiled into the `biorouterd` binary as well as the lib.
+/// **Run it too:** `cargo test -p biorouter-server --test workspace_socket`.
 #[cfg(test)]
 mod tests {
     use super::*;
