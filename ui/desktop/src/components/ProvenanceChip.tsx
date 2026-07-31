@@ -41,13 +41,18 @@ function labelFor(provenance: MessageProvenanceView): string {
 export function ProvenanceChip({ provenance }: { provenance?: MessageProvenanceView }) {
   if (!provenance) return null;
   const label = labelFor(provenance);
+  // The session name comes from another session, so its length is not ours to
+  // assume: cap the chip and clip the label rather than let it widen the row.
+  // The full text (plus the id, which the label may not carry) moves into the
+  // tooltip so nothing is lost to the clip.
+  const title = provenance.fromSessionId ? `${label} (${provenance.fromSessionId})` : label;
   return (
     <span
-      className="inline-flex items-center gap-1 rounded-full border border-border-subtle px-2 py-0.5 text-xs text-text-subtle"
-      title={provenance.fromSessionId ?? undefined}
+      className="inline-flex min-w-0 max-w-xs items-center gap-1 rounded-full border border-border-subtle px-2 py-0.5 text-xs text-text-subtle"
+      title={title}
       data-provenance-kind={provenance.kind}
     >
-      {label}
+      <span className="min-w-0 truncate">{label}</span>
     </span>
   );
 }
