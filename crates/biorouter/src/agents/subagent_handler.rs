@@ -500,15 +500,10 @@ mod tests {
     /// pass just as happily on a record that renders the skills under
     /// "Granted extensions" and the extensions under "Granted skills".
     fn section<'a>(body: &'a str, heading: &str) -> &'a str {
-        let start = body
-            .find(heading)
-            .unwrap_or_else(|| panic!("spawn record has no {heading} section:\n{body}"))
-            + heading.len();
-        let rest = &body[start..];
-        match rest.find("\n### ") {
-            Some(end) => &rest[..end],
-            None => rest,
-        }
+        let (_, rest) = body
+            .split_once(heading)
+            .unwrap_or_else(|| panic!("spawn record has no {heading} section:\n{body}"));
+        rest.split("\n### ").next().unwrap_or(rest)
     }
 
     #[tokio::test]
