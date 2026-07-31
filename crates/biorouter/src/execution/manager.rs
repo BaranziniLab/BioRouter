@@ -273,6 +273,24 @@ impl AgentManager {
         // for every row and there is no GUI tab either) the default
         // `scope: "open"` returns an empty list for the whole workspace —
         // exactly the configuration decision 21 exists to preserve.
+        //
+        // **This does NOT hold the pin guard across the LRU acquisition**, and
+        // the point is worth writing down because it reads as if it might: a
+        // reviewer called it an undocumented `pinned -> sessions` lock order.
+        // Both operands of a lazy boolean are their own temporary scope — `a ||
+        // b` is `if a { true } else { b }`, and an `if` condition is a scope —
+        // so the guard from the left operand is dropped BEFORE `self.sessions`
+        // is even touched. (Minimal check, edition 2021: with a `Drop` type in
+        // the left operand, "drop" prints before the right operand runs.)
+        //
+        // So no path in this file ever holds two of these guards at once —
+        // `get_or_create_agent` and `peek_agent` drop theirs at the end of the
+        // `if let`, `remove_session` at the end of its `let` — which is what
+        // makes a future `sessions -> pinned` path safe instead of a deadlock.
+        // The invariant is "one guard at a time", not "always this order", and
+        // `has_session_does_not_hold_the_pin_lock_while_it_waits` is what keeps
+        // it from being re-argued from first principles: it goes red for any
+        // rewrite that does hold the pin across the await.
         self.pinned.read().await.contains_key(session_id)
             || self.sessions.read().await.contains(session_id)
     }
@@ -789,6 +807,50 @@ mod tests {
         assert!(manager.has_session(&sessions[0]).await);
         assert!(!manager.has_session(&sessions[1]).await);
         assert!(manager.has_session(&session101).await);
+    }
+
+    /// `has_session` must never hold the pin guard while it waits for the LRU.
+    ///
+    /// It doesn't — both operands of `||` are their own temporary scope, so the
+    /// pin guard is gone before `sessions` is touched — but that is a subtle
+    /// enough rule that a reviewer read the one-liner as a `pinned -> sessions`
+    /// nesting, and the two forms are indistinguishable from their answers. So
+    /// pin the property rather than the argument: this goes red for any rewrite
+    /// that DOES hold the pin across the await (verified against
+    /// `let g = pinned.read().await; g.contains_key(..) || sessions.read().await
+    /// .contains(..)`, which fails here on the 2 s timeout).
+    ///
+    /// It matters because nothing else in this file holds two of these guards at
+    /// once, and that — not a fixed order — is what makes a future
+    /// `sessions -> pinned` path safe instead of a deadlock.
+    ///
+    /// The probe is parked on the LRU write lock we hold; if it were also
+    /// holding the pin READ lock, the write acquisition below could not
+    /// complete and the timeout fires with the invariant named.
+    #[tokio::test]
+    async fn has_session_does_not_hold_the_pin_lock_while_it_waits() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = Arc::new(create_test_manager(&temp_dir).await);
+
+        // Hold the LRU so an un-pinned lookup must park on it.
+        let sessions_guard = manager.sessions.write().await;
+        let probe = {
+            let manager = Arc::clone(&manager);
+            tokio::spawn(async move { manager.has_session("not-pinned-not-cached").await })
+        };
+        // Let the probe get past the (uncontended) pin read and block on the LRU.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), manager.pinned.write())
+            .await
+            .expect(
+                "has_session must not hold the pin lock while it waits on the LRU — a \
+                 `pinned -> sessions` nesting here deadlocks any future path that takes \
+                 them the other way round",
+            );
+
+        drop(sessions_guard);
+        assert!(!probe.await.unwrap());
     }
 
     #[tokio::test]
