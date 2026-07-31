@@ -7,6 +7,7 @@ use crate::scheduler_trait::SchedulerTrait;
 use crate::session::SessionManager;
 use anyhow::Result;
 use lru::LruCache;
+use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use tokio::sync::{OnceCell, RwLock};
@@ -16,8 +17,20 @@ const DEFAULT_MAX_SESSION: usize = 100;
 
 static AGENT_MANAGER: OnceCell<Arc<AgentManager>> = OnceCell::const_new();
 
+/// One pinned agent and how many concurrent runs are holding it.
+struct PinnedAgent {
+    agent: Arc<Agent>,
+    runs: usize,
+}
+
 pub struct AgentManager {
     sessions: Arc<RwLock<LruCache<String, Arc<Agent>>>>,
+    /// BR-71 decision 10: agents that must NOT be evicted while they run —
+    /// glass-box subagents (Task 33) and consulted Agent Drafter workers
+    /// (Task 41). The LRU is a memory bound for *idle* agents; an agent with a
+    /// live turn is not idle, and evicting it would restore the very bug
+    /// `register_agent` exists to fix.
+    pinned: Arc<RwLock<HashMap<String, PinnedAgent>>>,
     scheduler: Arc<dyn SchedulerTrait>,
     session_manager: Arc<SessionManager>,
     default_provider: Arc<RwLock<Option<Arc<dyn crate::providers::base::Provider>>>>,
@@ -36,6 +49,7 @@ impl AgentManager {
 
         let manager = Self {
             sessions: Arc::new(RwLock::new(LruCache::new(capacity))),
+            pinned: Arc::new(RwLock::new(HashMap::new())),
             scheduler,
             session_manager,
             default_provider: Arc::new(RwLock::new(None)),
@@ -109,7 +123,71 @@ impl AgentManager {
         *self.default_provider.write().await = Some(provider);
     }
 
+    /// BR-71: put an externally-built, fully-configured agent (a glass-box
+    /// subagent, or a consulted Agent Drafter worker) into the registry under
+    /// its session id, so every server resolution path — `POST /interrupt`,
+    /// `POST /reply`, workspace steer — returns the LIVE instance instead of
+    /// minting a default agent that no running loop drains. Overwrites any
+    /// placeholder entry an early racing resolution created (the live child
+    /// wins).
+    ///
+    /// **Pinned out of the LRU** (decision 10). The `sessions` cache holds 100
+    /// agents and evicts the least-recently-used; a registered child is
+    /// *running*, and evicting it would silently restore the pre-BR-71 bug —
+    /// a steer would mint a fresh agent that no loop drains. The pin is a plain
+    /// `HashMap` sidecar consulted before the cache, so a pinned entry cannot
+    /// be evicted by any amount of unrelated agent creation.
+    pub async fn register_agent(&self, session_id: String, agent: Arc<Agent>) {
+        let mut pinned = self.pinned.write().await;
+        match pinned.get_mut(&session_id) {
+            // REFCOUNTED, not overwritten. Two runs can legitimately register
+            // the same `Arc` back to back — a durable Agent Drafter worker
+            // consulted twice in quick succession does exactly this (Task 41),
+            // because `build_worker` reuses its cached `WorkerHandle.agent`. If
+            // the second registration merely overwrote, the FIRST run's
+            // deregistration — which is `tokio::spawn`ed and can land after the
+            // second has begun — would see `Arc::ptr_eq` match and remove a LIVE
+            // registration mid-turn. "Only clear your own" guards against a
+            // different successor; it does not guard against the same handle
+            // registered again.
+            Some(entry) if Arc::ptr_eq(&entry.agent, &agent) => entry.runs += 1,
+            _ => {
+                pinned.insert(session_id, PinnedAgent { agent, runs: 1 });
+            }
+        }
+    }
+
+    /// Release ONE registration of `session_id` → `agent`, and unpin only when
+    /// the last one goes. The `Arc::ptr_eq` test is the TurnGuard discipline
+    /// (`impl TurnGuard` / `impl Drop for TurnGuard`, `state.rs:65-98`): a
+    /// finished run may only clear its own registration, never a successor's.
+    ///
+    /// Note what this deliberately does NOT do: it does not touch the `sessions`
+    /// LRU. `register_agent` does not put anything there either, so there is
+    /// nothing of ours to remove — and an entry that IS there was put there by
+    /// an ordinary `get_or_create_agent`, which is how a consulted Agent Drafter
+    /// worker gets its agent (`routes/apps.rs:1663`). Popping it would evict a
+    /// cached worker this run never created, on every consult.
+    pub async fn deregister_agent_if_same(&self, session_id: &str, agent: &Arc<Agent>) {
+        let mut pinned = self.pinned.write().await;
+        let Some(entry) = pinned.get_mut(session_id) else {
+            return;
+        };
+        if !Arc::ptr_eq(&entry.agent, agent) {
+            return;
+        }
+        entry.runs -= 1;
+        if entry.runs == 0 {
+            pinned.remove(session_id);
+        }
+    }
+
     pub async fn get_or_create_agent(&self, session_id: String) -> Result<Arc<Agent>> {
+        // BR-71: a pinned (running, externally-built) agent always wins — it is
+        // the instance whose loop drains the soft-interrupt queue.
+        if let Some(entry) = self.pinned.read().await.get(&session_id) {
+            return Ok(Arc::clone(&entry.agent));
+        }
         {
             let mut sessions = self.sessions.write().await;
             if let Some(existing) = sessions.get(&session_id) {
@@ -150,15 +228,32 @@ impl AgentManager {
     ///
     /// `sessions` is an LRU, so reading it needs the write lock (`get` promotes
     /// the entry) — the same call `get_or_create_agent`'s hit path makes.
+    ///
+    /// BR-71: the PINNED sidecar is consulted first, for the same reason
+    /// `get_or_create_agent` consults it — a registered, running agent is the
+    /// live instance and is never in the LRU. Without this, a glass-box child
+    /// mid-run peeks as "no live agent" and `workspace_send_prompt` reads its
+    /// mode off nothing.
     pub async fn peek_agent(&self, session_id: &str) -> Option<Arc<Agent>> {
+        if let Some(entry) = self.pinned.read().await.get(session_id) {
+            return Some(Arc::clone(&entry.agent));
+        }
         self.sessions.write().await.get(session_id).map(Arc::clone)
     }
 
     pub async fn remove_session(&self, session_id: &str) -> Result<()> {
+        // Unconditional: an explicit stop outranks any live registration, and a
+        // still-running child's own deregistration then becomes a no-op (its
+        // `Arc::ptr_eq` finds no entry).
+        let was_pinned = self.pinned.write().await.remove(session_id).is_some();
         let mut sessions = self.sessions.write().await;
-        sessions
-            .pop(session_id)
-            .ok_or_else(|| anyhow::anyhow!("Session {} not found", session_id))?;
+        // "Not found" must mean NEITHER half knew the session. A registered
+        // child lives only in the pin, so testing the LRU alone would report a
+        // successful stop as a 404 (`POST /agent/stop`) or as a tool failure
+        // (`workspace_close scope:"agent"` → `ServerWorkspaceServices::stop_agent`).
+        if sessions.pop(session_id).is_none() && !was_pinned {
+            return Err(anyhow::anyhow!("Session {} not found", session_id));
+        }
         info!("Removed session {}", session_id);
         Ok(())
     }
@@ -171,7 +266,15 @@ impl AgentManager {
     }
 
     pub async fn has_session(&self, session_id: &str) -> bool {
-        self.sessions.read().await.contains(session_id)
+        // BR-71: a pinned (registered, running) agent is live even though it was
+        // never put in the LRU — see `register_agent`. Without this line
+        // `workspace_list` reports `live: false` for every glass-box subagent,
+        // and in the HEADLESS configuration (no daemon, so `running` is false
+        // for every row and there is no GUI tab either) the default
+        // `scope: "open"` returns an empty list for the whole workspace —
+        // exactly the configuration decision 21 exists to preserve.
+        self.pinned.read().await.contains_key(session_id)
+            || self.sessions.read().await.contains(session_id)
     }
 
     pub async fn session_count(&self) -> usize {
@@ -246,6 +349,254 @@ mod tests {
             "peek must hand back THE live agent, not an equivalent one — the \
              caller reads its `config.biorouter_mode`"
         );
+    }
+
+    /// BR-71: a subagent run registers its ALREADY-CONFIGURED agent so the
+    /// server's get_or_create_agent (the /interrupt and /reply resolution
+    /// path — `AppState::get_agent_for_route`, `state.rs:341`; `get_agent` is
+    /// `:334`) returns the LIVE instance, not a fresh default one.
+    #[tokio::test]
+    async fn register_agent_makes_get_or_create_return_the_live_instance() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = create_test_manager(&temp_dir).await;
+
+        let session_manager = Arc::new(SessionManager::new(temp_dir.path().to_path_buf()));
+        let child = Arc::new(crate::agents::Agent::with_config(
+            crate::agents::AgentConfig::new(
+                session_manager,
+                crate::config::permission::PermissionManager::instance(),
+                None,
+                crate::config::BioRouterMode::Auto,
+            ),
+        ));
+
+        manager
+            .register_agent("child-1".to_string(), child.clone())
+            .await;
+        let resolved = manager
+            .get_or_create_agent("child-1".to_string())
+            .await
+            .unwrap();
+        assert!(
+            Arc::ptr_eq(&child, &resolved),
+            "steer/interrupt must reach the SAME live agent the run drives"
+        );
+
+        // Deregistration removes exactly our entry; a successor registered
+        // meanwhile survives (the TurnGuard-style only-clear-your-own rule).
+        manager.deregister_agent_if_same("child-1", &child).await;
+        assert!(!manager.has_session("child-1").await);
+
+        let replacement = manager
+            .get_or_create_agent("child-1".to_string())
+            .await
+            .unwrap();
+        manager.deregister_agent_if_same("child-1", &child).await; // stale — no-op
+        let still = manager
+            .get_or_create_agent("child-1".to_string())
+            .await
+            .unwrap();
+        assert!(Arc::ptr_eq(&replacement, &still));
+    }
+
+    /// Decision 10: 100 intervening agent creations must NOT evict a running
+    /// registered child. Without the pin this test fails and a mid-run steer
+    /// silently reaches a fresh agent that no loop drains.
+    #[tokio::test]
+    async fn a_registered_agent_survives_lru_pressure() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = create_test_manager(&temp_dir).await;
+        let session_manager = Arc::new(SessionManager::new(temp_dir.path().to_path_buf()));
+        let child = Arc::new(crate::agents::Agent::with_config(
+            crate::agents::AgentConfig::new(
+                session_manager,
+                crate::config::permission::PermissionManager::instance(),
+                None,
+                crate::config::BioRouterMode::Auto,
+            ),
+        ));
+        manager
+            .register_agent("pinned-child".to_string(), child.clone())
+            .await;
+
+        for i in 0..150 {
+            let _ = manager
+                .get_or_create_agent(format!("filler-{i}"))
+                .await
+                .unwrap();
+        }
+
+        let resolved = manager
+            .get_or_create_agent("pinned-child".to_string())
+            .await
+            .unwrap();
+        assert!(
+            Arc::ptr_eq(&child, &resolved),
+            "a running registered agent must survive LRU pressure"
+        );
+        manager
+            .deregister_agent_if_same("pinned-child", &child)
+            .await;
+        // Once deregistered it is ordinary again: a fresh resolution mints a
+        // NEW agent rather than resurrecting the pinned one.
+        let after = manager
+            .get_or_create_agent("pinned-child".to_string())
+            .await
+            .unwrap();
+        assert!(!Arc::ptr_eq(&child, &after));
+    }
+
+    /// Registration is REFCOUNTED, so overlapping runs on the same agent cannot
+    /// unregister each other.
+    ///
+    /// The case this exists for is Task 41: a durable Agent Drafter worker is
+    /// consulted twice in quick succession and `build_worker` hands back the
+    /// SAME `Arc` both times. Consult #1's deregistration is `tokio::spawn`ed
+    /// and can land after consult #2 has already registered and started its
+    /// turn. With a plain insert/remove, `Arc::ptr_eq` matches, the live
+    /// registration is dropped mid-turn, and the "steerable via /interrupt"
+    /// property silently disappears — the exact bug `register_agent` was added
+    /// to fix, reintroduced by its own cleanup.
+    #[tokio::test]
+    async fn overlapping_registrations_of_the_same_agent_do_not_cancel_each_other() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = create_test_manager(&temp_dir).await;
+        let session_manager = Arc::new(SessionManager::new(temp_dir.path().to_path_buf()));
+        let worker = Arc::new(crate::agents::Agent::with_config(
+            crate::agents::AgentConfig::new(
+                session_manager,
+                crate::config::permission::PermissionManager::instance(),
+                None,
+                crate::config::BioRouterMode::Auto,
+            ),
+        ));
+
+        // Two overlapping runs on one worker.
+        manager
+            .register_agent("worker".to_string(), worker.clone())
+            .await;
+        manager
+            .register_agent("worker".to_string(), worker.clone())
+            .await;
+
+        // The first finishes and cleans up …
+        manager.deregister_agent_if_same("worker", &worker).await;
+        // … the second is still live and must still resolve to THIS instance.
+        let resolved = manager
+            .get_or_create_agent("worker".to_string())
+            .await
+            .unwrap();
+        assert!(
+            Arc::ptr_eq(&worker, &resolved),
+            "a live overlapping registration must survive its predecessor's cleanup"
+        );
+
+        // Only when the last one releases does the pin go.
+        manager.deregister_agent_if_same("worker", &worker).await;
+        let after = manager
+            .get_or_create_agent("worker".to_string())
+            .await
+            .unwrap();
+        assert!(!Arc::ptr_eq(&worker, &after));
+    }
+
+    /// `deregister` must not evict an LRU entry it never created — the entry a
+    /// consulted worker got from an ordinary `get_agent` (`routes/apps.rs:1663`).
+    #[tokio::test]
+    async fn deregistering_does_not_evict_a_cache_entry_it_did_not_create() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = create_test_manager(&temp_dir).await;
+
+        // An ordinary cached agent, exactly as `state.get_agent` produces.
+        let cached = manager
+            .get_or_create_agent("worker".to_string())
+            .await
+            .unwrap();
+        // A run registers that same agent, then finishes.
+        manager
+            .register_agent("worker".to_string(), cached.clone())
+            .await;
+        manager.deregister_agent_if_same("worker", &cached).await;
+
+        let after = manager
+            .get_or_create_agent("worker".to_string())
+            .await
+            .unwrap();
+        assert!(
+            Arc::ptr_eq(&cached, &after),
+            "the LRU entry predates the registration and must outlive it"
+        );
+    }
+
+    /// An explicit stop of a session that exists ONLY as a pin must succeed.
+    ///
+    /// A registered child is never put in the `sessions` LRU, so the pre-BR-71
+    /// body — which reports "not found" whenever `LruCache::pop` misses — would
+    /// evict the pin and then return `Err`. `POST /agent/stop` maps that to a
+    /// 404 and `workspace_close scope:"agent"` (via
+    /// `ServerWorkspaceServices::stop_agent`) surfaces it to the model as a
+    /// failure, for a stop that in fact worked. "Not found" must mean neither
+    /// half knew the session, not "the LRU half didn't".
+    #[tokio::test]
+    async fn removing_a_pin_only_session_succeeds_and_unpins_it() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = create_test_manager(&temp_dir).await;
+        let session_manager = Arc::new(SessionManager::new(temp_dir.path().to_path_buf()));
+        let child = Arc::new(crate::agents::Agent::with_config(
+            crate::agents::AgentConfig::new(
+                session_manager,
+                crate::config::permission::PermissionManager::instance(),
+                None,
+                crate::config::BioRouterMode::Auto,
+            ),
+        ));
+        manager
+            .register_agent("stop-me".to_string(), child.clone())
+            .await;
+        assert!(manager.has_session("stop-me").await);
+
+        manager.remove_session("stop-me").await.unwrap();
+        assert!(!manager.has_session("stop-me").await);
+
+        // An explicit stop outranks the registration outright: the run's own
+        // later deregistration finds nothing and is a no-op, and the id is
+        // ordinary again.
+        manager.deregister_agent_if_same("stop-me", &child).await;
+        let after = manager
+            .get_or_create_agent("stop-me".to_string())
+            .await
+            .unwrap();
+        assert!(!Arc::ptr_eq(&child, &after));
+    }
+
+    /// A pinned agent is a live agent for `peek_agent` too. `peek_agent` is how
+    /// `workspace_send_prompt` reads a target's permission mode without minting
+    /// one; a running glass-box child that peeked as absent would take the
+    /// conservative "no live agent, assume approval required" branch while its
+    /// own loop is right there holding the pin.
+    #[tokio::test]
+    async fn peek_agent_sees_a_pinned_agent() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = create_test_manager(&temp_dir).await;
+        let session_manager = Arc::new(SessionManager::new(temp_dir.path().to_path_buf()));
+        let child = Arc::new(crate::agents::Agent::with_config(
+            crate::agents::AgentConfig::new(
+                session_manager,
+                crate::config::permission::PermissionManager::instance(),
+                None,
+                crate::config::BioRouterMode::Auto,
+            ),
+        ));
+        assert!(manager.peek_agent("peek-child").await.is_none());
+
+        manager
+            .register_agent("peek-child".to_string(), child.clone())
+            .await;
+        let peeked = manager.peek_agent("peek-child").await.expect("pinned");
+        assert!(Arc::ptr_eq(&child, &peeked));
+
+        manager.deregister_agent_if_same("peek-child", &child).await;
+        assert!(manager.peek_agent("peek-child").await.is_none());
     }
 
     #[test]

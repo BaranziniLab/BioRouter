@@ -47,24 +47,53 @@ pub async fn run_complete_subagent_task(
 ) -> SubagentResult {
     let session_manager = config.session_manager.clone();
 
+    // BR-71 reconciliation #2 — one token per run, addressable from everywhere:
+    // a child of the parent-supplied token (parent-cancel still propagates to
+    // the child; cancelling the CHILD never kills the parent's turn), handed to
+    // the server turn lease, the active-work guard, and the agent loop alike.
+    let run_token = cancellation_token
+        .as_ref()
+        .map(tokio_util::sync::CancellationToken::child_token)
+        .unwrap_or_default();
+
+    // Hold the server's per-session turn lock for the run when the daemon is
+    // present (headless: None — today's behavior). Makes is_turn_active(child)
+    // true, keeps one-turn-per-session, and routes POST /agent/cancel /
+    // workspace_close scope:"turn" / the tab's Stop to run_token.
+    let _turn_lease: Option<Box<dyn crate::workspace_services::WorkspaceTurnLease>> =
+        match crate::workspace_services::get() {
+            Some(services) => match services.begin_turn(&session_id, run_token.clone()) {
+                Ok(lease) => Some(lease),
+                Err(conflict) => {
+                    return SubagentResult::from_error(format!(
+                        "subagent session is unexpectedly busy: {conflict}"
+                    ));
+                }
+            },
+            None => None,
+        };
+
     // Surface this subagent in the process-wide "active work" view (BR-42) for
     // the run's whole lifetime. The guard deregisters on drop, so an early
     // return or panic never leaks a phantom "still running" entry. Cancel routes
-    // to the run's cancellation token when one was supplied.
+    // to the run's own token — always present now, so the run is addressable
+    // whether or not the parent supplied one.
     let _active_work = {
         use biorouter_mcp::active_work::{ActiveWorkGuard, ActiveWorkKind};
         let title = subagent_work_title(&workflow);
-        let cancel = cancellation_token.clone().map(|token| {
-            let cancel: std::sync::Arc<dyn Fn() + Send + Sync> =
-                std::sync::Arc::new(move || token.cancel());
-            cancel
-        });
+        // Was `cancellation_token.clone().map(...)`, i.e. None when the parent
+        // supplied no token. Now always Some, built from `run_token`, so the
+        // active-work cancel reaches the run whether or not the parent had one.
+        let cancel: std::sync::Arc<dyn Fn() + Send + Sync> = {
+            let token = run_token.clone();
+            std::sync::Arc::new(move || token.cancel())
+        };
         ActiveWorkGuard::register(
             ActiveWorkKind::Subagent,
             title,
             Some(format!("child session {session_id}")),
             Some(task_config.parent_session_id.clone()),
-            cancel,
+            Some(cancel),
         )
     };
 
@@ -73,7 +102,7 @@ pub async fn run_complete_subagent_task(
         workflow,
         task_config,
         session_id.clone(),
-        cancellation_token,
+        Some(run_token.clone()),
     )
     .await
     {
@@ -246,6 +275,45 @@ fn get_agent_messages(
         // next line, so the spawn-context record's session handle is taken now.
         let session_manager = config.session_manager.clone();
         let agent = Arc::new(Agent::with_config(config));
+
+        // BR-71: make the live child addressable by the server control plane.
+        // Best-effort — AgentManager::instance() needs global config; unit
+        // tests and bare-library embedding run fine without it.
+        let registration = match crate::execution::manager::AgentManager::instance().await {
+            Ok(manager) => {
+                manager
+                    .register_agent(session_id.clone(), agent.clone())
+                    .await;
+                Some((manager, agent.clone()))
+            }
+            Err(e) => {
+                tracing::debug!("subagent not registered in AgentManager: {e}");
+                None
+            }
+        };
+        // Deregister on every exit path (scopeguard-free: a small Drop struct).
+        struct Deregister {
+            manager: Option<(
+                std::sync::Arc<crate::execution::manager::AgentManager>,
+                std::sync::Arc<Agent>,
+            )>,
+            session_id: String,
+        }
+        impl Drop for Deregister {
+            fn drop(&mut self) {
+                if let Some((manager, agent)) = self.manager.take() {
+                    let session_id = std::mem::take(&mut self.session_id);
+                    tokio::spawn(async move {
+                        manager.deregister_agent_if_same(&session_id, &agent).await;
+                    });
+                }
+            }
+        }
+        let _deregister = Deregister {
+            manager: registration,
+            session_id: session_id.clone(),
+        };
+
         let parent_working_dir = task_config.parent_working_dir.clone();
 
         // SubagentStart hook (observe-only). The child agent fires its own
@@ -624,5 +692,132 @@ mod tests {
         );
         assert_eq!(section(&text, "### Granted skills").trim(), "(none)");
         assert_eq!(section(&text, "### Knowledge bases").trim(), "(none)");
+    }
+
+    /// Headless (no WorkspaceServices installed): the run must not require the
+    /// daemon — no lease, no panic, result envelope still produced (§2.1) — AND
+    /// it must still register its child agent with the `AgentManager`, which is
+    /// the whole point of Task 33.
+    ///
+    /// ⚠ The registration half is new (2026-07-28 gate sweep). This test used to
+    /// end at `assert!(!rendered.is_empty())`, and `serde_json::to_string` of any
+    /// `Serialize` value is non-empty — so it passed with `register_agent`,
+    /// `begin_turn` and the `Deregister` guard **all absent**. The `AgentManager`
+    /// tests are genuinely good, but they call `register_agent` by hand; nothing
+    /// proved `run_complete_subagent_task` does.
+    ///
+    /// The sentinel below is what makes the registration observable without
+    /// racing the `Deregister` drop: we register OUR agent under the child's id
+    /// first. A run that registers replaces it and then deregisters its own
+    /// entry (`deregister_agent_if_same`), leaving nothing. A run that does not
+    /// register leaves the sentinel sitting there forever.
+    ///
+    /// ⚠ The sentinel proves ABSENCE, and one wrong implementation also produces
+    /// absence: a run that never registers but tears down with a blunt
+    /// `manager.remove_session(&child.id)` removes the sentinel and passes. The
+    /// Step-5 grep pair closes that (`remove_session(` must be **0** in
+    /// `subagent_handler.rs`); do not weaken it into "either deregistration is
+    /// fine", because identity-scoped removal is the whole point — a plain
+    /// remove would also evict a *live* agent registered by someone else.
+    #[tokio::test]
+    async fn subagent_run_without_daemon_services_still_completes() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let sm = std::sync::Arc::new(SessionManager::new(temp.path().to_path_buf()));
+        let child = sm
+            .create_session(
+                temp.path().to_path_buf(),
+                "child".into(),
+                crate::session::session_manager::SessionType::SubAgent,
+            )
+            .await
+            .unwrap();
+        let config = AgentConfig::new(
+            sm.clone(),
+            crate::config::permission::PermissionManager::instance(),
+            None,
+            crate::config::BioRouterMode::Auto,
+        );
+        // TestProvider replaying an empty cassette: fails on first use — the
+        // run errors fast, which is all this needs — the pattern
+        // `test_set_default_provider` uses in `execution::manager`'s tests.
+        let cassette = temp.path().join("empty.json");
+        std::fs::write(&cassette, "{}").unwrap();
+        let provider = std::sync::Arc::new(
+            crate::providers::testprovider::TestProvider::new_replaying(cassette.to_str().unwrap())
+                .unwrap(),
+        );
+        let workflow: Workflow = serde_json::from_value(serde_json::json!({
+            "title": "t", "description": "d",
+            "instructions": "do the thing", "prompt": "go"
+        }))
+        .unwrap();
+        let task_config = TaskConfig {
+            provider,
+            parent_session_id: "parent-1".into(),
+            parent_working_dir: temp.path().to_path_buf(),
+            extensions: vec![],
+            max_turns: Some(3),
+        };
+
+        // The sentinel: an agent nobody else owns, parked under the child's id.
+        let manager = crate::execution::manager::AgentManager::instance()
+            .await
+            .expect("AgentManager::instance (BIOROUTER_PATH_ROOT is set by the gate)");
+        let sentinel = std::sync::Arc::new(crate::agents::Agent::with_config(
+            crate::agents::AgentConfig::new(
+                sm.clone(),
+                crate::config::permission::PermissionManager::instance(),
+                None,
+                crate::config::BioRouterMode::Auto,
+            ),
+        ));
+        manager
+            .register_agent(child.id.clone(), sentinel.clone())
+            .await;
+
+        let result =
+            run_complete_subagent_task(config, workflow, task_config, true, child.id.clone(), None)
+                .await;
+
+        // The provider fails, so the envelope reports an error/incomplete run.
+        // Assert its SHAPE — `SubagentResult` always carries a status and a
+        // non-empty summary (`subagent_result.rs`) — rather than merely that
+        // serializing it produced bytes.
+        let rendered = serde_json::to_value(&result).unwrap();
+        assert!(
+            rendered.is_object(),
+            "a structured envelope, got: {rendered}"
+        );
+        assert!(
+            rendered.get("status").is_some(),
+            "…with a status: {rendered}"
+        );
+        assert!(
+            rendered
+                .get("summary")
+                .and_then(|v| v.as_str())
+                .is_some_and(|s| !s.is_empty()),
+            "…and a non-empty summary, even for a run that failed: {rendered}"
+        );
+
+        // The wiring: the run replaced the sentinel with its own live child and
+        // deregistered that child on the way out. `Deregister::drop` finishes the
+        // work on a spawned task, so poll rather than assume it has landed.
+        for _ in 0..100 {
+            if !manager.has_session(&child.id).await {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(
+            !manager.has_session(&child.id).await,
+            "run_complete_subagent_task must register the live child (which replaces the \
+             sentinel) and deregister it on exit; the sentinel is still there, so nothing \
+             registered and /interrupt would mint a different agent"
+        );
+        // Belt and braces: if the run somehow left the SENTINEL registered, the
+        // assertion above would already have fired — but make the failure mode
+        // unambiguous for whoever reads the output.
+        manager.deregister_agent_if_same(&child.id, &sentinel).await;
     }
 }

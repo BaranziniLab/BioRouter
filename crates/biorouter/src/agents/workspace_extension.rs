@@ -3143,6 +3143,59 @@ mod tests {
         );
     }
 
+    /// The DEFAULT scope must see a running child. A registered agent lives in
+    /// `AgentManager`'s PINNED sidecar, never in the `sessions` LRU — so this
+    /// passes only because Task 33 makes `has_session` consult the pin. Delete
+    /// that one line and this is the test that goes red.
+    #[tokio::test]
+    async fn the_default_scope_sees_a_registered_child_with_no_gui_tab() {
+        let c = client();
+        let sm = c.context.session_manager.clone();
+        let child = sm
+            .create_session(
+                std::env::temp_dir(),
+                "registered".into(),
+                crate::session::session_manager::SessionType::SubAgent,
+            )
+            .await
+            .unwrap();
+
+        let manager = crate::execution::manager::AgentManager::instance()
+            .await
+            .unwrap();
+        let agent = std::sync::Arc::new(crate::agents::Agent::with_config(
+            crate::agents::AgentConfig::new(
+                sm.clone(),
+                crate::config::permission::PermissionManager::instance(),
+                None,
+                crate::config::BioRouterMode::Auto,
+            ),
+        ));
+        manager
+            .register_agent(child.id.clone(), agent.clone())
+            .await;
+
+        // No `scope` key at all -> the default "open".
+        let args: rmcp::model::JsonObject =
+            serde_json::from_value(serde_json::json!({ "include_subagents": true })).unwrap();
+        let result = c
+            .call_tool(
+                "workspace_list",
+                Some(args),
+                test_meta(),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let text = result.content[0].as_text().unwrap().text.clone();
+        manager.deregister_agent_if_same(&child.id, &agent).await;
+
+        assert!(
+            text.contains(&child.id),
+            "a registered child with no GUI tab must be in the default scope: {text}"
+        );
+    }
+
     /// The seeded workspace every `workspace_read_conversation` test reads.
     ///
     /// The fixture exists because the original single gate test could not tell a
