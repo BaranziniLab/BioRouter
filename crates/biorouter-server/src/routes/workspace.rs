@@ -56,7 +56,15 @@ fn check_workspace_ws_auth(
             return Err("cross-origin connect rejected");
         }
     }
-    if token != Some(expected) {
+    // Constant time, not `!=`. This is the SAME server secret `check_token`
+    // guards, and `/ui/workspace` is the one path exempt from `check_token`
+    // (`auth::is_unauthenticated_path`) — which means it is also exempt from
+    // that middleware's rate limiter, so an attacker here gets unlimited,
+    // unthrottled timing samples against the daemon's master key. `str` equality
+    // is a length check plus an early-returning memcmp. `secret_matches` is
+    // `check_token`'s own comparator, shared rather than re-implemented so the
+    // two can never drift; its doc comment carries the invariant.
+    if !token.is_some_and(|token| super::secret_matches(token, expected)) {
         return Err("missing or invalid workspace socket secret");
     }
     Ok(())
@@ -195,6 +203,12 @@ mod tests {
         // Wrong/missing secret always refuses.
         assert!(check_workspace_ws_auth(None, Some("wrong"), secret).is_err());
         assert!(check_workspace_ws_auth(None, None, secret).is_err());
+        // Same length, differing in one byte, and a prefix: the comparison is
+        // `secret_matches`, which returns early on LENGTH only. A call that got
+        // its arguments confused, or compared lengths alone, passes the two
+        // cases above (`"wrong"` is 5 bytes against 11) and fails these.
+        assert!(check_workspace_ws_auth(None, Some("test-secreT"), secret).is_err());
+        assert!(check_workspace_ws_auth(None, Some("test-secre"), secret).is_err());
     }
 
     /// The socket loop's INBOUND vocabulary. Without this, `handle_workspace_socket`

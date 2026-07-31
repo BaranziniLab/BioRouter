@@ -9,19 +9,16 @@ use std::net::SocketAddr;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-/// Compare secrets without an early return, so a caller cannot recover the key
-/// one byte at a time by timing the response.
-fn secret_matches(candidate: &str, expected: &str) -> bool {
-    let (a, b) = (candidate.as_bytes(), expected.as_bytes());
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut diff = 0u8;
-    for (x, y) in a.iter().zip(b.iter()) {
-        diff |= x ^ y;
-    }
-    diff == 0
-}
+/// The constant-time secret comparison this middleware gates on.
+///
+/// The implementation moved to `routes` (with its rationale) so that
+/// `routes::workspace`'s WebSocket gate — which checks the same server secret,
+/// on a path this module exempts from the header check *and therefore from the
+/// rate limiter* — can share it instead of re-implementing it. `src/routes/` is
+/// compiled into the `biorouterd` binary as well as the lib and cannot name
+/// `crate::auth`, so the shared direction is this one. Re-exported here so
+/// `check_token` and `mod tests` are unaffected.
+use crate::routes::secret_matches;
 
 static FAILED_ATTEMPTS: OnceLock<Mutex<HashMap<String, Vec<Instant>>>> = OnceLock::new();
 
