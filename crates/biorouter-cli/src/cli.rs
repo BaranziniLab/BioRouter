@@ -527,6 +527,37 @@ enum SessionCommand {
         )]
         no_wait: bool,
     },
+    #[command(
+        about = "Attach to a running session: render where it is, follow it live, and steer it",
+        long_about = "Joins a session that is running RIGHT NOW. Prints the conversation \
+                      so far, then follows it live; anything you type is delivered to the \
+                      running turn (or starts one). Use `session --resume` instead for a \
+                      finished transcript — resuming a live session opens a second agent \
+                      on it and the two do not share the daemon's turn lock."
+    )]
+    Attach {
+        /// Session id to attach to.
+        session_id: Option<String>,
+        #[arg(
+            long,
+            value_name = "NAME",
+            help = "Attach by session name instead of id"
+        )]
+        name: Option<String>,
+        #[arg(
+            long = "of",
+            value_name = "PARENT_ID",
+            help = "Attach to the running subagent of this parent session"
+        )]
+        of: Option<String>,
+        #[arg(long, help = "Observe only; do not read stdin or send anything")]
+        read_only: bool,
+    },
+    #[command(about = "Stop the turn a session is running (idempotent)")]
+    Cancel {
+        /// Session id whose running turn should be stopped.
+        session_id: String,
+    },
     #[command(name = "diagnostics")]
     Diagnostics {
         /// Session identifier for generating diagnostics
@@ -1579,6 +1610,18 @@ async fn handle_session_subcommand(command: SessionCommand) -> Result<()> {
         } => {
             crate::commands::session_watch::handle_session_send(&session_id, &text, !no_wait)
                 .await?;
+        }
+        SessionCommand::Attach {
+            session_id,
+            name,
+            of,
+            read_only,
+        } => {
+            crate::commands::session_watch::handle_session_attach(session_id, name, of, read_only)
+                .await?;
+        }
+        SessionCommand::Cancel { session_id } => {
+            crate::commands::session_watch::handle_session_cancel(&session_id).await?;
         }
         SessionCommand::Diagnostics { identifier, output } => {
             let session_manager = SessionManager::instance();
