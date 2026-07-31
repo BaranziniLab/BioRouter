@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { planWorkspaceCommand } from './workspaceCommandPlanner';
-import { chatGroupsReducer, createInitialChatGroupsState, activeTabOf } from './chatGroupsReducer';
+import {
+  chatGroupsReducer,
+  createInitialChatGroupsState,
+  activeTabOf,
+  type ChatGroupsAction,
+} from './chatGroupsReducer';
 // Types come from chatGroupsTypes; the reducer exports functions only. This is
 // the convention every existing consumer follows (chatGroupsStorage.ts:1-2,
 // chatGroupsReducer.test.ts:9) — importing `ChatGroupsState` from
@@ -40,6 +45,77 @@ describe('planWorkspaceCommand', () => {
       stateWithSessions(['s-mine'])
     );
     expect(plan.actions).toHaveLength(1);
+  });
+
+  /** Apply a whole plan to state the way the executor's dispatch loop does. */
+  function applyPlan(state: ChatGroupsState, actions: ChatGroupsAction[]): ChatGroupsState {
+    return actions.reduce(chatGroupsReducer, state);
+  }
+
+  it('splits a NEW session into its own pane within the same plan', () => {
+    // The defect this pins: a new session's tab id does not exist until the
+    // `openTab` commits, so the first implementation emitted `openTab` alone and
+    // left the move to a `queueMicrotask` in the provider that re-read a ref
+    // React had not written yet. Measured under production scheduling (a frame
+    // delivered on a macrotask, as ws.onmessage delivers it) the ref was still
+    // pre-commit, `findTabBySession` returned null, the move was dropped, and
+    // the daemon was told `ok: true, detail: 'opened in split'` — one pane,
+    // "s-a+s-split", reported as a split.
+    //
+    // The plan is the whole answer: reduce it and the pane must be there.
+    const state = stateWithSessions(['s-a']);
+    const plan = planWorkspaceCommand(
+      {
+        type: 'workspace',
+        cmd: 'open_tab',
+        session_id: 's-split',
+        placement: 'split',
+        focus: true,
+      },
+      state
+    );
+    expect(plan.result.ok).toBe(true);
+
+    const after = applyPlan(state, plan.actions);
+    expect(groupCountOf(after.layout)).toBe(2);
+    const panes = leafGroupIds(after.layout).map((id) =>
+      after.groups[id].tabs.map((t) => t.sessionId).join('+')
+    );
+    expect(panes).toEqual(['s-a', 's-split']);
+  });
+
+  it('splits an ALREADY-OPEN session exactly once', () => {
+    // The same command for a session that already has a tab. Two moves would
+    // still end at two panes — the second lands on an equivalent layout — but it
+    // burns a group id and re-splits, so the count is the assertion.
+    const state = stateWithSessions(['s-a', 's-b']);
+    const plan = planWorkspaceCommand(
+      { type: 'workspace', cmd: 'open_tab', session_id: 's-a', placement: 'split', focus: true },
+      state
+    );
+    expect(plan.actions.filter((a) => a.type === 'moveTabToGroup')).toHaveLength(1);
+
+    const after = applyPlan(state, plan.actions);
+    expect(groupCountOf(after.layout)).toBe(2);
+    expect(
+      leafGroupIds(after.layout).map((id) =>
+        after.groups[id].tabs.map((t) => t.sessionId).join('+')
+      )
+    ).toEqual(['s-b', 's-a']);
+  });
+
+  it('reports a split it could not perform as a plain open', () => {
+    // A lone tab cannot be split off its own group (`moveTabToGroup` refuses at
+    // `source.tabs.length <= 1`), so the reduced plan is one pane. Saying
+    // "opened in split" there would tell the daemon a pane exists that does not.
+    const state = stateWithSessions([]);
+    const plan = planWorkspaceCommand(
+      { type: 'workspace', cmd: 'open_tab', session_id: 's-only', placement: 'split', focus: true },
+      state
+    );
+    expect(plan.result.ok).toBe(true);
+    expect(plan.result.detail).toBe('opened');
+    expect(groupCountOf(applyPlan(state, plan.actions).layout)).toBe(1);
   });
 
   it('refuses a split at MAX_GROUPS with a clear detail', () => {

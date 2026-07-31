@@ -14,7 +14,6 @@ import {
   activeSessionIdOf,
   activeGroupOf,
   activeTabOf,
-  findTabBySession,
 } from '../components/chatGroups/chatGroupsReducer';
 import {
   loadChatGroupsOrInitial,
@@ -55,7 +54,6 @@ import {
   planWorkspaceCommand,
   type TabAnnotation,
 } from '../components/chatGroups/workspaceCommandPlanner';
-import { MAX_GROUPS, groupCountOf } from '../components/chatGroups/chatGroupsLayout';
 import { useWorkspaceChannel, buildEchoFrame } from '../hooks/useWorkspaceChannel';
 import { toastService } from '../toasts';
 
@@ -255,23 +253,16 @@ export function ChatGroupsProvider({ children }: { children: React.ReactNode }) 
   useEffect(() => {
     const runPlan = (cmd: WorkspaceCommand): WorkspaceCommandResult => {
       const plan = planWorkspaceCommand(cmd, stateRef.current);
+      // The plan is the WHOLE answer — nothing here is deferred to a later tick.
+      // A split used to be finished off in a `queueMicrotask` that re-read
+      // `stateRef`, on the theory that a new session's tab id does not exist
+      // until `openTab` commits. It does not work: a frame arrives from
+      // `ws.onmessage` on a macrotask, React commits on the Scheduler's own
+      // macrotask, and the microtask therefore drains BEFORE the commit — so the
+      // ref was pre-open, the lookup missed, the move was dropped, and the daemon
+      // was told the window had split when it had not. The planner runs the
+      // reducer itself to learn the id, and the move rides in this same batch.
       for (const action of plan.actions) dispatch(action);
-      // Split follow-up for a NEWLY-created tab: the tab id only exists after
-      // the openTab commits, so re-plan the move against the committed state
-      // on the next microtask (stateRef is updated on every render).
-      if (cmd.cmd === 'open_tab' && cmd.placement === 'split' && plan.result.ok) {
-        queueMicrotask(() => {
-          const hit = cmd.session_id ? findTabBySession(stateRef.current, cmd.session_id) : null;
-          if (hit && groupCountOf(stateRef.current.layout) < MAX_GROUPS) {
-            dispatch({
-              type: 'moveTabToGroup',
-              tabId: hit.tabId,
-              targetGroupId: hit.groupId,
-              zone: 'right',
-            });
-          }
-        });
-      }
       if (plan.openWindowSessionId) {
         // create-chat-window IPC: the session id goes in the resume-session
         // position (4th parameter — see preload.ts createChatWindow).

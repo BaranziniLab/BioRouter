@@ -5,7 +5,12 @@
  * behavior (split refusal, focus etiquette, annotation) is unit-testable
  * against real reducer state.
  */
-import { activeTabOf, findTabBySession, type ChatGroupsAction } from './chatGroupsReducer';
+import {
+  activeTabOf,
+  chatGroupsReducer,
+  findTabBySession,
+  type ChatGroupsAction,
+} from './chatGroupsReducer';
 // `ChatGroupsState` lives in chatGroupsTypes — the reducer does not re-export it.
 import type { ChatGroupsState } from './chatGroupsTypes';
 import { MAX_GROUPS, groupCountOf } from './chatGroupsLayout';
@@ -40,32 +45,55 @@ export function planWorkspaceCommand(
         return refuse(`split refused: already at ${MAX_GROUPS} groups`);
       }
       const previouslyActive = activeTabOf(state)?.tabId ?? null;
-      const actions: ChatGroupsAction[] = [
-        // Dedupe by session id is the reducer's own rule (openTab): "open or
-        // focus session X" is this one dispatch.
-        { type: 'openTab', payload: { sessionId: cmd.session_id } },
-      ];
+      // Dedupe by session id is the reducer's own rule (openTab): "open or
+      // focus session X" is this one dispatch.
+      const open: ChatGroupsAction = {
+        type: 'openTab',
+        payload: { sessionId: cmd.session_id },
+      };
+      const actions: ChatGroupsAction[] = [open];
+
+      let splits = false;
       if (cmd.placement === 'split') {
-        const existing = findTabBySession(state, cmd.session_id);
-        if (existing) {
-          // Already-open session: move its tab into a new right-edge group.
-          actions.push({
+        // A NEW session's tab id does not exist until `openTab` has been
+        // applied — so APPLY it, here, and read the id off the result.
+        //
+        // The planner and the reducer are both pure, so this simulation is
+        // exact: the executor dispatches these same actions onto this same
+        // state, in this order. That is the whole point — the move has to be in
+        // the SAME plan (and so the same React batch) as the open. The first
+        // implementation instead left the move to a `queueMicrotask` in the
+        // provider that re-read `stateRef`; a frame delivered on a macrotask
+        // (which is how ws.onmessage delivers every real frame) drains that
+        // microtask BEFORE React commits, so the ref was pre-open, the lookup
+        // returned null, the move was silently dropped — and the daemon was
+        // told `ok: true, detail: 'opened in split'` for a window that never
+        // split.
+        const opened = chatGroupsReducer(state, open);
+        const hit = findTabBySession(opened, cmd.session_id);
+        if (hit) {
+          const move: ChatGroupsAction = {
+            // Split the tab off its OWN group: a new right-edge pane.
             type: 'moveTabToGroup',
-            tabId: existing.tabId,
-            targetGroupId: existing.groupId,
+            tabId: hit.tabId,
+            targetGroupId: hit.groupId,
             zone: 'right',
-          });
+          };
+          // The reducer refuses splits of its own accord — a group's only tab
+          // cannot be split off it (`moveTabToGroup`: `source.tabs.length <= 1`).
+          // Ask it rather than assume, so `detail` describes what the user will
+          // actually see and a pointless move never reaches the dispatch loop.
+          splits =
+            groupCountOf(chatGroupsReducer(opened, move).layout) > groupCountOf(opened.layout);
+          if (splits) actions.push(move);
         }
-        // A NEW session's tab id does not exist until the openTab commits; the
-        // provider's executor performs the follow-up move against post-commit
-        // state (see the executor, which re-plans the move).
       }
       if (cmd.focus === false && previouslyActive) {
         // §4.1 focus etiquette: background-open never steals the composer.
         actions.push({ type: 'activateTab', tabId: previouslyActive });
       }
       return {
-        result: { ok: true, detail: cmd.placement === 'split' ? 'opened in split' : 'opened' },
+        result: { ok: true, detail: splits ? 'opened in split' : 'opened' },
         actions,
       };
     }

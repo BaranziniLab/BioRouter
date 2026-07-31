@@ -57,6 +57,16 @@ function Probe() {
               .join(',')
           : ''}
       </span>
+      {/* Panes, not just tabs: `sessions` flattens the layout tree, so it reads
+          the same whether two sessions share one pane or sit in two. Anything
+          about splitting has to assert on THIS. */}
+      <span data-testid="panes">
+        {ctx
+          ? leafGroupIds(ctx.state.layout)
+              .map((id) => ctx.state.groups[id].tabs.map((t) => t.sessionId).join('+'))
+              .join(' | ')
+          : ''}
+      </span>
       <span data-testid="badges">
         {JSON.stringify(
           Object.fromEntries(
@@ -105,6 +115,55 @@ describe('ChatGroupsProvider — the workspace command executor', () => {
     // …and the tab is attached to the observer stream, because this window is
     // not the one driving that session (§4.3).
     expect(mocks.observeSession).toHaveBeenCalled();
+  });
+
+  it('splits a new session into its own pane, from a frame delivered as the socket delivers one', async () => {
+    // NOT wrapped in `act()`, and that is the entire point. `ws.onmessage` hands
+    // the executor a frame from a MACROTASK; React then commits on the
+    // Scheduler's own macrotask, so anything the executor defers to
+    // `queueMicrotask` runs BEFORE the commit it is waiting for. The first
+    // implementation deferred the split's follow-up move exactly that way and
+    // re-read `stateRef`, which React had not written yet: the session lookup
+    // missed, the move was silently dropped, and the daemon was answered
+    // `ok: true, detail: 'opened in split'` for a window showing ONE pane.
+    //
+    // `act()` masks it — it flushes the reducer synchronously before the
+    // microtask drains — so the test harness has to stop being kinder than
+    // production for this one case.
+    mount();
+    act(() => {
+      applyWorkspaceCommand(openTab('s-a'));
+    });
+    await waitFor(() => expect(screen.getByTestId('panes').textContent).toBe('s-a'));
+
+    let result: WorkspaceCommandResult | undefined;
+    await act(async () => {
+      await new Promise<void>((resolve) =>
+        setTimeout(() => {
+          result = applyWorkspaceCommand({
+            type: 'workspace',
+            cmd: 'open_tab',
+            session_id: 's-split',
+            placement: 'split',
+            focus: true,
+          });
+          resolve();
+        }, 0)
+      );
+    });
+
+    await waitFor(() => expect(screen.getByTestId('panes').textContent).toBe('s-a | s-split'));
+    // The answer the daemon gets has to describe the window the user is looking
+    // at — a `detail` of 'opened in split' over a single pane is worse than a
+    // refusal, because nothing downstream can tell it is wrong.
+    expect(result).toEqual({ ok: true, detail: 'opened in split' });
+
+    // And it settles there: a re-introduced post-commit follow-up move would
+    // land here, on state that already split, and split again.
+    await act(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    });
+    expect(screen.getByTestId('panes').textContent).toBe('s-a | s-split');
   });
 
   it('drains commands that arrived before any provider was mounted', async () => {
