@@ -297,6 +297,20 @@ struct WorkspaceOpenParams {
     focus: Option<bool>,
 }
 
+/// A conversation `workspace_open` just created, as the rest of the call needs
+/// it.
+struct NewSession {
+    session_id: String,
+    /// Where it works. Carried out of [`WorkspaceClient::open_new_session`]
+    /// because decision 5's "a different directory is never silent" has **two**
+    /// channels and the GUI toast is only one of them: headless
+    /// (`NullServices::gui_command` errors, and the notify path swallows it) the
+    /// tool result is the ONLY channel, and even with a GUI a model that is
+    /// never told where it put the session cannot report it to the user. The
+    /// directory is model-chosen, unvalidated, and worked in immediately.
+    working_dir: std::path::PathBuf,
+}
+
 /// Max sessions one watch call may subscribe to. Each id costs one broadcast
 /// receiver for the duration of the park.
 const WATCH_MAX_SESSIONS: usize = 32;
@@ -932,7 +946,7 @@ impl WorkspaceClient {
         let focus = args.focus.unwrap_or(false);
         let services = workspace_services::get();
 
-        let session_id = match (args.session_id, args.new) {
+        let (session_id, created) = match (args.session_id, args.new) {
             (Some(_), Some(_)) => {
                 return Err("pass either session_id OR new, not both".into());
             }
@@ -946,24 +960,37 @@ impl WorkspaceClient {
                     .get_session(&session_id, false)
                     .await
                     .map_err(|e| format!("no such session: {e}"))?;
-                session_id
+                (session_id, None)
             }
-            (None, Some(new)) => self.open_new_session(caller_session_id, new).await?,
+            (None, Some(new)) => {
+                let created = self.open_new_session(caller_session_id, new).await?;
+                (created.session_id.clone(), Some(created))
+            }
         };
 
-        self.place_in_gui(&session_id, &placement, focus, services.as_ref())
-            .await
+        self.place_in_gui(
+            &session_id,
+            &placement,
+            focus,
+            services.as_ref(),
+            created.as_ref(),
+        )
+        .await
     }
 
     /// The `new:` half of [`Self::handle_open`]: create the session, surface a
     /// directory that is not the caller's, and optionally seed it with a first
     /// detached turn. Split out of `handle_open` for the `too_many_lines`
     /// baseline, not because it has an independent contract.
+    ///
+    /// Returns the directory as well as the id because decision 5's disclosure
+    /// has two channels and the tool result is one of them — see
+    /// [`NewSession::working_dir`].
     async fn open_new_session(
         &self,
         caller_session_id: &str,
         new: WorkspaceOpenNew,
-    ) -> Result<String, String> {
+    ) -> Result<NewSession, String> {
         let services = workspace_services::get()
             .ok_or("starting a new session requires the BioRouter daemon")?;
         // Decision 5: the working dir DEFAULTS to the caller's. A different
@@ -1026,7 +1053,10 @@ impl WorkspaceClient {
                 .with_provenance(provenance);
             services.start_detached_turn(&session_id, message).await?;
         }
-        Ok(session_id)
+        Ok(NewSession {
+            session_id,
+            working_dir,
+        })
     }
 
     /// The GUI half of [`Self::handle_open`] (§4.3): `open_tab` relies on the
@@ -1042,7 +1072,13 @@ impl WorkspaceClient {
         placement: &str,
         focus: bool,
         services: Option<&std::sync::Arc<dyn workspace_services::WorkspaceServices>>,
+        created: Option<&NewSession>,
     ) -> Result<Vec<Content>, String> {
+        // Decision 5, the model-facing half: when this call CREATED the session,
+        // every result says where it works.
+        let dir_note = created
+            .map(|c| format!(" Working directory: {}.", c.working_dir.display()))
+            .unwrap_or_default();
         match services {
             Some(s) if s.gui_attached() => {
                 let frame = if placement == "window" {
@@ -1068,14 +1104,14 @@ impl WorkspaceClient {
                     .and_then(serde_json::Value::as_str)
                     .unwrap_or("");
                 Ok(vec![Content::text(format!(
-                    "Session {session_id} {} in the GUI ({placement}{}). {detail}",
+                    "Session {session_id} {} in the GUI ({placement}{}).{dir_note} {detail}",
                     if ok { "opened" } else { "NOT opened" },
                     if focus { ", focused" } else { ", background" },
                 ))])
             }
             _ => Ok(vec![Content::text(format!(
                 "Session {session_id} ready (gui_attached: false — no tab opened; \
-                 the session exists headlessly)."
+                 the session exists headlessly).{dir_note}"
             ))]),
         }
     }
@@ -5422,13 +5458,20 @@ mod tests {
         recorder.clear_frames();
         let elsewhere = std::env::temp_dir().join("br71-elsewhere");
         std::fs::create_dir_all(&elsewhere).unwrap();
-        open_as(
+        let r = open_as(
             &c,
             &caller_a.id,
             serde_json::json!({ "new": { "working_dir": elsewhere.to_str().unwrap() } }),
         )
         .await;
         assert_eq!(recorder.session_dirs().last().unwrap(), &elsewhere);
+        // The toast is for the user; the RESULT is for the model, and a model
+        // that is never told where it put the session cannot report it.
+        assert!(
+            text_of(&r).contains(&elsewhere.display().to_string()),
+            "the result names the new conversation's directory: {}",
+            text_of(&r)
+        );
         let notify = recorder
             .frame_with_cmd("notify")
             .expect("a caller-dir mismatch must be surfaced, not swallowed");
@@ -5609,6 +5652,16 @@ mod tests {
         .await;
         assert_ne!(r.is_error, Some(true), "got: {}", text_of(&r));
         assert!(text_of(&r).contains("headlessly"), "got: {}", text_of(&r));
+        // Decision 5's disclosure has TWO channels and this is the only one left
+        // here: `NullServices::gui_command` returns `Err`, which the notify path
+        // swallows, so without the directory in the result text a model-chosen
+        // divergent directory is disclosed nowhere at all — and `working_dir` is
+        // unvalidated, model-chosen, and immediately worked in.
+        assert!(
+            text_of(&r).contains(&dir.display().to_string()),
+            "the result names the new conversation's directory: {}",
+            text_of(&r)
+        );
 
         // …but "inherit the caller's directory" cannot be guessed when the
         // caller is unreadable, and the tool says exactly that instead of
