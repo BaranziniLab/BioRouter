@@ -1,6 +1,10 @@
 use crate::session::message_to_markdown;
 use anyhow::{Context, Result};
 
+use crate::commands::session_grouping::{
+    group_by_parent, liveness_label, render_child, Liveness, SessionRow,
+};
+use biorouter::session::session_manager::SessionType;
 use biorouter::session::{generate_diagnostics, Session, SessionManager};
 use biorouter::utils::safe_truncate;
 use cliclack::{confirm, multiselect, select};
@@ -134,9 +138,23 @@ pub async fn handle_session_list(
     ascending: bool,
     working_dir: Option<PathBuf>,
     limit: Option<usize>,
+    subagents: bool,
 ) -> Result<()> {
     let session_manager = SessionManager::instance();
-    let mut sessions = session_manager.list_sessions().await?;
+    // BR-71 Task 38b: `list_sessions()` filters `sub_agent` rows out in SQL, so
+    // the flag has to widen the *query* — a display-only change would show
+    // nothing new.
+    let mut sessions = if subagents {
+        session_manager
+            .list_sessions_by_types(&[
+                SessionType::User,
+                SessionType::Scheduled,
+                SessionType::SubAgent,
+            ])
+            .await?
+    } else {
+        session_manager.list_sessions().await?
+    };
 
     if let Some(ref pat) = working_dir {
         let pat_lower = pat.to_string_lossy().to_lowercase();
@@ -154,24 +172,108 @@ pub async fn handle_session_list(
         sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
     }
 
-    if let Some(n) = limit {
-        sessions.truncate(n);
+    if !subagents {
+        if let Some(n) = limit {
+            sessions.truncate(n);
+        }
+
+        match format.as_str() {
+            "json" => {
+                println!("{}", serde_json::to_string(&sessions)?);
+            }
+            _ => {
+                if sessions.is_empty() {
+                    println!("No sessions found");
+                    return Ok(());
+                }
+
+                println!("Available sessions:");
+                for session in sessions {
+                    let output =
+                        format!("{} - {} - {}", session.id, session.name, session.updated_at);
+                    println!("{}", output);
+                }
+            }
+        }
+        return Ok(());
     }
+
+    // The daemon owns liveness. With none reachable, say "unknown" rather than
+    // printing "done" over a run that is still going.
+    let live: Option<std::collections::HashSet<String>> =
+        crate::commands::session_watch::running_session_ids()
+            .await
+            .ok();
+
+    let rows: Vec<SessionRow> = sessions
+        .iter()
+        .map(|s| SessionRow {
+            id: s.id.clone(),
+            name: s.name.clone(),
+            session_type: s.session_type,
+            parent_session_id: s.parent_session_id.clone(),
+            updated_at: s.updated_at,
+            message_count: s.message_count,
+        })
+        .collect();
+    let mut groups = group_by_parent(rows);
+    // ⚠ `limit` caps the TOP-LEVEL rows, after grouping. Truncating the flat row
+    // list first would let one parent's six children consume a `--limit 5`.
+    if let Some(n) = limit {
+        groups.truncate(n);
+    }
+
+    let liveness_of = |id: &str| match &live {
+        None => Liveness::Unknown,
+        Some(ids) if ids.contains(id) => Liveness::Running,
+        Some(_) => Liveness::Finished,
+    };
 
     match format.as_str() {
         "json" => {
-            println!("{}", serde_json::to_string(&sessions)?);
+            let payload: Vec<serde_json::Value> = groups
+                .iter()
+                .map(|group| {
+                    serde_json::json!({
+                        "session": {
+                            "id": group.session.id,
+                            "name": group.session.name,
+                            "session_type": group.session.session_type.to_string(),
+                            "parent_session_id": group.session.parent_session_id,
+                            "updated_at": group.session.updated_at,
+                            "message_count": group.session.message_count,
+                            "live": liveness_label(liveness_of(&group.session.id)),
+                        },
+                        "children": group.children.iter().map(|child| serde_json::json!({
+                            "id": child.id,
+                            "name": child.name,
+                            "session_type": child.session_type.to_string(),
+                            "parent_session_id": child.parent_session_id,
+                            "updated_at": child.updated_at,
+                            "message_count": child.message_count,
+                            "live": liveness_label(liveness_of(&child.id)),
+                        })).collect::<Vec<_>>(),
+                        "live": liveness_label(liveness_of(&group.session.id)),
+                    })
+                })
+                .collect();
+            println!("{}", serde_json::to_string(&payload)?);
         }
         _ => {
-            if sessions.is_empty() {
+            if groups.is_empty() {
                 println!("No sessions found");
                 return Ok(());
             }
 
             println!("Available sessions:");
-            for session in sessions {
-                let output = format!("{} - {} - {}", session.id, session.name, session.updated_at);
-                println!("{}", output);
+            for group in groups {
+                println!(
+                    "{} - {} - {}",
+                    group.session.id, group.session.name, group.session.updated_at
+                );
+                for child in &group.children {
+                    println!("{}", render_child(child, liveness_of(&child.id)));
+                }
             }
         }
     }

@@ -409,7 +409,15 @@ async fn lookup_session_id(identifier: Identifier) -> Result<String> {
         Ok(session_id)
     } else if let Some(name) = identifier.name {
         let session_manager = SessionManager::instance();
-        let sessions = session_manager.list_sessions().await?;
+        // BR-71: subagent runs are addressable by name too — `list_sessions()`
+        // filters them out at the SQL level (User + Scheduled only).
+        let sessions = session_manager
+            .list_sessions_by_types(&[
+                SessionType::User,
+                SessionType::Scheduled,
+                SessionType::SubAgent,
+            ])
+            .await?;
         sessions
             .into_iter()
             .find(|s| s.name == name || s.id == name)
@@ -461,6 +469,12 @@ enum SessionCommand {
 
         #[arg(short = 'l', long = "limit", help = "Limit the number of results")]
         limit: Option<usize>,
+
+        #[arg(
+            long = "subagents",
+            help = "Include subagent runs, nested under the session that spawned them"
+        )]
+        subagents: bool,
     },
     #[command(about = "Remove sessions. Runs interactively if no ID, name, or regex is provided.")]
     Remove {
@@ -1522,8 +1536,9 @@ async fn handle_session_subcommand(command: SessionCommand) -> Result<()> {
             ascending,
             working_dir,
             limit,
+            subagents,
         } => {
-            handle_session_list(format, ascending, working_dir, limit).await?;
+            handle_session_list(format, ascending, working_dir, limit, subagents).await?;
         }
         SessionCommand::Remove { identifier, regex } => {
             let (session_id, name) = if let Some(id) = identifier {

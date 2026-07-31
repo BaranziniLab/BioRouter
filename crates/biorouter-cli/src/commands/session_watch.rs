@@ -247,6 +247,71 @@ fn print_frames(frames: &[serde_json::Value], stop_on_terminal: bool) -> bool {
     done
 }
 
+/// The sessions holding a turn right now, read from the daemon (BR-71 Task 38b).
+///
+/// Returns `Err` — never an empty set — when no daemon answers, so the caller
+/// can render `state unknown` instead of printing "done" over a run that is
+/// still going. Deliberately a one-shot read rather than `stream_frames`: the
+/// response is a single JSON object, not SSE.
+pub async fn running_session_ids() -> Result<std::collections::HashSet<String>> {
+    let secret = secret_key()?;
+    let port = configured_port();
+    if !daemon_ok(DAEMON_HOST, port).await {
+        return Err(anyhow!(
+            "no Biorouter daemon is listening on {DAEMON_HOST}:{port}, so turn \
+             liveness is not knowable from here"
+        ));
+    }
+    let mut stream = tokio::net::TcpStream::connect(format!("{DAEMON_HOST}:{port}")).await?;
+    stream
+        .write_all(build_get_request("/sessions/running", DAEMON_HOST, &secret).as_bytes())
+        .await?;
+
+    let mut raw = Vec::new();
+    let mut chunk = [0u8; 8192];
+    loop {
+        let read = stream.read(&mut chunk).await?;
+        if read == 0 {
+            break;
+        }
+        raw.extend_from_slice(&chunk[..read]);
+    }
+    let text = String::from_utf8_lossy(&raw).to_string();
+    let (head, body) = text
+        .split_once("\r\n\r\n")
+        .ok_or_else(|| anyhow!("daemon sent a malformed response"))?;
+    let status = head.lines().next().unwrap_or_default();
+    if !status.contains(" 200") {
+        return Err(anyhow!(
+            "daemon refused the request: {status}\n\
+             (401 usually means BIOROUTER_SERVER__SECRET_KEY does not match the daemon's)"
+        ));
+    }
+    Ok(parse_running_ids(body))
+}
+
+/// Pull the id set out of a `/sessions/running` body. Tolerates HTTP/1.1
+/// chunked framing by reading from the first `{` to the last `}` rather than
+/// parsing the whole body — the same defensiveness `feed` applies to SSE.
+pub(crate) fn parse_running_ids(body: &str) -> std::collections::HashSet<String> {
+    let json = body
+        .find('{')
+        .zip(body.rfind('}'))
+        .and_then(|(start, end)| body.get(start..=end))
+        .and_then(|slice| serde_json::from_str::<serde_json::Value>(slice).ok());
+    json.and_then(|value| {
+        value
+            .get("session_ids")
+            .and_then(serde_json::Value::as_array)
+            .map(|ids| {
+                ids.iter()
+                    .filter_map(|id| id.as_str().map(str::to_string))
+                    .collect()
+            })
+    })
+    .unwrap_or_default()
+}
+
 /// `biorouter sessions watch <id>` — read-only observation of a live session.
 pub async fn handle_session_watch(session_id: &str, follow: bool) -> Result<()> {
     let secret = secret_key()?;
