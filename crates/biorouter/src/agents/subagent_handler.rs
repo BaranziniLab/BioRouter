@@ -1719,11 +1719,20 @@ mod tests {
     /// A run that never produces a single stream event must still bracket
     /// itself: `TurnStarted` first, a terminal last, nothing in between.
     ///
-    /// The window matters because the server's turn lease is already held by the
-    /// time `get_agent_messages` runs — `is_turn_active(child)` is true — so a
-    /// client has been told the child is busy. A run that returned `Err` from
-    /// here without a terminal leaves an observer watching a session the daemon
-    /// called busy and then silently wasn't.
+    /// The window matters because **in production** the server's turn lease is
+    /// already held by the time `get_agent_messages` runs, so the daemon is
+    /// answering `is_turn_active(child) == true` and a client has been told the
+    /// child is busy. A run that returned `Err` from here without a terminal
+    /// leaves an observer watching a session the daemon called busy and then
+    /// silently wasn't.
+    ///
+    /// ⚠ Not in THIS test, and the distinction was worth writing down: no
+    /// `WorkspaceServices` is installed here, so no lease is taken and
+    /// `is_turn_active` is never true. This test gates the bracket's placement,
+    /// nothing about the lease. The lease is gated by
+    /// `the_run_holds_the_server_turn_lease_for_its_whole_run` above — which is
+    /// where a reader auditing lease coverage should look, rather than reading
+    /// this comment as evidence and stopping.
     ///
     /// Naming a session that was never created is what reaches that path for an
     /// ordinary reason rather than through a test-only seam: the child's first
