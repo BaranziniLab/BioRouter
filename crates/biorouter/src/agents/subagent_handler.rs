@@ -33,6 +33,91 @@ type TurnAbort = (String, String);
 type AgentMessagesFuture =
     Pin<Box<dyn Future<Output = Result<(Conversation, Option<String>, Option<TurnAbort>)>> + Send>>;
 
+/// BR-71 §4.2 glass-box: a child turn's bracket on the session bus, closed on
+/// **every** exit.
+///
+/// The bus contract is `TurnStarted` then exactly one terminal. Honouring only
+/// the happy path is not enough — an observer that saw the start and never sees
+/// a terminal waits forever on a turn that is long over, and the daemon has
+/// already told it the child is busy (the server turn lease is taken before the
+/// run begins). So the terminal is published from `Drop`, which is the only
+/// construct that also covers a panic unwinding through the run and the future
+/// being dropped outright (a `tokio` task abort — invisible to any
+/// cancellation-token probe, because nothing was cancelled). This is the same
+/// guarantee `biorouter-server`'s `supervise_turn` gives the interactive runner.
+///
+/// [`close`](BusTurnBracket::close) is the normal path and disarms the drop, so
+/// a run never publishes two terminals.
+struct BusTurnBracket {
+    session_id: String,
+    /// The run's cancellation token, so the *drop* path can tell a stopped run
+    /// from a failed one. It is only read on that path: a run that reaches
+    /// `close` passes the reason it computed itself.
+    cancel_probe: Option<CancellationToken>,
+    /// `false` once a terminal has been published, by either path.
+    open: bool,
+}
+
+impl BusTurnBracket {
+    /// Publish `TurnStarted` and take responsibility for the terminal.
+    fn open(session_id: String, turn_id: String, cancel_probe: Option<CancellationToken>) -> Self {
+        crate::session_events::publish(
+            &session_id,
+            crate::session_events::SessionBusEvent::TurnStarted { turn_id },
+        );
+        Self {
+            session_id,
+            cancel_probe,
+            open: true,
+        }
+    }
+
+    /// Close the bracket with the reason the run computed.
+    fn close(mut self, reason: &str) {
+        self.publish_terminal(reason);
+    }
+
+    /// Whether the run's token was tripped — the `cancelled` rung of the ladder.
+    fn run_cancelled(&self) -> bool {
+        self.cancel_probe
+            .as_ref()
+            .is_some_and(CancellationToken::is_cancelled)
+    }
+
+    fn publish_terminal(&mut self, reason: &str) {
+        if !self.open {
+            return;
+        }
+        self.open = false;
+        crate::session_events::publish(
+            &self.session_id,
+            crate::session_events::SessionBusEvent::TurnFinished {
+                reason: reason.to_string(),
+                // `None`, and that is the documented value here, not an
+                // omission: `SessionBusEvent`'s doc reserves `Some(..)` for
+                // brackets published after the BR-52 authoritative store read,
+                // which a subagent run — headless of the daemon — never
+                // performs. Synthesising `TokenState::default()` would put a
+                // plausible-looking all-zero reading on the wire.
+                token_state: None,
+            },
+        );
+    }
+}
+
+impl Drop for BusTurnBracket {
+    fn drop(&mut self) {
+        // A run that never reached `close` did not end normally. It was either
+        // stopped or it failed, and only the token can tell those apart.
+        let reason = if self.run_cancelled() {
+            "cancelled"
+        } else {
+            "error"
+        };
+        self.publish_terminal(reason);
+    }
+}
+
 /// Standalone function to run a complete subagent task, returning a structured
 /// result envelope. A run that fails, or one that ends on a tool call without a
 /// final text message, still yields a meaningful `SubagentResult` (BR-40) —
@@ -273,6 +358,24 @@ fn get_agent_messages(
     cancellation_token: Option<CancellationToken>,
 ) -> AgentMessagesFuture {
     Box::pin(async move {
+        // BR-71 §4.2 glass-box: open the child's bus bracket HERE, at the top of
+        // the run — not down at the reply stream — because the caller has
+        // already taken the server's turn lease, so from this instant the daemon
+        // answers `is_turn_active(child) == true`. Everything below can still
+        // fail: `update_provider` and the system-prompt render both `?` out, and
+        // a run that took one of those exits used to publish neither a start nor
+        // a terminal, leaving an observer watching a session the daemon called
+        // busy and then silently wasn't. The guard's `Drop` closes the bracket on
+        // those paths (and on a panic, and on the future being dropped).
+        //
+        // Turn id: the server lease's id when Task 33 acquired one (so observers
+        // correlate with /agent/cancel's turn_id); a stable synthetic id headless.
+        let bus_bracket = BusTurnBracket::open(
+            session_id.clone(),
+            lease_turn_id.unwrap_or_else(|| format!("subagent-{session_id}")),
+            cancellation_token.clone(),
+        );
+
         let system_instructions = workflow.instructions.clone().unwrap_or_default();
         let user_task = workflow
             .prompt
@@ -490,46 +593,18 @@ fn get_agent_messages(
             reasoning_effort: None,
         };
 
-        // BR-71 §4.2 glass-box: bracket the child's turn on the session bus, so
-        // a tab that did not start this run can still follow it.
-        //
-        // Turn id: the server lease's id when Task 33 acquired one (so observers
-        // correlate with /agent/cancel's turn_id); a stable synthetic id headless.
-        crate::session_events::publish(
-            &session_id,
-            crate::session_events::SessionBusEvent::TurnStarted {
-                turn_id: lease_turn_id.unwrap_or_else(|| format!("subagent-{session_id}")),
-            },
-        );
-
         let mut aborted: Option<TurnAbort> = None;
-        // Taken BEFORE the token moves into `agent.reply(...)` below: a run whose
-        // token was tripped ended `cancelled`, not `error`. The run token already
-        // IS this parameter — `run_complete_subagent_task` passes `Some(run_token)`.
-        let run_token_probe = cancellation_token.clone();
-        let stream_result =
-            crate::session_context::with_session_id(Some(session_id.clone()), async {
-                agent
-                    .reply(user_message, session_config, cancellation_token)
-                    .await
-            })
-            .await;
-        // Not `?`: an observer that has seen `TurnStarted` must always see a
-        // terminal frame. Returning here through `?` would leave the bracket
-        // open forever for a run that failed before its first event.
-        let mut stream = match stream_result {
-            Ok(stream) => stream,
-            Err(e) => {
-                crate::session_events::publish(
-                    &session_id,
-                    crate::session_events::SessionBusEvent::TurnFinished {
-                        reason: "error".into(),
-                        token_state: None,
-                    },
-                );
-                return Err(anyhow!("Failed to get reply from agent: {}", e));
-            }
-        };
+        // `?` is safe again here: `bus_bracket`'s `Drop` publishes the terminal
+        // for this exit (and picks `cancelled` over `error` when the run's token
+        // was tripped, which a hand-written publish on this one path could not
+        // do without duplicating the ladder).
+        let mut stream = crate::session_context::with_session_id(Some(session_id.clone()), async {
+            agent
+                .reply(user_message, session_config, cancellation_token)
+                .await
+        })
+        .await
+        .map_err(|e| anyhow!("Failed to get reply from agent: {}", e))?;
         while let Some(message_result) = stream.next().await {
             match message_result {
                 Ok(event) => {
@@ -590,25 +665,30 @@ fn get_agent_messages(
                 }
             }
         }
-        let run_token_cancelled = run_token_probe.is_some_and(|t| t.is_cancelled());
-        crate::session_events::publish(
-            &session_id,
-            crate::session_events::SessionBusEvent::TurnFinished {
-                reason: if run_token_cancelled {
-                    "cancelled".into()
-                } else if aborted.is_some() {
-                    "error".into()
-                } else {
-                    "stop".into()
-                },
-                // `None`, and that is the documented value here, not an
-                // omission: `SessionBusEvent`'s doc reserves `Some(..)` for
-                // brackets published after the BR-52 authoritative store read,
-                // which a subagent run — headless of the daemon — never
-                // performs.
-                token_state: None,
-            },
-        );
+        // The run reached the end of its stream, so it — not the guard — names
+        // the reason. `bus_bracket` holds a clone of the run's token, taken
+        // before the token moved into `agent.reply(..)` above, so a cancelled
+        // run still reports `cancelled` rather than `error`.
+        //
+        // Wire note (deliberate, not an oversight): when the turn aborted, an
+        // observer sees TWO frames it could read as terminal — the teed
+        // `Agent(TurnAborted)`, which `routes::session_events::map_bus_event`
+        // renders as `MessageEvent::Error` with the classified provider
+        // envelope, and then this `TurnFinished { reason: "error" }`, which it
+        // renders as `Finish`. That is the shape this crate can produce: the
+        // classifier lives in `biorouter-server`, so the child cannot publish a
+        // `SessionBusEvent::TurnError` with a faithful envelope itself, and the
+        // mapper's own comment says its `TurnAborted` arm exists precisely for
+        // publishers that tee raw agent events. The bracket must still close, so
+        // the `Finish` stays — a consumer takes the first terminal it sees.
+        let reason = if bus_bracket.run_cancelled() {
+            "cancelled"
+        } else if aborted.is_some() {
+            "error"
+        } else {
+            "stop"
+        };
+        bus_bracket.close(reason);
 
         // BR-28: the subagent is done — join its SubagentStart hook rather than
         // leaving the detached task to outlive the subagent and race shutdown.
@@ -808,7 +888,10 @@ mod tests {
     /// `subagent_handler.rs`); do not weaken it into "either deregistration is
     /// fine", because identity-scoped removal is the whole point — a plain
     /// remove would also evict a *live* agent registered by someone else.
+    /// Serialized against the other test that runs a real subagent — see
+    /// `subagent_run_publishes_lifecycle_to_the_bus` for why.
     #[tokio::test]
+    #[serial_test::serial(subagent_session_bus)]
     async fn subagent_run_without_daemon_services_still_completes() {
         let temp = tempfile::TempDir::new().unwrap();
         let sm = std::sync::Arc::new(SessionManager::new(temp.path().to_path_buf()));
@@ -915,7 +998,23 @@ mod tests {
         manager.deregister_agent_if_same(&child.id, &sentinel).await;
     }
 
+    /// ⚠ **Serialized, and it has to be.** The session bus is a process-global
+    /// map keyed by session **id**, but ids are minted per *store* as
+    /// `<date>_<n>` (`INSERT … SELECT MAX(CAST(SUBSTR(id, 10) AS INTEGER))`), so
+    /// two tests that each stand up their own `TempDir` `SessionManager` both
+    /// get `<today>_1` and publish into the *same* ring. Anything asserting on
+    /// the sequence then reads another test's frames interleaved with its own.
+    ///
+    /// This is not hypothetical and it is not new: it is why the frame count
+    /// here varies between runs. The `exactly one TurnStarted` assertion below
+    /// is what turned it from silent noise into a failure, and the serial key
+    /// covers every test in this binary that runs a real subagent against a
+    /// minted id (today: this one and
+    /// `subagent_run_without_daemon_services_still_completes`). A new one must
+    /// join the key — or use an id no store would mint, as the two bracket
+    /// tests below do.
     #[tokio::test]
+    #[serial_test::serial(subagent_session_bus)]
     async fn subagent_run_publishes_lifecycle_to_the_bus() {
         use crate::session_events::{self, SessionBusEvent};
         // A run with no provider fails fast — but must still bracket itself,
@@ -1128,6 +1227,289 @@ mod tests {
             !first.metadata.agent_visible,
             "…and stay out of the child's model context (Task 32) — a run that \
              re-persisted it as an ordinary row would double-inject the system prompt"
+        );
+    }
+
+    /// Build the fixture a bracket test needs, for a session id the caller
+    /// chooses — including one that was never created.
+    fn bracket_fixture(
+        temp: &tempfile::TempDir,
+        sm: &std::sync::Arc<SessionManager>,
+    ) -> (AgentConfig, Workflow, TaskConfig) {
+        let config = AgentConfig::new(
+            sm.clone(),
+            crate::config::permission::PermissionManager::instance(),
+            None,
+            crate::config::BioRouterMode::Auto,
+        );
+        let workflow: Workflow = serde_json::from_value(serde_json::json!({
+            "title": "t", "description": "d",
+            "instructions": "do the thing", "prompt": "go"
+        }))
+        .unwrap();
+        let cassette = temp.path().join("empty.json");
+        std::fs::write(&cassette, "{}").unwrap();
+        let provider = std::sync::Arc::new(
+            crate::providers::testprovider::TestProvider::new_replaying(cassette.to_str().unwrap())
+                .unwrap(),
+        );
+        let task_config = TaskConfig {
+            provider,
+            parent_session_id: "parent-1".into(),
+            parent_working_dir: temp.path().to_path_buf(),
+            extensions: vec![],
+            max_turns: Some(3),
+        };
+        (config, workflow, task_config)
+    }
+
+    /// A run that never produces a single stream event must still bracket
+    /// itself: `TurnStarted` first, a terminal last, nothing in between.
+    ///
+    /// The window matters because the server's turn lease is already held by the
+    /// time `get_agent_messages` runs — `is_turn_active(child)` is true — so a
+    /// client has been told the child is busy. A run that returned `Err` from
+    /// here without a terminal leaves an observer watching a session the daemon
+    /// called busy and then silently wasn't.
+    ///
+    /// Naming a session that was never created is what reaches that path for an
+    /// ordinary reason rather than through a test-only seam: the child's first
+    /// message insert violates the sessions foreign key, so `agent.reply(..)`
+    /// fails at construction and the stream never yields.
+    ///
+    /// Two `?` exits sit *even earlier* (`update_provider`, the system-prompt
+    /// render) and are not reachable from a unit test — neither fails for any
+    /// input a caller controls. They are covered by the guard itself, gated by
+    /// `an_unclosed_bracket_still_publishes_a_terminal_when_dropped` below.
+    #[tokio::test]
+    async fn subagent_run_with_no_stream_events_still_brackets_itself() {
+        use crate::session_events::{self, SessionBusEvent};
+        let temp = tempfile::TempDir::new().unwrap();
+        let sm = std::sync::Arc::new(SessionManager::new(temp.path().to_path_buf()));
+        // Deliberately never created.
+        let ghost = "ghost-session-never-created".to_string();
+        let mut rx = session_events::subscribe(&ghost);
+        let (config, workflow, task_config) = bracket_fixture(&temp, &sm);
+
+        let result =
+            run_complete_subagent_task(config, workflow, task_config, true, ghost.clone(), None)
+                .await;
+        assert_eq!(
+            result.status,
+            crate::agents::subagent_result::SubagentStatus::Error,
+            "fixture precondition: the run must fail before its first event; got {result:?}"
+        );
+
+        let events: Vec<SessionBusEvent> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        assert!(
+            matches!(
+                events.first(),
+                Some(SessionBusEvent::TurnStarted { turn_id }) if *turn_id == format!("subagent-{ghost}")
+            ),
+            "a run whose lease is held must open its bracket before the work that \
+             can fail; got {events:?}"
+        );
+        assert!(
+            matches!(
+                events.last(),
+                Some(SessionBusEvent::TurnFinished { reason, .. }) if reason == "error"
+            ),
+            "…and must close it on the failing exit, or an observer waits forever; \
+             got {events:?}"
+        );
+        assert_eq!(
+            events.len(),
+            2,
+            "fixture precondition: this run must reach no stream event at all, so the \
+             bracket is the only thing under test; got {events:?}"
+        );
+    }
+
+    /// The same failure, but with the run's token already tripped: the terminal
+    /// must say `cancelled`, not `error`.
+    ///
+    /// This exit never reaches the ladder at the bottom of the stream loop, so
+    /// it is the one run-level gate on the guard's own reason probe. A run the
+    /// user stopped is not a run that failed — the previous implementation
+    /// hardcoded `"error"` on this path.
+    #[tokio::test]
+    async fn a_cancelled_run_that_never_reached_the_stream_closes_as_cancelled() {
+        use crate::session_events::{self, SessionBusEvent};
+        let temp = tempfile::TempDir::new().unwrap();
+        let sm = std::sync::Arc::new(SessionManager::new(temp.path().to_path_buf()));
+        let ghost = "ghost-session-cancelled".to_string();
+        let mut rx = session_events::subscribe(&ghost);
+        let (config, workflow, task_config) = bracket_fixture(&temp, &sm);
+
+        // `run_complete_subagent_task` derives the run token as a CHILD of this
+        // one, so a parent that is already cancelled hands the run a cancelled
+        // token — the shape a stopped parent turn produces.
+        let parent_token = CancellationToken::new();
+        parent_token.cancel();
+        let _ = run_complete_subagent_task(
+            config,
+            workflow,
+            task_config,
+            true,
+            ghost.clone(),
+            Some(parent_token),
+        )
+        .await;
+
+        let events: Vec<SessionBusEvent> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        assert!(
+            matches!(
+                events.last(),
+                Some(SessionBusEvent::TurnFinished { reason, .. }) if reason == "cancelled"
+            ),
+            "a stopped run must close as `cancelled`, not `error`; got {events:?}"
+        );
+    }
+
+    /// A run that dies **between the lease and the stream** still closes its
+    /// bracket — the window `subagent_run_with_no_stream_events_still_brackets_itself`
+    /// cannot reach.
+    ///
+    /// That window is where the bracket's *placement* is decided, and nothing
+    /// else gates it: move the `BusTurnBracket::open` call back down next to
+    /// `agent.reply(..)` and every other test in this file still passes, because
+    /// they all fail at or after that line. The two `?` exits in the window
+    /// (`update_provider`, the system-prompt render) cannot be made to fail for
+    /// any input a caller controls — an `UPDATE` matching no row is not an
+    /// error, and the prompt template is embedded in the binary — so the failure
+    /// used here is a **panic**, which is one of the three exits the guard
+    /// exists for anyway (the others being `?` and the future being dropped).
+    ///
+    /// `max_turns: None` reaches it: the prompt context `expect`s the value.
+    /// If that `expect` is ever softened to a default, this run will reach the
+    /// stream instead and the "exactly 2 frames" assertion below fails loudly
+    /// rather than going quietly vacuous.
+    #[tokio::test]
+    async fn a_run_that_panics_before_the_stream_still_closes_its_bracket() {
+        use crate::session_events::{self, SessionBusEvent};
+        let temp = tempfile::TempDir::new().unwrap();
+        let sm = std::sync::Arc::new(SessionManager::new(temp.path().to_path_buf()));
+        // An id no store would mint, so this test needs no serial key.
+        let ghost = "ghost-session-panics".to_string();
+        let mut rx = session_events::subscribe(&ghost);
+        let (config, workflow, mut task_config) = bracket_fixture(&temp, &sm);
+        task_config.max_turns = None;
+
+        // Spawned so the panic is contained here instead of failing the test:
+        // it is the subject, not an accident.
+        let joined = tokio::spawn(async move {
+            run_complete_subagent_task(config, workflow, task_config, true, ghost, None).await
+        })
+        .await;
+        assert!(
+            joined.is_err_and(|e| e.is_panic()),
+            "fixture precondition: the run must panic before reaching the stream"
+        );
+
+        let events: Vec<SessionBusEvent> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        assert_eq!(
+            events.len(),
+            2,
+            "the run must have died before its first stream event; got {events:?}"
+        );
+        assert!(
+            matches!(events.first(), Some(SessionBusEvent::TurnStarted { .. })),
+            "the bracket must be OPEN before the work that can die — the lease is \
+             already held, so the daemon is already reporting this child busy; \
+             got {events:?}"
+        );
+        assert!(
+            matches!(
+                events.last(),
+                Some(SessionBusEvent::TurnFinished { reason, .. }) if reason == "error"
+            ),
+            "…and the unwind must close it; got {events:?}"
+        );
+    }
+
+    /// The guard closes the bracket from `Drop`, which is the only thing that
+    /// covers the exits no run-level test can reach: the two setup `?`s that
+    /// fail for no caller-controllable input, a panic unwinding through the run,
+    /// and the future being dropped outright (a `tokio` task abort — which no
+    /// cancellation-token probe can observe, because the token was never
+    /// cancelled).
+    ///
+    /// Asserted here rather than inferred from the shape of the code, because
+    /// "there is a `Drop` impl" and "the `Drop` impl publishes the terminal an
+    /// observer is waiting for" are different claims.
+    #[test]
+    fn an_unclosed_bracket_still_publishes_a_terminal_when_dropped() {
+        use crate::session_events::{self, SessionBusEvent};
+        let mut rx = session_events::subscribe("dropped-bracket");
+        {
+            let _bracket = BusTurnBracket::open("dropped-bracket".into(), "turn-9".into(), None);
+        }
+        let events: Vec<SessionBusEvent> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        assert!(
+            matches!(
+                events.first(),
+                Some(SessionBusEvent::TurnStarted { turn_id }) if turn_id == "turn-9"
+            ),
+            "opening the bracket publishes TurnStarted; got {events:?}"
+        );
+        assert!(
+            matches!(
+                events.last(),
+                Some(SessionBusEvent::TurnFinished { reason, token_state: None }) if reason == "error"
+            ),
+            "dropping an unclosed bracket must publish a terminal; got {events:?}"
+        );
+    }
+
+    /// …and a bracket dropped while the run's token is tripped closes as
+    /// `cancelled`. Same reasoning as the run-level test: a stop is not a
+    /// failure, and this is the branch a panic or task abort under cancellation
+    /// takes.
+    #[test]
+    fn a_dropped_bracket_reports_cancelled_when_the_run_token_was_tripped() {
+        use crate::session_events::{self, SessionBusEvent};
+        let mut rx = session_events::subscribe("dropped-bracket-cancelled");
+        let token = CancellationToken::new();
+        token.cancel();
+        drop(BusTurnBracket::open(
+            "dropped-bracket-cancelled".into(),
+            "turn-10".into(),
+            Some(token),
+        ));
+        let events: Vec<SessionBusEvent> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        assert!(
+            matches!(
+                events.last(),
+                Some(SessionBusEvent::TurnFinished { reason, .. }) if reason == "cancelled"
+            ),
+            "got {events:?}"
+        );
+    }
+
+    /// Closing explicitly publishes exactly one terminal — the subsequent `Drop`
+    /// must not publish a second. A double terminal is a wire-contract
+    /// violation: `workspace_watch` and `wait:"final_message"` both treat the
+    /// first one as the end of the turn.
+    #[test]
+    fn closing_a_bracket_disarms_its_drop() {
+        use crate::session_events::{self, SessionBusEvent};
+        let mut rx = session_events::subscribe("closed-bracket");
+        BusTurnBracket::open("closed-bracket".into(), "turn-11".into(), None).close("stop");
+        let events: Vec<SessionBusEvent> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| matches!(e, SessionBusEvent::TurnFinished { .. }))
+                .count(),
+            1,
+            "exactly one terminal; got {events:?}"
+        );
+        assert!(
+            matches!(
+                events.last(),
+                Some(SessionBusEvent::TurnFinished { reason, .. }) if reason == "stop"
+            ),
+            "and it carries the reason the caller chose; got {events:?}"
         );
     }
 }
