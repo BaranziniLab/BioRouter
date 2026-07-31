@@ -236,6 +236,60 @@ describe('SessionListView row actions', () => {
     });
   });
 
+  it('the Show-subagent-runs toggle refetches with include_subagents and nests children', async () => {
+    mocks.listSessions.mockResolvedValue({
+      data: {
+        sessions: [
+          {
+            id: 'p1',
+            session_type: 'user',
+            name: 'Parent',
+            working_dir: '/tmp',
+            created_at: '2026-07-14T12:00:00Z',
+            updated_at: '2026-07-14T12:00:00Z',
+            extension_data: {},
+            message_count: 3,
+          },
+          {
+            id: 'c1',
+            session_type: 'sub_agent',
+            parent_session_id: 'p1',
+            name: 'Subagent task',
+            working_dir: '/tmp',
+            created_at: '2026-07-14T12:00:00Z',
+            updated_at: '2026-07-14T12:00:00Z',
+            extension_data: {},
+            message_count: 2,
+          },
+        ],
+      },
+    });
+    // The component calls `useNavigate()`, so it MUST be inside a router, and
+    // `onSelectSession` is a required prop. This is the exact shape every other
+    // case in this file uses.
+    render(
+      <MemoryRouter>
+        <SessionListView onSelectSession={vi.fn()} />
+      </MemoryRouter>
+    );
+    const toggle = await screen.findByLabelText(/show subagent runs/i);
+    fireEvent.click(toggle);
+    await waitFor(() =>
+      expect(mocks.listSessions).toHaveBeenLastCalledWith(
+        expect.objectContaining({ query: { include_subagents: true } })
+      )
+    );
+    // Nested, not merely present: the child sits inside the indented wrapper
+    // and carries the badge, so the row reads as belonging to 'Parent'.
+    // Re-query on every attempt — `SessionItem` is declared inside
+    // `SessionListView`'s body, so each re-render is a fresh component type and
+    // React replaces the row's DOM node. A node captured once goes stale (it is
+    // detached, and `closest` then walks nothing), which is a flake, not a bug
+    // in the nesting.
+    await waitFor(() => expect(screen.getByText('Subagent task').closest('.ml-6')).not.toBeNull());
+    expect(screen.getByText('sub')).toBeTruthy();
+  });
+
   it('uses the shared notification surface after editing a session', async () => {
     const session = {
       id: 'session-1',

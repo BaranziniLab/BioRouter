@@ -29,6 +29,7 @@ import { SearchView } from '../conversation/SearchView';
 import { SearchHighlighter } from '../../utils/searchHighlighter';
 import { MainPanelLayout } from '../Layout/MainPanelLayout';
 import { groupSessionsByDate, type DateGroup } from '../../utils/dateUtils';
+import { groupSessionsByParent } from './sessionGrouping';
 import { Skeleton } from '../ui/skeleton';
 import { ConfirmationModal } from '../ui/ConfirmationModal';
 import { ImportSessionModal } from './ImportSessionModal';
@@ -300,6 +301,11 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
 
     const [visibleSessionCount, setVisibleSessionCount] = useState(INITIAL_VISIBLE_SESSIONS);
 
+    // BR-71: subagent transcripts are hidden by default — they are machinery,
+    // not conversations the user started. Turning this on refetches with
+    // `include_subagents` and nests each run under the session that spawned it.
+    const [showSubagents, setShowSubagents] = useState(false);
+
     // Edit modal state
     const [showEditModal, setShowEditModal] = useState(false);
     const [editingSession, setEditingSession] = useState<Session | null>(null);
@@ -380,7 +386,7 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
         setError(null);
       }
       try {
-        const refreshedSessions = await refreshSessionList();
+        const refreshedSessions = await refreshSessionList(showSubagents);
         // Use startTransition to make state updates non-blocking
         startTransition(() => {
           setSessions(refreshedSessions);
@@ -397,7 +403,7 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
       } finally {
         if (!hasCachedSessions) setIsLoading(false);
       }
-    }, []);
+    }, [showSubagents]);
 
     useEffect(() => {
       loadSessions();
@@ -912,15 +918,30 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
                 </h2>
               </div>
               <div className="session-grid biorouter-list-shell">
-                {group.sessions.map((session) => (
-                  <SessionItem
-                    key={session.id}
-                    session={session}
-                    onEditClick={handleEditSession}
-                    onDeleteClick={handleDeleteSession}
-                    onExportClick={handleExportSession}
-                    onOpenInNewWindow={handleOpenInNewWindow}
-                  />
+                {groupSessionsByParent(group.sessions).map(({ session, children }) => (
+                  <React.Fragment key={session.id}>
+                    <SessionItem
+                      session={session}
+                      onEditClick={handleEditSession}
+                      onDeleteClick={handleDeleteSession}
+                      onExportClick={handleExportSession}
+                      onOpenInNewWindow={handleOpenInNewWindow}
+                    />
+                    {children.map((child) => (
+                      <div key={child.id} className="ml-6 border-l border-border-subtle pl-2">
+                        <span className="mr-1 rounded bg-background-code px-1 text-[10px] text-text-subtle">
+                          sub
+                        </span>
+                        <SessionItem
+                          session={child}
+                          onEditClick={handleEditSession}
+                          onDeleteClick={handleDeleteSession}
+                          onExportClick={handleExportSession}
+                          onOpenInNewWindow={handleOpenInNewWindow}
+                        />
+                      </div>
+                    ))}
+                  </React.Fragment>
                 ))}
               </div>
             </div>
@@ -960,6 +981,14 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
                   View and search your past conversations with Biorouter. {getSearchShortcutText()}{' '}
                   to search.
                 </p>
+                <label className="mt-3 flex items-center gap-1 text-xs text-text-subtle">
+                  <input
+                    type="checkbox"
+                    checked={showSubagents}
+                    onChange={(e) => setShowSubagents(e.target.checked)}
+                  />
+                  Show subagent runs
+                </label>
               </ReadableContent>
             </div>
 

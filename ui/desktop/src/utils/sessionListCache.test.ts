@@ -64,6 +64,23 @@ describe('sessionListCache', () => {
     expect(getCachedSessionList()?.[0]).toMatchObject({ name: 'New name', user_set_name: true });
   });
 
+  it('a keyless refresh keeps the flagged identity instead of clobbering it', async () => {
+    mocks.listSessions.mockResolvedValue({ data: { sessions: [] } });
+    await refreshSessionList(true);
+    expect(mocks.listSessions).toHaveBeenLastCalledWith(
+      expect.objectContaining({ query: { include_subagents: true } })
+    );
+    mocks.listSessions.mockClear();
+    // Home's loader. It has no opinion, so it must not invalidate History's:
+    // whatever it re-reads, it re-reads with the identity History asked for.
+    // It re-reads (this function has no cache-hit short-circuit — a membership
+    // change depends on that), but it must re-read the flagged identity.
+    await refreshSessionList();
+    expect(mocks.listSessions).toHaveBeenLastCalledWith(
+      expect.objectContaining({ query: { include_subagents: true } })
+    );
+  });
+
   it('notifies list-change subscribers and re-reads on a membership change', async () => {
     mocks.listSessions.mockResolvedValue({ data: { sessions: [] } });
     await refreshSessionList();

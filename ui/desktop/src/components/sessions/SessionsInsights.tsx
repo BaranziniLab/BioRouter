@@ -89,7 +89,12 @@ export function SessionInsights() {
     const loadRecentSessions = async () => {
       try {
         const sessions = await refreshSessionList();
-        const refreshedRecentSessions = sessions.slice(0, RECENT_LIMIT);
+        // BR-71: History may have asked the shared cache for subagent runs.
+        // Home's recents are conversations the *user* started, so drop them
+        // here regardless of what the other surface wanted.
+        const refreshedRecentSessions = sessions
+          .filter((s) => s.session_type !== 'sub_agent')
+          .slice(0, RECENT_LIMIT);
         cacheHomeRecentSessions(refreshedRecentSessions);
         setRecentSessions(refreshedRecentSessions);
       } catch (error) {

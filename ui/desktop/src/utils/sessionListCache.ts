@@ -3,6 +3,9 @@ import { subscribeSessionNameChanges } from './sessionNameSync';
 
 let cachedSessions: Session[] | null = null;
 let inFlightRequest: Promise<Session[]> | null = null;
+// BR-71: the `include_subagents` query key is part of the cache identity, or a
+// toggle serves the stale list and never refetches.
+let cachedIncludeSubagents = false;
 const listeners = new Set<() => void>();
 
 function emitChange(): void {
@@ -88,10 +91,27 @@ export function subscribeSessionList(listener: () => void): () => void {
   return () => listeners.delete(listener);
 }
 
-export async function refreshSessionList(): Promise<Session[]> {
+// ⚠ `includeSubagents?: boolean`, NOT `= false`. This module has TWO consumers
+// (History and Home's `SessionsInsights`) and only one of them has an opinion;
+// a keyless call must mean "whatever is cached", not "false", or Home's every
+// render would invalidate History's toggle and silently drop the children.
+export async function refreshSessionList(includeSubagents?: boolean): Promise<Session[]> {
+  // A flag change invalidates both the in-flight request and the cache: the
+  // dedupe below is keyed only on "a request is running", so without this a
+  // toggle during an in-flight fetch would resolve to the OTHER flag's result.
+  if (includeSubagents !== undefined && includeSubagents !== cachedIncludeSubagents) {
+    cachedIncludeSubagents = includeSubagents;
+    cachedSessions = null;
+    inFlightRequest = null;
+  }
   if (inFlightRequest) return inFlightRequest;
 
-  inFlightRequest = listSessions<true>({ throwOnError: true })
+  inFlightRequest = listSessions<true>({
+    throwOnError: true,
+    // `cachedIncludeSubagents`, not the parameter: a keyless call must send the
+    // identity the cache is holding, not `undefined`.
+    query: { include_subagents: cachedIncludeSubagents },
+  })
     .then((response) => {
       cachedSessions = response.data.sessions;
       emitChange();
@@ -112,5 +132,6 @@ export function preloadSessionList(): void {
 export function clearSessionListCache(): void {
   cachedSessions = null;
   inFlightRequest = null;
+  cachedIncludeSubagents = false;
   emitChange();
 }
