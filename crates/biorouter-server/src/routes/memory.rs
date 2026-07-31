@@ -21,6 +21,17 @@
 //! `MemoryServer::get_memory_file`, so the containment checks issue #73 added
 //! govern this door exactly as they govern the four MCP tools. A refused
 //! category is a `400`, because it is the caller's mistake.
+//!
+//! **The secret key is declared, not merely enforced.** These routes list the
+//! machine-wide store and irreversibly delete from it, and the daemon's
+//! `check_token` middleware protects them — but it is applied in
+//! `commands/agent.rs`, outside `routes::configure`, so nothing in the route
+//! definitions said so. A spec that omits it describes an open endpoint: a
+//! client generated from it is entitled to send no key and to have no branch
+//! for the `401`, and an operator reading it is entitled to believe the store
+//! is readable by anything that can reach the loopback port. The `security` and
+//! `401` annotations below state the contract the middleware already keeps
+//! (#63 review, finding 7); `tests/memory_routes_auth.rs` pins that it does.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -166,8 +177,11 @@ fn project_dir(working_dir: Option<&String>) -> Option<&str> {
     params(MemoryInventoryQuery),
     responses(
         (status = 200, description = "Everything both memory stores hold", body = MemoryInventoryResponse),
+        (status = 401, description = "Unauthorized - Invalid or missing API key"),
         (status = 500, description = "A store could not be read"),
     ),
+    security(("api_key" = [])),
+    tag = "Memory"
 )]
 async fn memory_inventory(
     State(global): State<Arc<PathBuf>>,
@@ -201,9 +215,12 @@ async fn memory_inventory(
     responses(
         (status = 200, description = "The memory was deleted", body = MemoryDeleteEntryResponse),
         (status = 400, description = "Invalid category, or a local scope with no working_dir"),
+        (status = 401, description = "Unauthorized - Invalid or missing API key"),
         (status = 404, description = "No memory at that position"),
         (status = 409, description = "The category changed since it was listed"),
     ),
+    security(("api_key" = [])),
+    tag = "Memory"
 )]
 async fn memory_delete_entry(
     State(global): State<Arc<PathBuf>>,
@@ -266,9 +283,12 @@ async fn memory_delete_entry(
     responses(
         (status = 200, description = "The category was deleted", body = MemoryDeleteCategoryResponse),
         (status = 400, description = "Invalid category, or a local scope with no working_dir"),
+        (status = 401, description = "Unauthorized - Invalid or missing API key"),
         (status = 404, description = "No such category"),
         (status = 409, description = "The category changed since it was listed"),
     ),
+    security(("api_key" = [])),
+    tag = "Memory"
 )]
 async fn memory_delete_category(
     State(global): State<Arc<PathBuf>>,

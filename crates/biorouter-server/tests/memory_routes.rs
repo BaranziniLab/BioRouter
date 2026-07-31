@@ -527,3 +527,47 @@ fn the_default_router_manages_the_real_global_store() {
          honours BIOROUTER_PATH_ROOT, not a hand-rolled copy"
     );
 }
+
+/// #63 review, finding 7. These routes list and **irreversibly delete** the
+/// user's memories, and the daemon's global middleware protects them — but the
+/// annotations did not say so, so the published contract and the generated
+/// TypeScript client both described them as open. A client generated from that
+/// spec is entitled to omit the key, and an operator reading it is entitled to
+/// believe the memory store is world-readable on the loopback port.
+///
+/// The declaration is asserted against the *generated* document, because that is
+/// the artefact the client is built from.
+#[test]
+fn the_memory_routes_declare_the_authentication_they_actually_require() {
+    let spec: Value = serde_json::from_str(&biorouter_server::openapi::generate_schema()).unwrap();
+
+    let scheme = &spec["components"]["securitySchemes"]["api_key"];
+    assert!(
+        scheme.is_object(),
+        "the routes name an `api_key` scheme; a spec that does not define it is \
+         a dangling reference no generator can honour: {scheme:?}"
+    );
+
+    for (path, method) in [
+        ("/memory/inventory", "get"),
+        ("/memory/delete_entry", "post"),
+        ("/memory/delete_category", "post"),
+    ] {
+        let operation = &spec["paths"][path][method];
+        assert!(
+            operation.is_object(),
+            "{method} {path} is not in the generated spec at all"
+        );
+        assert_eq!(
+            operation["security"],
+            json!([{"api_key": []}]),
+            "{method} {path} does not declare the secret key it requires"
+        );
+        assert!(
+            operation["responses"]["401"].is_object(),
+            "{method} {path} does not document the 401 the middleware returns, so \
+             a generated client has no branch for it: {:?}",
+            operation["responses"]
+        );
+    }
+}
