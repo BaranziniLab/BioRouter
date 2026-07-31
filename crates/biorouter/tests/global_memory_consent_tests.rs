@@ -253,6 +253,85 @@ async fn unrelated_tools_are_unaffected() {
     assert_eq!(result.approved.len(), 1);
 }
 
+/// …but "unaffected" is about the *tool*, not the tool's arguments, and the
+/// store is a directory of text files. `cat <store>/clinical.txt` is the same
+/// disclosure the consent card exists for and `rm -rf <store>` the same
+/// destruction, taken with a tool the gate does not recognise by name.
+///
+/// The unit tests pin the classifier; this pins it through the real inspection
+/// manager in Auto mode, where the permission baseline approves everything — the
+/// exact configuration the issue was reported against, and the one where a
+/// classifier that quietly stopped running would go unnoticed.
+#[tokio::test]
+async fn a_shell_command_that_reads_the_global_store_is_refused() {
+    let store = biorouter_mcp::global_memory_dir();
+    let store = store.display().to_string();
+
+    for (id, command) in [
+        ("r1", format!("cat {store}/clinical.txt")),
+        ("r2", format!("rm -rf {store}")),
+        ("r3", format!("tar czf /tmp/x.tgz {store}")),
+    ] {
+        let (manager, _pm, _tmp) = build_manager();
+        let requests = vec![tool_request(
+            id,
+            "developer__shell",
+            json!({"command": command}),
+        )];
+        let result = decide(&manager, &requests, BioRouterMode::Auto).await;
+
+        assert_partition(&result);
+        assert!(
+            result.approved.is_empty(),
+            "{command:?} reached the machine-wide memory store with nobody asked"
+        );
+        assert_eq!(
+            result.denied.len(),
+            1,
+            "{command:?} must be refused outright — approving \"run this shell \
+             command\" is not consent to disclose a memory category, and there is \
+             a call that asks by name"
+        );
+        assert!(
+            result.needs_approval.is_empty(),
+            "{command:?} must not become a card that reads as a shell prompt"
+        );
+    }
+}
+
+/// Denying by path must not deny by resemblance, or ordinary work in the config
+/// directory stops. Through the real manager, in the same mode.
+#[tokio::test]
+async fn a_shell_command_near_the_global_store_is_still_approved() {
+    let store = biorouter_mcp::global_memory_dir();
+    let parent = store.parent().unwrap().display().to_string();
+    let store = store.display().to_string();
+
+    for (id, command) in [
+        // A sibling whose name merely starts with the store's.
+        ("r1", format!("cat {store}-archive.txt")),
+        // Backing up ~/.config is an ordinary thing to ask for.
+        ("r2", format!("tar czf /tmp/config.tgz {parent}")),
+        // Project-local memory: under the directory the user opened.
+        ("r3", "cat .biorouter/memory/development.txt".to_string()),
+    ] {
+        let (manager, _pm, _tmp) = build_manager();
+        let requests = vec![tool_request(
+            id,
+            "developer__shell",
+            json!({"command": command}),
+        )];
+        let result = decide(&manager, &requests, BioRouterMode::Auto).await;
+
+        assert_partition(&result);
+        assert_eq!(
+            result.approved.len(),
+            1,
+            "{command:?} is not the machine-wide store and must not be refused"
+        );
+    }
+}
+
 // --- ordering -------------------------------------------------------------
 
 /// The merge is escalation-only, so the *registration order* of these two

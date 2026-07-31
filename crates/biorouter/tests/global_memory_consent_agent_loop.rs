@@ -10,12 +10,20 @@
 //! These tests drive the whole loop with a mock provider (no network, no
 //! keychain) and a project `.biorouter/hooks.yaml`, asserting on what the user
 //! actually sees: a confirmation card, or a tool that ran without one.
+//!
+//! They also close the loop the other way (#63 review, test quality). Asserting
+//! that a call lands in `needs_approval` is satisfied by a gate that raises a
+//! prompt and never resumes — the user approves, and nothing happens. So the
+//! round-trip tests below add the real `memory` extension over a sandboxed
+//! store, answer the card, and assert on the *tool response*: approving returns
+//! the memory, denying does not and says why.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use anyhow::Result;
 use async_trait::async_trait;
+use biorouter::agents::extension::ExtensionConfig;
 use biorouter::agents::{Agent, AgentConfig, AgentEvent, SessionConfig};
 use biorouter::config::permission::PermissionManager;
 use biorouter::config::BioRouterMode;
@@ -119,6 +127,10 @@ const ALLOW_EVERYTHING_HOOK: &str = r#"hooks:
           command: "echo '{\"hookSpecificOutput\":{\"permissionDecision\":\"allow\",\"permissionDecisionReason\":\"auto-approved by project policy\"}}'"
 "#;
 
+/// A hooks file that answers nothing, so the round-trip tests below exercise the
+/// card itself rather than a hook's verdict.
+const NO_HOOKS: &str = "hooks: {}\n";
+
 async fn agent_with_hooks(
     hooks_yaml: &str,
     provider: Arc<dyn Provider>,
@@ -177,6 +189,18 @@ async fn drain_collecting_cards(
     user: &str,
     session_id: &str,
 ) -> Result<(Vec<Message>, Vec<Card>)> {
+    drain_answering(agent, user, session_id, Permission::AllowOnce).await
+}
+
+/// The same, with the user's answer as a parameter — "allow once" is only half
+/// the contract, and a gate that returned the memory either way would pass every
+/// test that only ever approves.
+async fn drain_answering(
+    agent: &Agent,
+    user: &str,
+    session_id: &str,
+    answer: Permission,
+) -> Result<(Vec<Message>, Vec<Card>)> {
     let session_config = SessionConfig {
         id: session_id.to_string(),
         schedule_id: None,
@@ -212,7 +236,7 @@ async fn drain_collecting_cards(
                             id.clone(),
                             PermissionConfirmation {
                                 principal_type: PrincipalType::Tool,
-                                permission: Permission::AllowOnce,
+                                permission: answer.clone(),
                             },
                         )
                         .await;
@@ -351,4 +375,202 @@ async fn a_permission_hook_still_answers_a_local_memory_call() {
         cards.is_empty(),
         "project-local memory is ungated; the hook must still cover it (cards: {cards:?})"
     );
+}
+
+// --- the whole round trip: card → answer → what the model gets --------------
+//
+// `global_memory_consent_tests.rs` stops at `needs_approval`, and the tests
+// above stop at the card. Both are satisfied by a gate that prompts and never
+// resumes: the user approves and nothing happens. These two drive the real
+// `memory` extension over a sandboxed store and assert on the tool response.
+
+/// Where `biorouter_mcp::global_memory_dir()` lands under a sandbox root.
+fn sandboxed_store(root: &std::path::Path) -> std::path::PathBuf {
+    root.join("config").join("memory")
+}
+
+/// The text of every tool response in a turn.
+fn tool_response_text(messages: &[Message]) -> String {
+    messages
+        .iter()
+        .flat_map(|message| message.content.iter())
+        .filter_map(|content| match content {
+            MessageContent::ToolResponse(response) => Some(response),
+            _ => None,
+        })
+        .map(|response| match &response.tool_result {
+            Ok(result) => result
+                .content
+                .iter()
+                .filter_map(|c| match &c.raw {
+                    rmcp::model::RawContent::Text(t) => Some(t.text.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+            Err(e) => e.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join("\n---\n")
+}
+
+/// An agent with the real built-in `memory` extension, both stores redirected
+/// under `root` so no test reads or writes the developer's own memories.
+///
+/// The env has to be set *while* `add_extension` runs: the built-in server
+/// resolves `global_memory_dir()` when it is constructed, inside that call.
+async fn agent_with_memory(
+    root: &std::path::Path,
+    provider: Arc<dyn Provider>,
+) -> (Agent, String, TempDir) {
+    let _env = env_lock::lock_env([(
+        "BIOROUTER_PATH_ROOT",
+        Some(root.to_string_lossy().into_owned()),
+    )]);
+    let (agent, session_id, work) = agent_with_hooks(NO_HOOKS, provider, BioRouterMode::Auto).await;
+    agent
+        .add_extension(ExtensionConfig::Builtin {
+            name: "memory".to_string(),
+            description: "memory".to_string(),
+            display_name: Some("Memory".to_string()),
+            timeout: Some(300),
+            bundled: Some(true),
+            available_tools: vec![],
+        })
+        .await
+        .expect("add the built-in memory extension");
+    (agent, session_id, work)
+}
+
+/// Approving the card has to *work*. The gate's whole justification is that the
+/// feature survives it — "one approved category at a time" — so a consent flow
+/// that prompts and then returns nothing would be the blanket refusal the #63
+/// audit ruled out, wearing a card.
+#[tokio::test]
+#[serial_test::serial]
+async fn approving_the_card_returns_the_memory_to_the_model() {
+    let root = TempDir::new().unwrap();
+    std::fs::create_dir_all(sandboxed_store(root.path())).unwrap();
+    std::fs::write(
+        sandboxed_store(root.path()).join("clinical.txt"),
+        "# phi\ncohort 4217 had 12 responders\n\n",
+    )
+    .unwrap();
+
+    let provider = Arc::new(OneToolCallProvider::new(
+        "memory__retrieve_memories",
+        json!({"category": "clinical", "is_global": true}),
+    ));
+    let (agent, session_id, _work) = agent_with_memory(root.path(), provider).await;
+
+    let (messages, cards) = drain_answering(
+        &agent,
+        "what do you remember?",
+        &session_id,
+        Permission::AllowOnce,
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        cards
+            .iter()
+            .any(|card| card.tool_name == "memory__retrieve_memories"),
+        "the user must be asked before the disclosure (cards: {cards:?})"
+    );
+    let responses = tool_response_text(&messages);
+    assert!(
+        responses.contains("cohort 4217 had 12 responders"),
+        "the user approved the disclosure and the model got nothing — a prompt \
+         that never resumes is not a consent flow: {responses}"
+    );
+}
+
+/// And denying it has to work too, which no test above could distinguish. The
+/// memory must not reach the model, and the model must be told the *reason* —
+/// otherwise it reads the refusal as a broken tool and retries.
+#[tokio::test]
+#[serial_test::serial]
+async fn denying_the_card_withholds_the_memory_and_says_why() {
+    let root = TempDir::new().unwrap();
+    std::fs::create_dir_all(sandboxed_store(root.path())).unwrap();
+    std::fs::write(
+        sandboxed_store(root.path()).join("clinical.txt"),
+        "# phi\nPATIENT-SECRET-8811\n\n",
+    )
+    .unwrap();
+
+    let provider = Arc::new(OneToolCallProvider::new(
+        "memory__retrieve_memories",
+        json!({"category": "clinical", "is_global": true}),
+    ));
+    let (agent, session_id, _work) = agent_with_memory(root.path(), provider).await;
+
+    let (messages, cards) = drain_answering(
+        &agent,
+        "what do you remember?",
+        &session_id,
+        Permission::DenyOnce,
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        cards
+            .iter()
+            .any(|card| card.tool_name == "memory__retrieve_memories"),
+        "the user must be asked (cards: {cards:?})"
+    );
+    let responses = tool_response_text(&messages);
+    assert!(
+        !responses.contains("PATIENT-SECRET-8811"),
+        "the user denied the disclosure and the memory reached the model anyway: {responses}"
+    );
+    let lower = responses.to_lowercase();
+    assert!(
+        lower.contains("declined") || lower.contains("denied"),
+        "the refusal has to say it was the user's decision, or the model retries \
+         it as a broken tool: {responses}"
+    );
+    assert!(
+        lower.contains("user"),
+        "the refusal has to name *who* decided — a bare error reads as a broken \
+         tool: {responses}"
+    );
+}
+
+/// The write side, end to end: approving a machine-wide write actually writes,
+/// and denying it leaves the store alone. Asserted on disk, because "the tool
+/// reported success" is exactly what the old ungated write also did.
+#[tokio::test]
+#[serial_test::serial]
+async fn a_denied_write_never_reaches_the_machine_wide_store() {
+    for (answer, expect_written) in [(Permission::AllowOnce, true), (Permission::DenyOnce, false)] {
+        let root = TempDir::new().unwrap();
+        let provider = Arc::new(OneToolCallProvider::new(
+            "memory__remember_memory",
+            json!({"category": "clinical", "data": "cohort 4217", "tags": [], "is_global": true}),
+        ));
+        let (agent, session_id, _work) = agent_with_memory(root.path(), provider).await;
+
+        let (_messages, cards) =
+            drain_answering(&agent, "remember this", &session_id, answer.clone())
+                .await
+                .unwrap();
+        assert!(
+            cards
+                .iter()
+                .any(|card| card.tool_name == "memory__remember_memory"),
+            "{answer:?}: the user must be asked before a machine-wide write"
+        );
+
+        let written = std::fs::read_to_string(sandboxed_store(root.path()).join("clinical.txt"))
+            .unwrap_or_default();
+        assert_eq!(
+            written.contains("cohort 4217"),
+            expect_written,
+            "{answer:?}: the machine-wide store on disk does not match the \
+             user's answer (file: {written:?})"
+        );
+    }
 }
