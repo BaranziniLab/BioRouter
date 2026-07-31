@@ -195,11 +195,27 @@ pub(crate) async fn persist_spawn_context(
     // reader who assumes it does something.
     //
     // The child's own copy of this content therefore cannot be lost to
-    // compaction, because it is not in the child's context to begin with; and the
-    // stored ROW cannot be lost to a rewrite, because #51 made every whole-history
-    // rewrite carry foreign appends over. If this record is ever made
-    // agent-visible, revisit — at that point it becomes exactly the "one message
-    // a child must never lose" case and should be pinned.
+    // compaction, because it is not in the child's context to begin with.
+    //
+    // What keeps the stored ROW alive across a whole-history rewrite is NOT
+    // #51's foreign-tail carry-over, and the earlier draft of this comment said
+    // it was. That guard only covers rows ABOVE `basis.max_rowid` that `known`
+    // does not name (see `RewriteBasis`, agent.rs); this record is written
+    // before the child's first turn, so it is inside `known` and below the
+    // watermark — the DELETE half of `replace_conversation_preserving_tail`
+    // covers it, and it survives only because it is in the `replacement`.
+    //
+    // It is in the replacement because every compaction path RE-EMITS every
+    // original message and only flips `agent_visible`: both branches of
+    // `compact_messages_with_window` push `msg.clone()` for each input, and the
+    // bottom rung of the recovery ladder, `drop_oldest_agent_visible_turns`,
+    // `map`s rather than filters. No path deletes a row. Anyone changing
+    // compaction to PRUNE instead of hide must give this record an explicit
+    // carve-out — the store will not save it.
+    //
+    // If this record is ever made agent-visible, revisit the pin decision too —
+    // at that point it becomes exactly the "one message a child must never
+    // lose" case and should be pinned.
     record.metadata.provenance = Some(MessageProvenance {
         kind: ProvenanceKind::SpawnContext,
         from_session_id: Some(parent_session_id.to_string()),
@@ -311,17 +327,41 @@ fn get_agent_messages(
 
         // BR-71 §4.4: record the child's spawn context as its first message,
         // before the reply stream starts. Grants for the record: extensions from
-        // the task config; skills from the workflow; the child's active KBs via
-        // the daemon services when installed (usually empty — a subagent
-        // inherits no KB today; recorded truthfully either way). The record
-        // names only the KB *set* — the primary is per-session mutable state,
-        // not a grant, and recording a value that can change five minutes later
-        // as part of an immutable spawn record is how a "source of truth" starts
-        // lying.
+        // the task config; skills from the workflow; the child's knowledge bases
+        // via the daemon services when installed (empty headless, where `get()`
+        // returns `None`).
+        //
+        // This is NOT usually empty when the daemon is installed, contrary to an
+        // earlier draft of this comment. `knowledge_selection` resolves to
+        // `KnowledgeService::selection`, whose visible set is *every installed
+        // base minus the hidden ones* (`selection_unlocked`), and a brand-new
+        // child session has no `.hidden-kb-sessions/<digest>` file, so
+        // `get_hidden_for_session_or_persisted` falls back to the machine-wide
+        // hidden list. A child therefore inherits the machine's whole visible
+        // set on its first read. That is the truth the record should carry — but
+        // do not restate the old "a subagent inherits no KB" claim; it is wrong.
+        //
+        // The record names only the KB *set* — the primary is per-session mutable
+        // state, not a grant, and recording a value that can change five minutes
+        // later as part of an immutable spawn record is how a "source of truth"
+        // starts lying.
+        //
+        // The read is dispatched to a blocking thread: the daemon implementation
+        // takes `KnowledgeService`'s root `flock` and scans directories, so a
+        // concurrent KB ingest macro holding that lock would otherwise park a
+        // tokio worker for the length of the ingest, on every subagent spawn.
         let skill_names: Vec<String> = workflow.skills.clone().unwrap_or_default();
-        let knowledge_bases = crate::workspace_services::get()
-            .map(|s| s.knowledge_selection(&session_id).kb_ids)
-            .unwrap_or_default();
+        let knowledge_bases = match crate::workspace_services::get() {
+            Some(services) => {
+                let kb_session_id = session_id.clone();
+                tokio::task::spawn_blocking(move || {
+                    services.knowledge_selection(&kb_session_id).kb_ids
+                })
+                .await
+                .unwrap_or_default()
+            }
+            None => Vec::new(),
+        };
         if let Err(e) = persist_spawn_context(
             &session_manager,
             &session_id,
@@ -334,7 +374,22 @@ fn get_agent_messages(
         )
         .await
         {
-            // Best-effort: a failed context record must not kill the run.
+            // Best-effort, and the asymmetry with `create_subagent_session`'s
+            // `?` on the SAME stamp is deliberate, not an accident of which
+            // call site got a `?`:
+            //
+            // At birth nothing has been spent — no provider configured, no
+            // extension loaded, no billed call — and `create_session` on that
+            // same store failing already aborts the spawn, so a targeted UPDATE
+            // failing one statement later means the store is gone and there is
+            // nothing to salvage. Failing there costs an error message and
+            // saves a permanently unparented row that no later path retries.
+            //
+            // Here the calculus is inverted: the provider and every extension
+            // are already configured, the reply stream is one line away, and
+            // the parent stamp is ALREADY durable from birth — so all that is
+            // at risk is the transcript header. Killing a configured run to
+            // save a header would be the worse trade.
             tracing::warn!("failed to persist subagent spawn context: {e}");
         }
 

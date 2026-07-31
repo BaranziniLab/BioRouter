@@ -422,6 +422,16 @@ async fn execute_subagent(
 /// the run starts at all. Stamping here means the row is never an orphan in that
 /// window: History can group it, and the workspace tools can resolve its parent,
 /// even for a child that dies before its first turn.
+///
+/// The stamp fails the spawn with `?` here, while the identical stamp inside
+/// `persist_spawn_context` only warns. That split is a decision, not an
+/// oversight: at this point nothing has been spent, and `create_session` on the
+/// same store two statements up already aborts the spawn — so a targeted UPDATE
+/// failing here means the store is unusable and continuing would only mint a
+/// permanently unparented row that no later path retries. By the time
+/// `persist_spawn_context` runs, the parent id is already durable from here and
+/// a configured agent is one line from its first turn, so the same failure is
+/// no longer worth the run. See the matching note at that call site.
 async fn create_subagent_session(
     config: &AgentConfig,
     working_dir: PathBuf,
