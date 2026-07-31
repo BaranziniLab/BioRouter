@@ -466,7 +466,10 @@ enum SessionCommand {
 
         #[arg(
             long = "subagents",
-            help = "Include subagent runs, nested under the session that spawned them"
+            help = "Include subagent runs, nested under the session that spawned them. \
+                    With this flag --limit counts top-level sessions, not total rows, \
+                    and each run is marked live/done (or 'state unknown' when no daemon \
+                    can be reached to ask)"
         )]
         subagents: bool,
     },

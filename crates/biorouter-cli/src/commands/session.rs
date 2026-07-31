@@ -261,30 +261,39 @@ pub async fn handle_session_list(
         Some(_) => Liveness::Finished,
     };
 
+    // `SessionRow` is a projection for the pure helpers and deliberately carries
+    // no `working_dir`. The JSON arm still has to emit one — the flat
+    // (`--subagents`-less) arm serialises whole `Session`s and includes it, and
+    // it is the field the sibling `--working-dir` filter matches on, so a script
+    // that adds `--subagents` must not silently lose it.
+    let working_dirs: std::collections::HashMap<&str, &std::path::Path> = sessions
+        .iter()
+        .map(|s| (s.id.as_str(), s.working_dir.as_path()))
+        .collect();
+    let as_json = |row: &SessionRow| {
+        serde_json::json!({
+            "id": row.id,
+            "name": row.name,
+            "session_type": row.session_type.to_string(),
+            "parent_session_id": row.parent_session_id,
+            "working_dir": working_dirs.get(row.id.as_str()),
+            "updated_at": row.updated_at,
+            "message_count": row.message_count,
+            "live": liveness_label(liveness_of(&row.id)),
+        })
+    };
+
     match format.as_str() {
         "json" => {
             let payload: Vec<serde_json::Value> = groups
                 .iter()
                 .map(|group| {
                     serde_json::json!({
-                        "session": {
-                            "id": group.session.id,
-                            "name": group.session.name,
-                            "session_type": group.session.session_type.to_string(),
-                            "parent_session_id": group.session.parent_session_id,
-                            "updated_at": group.session.updated_at,
-                            "message_count": group.session.message_count,
-                            "live": liveness_label(liveness_of(&group.session.id)),
-                        },
-                        "children": group.children.iter().map(|child| serde_json::json!({
-                            "id": child.id,
-                            "name": child.name,
-                            "session_type": child.session_type.to_string(),
-                            "parent_session_id": child.parent_session_id,
-                            "updated_at": child.updated_at,
-                            "message_count": child.message_count,
-                            "live": liveness_label(liveness_of(&child.id)),
-                        })).collect::<Vec<_>>(),
+                        "session": as_json(&group.session),
+                        "children": group.children.iter().map(|c| as_json(c)).collect::<Vec<_>>(),
+                        // The group-level `live` is the group session's, repeated
+                        // here so a consumer can read a group's state without
+                        // descending into it. Children carry their own inline.
                         "live": liveness_label(liveness_of(&group.session.id)),
                     })
                 })
