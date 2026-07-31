@@ -109,15 +109,28 @@ symbols as absent elsewhere on its own pages. Measured examples, all from round 
 Those six are repaired. **One is not, and it was found while writing this brief** — it is the live
 example of what the rest of this section is about:
 
-> **The contrast gate is already vacuous.** Tasks 26 and 32 expect
-> `node scripts/check-contrast.mjs` to print `OK — all 288 contrast assertions pass` *after* #56 lands,
-> from a stated baseline of 252 plus Task 26's 36 new assertions. Measured on `main` today, with no #56
-> code anywhere: it prints **`OK — all 288 contrast assertions pass`**. `check-contrast.mjs` gained
-> **+73 lines** between the plan's anchor `9558c346` and `main` (`grep -c privacy` over it → **0**), so
-> the plan's post-#56 total is now the *pre*-#56 baseline. That gate passes today, and it would still
-> pass if Task 26's 36 assertions never landed. **Re-measure the baseline, correct both tasks, and
-> record the correction** — if Task 26's arithmetic holds (252 → 288 pre-existing, +12 hover-ground,
-> +24 badge) the number to assert is **324**.
+> **The contrast gate is already vacuous, and the corrected post-#56 number is 324.** Tasks 26 and 32
+> expect `cd ui/desktop && node scripts/check-contrast.mjs` to print
+> `OK — all 288 contrast assertions pass` *after* #56 lands, from a stated baseline of 252 plus Task
+> 26's 36 new assertions. Measured on `main` today (`4e941619`), with no #56 code anywhere, it prints
+> exactly that — **`OK — all 288 contrast assertions pass`**, exit 0.
+>
+> The cause is drift, not a bug. `check-contrast.mjs` gained **+73 lines** between the plan's anchor
+> `9558c346` and `main`, and `grep -ci privacy` over it returns **0**, so none of that growth is #56's.
+> The plan's post-#56 total is now the *pre*-#56 baseline. **That gate passes today, and it would still
+> pass if Task 26's 36 assertions never landed.**
+>
+> **The arithmetic, every term of it measured today.** The script runs one identical block per
+> family×mode **scope**, and there are six (Parchment / Alma Mater / Roche Limit × light / dark).
+> Counting today's output by scope gives **48 in each of the six**, and 48 × 6 = **288**. The plan's
+> anchor decomposed as 42 per scope × 6 = 252, so the drift is +6 per scope — a theme fix
+> (`643a1f25`, the reference chip) that has nothing to do with #56. Task 26 adds **+2 per scope** (the
+> hover ground, 2 text tokens) and **+4 per scope** (the four badge assertions), which is exactly the
+> plan's own `+12` and `+24`. So the target is **(48 + 2 + 4) × 6 = 54 × 6 = 324.**
+>
+> **Correct Tasks 26 and 32 to 324 and record the correction in both.** Then re-measure the baseline
+> on your own branch point before trusting even this number: it has already moved once for a reason
+> unrelated to #56, and Stage 4 is the last stage to start.
 
 The lesson is the general one, and it applies to snippets and to numbers nobody has checked yet:
 
@@ -562,15 +575,18 @@ integration targets. **Two expected pre-existing failures**, to be verified on a
 dismissing: `providers::test_anthropic_provider` (calls the live API, fails on billing) and the
 `SessionListView.test.tsx` isolation flake.
 
-⚠ **`check-contrast.mjs`'s expected total is wrong in the plan and must be re-derived** — see
-[how to read the material](#how-to-read-the-material). Measure the pre-#56 baseline on your own branch
-point first (it is **288** on `main` today, which is the number the plan expects *after* #56), then
-assert baseline + Task 26's 36. The diagnostic reasoning in the plan still holds and is worth keeping:
-a total higher than expected means `--background-medium` moved into `TEXT_GROUNDS` (and that run does
-not print `OK` at all — three of its assertions fail AA at 3.75 / 4.45 / 4.28, and it exits 1); a total
+⚠ **`check-contrast.mjs`'s expected total is wrong in the plan. The corrected post-#56 target is
+`OK — all 324 contrast assertions pass`**, derived and measured in
+[how to read the material](#how-to-read-the-material): **288** on `main` today (48 per scope × 6
+scopes) plus Task 26's **36** (2 hover-ground + 4 badge, per scope). The plan's `288` is the *pre*-#56
+baseline, so as written the gate cannot fail. Re-measure the baseline on your own branch point before
+asserting anything. The diagnostic reasoning in the plan still holds and is worth keeping: a total
+*higher* than expected means `--background-medium` moved into `TEXT_GROUNDS` (and that run does not
+print `OK` at all — three of its assertions fail AA at 3.75 / 4.45 / 4.28, and it exits 1); a total
 short by exactly **10** or **20** means one of the two new blocks landed outside the per-scope loop and
-ran once instead of six times. Both wrong numbers read to a worker as "the phase failed" when the phase
-succeeded, which is why the plan has quoted three different totals and got two of them wrong.
+ran once instead of six times (12 − 12/6 = 10; 24 − 24/6 = 20). Both wrong numbers read to a worker as
+"the phase failed" when the phase succeeded, which is why the plan has quoted three different totals
+and got two of them wrong.
 
 ⚠ `cargo test -p biorouter-mcp --test mcp_integration_test` is a cargo **hard error** — the file is
 `crates/biorouter/tests/mcp_integration_test.rs`. Two invocations in an earlier draft had this wrong.
