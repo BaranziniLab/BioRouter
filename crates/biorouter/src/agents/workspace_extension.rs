@@ -1089,7 +1089,7 @@ impl WorkspaceClient {
             .unwrap_or_default();
         match services {
             Some(s) if s.gui_attached() => {
-                let frame = if placement == "window" {
+                let open_frame = if placement == "window" {
                     json!({
                         "type": "workspace", "cmd": "open_window",
                         "session_id": session_id,
@@ -1102,6 +1102,11 @@ impl WorkspaceClient {
                         "focus": focus,
                     })
                 };
+                // §8.1 / decision 7. Read ONCE, and used for both halves: the
+                // frame the GUI gets and the sentence the model gets must agree,
+                // or the model reports a tab the user cannot see.
+                let announce_only = announce_only_enabled();
+                let frame = apply_focus_etiquette(open_frame, announce_only);
                 let result = match s.gui_command(frame, true).await {
                     Ok(result) => result,
                     // The session is already committed — extensions, knowledge
@@ -1119,18 +1124,13 @@ impl WorkspaceClient {
                     // Nothing was created, so there is nothing to orphan.
                     Err(e) => return Err(e),
                 };
-                let ok = result
-                    .get("ok")
-                    .and_then(serde_json::Value::as_bool)
-                    .unwrap_or(false);
-                let detail = result
-                    .get("detail")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or("");
+                // `open_result_text` is pure and five-argument (its test pins the
+                // signature), so decision 5's directory note is appended rather
+                // than interleaved. It therefore survives on BOTH arms — the
+                // announce-only sentence still names where the session works.
                 Ok(vec![Content::text(format!(
-                    "Session {session_id} {} in the GUI ({placement}{}).{dir_note} {detail}",
-                    if ok { "opened" } else { "NOT opened" },
-                    if focus { ", focused" } else { ", background" },
+                    "{}{dir_note}",
+                    open_result_text(session_id, placement, focus, announce_only, &result)
                 ))])
             }
             _ => Ok(vec![Content::text(format!(
@@ -2509,6 +2509,110 @@ impl McpClientTrait for WorkspaceClient {
     fn get_info(&self) -> Option<&InitializeResult> {
         Some(&self.info)
     }
+}
+
+/// BR-71 §8.1 / decision 7: the user's focus-etiquette preference. When on, the
+/// workspace never opens a tab or a window on its own — it posts a notification
+/// naming the conversation instead, and the tool result says so, so the model
+/// does not claim to have opened something.
+///
+/// Config key, read through the same store every other daemon-visible
+/// preference uses (`Config::global().get_param`, e.g. `SECURITY_PROMPT_ENABLED`
+/// in `security/mod.rs`). Default OFF — background-open stays the design's
+/// default (§4.1 "opens in the background, never stealing the composer").
+pub const ANNOUNCE_ONLY_KEY: &str = "WORKSPACE_ANNOUNCE_ONLY";
+
+/// Pure, so the mapping is testable without a config file.
+fn announce_only_enabled_for(configured: Option<bool>) -> bool {
+    configured.unwrap_or(false)
+}
+
+pub(crate) fn announce_only_enabled() -> bool {
+    announce_only_enabled_for(
+        crate::config::Config::global()
+            .get_param::<bool>(ANNOUNCE_ONLY_KEY)
+            .ok(),
+    )
+}
+
+/// The frames that put a conversation in front of the user, and are therefore
+/// subject to the setting. `open_tab` and `open_window` create something new;
+/// `activate_tab` yanks the view to an existing tab, which is the same
+/// intrusion by a different route — the setting's promise is "don't take me
+/// somewhere I didn't ask to go", not "don't allocate a tab". Everything else
+/// (annotate, close, notify) is not a focus event and always reaches the GUI.
+const FOCUS_STEALING_CMDS: [&str; 3] = ["open_tab", "open_window", "activate_tab"];
+
+/// Downgrade focus-stealing frames to a notification when announce-only is on.
+pub(crate) fn apply_focus_etiquette(
+    frame: serde_json::Value,
+    announce_only: bool,
+) -> serde_json::Value {
+    if !announce_only {
+        return frame;
+    }
+    let cmd = frame
+        .get("cmd")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    if !FOCUS_STEALING_CMDS.contains(&cmd) {
+        return frame;
+    }
+    let session_id = frame
+        .get("session_id")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("a conversation")
+        .to_string();
+    json!({
+        "type": "workspace",
+        "cmd": "notify",
+        "session_id": session_id,
+        "level": "info",
+        "message": format!(
+            "An agent wants to show you conversation {session_id}. \
+             Open it from History — automatic tab opening is turned off in Settings."
+        ),
+    })
+}
+
+/// What the MODEL is told. Pure, and separate from the frame, because the two
+/// can disagree in exactly one direction that matters: the frame was downgraded
+/// to a notification and the text still says "opened". A model that believes it
+/// opened a tab will tell the user so, and the user is looking at a screen where
+/// nothing happened.
+///
+/// Deviation from the plan's snippet: decision 5's `dir_note` is NOT a parameter
+/// here (the task's own test pins this five-argument signature), so
+/// [`WorkspaceClient::place_in_gui`] appends it to whatever this returns. That
+/// keeps the note on BOTH arms — a newly created session announced rather than
+/// opened still tells the model where it works.
+pub(crate) fn open_result_text(
+    session_id: &str,
+    placement: &str,
+    focus: bool,
+    announce_only: bool,
+    gui_result: &serde_json::Value,
+) -> String {
+    if announce_only {
+        return format!(
+            "Session {session_id} is ready, but the user has turned OFF automatic tab \
+             opening, so no tab was opened — they were notified and can open it \
+             themselves. Do not tell the user you opened a tab."
+        );
+    }
+    let ok = gui_result
+        .get("ok")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let detail = gui_result
+        .get("detail")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    format!(
+        "Session {session_id} {} in the GUI ({placement}{}). {detail}",
+        if ok { "opened" } else { "NOT opened" },
+        if focus { ", focused" } else { ", background" },
+    )
 }
 
 #[cfg(test)]
@@ -5858,5 +5962,110 @@ mod tests {
             );
         }
         assert!(instructions.len() <= 2500, "injection budget (§6)");
+    }
+
+    #[test]
+    fn announce_only_defaults_off_and_maps_open_tab_to_notify() {
+        // Default: unset config → tabs open (today's behaviour).
+        assert!(!announce_only_enabled_for(None));
+        assert!(!announce_only_enabled_for(Some(false)));
+        assert!(announce_only_enabled_for(Some(true)));
+
+        // The frame transformation is the whole of the feature (§8.1).
+        let open = json!({
+            "type": "workspace", "cmd": "open_tab",
+            "session_id": "s-child", "placement": "tab", "focus": false
+        });
+        let announced = apply_focus_etiquette(open.clone(), false);
+        assert_eq!(announced["cmd"], "open_tab");
+
+        let announced = apply_focus_etiquette(open, true);
+        assert_eq!(announced["cmd"], "notify");
+        assert_eq!(announced["session_id"], "s-child");
+        let message = announced["message"].as_str().unwrap();
+        assert!(message.contains("s-child"));
+        assert!(message.to_lowercase().contains("open"));
+
+        // A window request degrades the same way — it is the loudest of all.
+        let window = json!({ "type": "workspace", "cmd": "open_window", "session_id": "s-w" });
+        assert_eq!(apply_focus_etiquette(window, true)["cmd"], "notify");
+
+        // The frame is only half the feature. The OTHER half is what the model
+        // is told — see `open_result_text` below.
+
+        // …and so does activate_tab. It does not OPEN anything, but it is the
+        // frame that yanks the user's view to a different conversation, which is
+        // the same intrusion the setting exists to prevent. No daemon emitter
+        // constructs one today (workspace_open always sends open_tab and lets
+        // the reducer's dedupe focus an existing tab), so this is forward
+        // protection: the next emitter that reaches for it inherits the
+        // etiquette instead of quietly bypassing it.
+        let activate = json!({ "type": "workspace", "cmd": "activate_tab", "session_id": "s-a" });
+        assert_eq!(apply_focus_etiquette(activate, true)["cmd"], "notify");
+
+        // Everything else is untouched: annotate/close/notify are not focus
+        // events and must still reach the GUI — a child that runs without a tab
+        // still gets its badge the moment the user opens it from History.
+        for cmd in ["annotate_tab", "close_tab", "notify"] {
+            let frame = json!({ "type": "workspace", "cmd": cmd, "session_id": "s" });
+            assert_eq!(apply_focus_etiquette(frame, true)["cmd"], cmd);
+        }
+    }
+
+    /// ⚠ The transform is the visible half; THIS is the half that decides what
+    /// the model believes. A model told "opened" when nothing opened will answer
+    /// the user from a false premise ("I've put it in a tab for you"), and no
+    /// frame assertion above can catch that — `apply_focus_etiquette` is correct
+    /// in both worlds. Before this test the whole truthful-result arm shipped
+    /// untested, and its only net was a human reading the agent's reply during
+    /// Task 31's live pass.
+    #[test]
+    fn the_result_text_never_claims_a_tab_that_was_not_opened() {
+        let ok = json!({ "ok": true, "detail": "opened" });
+
+        let announced = open_result_text("s-child", "tab", false, true, &ok);
+        assert!(announced.contains("s-child"));
+        // The plan wrote this as `!announced.contains("opened")` alongside the
+        // `contains("no tab was opened")` assertion below — which no string can
+        // satisfy, since the required phrase contains the forbidden substring.
+        // The INTENT ("must not use the word the model will repeat") is the
+        // affirmative claim, so the negative is anchored to the exact phrasing
+        // the truthful arm would fall through to. This is strictly the stronger
+        // reading: a copy of the normal text still fails here, and so does any
+        // other sentence that asserts a tab appeared.
+        assert!(
+            !announced.contains("Session s-child opened"),
+            "announce-only must never claim the session opened: {announced}"
+        );
+        assert!(
+            !announced.contains("opened in the GUI"),
+            "announce-only must not reuse the phrase the model will repeat: {announced}"
+        );
+        assert!(
+            announced.contains("no tab was opened") && announced.contains("Do not tell the user"),
+            "the model must be told, in words, not to claim a tab: {announced}"
+        );
+
+        let normal = open_result_text("s-child", "tab", false, false, &ok);
+        assert!(normal.contains("opened") && !normal.contains("NOT opened"));
+        assert!(
+            normal.contains("background"),
+            "focus:false is background: {normal}"
+        );
+        assert!(normal.contains("tab"));
+
+        let focused = open_result_text("s-child", "split", true, false, &ok);
+        assert!(focused.contains("focused") && focused.contains("split"));
+
+        // A GUI that refused the command is reported as a refusal, not as
+        // success — the round trip returns `ok:false`, and the previous inline
+        // code path had no test that this branch was ever reachable.
+        let refused = json!({ "ok": false, "detail": "no room for another split" });
+        let text = open_result_text("s-child", "split", false, false, &refused);
+        assert!(text.contains("NOT opened"), "{text}");
+        assert!(
+            text.contains("no room for another split"),
+            "the GUI's reason survives: {text}"
+        );
     }
 }
