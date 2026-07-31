@@ -16,9 +16,53 @@ type SubagentSessionInfo = {
   stop: () => Promise<void>;
 };
 
-/** BR-71: the child's KB grants, from the one place they are recorded. */
+/** The record's section heading — matched only as a whole line, never as prose. */
+const KB_HEADING = '### Knowledge bases';
+
+/**
+ * BR-71: the child's KB grants, from the one place they are recorded.
+ *
+ * The heading is matched ANCHORED TO A LINE START and only when it occurs
+ * EXACTLY ONCE; anything else yields no grants at all. That is deliberate, and
+ * it is the whole security posture of this parser.
+ *
+ * `persist_spawn_context` (subagent_handler.rs) interleaves the structured
+ * grant sections with two blobs of parent-agent-controlled free text:
+ * `### Task instructions` sits BEFORE the grants, and `### Rendered system
+ * prompt` sits after them — and the latter re-embeds the former, because
+ * `subagent_system.md` is rendered with `task_instructions: system_instructions`.
+ * So a task string containing this heading forges a grants section on BOTH
+ * sides of the real one, and neither "first match" nor "last match" is sound.
+ *
+ * When the record is ambiguous we therefore show NOTHING. This header exists so
+ * a human can see what the child was actually granted; under-reporting a grant
+ * is a visible, recoverable gap, whereas displaying a fabricated one defeats the
+ * entire point of the glass box. A genuine record has exactly one such line —
+ * every heading in `subagent_system.md` is single-hash, so the rendered prompt
+ * never contributes a second on its own.
+ */
 export function extractKnowledgeBases(spawnContext?: string): string[] {
-  const section = spawnContext?.split('### Knowledge bases')[1]?.split('###')[0]?.trim();
+  if (!spawnContext) return [];
+  const lines = spawnContext.split('\n');
+
+  let heading = -1;
+  for (let i = 0; i < lines.length; i++) {
+    // `trimEnd` only: a heading indented by the writer is prose, but a trailing
+    // `\r` or space is still the daemon's own line.
+    if (lines[i].trimEnd() !== KB_HEADING) continue;
+    if (heading !== -1) return []; // ambiguous — refuse to guess.
+    heading = i;
+  }
+  if (heading === -1) return [];
+
+  // The section runs to the next line-start `### ` heading, which is the same
+  // boundary the backend's own `section()` helper splits on.
+  const body: string[] = [];
+  for (let i = heading + 1; i < lines.length && !lines[i].startsWith('### '); i++) {
+    body.push(lines[i]);
+  }
+
+  const section = body.join('\n').trim();
   if (!section || section === '(none)') return [];
   return section
     .split(',')
