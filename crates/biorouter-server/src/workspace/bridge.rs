@@ -145,6 +145,19 @@ impl WorkspaceBridge {
         }
     }
 
+    /// Park a request under a caller-chosen id, so a test can exercise `resolve`
+    /// without driving `emit_and_wait`.
+    ///
+    /// `routes::workspace`'s socket-dispatch test needs *a parked request whose
+    /// id it knows*; `emit_and_wait` mints the id itself and then blocks on it,
+    /// which would force that test into a `#[tokio::test]` with a spawned task
+    /// holding the parked future — testing this module rather than the frame
+    /// dispatch it is about.
+    #[cfg(test)]
+    pub(crate) fn insert_pending_for_test(&self, request_id: &str, tx: oneshot::Sender<Value>) {
+        lock(&self.inner.pending).insert(request_id.to_string(), tx);
+    }
+
     pub fn cancel_all(&self) {
         for (_, tx) in lock(&self.inner.pending).drain() {
             drop(tx); // receivers observe Err and unpark

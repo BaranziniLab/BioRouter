@@ -73,6 +73,7 @@ pub mod usage;
 pub mod utils;
 pub mod workflow;
 pub mod workflow_utils;
+pub mod workspace;
 
 use std::sync::Arc;
 
@@ -98,7 +99,8 @@ pub fn configure(state: Arc<crate::state::AppState>, secret_key: String) -> Rout
         .merge(llamacpp::routes(state.clone()))
         .merge(tunnel::routes(state.clone()))
         .merge(mcp_ui_proxy::routes())
-        .merge(mcp_app_proxy::routes(secret_key))
+        .merge(mcp_app_proxy::routes(secret_key.clone()))
+        .merge(workspace::routes(state.clone(), secret_key.clone()))
         .merge(session_events::routes(state.clone()))
         .nest(
             "/knowledge",

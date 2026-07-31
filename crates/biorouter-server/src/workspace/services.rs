@@ -1,5 +1,7 @@
 //! The daemon's `WorkspaceServices` implementation over `AppState` (BR-71).
-//! GUI methods are wired in Slice 2 (Task 23); until then they report headless.
+//! The GUI methods are backed by the `WorkspaceBridge` registry (Slice 2), which
+//! `routes::workspace`'s `/ui/workspace` socket populates; with no window
+//! attached they degrade to the headless answers.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -54,11 +56,11 @@ pub fn install_workspace_services(state: Arc<AppState>) {
 #[async_trait::async_trait]
 impl WorkspaceServices for ServerWorkspaceServices {
     fn gui_attached(&self) -> bool {
-        false // Slice 2 (Task 23) wires the WorkspaceBridge registry here.
+        crate::workspace::bridge::any_attached()
     }
 
     fn layout_snapshot(&self) -> Option<serde_json::Value> {
-        None // Slice 2.
+        crate::workspace::bridge::merged_layout()
     }
 
     fn is_turn_active(&self, session_id: &str) -> bool {
@@ -285,10 +287,19 @@ impl WorkspaceServices for ServerWorkspaceServices {
 
     async fn gui_command(
         &self,
-        _frame: serde_json::Value,
-        _wait_result: bool,
+        frame: serde_json::Value,
+        wait_result: bool,
     ) -> Result<serde_json::Value, String> {
-        Err("no GUI attached".to_string()) // Slice 2.
+        let bridge = crate::workspace::bridge::focused_or_recent().ok_or("no GUI attached")?;
+        if wait_result {
+            bridge
+                .emit_and_wait(frame, std::time::Duration::from_secs(10))
+                .await
+        } else {
+            bridge
+                .emit(frame)
+                .map(|()| serde_json::json!({ "sent": true }))
+        }
     }
 }
 
@@ -624,8 +635,54 @@ mod tests {
             .expect("lock acquired");
         assert!(installed.is_turn_active("br71-bootstrap-witness"));
         assert!(!installed.is_turn_active("br71-bootstrap-never-started"));
-        // Slice 1 reports headless for the GUI half.
-        assert!(!installed.gui_attached());
-        assert!(installed.layout_snapshot().is_none());
+
+        // The GUI half, now that Task 23 has wired it to the WorkspaceBridge
+        // registry. This replaces Slice 1's `assert!(!gui_attached())` /
+        // `assert!(layout_snapshot().is_none())` pair, which stated the STUB's
+        // behaviour and, against the live registry, is a cross-test flake:
+        // `BRIDGES` is a process-wide static shared with
+        // `workspace::bridge::tests::registry_tracks_focus_and_merges_layouts`,
+        // which holds two attached windows for part of its run. (Unaided the
+        // collision was 0/15; widening that test's window with an 800 ms sleep
+        // reproduced it 1/1.) So the assertions below are CONTAINMENT
+        // assertions about a window this test owns — never global counts, and
+        // never "nothing is attached".
+        //
+        // They are also strictly stronger than the pair they replace: a stub
+        // returning a constant cannot make this daemon's services report an
+        // echo that this test stored a moment ago, nor drop it again on detach.
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let win = format!("br71-bootstrap-win-{nonce}");
+        let bridge = crate::workspace::bridge::bridge_for(&win);
+        let (_rx, conn) = bridge.attach();
+        bridge.store_echo(serde_json::json!({"window_id": win, "focused_session": null}));
+
+        assert!(
+            installed.gui_attached(),
+            "with a window attached the daemon's services must report a GUI"
+        );
+        let carries_our_window = |snapshot: Option<serde_json::Value>| -> bool {
+            snapshot
+                .and_then(|v| v.as_array().cloned())
+                .is_some_and(|entries| {
+                    entries
+                        .iter()
+                        .any(|e| e.get("window_id").and_then(|w| w.as_str()) == Some(win.as_str()))
+                })
+        };
+        assert!(
+            carries_our_window(installed.layout_snapshot()),
+            "layout_snapshot must carry this window's echo — it IS workspace_list's `gui`"
+        );
+
+        // …and it is live, not a captured constant: closing the window drops it.
+        bridge.detach(conn);
+        assert!(
+            !carries_our_window(installed.layout_snapshot()),
+            "a closed window's stale echo must not still be reported as GUI state"
+        );
     }
 }

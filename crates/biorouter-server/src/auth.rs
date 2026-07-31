@@ -77,13 +77,32 @@ fn is_public_app_get(method: &axum::http::Method, path: &str) -> bool {
     ) || matches!(tail.as_slice(), ["dist" | "assets", _, ..])
 }
 
+/// Paths served without the `X-Secret-Key` header. Each one carries its own
+/// gate; the list is a predicate rather than a chain of `||` inside
+/// `check_token` so it is unit-testable — a security allowlist that no test
+/// can reach is one refactor away from admitting `/ui/workspaceX`.
+fn is_unauthenticated_path(path: &str) -> bool {
+    matches!(
+        path,
+        "/status"
+            | "/mcp-ui-proxy"
+            | "/mcp-app-proxy"
+            // BR-71: the desktop renderer opens this WebSocket, and a browser
+            // WebSocket cannot send headers. The route carries its own two
+            // gates — the same secret as a query token, plus the Origin check
+            // (CSWSH) — in `routes::workspace::check_workspace_ws_auth`,
+            // exactly as the app agent socket does (`apps::agent_ws`).
+            | "/ui/workspace"
+    )
+}
+
 pub async fn check_token(
     State(state): State<String>,
     request: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
     let path = request.uri().path();
-    if path == "/status" || path == "/mcp-ui-proxy" || path == "/mcp-app-proxy" {
+    if is_unauthenticated_path(path) {
         return Ok(next.run(request).await);
     }
     // Biorouter apps are opened directly in the browser (and connect a WebSocket),
@@ -128,8 +147,25 @@ pub async fn check_token(
 
 #[cfg(test)]
 mod tests {
-    use super::{is_public_app_get, secret_matches};
+    use super::{is_public_app_get, is_unauthenticated_path, secret_matches};
     use axum::http::Method;
+
+    #[test]
+    fn the_workspace_socket_is_exempt_and_nothing_that_merely_starts_with_it_is() {
+        assert!(is_unauthenticated_path("/ui/workspace"));
+        // Exact match only. A `starts_with` would exempt every future route
+        // under this prefix, and the daemon has no other authentication.
+        assert!(!is_unauthenticated_path("/ui/workspaceX"));
+        assert!(!is_unauthenticated_path("/ui/workspace/admin"));
+        assert!(!is_unauthenticated_path("/ui/workspace?secret=x"));
+        // The three that were already exempt still are.
+        assert!(is_unauthenticated_path("/status"));
+        assert!(is_unauthenticated_path("/mcp-ui-proxy"));
+        assert!(is_unauthenticated_path("/mcp-app-proxy"));
+        // …and nothing else is.
+        assert!(!is_unauthenticated_path("/reply"));
+        assert!(!is_unauthenticated_path("/sessions"));
+    }
 
     #[test]
     fn secret_compare_is_exact() {
