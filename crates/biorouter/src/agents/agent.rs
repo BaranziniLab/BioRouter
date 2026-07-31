@@ -485,7 +485,11 @@ pub(crate) fn is_spawn_tool_call(tool_name: &str) -> bool {
 /// would be refused inside a subagent with the misleading message "Subagents
 /// cannot use workspace tools." An explicit list cannot do that, and it is a
 /// closed set we control: when a `workspace_*` tool is added, this list is where
-/// the compiler-free reminder lives (the test below names all of them).
+/// the compiler-free reminder lives. It is not left to a reminder, though:
+/// `the_refusal_list_mirrors_every_tool_the_workspace_extension_advertises`
+/// cross-checks it against `WorkspaceClient::get_tools()` in both directions, so
+/// an eighth tool added there fails this crate's suite instead of quietly
+/// becoming reachable inside a delegation tree.
 const WORKSPACE_TOOL_NAMES: [&str; 7] = [
     "workspace_list",
     "workspace_open",
@@ -7492,6 +7496,159 @@ mod tests {
                 SessionType::SubAgent,
                 &format!("workspace__{name}")
             ));
+        }
+    }
+
+    /// The rot vector both the guard's own comment and its over-match test
+    /// share: `WORKSPACE_TOOL_NAMES` is a hand-maintained mirror of what the
+    /// workspace extension advertises, and
+    /// `the_workspace_guard_does_not_swallow_a_third_party_extension` iterates
+    /// that same list — so an eighth `workspace_*` tool added to `get_tools()`
+    /// later would be dispatchable inside a delegation tree with nothing
+    /// failing. Cross-check against the real advertisement, both directions:
+    /// a new tool that is not refused, and a refused name that no longer
+    /// exists, are both errors.
+    #[test]
+    fn the_refusal_list_mirrors_every_tool_the_workspace_extension_advertises() {
+        use crate::session::session_manager::SessionType;
+        let all: Vec<String> = crate::agents::workspace_extension::WorkspaceClient::get_tools()
+            .into_iter()
+            .map(|t| t.name.to_string())
+            .collect();
+
+        // The spawn tool rides in `get_tools()` too (decision 22 moved it into
+        // this extension), but it is named `subagent`, not `workspace_*`, and
+        // `is_spawn_tool_call` — not this list — is what refuses it. Assert that
+        // rather than assume it, then take it out of the mirror comparison.
+        assert!(
+            all.iter().any(|a| a == SUBAGENT_TOOL_NAME),
+            "the spawn tool is advertised by the workspace extension: {all:?}"
+        );
+        assert!(is_workspace_tool_refused_for(
+            SessionType::SubAgent,
+            SUBAGENT_TOOL_NAME
+        ));
+        let advertised: Vec<String> = all
+            .into_iter()
+            .filter(|n| n != SUBAGENT_TOOL_NAME)
+            .collect();
+
+        for name in &advertised {
+            assert!(
+                WORKSPACE_TOOL_NAMES.contains(&name.as_str()),
+                "{name} is advertised by the workspace extension but is not in \
+                 WORKSPACE_TOOL_NAMES — a subagent could call it"
+            );
+        }
+        for name in WORKSPACE_TOOL_NAMES {
+            assert!(
+                advertised.iter().any(|a| a == name),
+                "{name} is refused for subagents but is no longer advertised — \
+                 the list is stale"
+            );
+        }
+        // …and the spawn tool stays out of the name list itself, so the two
+        // mechanisms cannot both claim it and the refusal message stays
+        // specific ("cannot create other subagents", not "workspace tools").
+        assert!(!WORKSPACE_TOOL_NAMES.contains(&SUBAGENT_TOOL_NAME));
+    }
+
+    /// The CALL SITE, not the predicate. `is_workspace_tool_refused_for` is a
+    /// pure function; deleting its one invocation at the top of
+    /// `dispatch_tool_call` leaves every other test in this file green while a
+    /// subagent regains the entire workspace surface. This drives the real
+    /// dispatcher with a real `SessionType::SubAgent` session and pins both
+    /// branches of the two-message refusal.
+    #[tokio::test]
+    async fn dispatch_refuses_workspace_tools_and_nesting_inside_a_subagent() {
+        use crate::session::session_manager::SessionType;
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let sm = std::sync::Arc::new(crate::session::SessionManager::new(
+            temp.path().to_path_buf(),
+        ));
+        let child = sm
+            .create_session(
+                temp.path().to_path_buf(),
+                "child".into(),
+                SessionType::SubAgent,
+            )
+            .await
+            .unwrap();
+        let parent = sm
+            .create_session(
+                temp.path().to_path_buf(),
+                "parent".into(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        std::mem::forget(temp);
+        let agent = Agent::with_config(AgentConfig::new(
+            sm,
+            crate::config::permission::PermissionManager::instance(),
+            None,
+            crate::config::BioRouterMode::Auto,
+        ));
+
+        let call = |name: &str| CallToolRequestParams {
+            meta: None,
+            name: name.to_string().into(),
+            arguments: Some(serde_json::Map::new()),
+            task: None,
+        };
+        let refusal = |result: Result<ToolCallResult, ErrorData>| match result {
+            // `ToolCallResult` is not `Debug`, so match rather than unwrap_err.
+            Ok(_) => panic!("the guard must refuse before anything dispatches"),
+            Err(e) => e,
+        };
+
+        // Cross-session control, prefixed and bare.
+        for name in ["workspace__workspace_send_prompt", "workspace_close"] {
+            let (_id, result) = agent
+                .dispatch_tool_call(call(name), "req".into(), None, &child)
+                .await;
+            let err = refusal(result);
+            assert_eq!(err.code, ErrorCode::INVALID_REQUEST, "{name}");
+            assert!(
+                err.message.contains("cannot use workspace tools"),
+                "{name}: {}",
+                err.message
+            );
+        }
+
+        // Nesting gets its OWN message, so the model learns the actual rule
+        // rather than a generic "workspace tools" it did not think it used.
+        for name in ["subagent", "workspace__subagent"] {
+            let (_id, result) = agent
+                .dispatch_tool_call(call(name), "req".into(), None, &child)
+                .await;
+            let err = refusal(result);
+            assert_eq!(err.code, ErrorCode::INVALID_REQUEST, "{name}");
+            assert!(
+                err.message.contains("cannot create other subagents"),
+                "{name}: {}",
+                err.message
+            );
+        }
+
+        // …and a USER session is untouched by the guard. It still fails (no
+        // such extension is loaded), but not with the subagent refusal — which
+        // is what a blanket "refuse workspace tools" implementation would give.
+        let (_id, result) = agent
+            .dispatch_tool_call(
+                call("workspace__workspace_list"),
+                "req".into(),
+                None,
+                &parent,
+            )
+            .await;
+        if let Err(e) = result {
+            assert!(
+                !e.message.contains("Subagents cannot"),
+                "a user session must not hit the subagent guard: {}",
+                e.message
+            );
         }
     }
 

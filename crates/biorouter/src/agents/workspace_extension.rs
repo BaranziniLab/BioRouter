@@ -454,7 +454,11 @@ impl WorkspaceClient {
         )
     }
 
-    fn get_tools() -> Vec<Tool> {
+    /// `pub(crate)` so `agent.rs` can cross-check `WORKSPACE_TOOL_NAMES` (the
+    /// BR-71 §5 subagent refusal list) against what is actually advertised.
+    /// A hand-maintained mirror of this function is the one place that guard
+    /// can rot silently.
+    pub(crate) fn get_tools() -> Vec<Tool> {
         vec![
             Self::tool(
                 "workspace_list",
