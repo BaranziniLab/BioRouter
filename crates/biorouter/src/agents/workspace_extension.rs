@@ -5517,13 +5517,46 @@ mod tests {
     }
 
     /// Call `workspace_open` as `caller`. Mirrors [`send_prompt`].
+    ///
+    /// The §8.1 focus-etiquette preference is pinned OFF here rather than
+    /// inherited from the machine. `place_in_gui` resolves it through
+    /// `Config::global().get_param`, which reads `WORKSPACE_ANNOUNCE_ONLY`
+    /// from the environment and then from `~/.config/biorouter/config.yaml` —
+    /// the very file the Settings toggle this feature ships writes. Without
+    /// the pin, a maintainer who turns the setting on in the app gets a red
+    /// suite (`open_new_inherits_…` panics with "an open_tab frame was sent")
+    /// with no visible connection to what they changed, and CLAUDE.md's bare
+    /// `cargo test` reads that real config file.
     async fn open_as(c: &WorkspaceClient, caller: &str, args: serde_json::Value) -> CallToolResult {
+        open_as_with_announce_only(c, caller, args, false).await
+    }
+
+    /// [`open_as`] with the §8.1 preference forced to `announce_only`.
+    ///
+    /// The override is task-local ([`crate::config::with_config_overrides`]):
+    /// it wins over both the environment and the config file, and — unlike
+    /// `std::env::set_var`, which is unsound in a multi-threaded program —
+    /// never mutates the process environment, so the parallel test threads
+    /// outside this task cannot observe it.
+    async fn open_as_with_announce_only(
+        c: &WorkspaceClient,
+        caller: &str,
+        args: serde_json::Value,
+        announce_only: bool,
+    ) -> CallToolResult {
         let args: rmcp::model::JsonObject = serde_json::from_value(args).unwrap();
-        c.call_tool(
-            "workspace_open",
-            Some(args),
-            crate::agents::mcp_client::McpMeta::new(caller.to_string()),
-            CancellationToken::new(),
+        let overrides = std::collections::HashMap::from([(
+            ANNOUNCE_ONLY_KEY.to_string(),
+            announce_only.to_string(),
+        )]);
+        crate::config::with_config_overrides(
+            overrides,
+            c.call_tool(
+                "workspace_open",
+                Some(args),
+                crate::agents::mcp_client::McpMeta::new(caller.to_string()),
+                CancellationToken::new(),
+            ),
         )
         .await
         .unwrap()
@@ -5644,6 +5677,87 @@ mod tests {
             ["open_tab", "notify"],
             "the tab must exist before the toast addressed to it"
         );
+
+        crate::workspace_services::clear_test_override();
+    }
+
+    /// §8.1 / decision 7, through the REAL emitter.
+    ///
+    /// The setting's other two tests are pure — they hand
+    /// `apply_focus_etiquette` and `open_result_text` their arguments directly
+    /// — so deleting the two lines in `place_in_gui` that wire them in leaves
+    /// both green and ships a preference the daemon silently ignores, with the
+    /// first symptom a user whose Settings toggle does nothing. This is the
+    /// test that fails when the transform is not actually applied, and it pins
+    /// the two halves TOGETHER: a frame that was downgraded and a result text
+    /// that still says "opened" is the specific disagreement the whole feature
+    /// exists to prevent, and neither pure test can see it.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn announce_only_downgrades_the_real_open_to_a_notification() {
+        let recorder = FakeServices::with_gui(true).install();
+
+        let c = client();
+        let dir = std::env::temp_dir().join("br71-announce-only");
+        std::fs::create_dir_all(&dir).unwrap();
+        let caller = c
+            .context
+            .session_manager
+            .create_session(
+                dir.clone(),
+                "caller".into(),
+                crate::session::session_manager::SessionType::User,
+            )
+            .await
+            .unwrap();
+
+        let r = open_as_with_announce_only(&c, &caller.id, serde_json::json!({ "new": {} }), true)
+            .await;
+
+        // The GUI never got a focus-stealing frame…
+        assert!(
+            recorder.frame_with_cmd("open_tab").is_none(),
+            "announce-only must not open a tab: {:?}",
+            recorder.all_frames()
+        );
+        assert!(recorder.frame_with_cmd("open_window").is_none());
+        // …it got the notification instead, naming the conversation so the user
+        // can find it in History.
+        let notify = recorder
+            .frame_with_cmd("notify")
+            .expect("the downgraded frame must still reach the GUI");
+        assert_eq!(notify["session_id"], "s-new");
+        assert!(
+            notify["message"].as_str().unwrap().contains("s-new"),
+            "the announcement names the conversation: {notify}"
+        );
+
+        // …and in the SAME call the model was told the truth, not "opened".
+        let text = text_of(&r);
+        assert!(
+            text.contains("no tab was opened") && text.contains("Do not tell the user"),
+            "{text}"
+        );
+        assert!(
+            !text.contains("opened in the GUI"),
+            "the model must not be handed the phrase it will repeat: {text}"
+        );
+        // Decision 5's directory note survives the announce-only arm — a
+        // session the model cannot see is exactly the one it most needs the
+        // working directory for.
+        assert!(text.contains(&dir.display().to_string()), "{text}");
+
+        // The setting suppresses the TAB, never the work: the session was still
+        // created, in the caller's directory.
+        assert_eq!(recorder.session_dirs(), vec![dir]);
+
+        // And with the setting off, the same call opens a tab — so the
+        // assertions above are pinned to the preference, not to some unrelated
+        // property of this fixture.
+        recorder.clear_frames();
+        let r = open_as(&c, &caller.id, serde_json::json!({ "new": {} })).await;
+        assert!(recorder.frame_with_cmd("open_tab").is_some());
+        assert!(text_of(&r).contains("opened in the GUI"));
 
         crate::workspace_services::clear_test_override();
     }
