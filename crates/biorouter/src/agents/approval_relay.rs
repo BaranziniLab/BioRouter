@@ -408,7 +408,19 @@ pub fn resolve(origin: &AskId, decision: Permission, decided_by: &str) -> Resolv
             .filter(|s| s.as_str() != decided_by)
             .cloned()
             .collect();
-        entry.surfaces.clear();
+        // ⚠ The surfaces are deliberately RETAINED, not cleared. `lookup`
+        // requires the posting session to be a surface, so clearing them here
+        // would make a decided-but-not-yet-forgotten ask unroutable from
+        // anywhere — and the second click would fall through to the
+        // pre-Task-36b path, find no prompt parked in that session, and answer
+        // `unknown`. `AlreadyResolved` would be unreachable from the route.
+        //
+        // That matters because `already_resolved` IS the consistency mechanism
+        // while the renderer still ignores the `resolve_confirmation` dismissal
+        // frame (see `dismiss_on`): the other card keeps rendering as pending,
+        // and the only thing that reconciles it is the answer its own click
+        // gets. `decision` being `Some` — not an empty surface list — is what
+        // makes this ask closed; `forget` is what makes it gone.
         // Decision 31: an always-confirm ask is answered once per call, never
         // remembered for the tree.
         let memo_key = (entry.class == AskClass::Delegable)
@@ -503,14 +515,28 @@ pub async fn begin_delegated_approval(
         let Some(decision) = DelegationPolicy::agent_decision(&verdict) else {
             continue; // Escalate: relay to its own layer.
         };
-        if let ResolveOutcome::Resolved { .. } = resolve(&origin, decision.clone(), ancestor_id) {
-            deliver(agent, &origin, decision.clone()).await;
-            return Delegation::DecidedByAncestor(decision);
+        match resolve(&origin, decision.clone(), ancestor_id) {
+            ResolveOutcome::Resolved { .. } => {
+                deliver(agent, &origin, decision.clone()).await;
+                return Delegation::DecidedByAncestor(decision);
+            }
+            // Raced with a human at one of the surfaces; their decision stands
+            // — and it has ALREADY been delivered to this prompt by whoever
+            // resolved it (`confirm_tool_action` calls `handle_confirmation`
+            // before it returns). So the ask is answered, and the caller must
+            // show no card: reporting `AwaitingHuman` here would publish a
+            // second card into the root for a question nobody can still answer,
+            // at a surface that was never registered — `add_surface(&root)` is
+            // below this loop, so `lookup` would refuse to route from it.
+            ResolveOutcome::AlreadyResolved(decided) => {
+                return Delegation::DecidedByAncestor(decided);
+            }
+            // The entry vanished under us. There is nothing for the relay to
+            // route, at any surface — so fall all the way back to the
+            // pre-Task-36b path, where a decision posted from the origin's own
+            // tab reaches the parked prompt directly.
+            ResolveOutcome::Unknown => return Delegation::NotDelegated,
         }
-        // Raced with a human at one of the surfaces; their decision stands.
-        return Delegation::AwaitingHuman {
-            surfaced_in: root.clone(),
-        };
     }
 
     // Chain exhausted: ask the person, at the root of the tree. A-4, surface
@@ -822,6 +848,15 @@ mod tests {
             }
             other => panic!("the first decision must resolve; got {other:?}"),
         }
+
+        // A decided ask stays ROUTABLE until it is forgotten. `confirm_tool_action`
+        // reaches `resolve` only through `lookup`, so an ask that stopped being
+        // findable the moment it was decided could never answer `already_resolved`
+        // — the second click would fall through to the pre-Task-36b path and get
+        // `unknown` instead. While the renderer still ignores the dismissal frame,
+        // that answer is the only thing that clears the other card.
+        assert_eq!(lookup("call-1", "child-1"), Some(origin.clone()));
+        assert_eq!(lookup("call-1", "root-1"), Some(origin.clone()));
 
         // The same user then clicks Allow in the child's tab (or double-clicks).
         assert_eq!(
