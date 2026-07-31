@@ -6,6 +6,13 @@ let inFlightRequest: Promise<Session[]> | null = null;
 // BR-71: the `include_subagents` query key is part of the cache identity, or a
 // toggle serves the stale list and never refetches.
 let cachedIncludeSubagents = false;
+// Bumped whenever a request in flight is orphaned (a flag change, a cache
+// clear). Nothing can cancel an in-flight fetch, so each request captures the
+// generation it was issued under and, on settling, checks it is still the
+// current one before touching any module state. Without this an orphan writes
+// its answer into the cache — emitting the wrong-shaped list to every
+// subscriber — and its `.finally` nulls the in-flight slot its successor owns.
+let requestGeneration = 0;
 const listeners = new Set<() => void>();
 
 function emitChange(): void {
@@ -103,9 +110,11 @@ export async function refreshSessionList(includeSubagents?: boolean): Promise<Se
     cachedIncludeSubagents = includeSubagents;
     cachedSessions = null;
     inFlightRequest = null;
+    requestGeneration += 1;
   }
   if (inFlightRequest) return inFlightRequest;
 
+  const generation = requestGeneration;
   inFlightRequest = listSessions<true>({
     throwOnError: true,
     // `cachedIncludeSubagents`, not the parameter: a keyless call must send the
@@ -113,12 +122,16 @@ export async function refreshSessionList(includeSubagents?: boolean): Promise<Se
     query: { include_subagents: cachedIncludeSubagents },
   })
     .then((response) => {
+      // Superseded while in flight: hand the answer back to whoever awaited
+      // this exact call, but publish nothing — the cache and its subscribers
+      // belong to the request that replaced it.
+      if (generation !== requestGeneration) return response.data.sessions;
       cachedSessions = response.data.sessions;
       emitChange();
       return cachedSessions;
     })
     .finally(() => {
-      inFlightRequest = null;
+      if (generation === requestGeneration) inFlightRequest = null;
     });
 
   return inFlightRequest;
@@ -133,5 +146,8 @@ export function clearSessionListCache(): void {
   cachedSessions = null;
   inFlightRequest = null;
   cachedIncludeSubagents = false;
+  // Same orphaning as a flag change: a request issued before the clear must not
+  // repopulate the cache we just emptied.
+  requestGeneration += 1;
   emitChange();
 }
