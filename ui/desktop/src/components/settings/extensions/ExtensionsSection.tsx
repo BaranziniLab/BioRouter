@@ -115,11 +115,16 @@ export default function ExtensionsSection({
         }
       )
     ) {
-      markChatrecallSuggestionSeen();
+      // Show first, THEN burn the one-shot. `toastService.success` returns early
+      // when the singleton is in silent mode (`toasts.tsx`, `if (this.silent) return;`),
+      // and `silent` is sticky once set — `handleError`'s options flow into
+      // `configure()`. Burning the flag first would spend decision 14's single
+      // suggestion on a toast the user never saw.
       toastService.success({
         title: 'Workspace Control enabled',
         msg: 'Chat Recall pairs with it: Workspace reads and steers live conversations, Chat Recall searches past ones. Turn it on under Settings → Chat → Capabilities.',
       });
+      markChatrecallSuggestionSeen();
     }
 
     return true;
