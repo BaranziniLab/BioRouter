@@ -37,6 +37,31 @@ impl ServerWorkspaceServices {
     pub fn new(state: Arc<AppState>) -> Self {
         Self { state }
     }
+
+    /// Hydrate a session's extensions for a turn this crate is about to run,
+    /// **reusing the eager load if one is already in flight**.
+    ///
+    /// `start_session` spawns a full `load_extensions_from_session` and
+    /// registers the handle, exactly as `POST /agent/start` does. Loading again
+    /// unconditionally means two concurrent loads on one agent: each spawns the
+    /// session's stdio MCP subprocesses, and `add_extension_with_origin`'s
+    /// double-check under the map lock drops the losing racer's — spawned,
+    /// unreferenced, never reaped. `POST /agent/reply` has always avoided this
+    /// by taking the pending results instead (`routes/agent.rs`); this is the
+    /// same move, and `workspace_open { new: { prompt } }` — which chains
+    /// `start_session` straight into a detached turn — is the caller that made
+    /// it necessary here.
+    async fn hydrate_extensions(
+        &self,
+        agent: &Arc<biorouter::agents::Agent>,
+        session: &biorouter::session::Session,
+    ) -> Vec<biorouter::agents::ExtensionLoadResult> {
+        if let Some(results) = self.state.take_extension_loading_task(&session.id).await {
+            self.state.remove_extension_loading_task(&session.id).await;
+            return results;
+        }
+        agent.load_extensions_from_session(session).await
+    }
 }
 
 /// Publish this daemon's platform services to the `biorouter` crate, so the
@@ -127,7 +152,7 @@ impl WorkspaceServices for ServerWorkspaceServices {
             .map_err(|e| e.to_string())?;
         let (provider_result, _extension_results) = tokio::join!(
             agent.restore_provider_from_session(&session),
-            agent.load_extensions_from_session(&session),
+            self.hydrate_extensions(&agent, &session),
         );
         provider_result.map_err(|e| e.to_string())?;
 
@@ -400,6 +425,73 @@ mod tests {
                 .iter()
                 .map(|e| e.name().to_string())
                 .collect::<Vec<_>>()
+        );
+    }
+
+    /// `start_session` kicks off an EAGER extension load in a background task
+    /// and registers it, exactly as `POST /agent/start` does. A detached turn on
+    /// that same fresh session — which is what `workspace_open { new: { prompt
+    /// } }` does microseconds later, the first caller to chain the two — must
+    /// consume that pending load, not start a second concurrent one.
+    ///
+    /// `POST /agent/reply` already does precisely this (`take_extension_loading_task`
+    /// then *reuse*, `routes/agent.rs`), and for the reason that applies here
+    /// too: two concurrent `load_extensions_from_session` calls on one agent
+    /// each spawn the session's stdio MCP subprocesses, and
+    /// `add_extension_with_origin`'s double-check under the map lock means the
+    /// losing racer's children are simply dropped — spawned, unreferenced, and
+    /// never reaped.
+    #[tokio::test]
+    async fn a_detached_turn_reuses_the_eager_extension_load_instead_of_racing_it() {
+        let state = crate::state::AppState::new().await.unwrap();
+        let services = ServerWorkspaceServices::new(state.clone());
+        let temp = tempfile::TempDir::new().unwrap();
+
+        // There IS one to reuse — without this the assertion below would pass
+        // against a `start_session` that never registered anything.
+        let untouched = services
+            .start_session(
+                temp.path().to_path_buf(),
+                Some(Vec::new()),
+                Vec::new(),
+                KbPrimaryChoice::Auto,
+            )
+            .await
+            .unwrap();
+        assert!(
+            state
+                .take_extension_loading_task(&untouched)
+                .await
+                .is_some(),
+            "start_session registers an eager extension load"
+        );
+
+        let sid = services
+            .start_session(
+                temp.path().to_path_buf(),
+                Some(Vec::new()),
+                Vec::new(),
+                KbPrimaryChoice::Auto,
+            )
+            .await
+            .unwrap();
+        let session = state
+            .session_manager()
+            .get_session(&sid, false)
+            .await
+            .unwrap();
+        let agent = state.get_agent(sid.clone()).await.unwrap();
+
+        // The hydration a detached turn performs, without running the turn:
+        // `start_detached_turn` would go on to restore a provider and call the
+        // real turn runner, and in a developer's own environment that provider
+        // resolves — a test must not fire a live turn to check a load.
+        services.hydrate_extensions(&agent, &session).await;
+
+        assert!(
+            state.take_extension_loading_task(&sid).await.is_none(),
+            "the detached turn must consume the eager load, not leave it running \
+             beside a second one of its own"
         );
     }
 
