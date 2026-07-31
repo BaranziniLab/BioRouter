@@ -841,13 +841,17 @@ mod tests {
         // Let the probe get past the (uncontended) pin read and block on the LRU.
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-        tokio::time::timeout(std::time::Duration::from_secs(2), manager.pinned.write())
-            .await
-            .expect(
-                "has_session must not hold the pin lock while it waits on the LRU — a \
-                 `pinned -> sessions` nesting here deadlocks any future path that takes \
-                 them the other way round",
-            );
+        // Acquiring it IS the assertion; holding it is not the point, so it is
+        // dropped immediately (an unbound `must_use` guard warns).
+        let pin_guard =
+            tokio::time::timeout(std::time::Duration::from_secs(2), manager.pinned.write())
+                .await
+                .expect(
+                    "has_session must not hold the pin lock while it waits on the LRU — a \
+             `pinned -> sessions` nesting here deadlocks any future path that takes \
+             them the other way round",
+                );
+        drop(pin_guard);
 
         drop(sessions_guard);
         assert!(!probe.await.unwrap());
