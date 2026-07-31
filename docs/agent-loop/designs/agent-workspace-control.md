@@ -662,8 +662,8 @@ Each slice ships independently and is verifiable on its own.
 4. **Observer backpressure.** `broadcast` drops on lag; the observer endpoint must resync
    with an `UpdateConversation` snapshot on `Lagged` — spec'd, but the resync cost on very
    long transcripts needs measurement.
-5. **CLI surface.** The same spine trivially enables `biorouter sessions watch <id>` and
-   `biorouter sessions send <id>` — worth doing in Slice 1 as free verification tooling?
+5. **CLI surface.** The same spine trivially enables `biorouter session watch <id>` and
+   `biorouter session send <id>` — worth doing in Slice 1 as free verification tooling?
 
 ## Related documentation
 

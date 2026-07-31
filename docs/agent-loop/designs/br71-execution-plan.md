@@ -48,8 +48,8 @@
 > gates it reviewed rather than reading them.
 >
 > **Amended 2026-07-30 — CLI parity (operator requirement).** Three tasks added:
-> **38b** (`biorouter sessions list --subagents`, so a subagent is *discoverable* from a
-> terminal), **38c** (`biorouter sessions attach` / `sessions cancel`, so a **live** one
+> **38b** (`biorouter session list --subagents`, so a subagent is *discoverable* from a
+> terminal), **38c** (`biorouter session attach` / `session cancel`, so a **live** one
 > can be joined at its current position, steered and stopped) and **42b** (a standing
 > gate that fails the build when a workspace capability is reachable from the GUI or the
 > daemon and has no CLI counterpart). 38b/38c sit in **Phase 3**, beside Task 38, because
@@ -95,7 +95,7 @@ runner** (`/reply`'s turn body factored out — decision 11 — so `/reply` beco
 trait bridging the crate boundary (incl. a server turn *lease* the subagent runs will
 hold), an always-confirm inspector for security-relevant tool-set mutations
 (decision 1), the headless `workspace_*` tools including `workspace_watch`, the merged
-`subagent` tool, and the `biorouter sessions watch|send` CLI. Phase 2 adds the
+`subagent` tool, and the `biorouter session watch|send` CLI. Phase 2 adds the
 `WorkspaceBridge` (modeled on Agent Drafter's `UiBridge`), the `GET /ui/workspace`
 WebSocket, the renderer-side command applier that maps frames onto the existing
 `ChatGroups` reducer, and two Settings affordances (focus etiquette, chatrecall
@@ -1169,8 +1169,8 @@ crates/biorouter-server/src/workspace/bridge.rs            # WorkspaceBridge + p
 crates/biorouter-server/src/workspace/services.rs          # ServerWorkspaceServices: WorkspaceServices impl over AppState
 crates/biorouter-server/src/routes/session_events.rs       # GET /sessions/{session_id}/events (SSE observer) + map_bus_event; carries tag = "workspace" (Task 42b)
 crates/biorouter-server/src/routes/workspace.rs            # GET /ui/workspace (WS) + auth
-crates/biorouter-cli/src/commands/session_watch.rs         # `biorouter sessions watch|send` (Task 20); `attach`/`cancel` join it in Task 38c
-crates/biorouter-cli/src/commands/session_grouping.rs      # Parent/child grouping + liveness rendering for `sessions list --subagents` (Task 38b)
+crates/biorouter-cli/src/commands/session_watch.rs         # `biorouter session watch|send` (Task 20); `attach`/`cancel` join it in Task 38c
+crates/biorouter-cli/src/commands/session_grouping.rs      # Parent/child grouping + liveness rendering for `session list --subagents` (Task 38b)
 crates/biorouter-cli/src/commands/workspace_parity.rs      # The capability table + the four checks that make CLI parity mechanical (Task 42b)
 ui/desktop/src/components/chatGroups/workspaceCommandRegistry.ts       # Frame→dispatch seam (newTabRegistry sibling)
 ui/desktop/src/components/chatGroups/workspaceCommandRegistry.test.ts
@@ -1255,7 +1255,7 @@ runner that `/reply` and injected turns both consume, **six** `workspace_*` tool
 operate headlessly (`gui_attached: false` — `workspace_open` is the seventh and lands in
 Phase 2 with the GUI bridge it needs), the merged `subagent` tool with `subagent_status`
 retired, an always-confirm hook for security-relevant tool-set changes, and
-`biorouter sessions watch|send` to drive all of it from a terminal — with route + unit
+`biorouter session watch|send` to drive all of it from a terminal — with route + unit
 tests green and the OpenAPI client regenerated.
 
 **Task order inside this phase is load-bearing in four places:** Task 6 (the runner)
@@ -12453,7 +12453,25 @@ git commit -m "feat(subagent)!: remove subagent_status; its jobs move to workspa
 
 ---
 
-### Task 20: `biorouter sessions watch` / `biorouter sessions send`
+### Task 20: `biorouter session watch` / `biorouter session send`
+
+⚠ **Spelling amendment (Task 31 fixup, 2026-07-31): the command is `session`, singular.**
+This plan wrote `biorouter sessions …` in roughly forty places, including Tasks 38b, 38c
+and 44 — every one of them wrong. There is no `sessions` command and no `sessions` alias:
+`Command::Session` (`cli.rs`, `visible_alias = "s"`) already existed for "Start or resume
+interactive chat sessions", and `watch`/`send` are variants of its `SessionCommand`, which
+is exactly what this task's own **Files** list says one paragraph below. The prose and the
+file-level instruction disagreed, and the prose was the wrong one. Left uncorrected it was
+load-bearing: Task 44's CLI-parity gate resolves `Counterpart::Cli { path }` against the
+real clap tree, so every `&["sessions", …]` row would have failed to resolve, and two rows
+in its mutation table would have failed on the parent rather than on the leaf they exist
+to probe. All corrected in place.
+
+Two things this amendment does **not** touch. The shipped Task 20 commit `aad74e79` says
+"biorouter sessions watch/send" in its subject; that is history and stays wrong — the code
+it landed is right. And adding `sessions` as an alias is deliberately *not* done here: it
+may be worth it (users will type the plural), but that is a product decision for the CLI,
+not a repair a gate task makes to its own docs.
 
 **Decision 9.** Design §8.5 called these "free verification tooling" that falls out of the
 spine; the operator made them a Phase-1 task. They are also the only way to exercise the
@@ -12569,7 +12587,7 @@ Expected: COMPILE ERROR — module not found.
 - [ ] **Step 3: Implement**
 
 ```rust
-//! BR-71 §8.5 / decision 9: `biorouter sessions watch` and `biorouter sessions
+//! BR-71 §8.5 / decision 9: `biorouter session watch` and `biorouter session
 //! send`.
 //!
 //! `watch` streams a session's live events from the observer route added in
@@ -12596,7 +12614,7 @@ fn secret_key() -> Result<String> {
             "BIOROUTER_SERVER__SECRET_KEY is not set, so this command cannot authenticate \
              with the daemon.\nStart the daemon with a known key and reuse it here:\n  \
              BIOROUTER_SERVER__SECRET_KEY=<key> biorouterd agent\n  \
-             BIOROUTER_SERVER__SECRET_KEY=<key> biorouter sessions watch <id>"
+             BIOROUTER_SERVER__SECRET_KEY=<key> biorouter session watch <id>"
         )
     })
 }
@@ -12784,7 +12802,7 @@ fn print_frames(frames: &[serde_json::Value], stop_on_terminal: bool) -> bool {
     done
 }
 
-/// `biorouter sessions watch <id>` — read-only observation of a live session.
+/// `biorouter session watch <id>` — read-only observation of a live session.
 pub async fn handle_session_watch(session_id: &str, follow: bool) -> Result<()> {
     let secret = secret_key()?;
     eprintln!("watching session {session_id} (ctrl-c to stop)");
@@ -12795,7 +12813,7 @@ pub async fn handle_session_watch(session_id: &str, follow: bool) -> Result<()> 
     .await
 }
 
-/// `biorouter sessions send <id> <text>` — inject a turn and, unless
+/// `biorouter session send <id> <text>` — inject a turn and, unless
 /// `--no-wait`, watch it to completion.
 pub async fn handle_session_send(session_id: &str, text: &str, wait: bool) -> Result<()> {
     let secret = secret_key()?;
@@ -12867,8 +12885,8 @@ SID=$(curl -s -X POST http://127.0.0.1:3000/agent/start -H 'X-Secret-Key: test' 
   -H 'Content-Type: application/json' -d '{"working_dir": "/tmp"}' \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
 
-biorouter sessions watch "$SID" --follow &     # observer
-biorouter sessions send "$SID" "say hello in five words"
+biorouter session watch "$SID" --follow &     # observer
+biorouter session send "$SID" "say hello in five words"
 ```
 
 Expected: the `send` prints `[assistant] …` then `[finished] stop`; the backgrounded
@@ -12882,7 +12900,7 @@ Phase-1 spine working end to end. Without a provider configured both print
 git add crates/biorouter-cli/src/commands/session_watch.rs \
         crates/biorouter-cli/src/commands/mod.rs crates/biorouter-cli/src/commands/apps.rs \
         crates/biorouter-cli/src/cli.rs
-git commit -m "feat(cli): biorouter sessions watch/send over the session event spine (BR-71)"
+git commit -m "feat(cli): biorouter session watch/send over the session event spine (BR-71)"
 ```
 
 ---
@@ -13106,8 +13124,8 @@ curl -s -H 'X-Secret-Key: test' "http://127.0.0.1:3000/sessions/$SID/extensions"
 # still advertised (auto-injection) and this endpoint must NOT list `workspace`.
 
 # 7. The CLI half of the spine (Task 20).
-BIOROUTER_SERVER__SECRET_KEY=test biorouter sessions watch "$SID" &
-BIOROUTER_SERVER__SECRET_KEY=test biorouter sessions send "$SID" "hello"
+BIOROUTER_SERVER__SECRET_KEY=test biorouter session watch "$SID" &
+BIOROUTER_SERVER__SECRET_KEY=test biorouter session send "$SID" "hello"
 # Expected: both print the same frames; `send` ends on [finished] or [error:…].
 ```
 
@@ -17097,7 +17115,7 @@ screenshots, never `screencapture`; `env -u ELECTRON_RUN_AS_NODE`)
    workspace ON in Settings → Extensions and verify the chatrecall suggestion appears
    exactly once (toggle off and on again — it must not reappear).
 7. Close the GUI; re-run the same tool from `biorouter` CLI against the daemon —
-   verify `gui_attached: false` degradation, and that `biorouter sessions watch` still
+   verify `gui_attached: false` degradation, and that `biorouter session watch` still
    streams.
 
 ⚠ **Two known gaps in `/ui/workspace`, recorded here deliberately by Task 23's review
@@ -17185,10 +17203,10 @@ annotated tab the human can watch, steer, and stop; the parent's result reports 
 intervention.
 
 **And the same three verbs from a terminal** (Tasks 38b/38c, the operator's 2026-07-30
-CLI-parity requirement): `biorouter sessions list --subagents` makes a child
+CLI-parity requirement): `biorouter session list --subagents` makes a child
 *discoverable* — grouped under its parent, with live/finished state and a label derived
 from its own task rather than the shared `"Subagent task"` literal — and
-`biorouter sessions attach` joins it **while it is running**, rendering the conversation
+`biorouter session attach` joins it **while it is running**, rendering the conversation
 so far and then following and steering it. Both are placed here, not in Phase 4, because
 they stand on Task 32's stamping, Task 33's registration (without which `/interrupt`
 mints a different agent for the child and a steer lands nowhere) and Task 34's bus
@@ -22202,7 +22220,7 @@ git commit -m "feat(ui): History groups subagent transcripts under their parent 
 
 ---
 
-### Task 38b: `biorouter sessions list` shows subagents grouped under their parent
+### Task 38b: `biorouter session list` shows subagents grouped under their parent
 
 **The CLI counterpart of Task 38, and the precondition for Task 38c.** The operator's
 2026-07-30 requirement is that the CLI inherit what the GUI and the server gained: "users
@@ -22214,7 +22232,7 @@ find, and today the terminal cannot find one at all.
 `feat/br71-workspace-control` after Task 20 landed). Re-verify by symbol; do not trust the
 line numbers.**
 
-1. **`biorouter sessions list` cannot see a subagent, at the SQL level.**
+1. **`biorouter session list` cannot see a subagent, at the SQL level.**
    `commands/session.rs`'s `handle_session_list` calls `SessionManager::list_sessions()`,
    whose storage impl is exactly
    `self.list_sessions_by_types(&[SessionType::User, SessionType::Scheduled])`
@@ -22228,7 +22246,7 @@ line numbers.**
 3. **Every subagent session carries the SAME name.** `subagent_tool.rs`'s
    `create_subagent_session` passes the literal `"Subagent task"` to
    `SessionManager::create_session`. An N-way fan-out therefore produces N rows named
-   `Subagent task`, differing only by uuid — in `biorouter sessions list`, in Task 38's
+   `Subagent task`, differing only by uuid — in `biorouter session list`, in Task 38's
    grouped History, and in `workspace_list`. "Enough identity to tell two sibling
    sub-agents apart" is not currently available on **any** surface, so this is not a
    CLI-only repair.
@@ -22580,7 +22598,7 @@ In `crates/biorouter/src/agents/subagent_tool.rs`, beside `create_subagent_sessi
 
 ```rust
 /// A one-line label for a spawned child, so two siblings of one fan-out are
-/// distinguishable everywhere a session is listed — `biorouter sessions list`,
+/// distinguishable everywhere a session is listed — `biorouter session list`,
 /// Task 38's grouped History, and `workspace_list` all read `Session.name`.
 ///
 /// Prefers the subworkflow name (a run of a named workflow is best identified by
@@ -22817,7 +22835,7 @@ Expected: exit 0 — i.e. Step 5's regen was committed.
 Live, against `BIOROUTER_SERVER__SECRET_KEY=test just debug-server`:
 
 ```bash
-biorouter sessions list --subagents | head -20
+biorouter session list --subagents | head -20
 ```
 Expected, after a real fan-out: each parent line followed by indented `└─ Subagent: …`
 children whose **labels differ**, each with `● live` or `○ done`. Stop the daemon and
@@ -22849,7 +22867,7 @@ git add crates/biorouter-cli/src/commands/session_grouping.rs \
         crates/biorouter-cli/src/commands/session.rs \
         crates/biorouter-cli/src/commands/session_watch.rs \
         crates/biorouter-cli/src/cli.rs
-git commit -m "feat(cli): sessions list groups subagent runs under their parent (BR-71)"
+git commit -m "feat(cli): session list groups subagent runs under their parent (BR-71)"
 
 git add crates/biorouter/src/agents/subagent_tool.rs
 git commit -m "feat(subagent): name a child session after its own task (BR-71)"
@@ -22863,7 +22881,7 @@ git commit -m "feat(server): GET /sessions/running publishes turn liveness (BR-7
 
 ---
 
-### Task 38c: `biorouter sessions attach` — join a LIVE session at its current position
+### Task 38c: `biorouter session attach` — join a LIVE session at its current position
 
 **The operator's headline sentence, 2026-07-30:** *"The users will be able to use either a
 session ID or some other ways to spin up the conversation so that the conversation within
@@ -22872,7 +22890,7 @@ same ways of monitoring the data of different sub-agents and injecting problems 
 if needed, but just without the graphic user interface."*
 
 ⚠ **Reading of record: "inject problems" is read as "inject prompts"** — the same act
-`workspace_send_prompt` performs and that `biorouter sessions send` (Task 20) already
+`workspace_send_prompt` performs and that `biorouter session send` (Task 20) already
 performs. Nothing in the design has a notion of injecting a *fault*, and the sentence
 sits between "monitor" and "if needed", where a steer belongs. **Recorded explicitly so a
 future reader can correct it**: if the operator meant fault injection, this task is
@@ -22907,7 +22925,7 @@ symbol.**
 2. **Task 20's `watch` throws that snapshot away.** `session_watch.rs`'s `render_frame`
    maps `"UpdateConversation"` to the single line
    `"[snapshot] conversation resynced"`. That is correct for a *resync* mid-stream and
-   useless as a *join*: it is exactly why `biorouter sessions watch` does not start you
+   useless as a *join*: it is exactly why `biorouter session watch` does not start you
    "at the position of the sub-agent". Attach renders it.
 3. **A `/reply` stream still owns its turn, even after Task 8.** The runner is detached
    (`reply.rs` spawns `crate::workspace::turn::run_turn` and, separately,
@@ -23151,7 +23169,7 @@ sees their own steer kill the run they were watching, with no error anywhere.
 - [ ] **Step 5: The attach loop**
 
 ```rust
-/// `biorouter sessions attach <id>` — render where the session is, follow it
+/// `biorouter session attach <id>` — render where the session is, follow it
 /// live, and steer it from stdin.
 pub async fn handle_session_attach(session_id: &str, read_only: bool) -> Result<()> {
     let secret = secret_key()?;
@@ -23280,13 +23298,13 @@ export BIOROUTER_SERVER__SECRET_KEY=test
 SID=$(curl -s -X POST http://127.0.0.1:3000/agent/start -H 'X-Secret-Key: test' \
   -H 'Content-Type: application/json' -d '{"working_dir": "/tmp"}' \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
-biorouter sessions send "$SID" \
+biorouter session send "$SID" \
   "Use a subagent to count the .rs files under crates/ one directory at a time, \
    reporting after each." &
 
 # 2. Find the child and attach to it MID-RUN.
-biorouter sessions list --subagents | grep '● live'
-biorouter sessions attach <child-id>
+biorouter session list --subagents | grep '● live'
+biorouter session attach <child-id>
 ```
 
 Expected, in order, and each is a separate claim to check:
@@ -23299,7 +23317,7 @@ Expected, in order, and each is a separate claim to check:
 4. attaching a **second** terminal to the same child shows the same frames — two
    observers, one turn;
 5. Ctrl-C in either observer detaches and the child keeps running (check with
-   `biorouter sessions list --subagents`, which must still show `● live`);
+   `biorouter session list --subagents`, which must still show `● live`);
 6. after the child finishes, typing into a still-open attach starts a **new** turn
    (the `/reply` rung) and the observer renders it once, not twice.
 
@@ -23307,7 +23325,7 @@ Then the refusal path, which step 3 cannot reach:
 
 ```bash
 # Steer a session with no turn in flight: /interrupt 409s, /reply takes it.
-biorouter sessions attach "$SID"   # after its turn has ended
+biorouter session attach "$SID"   # after its turn has ended
 ```
 Expected: `[started a new turn]`, never a bare `409`, and never two copies of the answer.
 
@@ -23325,7 +23343,7 @@ accept point including "never"); a ladder that sends on both routes when the fir
 is slow (the at-most-once test asserts `delivered.len() <= 1` for every accept point); a
 `/reply` fallback that drops its socket to avoid double-rendering — which cancels the
 turn, and shows up as live step 6 printing nothing and
-`sessions list --subagents` flipping to `○ done` immediately; and a Ctrl-C handler that
+`session list --subagents` flipping to `○ done` immediately; and a Ctrl-C handler that
 exits unconditionally while a `/reply` socket is open (pinned by all four rows of
 `ctrl_c_action`, none of which a constant return satisfies).
 
@@ -23339,7 +23357,7 @@ UX question this plan does not answer.
 
 ```bash
 git add crates/biorouter-cli/src/commands/session_watch.rs crates/biorouter-cli/src/cli.rs
-git commit -m "feat(cli): sessions attach joins a live session and steers it (BR-71)"
+git commit -m "feat(cli): session attach joins a live session and steers it (BR-71)"
 ```
 
 ---
@@ -23883,19 +23901,19 @@ drift amendment; both taken on this worktree at `ea15a4de`, before Phase 2 start
 
   Then, by hand, delegating a long-running fan-out from a `biorouter session` and with no
   desktop app running:
-  1. `biorouter sessions list --subagents` shows the children nested under their parent,
+  1. `biorouter session list --subagents` shows the children nested under their parent,
      with **different labels** and a `● live` marker. Two identical `Subagent: …` labels
      mean Task 38b Step 4 did not land;
-  2. `biorouter sessions attach <child-id>` prints the child's conversation **so far** as
+  2. `biorouter session attach <child-id>` prints the child's conversation **so far** as
      a transcript and then follows it — one line reading
      `[snapshot] conversation resynced` means Task 38c Step 3 did not land;
   3. a line typed into that attach returns `[steered turn <id>]` and lands in the same
      turn. **A `409` here is the same Task 33 control-plane regression the harness's live
      tier hunts, arriving on the other surface** — the child agent is not registered, so
      `/interrupt` resolves a different one;
-  4. `biorouter sessions cancel <child-id>` stops it and reports the turn id; a second
+  4. `biorouter session cancel <child-id>` stops it and reports the turn id; a second
      call reports `cancelled: false` and still exits 0;
-  5. Ctrl-C out of the attach and confirm with `biorouter sessions list --subagents` that
+  5. Ctrl-C out of the attach and confirm with `biorouter session list --subagents` that
      the sibling children are **still running** — detaching an observer must not cancel
      anything.
 - [ ] Update the design-doc status header (Slice 3 shipped); commit:
@@ -24617,10 +24635,10 @@ mod tests {
     #[test]
     fn the_counterpart_resolver_rejects_a_subcommand_that_does_not_exist() {
         let root = crate::cli::command_tree();
-        assert!(resolve(&root, &["sessions", "list"]).is_some());
-        assert!(resolve(&root, &["sessions", "teleport"]).is_none());
+        assert!(resolve(&root, &["session", "list"]).is_some());
+        assert!(resolve(&root, &["session", "teleport"]).is_none());
         assert!(resolve(&root, &["teleport"]).is_none());
-        let sessions_list = resolve(&root, &["sessions", "list"]).unwrap();
+        let sessions_list = resolve(&root, &["session", "list"]).unwrap();
         assert!(sessions_list.get_arguments().any(|a| a.get_id().as_str() == "subagents"));
         assert!(!sessions_list.get_arguments().any(|a| a.get_id().as_str() == "teleport"));
     }
@@ -24729,16 +24747,16 @@ pub fn cli_counterpart(capability: WorkspaceCapability) -> Counterpart {
     use WorkspaceCapability as C;
     match capability {
         C::List => Counterpart::Cli {
-            path: &["sessions", "list"],
+            path: &["session", "list"],
             args: &["subagents"],
         },
         C::ReadConversation => Counterpart::Cli {
-            path: &["sessions", "export"],
+            path: &["session", "export"],
             args: &["format"],
         },
-        C::SendPrompt => Counterpart::Cli { path: &["sessions", "send"], args: &[] },
-        C::Watch => Counterpart::Cli { path: &["sessions", "watch"], args: &["follow"] },
-        C::Close => Counterpart::Cli { path: &["sessions", "cancel"], args: &[] },
+        C::SendPrompt => Counterpart::Cli { path: &["session", "send"], args: &[] },
+        C::Watch => Counterpart::Cli { path: &["session", "watch"], args: &["follow"] },
+        C::Close => Counterpart::Cli { path: &["session", "cancel"], args: &[] },
         C::Spawn => Counterpart::Asymmetry {
             reason: "Spawning is a TOOL the model calls, not a command the user \
                      types, and it already works in the CLI: the CLI's reply path \
@@ -24755,12 +24773,12 @@ pub fn cli_counterpart(capability: WorkspaceCapability) -> Counterpart {
                      an explicit request.",
         },
         C::Open => Counterpart::Cli { path: &["session"], args: &["name"] },
-        C::RouteReply => Counterpart::Cli { path: &["sessions", "send"], args: &[] },
-        C::RouteInterrupt => Counterpart::Cli { path: &["sessions", "attach"], args: &[] },
-        C::RouteCancel => Counterpart::Cli { path: &["sessions", "cancel"], args: &[] },
-        C::RouteObserve => Counterpart::Cli { path: &["sessions", "attach"], args: &["of"] },
+        C::RouteReply => Counterpart::Cli { path: &["session", "send"], args: &[] },
+        C::RouteInterrupt => Counterpart::Cli { path: &["session", "attach"], args: &[] },
+        C::RouteCancel => Counterpart::Cli { path: &["session", "cancel"], args: &[] },
+        C::RouteObserve => Counterpart::Cli { path: &["session", "attach"], args: &["of"] },
         C::RouteRunning => Counterpart::Cli {
-            path: &["sessions", "list"],
+            path: &["session", "list"],
             args: &["subagents"],
         },
     }
@@ -24855,8 +24873,8 @@ mutation, run the command, confirm the named failure, and revert:
 | Add a ninth tool to `WorkspaceClient::get_tools()` and nothing else | check A: *"In the surface, not the table"* naming it |
 | Delete `C::Watch` from `ALL_CAPABILITIES` | check A: *"In the surface, not the table: [workspace_watch]"* |
 | Add a `WorkspaceCapability` variant | **compile error** `E0004` in `cli_counterpart` and in `surface` |
-| Point `C::List` at `&["sessions", "teleport"]` | check C: *"no `biorouter sessions teleport` subcommand"* |
-| Point `C::List` at `&["sessions", "list"]` with `args: &["teleport"]` | check C: *"has no --teleport"* |
+| Point `C::List` at `&["session", "teleport"]` | check C: *"no `biorouter session teleport` subcommand"* |
+| Point `C::List` at `&["session", "list"]` with `args: &["teleport"]` | check C: *"has no --teleport"* |
 | Change the tag selector to `"workspce"` | check B: *"the selector matched nothing"* |
 | Add `tag = "workspace"` to an unrelated route | check B: set inequality naming it |
 | Turn `C::Close` into `Asymmetry { reason: "n/a" }` | check C (reason too short) **and** check D (three asymmetries) |
@@ -24875,8 +24893,8 @@ and an **escape hatch that swallows everything** (`Asymmetry` requires a >40-cha
 reason and is capped at two, so "declare it asymmetric" is not a way past the gate).
 
 **What it cannot check, stated rather than hidden:** that a CLI counterpart is *correct*.
-A `sessions attach` that resolved, declared `--of`, and did nothing would pass every
-check here. That is what Task 38c's live step and Task 44's `sessions attach` run are for
+A `session attach` that resolved, declared `--of`, and did nothing would pass every
+check here. That is what Task 38c's live step and Task 44's `session attach` run are for
 — this gate proves a capability is *reachable* from the terminal, not that it works.
 
 - [ ] **Step 6: Commit**
@@ -25102,7 +25120,7 @@ the tree — fix it there, once, rather than in two places.
   - **`every_counterpart_exists_in_the_real_cli` red** — a row *claims* a subcommand or
     flag the binary does not have. A rename in `cli.rs` lands here.
 - [ ] The end-to-end CLI run, **with no desktop app running**, per Task 40's CLI half:
-  `sessions list --subagents` → `sessions attach <child>` → steer → `sessions cancel`.
+  `session list --subagents` → `session attach <child>` → steer → `session cancel`.
   Exit 0 on each, and a `409` on the steer is the Task 33 control-plane regression, not a
   CLI bug.
 - [ ] Squash-review the branch diff for the permission-relevant files (Tasks 6, 8, 10,
@@ -25281,7 +25299,7 @@ problems into them if needed, but just without the graphic user interface."*
 → **Tasks 38b, 38c and 42b.**
 
 *Reading of record:* **"inject problems" is read as "inject prompts"** — the act
-`workspace_send_prompt` performs and that `biorouter sessions send` already performs.
+`workspace_send_prompt` performs and that `biorouter session send` already performs.
 Nothing in the design has a notion of injecting a *fault*, and the phrase sits between
 "monitoring" and "if needed", where a steer belongs. Recorded so it can be corrected: if
 fault injection was meant, Task 38c is mis-scoped and needs re-specifying.
@@ -25358,8 +25376,8 @@ caught this.
 **8. `MessageMetadata` loses `Copy` — accepted.** Mechanical `.clone()` fallout.
 → **Task 2**, reconciliation #4.
 
-**9. CLI surface ships in Phase 1**: `biorouter sessions watch` and
-`biorouter sessions send`, over a raw socket so the CLI gains no HTTP dependency.
+**9. CLI surface ships in Phase 1**: `biorouter session watch` and
+`biorouter session send`, over a raw socket so the CLI gains no HTTP dependency.
 → **Task 20**.
 
 **10. Registered children are PINNED out of the `AgentManager` LRU** (a `HashMap`
