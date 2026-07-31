@@ -280,9 +280,10 @@ export function ChatGroupsProvider({ children }: { children: React.ReactNode }) 
   // actions and perform its declared effects.
   const [tabAnnotations, setTabAnnotations] = useState<Record<string, TabAnnotation>>({});
 
-  // A closed tab's annotation is forgotten. The map is keyed by session id and
-  // written straight from daemon frames, so with no prune it only ever grows,
-  // for the life of the window, on input this renderer does not control.
+  // A closed tab's annotation is forgotten, and its observer stream detached.
+  // The map is keyed by session id and written straight from daemon frames, so
+  // with no prune it only ever grows, for the life of the window, on input this
+  // renderer does not control.
   //
   // The prune is deliberately scoped to sessions that HAD a tab and no longer
   // do, rather than to "every session without a tab right now": nothing orders
@@ -296,6 +297,16 @@ export function ChatGroupsProvider({ children }: { children: React.ReactNode }) 
     const closed = [...tabbedSessionsRef.current].filter((id) => !tabbed.has(id));
     tabbedSessionsRef.current = tabbed;
     if (closed.length === 0) return;
+    // The other end of the `observeSession()` below (§4.3: "until the tab
+    // detaches or the user takes the session over"). That loop reconnects until
+    // something stops it, and `getController` retains its controller for the
+    // life of the renderer, so with no detach every daemon-opened tab leaves an
+    // SSE subscription reconnecting forever for a chat nobody can see.
+    //
+    // `peekController`, so teardown never CREATES a controller; and
+    // `stopObserving` is a no-op on a controller that is driving, so closing an
+    // ordinary chat tab still does not cancel its turn.
+    for (const id of closed) defaultChatStreamRegistry.peekController(id)?.stopObserving();
     setTabAnnotations((prev) => {
       // Same object back when there is nothing to drop, so this never costs a
       // render on the ordinary tab close.

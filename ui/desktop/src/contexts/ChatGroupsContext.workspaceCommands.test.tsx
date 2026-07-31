@@ -13,6 +13,7 @@ import { MAX_GROUPS } from '../components/chatGroups/chatGroupsLayout';
 
 const mocks = vi.hoisted(() => ({
   observeSession: vi.fn(),
+  stopObserving: vi.fn(),
   info: vi.fn(),
   warning: vi.fn(),
   error: vi.fn(),
@@ -34,15 +35,18 @@ const mocks = vi.hoisted(() => ({
   runningChats: [] as { sessionId: string; completedAt?: number }[],
 }));
 
-// The provider imports `useRunningChats` from this module and the executor calls
-// `defaultChatStreamRegistry.getController(...).observeSession()`. Mocking the
-// module replaces BOTH, so the mock must supply both — `tabs.test.tsx` supplies
-// only `useRunningChats`, which is safe there only because it never dispatches a
-// workspace command.
+// The provider imports `useRunningChats` from this module, the executor calls
+// `defaultChatStreamRegistry.getController(...).observeSession()`, and closing a
+// tab calls `peekController(...)?.stopObserving()`. Mocking the module replaces
+// all three, so the mock must supply all three.
 vi.mock('../hooks/chatStreamStore', () => ({
   useRunningChats: () => mocks.runningChats,
   defaultChatStreamRegistry: {
     getController: () => ({ observeSession: mocks.observeSession }),
+    // `peek`, not `get`: the detach path must never CREATE a controller for a
+    // session this window has no tab for — that is the leak `getController` is
+    // guarded against on the attach side too.
+    peekController: () => ({ stopObserving: mocks.stopObserving }),
   },
 }));
 vi.mock('../utils/sessionNameSync', () => ({ subscribeSessionNameChanges: () => () => undefined }));
@@ -318,6 +322,30 @@ describe('ChatGroupsProvider — the workspace command executor', () => {
       expect(screen.getByTestId('sessions').textContent).toContain('s-unrelated')
     );
     expect(screen.getByTestId('badges').textContent).toContain('s-pending');
+  });
+
+  it('detaches the observer stream when the tab it was attached for closes', async () => {
+    // The other end of the attach above. `observeSession` owns a reconnect loop
+    // that runs until something detaches it, and `getController` retains its
+    // controller for the life of the renderer — so with nothing calling
+    // `stopObserving`, closing a daemon-opened tab leaves an SSE subscription
+    // reconnecting forever for a chat that is nowhere on screen, one per tab the
+    // daemon ever opened.
+    mount();
+    act(() => {
+      applyWorkspaceCommand(openTab('s-observed'));
+    });
+    await waitFor(() => expect(screen.getByTestId('sessions').textContent).toContain('s-observed'));
+    expect(mocks.observeSession).toHaveBeenCalled();
+    expect(mocks.stopObserving).not.toHaveBeenCalled();
+
+    act(() => {
+      applyWorkspaceCommand({ type: 'workspace', cmd: 'close_tab', session_id: 's-observed' });
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId('sessions').textContent).not.toContain('s-observed')
+    );
+    expect(mocks.stopObserving).toHaveBeenCalledTimes(1);
   });
 
   it('relays open_window to the main process instead of opening a tab', async () => {

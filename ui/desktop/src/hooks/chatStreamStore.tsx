@@ -1631,6 +1631,16 @@ export class ChatStreamRegistry {
     return controller;
   }
 
+  /**
+   * The controller for this session IF one already exists — a lookup, where
+   * `getController` is a create-or-get that retains what it makes for the life
+   * of the renderer. Use this for teardown ("the tab closed, detach"), where
+   * creating a controller for a session that has none is exactly backwards.
+   */
+  peekController(sessionId: string): ChatStreamController | undefined {
+    return this.controllers.get(sessionId);
+  }
+
   isSessionRunning(sessionId: string): boolean {
     return this.controllers.get(sessionId)?.isRunning() ?? false;
   }
