@@ -1092,8 +1092,32 @@ pub async fn interrupt(
     if !state.is_turn_active(&req.session_id) {
         return Err(StatusCode::CONFLICT);
     }
+    // BR-71 §4.5: a steer typed into a subagent's tab is a human intervention
+    // the parent must hear about, so stamp it `user_direct`. Read the session
+    // BEFORE `get_agent_for_route`, which takes `req.session_id` by value — a
+    // `&req.session_id` afterwards is E0382.
+    //
+    // An unreadable session yields `None`, not a 500. Queueing a steer is a
+    // purely in-memory operation on an agent that is demonstrably running; the
+    // store read exists only to decide provenance, and a session we cannot read
+    // is simply not provably a subagent. Making it fatal would turn a working
+    // steer into an error for every caller whose row is missing or racing a
+    // write — a new failure mode on a path that never touched the store before.
+    let provenance = state
+        .session_manager()
+        .get_session(&req.session_id, false)
+        .await
+        .ok()
+        .filter(|session| {
+            session.session_type == biorouter::session::session_manager::SessionType::SubAgent
+        })
+        .map(|_| biorouter::conversation::message::MessageProvenance {
+            kind: biorouter::conversation::message::ProvenanceKind::UserDirect,
+            from_session_id: None,
+            from_session_name: None,
+        });
     let agent = state.get_agent_for_route(req.session_id).await?;
-    match agent.try_queue_soft_interrupt(req.text, None) {
+    match agent.try_queue_soft_interrupt(req.text, provenance) {
         Ok(turn_id) => Ok((
             StatusCode::ACCEPTED,
             Json(InterruptAccepted {

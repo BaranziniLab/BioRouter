@@ -353,6 +353,38 @@ impl Drop for BusRelease {
     }
 }
 
+/// BR-71 §4.5: a human typing into a subagent's tab is an intervention the
+/// parent must hear about. Sessions of other types are untouched.
+///
+/// **An existing stamp is never overwritten**, and that is load-bearing rather
+/// than defensive. `run_turn` is the ONE turn runner (Task 6), so a
+/// `workspace_send_prompt mode:"turn"` injection arrives here too — already
+/// carrying `ProvenanceKind::AgentInjection`, applied by
+/// `workspace_extension.rs` before it calls `start_detached_turn`. Stamping it
+/// `UserDirect` because the *target* happens to be a subagent would relabel
+/// another agent's injection as a human steer, and
+/// `conversation_has_user_direct` would then report `human_intervened: true` to
+/// the parent for a run no human ever touched — the exact false positive that
+/// helper's `agent_injected` case exists to rule out, reintroduced one layer up.
+/// A message that already names its origin is not a human at a composer.
+pub(crate) fn stamp_user_direct_if_subagent(
+    message: biorouter::conversation::message::Message,
+    session_type: biorouter::session::session_manager::SessionType,
+) -> biorouter::conversation::message::Message {
+    use biorouter::conversation::message::{MessageProvenance, ProvenanceKind};
+    if message.metadata.provenance.is_none()
+        && session_type == biorouter::session::session_manager::SessionType::SubAgent
+    {
+        message.with_provenance(MessageProvenance {
+            kind: ProvenanceKind::UserDirect,
+            from_session_id: None,
+            from_session_name: None,
+        })
+    } else {
+        message
+    }
+}
+
 /// Everything [`run_turn_body`] resolves out of the store before it can ask the
 /// provider for a single token. Produced by [`prepare_turn`].
 struct TurnSetup {
@@ -361,6 +393,12 @@ struct TurnSetup {
     /// The turn's accumulator, already seeded and already carrying
     /// `user_message` as its last entry.
     all_messages: Conversation,
+    /// The message to hand `agent.reply(...)`, **after** [`prepare_turn`] has
+    /// stamped it. It must be this one and not the caller's original: the
+    /// accumulator above already holds a clone of the stamped message, and two
+    /// objects for one logical row that differ only in `metadata.provenance` is
+    /// exactly the bug BR-71 §4.5 exists to prevent.
+    user_message: Message,
 }
 
 /// The setup phase: resolve the session's agent, read the session, build its
@@ -371,10 +409,13 @@ struct TurnSetup {
 /// anything else. Split out of [`run_turn_body`] to keep that function under the
 /// repo's 100-line ceiling; it is a phase boundary the code already had, not a
 /// line-count slice, and every publish/return pair moved across it verbatim.
+/// `user_message` is taken **by value** so the stamp below can shadow it and
+/// both consumers — the accumulator and `agent.reply(...)` — see the same
+/// object; the returned [`TurnSetup`] carries it back out.
 async fn prepare_turn(
     state: &Arc<AppState>,
     session_id: &str,
-    user_message: &Message,
+    user_message: Message,
     reasoning_effort: Option<biorouter::agents::ReasoningEffort>,
     conversation_so_far: Option<Conversation>,
 ) -> Option<TurnSetup> {
@@ -409,6 +450,13 @@ async fn prepare_turn(
         }
     };
 
+    // BR-71 §4.5: a human typing into a subagent's tab (its composer posts to
+    // /reply like any other tab) is an intervention the parent must hear about.
+    // It has to happen HERE, above the accumulator seed below, so the row the
+    // telemetry accumulator keeps and the message the agent replies to are the
+    // same stamped object.
+    let user_message = stamp_user_direct_if_subagent(user_message, session.session_type);
+
     let session_config = SessionConfig {
         id: session_id.to_string(),
         schedule_id: session.schedule_id.clone(),
@@ -438,6 +486,7 @@ async fn prepare_turn(
         agent,
         session_config,
         all_messages,
+        user_message,
     })
 }
 
@@ -560,10 +609,11 @@ async fn run_turn_body(
         agent,
         session_config,
         mut all_messages,
+        user_message,
     }) = prepare_turn(
         &state,
         &session_id,
-        &user_message,
+        user_message,
         extras.reasoning_effort,
         extras.conversation_so_far,
     )
@@ -1309,6 +1359,43 @@ mod tests {
                 .is_err(),
             "the unguarded session must not publish a turn lifecycle"
         );
+    }
+
+    #[tokio::test]
+    async fn replies_into_subagent_sessions_are_stamped_user_direct() {
+        // The pure stamping helper is what we assert; the full /reply path
+        // exercises it via the session_type read it already performs.
+        use biorouter::conversation::message::ProvenanceKind;
+        let stamped =
+            stamp_user_direct_if_subagent(Message::user().with_text("hi"), SessionType::SubAgent);
+        assert_eq!(
+            stamped.metadata.provenance.as_ref().unwrap().kind,
+            ProvenanceKind::UserDirect
+        );
+        let untouched =
+            stamp_user_direct_if_subagent(Message::user().with_text("hi"), SessionType::User);
+        assert!(untouched.metadata.provenance.is_none());
+    }
+
+    /// `run_turn` is the ONE turn runner, so `workspace_send_prompt mode:"turn"`
+    /// lands here as well — and its message is already stamped
+    /// `AgentInjection` by the time it arrives. Relabelling it `UserDirect`
+    /// because the target is a subagent would report `human_intervened: true`
+    /// to the parent for a run no human touched.
+    #[tokio::test]
+    async fn an_agent_injection_into_a_subagent_keeps_its_own_provenance() {
+        use biorouter::conversation::message::{MessageProvenance, ProvenanceKind};
+        let injected = Message::user()
+            .with_text("from the parent")
+            .with_provenance(MessageProvenance {
+                kind: ProvenanceKind::AgentInjection,
+                from_session_id: Some("s-parent".into()),
+                from_session_name: Some("Planning chat".into()),
+            });
+        let stamped = stamp_user_direct_if_subagent(injected, SessionType::SubAgent);
+        let provenance = stamped.metadata.provenance.as_ref().unwrap();
+        assert_eq!(provenance.kind, ProvenanceKind::AgentInjection);
+        assert_eq!(provenance.from_session_id.as_deref(), Some("s-parent"));
     }
 
     /// `start_turn` must hand back a subscription it opened itself, not leave

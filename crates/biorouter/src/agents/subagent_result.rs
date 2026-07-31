@@ -62,6 +62,10 @@ pub struct SubagentResult {
     /// Token usage for the child's session, when available.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tokens: Option<SubagentTokens>,
+    /// BR-71: the human typed into the child's tab during the run. Surfaced in
+    /// the parent's tool result so it can weigh the summary.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub human_intervened: bool,
 }
 
 impl SubagentResult {
@@ -74,6 +78,7 @@ impl SubagentResult {
             error: Some(message),
             artifacts: Vec::new(),
             tokens: None,
+            human_intervened: false,
         }
     }
 
@@ -111,6 +116,7 @@ impl SubagentResult {
             error: Some(message),
             artifacts,
             tokens: None,
+            human_intervened: false,
         }
     }
 
@@ -135,6 +141,7 @@ impl SubagentResult {
                 error: None,
                 artifacts,
                 tokens: None,
+                human_intervened: false,
             };
         }
 
@@ -169,6 +176,7 @@ impl SubagentResult {
             error: None,
             artifacts,
             tokens: None,
+            human_intervened: false,
         }
     }
 
@@ -176,6 +184,17 @@ impl SubagentResult {
     /// carrying status / artifacts / tokens.
     pub fn to_agent_text(&self) -> String {
         let mut out = self.summary.clone();
+        // BR-71 §4.5: said only when it happened. A "human_intervened: false"
+        // line would read to the parent model as an assertion that someone
+        // checked, when in fact nothing was observed either way.
+        if self.human_intervened {
+            if !out.is_empty() {
+                out.push_str("\n\n");
+            }
+            out.push_str(
+                "Note: the user intervened directly in this subagent's tab during the run.",
+            );
+        }
         let footer = self.footer_line();
         if !footer.is_empty() {
             if !out.is_empty() {
@@ -219,6 +238,19 @@ impl SubagentResult {
             meta: None,
         }
     }
+}
+
+/// BR-71 §4.5: true when the child's conversation contains any message the
+/// human injected directly through the subagent tab. The parent weighs the
+/// summary accordingly.
+pub fn conversation_has_user_direct(conversation: &Conversation) -> bool {
+    use crate::conversation::message::ProvenanceKind;
+    conversation.messages().iter().any(|m| {
+        m.metadata
+            .provenance
+            .as_ref()
+            .is_some_and(|p| p.kind == ProvenanceKind::UserDirect)
+    })
 }
 
 /// Non-whitespace text of the last message, but only if it's the child's own
@@ -550,5 +582,80 @@ mod tests {
         );
         // No tokens, no artifacts, completed -> bare summary, no footer.
         assert_eq!(r.to_agent_text(), "just the summary");
+    }
+
+    #[test]
+    fn human_intervention_is_detected_from_provenance() {
+        use crate::conversation::message::{Message, MessageProvenance, ProvenanceKind};
+        let clean = Conversation::new_unvalidated(vec![Message::user().with_text("task")]);
+        assert!(!conversation_has_user_direct(&clean));
+
+        let steered = Conversation::new_unvalidated(vec![
+            Message::user().with_text("task"),
+            Message::user()
+                .with_text("actually, stop and use Python")
+                .with_provenance(MessageProvenance {
+                    kind: ProvenanceKind::UserDirect,
+                    from_session_id: None,
+                    from_session_name: None,
+                }),
+        ]);
+        assert!(conversation_has_user_direct(&steered));
+
+        // Another AGENT's injection is not a human intervention. Without this
+        // case, `provenance.is_some()` passes the test above and turns every
+        // `workspace_send_prompt` into a reported human steer.
+        let agent_injected = Conversation::new_unvalidated(vec![Message::user()
+            .with_text("from the parent")
+            .with_provenance(MessageProvenance {
+                kind: ProvenanceKind::AgentInjection,
+                from_session_id: Some("s-parent".into()),
+                from_session_name: Some("Planning chat".into()),
+            })]);
+        assert!(!conversation_has_user_direct(&agent_injected));
+    }
+
+    /// The flag has to reach the PARENT, which means it has to survive
+    /// `into_call_tool_result` — the only thing the parent model ever reads.
+    /// Nothing else in this task looks at that boundary: `conversation_has_user_direct`
+    /// is pure and its assignment in `run_complete_subagent_task` is a one-liner
+    /// with no test, so a field that is set correctly and then dropped on
+    /// serialization is invisible until Task 40's live pass.
+    #[test]
+    fn human_intervened_reaches_the_parent_through_the_tool_result() {
+        let mut result = SubagentResult::from_error("boom");
+        result.human_intervened = true;
+        let rendered = result.into_call_tool_result();
+
+        let structured = rendered.structured_content.expect("structured envelope");
+        assert_eq!(structured["human_intervened"], true);
+
+        let text: String = rendered
+            .content
+            .iter()
+            .filter_map(|c| c.as_text().map(|t| t.text.clone()))
+            .collect();
+        assert!(
+            text.to_lowercase().contains("intervened"),
+            "the model reads TEXT, not structured_content, so the note must be there: {text}"
+        );
+
+        // …and a clean run says nothing, rather than "human_intervened: false",
+        // which a model would read as an assertion that it checked.
+        let clean = SubagentResult::from_error("boom").into_call_tool_result();
+        let clean_structured = clean.structured_content.expect("structured envelope");
+        assert!(
+            clean_structured.get("human_intervened").is_none(),
+            "skip_serializing_if keeps a false flag out of the envelope entirely"
+        );
+        let clean_text: String = clean
+            .content
+            .iter()
+            .filter_map(|c| c.as_text().map(|t| t.text.clone()))
+            .collect();
+        assert!(
+            !clean_text.to_lowercase().contains("intervened"),
+            "{clean_text}"
+        );
     }
 }

@@ -255,6 +255,7 @@ pub async fn run_complete_subagent_task(
         Some((code, message)) => SubagentResult::from_aborted_turn(&messages, &code, message),
         None => SubagentResult::from_conversation(&messages, final_output, return_last_only),
     };
+    result.human_intervened = super::subagent_result::conversation_has_user_direct(&messages);
     result.tokens = fetch_subagent_tokens(&session_manager, &session_id).await;
     result
 }
