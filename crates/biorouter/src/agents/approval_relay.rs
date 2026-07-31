@@ -77,10 +77,29 @@ const MAX_DELEGATION_DEPTH: usize = 16;
 /// [`DelegationPolicy::ask_ancestor`] turns into a refusal without asking
 /// anybody.
 ///
+/// `"hooks"` is here for a reason that is really about [`ask_ancestor`]:
+/// re-running the hook inspector against an ancestor would re-execute the
+/// user's own PreToolUse shell commands (see the exclusion there), so the
+/// ancestor is asked *without* it. The hook's authority must not be lost with
+/// its side effects, and it does not have to be — by the time an ask exists the
+/// hook has already spoken in the descendant's own round: a `Deny` became
+/// [`InspectionAction::Deny`] and never reached this path at all
+/// (`apply_inspection_results_to_permissions` moves a denied request out of
+/// `needs_approval`), and an `Ask` is the very `RequireApproval` we are
+/// classifying here. Calling that `HumanOnly` keeps a user-configured "confirm
+/// this" answerable only by the user, which is what a hook that asks means.
+///
 /// ⚠ **This is the tunable half.** Narrowing it is a product decision about
 /// approval fatigue. Do not narrow it by deleting the check in `ask_ancestor` —
-/// that is decision 30's half and a different security model.
-pub const HUMAN_ONLY_INSPECTORS: &[&str] = &["workspace_mutation", "sensitive_ops", "security"];
+/// that is decision 30's half and a different security model. And do not drop
+/// `"hooks"` without also restoring it to the ancestor's inspection round;
+/// dropping only this entry makes an agent able to answer the user's hook.
+pub const HUMAN_ONLY_INSPECTORS: &[&str] = &[
+    "workspace_mutation",
+    "sensitive_ops",
+    "security",
+    crate::hooks::inspector::HOOK_INSPECTOR_NAME,
+];
 
 /// Which parked prompt a decision resolves.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -204,8 +223,25 @@ impl DelegationPolicy {
         // the field read below to keep it that way. Both calls go through it.
         let authority = &ancestor.tool_inspection_manager;
 
+        // ⚠ EXCLUDING the hook inspector is not an optimisation — it is the
+        // difference between reading an ancestor's policy and *running the
+        // user's shell commands again*. `HookInspector::inspect` calls
+        // `HooksManager::pre_tool_use`, which executes the user's configured
+        // PreToolUse commands; a plain `inspect_tools` here would fire them once
+        // more per ancestor, with the DESCENDANT's session id and working dir,
+        // for a call the descendant's own round already hooked. A hook that
+        // appends to a log or bumps a counter would run N+1 times for one tool
+        // call, and a rewriting hook would stage a `StagedToolHook` on the
+        // ancestor's manager keyed by a session that ancestor will never drain.
+        // `inspect_tools_excluding` exists for exactly this hazard (BR-19).
+        //
+        // No authority is lost: the hook already spoke in the descendant's round
+        // — a `Deny` denied the call before this path, and an `Ask` is why we are
+        // here and is classified `HumanOnly` (see [`HUMAN_ONLY_INSPECTORS`]), so
+        // it is rejected above before any ancestor is consulted.
         let results = match authority
-            .inspect_tools(
+            .inspect_tools_excluding(
+                &[crate::hooks::inspector::HOOK_INSPECTOR_NAME],
                 std::slice::from_ref(request),
                 &[],
                 ancestor.config.biorouter_mode,
@@ -710,6 +746,30 @@ mod tests {
         assert_eq!(
             DelegationPolicy::class_of("call-1", &[required_by("workspace_mutation", "call-2")]),
             AskClass::Delegable
+        );
+    }
+
+    /// The hook inspector is deliberately EXCLUDED from the ancestor's
+    /// inspection round, because re-running it would execute the user's own
+    /// PreToolUse shell commands a second time. That exclusion is only safe
+    /// because the hook's verdict is preserved here instead: a hook that asks
+    /// is a user-configured "a person must confirm this", so no agent may
+    /// answer it at any depth.
+    ///
+    /// ⚠ These two must move together. Dropping this classification while
+    /// keeping the exclusion hands the user's hook to an Auto-mode ancestor.
+    #[test]
+    fn a_hook_that_asks_is_answerable_only_by_the_user() {
+        assert_eq!(
+            DelegationPolicy::class_of(
+                "call-1",
+                &[required_by(
+                    crate::hooks::inspector::HOOK_INSPECTOR_NAME,
+                    "call-1"
+                )]
+            ),
+            AskClass::HumanOnly,
+            "a PreToolUse hook's Ask must not be satisfiable by an agent"
         );
     }
 
