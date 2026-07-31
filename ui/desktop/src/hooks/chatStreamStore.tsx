@@ -8,6 +8,7 @@ import {
   listSessions,
   Message,
   MessageEvent,
+  observeSessionEvents,
   reply,
   resumeAgent,
   Session,
@@ -316,6 +317,31 @@ class ChatStreamController {
    * the session, and is what makes `expectedMessageIds` mandatory server-side.
    */
   private viewNamesEveryStoredRow = false;
+  /**
+   * BR-71 — true while this controller is an OBSERVER of a session another
+   * agent drives, rather than the driver of its own `/reply` turn. Set by
+   * `observeSession`, cleared by `stopObserving` and by the user taking the
+   * tab over (`submitPreparedMessage`).
+   *
+   * PERMANENT CONSEQUENCE FOR `expectedMessageIds` — state it here rather than
+   * let the next reader discover it. `viewNamesEveryStoredRow` (above) is set
+   * in exactly the two places that read a conversation back from the server,
+   * and cleared by every streamed event. An observer-fed tab is a pure event
+   * consumer: it never performs that read, so the flag is ALWAYS false for it
+   * and `onMessageUpdate` therefore PERMANENTLY omits the `expectedMessageIds`
+   * guard on in-place edits, where an ordinary tab sends it after each read.
+   *
+   * That is safe — the guard is omitted, never falsified, and the server-side
+   * cut still runs under the turn lock, still bounded to the rows the handler
+   * itself read — but it is a real capability difference a user can hit.
+   *
+   * Do NOT "fix" it by setting `viewNamesEveryStoredRow` here: it would be a
+   * lie, because an observer tab genuinely does not know it holds every stored
+   * row. The thing that would let it is consuming #59's `MessagesPersisted`
+   * frame, which is the FOLLOW-UP recorded on `viewNamesEveryStoredRow` and is
+   * deliberately not done yet.
+   */
+  private observing = false;
   private abortController: AbortController | null = null;
   private activeStreamId = 0;
   private lastInteractionTime = Date.now();
@@ -982,11 +1008,86 @@ class ChatStreamController {
     }
   }
 
+  /**
+   * BR-71: render a session this window is NOT driving. Subscribes to the
+   * read-only observer stream (GET /sessions/{id}/events, generated client
+   * `.sse.get`) and feeds it through the SAME event pipeline as a `/reply`
+   * stream — the observer emits identical `MessageEvent` frames, starting with
+   * an `UpdateConversation` snapshot. Used by tabs the daemon opened (subagent
+   * tabs, `workspace_open` from another agent).
+   *
+   * Owns its reconnects: the observer stream never "completes" from the
+   * client's point of view (the session outlives any one connection), so on
+   * stream end or transport error it re-subscribes with backoff until
+   * `stopObserving()` or a user-driven turn takes the controller over
+   * (design §4.3; the daemon side is generation-safe — a re-subscribe is just
+   * a new broadcast receiver + fresh snapshot).
+   *
+   * ⚠ This relay MUST NOT reorder, filter or buffer the frames it forwards.
+   * The producer-side invariant "no `MessagesPersisted` may precede a
+   * `Message` frame carrying one of the ids it publishes" (`agent.rs`) is a
+   * property of the STREAM ORDER, and survives only if every relay preserves
+   * it. We get that for free by handing the whole `AsyncIterable` straight to
+   * `streamFromResponse` with no `Promise.all` and no per-variant skipping —
+   * keep it that way. Dropping the accounting frames here because this store
+   * ignores them today would be invisible now and would silently break the day
+   * `MessagesPersisted` is consumed (see `viewNamesEveryStoredRow`'s
+   * FOLLOW-UP). Forward every variant, in order, unconditionally.
+   *
+   * On the observer-tab consequence for `expectedMessageIds`, see `observing`.
+   */
+  async observeSession(): Promise<void> {
+    if (this.observing) return; // idempotent — tab re-mounts must not stack loops
+    this.observing = true;
+    let retryMs = 1000;
+    while (this.observing) {
+      const streamId = ++this.activeStreamId;
+      this.abortController?.abort();
+      this.abortController = new AbortController();
+      try {
+        const { stream } = await observeSessionEvents({
+          path: { session_id: this.sessionId },
+          throwOnError: true,
+          signal: this.abortController.signal,
+          // NOT optional. Without it the generated SSE client retries forever
+          // on its own (`api/core/serverSentEvents.gen.ts` — `sseMaxRetryAttempts`
+          // has no default) and the loop below never regains control on a
+          // transport error. `/reply` passes the same value for the same reason.
+          sseMaxRetryAttempts: 1,
+        });
+        retryMs = 1000;
+        await this.streamFromResponse(stream, this.messagesRef, streamId);
+      } catch (error) {
+        // Rarely reached: `serverSentEvents` returns `{ stream }` from a lazy
+        // async generator, so the await above resolves before a byte is
+        // fetched and transport errors surface inside `streamFromResponse`.
+        // Kept for the client-side throws that DO land here (a malformed URL).
+        if (error instanceof Error && error.name === 'AbortError') return;
+        // fall through to retry
+      }
+      if (!this.observing || this.activeStreamId !== streamId) return;
+      await new Promise((resolve) => setTimeout(resolve, retryMs));
+      retryMs = Math.min(retryMs * 2, 15000);
+    }
+  }
+
+  /** Detach from the observed session (tab closed / user takes over). */
+  stopObserving(): void {
+    this.observing = false;
+    this.abortController?.abort();
+  }
+
   private submitPreparedMessage = async (
     newMessage: Message,
     currentMessages: Message[],
     updateMessageList: boolean
   ): Promise<void> => {
+    // BR-71 — a user-driven turn converts an observer tab into a driver. The
+    // `activeStreamId` bump below already trips the observer loop's staleness
+    // check; clearing the flag makes the conversion explicit and lets a later
+    // `observeSession()` start fresh rather than short-circuit on the
+    // idempotence guard.
+    this.observing = false;
     if (updateMessageList) {
       this.updateMessages(currentMessages);
     }

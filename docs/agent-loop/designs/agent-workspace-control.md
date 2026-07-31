@@ -397,7 +397,27 @@ the split was possible). Tabs opened this way bind sessions through the **existi
 
 A tab opened for a session the renderer isn't driving subscribes its
 `ChatStreamController` to `GET /sessions/{id}/events` instead of owning a `/reply` stream
-— the one renderer-side change to `chatStreamStore.tsx` beyond the command applier.
+— the one renderer-side change to `chatStreamStore.tsx` beyond the command applier. The
+controller owns its own reconnects, because the observer stream never "completes" from
+the client's point of view: on stream end or transport error it re-subscribes with
+backoff (1 s, doubling, capped at 15 s) until the tab detaches or the user takes the
+session over. It must relay every frame in order and unchanged — the producer-side
+ordering invariant that no `MessagesPersisted` precedes the `Message` frame carrying an
+id it publishes is a property of the stream order, and only survives if each relay
+preserves it.
+
+**Known, permanent consequence — an observer tab omits `expectedMessageIds`.** The store
+sends that optimistic-concurrency guard on an in-place `edit_message` only while
+`viewNamesEveryStoredRow` is true, and that flag is set in exactly the two places that
+read a conversation back from the server, then cleared by any streamed event. An
+observer-fed tab is a pure event consumer and never performs that read, so the flag is
+always false for it and the guard is **permanently** omitted, where an ordinary tab sends
+it after each read. This is safe — the guard is omitted, never falsified, and the
+server-side cut still runs under the turn lock, bounded to the rows the handler itself
+read — but it is a real capability difference, stated here rather than left to be
+discovered. It must not be "fixed" by setting the flag for observers: an observer tab
+genuinely does not know it holds every stored row. Consuming issue #59's
+`MessagesPersisted` frame is what would earn the claim, and is a deliberate follow-up.
 
 ### 4.4 Session model additions
 
