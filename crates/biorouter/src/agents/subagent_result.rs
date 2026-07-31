@@ -252,9 +252,26 @@ fn message_text(message: &Message) -> Option<String> {
 }
 
 /// All text + tool-result text, concatenated (the `summary=false` path).
+///
+/// Agent-invisible rows are skipped. `summary: false` means "give the parent the
+/// child's transcript", and a row the child's own model was not allowed to see is
+/// not part of that transcript:
+///
+/// * BR-71 Task 32 makes the child's first stored message its entire rendered
+///   spawn context (`agent_visible: false`). A child that compacts mid-run gets
+///   `AgentEvent::HistoryReplaced`, which swaps the handler's local conversation
+///   for the stored one — so without this filter the child's whole system prompt
+///   would be concatenated into the parent's tool result.
+/// * Compaction's hidden originals are already represented by the summary that
+///   replaced them, so carrying both duplicated the transcript on top of the
+///   bloat. That leak predates BR-71; this filter closes it too.
+///
+/// The empty case is safe: `from_conversation` falls back to `describe_activity`
+/// when the concatenation is blank.
 fn concatenate_text(conversation: &Conversation) -> String {
     let parts: Vec<String> = conversation
         .iter()
+        .filter(|message| message.is_agent_visible())
         .flat_map(|message| {
             message.content.iter().filter_map(|content| match content {
                 MessageContent::Text(text) => Some(text.text.clone()),
@@ -460,6 +477,38 @@ mod tests {
         assert_eq!(r.status, SubagentStatus::Completed);
         assert!(r.summary.contains("first"));
         assert!(r.summary.contains("second"));
+    }
+
+    /// BR-71 Task 32: the child's first stored message is now its whole
+    /// rendered spawn context, `agent_visible: false`. If the child compacts
+    /// mid-run, `AgentEvent::HistoryReplaced` swaps the handler's local
+    /// conversation for the STORED one — which contains that record — and the
+    /// `summary: false` path concatenates every message. Without a visibility
+    /// filter the parent's tool result would carry the child's entire system
+    /// prompt. Same rule for the agent-invisible originals a compaction leaves
+    /// behind: they are already represented by the summary that replaced them,
+    /// so including both duplicates the transcript as well as bloating it.
+    #[test]
+    fn concatenate_path_skips_agent_invisible_rows() {
+        let hidden = Message::user()
+            .with_text("## Subagent spawn context\n### Rendered system prompt\nSECRET PROMPT")
+            .with_metadata(
+                crate::conversation::message::MessageMetadata::default().with_agent_invisible(),
+            );
+        let c = conv(vec![
+            hidden,
+            Message::assistant().with_text("first"),
+            Message::assistant().with_text("second"),
+        ]);
+        let r = SubagentResult::from_conversation(&c, None, false);
+        assert_eq!(r.status, SubagentStatus::Completed);
+        assert!(r.summary.contains("first"));
+        assert!(r.summary.contains("second"));
+        assert!(
+            !r.summary.contains("SECRET PROMPT"),
+            "the child's spawn context must not ride back to the parent's model: {}",
+            r.summary
+        );
     }
 
     #[test]
