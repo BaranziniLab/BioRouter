@@ -966,19 +966,138 @@ mod tests {
             run_complete_subagent_task(config, workflow, task_config, true, child.id.clone(), None)
                 .await;
 
-        let mut saw_started = false;
-        let mut saw_finished = false;
-        while let Ok(event) = rx.try_recv() {
-            match event {
-                SessionBusEvent::TurnStarted { .. } => saw_started = true,
-                SessionBusEvent::TurnFinished { .. } => saw_finished = true,
-                _ => {}
+        // Drain the whole ring into a Vec, because every property this task is
+        // about is a property of the SEQUENCE, not of set membership. The
+        // original `saw_started && saw_finished` pair could not tell this
+        // implementation apart from one that published the two brackets and
+        // deleted the tee entirely — `_ => {}` swallowed every `Agent(..)`
+        // frame, which is the task's actual deliverable.
+        let events: Vec<SessionBusEvent> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        let kinds: Vec<String> = events
+            .iter()
+            .map(|e| match e {
+                SessionBusEvent::TurnStarted { turn_id } => format!("TurnStarted({turn_id})"),
+                SessionBusEvent::TurnError { code, .. } => format!("TurnError({code})"),
+                SessionBusEvent::TurnFinished { reason, .. } => format!("TurnFinished({reason})"),
+                SessionBusEvent::Agent(AgentEvent::Message(_)) => "Agent(Message)".into(),
+                SessionBusEvent::Agent(AgentEvent::MessagesPersisted(ids)) => {
+                    format!("Agent(MessagesPersisted[{}])", ids.len())
+                }
+                SessionBusEvent::Agent(AgentEvent::TurnAborted { code, .. }) => {
+                    format!("Agent(TurnAborted({}))", code.wire_code())
+                }
+                SessionBusEvent::Agent(other) => format!("Agent({other:?})"),
+            })
+            .collect();
+
+        // 1. The bracket: exactly one of each, first and last, nothing outside.
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| matches!(e, SessionBusEvent::TurnStarted { .. }))
+                .count(),
+            1,
+            "exactly one TurnStarted; got {kinds:?}"
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| matches!(
+                    e,
+                    SessionBusEvent::TurnFinished { .. } | SessionBusEvent::TurnError { .. }
+                ))
+                .count(),
+            1,
+            "exactly one terminal frame; got {kinds:?}"
+        );
+        // The synthetic id, asserted exactly: headless there is no server turn
+        // lease, so `lease_turn_id` is `None` and the run must mint
+        // `subagent-<session id>`. Nothing else read `turn_id`, so a run that
+        // threaded the parameter but dropped it on the floor passed before.
+        assert!(
+            matches!(
+                &events[0],
+                SessionBusEvent::TurnStarted { turn_id } if *turn_id == format!("subagent-{}", child.id)
+            ),
+            "first frame must be TurnStarted carrying the synthetic turn id \
+             `subagent-{}`; got {kinds:?}",
+            child.id
+        );
+        // The reason ladder, asserted by value: this run aborts (the empty
+        // cassette has no recorded response), so the terminal must say `error`.
+        // `TurnFinished { .. }` would have accepted a ladder hardcoded to
+        // `stop`.
+        assert!(
+            matches!(
+                events.last(),
+                Some(SessionBusEvent::TurnFinished { reason, token_state: None })
+                    if reason == "error"
+            ),
+            "last frame must be TurnFinished{{reason:\"error\", token_state:None}} \
+             for a run whose provider failed; got {kinds:?}"
+        );
+
+        // 2. The tee exists at all, and is TOTAL — not filtered to the variants
+        //    the parent's own `match` happens to act on. `MessagesPersisted` is
+        //    the discriminating case: the parent explicitly ignores it (it has
+        //    no `expectedMessageIds` to satisfy), so a tee written as "publish
+        //    what I handle" drops it — and an observer tab, which IS a full
+        //    client, would never learn its rows are durable (#59).
+        let agent_frames = events
+            .iter()
+            .filter(|e| matches!(e, SessionBusEvent::Agent(_)))
+            .count();
+        // A deliberately loose floor: the exact frame count varies between runs
+        // (the loop retries the failing provider), so the two named-variant
+        // assertions below are what discriminate. This one only says "the tee
+        // ran at all".
+        assert!(
+            agent_frames >= 2,
+            "the child's own agent events must be teed onto the bus; got {kinds:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, SessionBusEvent::Agent(AgentEvent::MessagesPersisted(_)))),
+            "the tee must be TOTAL: `MessagesPersisted` is ignored by the parent's \
+             accumulation but is exactly what an observer needs (#59); got {kinds:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, SessionBusEvent::Agent(AgentEvent::TurnAborted { .. }))),
+            "…including the variant that breaks the loop, which must be published \
+             BEFORE the `break`; got {kinds:?}"
+        );
+
+        // 3. Order preservation — the #59 invariant this relay must not undo.
+        //    No `MessagesPersisted` may name an id whose `Message` frame comes
+        //    later in the stream; a client that saw the id first would render a
+        //    row it has no content for. (Ids the stream never carries a
+        //    `Message` for — the caller's own user message — are the client's
+        //    already and are correctly unconstrained.)
+        let message_position: std::collections::HashMap<String, usize> = events
+            .iter()
+            .enumerate()
+            .filter_map(|(i, e)| match e {
+                SessionBusEvent::Agent(AgentEvent::Message(m)) => m.id.clone().map(|id| (id, i)),
+                _ => None,
+            })
+            .collect();
+        for (i, event) in events.iter().enumerate() {
+            if let SessionBusEvent::Agent(AgentEvent::MessagesPersisted(persisted)) = event {
+                for row in persisted {
+                    if let Some(&msg_at) = message_position.get(&row.id) {
+                        assert!(
+                            msg_at < i,
+                            "relay reordered the stream: MessagesPersisted at {i} names {} \
+                             whose Message frame is at {msg_at}; got {kinds:?}",
+                            row.id
+                        );
+                    }
+                }
             }
         }
-        assert!(
-            saw_started && saw_finished,
-            "subagent run must bracket itself on the bus"
-        );
 
         // Task 32 follow-through (the overwrite guard): the spawn-context
         // record survives the child's own persistence as message[0].
