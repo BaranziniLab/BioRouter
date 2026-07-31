@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ChatState } from '../types/chatState';
-import { ChatStreamRegistry, NOTIFY_FALLBACK_MS } from './chatStreamStore';
+import { ChatStreamRegistry, NOTIFY_FALLBACK_MS, isRunningState } from './chatStreamStore';
 import type { Message, MessageEvent, Session, TokenState } from '../api';
 import { cancelTurn, editMessage, getSession, interrupt, reply, resumeAgent } from '../api';
 
@@ -1819,5 +1819,30 @@ describe('notification batching (#22)', () => {
     controlled.close();
     await submitted;
     unsubscribe();
+  });
+});
+
+/**
+ * BR-71: `isRunningState` is the app's ONE answer to "is a turn live?", and the
+ * whole reason it is exported is that the answer is not the obvious
+ * `!== Idle`. Loading a conversation is not a running turn, and a surface that
+ * gets that wrong offers the user a kill switch for a turn that does not exist
+ * — which is exactly what the subagent header's Stop button did before it was
+ * pointed at this function.
+ */
+describe('isRunningState', () => {
+  it('does not count loading a conversation as a live turn', () => {
+    // The state every session load starts in. `!== ChatState.Idle` — the naive
+    // predicate — is TRUE here, which is the bug this pins shut.
+    expect(isRunningState(ChatState.LoadingConversation)).toBe(false);
+    expect(isRunningState(ChatState.Idle)).toBe(false);
+  });
+
+  it('counts every state in which the agent is actually working', () => {
+    expect(isRunningState(ChatState.Thinking)).toBe(true);
+    expect(isRunningState(ChatState.Streaming)).toBe(true);
+    expect(isRunningState(ChatState.WaitingForUserInput)).toBe(true);
+    expect(isRunningState(ChatState.Compacting)).toBe(true);
+    expect(isRunningState(ChatState.RestartingAgent)).toBe(true);
   });
 });

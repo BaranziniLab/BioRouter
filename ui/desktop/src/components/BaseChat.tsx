@@ -33,6 +33,7 @@ import { useIsMobile } from '../hooks/use-mobile';
 import { useSidebar } from './ui/sidebar';
 import { cn } from '../utils';
 import { useChatStream } from '../hooks/useChatStream';
+import { isRunningState } from '../hooks/chatStreamStore';
 import { useNavigation } from '../hooks/useNavigation';
 import { WorkflowHeader } from './WorkflowHeader';
 import { WorkflowWarningModal } from './ui/WorkflowWarningModal';
@@ -2164,7 +2165,11 @@ function BaseChatContent({
                   spawnContext={subagent.spawnContext}
                   extensions={subagent.extensions}
                   knowledgeBases={extractKnowledgeBases(subagent.spawnContext)}
-                  running={chatState !== ChatState.Idle}
+                  // The store's own predicate, NOT `!== ChatState.Idle`: every
+                  // session load starts in LoadingConversation, so the naive
+                  // form offered Stop for the whole of every subagent tab open
+                  // — a kill switch for a turn that had already finished.
+                  running={isRunningState(chatState)}
                   onOpenParent={() =>
                     // The reducer's own DEDUPE rule makes this "open or focus":
                     // a sessionId already open anywhere activates that tab (and

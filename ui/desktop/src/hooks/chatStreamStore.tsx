@@ -266,7 +266,21 @@ const EMPTY_TOKEN_STATE: TokenState = {
   accumulatedTotalTokens: 0,
 };
 
-function isRunningState(chatState: ChatState): boolean {
+/**
+ * The app's ONE answer to "is a turn live in this chat?".
+ *
+ * Exported because the answer is NOT the obvious `!== ChatState.Idle`:
+ * `LoadingConversation` is set at the top of every session load (see
+ * `ensureLoaded`), so the naive form reports a freshly opened, long-finished
+ * chat as running for the whole load. `isRunning()` and therefore the running
+ * registry — the set the sidebar and the tab strip's live dot both read — are
+ * defined by this function, so any surface that decides "running" for itself
+ * from a bare `!== Idle` is silently disagreeing with the rest of the app.
+ * Import this instead of re-deriving it. (BR-71: the subagent header's Stop
+ * button was that fourth ad-hoc copy, and it offered a kill switch for a turn
+ * that did not exist.)
+ */
+export function isRunningState(chatState: ChatState): boolean {
   return chatState !== ChatState.Idle && chatState !== ChatState.LoadingConversation;
 }
 
