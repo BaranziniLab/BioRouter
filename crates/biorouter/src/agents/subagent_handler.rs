@@ -1033,6 +1033,91 @@ mod tests {
         manager.deregister_agent_if_same(&child.id, &sentinel).await;
     }
 
+    /// The run's teardown must be IDENTITY-SCOPED, not a blunt eviction.
+    ///
+    /// This is the half of the wiring neither existing gate can see.
+    /// `subagent_run_without_daemon_services_still_completes` proves the pin is
+    /// gone once the run ends; `the_run_holds_the_server_turn_lease_for_its_whole_run`
+    /// proves the live child was in it while the run worked. Both are satisfied
+    /// just as well by a teardown that calls `manager.remove_session(&session_id)`,
+    /// because that also leaves the pin empty. Until now the only thing standing
+    /// between the two was the Step-5 grep (`remove_session(` must be 0 in this
+    /// file) — and a grep in a plan is not a gate: swap the blunt remover in
+    /// later and every one of the 1857 lib tests stays green.
+    ///
+    /// The observable difference is the **LRU**, which `remove_session` pops and
+    /// `deregister_agent_if_same` deliberately does not. A blunt teardown
+    /// therefore evicts a cache entry the run never created. In production that
+    /// entry is the agent a consulted Agent Drafter worker got from an ordinary
+    /// `get_agent` (`routes/apps.rs`), thrown away on every consult — and, worse,
+    /// a plain remove would evict a *live* registration belonging to someone
+    /// else, which is the whole reason release is identity-scoped.
+    ///
+    /// So: park exactly such a bystander under the child's id and watch whether
+    /// the run's exit takes it with it. `register_agent` never touches the LRU,
+    /// so the run's pin merely shadows the bystander for the run's duration and
+    /// it must be there again afterwards.
+    ///
+    /// (`deregistering_does_not_evict_a_cache_entry_it_did_not_create` asserts
+    /// this of the METHOD, called by hand. This asserts it of the RUN, which is
+    /// what the grep was standing in for.)
+    #[tokio::test]
+    #[serial_test::parallel(workspace_services)]
+    #[serial_test::serial(subagent_session_bus, agent_manager_pin)]
+    async fn the_runs_teardown_does_not_evict_a_cache_entry_it_did_not_create() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let sm = std::sync::Arc::new(SessionManager::new(temp.path().to_path_buf()));
+        // An id no store would mint, so this test shares neither a bus ring nor
+        // an `AgentManager` entry with any other test in the binary.
+        let child = "ghost-session-teardown-scope".to_string();
+
+        let manager = crate::execution::manager::AgentManager::instance()
+            .await
+            .expect("AgentManager::instance (config root sandboxed by crate::test_sandbox)");
+
+        // The bystander: an ORDINARY cached agent, exactly what `get_agent`
+        // leaves behind for a session someone opened.
+        let cached = manager.get_or_create_agent(child.clone()).await.unwrap();
+
+        let (config, workflow, task_config) = bracket_fixture(&temp, &sm);
+        let _ =
+            run_complete_subagent_task(config, workflow, task_config, true, child.clone(), None)
+                .await;
+
+        // `Deregister::drop` releases on a spawned task, so poll until the pin
+        // stops answering — `peek_agent` reports the run's live child until then,
+        // and it is neither the bystander nor `None`.
+        let mut outcome = None;
+        for _ in 0..200 {
+            match manager.peek_agent(&child).await {
+                Some(a) if Arc::ptr_eq(&a, &cached) => {
+                    outcome = Some(true);
+                    break;
+                }
+                None => {
+                    outcome = Some(false);
+                    break;
+                }
+                Some(_) => tokio::time::sleep(std::time::Duration::from_millis(10)).await,
+            }
+        }
+        let _ = manager.remove_session(&child).await;
+        match outcome {
+            Some(true) => {}
+            Some(false) => panic!(
+                "the run's teardown evicted the cached agent it found under the child's id. \
+                 Release must be `deregister_agent_if_same`, which clears only the pin — a \
+                 `remove_session` here also pops the LRU, discarding an entry this run never \
+                 created (in production, a consulted worker's own agent) and evicting live \
+                 registrations belonging to other runs"
+            ),
+            None => panic!(
+                "the run never released its registration: `peek_agent` still resolves an \
+                 agent that is neither the bystander nor absent after 2 s"
+            ),
+        }
+    }
+
     /// Releasing a registration with no runtime alive must not panic.
     ///
     /// `tokio::spawn` panics when there is no reactor, and this guard is dropped
