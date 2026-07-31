@@ -11,9 +11,13 @@ import {
 } from '../components/chatGroups/chatGroupsReducer';
 import { leafGroupIds } from '../components/chatGroups/chatGroupsTypes';
 
+/** Comfortably past the hook's 300 ms echo debounce. */
+const ECHO_DEBOUNCE_WAIT_MS = 400;
+
 class FakeWebSocket {
   static instances: FakeWebSocket[] = [];
   static OPEN = 1;
+  static CLOSED = 3;
   readyState = FakeWebSocket.OPEN;
   sent: string[] = [];
   onmessage: ((ev: { data: string }) => void) | null = null;
@@ -26,8 +30,16 @@ class FakeWebSocket {
   send(data: string) {
     this.sent.push(data);
   }
+  /**
+   * ASYNCHRONOUS, because a real one is: `close()` begins the closing handshake
+   * and the close event arrives on a later tick. A synchronous fake makes the
+   * effect's cleanup look atomic — the old socket's `onclose` runs *inside* the
+   * cleanup, before the replacement exists — and hides every ordering bug that
+   * lives in the gap. The stale-socket case below is exactly such a bug.
+   */
   close() {
-    this.onclose?.();
+    this.readyState = FakeWebSocket.CLOSED;
+    queueMicrotask(() => this.onclose?.());
   }
 }
 
@@ -67,6 +79,75 @@ describe('useWorkspaceChannel', () => {
     expect(applied).toEqual(['open_tab']);
     const reply = ws.sent.map((s) => JSON.parse(s)).find((f) => f.type === 'workspace_result');
     expect(reply).toMatchObject({ request_id: 'wsreq-1', ok: true, detail: 'done' });
+  });
+
+  it('answers the daemon even when applying the command throws', async () => {
+    // Every workspace tool that carries a `request_id` parks on the matching
+    // `workspace_result` (WorkspaceBridge's pending map). An exception escaping
+    // the executor skips the reply, so the tool call does not fail — it HANGS,
+    // to whatever timeout the daemon has, with the renderer perfectly healthy.
+    // A refusal the daemon can read is strictly better than silence.
+    registerWorkspaceCommands(() => {
+      throw new Error('boom');
+    });
+    renderHook(() => useWorkspaceChannel({ secret: 's', windowId: 'w1', enabled: true }));
+    await act(async () => {});
+    const ws = FakeWebSocket.instances[0];
+    act(() => {
+      ws.onmessage?.({
+        data: JSON.stringify({
+          type: 'workspace',
+          cmd: 'open_tab',
+          session_id: 's1',
+          request_id: 'wsreq-boom',
+        }),
+      });
+    });
+    const reply = ws.sent.map((s) => JSON.parse(s)).find((f) => f.type === 'workspace_result');
+    expect(reply).toMatchObject({ request_id: 'wsreq-boom', ok: false });
+    expect(reply.detail).toContain('boom');
+  });
+
+  it('a stale socket closing does not silence the live one', async () => {
+    // The effect re-runs whenever the secret or the window id changes. Cleanup
+    // closes the old socket, but the close event is asynchronous, so it lands
+    // AFTER the replacement is already installed. An `onclose` that nulls the
+    // shared ref unconditionally therefore clears a socket that is perfectly
+    // open — and every echo after that is dropped in silence, with no reconnect,
+    // because the live socket never closed.
+    const { result, rerender } = renderHook(
+      ({ windowId }) => useWorkspaceChannel({ secret: 's', windowId, enabled: true }),
+      { initialProps: { windowId: 'w1' } }
+    );
+    await act(async () => {});
+    expect(FakeWebSocket.instances).toHaveLength(1);
+
+    rerender({ windowId: 'w2' });
+    await act(async () => {});
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    const stale = FakeWebSocket.instances[0];
+    const live = FakeWebSocket.instances[1];
+    expect(stale.readyState).toBe(FakeWebSocket.CLOSED);
+    expect(live.readyState).toBe(FakeWebSocket.OPEN);
+
+    const before = live.sent.length;
+    act(() => {
+      result.current.sendEcho({
+        type: 'workspace_echo',
+        window_id: 'w2',
+        focused_session: 's-1',
+        layout: [],
+      });
+    });
+    // Past the debounce window.
+    await act(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, ECHO_DEBOUNCE_WAIT_MS));
+    });
+    expect(live.sent.length).toBe(before + 1);
+    expect(JSON.parse(live.sent[live.sent.length - 1])).toMatchObject({
+      type: 'workspace_echo',
+      window_id: 'w2',
+    });
   });
 
   it('buildEchoFrame reports the layout tree in LEAF order, with session bindings', () => {

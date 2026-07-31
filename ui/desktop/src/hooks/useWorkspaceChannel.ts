@@ -13,6 +13,7 @@ import { getApiUrl } from '../config';
 import {
   applyWorkspaceCommand,
   type WorkspaceCommand,
+  type WorkspaceCommandResult,
 } from '../components/chatGroups/workspaceCommandRegistry';
 // State + layout types live in chatGroupsTypes, never in chatGroupsReducer —
 // the reducer imports them and re-exports nothing.
@@ -121,7 +122,17 @@ export function useWorkspaceChannel({
           return;
         }
         if (frame.type !== 'workspace') return;
-        const result = applyWorkspaceCommand(frame);
+        let result: WorkspaceCommandResult;
+        try {
+          result = applyWorkspaceCommand(frame);
+        } catch (err) {
+          // A frame carrying a request_id is a tool call PARKED on the reply
+          // (WorkspaceBridge's pending map). Letting an exception escape here
+          // does not fail that call — it hangs it, to whatever timeout the
+          // daemon has, while this renderer carries on perfectly healthy. Turn
+          // it into a refusal the daemon can read and report.
+          result = { ok: false, detail: `renderer error: ${String(err)}` };
+        }
         if (frame.request_id) {
           ws.send(
             JSON.stringify({
@@ -134,7 +145,14 @@ export function useWorkspaceChannel({
         }
       };
       ws.onclose = () => {
-        socketRef.current = null;
+        // Only if this socket is still the live one. `socketRef` is shared
+        // across effect runs, and a close event is asynchronous: when the effect
+        // re-runs (a new secret or window id) the cleanup closes the old socket
+        // but its close event lands AFTER the replacement is installed. Nulling
+        // unconditionally would clear a socket that is open, and every echo
+        // after that is dropped in silence — with no reconnect, because nothing
+        // actually closed.
+        if (socketRef.current === ws) socketRef.current = null;
         if (!disposed) {
           retryTimer = setTimeout(connect, retryMs);
           retryMs = Math.min(retryMs * 2, 15000);
