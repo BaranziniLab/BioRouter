@@ -506,12 +506,17 @@ fn get_agent_messages(
         // §5: it must name what is ACTUALLY granted, so it excludes the
         // workspace extension the loop below strips — otherwise the spawn
         // record tells the user the child holds workspace control it does not.
-        let extension_names: Vec<String> = task_config
-            .extensions
-            .iter()
-            .filter(|e| e.name() != WORKSPACE_EXTENSION_NAME)
-            .map(|e| e.name().to_string())
-            .collect();
+        //
+        // It runs the SAME helper rather than repeating its predicate. A second
+        // copy of `!= WORKSPACE_EXTENSION_NAME` is one edit away from disagreeing
+        // with the grant it claims to describe, and the disagreement is silent:
+        // the record is prose the user reads, not a value anything checks. The
+        // clone is one small `Vec<ExtensionConfig>` per spawn.
+        let extension_names: Vec<String> =
+            strip_workspace_extension(task_config.extensions.clone())
+                .iter()
+                .map(|e| e.name().to_string())
+                .collect();
 
         for extension in strip_workspace_extension(task_config.extensions) {
             if let Err(e) = agent.add_extension(extension.clone()).await {
