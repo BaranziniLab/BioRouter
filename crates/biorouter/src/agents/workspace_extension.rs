@@ -2605,25 +2605,60 @@ pub(crate) fn open_result_text(
         } else {
             "tab"
         };
+        // The announcement is itself a round trip, and the GUI can refuse it.
+        // Reporting "they were notified" when it answered `ok:false` is the
+        // same class of falsehood as claiming a tab — the model hands the user
+        // off to something they never saw — so the refusal is carried through
+        // verbatim instead of being swallowed with the rest of `gui_result`.
+        let handoff = if announcement_delivered(gui_result) {
+            "they were notified and can open it themselves".to_string()
+        } else {
+            format!(
+                "the GUI did NOT confirm the notification ({}), so say the conversation \
+                 is waiting in History rather than that the user was told",
+                gui_detail(gui_result).unwrap_or("no reason given")
+            )
+        };
         return format!(
             "Session {session_id} is ready, but the user has turned OFF automatic tab \
-             opening, so no {noun} was opened — they were notified and can open it \
-             themselves. Do not tell the user you opened a {noun}."
+             opening, so no {noun} was opened — {handoff}. Do not tell the user you \
+             opened a {noun}."
         );
     }
-    let ok = gui_result
-        .get("ok")
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false);
-    let detail = gui_result
-        .get("detail")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("");
+    // The separator belongs to the detail, not to the sentence: `place_in_gui`
+    // appends decision 5's directory note to whatever this returns, and a
+    // trailing space on a GUI answer that carried no `detail` put a double
+    // space in the middle of the model-facing text.
+    let detail = gui_detail(gui_result)
+        .map(|d| format!(" {d}"))
+        .unwrap_or_default();
     format!(
-        "Session {session_id} {} in the GUI ({placement}{}). {detail}",
-        if ok { "opened" } else { "NOT opened" },
+        "Session {session_id} {} in the GUI ({placement}{}).{detail}",
+        if announcement_delivered(gui_result) {
+            "opened"
+        } else {
+            "NOT opened"
+        },
         if focus { ", focused" } else { ", background" },
     )
+}
+
+/// Did the renderer accept the frame? Absent or non-boolean `ok` counts as a
+/// refusal: the round trip is the only evidence anything happened, and an
+/// unparseable answer is not evidence.
+fn announcement_delivered(gui_result: &serde_json::Value) -> bool {
+    gui_result
+        .get("ok")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+}
+
+/// The renderer's own reason, when it gave one.
+fn gui_detail(gui_result: &serde_json::Value) -> Option<&str> {
+    gui_result
+        .get("detail")
+        .and_then(serde_json::Value::as_str)
+        .filter(|d| !d.is_empty())
 }
 
 #[cfg(test)]
@@ -6170,6 +6205,26 @@ mod tests {
             announced.contains("no tab was opened") && announced.contains("Do not tell the user"),
             "the model must be told, in words, not to claim a tab: {announced}"
         );
+        assert!(
+            announced.contains("they were notified"),
+            "the GUI confirmed the announcement, so the handoff is real: {announced}"
+        );
+
+        // The announcement is itself a round trip and it can come back refused.
+        // "They were notified" when the GUI said otherwise is the same falsehood
+        // one noun removed: the model reports a handoff to a user who saw
+        // nothing, and then stops mentioning the session at all.
+        let unheard = json!({ "ok": false, "detail": "renderer error: socket closed" });
+        let silent = open_result_text("s-child", "tab", false, true, &unheard);
+        assert!(silent.contains("no tab was opened"), "{silent}");
+        assert!(
+            !silent.contains("they were notified"),
+            "an unconfirmed announcement must not be reported as delivered: {silent}"
+        );
+        assert!(
+            silent.contains("renderer error: socket closed"),
+            "the GUI's reason survives here too: {silent}"
+        );
 
         // `placement: "window"` degrades the same way, and must say so in the
         // CALLER'S vocabulary. Answering a window request with "no tab was
@@ -6206,6 +6261,17 @@ mod tests {
         assert!(
             text.contains("no room for another split"),
             "the GUI's reason survives: {text}"
+        );
+
+        // A GUI answer with no `detail` must not leave a dangling separator:
+        // `place_in_gui` appends decision 5's directory note to this string, so
+        // a trailing space put a double space in the middle of the sentence the
+        // model reads back to the user.
+        let bare = open_result_text("s-child", "tab", false, false, &json!({ "ok": true }));
+        assert!(bare.ends_with("(tab, background)."), "{bare}");
+        assert!(
+            !format!("{bare} Working directory: /p.").contains("  "),
+            "the appended directory note must not double the space: {bare:?}"
         );
     }
 }
