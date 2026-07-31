@@ -168,11 +168,18 @@ async fn the_mounted_socket_authenticates_and_carries_frames_both_ways() {
     let bridge = biorouter_server::workspace::bridge::bridge_for(&window);
 
     // INBOUND: a renderer frame reaches the bridge through the live loop.
+    //
+    // The `window_id` in the payload is a LIE, deliberately. A window's identity
+    // is the connection's, and `merged_layout()` hands these echoes to the model
+    // as `workspace_list`'s `gui` — where the id is what the agent then targets
+    // commands at. A client-asserted id would let one authenticated window
+    // impersonate another in the model's view of the workspace, and would
+    // disagree with the `BRIDGES` key the echo is actually stored under.
     socket
         .send(ClientMessage::Text(
             serde_json::json!({
                 "type": "workspace_echo",
-                "window_id": window,
+                "window_id": "w-impersonated",
                 "focused_session": "s-live",
                 "layout": [],
             })
@@ -192,6 +199,11 @@ async fn the_mounted_socket_authenticates_and_carries_frames_both_ways() {
         "the socket loop must dispatch an inbound workspace_echo into the bridge",
     )
     .await;
+    assert_eq!(
+        bridge.last_echo().unwrap()["window_id"],
+        serde_json::Value::String(window.clone()),
+        "the daemon must stamp the CONNECTION's window_id over the payload's claim"
+    );
 
     // OUTBOUND: `attach`'s sender is really wired to this socket.
     bridge

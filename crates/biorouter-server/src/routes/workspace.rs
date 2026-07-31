@@ -128,7 +128,7 @@ async fn handle_workspace_socket(socket: WebSocket, _state: Arc<AppState>, windo
             inbound = socket_rx.next() => match inbound {
                 Some(Ok(WsMessage::Text(text))) => {
                     let Ok(value) = serde_json::from_str::<Value>(&text) else { continue };
-                    apply_inbound_frame(&bridge, value);
+                    apply_inbound_frame(&bridge, &window_id, value);
                 }
                 Some(Ok(WsMessage::Close(_))) | None => break,
                 Some(Ok(_)) => {}
@@ -142,9 +142,32 @@ async fn handle_workspace_socket(socket: WebSocket, _state: Arc<AppState>, windo
 /// The renderer→daemon frame vocabulary, lifted out of the socket loop so it has
 /// a test (`inbound_frames_reach_the_bridge_by_type`). Everything above it is
 /// transport; this is the behaviour.
-fn apply_inbound_frame(bridge: &bridge::WorkspaceBridge, value: Value) {
+///
+/// `window_id` is the **connection's**, taken from the handshake query — never
+/// the payload's. See the echo arm.
+fn apply_inbound_frame(bridge: &bridge::WorkspaceBridge, window_id: &str, mut value: Value) {
     match value.get("type").and_then(Value::as_str) {
-        Some("workspace_echo") => bridge.store_echo(value),
+        Some("workspace_echo") => {
+            // Stamp the identity from the connection, overwriting whatever the
+            // client claimed. `merged_layout()` hands these echoes to the model
+            // as `workspace_list`'s `gui`, and the model then targets commands
+            // by that id — so a client-asserted `window_id` lets one
+            // authenticated window impersonate another in the agent's view of
+            // the workspace. It would also disagree with the `BRIDGES` key the
+            // echo is stored under (`bridge_for(&window_id)`), which is the
+            // connection's id and nothing else.
+            //
+            // `get` on a non-object `Value` returns `None`, so reaching this arm
+            // already proves `value` is an object; `as_object_mut` keeps that a
+            // fact rather than an assumption `IndexMut` would panic on.
+            if let Some(object) = value.as_object_mut() {
+                object.insert(
+                    "window_id".to_string(),
+                    Value::String(window_id.to_string()),
+                );
+            }
+            bridge.store_echo(value);
+        }
         Some("workspace_result") => {
             if let Some(id) = value.get("request_id").and_then(Value::as_str) {
                 bridge.resolve(id, value.clone());
@@ -228,8 +251,9 @@ mod tests {
 
         apply_inbound_frame(
             &bridge,
+            "w1",
             serde_json::json!({
-                "type": "workspace_echo", "window_id": "w1",
+                "type": "workspace_echo", "window_id": "w-impersonated",
                 "focused_session": "s1", "layout": []
             }),
         );
@@ -238,12 +262,19 @@ mod tests {
             "s1",
             "workspace_echo must land in the bridge's last_echo — it IS workspace_list's `gui`"
         );
+        assert_eq!(
+            bridge.last_echo().unwrap()["window_id"],
+            "w1",
+            "the window's identity is the CONNECTION's, not the payload's claim: the model \
+             targets commands by this id, and the echo is stored under the connection's key"
+        );
 
         // A result frame resolves the parked request it names, and only that one.
         let (tx, mut rx_result) = tokio::sync::oneshot::channel::<serde_json::Value>();
         bridge.insert_pending_for_test("wsreq-1", tx);
         apply_inbound_frame(
             &bridge,
+            "w1",
             serde_json::json!({"type": "workspace_result", "request_id": "wsreq-9", "ok": false}),
         );
         assert!(
@@ -252,6 +283,7 @@ mod tests {
         );
         apply_inbound_frame(
             &bridge,
+            "w1",
             serde_json::json!({"type": "workspace_result", "request_id": "wsreq-1", "ok": true}),
         );
         assert_eq!(rx_result.try_recv().unwrap()["ok"], true);
@@ -259,6 +291,7 @@ mod tests {
         // Anything else is ignored, not treated as an echo.
         apply_inbound_frame(
             &bridge,
+            "w1",
             serde_json::json!({"type": "hello", "focused_session": "s9"}),
         );
         assert_eq!(bridge.last_echo().unwrap()["focused_session"], "s1");
