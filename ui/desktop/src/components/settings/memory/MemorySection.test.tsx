@@ -27,6 +27,9 @@ const entry = (index: number, content: string, tags: string[] = []) => ({
   index,
   tags,
   content,
+  // The row's identity, over its tags as well as its body. The delete carries
+  // it back so a list that went stale cannot take out the wrong memory.
+  digest: `digest-${index}-${content.slice(0, 8)}`,
 });
 
 const inventoryResponse = (overrides: Record<string, unknown> = {}) => ({
@@ -42,6 +45,7 @@ const inventoryResponse = (overrides: Record<string, unknown> = {}) => ({
             entry(0, 'the cohort has 812 patients', ['phi', 'cohort']),
             entry(1, 'exclusions are documented in the protocol'),
           ],
+          revision: 'clinical-rev-1',
           size_bytes: 412,
           modified: 1_780_000_000,
         },
@@ -55,6 +59,7 @@ const inventoryResponse = (overrides: Record<string, unknown> = {}) => ({
         {
           name: 'development',
           entries: [entry(0, 'we format with black')],
+          revision: 'development-rev-1',
           size_bytes: 24,
           modified: 1_780_000_000,
         },
@@ -127,7 +132,13 @@ describe('MemorySection', () => {
     await waitFor(() =>
       expect(mockDeleteCategory).toHaveBeenCalledWith(
         expect.objectContaining({
-          body: expect.objectContaining({ scope: 'global', category: 'clinical' }),
+          body: expect.objectContaining({
+            scope: 'global',
+            category: 'clinical',
+            // The compare-and-set token: the daemon refuses if the category
+            // moved since it was listed.
+            revision: 'clinical-rev-1',
+          }),
         })
       )
     );
@@ -154,7 +165,8 @@ describe('MemorySection', () => {
             scope: 'global',
             category: 'clinical',
             index: 0,
-            content: 'the cohort has 812 patients',
+            digest: 'digest-0-the coho',
+            revision: 'clinical-rev-1',
             working_dir: '/Users/someone/work/proj',
           },
         })
@@ -238,6 +250,7 @@ describe('MemorySection', () => {
             {
               name: long,
               entries: [entry(0, 'x'.repeat(2000))],
+              revision: 'long-rev-1',
               size_bytes: 2000,
               modified: 1_780_000_000,
             },

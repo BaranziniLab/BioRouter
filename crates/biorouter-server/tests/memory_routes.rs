@@ -94,6 +94,20 @@ fn inventory_uri(temp: &TempDir) -> String {
     format!("/memory/inventory?{query}")
 }
 
+/// One category exactly as the Settings surface would render it: the rows and
+/// the revision a delete then has to carry back. Fetched through the inventory
+/// route, so every delete below is guarded by what a client actually saw.
+async fn listed(temp: &TempDir, scope: &str, category: &str) -> Value {
+    let (_, body) = get(temp, &inventory_uri(temp)).await;
+    body[scope]["categories"]
+        .as_array()
+        .unwrap_or(&Vec::new())
+        .iter()
+        .find(|c| c["name"] == category)
+        .unwrap_or_else(|| panic!("category {category:?} is not in the {scope} inventory"))
+        .clone()
+}
+
 /// The whole point of the view: a user can see what is in the machine-wide
 /// store, with the category, the body, the tags, and where the store lives.
 #[tokio::test]
@@ -178,10 +192,17 @@ async fn deleting_an_entry_removes_exactly_that_entry() {
         "# phi\npatient A\n\n# phi\npatient B\n\n",
     );
 
+    let listing = listed(&temp, "global", "clinical").await;
     let (status, body) = post(
         &temp,
         "/memory/delete_entry",
-        json!({"scope": "global", "category": "clinical", "index": 0, "content": "patient A"}),
+        json!({
+            "scope": "global",
+            "category": "clinical",
+            "index": 0,
+            "digest": listing["entries"][0]["digest"],
+            "revision": listing["revision"],
+        }),
     )
     .await;
     assert_eq!(status, 200);
@@ -210,10 +231,17 @@ async fn deleting_the_last_entry_reports_that_the_category_went_with_it() {
     let temp = TempDir::new().unwrap();
     write_store(&global_store(&temp), "clinical", "the only note\n\n");
 
+    let listing = listed(&temp, "global", "clinical").await;
     let (status, body) = post(
         &temp,
         "/memory/delete_entry",
-        json!({"scope": "global", "category": "clinical", "index": 0, "content": "the only note"}),
+        json!({
+            "scope": "global",
+            "category": "clinical",
+            "index": 0,
+            "digest": listing["entries"][0]["digest"],
+            "revision": listing["revision"],
+        }),
     )
     .await;
     assert_eq!(status, 200);
@@ -232,10 +260,18 @@ async fn a_stale_row_is_refused_with_conflict_and_deletes_nothing() {
     let temp = TempDir::new().unwrap();
     write_store(&global_store(&temp), "clinical", "first\n\nsecond\n\n");
 
+    let listing = listed(&temp, "global", "clinical").await;
     let (status, text) = post_text(
         &temp,
         "/memory/delete_entry",
-        json!({"scope": "global", "category": "clinical", "index": 0, "content": "a stale body"}),
+        json!({
+            "scope": "global",
+            "category": "clinical",
+            "index": 0,
+            // The row the user clicked is no longer the row at that index.
+            "digest": "a digest of some other row",
+            "revision": listing["revision"],
+        }),
     )
     .await;
     assert_eq!(status, 409);
@@ -255,15 +291,97 @@ async fn a_stale_row_is_refused_with_conflict_and_deletes_nothing() {
     );
 }
 
+/// The row the user clicked can still be that row while the category around it
+/// has changed — a conversation appended to it while the confirmation dialog
+/// was open. Deleting then acts on a list the user never saw, so the route
+/// refuses with a conflict and the client reloads (#63 review, finding 6).
+#[tokio::test]
+async fn an_append_since_the_listing_is_refused_with_conflict() {
+    let temp = TempDir::new().unwrap();
+    write_store(&global_store(&temp), "clinical", "first\n\n");
+    let listing = listed(&temp, "global", "clinical").await;
+
+    // A conversation saves a memory while the confirmation is open.
+    fs::write(
+        global_store(&temp).join("clinical.txt"),
+        "first\n\narrived afterwards\n\n",
+    )
+    .unwrap();
+
+    let (status, text) = post_text(
+        &temp,
+        "/memory/delete_entry",
+        json!({
+            "scope": "global",
+            "category": "clinical",
+            "index": 0,
+            "digest": listing["entries"][0]["digest"],
+            "revision": listing["revision"],
+        }),
+    )
+    .await;
+    assert_eq!(status, 409, "got: {text}");
+    assert!(
+        text.to_lowercase().contains("reload"),
+        "the message must tell the user how to recover, got: {text}"
+    );
+
+    let (status, text) = post_text(
+        &temp,
+        "/memory/delete_category",
+        json!({
+            "scope": "global",
+            "category": "clinical",
+            "revision": listing["revision"],
+        }),
+    )
+    .await;
+    assert_eq!(status, 409, "got: {text}");
+
+    let (_, after) = get(&temp, &inventory_uri(&temp)).await;
+    assert_eq!(
+        after["global"]["categories"][0]["entries"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2,
+        "a refused delete removes nothing"
+    );
+
+    // Reloading gives the current revision, and the delete goes through — a
+    // conflict the client cannot recover from is a button that never works.
+    let reloaded = listed(&temp, "global", "clinical").await;
+    let (status, _) = post(
+        &temp,
+        "/memory/delete_entry",
+        json!({
+            "scope": "global",
+            "category": "clinical",
+            "index": 0,
+            "digest": reloaded["entries"][0]["digest"],
+            "revision": reloaded["revision"],
+        }),
+    )
+    .await;
+    assert_eq!(status, 200);
+}
+
 #[tokio::test]
 async fn deleting_a_row_that_is_no_longer_there_is_a_not_found() {
     let temp = TempDir::new().unwrap();
     write_store(&global_store(&temp), "clinical", "only one\n\n");
 
+    let listing = listed(&temp, "global", "clinical").await;
     let (status, _) = post_text(
         &temp,
         "/memory/delete_entry",
-        json!({"scope": "global", "category": "clinical", "index": 9, "content": "only one"}),
+        json!({
+            "scope": "global",
+            "category": "clinical",
+            "index": 9,
+            "digest": listing["entries"][0]["digest"],
+            "revision": listing["revision"],
+        }),
     )
     .await;
     assert_eq!(status, 404);
@@ -276,10 +394,15 @@ async fn deleting_a_category_reports_how_many_memories_went_with_it() {
     let temp = TempDir::new().unwrap();
     write_store(&global_store(&temp), "clinical", "one\n\ntwo\n\nthree\n\n");
 
+    let listing = listed(&temp, "global", "clinical").await;
     let (status, body) = post(
         &temp,
         "/memory/delete_category",
-        json!({"scope": "global", "category": "clinical"}),
+        json!({
+            "scope": "global",
+            "category": "clinical",
+            "revision": listing["revision"],
+        }),
     )
     .await;
     assert_eq!(status, 200);
@@ -288,7 +411,11 @@ async fn deleting_a_category_reports_how_many_memories_went_with_it() {
     let (status, _) = post_text(
         &temp,
         "/memory/delete_category",
-        json!({"scope": "global", "category": "clinical"}),
+        json!({
+            "scope": "global",
+            "category": "clinical",
+            "revision": listing["revision"],
+        }),
     )
     .await;
     assert_eq!(status, 404, "the category is already gone");
@@ -303,12 +430,14 @@ async fn a_local_delete_leaves_the_global_category_of_the_same_name_alone() {
     write_store(&global_store(&temp), "development", "global note\n\n");
     write_store(&local_store(&temp), "development", "local note\n\n");
 
+    let listing = listed(&temp, "local", "development").await;
     let (status, _) = post(
         &temp,
         "/memory/delete_category",
         json!({
             "scope": "local",
             "category": "development",
+            "revision": listing["revision"],
             "working_dir": project(&temp).display().to_string(),
         }),
     )
@@ -334,7 +463,7 @@ async fn a_local_delete_without_a_project_is_rejected() {
     let (status, text) = post_text(
         &temp,
         "/memory/delete_category",
-        json!({"scope": "local", "category": "development"}),
+        json!({"scope": "local", "category": "development", "revision": "any"}),
     )
     .await;
     assert_eq!(status, 400);
@@ -359,7 +488,7 @@ async fn a_traversing_category_is_a_bad_request_and_touches_nothing() {
         let (status, _) = post_text(
             &temp,
             "/memory/delete_category",
-            json!({"scope": "global", "category": escaping}),
+            json!({"scope": "global", "category": escaping, "revision": "any"}),
         )
         .await;
         assert_eq!(status, 400, "delete_category accepted {escaping:?}");
@@ -367,7 +496,13 @@ async fn a_traversing_category_is_a_bad_request_and_touches_nothing() {
         let (status, _) = post_text(
             &temp,
             "/memory/delete_entry",
-            json!({"scope": "global", "category": escaping, "index": 0, "content": "ORIGINAL"}),
+            json!({
+                "scope": "global",
+                "category": escaping,
+                "index": 0,
+                "digest": "any",
+                "revision": "any",
+            }),
         )
         .await;
         assert_eq!(status, 400, "delete_entry accepted {escaping:?}");

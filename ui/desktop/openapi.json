@@ -2652,6 +2652,9 @@
           },
           "404": {
             "description": "No such category"
+          },
+          "409": {
+            "description": "The category changed since it was listed"
           }
         }
       }
@@ -6862,6 +6865,7 @@
         "required": [
           "name",
           "entries",
+          "revision",
           "size_bytes"
         ],
         "properties": {
@@ -6880,6 +6884,10 @@
           "name": {
             "type": "string"
           },
+          "revision": {
+            "type": "string",
+            "description": "Digest of the whole category file as it was listed.\n\nThe compare-and-set token for every delete: any write to the category —\nan agent appending, another window deleting — changes it, so a delete\nthat still carries the listed revision is a delete of the category the\nuser was actually looking at. Without it the user confirms a list that\nhas since moved on and destroys something they were never shown."
+          },
           "size_bytes": {
             "type": "integer",
             "format": "int64",
@@ -6892,11 +6900,16 @@
         "type": "object",
         "required": [
           "scope",
-          "category"
+          "category",
+          "revision"
         ],
         "properties": {
           "category": {
             "type": "string"
+          },
+          "revision": {
+            "type": "string",
+            "description": "`MemoryCategoryInventory.revision` of the category as it was listed.\nDeleting a whole category is consent to lose the memories that were on\nthe screen, not whatever arrived while the confirmation was open."
           },
           "scope": {
             "$ref": "#/components/schemas/MemoryScope"
@@ -6927,20 +6940,25 @@
           "scope",
           "category",
           "index",
-          "content"
+          "digest",
+          "revision"
         ],
         "properties": {
           "category": {
             "type": "string"
           },
-          "content": {
+          "digest": {
             "type": "string",
-            "description": "The body that was listed at that position. The delete refuses unless it\nstill matches, so a list that went stale while an agent appended to the\nstore cannot delete the wrong memory."
+            "description": "`MemoryEntry.digest` of the row that was listed at that position — the\nrow's identity, over its tags as well as its body."
           },
           "index": {
             "type": "integer",
             "description": "The entry's position in the category, as listed.",
             "minimum": 0
+          },
+          "revision": {
+            "type": "string",
+            "description": "`MemoryCategoryInventory.revision` of the category as it was listed. The\ndelete is a compare-and-set against it, so a list that went stale while\nan agent appended to the store deletes nothing and the caller reloads."
           },
           "scope": {
             "$ref": "#/components/schemas/MemoryScope"
@@ -6976,16 +6994,21 @@
         "required": [
           "index",
           "tags",
-          "content"
+          "content",
+          "digest"
         ],
         "properties": {
           "content": {
             "type": "string",
             "description": "The entry body, interior newlines preserved."
           },
+          "digest": {
+            "type": "string",
+            "description": "Digest of this entry exactly as it is serialized on disk — tag line and\nbody together.\n\nThis is the row's identity, and it is what a delete has to name. The body\nalone is not an identity: two entries can carry the same text under\ndifferent tags, and a body-only guard is satisfied by whichever of them\nhappens to sit at the index (#63 review, finding 6)."
+          },
           "index": {
             "type": "integer",
-            "description": "Position within the category file, counting from zero.\n\nStable only for as long as the file is untouched, which is why\n[`MemoryServer::delete_entry`] takes the body back as a guard rather\nthan trusting the index on its own.",
+            "description": "Position within the category file, counting from zero.\n\nStable only for as long as the file is untouched, which is why\n[`MemoryServer::delete_entry`] takes [`MemoryEntry::digest`] back as a\nguard rather than trusting the index on its own.",
             "minimum": 0
           },
           "tags": {

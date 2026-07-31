@@ -23,7 +23,8 @@ use std::{
 pub mod inventory;
 
 pub use inventory::{
-    EntryDeletion, MemoryCategoryInventory, MemoryEntry, MemoryScope, MemoryStoreInventory,
+    CategoryDeletion, EntryDeletion, MemoryCategoryInventory, MemoryEntry, MemoryScope,
+    MemoryStoreInventory,
 };
 
 /// Parameters for the remember_memory tool

@@ -31,7 +31,9 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use biorouter_mcp::{EntryDeletion, MemoryScope, MemoryServer, MemoryStoreInventory};
+use biorouter_mcp::{
+    CategoryDeletion, EntryDeletion, MemoryScope, MemoryServer, MemoryStoreInventory,
+};
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
@@ -59,10 +61,13 @@ pub struct MemoryDeleteEntryRequest {
     pub category: String,
     /// The entry's position in the category, as listed.
     pub index: usize,
-    /// The body that was listed at that position. The delete refuses unless it
-    /// still matches, so a list that went stale while an agent appended to the
-    /// store cannot delete the wrong memory.
-    pub content: String,
+    /// `MemoryEntry.digest` of the row that was listed at that position — the
+    /// row's identity, over its tags as well as its body.
+    pub digest: String,
+    /// `MemoryCategoryInventory.revision` of the category as it was listed. The
+    /// delete is a compare-and-set against it, so a list that went stale while
+    /// an agent appended to the store deletes nothing and the caller reloads.
+    pub revision: String,
     /// Required when `scope` is `local`.
     pub working_dir: Option<String>,
 }
@@ -79,6 +84,10 @@ pub struct MemoryDeleteEntryResponse {
 pub struct MemoryDeleteCategoryRequest {
     pub scope: MemoryScope,
     pub category: String,
+    /// `MemoryCategoryInventory.revision` of the category as it was listed.
+    /// Deleting a whole category is consent to lose the memories that were on
+    /// the screen, not whatever arrived while the confirmation was open.
+    pub revision: String,
     /// Required when `scope` is `local`.
     pub working_dir: Option<String>,
 }
@@ -205,7 +214,13 @@ async fn memory_delete_entry(
     let server = server_for(&global, working_dir);
 
     match server
-        .delete_entry(&req.category, req.scope, req.index, &req.content)
+        .delete_entry(
+            &req.category,
+            req.scope,
+            req.index,
+            &req.digest,
+            &req.revision,
+        )
         .map_err(|e| store_error(&e))?
     {
         EntryDeletion::Deleted {
@@ -232,6 +247,15 @@ async fn memory_delete_entry(
                 req.index, req.category
             ),
         )),
+        EntryDeletion::CategoryChanged => Err((
+            StatusCode::CONFLICT,
+            format!(
+                "The category \"{}\" changed since it was listed, most likely because a \
+                 conversation wrote to it. Deleting now would act on a list you have not seen. \
+                 Nothing was deleted; reload and try again.",
+                req.category
+            ),
+        )),
     }
 }
 
@@ -243,6 +267,7 @@ async fn memory_delete_entry(
         (status = 200, description = "The category was deleted", body = MemoryDeleteCategoryResponse),
         (status = 400, description = "Invalid category, or a local scope with no working_dir"),
         (status = 404, description = "No such category"),
+        (status = 409, description = "The category changed since it was listed"),
     ),
 )]
 async fn memory_delete_category(
@@ -254,11 +279,13 @@ async fn memory_delete_category(
     let server = server_for(&global, working_dir);
 
     match server
-        .delete_category(&req.category, req.scope)
+        .delete_category(&req.category, req.scope, &req.revision)
         .map_err(|e| store_error(&e))?
     {
-        Some(removed_entries) => Ok(Json(MemoryDeleteCategoryResponse { removed_entries })),
-        None => Err((
+        CategoryDeletion::Deleted { removed_entries } => {
+            Ok(Json(MemoryDeleteCategoryResponse { removed_entries }))
+        }
+        CategoryDeletion::Missing => Err((
             StatusCode::NOT_FOUND,
             format!(
                 "There is no memory category \"{}\" in the {} store.",
@@ -267,6 +294,15 @@ async fn memory_delete_category(
                     MemoryScope::Global => "global",
                     MemoryScope::Local => "local",
                 }
+            ),
+        )),
+        CategoryDeletion::CategoryChanged => Err((
+            StatusCode::CONFLICT,
+            format!(
+                "The category \"{}\" changed since it was listed, most likely because a \
+                 conversation wrote to it, so it no longer holds only what you were shown. \
+                 Nothing was deleted; reload and try again.",
+                req.category
             ),
         )),
     }

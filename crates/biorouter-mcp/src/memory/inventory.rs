@@ -49,8 +49,26 @@ use std::path::Path;
 use std::time::UNIX_EPOCH;
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use super::{validated_category, MemoryServer};
+
+/// A content digest, used two ways: over one serialized entry (which row is
+/// this?) and over a whole category file (which state of the category is this?).
+///
+/// It has to cover the *complete* serialized entry, tag line included. Two
+/// entries can share a body and differ only in their tags — `# phi\npatient A`
+/// and `patient A` are two rows a user must be able to tell apart, and a guard
+/// that compared bodies alone would happily satisfy itself against the wrong one
+/// (#63 review, finding 6).
+fn digest_of(text: &str) -> String {
+    format!("{:x}", Sha256::digest(text.as_bytes()))
+}
+
+/// The revision reported for a category that is not there. Distinct from any
+/// real file's digest, so it cannot be presented back as "this is the state I
+/// listed" for a category that has since been created.
+const NO_SUCH_CATEGORY: &str = "absent";
 
 /// Which of the two stores an entry lives in.
 ///
@@ -80,13 +98,21 @@ pub struct MemoryEntry {
     /// Position within the category file, counting from zero.
     ///
     /// Stable only for as long as the file is untouched, which is why
-    /// [`MemoryServer::delete_entry`] takes the body back as a guard rather
-    /// than trusting the index on its own.
+    /// [`MemoryServer::delete_entry`] takes [`MemoryEntry::digest`] back as a
+    /// guard rather than trusting the index on its own.
     pub index: usize,
     /// Words from the entry's leading `# …` line; empty when it has none.
     pub tags: Vec<String>,
     /// The entry body, interior newlines preserved.
     pub content: String,
+    /// Digest of this entry exactly as it is serialized on disk — tag line and
+    /// body together.
+    ///
+    /// This is the row's identity, and it is what a delete has to name. The body
+    /// alone is not an identity: two entries can carry the same text under
+    /// different tags, and a body-only guard is satisfied by whichever of them
+    /// happens to sit at the index (#63 review, finding 6).
+    pub digest: String,
 }
 
 /// One category file, listed in full.
@@ -95,6 +121,14 @@ pub struct MemoryEntry {
 pub struct MemoryCategoryInventory {
     pub name: String,
     pub entries: Vec<MemoryEntry>,
+    /// Digest of the whole category file as it was listed.
+    ///
+    /// The compare-and-set token for every delete: any write to the category —
+    /// an agent appending, another window deleting — changes it, so a delete
+    /// that still carries the listed revision is a delete of the category the
+    /// user was actually looking at. Without it the user confirms a list that
+    /// has since moved on and destroys something they were never shown.
+    pub revision: String,
     /// The category file's size on disk.
     pub size_bytes: u64,
     /// The category file's modification time, Unix seconds.
@@ -134,6 +168,26 @@ pub enum EntryDeletion {
     /// There is an entry at that index, but it is not the one the caller was
     /// shown. Something wrote to the category in between.
     ContentMismatch,
+    /// The row at that index is still the right one, but the category as a whole
+    /// is not the one that was listed — something else in it was added, edited
+    /// or removed since. The delete refuses rather than acting on a view the
+    /// user has not seen.
+    CategoryChanged,
+}
+
+/// The outcome of deleting a whole category.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CategoryDeletion {
+    Deleted {
+        /// How many entries went with it, so the caller can say what was lost.
+        removed_entries: usize,
+    },
+    /// There is no such category.
+    Missing,
+    /// The category changed since it was listed. "Delete everything in
+    /// `clinical`" is consent to lose what the user was shown, not whatever
+    /// arrived afterwards.
+    CategoryChanged,
 }
 
 /// Split a category file into entries the way [`MemoryServer::retrieve`] splits
@@ -168,6 +222,7 @@ fn parse_entries(content: &str) -> Vec<MemoryEntry> {
         };
         entries.push(MemoryEntry {
             index: entries.len(),
+            digest: digest_of(&render_entry(&tags, &body)),
             tags,
             content: body,
         });
@@ -175,21 +230,29 @@ fn parse_entries(content: &str) -> Vec<MemoryEntry> {
     entries
 }
 
+/// One entry in the on-disk format. The unit both [`render_entries`] and
+/// [`MemoryEntry::digest`] are built from, so a row's identity is by
+/// construction a digest of what a rewrite would put back on disk.
+fn render_entry(tags: &[String], content: &str) -> String {
+    let mut out = String::new();
+    if !tags.is_empty() {
+        out.push('#');
+        out.push(' ');
+        out.push_str(&tags.join(" "));
+        out.push('\n');
+    }
+    out.push_str(content);
+    out.push_str("\n\n");
+    out
+}
+
 /// Re-serialize entries into the on-disk format, so a delete leaves a file the
 /// memory tools still parse identically.
 fn render_entries(entries: &[MemoryEntry]) -> String {
-    let mut out = String::new();
-    for entry in entries {
-        if !entry.tags.is_empty() {
-            out.push('#');
-            out.push(' ');
-            out.push_str(&entry.tags.join(" "));
-            out.push('\n');
-        }
-        out.push_str(&entry.content);
-        out.push_str("\n\n");
-    }
-    out
+    entries
+        .iter()
+        .map(|entry| render_entry(&entry.tags, &entry.content))
+        .collect()
 }
 
 fn modified_secs(meta: &fs::Metadata) -> Option<i64> {
@@ -209,13 +272,34 @@ impl MemoryServer {
         }
     }
 
-    /// Every entry in one category, in file order.
-    pub fn list_entries(&self, category: &str, scope: MemoryScope) -> io::Result<Vec<MemoryEntry>> {
+    /// One category as it stands on disk right now: its entries, and the
+    /// revision naming exactly this state of it.
+    ///
+    /// One read, so the two cannot describe different moments — computing the
+    /// revision in a second pass would report a digest of a file the entries did
+    /// not come from.
+    fn read_category(
+        &self,
+        category: &str,
+        scope: MemoryScope,
+    ) -> io::Result<(Vec<MemoryEntry>, String)> {
         let path = self.get_memory_file(category, scope.is_global())?;
         if !path.exists() {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), NO_SUCH_CATEGORY.to_string()));
         }
-        Ok(parse_entries(&fs::read_to_string(path)?))
+        let raw = fs::read_to_string(path)?;
+        Ok((parse_entries(&raw), digest_of(&raw)))
+    }
+
+    /// Every entry in one category, in file order.
+    pub fn list_entries(&self, category: &str, scope: MemoryScope) -> io::Result<Vec<MemoryEntry>> {
+        Ok(self.read_category(category, scope)?.0)
+    }
+
+    /// The revision of one category — the compare-and-set token a delete has to
+    /// carry back. See [`MemoryCategoryInventory::revision`].
+    pub fn category_revision(&self, category: &str, scope: MemoryScope) -> io::Result<String> {
+        Ok(self.read_category(category, scope)?.1)
     }
 
     /// Everything in one store: what the Settings surface lists.
@@ -250,9 +334,11 @@ impl MemoryServer {
                 continue;
             }
             let meta = entry.metadata()?;
+            let (entries, revision) = self.read_category(category, scope)?;
             inventory.categories.push(MemoryCategoryInventory {
                 name: category.to_string(),
-                entries: self.list_entries(category, scope)?,
+                entries,
+                revision,
                 size_bytes: meta.len(),
                 modified: modified_secs(&meta),
             });
@@ -266,21 +352,32 @@ impl MemoryServer {
         Ok(inventory)
     }
 
-    /// Delete exactly one entry, identified by its position **and** by the body
-    /// the caller was shown.
+    /// Delete exactly one entry, identified by its position, by the **digest of
+    /// the row** the caller was shown, and by the **revision of the category**
+    /// they were shown it in.
     ///
-    /// The guard is the whole design. An index alone deletes whatever has since
-    /// moved into that slot — and this store is appended to by an agent that
-    /// may be running while the user is looking at the list. A substring match
-    /// alone (what `remove_specific_memory` does) deletes every entry the text
-    /// appears in. Position plus exact body deletes the row that was clicked,
-    /// or nothing.
+    /// The three-part guard is the whole design, and each part answers a way the
+    /// listing can have gone stale between rendering and clicking — this store
+    /// is appended to by an agent that may be running while the user reads it.
+    ///
+    /// * The *index* alone deletes whatever has since moved into that slot.
+    /// * The *row digest* pins which entry that is, over the complete serialized
+    ///   entry rather than its body: two rows can share a body and differ only
+    ///   in tags, and a body-only guard is satisfied by the wrong one.
+    /// * The *category revision* makes it a compare-and-set. The row can still
+    ///   be the right row while the category around it has changed, and a user
+    ///   who confirmed a delete against a list that has since moved on is
+    ///   deleting from a state they were never shown.
+    ///
+    /// Together with the store lock, the check and the write are atomic, so the
+    /// CAS cannot be raced.
     pub fn delete_entry(
         &self,
         category: &str,
         scope: MemoryScope,
         index: usize,
-        expected_content: &str,
+        expected_digest: &str,
+        expected_revision: &str,
     ) -> io::Result<EntryDeletion> {
         let path = self.get_memory_file(category, scope.is_global())?;
         // The read, the guard and the rewrite are one critical section. Without
@@ -293,12 +390,19 @@ impl MemoryServer {
         if !path.exists() {
             return Ok(EntryDeletion::OutOfRange);
         }
-        let mut entries = parse_entries(&fs::read_to_string(&path)?);
+        let raw = fs::read_to_string(&path)?;
+        let revision = digest_of(&raw);
+        let mut entries = parse_entries(&raw);
         let Some(found) = entries.get(index) else {
             return Ok(EntryDeletion::OutOfRange);
         };
-        if found.content != expected_content {
+        // Row identity first: it is the more specific answer, and the one the
+        // caller can act on ("that is not the memory you clicked").
+        if found.digest != expected_digest {
             return Ok(EntryDeletion::ContentMismatch);
+        }
+        if revision != expected_revision {
+            return Ok(EntryDeletion::CategoryChanged);
         }
 
         entries.remove(index);
@@ -324,21 +428,35 @@ impl MemoryServer {
         })
     }
 
-    /// Delete a whole category. Reports how many entries went with it, so the
-    /// caller can tell the user what they actually lost.
-    pub fn delete_category(&self, category: &str, scope: MemoryScope) -> io::Result<Option<usize>> {
+    /// Delete a whole category, guarded by the revision it was listed at.
+    ///
+    /// Reports how many entries went with it, so the caller can tell the user
+    /// what they actually lost — and refuses if that number would not be the
+    /// number they were shown. "Delete everything in `clinical`" is consent to
+    /// lose the memories on the screen, not whatever an agent appended while the
+    /// confirmation dialog was open.
+    pub fn delete_category(
+        &self,
+        category: &str,
+        scope: MemoryScope,
+        expected_revision: &str,
+    ) -> io::Result<CategoryDeletion> {
         let path = self.get_memory_file(category, scope.is_global())?;
         // Counting and removing under one lock, so the count reported to the
         // user is the count that was actually destroyed.
         let Some(_lock) = self.lock_store_if_present(scope.is_global())? else {
-            return Ok(None);
+            return Ok(CategoryDeletion::Missing);
         };
         if !path.exists() {
-            return Ok(None);
+            return Ok(CategoryDeletion::Missing);
         }
-        let removed = parse_entries(&fs::read_to_string(&path)?).len();
+        let raw = fs::read_to_string(&path)?;
+        if digest_of(&raw) != expected_revision {
+            return Ok(CategoryDeletion::CategoryChanged);
+        }
+        let removed_entries = parse_entries(&raw).len();
         fs::remove_file(&path)?;
-        Ok(Some(removed))
+        Ok(CategoryDeletion::Deleted { removed_entries })
     }
 }
 
@@ -362,6 +480,22 @@ mod tests {
     fn write_store(dir: &Path, category: &str, body: &str) {
         fs::create_dir_all(dir).unwrap();
         fs::write(dir.join(format!("{category}.txt")), body).unwrap();
+    }
+
+    /// One category exactly as the Settings surface would render it — the rows
+    /// and the revision a delete then has to carry back.
+    fn listing(
+        server: &MemoryServer,
+        category: &str,
+        scope: MemoryScope,
+    ) -> MemoryCategoryInventory {
+        server
+            .inventory(scope)
+            .unwrap()
+            .categories
+            .into_iter()
+            .find(|c| c.name == category)
+            .unwrap_or_else(|| panic!("category {category:?} is not in the {scope:?} inventory"))
     }
 
     /// The reason this module exists rather than reusing `retrieve`: two
@@ -520,8 +654,15 @@ mod tests {
             "black\n\nwe use black for formatting\n\n",
         );
 
+        let listed = listing(&server, "development", MemoryScope::Local);
         let outcome = server
-            .delete_entry("development", MemoryScope::Local, 0, "black")
+            .delete_entry(
+                "development",
+                MemoryScope::Local,
+                0,
+                &listed.entries[0].digest,
+                &listed.revision,
+            )
             .unwrap();
         assert_eq!(
             outcome,
@@ -553,8 +694,15 @@ mod tests {
             "# name\nWanjun\n\n# city\nSan Francisco\n\n",
         );
 
+        let listed = listing(&server, "personal", MemoryScope::Global);
         server
-            .delete_entry("personal", MemoryScope::Global, 0, "Wanjun")
+            .delete_entry(
+                "personal",
+                MemoryScope::Global,
+                0,
+                &listed.entries[0].digest,
+                &listed.revision,
+            )
             .unwrap();
 
         let retrieved = server.retrieve("personal", true).unwrap();
@@ -579,8 +727,15 @@ mod tests {
         let dir = temp.path().join("global");
         write_store(&dir, "clinical", "the only note\n\n");
 
+        let listed = listing(&server, "clinical", MemoryScope::Global);
         let outcome = server
-            .delete_entry("clinical", MemoryScope::Global, 0, "the only note")
+            .delete_entry(
+                "clinical",
+                MemoryScope::Global,
+                0,
+                &listed.entries[0].digest,
+                &listed.revision,
+            )
             .unwrap();
         assert_eq!(
             outcome,
@@ -609,13 +764,20 @@ mod tests {
         let server = server_at(temp.path());
         let dir = temp.path().join("global");
         write_store(&dir, "clinical", "first\n\nsecond\n\n");
+        let listed = listing(&server, "clinical", MemoryScope::Global);
 
         // The user was shown "first" at index 0, but the agent has since
         // rewritten the file.
         write_store(&dir, "clinical", "something else entirely\n\nsecond\n\n");
 
         let outcome = server
-            .delete_entry("clinical", MemoryScope::Global, 0, "first")
+            .delete_entry(
+                "clinical",
+                MemoryScope::Global,
+                0,
+                &listed.entries[0].digest,
+                &listed.revision,
+            )
             .unwrap();
         assert_eq!(outcome, EntryDeletion::ContentMismatch);
         assert_eq!(
@@ -628,15 +790,186 @@ mod tests {
         );
     }
 
+    /// Two memories can carry the same words under different tags. They are two
+    /// rows on screen and two rows on disk, so deleting one must not be
+    /// satisfiable by the other — which is exactly what a guard comparing bodies
+    /// does (#63 review, finding 6). The digest covers the serialized entry, tag
+    /// line included.
+    #[test]
+    fn a_row_is_identified_by_its_tags_as_well_as_its_body() {
+        let temp = tempdir().unwrap();
+        let server = server_at(temp.path());
+        let dir = temp.path().join("global");
+        write_store(
+            &dir,
+            "clinical",
+            "# draft\npatient A responded\n\n# confirmed\npatient A responded\n\n",
+        );
+        let listed = listing(&server, "clinical", MemoryScope::Global);
+        assert_eq!(listed.entries[0].content, listed.entries[1].content);
+        assert_ne!(
+            listed.entries[0].digest, listed.entries[1].digest,
+            "two rows differing only in tags must not share an identity"
+        );
+
+        // The user clicked the *confirmed* row (index 1) but the digest they
+        // carry back names the draft one. A body comparison cannot tell these
+        // apart; the delete must refuse rather than destroy the confirmed note.
+        let outcome = server
+            .delete_entry(
+                "clinical",
+                MemoryScope::Global,
+                1,
+                &listed.entries[0].digest,
+                &listed.revision,
+            )
+            .unwrap();
+        assert_eq!(outcome, EntryDeletion::ContentMismatch);
+        assert_eq!(
+            server
+                .list_entries("clinical", MemoryScope::Global)
+                .unwrap()
+                .len(),
+            2,
+            "nothing may be deleted when the row named is not the row at that index"
+        );
+
+        // Naming the row it really is deletes exactly that row.
+        let outcome = server
+            .delete_entry(
+                "clinical",
+                MemoryScope::Global,
+                1,
+                &listed.entries[1].digest,
+                &listed.revision,
+            )
+            .unwrap();
+        assert_eq!(
+            outcome,
+            EntryDeletion::Deleted {
+                remaining: 1,
+                category_removed: false
+            }
+        );
+        let left = server
+            .list_entries("clinical", MemoryScope::Global)
+            .unwrap();
+        assert_eq!(left[0].tags, vec!["draft"], "the wrong row was taken");
+    }
+
+    /// The row the user clicked can still be that row while the *category* has
+    /// moved on — an agent appended to it, or another window deleted from it,
+    /// between the listing and the click. Deleting then acts on a state the user
+    /// was never shown, so it refuses and the caller reloads.
+    ///
+    /// This is the case the old suite could not reach: it changed the file
+    /// *before* the delete began, which the read inside `delete_entry` simply
+    /// picked up. Here nothing about the clicked row changes at all.
+    #[test]
+    fn an_append_since_the_listing_refuses_the_delete() {
+        let temp = tempdir().unwrap();
+        let server = server_at(temp.path());
+        write_store(&temp.path().join("global"), "clinical", "first\n\n");
+        let listed = listing(&server, "clinical", MemoryScope::Global);
+
+        // A conversation saves a memory while the user reads the list.
+        server
+            .remember("context", "clinical", "arrived afterwards", &[], true)
+            .unwrap();
+
+        let outcome = server
+            .delete_entry(
+                "clinical",
+                MemoryScope::Global,
+                0,
+                &listed.entries[0].digest,
+                &listed.revision,
+            )
+            .unwrap();
+        assert_eq!(
+            outcome,
+            EntryDeletion::CategoryChanged,
+            "the row is unchanged but the category is not the one that was listed"
+        );
+        let left = server
+            .list_entries("clinical", MemoryScope::Global)
+            .unwrap();
+        assert_eq!(
+            left.iter().map(|e| e.content.as_str()).collect::<Vec<_>>(),
+            vec!["first", "arrived afterwards"],
+            "a refused delete removes nothing"
+        );
+
+        // Reloading gives the current revision, and the delete goes through.
+        let reloaded = listing(&server, "clinical", MemoryScope::Global);
+        assert_eq!(
+            server
+                .delete_entry(
+                    "clinical",
+                    MemoryScope::Global,
+                    0,
+                    &reloaded.entries[0].digest,
+                    &reloaded.revision,
+                )
+                .unwrap(),
+            EntryDeletion::Deleted {
+                remaining: 1,
+                category_removed: false
+            },
+            "a refusal must be recoverable by reloading, or the button never works"
+        );
+    }
+
+    /// The same compare-and-set on the whole-category delete. "Delete everything
+    /// in `clinical`" is consent to lose the memories that were on the screen.
+    #[test]
+    fn an_append_since_the_listing_refuses_the_category_delete() {
+        let temp = tempdir().unwrap();
+        let server = server_at(temp.path());
+        let dir = temp.path().join("global");
+        write_store(&dir, "clinical", "one\n\ntwo\n\n");
+        let listed = listing(&server, "clinical", MemoryScope::Global);
+
+        server
+            .remember("context", "clinical", "arrived afterwards", &[], true)
+            .unwrap();
+
+        assert_eq!(
+            server
+                .delete_category("clinical", MemoryScope::Global, &listed.revision)
+                .unwrap(),
+            CategoryDeletion::CategoryChanged
+        );
+        assert!(
+            dir.join("clinical.txt").exists(),
+            "a refused category delete removes nothing"
+        );
+
+        let reloaded = listing(&server, "clinical", MemoryScope::Global);
+        assert_eq!(
+            server
+                .delete_category("clinical", MemoryScope::Global, &reloaded.revision)
+                .unwrap(),
+            CategoryDeletion::Deleted { removed_entries: 3 }
+        );
+    }
+
     #[test]
     fn an_index_past_the_end_deletes_nothing() {
         let temp = tempdir().unwrap();
         let server = server_at(temp.path());
         write_store(&temp.path().join("local"), "development", "only one\n\n");
+        let listed = listing(&server, "development", MemoryScope::Local);
 
         assert_eq!(
             server
-                .delete_entry("development", MemoryScope::Local, 7, "only one")
+                .delete_entry(
+                    "development",
+                    MemoryScope::Local,
+                    7,
+                    &listed.entries[0].digest,
+                    &listed.revision
+                )
                 .unwrap(),
             EntryDeletion::OutOfRange
         );
@@ -657,19 +990,20 @@ mod tests {
         let server = server_at(temp.path());
         let dir = temp.path().join("global");
         write_store(&dir, "clinical", "one\n\ntwo\n\nthree\n\n");
+        let listed = listing(&server, "clinical", MemoryScope::Global);
 
         assert_eq!(
             server
-                .delete_category("clinical", MemoryScope::Global)
+                .delete_category("clinical", MemoryScope::Global, &listed.revision)
                 .unwrap(),
-            Some(3)
+            CategoryDeletion::Deleted { removed_entries: 3 }
         );
         assert!(!dir.join("clinical.txt").exists());
         assert_eq!(
             server
-                .delete_category("clinical", MemoryScope::Global)
+                .delete_category("clinical", MemoryScope::Global, &listed.revision)
                 .unwrap(),
-            None,
+            CategoryDeletion::Missing,
             "deleting a category that is already gone is not an error"
         );
     }
@@ -723,13 +1057,13 @@ mod tests {
             );
             assert!(
                 server
-                    .delete_category(escaping, MemoryScope::Global)
+                    .delete_category(escaping, MemoryScope::Global, "any")
                     .is_err(),
                 "delete_category accepted {escaping:?}"
             );
             assert!(
                 server
-                    .delete_entry(escaping, MemoryScope::Global, 0, "ORIGINAL")
+                    .delete_entry(escaping, MemoryScope::Global, 0, "any", "any")
                     .is_err(),
                 "delete_entry accepted {escaping:?}"
             );
@@ -783,11 +1117,12 @@ mod tests {
             vec!["a.txt.b"]
         );
         assert_eq!(inventory.categories[0].entries.len(), 1);
+        let listed = &inventory.categories[0];
         assert_eq!(
             server
-                .delete_category("a.txt.b", MemoryScope::Global)
+                .delete_category("a.txt.b", MemoryScope::Global, &listed.revision)
                 .unwrap(),
-            Some(1)
+            CategoryDeletion::Deleted { removed_entries: 1 }
         );
     }
 }

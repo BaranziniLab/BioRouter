@@ -62,12 +62,20 @@ const formatBytes = (bytes: number) => {
 const quote = (text: string, max = 240) =>
   text.length <= max ? text : `${text.slice(0, max).trimEnd()}…`;
 
+/**
+ * A delete carries back the state the user was looking at when they clicked:
+ * the row's `digest` and the category's `revision`. The daemon compares both
+ * and refuses (409) if either moved, because the store is appended to by
+ * conversations that may be running while this list sits open — see
+ * `MemoryServer::delete_entry`. `revision` is why `category` is kept whole here
+ * rather than reduced to its name.
+ */
 type PendingDelete =
   | { kind: 'category'; scope: MemoryScope; category: MemoryCategoryInventory }
   | {
       kind: 'entry';
       scope: MemoryScope;
-      categoryName: string;
+      category: MemoryCategoryInventory;
       entry: MemoryEntry;
       isLastInCategory: boolean;
     };
@@ -124,6 +132,7 @@ export default function MemorySection() {
           body: {
             scope: pending.scope,
             category: pending.category.name,
+            revision: pending.category.revision,
             working_dir: workingDir,
           },
           throwOnError: true,
@@ -139,15 +148,16 @@ export default function MemorySection() {
         const response = await memoryDeleteEntry<true>({
           body: {
             scope: pending.scope,
-            category: pending.categoryName,
+            category: pending.category.name,
             index: pending.entry.index,
-            content: pending.entry.content,
+            digest: pending.entry.digest,
+            revision: pending.category.revision,
             working_dir: workingDir,
           },
           throwOnError: true,
         });
         toastSuccess({
-          title: pending.categoryName,
+          title: pending.category.name,
           msg: response.data.category_removed
             ? 'Memory deleted; the category is now empty and was removed'
             : 'Memory deleted',
@@ -185,10 +195,10 @@ export default function MemorySection() {
       title: 'Delete this memory?',
       message:
         `“${quote(pending.entry.content)}” will be permanently removed from the ` +
-        `${scopeNoun(pending.scope)} category “${pending.categoryName}”, which ` +
+        `${scopeNoun(pending.scope)} category “${pending.category.name}”, which ` +
         `${scopeAudience(pending.scope)} can read. This cannot be undone.` +
         (pending.isLastInCategory
-          ? ` It is the last memory in “${pending.categoryName}”, so the category goes with it.`
+          ? ` It is the last memory in “${pending.category.name}”, so the category goes with it.`
           : ''),
     };
   })();
@@ -236,8 +246,8 @@ export default function MemorySection() {
             onDeleteCategory={(category) =>
               setPending({ kind: 'category', scope: 'global', category })
             }
-            onDeleteEntry={(categoryName, entry, isLastInCategory) =>
-              setPending({ kind: 'entry', scope: 'global', categoryName, entry, isLastInCategory })
+            onDeleteEntry={(category, entry, isLastInCategory) =>
+              setPending({ kind: 'entry', scope: 'global', category, entry, isLastInCategory })
             }
           />
 
@@ -251,8 +261,8 @@ export default function MemorySection() {
               onDeleteCategory={(category) =>
                 setPending({ kind: 'category', scope: 'local', category })
               }
-              onDeleteEntry={(categoryName, entry, isLastInCategory) =>
-                setPending({ kind: 'entry', scope: 'local', categoryName, entry, isLastInCategory })
+              onDeleteEntry={(category, entry, isLastInCategory) =>
+                setPending({ kind: 'entry', scope: 'local', category, entry, isLastInCategory })
               }
             />
           ) : (
@@ -297,7 +307,11 @@ function StoreBlock({
   expanded: Set<string>;
   onToggle: (key: string) => void;
   onDeleteCategory: (category: MemoryCategoryInventory) => void;
-  onDeleteEntry: (categoryName: string, entry: MemoryEntry, isLastInCategory: boolean) => void;
+  onDeleteEntry: (
+    category: MemoryCategoryInventory,
+    entry: MemoryEntry,
+    isLastInCategory: boolean
+  ) => void;
 }) {
   if (!store) return null;
   const total = store.categories.reduce((sum, category) => sum + category.entries.length, 0);
@@ -338,7 +352,7 @@ function StoreBlock({
               onToggle={() => onToggle(`${store.scope}:${category.name}`)}
               onDeleteCategory={() => onDeleteCategory(category)}
               onDeleteEntry={(entry) =>
-                onDeleteEntry(category.name, entry, category.entries.length === 1)
+                onDeleteEntry(category, entry, category.entries.length === 1)
               }
             />
           ))}

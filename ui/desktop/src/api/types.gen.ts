@@ -977,6 +977,16 @@ export type MemoryCategoryInventory = {
     modified?: number | null;
     name: string;
     /**
+     * Digest of the whole category file as it was listed.
+     *
+     * The compare-and-set token for every delete: any write to the category —
+     * an agent appending, another window deleting — changes it, so a delete
+     * that still carries the listed revision is a delete of the category the
+     * user was actually looking at. Without it the user confirms a list that
+     * has since moved on and destroys something they were never shown.
+     */
+    revision: string;
+    /**
      * The category file's size on disk.
      */
     size_bytes: number;
@@ -984,6 +994,12 @@ export type MemoryCategoryInventory = {
 
 export type MemoryDeleteCategoryRequest = {
     category: string;
+    /**
+     * `MemoryCategoryInventory.revision` of the category as it was listed.
+     * Deleting a whole category is consent to lose the memories that were on
+     * the screen, not whatever arrived while the confirmation was open.
+     */
+    revision: string;
     scope: MemoryScope;
     /**
      * Required when `scope` is `local`.
@@ -1001,15 +1017,20 @@ export type MemoryDeleteCategoryResponse = {
 export type MemoryDeleteEntryRequest = {
     category: string;
     /**
-     * The body that was listed at that position. The delete refuses unless it
-     * still matches, so a list that went stale while an agent appended to the
-     * store cannot delete the wrong memory.
+     * `MemoryEntry.digest` of the row that was listed at that position — the
+     * row's identity, over its tags as well as its body.
      */
-    content: string;
+    digest: string;
     /**
      * The entry's position in the category, as listed.
      */
     index: number;
+    /**
+     * `MemoryCategoryInventory.revision` of the category as it was listed. The
+     * delete is a compare-and-set against it, so a list that went stale while
+     * an agent appended to the store deletes nothing and the caller reloads.
+     */
+    revision: string;
     scope: MemoryScope;
     /**
      * Required when `scope` is `local`.
@@ -1037,11 +1058,21 @@ export type MemoryEntry = {
      */
     content: string;
     /**
+     * Digest of this entry exactly as it is serialized on disk — tag line and
+     * body together.
+     *
+     * This is the row's identity, and it is what a delete has to name. The body
+     * alone is not an identity: two entries can carry the same text under
+     * different tags, and a body-only guard is satisfied by whichever of them
+     * happens to sit at the index (#63 review, finding 6).
+     */
+    digest: string;
+    /**
      * Position within the category file, counting from zero.
      *
      * Stable only for as long as the file is untouched, which is why
-     * [`MemoryServer::delete_entry`] takes the body back as a guard rather
-     * than trusting the index on its own.
+     * [`MemoryServer::delete_entry`] takes [`MemoryEntry::digest`] back as a
+     * guard rather than trusting the index on its own.
      */
     index: number;
     /**
@@ -4437,6 +4468,10 @@ export type MemoryDeleteCategoryErrors = {
      * No such category
      */
     404: unknown;
+    /**
+     * The category changed since it was listed
+     */
+    409: unknown;
 };
 
 export type MemoryDeleteCategoryResponses = {

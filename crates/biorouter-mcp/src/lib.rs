@@ -47,8 +47,8 @@ pub use memory::MemoryServer;
 // The user-facing half of the memory feature (issue #63): what the Settings
 // surface lists, and the two deletions it offers.
 pub use memory::{
-    global_memory_dir, EntryDeletion, MemoryCategoryInventory, MemoryEntry, MemoryScope,
-    MemoryStoreInventory,
+    global_memory_dir, CategoryDeletion, EntryDeletion, MemoryCategoryInventory, MemoryEntry,
+    MemoryScope, MemoryStoreInventory,
 };
 // The barrier every generic file tool owes the machine-wide store
 // (#63 review, finding 2).
