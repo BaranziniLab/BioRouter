@@ -1,4 +1,7 @@
 pub(crate) mod agent;
+// BR-71 Task 36b: approval routing for agent-created sessions — the relay, the
+// single policy point for the two delegation bounds, and the escalation walk.
+pub mod approval_relay;
 // BR-35: the per-reply wall-clock / token / dollar ceiling. Off unless
 // configured; the iteration caps (`max_turns`, `max_tool_calls`) bound how many
 // steps a reply takes, this bounds how long it runs and what it costs.

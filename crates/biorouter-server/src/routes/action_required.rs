@@ -1,5 +1,6 @@
 use crate::state::AppState;
 use axum::{extract::State, http::StatusCode, routing::post, Json, Router};
+use biorouter::agents::approval_relay::{self, ResolveOutcome};
 use biorouter::agents::ConfirmationOutcome;
 use biorouter::permission::permission_confirmation::PrincipalType;
 use biorouter::permission::{Permission, PermissionConfirmation};
@@ -49,7 +50,6 @@ pub async fn confirm_tool_action(
     State(state): State<Arc<AppState>>,
     Json(request): Json<ConfirmToolActionRequest>,
 ) -> Result<Json<Value>, StatusCode> {
-    let agent = state.get_agent_for_route(request.session_id).await?;
     let permission = match request.action.as_str() {
         "always_allow" => Permission::AlwaysAllow,
         "allow_once" => Permission::AllowOnce,
@@ -57,6 +57,45 @@ pub async fn confirm_tool_action(
         _ => Permission::DenyOnce,
     };
 
+    // BR-71 Task 36b: two surfaces, ONE pending ask. The escalation card in the
+    // parent's chat carries the origin's tool request id, so a decision posted
+    // from either session resolves the same relay entry — and the OTHER surface
+    // is dismissed rather than left pending.
+    if let Some(ask) = approval_relay::lookup(&request.id, &request.session_id) {
+        return match approval_relay::resolve(&ask, permission, &request.session_id) {
+            ResolveOutcome::Resolved { decision, notify } => {
+                let origin = state.get_agent_for_route(ask.session_id.clone()).await?;
+                let outcome = origin
+                    .handle_confirmation(
+                        ask.request_id.clone(),
+                        PermissionConfirmation {
+                            principal_type: request.principal_type,
+                            permission: decision,
+                        },
+                    )
+                    .await;
+                dismiss_on(&notify, &ask.request_id).await;
+                Ok(Json(serde_json::json!({
+                    "status": match outcome {
+                        ConfirmationOutcome::Delivered => "delivered",
+                        ConfirmationOutcome::Unknown => "unknown",
+                    },
+                    "dismissed": notify,
+                })))
+            }
+            // The other surface got there first. 200 and the truth: a
+            // double-click is a no-op, and the client reconciles its card from
+            // the decision rather than re-posting.
+            ResolveOutcome::AlreadyResolved(decision) => Ok(Json(serde_json::json!({
+                "status": "already_resolved",
+                "decision": decision,
+            }))),
+            ResolveOutcome::Unknown => Ok(Json(serde_json::json!({ "status": "unknown" }))),
+        };
+    }
+
+    // Not a delegated ask: the pre-Task-36b path, unchanged.
+    let agent = state.get_agent_for_route(request.session_id).await?;
     let outcome = agent
         .handle_confirmation(
             request.id.clone(),
@@ -73,6 +112,31 @@ pub async fn confirm_tool_action(
     };
 
     Ok(Json(serde_json::json!({ "status": status })))
+}
+
+/// A-5: tell every other surface the ask is answered, so its card stops showing
+/// as pending. Best-effort — the relay is the truth, and a client that misses
+/// the frame learns on its next POST (`already_resolved`).
+async fn dismiss_on(session_ids: &[String], request_id: &str) {
+    let Some(services) = biorouter::workspace_services::get() else {
+        return;
+    };
+    if !services.gui_attached() {
+        return;
+    }
+    for session_id in session_ids {
+        let _ = services
+            .gui_command(
+                serde_json::json!({
+                    "type": "workspace",
+                    "cmd": "resolve_confirmation",
+                    "session_id": session_id,
+                    "request_id": request_id,
+                }),
+                false,
+            )
+            .await;
+    }
 }
 
 pub fn routes(state: Arc<AppState>) -> Router {
