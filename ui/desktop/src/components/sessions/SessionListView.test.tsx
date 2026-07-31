@@ -298,8 +298,94 @@ describe('SessionListView row actions', () => {
     // React replaces the row's DOM node. A node captured once goes stale (it is
     // detached, and `closest` then walks nothing), which is a flake, not a bug
     // in the nesting.
+    await waitFor(() => {
+      const childRow = screen.getByText('Subagent task').closest('.ml-6');
+      expect(childRow).not.toBeNull();
+      // The badge belongs to the row, not above it: a bare inline span placed
+      // before a block-level row inside a flex column renders on its own line.
+      expect(
+        screen
+          .getByText('Subagent task')
+          .closest('.biorouter-list-row')
+          ?.querySelector('[data-testid="subagent-badge"]')
+      ).not.toBeNull();
+    });
+  });
+
+  // BR-71: `groupSessionsByDate` buckets on `updated_at`, and a parent's
+  // `updated_at` advances every time the conversation is resumed. Grouping by
+  // parent INSIDE each date bucket therefore drops any subagent that ran on an
+  // earlier day back to top level — the confusing artifact the feature exists
+  // to remove. Parent grouping has to run first.
+  it('nests a subagent run under its parent across date buckets', async () => {
+    mocks.listSessions.mockResolvedValue({
+      data: {
+        sessions: [
+          row({
+            id: 'p1',
+            name: 'Parent',
+            session_type: 'user',
+            updated_at: '2026-07-14T12:00:00Z',
+          }),
+          row({
+            id: 'c1',
+            name: 'Subagent task',
+            session_type: 'sub_agent',
+            parent_session_id: 'p1',
+            updated_at: '2026-07-10T12:00:00Z',
+          }),
+        ],
+      },
+    });
+
+    render(
+      <MemoryRouter>
+        <SessionListView onSelectSession={vi.fn()} />
+      </MemoryRouter>
+    );
+    fireEvent.click(await screen.findByLabelText(/show subagent runs/i));
+    await waitFor(() =>
+      expect(mocks.listSessions).toHaveBeenLastCalledWith(
+        expect.objectContaining({ query: { include_subagents: true } })
+      )
+    );
+
     await waitFor(() => expect(screen.getByText('Subagent task').closest('.ml-6')).not.toBeNull());
-    expect(screen.getByText('sub')).toBeTruthy();
+    // The child rides in its parent's bucket, so its own date never opens one.
+    expect(screen.queryByText(/July 10/)).not.toBeInTheDocument();
+  });
+
+  it('badges a subagent run whose parent is not in the list', async () => {
+    mocks.listSessions.mockResolvedValue({
+      data: {
+        sessions: [
+          row({
+            id: 'c9',
+            name: 'Orphan run',
+            session_type: 'sub_agent',
+            parent_session_id: 'deleted-parent',
+          }),
+        ],
+      },
+    });
+
+    render(
+      <MemoryRouter>
+        <SessionListView onSelectSession={vi.fn()} />
+      </MemoryRouter>
+    );
+    fireEvent.click(await screen.findByLabelText(/show subagent runs/i));
+
+    // An orphan stays top-level so it is still reachable — but unbadged it is
+    // an unexplained bare row, which is the same confusion in another form.
+    await waitFor(() =>
+      expect(
+        screen
+          .getByText('Orphan run')
+          .closest('.biorouter-list-row')
+          ?.querySelector('[data-testid="subagent-badge"]')
+      ).not.toBeNull()
+    );
   });
 
   // BR-71: `showSubagents` is per-component but the session cache it reads is

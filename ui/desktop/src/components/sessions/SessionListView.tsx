@@ -322,6 +322,26 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
       [sessions, showSubagents]
     );
 
+    // Parent grouping runs BEFORE date bucketing. `groupSessionsByDate` buckets
+    // on `updated_at` and a parent's advances every time the conversation is
+    // resumed, so a subagent that ran on an earlier day sits in a different
+    // bucket — grouping within each bucket would drop it back to top level,
+    // which is exactly the orphaned, unexplained row this feature removes.
+    const parentGroups = useMemo(
+      () => groupSessionsByParent(filteredSessions),
+      [filteredSessions]
+    );
+    // Only top-level rows are dated and paginated; children ride with their
+    // parent, so `visibleSessionCount` counts rendered parents, not raw rows.
+    const topLevelSessions = useMemo(() => parentGroups.map((g) => g.session), [parentGroups]);
+    const childrenByParentId = useMemo(() => {
+      const map = new Map<string, Session[]>();
+      for (const { session, children } of parentGroups) {
+        if (children.length > 0) map.set(session.id, children);
+      }
+      return map;
+    }, [parentGroups]);
+
     // Edit modal state
     const [showEditModal, setShowEditModal] = useState(false);
     const [editingSession, setEditingSession] = useState<Session | null>(null);
@@ -375,23 +395,23 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
 
         if (
           scrollHeight - scrollTop - clientHeight < threshold &&
-          visibleSessionCount < filteredSessions.length
+          visibleSessionCount < topLevelSessions.length
         ) {
           setVisibleSessionCount((previousCount) =>
-            Math.min(previousCount + VISIBLE_SESSION_BATCH, filteredSessions.length)
+            Math.min(previousCount + VISIBLE_SESSION_BATCH, topLevelSessions.length)
           );
         }
       },
-      [visibleSessionCount, filteredSessions.length]
+      [visibleSessionCount, topLevelSessions.length]
     );
 
     useEffect(() => {
       if (debouncedSearchTerm) {
-        setVisibleSessionCount(filteredSessions.length);
+        setVisibleSessionCount(topLevelSessions.length);
       } else {
         setVisibleSessionCount(INITIAL_VISIBLE_SESSIONS);
       }
-    }, [debouncedSearchTerm, filteredSessions.length]);
+    }, [debouncedSearchTerm, topLevelSessions.length]);
 
     const loadSessions = useCallback(async () => {
       const hasCachedSessions = getCachedSessionList() !== null;
@@ -459,11 +479,11 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
 
     // Memoize date groups calculation to prevent unnecessary recalculations
     const memoizedDateGroups = useMemo(() => {
-      if (filteredSessions.length > 0) {
-        return groupSessionsByDate(filteredSessions);
+      if (topLevelSessions.length > 0) {
+        return groupSessionsByDate(topLevelSessions);
       }
       return [];
-    }, [filteredSessions]);
+    }, [topLevelSessions]);
 
     // Update date groups when filtered sessions change
     useEffect(() => {
@@ -475,7 +495,10 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
     // Scroll to the selected session when returning from session history view
     useEffect(() => {
       if (selectedSessionId) {
-        const selectedIndex = filteredSessions.findIndex(
+        // Indexes into the paginated top-level list; a nested child is not in
+        // it, so the count bump is skipped and the scroll falls through to the
+        // row's own ref, which children register too.
+        const selectedIndex = topLevelSessions.findIndex(
           (session) => session.id === selectedSessionId
         );
         if (selectedIndex >= visibleSessionCount) {
@@ -489,7 +512,7 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
           });
         }
       }
-    }, [filteredSessions, selectedSessionId, sessions, visibleSessionCount]);
+    }, [topLevelSessions, selectedSessionId, sessions, visibleSessionCount]);
 
     // Debounced search effect - performs actual filtering
     useEffect(() => {
@@ -733,6 +756,20 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
           className="biorouter-list-row session-item flex items-center gap-3 py-2 px-4 relative group"
           ref={(el) => setSessionRefs(session.id, el)}
         >
+          {/* BR-71: the badge lives INSIDE the row, and is derived from the row
+              itself rather than from where it was rendered — so a subagent run
+              whose parent is missing from the list is still labelled instead of
+              reading as an unexplained bare conversation. */}
+          {session.session_type === 'sub_agent' && (
+            <span
+              data-testid="subagent-badge"
+              title="Subagent run"
+              className="flex-shrink-0 rounded bg-background-code px-1 text-[10px] text-text-subtle"
+            >
+              sub
+            </span>
+          )}
+
           {/* Title + metadata */}
           <button
             type="button"
@@ -936,36 +973,43 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
                 </h2>
               </div>
               <div className="session-grid biorouter-list-shell">
-                {groupSessionsByParent(group.sessions).map(({ session, children }) => (
-                  <React.Fragment key={session.id}>
-                    <SessionItem
-                      session={session}
-                      onEditClick={handleEditSession}
-                      onDeleteClick={handleDeleteSession}
-                      onExportClick={handleExportSession}
-                      onOpenInNewWindow={handleOpenInNewWindow}
-                    />
-                    {children.map((child) => (
-                      <div key={child.id} className="ml-6 border-l border-border-subtle pl-2">
-                        <span className="mr-1 rounded bg-background-code px-1 text-[10px] text-text-subtle">
-                          sub
-                        </span>
-                        <SessionItem
-                          session={child}
-                          onEditClick={handleEditSession}
-                          onDeleteClick={handleDeleteSession}
-                          onExportClick={handleExportSession}
-                          onOpenInNewWindow={handleOpenInNewWindow}
-                        />
-                      </div>
-                    ))}
-                  </React.Fragment>
-                ))}
+                {group.sessions.map((session) => {
+                  const children = childrenByParentId.get(session.id);
+                  return (
+                    <React.Fragment key={session.id}>
+                      <SessionItem
+                        session={session}
+                        onEditClick={handleEditSession}
+                        onDeleteClick={handleDeleteSession}
+                        onExportClick={handleExportSession}
+                        onOpenInNewWindow={handleOpenInNewWindow}
+                      />
+                      {/* One indented block for all of a parent's children, not
+                          one wrapper each: a lone row inside its own wrapper is
+                          `:last-child` and loses the separator every other row
+                          in the list has. */}
+                      {children && (
+                        <div className="ml-6 flex flex-col border-l border-border-subtle pl-2">
+                          {children.map((child) => (
+                            <SessionItem
+                              key={child.id}
+                              session={child}
+                              onEditClick={handleEditSession}
+                              onDeleteClick={handleDeleteSession}
+                              onExportClick={handleExportSession}
+                              onOpenInNewWindow={handleOpenInNewWindow}
+                            />
+                          ))}
+                        </div>
+                      )}
+                    </React.Fragment>
+                  );
+                })}
               </div>
             </div>
           ))}
 
-          {visibleSessionCount < filteredSessions.length && (
+          {visibleSessionCount < topLevelSessions.length && (
             <div className="flex justify-center py-8">
               <div className="flex items-center space-x-2 text-text-muted">
                 <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-text-muted"></div>
