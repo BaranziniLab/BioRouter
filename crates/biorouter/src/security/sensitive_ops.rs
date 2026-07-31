@@ -87,25 +87,6 @@ use crate::security::policy::command::{redirect_targets, ParsedCommand};
 use crate::security::policy::target::{classify, normalize_for, Blast, EnvFacts, TargetPath};
 use crate::tool_inspection::{InspectionAction, InspectionResult, ToolInspector};
 
-/// Object-argument keys whose string (or string-array) value is a filesystem
-/// path we should classify. Also matched: any key ending in `_path`, and the
-/// plural `paths`.
-const PATH_ARG_KEYS: &[&str] = &[
-    "path",
-    "file_path",
-    "filepath",
-    "filename",
-    "file",
-    "target",
-    "target_path",
-    "dest",
-    "destination",
-    "output_path",
-    "output",
-    "to",
-    "new_path",
-];
-
 /// `text_editor`-style `command` values that MUTATE the target (everything but
 /// `view`). An editor call with no explicit command fails safe → treated as a
 /// mutation (so it is checked, not silently allowed).
@@ -287,10 +268,7 @@ fn operation_is_mutating(tool_name: &str, args: &Map<String, Value>) -> bool {
 fn path_values(args: &Map<String, Value>) -> Vec<String> {
     let mut out = Vec::new();
     for (key, value) in args {
-        let k = key.to_ascii_lowercase();
-        let is_path_key =
-            PATH_ARG_KEYS.iter().any(|pk| k == *pk) || k.ends_with("_path") || k == "paths";
-        if !is_path_key {
+        if !crate::security::is_path_argument_key(key) {
             continue;
         }
         match value {
