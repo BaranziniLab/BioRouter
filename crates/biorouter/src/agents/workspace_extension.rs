@@ -309,6 +309,12 @@ struct NewSession {
     /// never told where it put the session cannot report it to the user. The
     /// directory is model-chosen, unvalidated, and worked in immediately.
     working_dir: std::path::PathBuf,
+    /// The user-facing notice, set only when `working_dir` is not the caller's.
+    /// Held rather than sent because it is addressed to `session_id` and a
+    /// renderer that routes a session's toasts to that session's tab would drop
+    /// one that arrived before the tab did — so `handle_open` emits it after
+    /// placement.
+    notice: Option<String>,
 }
 
 /// Max sessions one watch call may subscribe to. Each id costs one broadcast
@@ -968,24 +974,36 @@ impl WorkspaceClient {
             }
         };
 
-        self.place_in_gui(
-            &session_id,
-            &placement,
-            focus,
-            services.as_ref(),
-            created.as_ref(),
-        )
-        .await
+        let placed = self
+            .place_in_gui(
+                &session_id,
+                &placement,
+                focus,
+                services.as_ref(),
+                created.as_ref(),
+            )
+            .await;
+
+        // Decision 5's user-facing half, AFTER the tab exists: the toast names
+        // `session_id`, and a renderer that routes a session's toasts to that
+        // session's tab has nothing to attach one to until `open_tab` has been
+        // applied. Emitting it inside `open_new_session` — before placement —
+        // baked that race into the frame ordering for Task 26 to inherit.
+        if let Some(notice) = created.and_then(|c| c.notice) {
+            self.notify_target(&session_id, notice).await;
+        }
+        placed
     }
 
-    /// The `new:` half of [`Self::handle_open`]: create the session, surface a
-    /// directory that is not the caller's, and optionally seed it with a first
-    /// detached turn. Split out of `handle_open` for the `too_many_lines`
+    /// The `new:` half of [`Self::handle_open`]: create the session, work out
+    /// whether its directory needs surfacing, and optionally seed it with a
+    /// first detached turn. Split out of `handle_open` for the `too_many_lines`
     /// baseline, not because it has an independent contract.
     ///
-    /// Returns the directory as well as the id because decision 5's disclosure
-    /// has two channels and the tool result is one of them — see
-    /// [`NewSession::working_dir`].
+    /// Returns the directory and the notice alongside the id because decision
+    /// 5's disclosure has two channels, and neither belongs here: the tool
+    /// result is written by `place_in_gui`, and the toast has to wait for the
+    /// tab. See [`NewSession`].
     async fn open_new_session(
         &self,
         caller_session_id: &str,
@@ -1029,23 +1047,12 @@ impl WorkspaceClient {
                 kb_primary,
             )
             .await?;
-        if differs {
-            let _ = services
-                .gui_command(
-                    json!({
-                        "type": "workspace", "cmd": "notify",
-                        "session_id": session_id,
-                        "level": "info",
-                        "message": format!(
-                            "An agent started a new conversation in {} (not this \
-                             conversation's folder).",
-                            working_dir.display()
-                        ),
-                    }),
-                    false,
-                )
-                .await;
-        }
+        let notice = differs.then(|| {
+            format!(
+                "An agent started a new conversation in {} (not this conversation's folder).",
+                working_dir.display()
+            )
+        });
         if let Some(prompt) = new.prompt {
             let provenance = self.caller_provenance(caller_session_id).await;
             let message = crate::conversation::message::Message::user()
@@ -1056,6 +1063,7 @@ impl WorkspaceClient {
         Ok(NewSession {
             session_id,
             working_dir,
+            notice,
         })
     }
 
@@ -5512,6 +5520,18 @@ mod tests {
                 .unwrap()
                 .contains(&elsewhere.display().to_string()),
             "the notice names the directory: {notify}"
+        );
+        // …and it arrives AFTER the tab. The toast is addressed to
+        // `session_id: s-new`, so a renderer that routes a session's toasts to
+        // that session's tab drops one sent before the tab is created. The
+        // ordering is the daemon's to get right; the renderer half (Task 26) has
+        // no way to recover a frame it dropped.
+        let frames = recorder.all_frames();
+        let cmds: Vec<&str> = frames.iter().filter_map(|f| f["cmd"].as_str()).collect();
+        assert_eq!(
+            cmds,
+            ["open_tab", "notify"],
+            "the tab must exist before the toast addressed to it"
         );
 
         crate::workspace_services::clear_test_override();
