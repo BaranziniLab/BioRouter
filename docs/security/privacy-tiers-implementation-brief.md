@@ -11,7 +11,7 @@
 > again during implementation. Read [the brief is subject to change](#the-brief-is-subject-to-change)
 > before anything else.
 >
-> ⚠ **Stage 3 is descoped.** The general filesystem barrier — the stage that failed review four times —
+> ⚠ **Stage 3 is descoped.** The general filesystem barrier — the stage that failed review three times —
 > is out of scope for v1; its tasks are marked `DEFERRED` in the plan and kept intact. Two new task
 > units replace it in scope terms: **Task 29A** (the user-controlled knowledge-base tier) and
 > **Task 30A** (the non-private-model disclosure, which is what makes the ruling's accepted risks
@@ -376,7 +376,7 @@ count is a no-growth tripwire, not a measurement of #56 — any increase is a ne
 
 ## Staging
 
-Four stages. Value lands early; the part that has failed review four times is isolated at the end of
+Four stages. Value lands early; the part that has failed review three times is isolated at the end of
 the enforcement work, where it can be re-planned without unwinding anything else.
 
 ⚠ **Stage 3 is now DESCOPED ([DR-17](privacy-tiers-execution-plan.md#scope-ruling--dr-17-narrows-this-plan-to-the-session-store)) and the isolation is what made that cheap.** Nothing in Stages 1,
@@ -387,33 +387,72 @@ Within a stage, follow the plan's task units in order and honour the **non-negot
 (O1–O16) — each one has a measured failure mode behind it, and O12/O13/O15/O16 are the ones that
 decide whether a commit even compiles.
 
-### Stage 1 — the parts Codex has confirmed sound
+### Stage 1 — the tier model and the knowledge-base barrier
 
-**Delivers:** the tier model and the knowledge-base barrier, which is the largest genuinely-settled
-block of work in the plan.
+**Delivers:** the tier model and the knowledge-base barrier, which is the largest block of settled
+*intent* in the plan — but read the next heading before you treat any of it as verified.
 
 **Task units:** Phase 0 (Tasks 1–3), Phase 1 (Tasks 4, 4b, 5–9), and Phase 2's KB block (Tasks 10,
 10A, 10B, 10C, 10D) plus Task 11 (Gate G).
 
-**Why these first:** three review rounds independently confirmed them sound as specifications, and one
-reviewer tried to reconstruct the pointer leak past the replacement tests and reported it could not.
-Specifically confirmed:
+⚠ **An earlier version of this brief called this whole stage "the parts Codex has confirmed sound".
+That was false, and it is the most dangerous kind of error a brief can carry** — an implementer who
+believes a gate is confirmed will not re-derive it, and three of these gates are known to pass a
+wrong implementation. What Codex confirmed is a strict subset. It is listed exactly, with the round
+that confirmed it, and everything else in the stage is **designed but unverified**.
 
-- **CP1 is valid.** The hand-written `<KnowledgeServer as ServerHandler>::call_tool` is a faithful
-  replacement of both rmcp-macro-generated methods: `ToolCallContext::new` is `pub`,
-  `ToolRouter::call` is `pub`, and `CallToolRequestParams.arguments` is present before the tool body
-  runs. A future incompatible rmcp change produces a **compile failure**, not a silent bypass.
-  (`rmcp 0.14.0`, locked.)
-- **The KB pointer filtering (Task 10C / finding 2.2) is closed.** All three pointer fields filtered,
-  the stored primary preserved, private and nonexistent targets made indistinguishable, error
-  candidates filtered, private callers still working.
-- **CP3 (finding 2.3) is closed.** Both mixed main/worker directions are driven through the real
-  socket, and only the mid-turn site is attributed to `turn_agent`.
-- **CP5 (finding 2.4) is closed.** Both global/manifest-provider inversions are exercised through
-  `configure_agent` itself, plus the worker-specific grant.
-- **The #57 child-environment strip is sound** for every spawn path the design relies on — foreground
-  and background shells, `automation_script`, all three computer-control platforms, stdio/inline
-  extensions, and the Agent Drafter smoke/esbuild children.
+#### Confirmed by review, and by which round
+
+- **CP1 is valid** — round 1 (§1, "No defect found"). The hand-written
+  `<KnowledgeServer as ServerHandler>::call_tool` is a faithful replacement of both
+  rmcp-macro-generated methods: `ToolCallContext::new` is `pub`, `ToolRouter::call` is `pub`, and
+  `CallToolRequestParams.arguments` is present before the tool body runs. A future incompatible rmcp
+  change produces a **compile failure**, not a silent bypass. (`rmcp 0.14.0`, locked.) ⚠ Rounds 2 and
+  3 did not re-examine it; if the lock moves off 0.14.0, this confirmation expires.
+- **Task 10C — the KB pointer filtering (finding 2.2)** — round 2 (§4 and §5), re-affirmed round 3
+  (§7). All three pointer fields filtered, the stored primary preserved, private and nonexistent
+  targets made indistinguishable, error candidates filtered, private callers still working. This is
+  the one gate a reviewer actively tried and **failed** to defeat: *"I could not construct the
+  original pointer leak without failing the replacement tests."*
+- **CP3 (finding 2.3)** — round 2 (§4), re-affirmed round 3 (§7). Both mixed main/worker directions
+  are driven through the real socket, and only the mid-turn site is attributed to `turn_agent`.
+- **CP5 (finding 2.4)** — round 2 (§4), re-affirmed round 3 (§7). Both global/manifest-provider
+  inversions are exercised through `configure_agent` itself, plus the worker-specific grant.
+- **The #57 child-environment strip** — round 2 (§3), "genuinely sound for the existing spawn paths
+  the design relies on": foreground and background shells, `automation_script`, all three
+  computer-control platforms, stdio/inline extensions, and the Agent Drafter smoke/esbuild children.
+  This one is about code that already shipped, not a specification.
+
+#### Designed but UNVERIFIED — round 3 built a passing wrong implementation for each
+
+Treat every item here as work to re-derive, not work to transcribe. In each case the gate as written
+runs green over an implementation the same round proved unsound.
+
+- **Task 10A (the archive/provenance gate).** "Write outside, then move inside before returning"
+  passes every assertion while opening a transient public-read window, and the user-route mirror test
+  is invalid independently of that. See the [chain in the register](#the-killed-approaches-register).
+- **Task 10B and Task 11 (Gate G, caller provenance).** A handler may call `paired`, ignore the tier
+  it returns, and derive capability from the *requested provider name* — every structural count still
+  passes. The CLI leg asserts `build_completer`'s returned tuple, not the handlers, and the plan
+  concedes in its own text that no test would fail.
+- **Task 10D (the metadata detector).** Function-item and direct-registry escapes; it is a drift
+  tripwire, not a barrier proof, and the register now says so in those words.
+- **Task 10 itself.** Round 3 found it mandates a **third** capability read, for built-in metadata —
+  the sampling defect, inside the task that is supposed to establish the tier model.
+- **Task 4b (the filter audit).** Round 3: the gate "treats any positive match count as success, so
+  it still cannot enforce the claimed exact pre-counts". The baselines table below is only as good as
+  the gate that checks it.
+
+⚠ **A gap the plan admits and this brief previously buried: Task 10B covers `handle_ingest` with a
+behavioural provenance row and leaves `handle_query`, `handle_lint` and `handle_ingest_conversation`
+with none.** The plan states this deliberately — `handle_ingest` is "the one that writes content into
+a base", and the other three are covered only structurally, by Step 5 (i) plus the ingest row's
+existence as a pattern to copy. **But `query` writes too**, measured in
+`crates/biorouter-mcp/src/knowledge/macros/query.rs`: its module doc says "optionally filing it as a
+new knowledge page", `QueryArgs` carries `file_as_page: bool`, the sub-agent has `kb_write_page`, and
+`commit_txn_if_a_page_was_filed` commits the transaction. So the stated reason — *the writer is the
+one covered* — does not hold as written. Decide this consciously: add the three behavioural rows, or
+record per handler why structural coverage suffices. Do not inherit it as settled.
 
 **Depends on:** nothing outside `main`.
 
