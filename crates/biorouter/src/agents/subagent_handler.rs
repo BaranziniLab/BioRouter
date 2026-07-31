@@ -102,6 +102,13 @@ pub async fn run_complete_subagent_task(
         workflow,
         task_config,
         session_id.clone(),
+        // BR-71 §4.2: the bus bracket's turn id. The server lease's id when the
+        // daemon handed us one, so an observer correlates the child's turn with
+        // POST /agent/cancel's `turn_id`; `None` headless, where the run mints a
+        // stable synthetic id instead.
+        _turn_lease
+            .as_ref()
+            .map(|lease| lease.turn_id().to_string()),
         Some(run_token.clone()),
     )
     .await
@@ -262,6 +269,7 @@ fn get_agent_messages(
     workflow: Workflow,
     task_config: TaskConfig,
     session_id: String,
+    lease_turn_id: Option<String>,
     cancellation_token: Option<CancellationToken>,
 ) -> AgentMessagesFuture {
     Box::pin(async move {
@@ -482,37 +490,98 @@ fn get_agent_messages(
             reasoning_effort: None,
         };
 
+        // BR-71 §4.2 glass-box: bracket the child's turn on the session bus, so
+        // a tab that did not start this run can still follow it.
+        //
+        // Turn id: the server lease's id when Task 33 acquired one (so observers
+        // correlate with /agent/cancel's turn_id); a stable synthetic id headless.
+        crate::session_events::publish(
+            &session_id,
+            crate::session_events::SessionBusEvent::TurnStarted {
+                turn_id: lease_turn_id.unwrap_or_else(|| format!("subagent-{session_id}")),
+            },
+        );
+
         let mut aborted: Option<TurnAbort> = None;
-        let mut stream = crate::session_context::with_session_id(Some(session_id.clone()), async {
-            agent
-                .reply(user_message, session_config, cancellation_token)
-                .await
-        })
-        .await
-        .map_err(|e| anyhow!("Failed to get reply from agent: {}", e))?;
+        // Taken BEFORE the token moves into `agent.reply(...)` below: a run whose
+        // token was tripped ended `cancelled`, not `error`. The run token already
+        // IS this parameter — `run_complete_subagent_task` passes `Some(run_token)`.
+        let run_token_probe = cancellation_token.clone();
+        let stream_result =
+            crate::session_context::with_session_id(Some(session_id.clone()), async {
+                agent
+                    .reply(user_message, session_config, cancellation_token)
+                    .await
+            })
+            .await;
+        // Not `?`: an observer that has seen `TurnStarted` must always see a
+        // terminal frame. Returning here through `?` would leave the bracket
+        // open forever for a run that failed before its first event.
+        let mut stream = match stream_result {
+            Ok(stream) => stream,
+            Err(e) => {
+                crate::session_events::publish(
+                    &session_id,
+                    crate::session_events::SessionBusEvent::TurnFinished {
+                        reason: "error".into(),
+                        token_state: None,
+                    },
+                );
+                return Err(anyhow!("Failed to get reply from agent: {}", e));
+            }
+        };
         while let Some(message_result) = stream.next().await {
             match message_result {
-                Ok(AgentEvent::Message(msg)) => conversation.push(msg),
-                Ok(AgentEvent::McpNotification(_))
-                | Ok(AgentEvent::ModelChange { .. })
-                | Ok(AgentEvent::ToolCallPending(_))
-                // #59: the subagent's own rows are already carried by the
-                // `Message` events above (which now name themselves); the
-                // parent has no `expectedMessageIds` to satisfy.
-                | Ok(AgentEvent::MessagesPersisted(_))
-                | Ok(AgentEvent::TokenUsage(_)) => {}
-                Ok(AgentEvent::HistoryReplaced(updated_conversation)) => {
-                    conversation = updated_conversation;
-                }
-                Ok(AgentEvent::TurnAborted { code, message }) => {
-                    // The subagent's turn failed. Its assistant Message (the
-                    // human-readable "Ran into this error: …") is already in the
-                    // conversation, so the parent still sees *what* happened —
-                    // but as prose indistinguishable from a real summary. Carry
-                    // the abort out so the envelope can say `error`.
-                    tracing::error!(abort = code.wire_code(), "Subagent turn aborted: {message}");
-                    aborted = Some((code.wire_code().to_string(), message));
-                    break;
+                Ok(event) => {
+                    // BR-71: glass-box — every child event is observable.
+                    //
+                    // TOTAL AND IN STREAM ORDER. This tee publishes EVERY
+                    // variant, before the `match` below decides what the parent
+                    // does with it, and it never reorders, filters or coalesces.
+                    // Both halves are load-bearing:
+                    //   * total, because an observer tab is a full client and
+                    //     must receive `MessagesPersisted` (#59) even though the
+                    //     parent's accumulation ignores it;
+                    //   * in order, because the #59 invariant — no
+                    //     `MessagesPersisted` may precede a `Message` frame
+                    //     carrying one of the ids it publishes — is a property of
+                    //     the PRODUCER's stream, and it survives only if every
+                    //     relay preserves order. Publishing here, once, before
+                    //     any per-variant handling, is what makes that free.
+                    crate::session_events::publish(
+                        &session_id,
+                        crate::session_events::SessionBusEvent::Agent(event.clone()),
+                    );
+                    // EIGHT arms, no wildcard: a `_ => {}` here would silently
+                    // swallow a ninth `AgentEvent` variant instead of failing
+                    // the build.
+                    match event {
+                        AgentEvent::Message(msg) => conversation.push(msg),
+                        AgentEvent::McpNotification(_)
+                        | AgentEvent::ModelChange { .. }
+                        | AgentEvent::ToolCallPending(_)
+                        // #59: the subagent's own rows are already carried by
+                        // the `Message` events above (which now name
+                        // themselves); the parent has no `expectedMessageIds`
+                        // to satisfy. The TEE above still publishes this — an
+                        // observer tab DOES need it. Do not drop it.
+                        | AgentEvent::MessagesPersisted(_)
+                        | AgentEvent::TokenUsage(_) => {}
+                        AgentEvent::HistoryReplaced(updated_conversation) => {
+                            conversation = updated_conversation;
+                        }
+                        AgentEvent::TurnAborted { code, message } => {
+                            // The subagent's turn failed. Its assistant Message
+                            // (the human-readable "Ran into this error: …") is
+                            // already in the conversation, so the parent still
+                            // sees *what* happened — but as prose
+                            // indistinguishable from a real summary. Carry the
+                            // abort out so the envelope can say `error`.
+                            tracing::error!(abort = code.wire_code(), "Subagent turn aborted: {message}");
+                            aborted = Some((code.wire_code().to_string(), message));
+                            break;
+                        }
+                    }
                 }
                 Err(e) => {
                     tracing::error!("Error receiving message from subagent: {}", e);
@@ -521,14 +590,34 @@ fn get_agent_messages(
                 }
             }
         }
+        let run_token_cancelled = run_token_probe.is_some_and(|t| t.is_cancelled());
+        crate::session_events::publish(
+            &session_id,
+            crate::session_events::SessionBusEvent::TurnFinished {
+                reason: if run_token_cancelled {
+                    "cancelled".into()
+                } else if aborted.is_some() {
+                    "error".into()
+                } else {
+                    "stop".into()
+                },
+                // `None`, and that is the documented value here, not an
+                // omission: `SessionBusEvent`'s doc reserves `Some(..)` for
+                // brackets published after the BR-52 authoritative store read,
+                // which a subagent run — headless of the daemon — never
+                // performs.
+                token_state: None,
+            },
+        );
 
         // BR-28: the subagent is done — join its SubagentStart hook rather than
         // leaving the detached task to outlive the subagent and race shutdown.
         // The aggregate is keyed by the *parent* session (that is the payload's
         // session_id), which the child's own turn boundaries never drain, so
-        // this is its only settle point. A subagent's stream is not user-visible,
-        // so a `systemMessage` surfaces in the log; errors are already warned by
-        // `dispatch`.
+        // this is its only settle point. A subagent's stream is observable — the
+        // tee above publishes it to the session bus (BR-71) — but it is still not
+        // part of the parent's `/reply` stream, so a `systemMessage` has nowhere
+        // to surface but the log; errors are already warned by `dispatch`.
         for outcome in agent
             .hooks_manager()
             .settle_fired(
@@ -760,9 +849,14 @@ mod tests {
         };
 
         // The sentinel: an agent nobody else owns, parked under the child's id.
+        // `AgentManager::instance()` resolves `Paths::data_dir()` and runs
+        // `run_first_run_init` on first use, so it must never resolve to the
+        // developer's real `~/.config/biorouter`. `crate::test_sandbox`'s `ctor`
+        // guarantees that for every test in this binary, whether or not the
+        // caller exported `BIOROUTER_PATH_ROOT`.
         let manager = crate::execution::manager::AgentManager::instance()
             .await
-            .expect("AgentManager::instance (BIOROUTER_PATH_ROOT is set by the gate)");
+            .expect("AgentManager::instance (config root sandboxed by crate::test_sandbox)");
         let sentinel = std::sync::Arc::new(crate::agents::Agent::with_config(
             crate::agents::AgentConfig::new(
                 sm.clone(),
@@ -819,5 +913,102 @@ mod tests {
         // assertion above would already have fired — but make the failure mode
         // unambiguous for whoever reads the output.
         manager.deregister_agent_if_same(&child.id, &sentinel).await;
+    }
+
+    #[tokio::test]
+    async fn subagent_run_publishes_lifecycle_to_the_bus() {
+        use crate::session_events::{self, SessionBusEvent};
+        // A run with no provider fails fast — but must still bracket itself,
+        // exactly like the detached runner (Task 8's test).
+        let temp = tempfile::TempDir::new().unwrap();
+        let sm = std::sync::Arc::new(SessionManager::new(temp.path().to_path_buf()));
+        let child = sm
+            .create_session(
+                temp.path().to_path_buf(),
+                "child".into(),
+                crate::session::session_manager::SessionType::SubAgent,
+            )
+            .await
+            .unwrap();
+        let mut rx = session_events::subscribe(&child.id);
+
+        let config = AgentConfig::new(
+            sm.clone(),
+            crate::config::permission::PermissionManager::instance(),
+            None,
+            crate::config::BioRouterMode::Auto,
+        );
+        // Workflow has NO Default (`title`/`description` are required, `version`
+        // has a serde default) — build it via serde.
+        let workflow: Workflow = serde_json::from_value(serde_json::json!({
+            "title": "t", "description": "d",
+            "instructions": "do the thing", "prompt": "go"
+        }))
+        .unwrap();
+        // The verified cheap provider: TestProvider replaying an empty cassette
+        // fails on first use — the exact pattern `test_set_default_provider`
+        // uses in `execution::manager`'s tests.
+        let cassette = temp.path().join("empty.json");
+        std::fs::write(&cassette, "{}").unwrap();
+        let provider = std::sync::Arc::new(
+            crate::providers::testprovider::TestProvider::new_replaying(cassette.to_str().unwrap())
+                .unwrap(),
+        );
+        let task_config = TaskConfig {
+            provider,
+            parent_session_id: "parent-1".into(),
+            parent_working_dir: temp.path().to_path_buf(),
+            extensions: vec![],
+            max_turns: Some(3),
+        };
+
+        let _result =
+            run_complete_subagent_task(config, workflow, task_config, true, child.id.clone(), None)
+                .await;
+
+        let mut saw_started = false;
+        let mut saw_finished = false;
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                SessionBusEvent::TurnStarted { .. } => saw_started = true,
+                SessionBusEvent::TurnFinished { .. } => saw_finished = true,
+                _ => {}
+            }
+        }
+        assert!(
+            saw_started && saw_finished,
+            "subagent run must bracket itself on the bus"
+        );
+
+        // Task 32 follow-through (the overwrite guard): the spawn-context
+        // record survives the child's own persistence as message[0].
+        //
+        // ⚠ `expect`, NOT `if let Some(first) = msgs.first()`. The `if let` form
+        // goes vacuous in **exactly** the case it exists to catch: if
+        // `persist_spawn_context` was never wired into `get_agent_messages`, the
+        // child's conversation after a fast-failing provider is EMPTY, `first()`
+        // is `None`, and the assertion is skipped. Task 32's own test calls the
+        // helper directly, so that defect would have two gates and both green.
+        // Do not reintroduce the guard "for the empty case" — the empty case is
+        // the bug.
+        let reread = sm.get_session(&child.id, true).await.unwrap();
+        let msgs = reread.conversation.unwrap().messages().to_vec();
+        let first = msgs.first().expect(
+            "the spawn-context record must exist: an empty child conversation means \
+             Task 32's persist_spawn_context is defined but never called from \
+             get_agent_messages",
+        );
+        assert!(
+            first.metadata.provenance.as_ref().is_some_and(|p| {
+                p.kind == crate::conversation::message::ProvenanceKind::SpawnContext
+            }),
+            "spawn-context record must remain the FIRST message; got {:?}",
+            first.metadata.provenance
+        );
+        assert!(
+            !first.metadata.agent_visible,
+            "…and stay out of the child's model context (Task 32) — a run that \
+             re-persisted it as an ordinary row would double-inject the system prompt"
+        );
     }
 }
