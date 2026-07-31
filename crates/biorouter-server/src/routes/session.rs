@@ -1607,9 +1607,18 @@ mod diverge_tests {
     /// inserts into the in-memory `active_turns` map and never consults the store,
     /// so fabricated ids exercise the whole path — which keeps this test inside
     /// this module's READ-ONLY rule (`AppState::new()` opens the real user DB).
-    /// The `#[serial]` attribute is not optional: `active_turns` is process-wide
-    /// and a concurrent route test holding a turn would make the first assertion
-    /// flake.
+    ///
+    /// `#[serial]` matches the rest of this module, whose tests share that real
+    /// database — NOT because `active_turns` is shared. It is not:
+    /// `AppState::new` allocates a fresh `Arc<StdMutex<HashMap<…>>>` per call
+    /// (`state.rs`), so this test's map is its own. The ids are still stamped
+    /// unique and the assertions still speak only about this test's own ids,
+    /// because both are free and neither depends on that reading of the code
+    /// being right.
+    ///
+    /// The load-bearing assertion is the LAST one. Everything before it is also
+    /// satisfied by a route that snapshots the running set once at construction;
+    /// only the post-`drop(guard)` check separates a live read from a snapshot.
     #[tokio::test(flavor = "multi_thread")]
     #[serial]
     async fn running_sessions_reports_exactly_the_sessions_holding_a_turn() {
@@ -1624,6 +1633,8 @@ mod diverge_tests {
         let busy = format!("parity-busy-{stamp}");
         let idle = format!("parity-idle-{stamp}");
 
+        // A cheap precondition, not a strong one — this map starts empty. Kept
+        // so the failure message names the offender if that ever stops holding.
         let before = get_running(state.clone()).await;
         assert!(!before.contains(&busy), "precondition: {before:?}");
 
