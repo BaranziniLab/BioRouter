@@ -70,6 +70,44 @@ fn check_workspace_ws_auth(
     Ok(())
 }
 
+/// Cap on one renderer→daemon frame.
+///
+/// A `workspace_echo` is a single window's tab/pane layout; 128 KiB is orders of
+/// magnitude more than that and still bounded. It matters because `store_echo`'s
+/// value is handed to the model verbatim as `workspace_list`'s `gui` — so an
+/// uncapped frame is unbounded daemon memory *and* an unbounded injection into
+/// the agent's context.
+///
+/// The oversized frame is dropped, not the connection: the echo is a periodic
+/// report, so a renderer bug that emits one bad frame must not cost the user
+/// their window channel, and the bridge keeps the last good echo.
+const MAX_INBOUND_FRAME_BYTES: usize = 128 * 1024;
+
+/// The registry key a connection claims, validated.
+///
+/// `bridge::bridge_for` inserts on first sight into `BRIDGES`, a process-lifetime
+/// map that never evicts, and retains the key together with that window's last
+/// echo. Unbounded, it is a memory sink one query parameter wide. The
+/// charset+length rule is `auth::is_public_app_get`'s, which bounds the other
+/// client-supplied identifier this daemon keys retained state on.
+///
+/// **Absent is not invalid.** A single-window client may omit it and share the
+/// `"default"` window; only a *present but malformed* id is refused, so this
+/// cannot turn into a handshake failure for a client that never sends one.
+fn window_id_from(raw: Option<&str>) -> Result<String, &'static str> {
+    let Some(raw) = raw.map(str::trim).filter(|id| !id.is_empty()) else {
+        return Ok("default".to_string());
+    };
+    if raw.len() > 128
+        || !raw
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err("invalid window_id");
+    }
+    Ok(raw.to_string())
+}
+
 async fn workspace_ws(
     Query(params): Query<std::collections::HashMap<String, String>>,
     headers: axum::http::HeaderMap,
@@ -89,11 +127,18 @@ async fn workspace_ws(
         );
         return (axum::http::StatusCode::FORBIDDEN, reason).into_response();
     }
-    let window_id = params
-        .get("window_id")
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "default".to_string());
+    // After the auth gate, deliberately: an unauthenticated caller learns
+    // nothing about this route's input rules.
+    let window_id = match window_id_from(params.get("window_id").map(String::as_str)) {
+        Ok(window_id) => window_id,
+        Err(reason) => {
+            tracing::warn!(
+                origin = origin.unwrap_or("<none>"),
+                "rejected workspace WS: {reason}"
+            );
+            return (axum::http::StatusCode::BAD_REQUEST, reason).into_response();
+        }
+    };
     // Task 31's live gate has to record what the packaged renderer actually
     // sends here: whether Chromium presents `file://` or the opaque `null` on a
     // handshake from a `file:` page is version-dependent. If it is `null`, the
@@ -127,6 +172,14 @@ async fn handle_workspace_socket(socket: WebSocket, _state: Arc<AppState>, windo
             },
             inbound = socket_rx.next() => match inbound {
                 Some(Ok(WsMessage::Text(text))) => {
+                    if text.len() > MAX_INBOUND_FRAME_BYTES {
+                        tracing::warn!(
+                            window_id = %window_id,
+                            bytes = text.len(),
+                            "dropping an oversized workspace frame"
+                        );
+                        continue;
+                    }
                     let Ok(value) = serde_json::from_str::<Value>(&text) else { continue };
                     apply_inbound_frame(&bridge, &window_id, value);
                 }
@@ -232,6 +285,27 @@ mod tests {
         // cases above (`"wrong"` is 5 bytes against 11) and fails these.
         assert!(check_workspace_ws_auth(None, Some("test-secreT"), secret).is_err());
         assert!(check_workspace_ws_auth(None, Some("test-secre"), secret).is_err());
+    }
+
+    #[test]
+    fn the_window_id_is_bounded_and_absence_is_not_an_error() {
+        // A single-window client may simply omit it.
+        assert_eq!(window_id_from(None).unwrap(), "default");
+        assert_eq!(window_id_from(Some("  ")).unwrap(), "default");
+        assert_eq!(window_id_from(Some(" win-2 ")).unwrap(), "win-2");
+        assert_eq!(window_id_from(Some("W_9")).unwrap(), "W_9");
+        // `bridge_for` inserts on first sight into a process-lifetime map that
+        // never evicts, and the key is retained with the window's last echo. An
+        // unbounded id is therefore a memory sink one query parameter wide.
+        assert!(window_id_from(Some(&"a".repeat(128))).is_ok());
+        assert!(window_id_from(Some(&"a".repeat(129))).is_err());
+        // Same charset as `auth::is_public_app_get`'s app id — the other
+        // client-supplied identifier this daemon keys retained state on. No
+        // separators, so a window id can never be read as a path or carry
+        // structure into a log line.
+        assert!(window_id_from(Some("win/../other")).is_err());
+        assert!(window_id_from(Some("win 2")).is_err());
+        assert!(window_id_from(Some("win\n2")).is_err());
     }
 
     /// The socket loop's INBOUND vocabulary. Without this, `handle_workspace_socket`

@@ -220,6 +220,75 @@ async fn the_mounted_socket_authenticates_and_carries_frames_both_ways() {
     let frame: serde_json::Value = serde_json::from_str(&text).unwrap();
     assert_eq!(frame["cmd"], "workspace_probe");
 
+    // An OVERSIZED frame is dropped, and the socket survives it. `store_echo`'s
+    // value is handed to the model verbatim as `workspace_list`'s `gui`, so an
+    // uncapped frame is both unbounded daemon memory and an unbounded injection
+    // into the agent's context. Dropping the frame rather than the connection is
+    // deliberate: the echo is a periodic report, and one bad frame must not cost
+    // the user their window channel.
+    socket
+        .send(ClientMessage::Text(
+            serde_json::json!({
+                "type": "workspace_echo",
+                "focused_session": "s-oversized",
+                "layout": ["x".repeat(200 * 1024)],
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .unwrap();
+
+    // A full round trip issued AFTER it. WebSocket frames arrive in order on one
+    // connection and the loop reads them in order, so once this resolves the
+    // oversized frame has provably already been handled — which is what makes
+    // the assertion below a fact rather than a race with a sleep in it.
+    let waiter = {
+        let bridge = bridge.clone();
+        tokio::spawn(async move {
+            bridge
+                .emit_and_wait(
+                    serde_json::json!({"cmd": "workspace_probe_2"}),
+                    std::time::Duration::from_secs(5),
+                )
+                .await
+        })
+    };
+    let received = tokio::time::timeout(std::time::Duration::from_secs(5), socket.next())
+        .await
+        .expect("the parked command must reach the socket")
+        .expect("the socket is still open")
+        .unwrap();
+    let ClientMessage::Text(text) = received else {
+        panic!("expected a text frame, got {received:?}");
+    };
+    let parked: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let request_id = parked["request_id"].as_str().expect("a minted request_id");
+    socket
+        .send(ClientMessage::Text(
+            serde_json::json!({
+                "type": "workspace_result",
+                "request_id": request_id,
+                "ok": true,
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .unwrap();
+    let resolved = tokio::time::timeout(std::time::Duration::from_secs(5), waiter)
+        .await
+        .expect("the renderer's workspace_result must unpark the round trip")
+        .unwrap()
+        .unwrap();
+    assert_eq!(resolved["ok"], true);
+
+    assert_eq!(
+        bridge.last_echo().unwrap()["focused_session"],
+        "s-live",
+        "an oversized workspace_echo must be dropped, leaving the last good one"
+    );
+
     // …and closing the window really detaches it, so `workspace_list` stops
     // claiming the user can see it.
     socket.close(None).await.unwrap();
