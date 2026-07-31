@@ -309,6 +309,46 @@ fn references_global_store(args: &Map<String, Value>) -> bool {
     args.values().any(|v| walk(v, &forms))
 }
 
+/// What the model is told when a tool argument points at the store's path.
+///
+/// Naming the itemised call that *does* work is the load-bearing half: a
+/// refusal that only says no gets retried, or reported to the user as a broken
+/// feature.
+fn named_by_path_refusal(tool_name: &str) -> String {
+    format!(
+        "Refused: this call names Biorouter's machine-wide memory store by path. That store \
+         is shared by every Biorouter session on this computer, and reading, changing or \
+         deleting it has to be shown to the user and approved by category — which a file \
+         path cannot be. Use the memory tools instead: \
+         retrieve_memories(category=\"<name>\", is_global=true) to read a category, \
+         remember_memory(...) to add to one, remove_memory_category / \
+         remove_specific_memory to delete. Each is put to the user by name. To browse or \
+         prune the store themselves the user can open Settings → Chat → Memory. \
+         Project-local memory (.biorouter/memory) is not affected.{}",
+        if is_execute_code(tool_name) {
+            " Note this call is a script: make the memory call directly, outside execute_code."
+        } else {
+            ""
+        }
+    )
+}
+
+/// The card shown for an `execute_code` body that looks like it wants global
+/// memory. It asks about the *rest* of the script, because the memory calls
+/// themselves are refused at the dispatch boundary whatever the user answers.
+fn script_touches_memory_card() -> String {
+    "🔒 This script looks like it wants cross-session memory.\n\
+     It appears to read or write the global memory store — the machine-wide store \
+     shared by every Biorouter session on this computer, in every project. Tool \
+     calls made from inside a script are not itemised, so there is nothing here for \
+     you to approve one by one, and Biorouter therefore refuses global memory \
+     operations attempted from inside a script whatever you decide now.\n\
+     So this asks about the rest of what the script does. Approve it to run it — its \
+     global memory calls will fail with an explanation — or deny it and ask for the \
+     memory calls to be made directly, where each one is shown to you by category."
+        .to_string()
+}
+
 /// Classify a tool call against the global memory store.
 ///
 /// `None` means "this call does not touch the machine-wide store" — a local
@@ -330,40 +370,13 @@ pub fn global_memory_gate(tool_name: &str, args: &Map<String, Value>) -> Option<
     // computed shell command still reads any file on the machine. That is the
     // filesystem barrier of issue #56, deliberately not built here.
     if references_global_store(args) {
-        return Some(GlobalMemoryGate::Refuse(format!(
-            "Refused: this call names Biorouter's machine-wide memory store by path. That store \
-             is shared by every Biorouter session on this computer, and reading, changing or \
-             deleting it has to be shown to the user and approved by category — which a file \
-             path cannot be. Use the memory tools instead: \
-             retrieve_memories(category=\"<name>\", is_global=true) to read a category, \
-             remember_memory(...) to add to one, remove_memory_category / \
-             remove_specific_memory to delete. Each is put to the user by name. To browse or \
-             prune the store themselves the user can open Settings → Chat → Memory. \
-             Project-local memory (.biorouter/memory) is not affected.{}",
-            if is_execute_code(tool_name) {
-                " Note this call is a script: make the memory call directly, outside execute_code."
-            } else {
-                ""
-            }
-        )));
+        return Some(GlobalMemoryGate::Refuse(named_by_path_refusal(tool_name)));
     }
 
     if is_execute_code(tool_name) {
         let code = args.get("code").and_then(Value::as_str)?;
-        return code_touches_global_memory(code).then(|| {
-            GlobalMemoryGate::Ask(
-                "🔒 This script looks like it wants cross-session memory.\n\
-                 It appears to read or write the global memory store — the machine-wide store \
-                 shared by every Biorouter session on this computer, in every project. Tool \
-                 calls made from inside a script are not itemised, so there is nothing here for \
-                 you to approve one by one, and Biorouter therefore refuses global memory \
-                 operations attempted from inside a script whatever you decide now.\n\
-                 So this asks about the rest of what the script does. Approve it to run it — its \
-                 global memory calls will fail with an explanation — or deny it and ask for the \
-                 memory calls to be made directly, where each one is shown to you by category."
-                    .to_string(),
-            )
-        });
+        return code_touches_global_memory(code)
+            .then(|| GlobalMemoryGate::Ask(script_touches_memory_card()));
     }
 
     let tool = memory_tool(tool_name)?;
