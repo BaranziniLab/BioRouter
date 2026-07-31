@@ -274,6 +274,76 @@ same weight:
   `Agent::call_prefetch_tool`. Each captures one `CallCapability` (provider tier *and* master toggle,
   in one instant) and everything downstream takes it as a parameter.
 
+### Two places the material contradicts itself, and what is actually true
+
+Both were found by review of the first version of this brief. A contradiction left standing gets
+resolved by whoever hits it first, in whichever direction lets their task close — so both are
+resolved here, in writing.
+
+#### DR-3 says "not indirectly", AR-11 concedes an indirect path, and DR-17 decides which one binds
+
+DR-3 rules that a public model must never reach a private session, *"not once, not read-only, not
+indirectly."* AR-11 measures that a tool running **inside** the daemon recovers the daemon's own API
+secret — `ps -Ewww -p $PPID` on macOS (under a hardened, notarized binary, and under every
+constructible sandbox profile, because `sysctl-read` is not gated) and `/proc/self/environ`
+in-process on Linux — and then reads a private transcript from `GET /sessions/{id}/export`. As
+written, both cannot be true.
+
+**What is true after DR-17:** DR-3 remains the settled ruling and the goal the design is aimed at. It
+is **not** the guarantee v1 delivers. DR-17 draws the v1 enforcement boundary at the
+**agent-mediated** channels, and everything outside that boundary is an accepted, disclosed residual
+rather than a defect to fix in this issue.
+
+| | In scope for v1 — a defect if it leaks | Out of scope for v1 — disclosed, not mechanised |
+|---|---|---|
+| **Channel** | The tool-call choke point (Gate C), the tier and bind gates, the knowledge-base tool barrier (CP1–CP5, which DR-18 makes requirement R16), the app and worker seams, the extension catalog | The raw filesystem — `developer__shell` reads `sessions.db`, which carries a contentful FTS mirror of every message by design; the daemon's HTTP API once the secret is recovered in-process (`/sessions/{id}/export`, the `/knowledge/*` read routes, `GET /apps/{id}/export`, and `GET /diagnostics/{id}`, which is the widest — a zip of `session.json`, recent `logs/*.jsonl` and a verbatim `config.yaml`) |
+| **Authority** | DR-3, DR-13, DR-18 | DR-17, disclosed by **Task 30A**, which is what makes the residual a considered tradeoff rather than an omission |
+
+Two rules follow, and they are symmetrical. **Do not cite DR-3 to build the descoped stage** — the
+filesystem barrier is out of v1 by operator ruling, not by oversight. **Do not cite DR-17 to weaken
+an agent-mediated channel** — DR-17 names three things (files a private session left elsewhere,
+encryption at rest, the general filesystem barrier) and nothing else.
+
+⚠ Note what AR-11 *withdrew* when Stage 3 was descoped. Its earlier claim was that the second door
+was "held by Layer A". Layer A is gone, so `POST /agent/call_tool` is now covered by **Gate C alone**
+— a private extension is refused there, which is DR-17 requirement 2 — and the path-barrier half of
+that coverage no longer exists. The register's *"a caller with the secret gets exactly what the chat
+gets"* row still holds as a narrowing, and it is still not a closure: issue **#47** is the open item,
+and #56 neither fixes nor depends on it.
+
+#### "Never on an enumeration" versus a knowledge root with no resolver
+
+The rule says phrase every gate as a choke point. The knowledge design is CP1–CP5 plus a grep, and
+the plan concedes the root has no private resolver: `resolve_readable_path`
+(`knowledge/store.rs:121`) has **3** call sites against roughly **40** direct filesystem reads in the
+same module, and `KnowledgeService::root()` is `pub` (`service.rs:415`) because `routes/knowledge.rs`
+legitimately joins off it at 7 sites.
+
+**The rule stands; the design carries a stated exception.** Resolved in that direction, and here is
+the distinction that makes it honest:
+
+- **CP1–CP5 are not an enumeration.** They are five choke points on five *channels*. CP1 —
+  `<KnowledgeServer as ServerHandler>::call_tool` — covers all nineteen `kb_*` tools **and the
+  twentieth, the day it is written**, including the nine that take no `RequestContext`. CP2 is the
+  `lock_kb` + `kb_root` prologue every macro shares; CP3 is `handle_kb_frame`, the single funnel its
+  three call sites share; CP4 is `stage_full_payload`, the drafter's only door to KB content; CP5 is
+  `Catalog::discover`. Each is "every call on this channel passes through symbol X". That is the rule
+  being followed, not bent.
+- **The exception is one level below them: the library API.** A new caller *inside* `biorouter-mcp`
+  that joins off `root()` reaches KB content without passing any CP. Nothing in the type system stops
+  it. Task 14E's grep was the guard, and DR-17 defers Task 14E — so, in the plan's own words on
+  open question 22, **"with Task 14E deferred, nothing does"**. Task 10C's completeness test is the
+  surviving guard, and it is a test rather than a type.
+
+⚠ **DR-18 raises the cost of this exception and nothing has yet paid it.** The knowledge tool channel
+is no longer a deferred nice-to-have; it is requirement R16 and it ships in Stage 1. So a shipping
+requirement now rests on a convention a grep enforces. **The cheapest honest fix is the one open
+question 22 already names**: make `root()` `pub(crate)` and give `biorouter-server` a narrower
+accessor returning a *base's* directory rather than the tree's. That is a mechanical change, it is
+the one piece of the deferred Task 14E worth reviving inside Stage 1, and it converts this exception
+back into the rule. Until then, say "exception", never "choke point", when describing the knowledge
+root.
+
 ---
 
 ## The killed-approaches register
