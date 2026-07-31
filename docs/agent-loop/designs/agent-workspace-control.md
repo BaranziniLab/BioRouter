@@ -11,12 +11,15 @@
 > is not.** Slice 1 shipped the session model, the event spine, the one turn runner and
 > the headless `workspace_*` tools; Slice 2 shipped the GUI bridge (`GET /ui/workspace`),
 > `workspace_open`, the observer-backed tab, provenance chips, the focus-etiquette
-> setting and the chatrecall suggestion — verified end to end against the real desktop
-> app, where `workspace_list` reports `gui_attached: true` and a background tab under
-> `gui`. Everything below about subagents (§4.4, §6, the `subagent` merge's glass-box
-> half) is still design. BR-71 is a post-campaign proposal, numbered as the next free
-> identifier after the campaign's BR-1…BR-70; it does not appear in the campaign master
-> list.
+> setting and the chatrecall suggestion — verified end to end against the **dev build**,
+> where `workspace_list` reports `gui_attached: true` and a background tab under `gui`.
+> The **packaged** app has not been run end to end; its one materially different input,
+> the renderer origin, was measured separately (see §4.3): a `file://` document in
+> Electron 39.8.10 / Chromium 142 sends `Origin: file://`, not `null`, which is exactly
+> what `check_workspace_ws_auth` admits. Everything below about subagents (§4.4, §6, the
+> `subagent` merge's glass-box half) is still design. BR-71 is a post-campaign proposal,
+> numbered as the next free identifier after the campaign's BR-1…BR-70; it does not
+> appear in the campaign master list.
 > **Audience:** developers working on the agent loop, `biorouter-server`, and the desktop GUI.
 
 ---
@@ -370,6 +373,34 @@ ui/desktop && npm run generate-api`.)
 **Route.** `GET /ui/workspace` WebSocket. Each Electron **window** connects once at
 startup (from the renderer root, alongside `ChatGroupsProvider`), authenticating with the
 server secret and identifying itself with a stable `window_id`.
+
+**Two gates stand between the renderer and that route, and both were got wrong once.**
+Neither can fail loudly: a blocked or refused socket leaves `is_attached()` false, so
+`workspace_list` reports `gui_attached: false` and every tool degrades to its headless
+arm — correct-looking output describing a GUI that is running in front of the user.
+
+*The renderer's CSP must name the `ws` scheme, in both policies.* CSP relaxes a source
+expression's scheme onto a URL's only via CSP3 §6.6.2.6's short list — `http`→`https`,
+`ws`→`wss`/`http`/`https`, `wss`→`https` — so `http://127.0.0.1:*` does **not** cover
+`ws://127.0.0.1:<port>/ui/workspace`, and a blanket `https:` does **not** cover the
+`wss://` socket of an external TLS backend. Both `index.html`'s `<meta>` policy and the
+header `buildConnectSrc()` attaches in `main.ts` apply to the window and the stricter
+wins, so a source added to one and not the other still blocks the socket — which is
+precisely how each of these two shipped. Measured in Electron 39.8.10 / Chromium 142
+from a `file://` document: the first policy fires `securitypolicyviolation` with
+`effectiveDirective: "connect-src"`, the shipped policy admits both sockets.
+`ui/desktop/src/workspaceChannelCsp.test.ts` models the scheme rule and pins both files.
+
+*The origin gate admits `file://`, and that is what the packaged renderer sends.*
+`check_workspace_ws_auth` accepts a loopback origin (the dev renderer, served by vite) or
+the literal `file://`, and **refuses `"null"`** — the opaque origin of every sandboxed
+frame, including the agent-authored figures this same app renders through the
+unauthenticated `/mcp-ui-proxy`. That made the packaged path the one materially different
+input from the dev build, and it was unmeasured until Task 31's fixup measured it
+directly: a `file://` document in Electron 39.8.10 puts `Origin: file://` on the
+WebSocket handshake, not `null`, so the packaged renderer is admitted. Re-measure if the
+renderer ever moves to a custom protocol — a scheme the gate does not name reads as
+cross-origin and takes the GUI half offline silently.
 
 **Bridge.** `WorkspaceBridge`, modeled line-for-line on `UiBridge`
 (`control.rs:557-663`): a registry keyed by `window_id`, generation-guarded
