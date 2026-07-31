@@ -131,6 +131,86 @@ async fn fetch_subagent_tokens(
     })
 }
 
+/// BR-71 §4.4: persist the child's rendered spawn context as its first message
+/// — user_visible (the tab header shows it), agent_visible: false (the child's
+/// model context already receives it as the system override; storing it
+/// visibly must not double-inject it). Also stamps parent_session_id. The
+/// record carries ALL grants the issue names — extensions, skills, and the
+/// knowledge bases — so `workspace_read_conversation view:"spawn_context"` and
+/// the tab header can show them without a second source of truth.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn persist_spawn_context(
+    session_manager: &SessionManager,
+    child_session_id: &str,
+    parent_session_id: &str,
+    rendered_system_prompt: &str,
+    task_instructions: &str,
+    extension_names: &[String],
+    skill_names: &[String],
+    knowledge_bases: &[String],
+) -> Result<()> {
+    use crate::conversation::message::{MessageProvenance, ProvenanceKind};
+
+    session_manager
+        .update(child_session_id)
+        .parent_session_id(Some(parent_session_id.to_string()))
+        .apply()
+        .await?;
+
+    let body = format!(
+        "## Subagent spawn context\n\nSpawned by session: {parent_session_id}\n\n\
+         ### Task instructions\n{task_instructions}\n\n\
+         ### Granted extensions\n{}\n\n\
+         ### Granted skills\n{}\n\n\
+         ### Knowledge bases\n{}\n\n\
+         ### Rendered system prompt\n{rendered_system_prompt}",
+        if extension_names.is_empty() {
+            "(parent defaults)".to_string()
+        } else {
+            extension_names.join(", ")
+        },
+        if skill_names.is_empty() {
+            "(none)".to_string()
+        } else {
+            skill_names.join(", ")
+        },
+        if knowledge_bases.is_empty() {
+            "(none)".to_string()
+        } else {
+            knowledge_bases.join(", ")
+        },
+    );
+    let mut record = Message::user().with_text(body);
+    record.metadata.user_visible = true;
+    record.metadata.agent_visible = false;
+    // DELIBERATELY NOT `.pinned()`, and this is the product decision the
+    // 2026-07-28 amendment owes the reader (Task 14 pins its `note`; this record
+    // does not, and the difference is not an oversight):
+    //
+    // `pin_is_eligible` (`context_mgmt::pins`) requires the message to be
+    // AGENT-VISIBLE, and this one is `agent_visible: false` by design — it is a
+    // transcript header for the human and the tab, not context for the child's
+    // model, which already received all of it as its rendered system prompt. A
+    // pin here would be inert: silently unhonoured, and misleading to the next
+    // reader who assumes it does something.
+    //
+    // The child's own copy of this content therefore cannot be lost to
+    // compaction, because it is not in the child's context to begin with; and the
+    // stored ROW cannot be lost to a rewrite, because #51 made every whole-history
+    // rewrite carry foreign appends over. If this record is ever made
+    // agent-visible, revisit — at that point it becomes exactly the "one message
+    // a child must never lose" case and should be pinned.
+    record.metadata.provenance = Some(MessageProvenance {
+        kind: ProvenanceKind::SpawnContext,
+        from_session_id: Some(parent_session_id.to_string()),
+        from_session_name: None,
+    });
+    session_manager
+        .add_message_adopting_uid(child_session_id, &mut record)
+        .await?;
+    Ok(())
+}
+
 #[allow(clippy::too_many_lines)]
 fn get_agent_messages(
     config: AgentConfig,
@@ -146,6 +226,9 @@ fn get_agent_messages(
             .clone()
             .unwrap_or_else(|| "Begin.".to_string());
 
+        // Prep binding 4: `config` is moved into `Agent::with_config` on the
+        // next line, so the spawn-context record's session handle is taken now.
+        let session_manager = config.session_manager.clone();
         let agent = Arc::new(Agent::with_config(config));
         let parent_working_dir = task_config.parent_working_dir.clone();
 
@@ -173,6 +256,14 @@ fn get_agent_messages(
             .await
             .map_err(|e| anyhow!("Failed to set provider on sub agent: {}", e))?;
 
+        // Prep binding 1: the loop below consumes `task_config.extensions` by
+        // value, so the grant list for the spawn-context record is taken first.
+        let extension_names: Vec<String> = task_config
+            .extensions
+            .iter()
+            .map(|e| e.name().to_string())
+            .collect();
+
         for extension in task_config.extensions {
             if let Err(e) = agent.add_extension(extension.clone()).await {
                 debug!(
@@ -192,6 +283,10 @@ fn get_agent_messages(
             )
             .await;
 
+        // Prep binding 2: the prompt context below moves `system_instructions`
+        // into `task_instructions`.
+        let task_instructions_for_record = system_instructions.clone();
+
         let tools = agent.list_tools(&session_id, None).await;
         let subagent_prompt = render_global_file(
             "subagent_system.md",
@@ -210,7 +305,38 @@ fn get_agent_messages(
             },
         )
         .map_err(|e| anyhow!("Failed to render subagent system prompt: {}", e))?;
+        // Prep binding 3: `override_system_prompt` takes the template BY VALUE.
+        let rendered_prompt = subagent_prompt.clone();
         agent.override_system_prompt(subagent_prompt).await;
+
+        // BR-71 §4.4: record the child's spawn context as its first message,
+        // before the reply stream starts. Grants for the record: extensions from
+        // the task config; skills from the workflow; the child's active KBs via
+        // the daemon services when installed (usually empty — a subagent
+        // inherits no KB today; recorded truthfully either way). The record
+        // names only the KB *set* — the primary is per-session mutable state,
+        // not a grant, and recording a value that can change five minutes later
+        // as part of an immutable spawn record is how a "source of truth" starts
+        // lying.
+        let skill_names: Vec<String> = workflow.skills.clone().unwrap_or_default();
+        let knowledge_bases = crate::workspace_services::get()
+            .map(|s| s.knowledge_selection(&session_id).kb_ids)
+            .unwrap_or_default();
+        if let Err(e) = persist_spawn_context(
+            &session_manager,
+            &session_id,
+            &task_config.parent_session_id,
+            &rendered_prompt,
+            &task_instructions_for_record,
+            &extension_names,
+            &skill_names,
+            &knowledge_bases,
+        )
+        .await
+        {
+            // Best-effort: a failed context record must not kill the run.
+            tracing::warn!("failed to persist subagent spawn context: {e}");
+        }
 
         let user_message = Message::user().with_text(user_task);
         let mut conversation = Conversation::new_unvalidated(vec![user_message.clone()]);
@@ -306,4 +432,61 @@ fn get_agent_messages(
 
         Ok((conversation, final_output, aborted))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::conversation::message::ProvenanceKind;
+    use crate::session::session_manager::SessionType;
+
+    #[tokio::test]
+    async fn spawn_context_is_persisted_visible_to_user_not_agent() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let sm = std::sync::Arc::new(SessionManager::new(temp.path().to_path_buf()));
+        let child = sm
+            .create_session(
+                temp.path().to_path_buf(),
+                "Subagent task".into(),
+                SessionType::SubAgent,
+            )
+            .await
+            .unwrap();
+
+        persist_spawn_context(
+            &sm,
+            &child.id,
+            "parent-1",
+            "SYSTEM PROMPT RENDERED HERE",
+            "task: count the files",
+            &["developer".to_string()],
+            &["single-cell".to_string()],
+            &["kb-papers".to_string(), "kb-methods".to_string()],
+        )
+        .await
+        .unwrap();
+
+        let reread = sm.get_session(&child.id, true).await.unwrap();
+        assert_eq!(reread.parent_session_id.as_deref(), Some("parent-1"));
+        let msgs = reread.conversation.unwrap().messages().to_vec();
+        let record = msgs.first().expect("spawn context is the first message");
+        assert!(record.metadata.user_visible);
+        assert!(
+            !record.metadata.agent_visible,
+            "must not enter the child's model context"
+        );
+        assert_eq!(
+            record.metadata.provenance.as_ref().unwrap().kind,
+            ProvenanceKind::SpawnContext
+        );
+        let text: String = record.content.iter().filter_map(|c| c.as_text()).collect();
+        assert!(text.contains("SYSTEM PROMPT RENDERED HERE"));
+        assert!(text.contains("count the files"));
+        assert!(text.contains("developer"));
+        // §4.5/issue: the record carries ALL grants — extensions, skills, KB.
+        assert!(text.contains("single-cell"));
+        assert!(text.contains("kb-papers"));
+        // Issue #45: the record shows EVERY active base, not just the first.
+        assert!(text.contains("kb-methods"));
+    }
 }

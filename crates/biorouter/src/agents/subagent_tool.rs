@@ -373,7 +373,8 @@ async fn execute_subagent(
     // BR-40: detached run — create the child session (so the handle can name it),
     // register the handle, and hand it straight back to the parent.
     if params.background && subagent_handle::background_enabled() {
-        let session = create_subagent_session(&config, working_dir).await?;
+        let session =
+            create_subagent_session(&config, working_dir, &task_config.parent_session_id).await?;
         let task_config = overridden_task_config(task_config, &params).await?;
         return Ok(spawn_background_subagent(
             config,
@@ -392,7 +393,8 @@ async fn execute_subagent(
     })?;
     let _inflight = inflight;
 
-    let session = create_subagent_session(&config, working_dir).await?;
+    let session =
+        create_subagent_session(&config, working_dir, &task_config.parent_session_id).await?;
     let task_config = overridden_task_config(task_config, &params).await?;
 
     // The result envelope encodes success, an incomplete (tool-call-ending)
@@ -411,11 +413,27 @@ async fn execute_subagent(
     Ok(result.into_call_tool_result())
 }
 
+/// Create the child session and stamp its `parent_session_id` (BR-71) at birth.
+///
+/// `persist_spawn_context` stamps it too, but only once `get_agent_messages` has
+/// reached the system-prompt override. Everything before that — the provider
+/// update, extension loading — can fail with `?`, and the `background: true`
+/// path hands the child's session id back to the parent *immediately*, before
+/// the run starts at all. Stamping here means the row is never an orphan in that
+/// window: History can group it, and the workspace tools can resolve its parent,
+/// even for a child that dies before its first turn.
 async fn create_subagent_session(
     config: &AgentConfig,
     working_dir: PathBuf,
+    parent_session_id: &str,
 ) -> Result<crate::session::Session, ErrorData> {
-    config
+    let internal = |e: &dyn std::fmt::Display| ErrorData {
+        code: ErrorCode::INTERNAL_ERROR,
+        message: Cow::from(format!("Failed to create session: {e}")),
+        data: None,
+    };
+
+    let mut session = config
         .session_manager
         .create_session(
             working_dir,
@@ -423,11 +441,19 @@ async fn create_subagent_session(
             crate::session::session_manager::SessionType::SubAgent,
         )
         .await
-        .map_err(|e| ErrorData {
-            code: ErrorCode::INTERNAL_ERROR,
-            message: Cow::from(format!("Failed to create session: {}", e)),
-            data: None,
-        })
+        .map_err(|e| internal(&e))?;
+
+    config
+        .session_manager
+        .update(&session.id)
+        .parent_session_id(Some(parent_session_id.to_string()))
+        .apply()
+        .await
+        .map_err(|e| internal(&e))?;
+    // Keep the in-memory copy honest with the row we just wrote.
+    session.parent_session_id = Some(parent_session_id.to_string());
+
+    Ok(session)
 }
 
 async fn overridden_task_config(
