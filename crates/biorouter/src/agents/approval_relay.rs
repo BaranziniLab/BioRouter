@@ -668,18 +668,30 @@ mod tests {
         Arc<crate::agents::Agent>,
         crate::session::Session,
     ) {
+        let (temp, sm, agent) = sandbox(mode).await;
+        let child = new_session(&sm, temp.path(), "child").await;
+        (temp, agent, child)
+    }
+
+    /// A sandbox: a temp dir, ONE `SessionManager` over it, and a real `Agent`
+    /// with a real inspection manager in a chosen mode **sharing that manager**.
+    ///
+    /// Sharing is not tidiness. `begin_delegated_approval` walks
+    /// `agent.config.session_manager`, so an agent built over a second manager
+    /// would climb a chain that does not contain the sessions the test just
+    /// created — and every walk assertion would pass for the wrong reason. (Two
+    /// managers over one directory are also two SQLite handles on one file.)
+    async fn sandbox(
+        mode: BioRouterMode,
+    ) -> (
+        tempfile::TempDir,
+        Arc<crate::session::SessionManager>,
+        Arc<crate::agents::Agent>,
+    ) {
         let temp = tempfile::TempDir::new().unwrap();
         let sm = Arc::new(crate::session::SessionManager::new(
             temp.path().to_path_buf(),
         ));
-        let child = sm
-            .create_session(
-                temp.path().to_path_buf(),
-                "child".into(),
-                SessionType::SubAgent,
-            )
-            .await
-            .unwrap();
         let agent = Arc::new(crate::agents::Agent::with_config(
             crate::agents::AgentConfig::new(
                 Arc::clone(&sm),
@@ -688,7 +700,32 @@ mod tests {
                 mode,
             ),
         ));
-        (temp, agent, child)
+        (temp, sm, agent)
+    }
+
+    async fn new_session(
+        sm: &crate::session::SessionManager,
+        working_dir: &std::path::Path,
+        name: &str,
+    ) -> crate::session::Session {
+        std::fs::create_dir_all(working_dir).unwrap();
+        sm.create_session(
+            working_dir.to_path_buf(),
+            name.to_string(),
+            SessionType::SubAgent,
+        )
+        .await
+        .unwrap()
+    }
+
+    /// Stamp the delegation edge Task 32 writes at spawn. Without it every
+    /// session looks like a root and the whole walk is inert.
+    async fn set_parent(sm: &crate::session::SessionManager, child: &str, parent: &str) {
+        sm.update(child)
+            .parent_session_id(Some(parent.to_string()))
+            .apply()
+            .await
+            .unwrap();
     }
 
     fn required_by(inspector: &str, request_id: &str) -> InspectionResult {
@@ -1060,5 +1097,230 @@ mod tests {
         forget(&a);
         assert_eq!(lookup("call_1", "root-5"), Some(b.clone()));
         forget(&b);
+    }
+
+    // ------------------------------------ A-1/A-3: the escalation walk itself
+
+    /// A-3 depends entirely on this order: the loop asks `chain[0]` first, so a
+    /// root-first chain would hand a depth-3 child's ask straight to the user's
+    /// own conversation, skipping the two agents between. Nothing else in the
+    /// module can catch that — both orders are non-empty and both terminate.
+    #[tokio::test]
+    async fn the_ancestor_chain_runs_immediate_parent_first_and_root_last() {
+        let (temp, sm, _agent) = sandbox(BioRouterMode::Approve).await;
+        let root = new_session(&sm, temp.path(), "root").await;
+        let mid = new_session(&sm, temp.path(), "mid").await;
+        let leaf = new_session(&sm, temp.path(), "leaf").await;
+        set_parent(&sm, &mid.id, &root.id).await;
+        set_parent(&sm, &leaf.id, &mid.id).await;
+        let leaf = sm.get_session(&leaf.id, false).await.unwrap();
+
+        assert_eq!(
+            ancestor_chain(&sm, &leaf).await,
+            vec![mid.id.clone(), root.id.clone()],
+            "the walk must climb one hop at a time, so the immediate parent is asked first"
+        );
+
+        // A root has no chain at all, which is what makes `begin_delegated_approval`
+        // return `NotDelegated` for a conversation the user started.
+        let root = sm.get_session(&root.id, false).await.unwrap();
+        assert!(ancestor_chain(&sm, &root).await.is_empty());
+    }
+
+    /// The two bounds on the walk, both defending against a corrupted
+    /// `parent_session_id`. A session that is its own parent must yield an empty
+    /// chain (not an infinite loop, and not a chain containing itself), and a
+    /// cycle between two sessions must terminate.
+    #[tokio::test]
+    async fn the_ancestor_chain_is_cycle_safe_and_depth_bounded() {
+        let (temp, sm, _agent) = sandbox(BioRouterMode::Approve).await;
+
+        let solo = new_session(&sm, temp.path(), "solo").await;
+        set_parent(&sm, &solo.id, &solo.id).await;
+        let solo = sm.get_session(&solo.id, false).await.unwrap();
+        assert!(
+            ancestor_chain(&sm, &solo).await.is_empty(),
+            "a self-referential parent is not an ancestor, so there is nobody to delegate to"
+        );
+
+        let a = new_session(&sm, temp.path(), "a").await;
+        let b = new_session(&sm, temp.path(), "b").await;
+        set_parent(&sm, &a.id, &b.id).await;
+        set_parent(&sm, &b.id, &a.id).await;
+        let a = sm.get_session(&a.id, false).await.unwrap();
+        assert_eq!(
+            ancestor_chain(&sm, &a).await,
+            vec![b.id.clone()],
+            "the visited set must stop the walk before it revisits the origin"
+        );
+
+        // A long legitimate chain is truncated, never followed forever.
+        let mut previous = new_session(&sm, temp.path(), "d0").await;
+        let mut deepest = previous.clone();
+        for depth in 1..=(MAX_DELEGATION_DEPTH + 4) {
+            let next = new_session(&sm, temp.path(), &format!("d{depth}")).await;
+            set_parent(&sm, &next.id, &previous.id).await;
+            previous = next.clone();
+            deepest = next;
+        }
+        let deepest = sm.get_session(&deepest.id, false).await.unwrap();
+        assert_eq!(
+            ancestor_chain(&sm, &deepest).await.len(),
+            MAX_DELEGATION_DEPTH,
+            "the climb is bounded"
+        );
+    }
+
+    /// A-1. A conversation the user started has always owned its own approvals,
+    /// and nothing about this task may change that: no relay entry, and no card
+    /// published anywhere else.
+    #[tokio::test]
+    async fn a_root_conversation_never_delegates() {
+        let (_temp, agent, child) = ancestor_and_child(BioRouterMode::Approve).await;
+        let req = request("call-r1", "acme__widget", serde_json::json!({"n": 1}));
+        assert_eq!(child.parent_session_id, None);
+
+        assert_eq!(
+            begin_delegated_approval(&agent, &req, &child, &[]).await,
+            Delegation::NotDelegated
+        );
+        assert_eq!(
+            lookup("call-r1", &child.id),
+            None,
+            "a root's ask must not enter the relay at all"
+        );
+    }
+
+    /// Fail closed on a request with no recoverable identity: there is no key to
+    /// scope a grant to, so there is no grant to make.
+    #[tokio::test]
+    async fn a_malformed_request_is_never_delegated() {
+        let (temp, sm, agent) = sandbox(BioRouterMode::Approve).await;
+        let parent = new_session(&sm, temp.path(), "parent").await;
+        let child = new_session(&sm, temp.path(), "child").await;
+        set_parent(&sm, &child.id, &parent.id).await;
+        let child = sm.get_session(&child.id, false).await.unwrap();
+
+        let malformed = ToolRequest {
+            id: "call-m1".to_string(),
+            tool_call: Err(rmcp::model::ErrorData::new(
+                rmcp::model::ErrorCode::INTERNAL_ERROR,
+                "poisoned tool_call payload".to_string(),
+                None,
+            )),
+            metadata: None,
+            tool_meta: None,
+        };
+        assert_eq!(
+            begin_delegated_approval(&agent, &malformed, &child, &[]).await,
+            Delegation::NotDelegated
+        );
+        assert_eq!(lookup("call-m1", &child.id), None);
+    }
+
+    /// **The security-critical branch of the walk.** No ancestor in this chain
+    /// has a live agent in this process, and the answer must be "ask the person"
+    /// — never "nobody objected, so allow". It also pins A-4: after the walk,
+    /// BOTH the origin's own tab and the root are registered surfaces, which is
+    /// what makes a decision posted from either one routable.
+    #[tokio::test]
+    async fn an_absent_ancestor_is_never_silence_that_approves() {
+        let (temp, sm, agent) = sandbox(BioRouterMode::Auto).await;
+        let root = new_session(&sm, temp.path(), "root").await;
+        let mid = new_session(&sm, temp.path(), "mid").await;
+        let leaf = new_session(&sm, temp.path(), "leaf").await;
+        set_parent(&sm, &mid.id, &root.id).await;
+        set_parent(&sm, &leaf.id, &mid.id).await;
+        let leaf = sm.get_session(&leaf.id, false).await.unwrap();
+
+        let req = request("call-w1", "acme__widget", serde_json::json!({"n": 1}));
+        assert_eq!(
+            begin_delegated_approval(&agent, &req, &leaf, &[]).await,
+            Delegation::AwaitingHuman {
+                surfaced_in: root.id.clone()
+            },
+            "with no live ancestor the chain is exhausted and a person is asked, at the root"
+        );
+
+        let origin = AskId {
+            session_id: leaf.id.clone(),
+            request_id: "call-w1".to_string(),
+        };
+        assert_eq!(lookup("call-w1", &leaf.id), Some(origin.clone()));
+        assert_eq!(lookup("call-w1", &root.id), Some(origin.clone()));
+        assert_eq!(
+            lookup("call-w1", &mid.id),
+            None,
+            "an intermediate layer the ask only passed through is not a surface"
+        );
+        // Nothing was granted, and nothing was memoized.
+        assert_eq!(
+            remembered(
+                &root.id,
+                &leaf.working_dir.to_string_lossy(),
+                &AskKey::for_request(&req).unwrap()
+            ),
+            None
+        );
+        forget(&origin);
+    }
+
+    /// A-5 end to end: a human's grant, remembered for the tree, short-circuits
+    /// the walk for a byte-identical later ask — and is delivered rather than
+    /// re-asked. The second half is the guard: the SAME ask from a sibling in a
+    /// DIFFERENT working directory does not hit the memo.
+    #[tokio::test]
+    async fn a_remembered_grant_short_circuits_the_walk_within_its_own_directory() {
+        let (temp, sm, agent) = sandbox(BioRouterMode::Auto).await;
+        let root = new_session(&sm, temp.path(), "root").await;
+        let near = new_session(&sm, &temp.path().join("here"), "near").await;
+        let far = new_session(&sm, &temp.path().join("elsewhere"), "far").await;
+        set_parent(&sm, &near.id, &root.id).await;
+        set_parent(&sm, &far.id, &root.id).await;
+        let near = sm.get_session(&near.id, false).await.unwrap();
+        let far = sm.get_session(&far.id, false).await.unwrap();
+
+        // A human answered this exact ask once, in `near`'s directory.
+        let first = request("call-m0", "acme__widget", serde_json::json!({"n": 7}));
+        let seed = AskId {
+            session_id: near.id.clone(),
+            request_id: "call-m0".to_string(),
+        };
+        register(
+            seed.clone(),
+            AskKey::for_request(&first).unwrap(),
+            AskClass::Delegable,
+            root.id.clone(),
+            near.working_dir.to_string_lossy().to_string(),
+        );
+        add_surface(&seed, &near.id);
+        assert!(matches!(
+            resolve(&seed, crate::permission::Permission::AllowOnce, &root.id),
+            ResolveOutcome::Resolved { .. }
+        ));
+        forget(&seed);
+
+        // The same ask again, same directory: decided from the memo, no card.
+        let again = request("call-m1", "acme__widget", serde_json::json!({"n": 7}));
+        assert_eq!(
+            begin_delegated_approval(&agent, &again, &near, &[]).await,
+            Delegation::DecidedByAncestor(crate::permission::Permission::AllowOnce)
+        );
+        assert_eq!(lookup("call-m1", &near.id), None, "no card, so no surface");
+
+        // The same ask from a sibling in a DIFFERENT directory: the human is
+        // asked again, because those bytes name different files there.
+        let sibling = request("call-m2", "acme__widget", serde_json::json!({"n": 7}));
+        assert_eq!(
+            begin_delegated_approval(&agent, &sibling, &far, &[]).await,
+            Delegation::AwaitingHuman {
+                surfaced_in: root.id.clone()
+            },
+            "a grant made in one working directory must not silently cover another"
+        );
+        forget(&AskId {
+            session_id: far.id.clone(),
+            request_id: "call-m2".to_string(),
+        });
     }
 }
