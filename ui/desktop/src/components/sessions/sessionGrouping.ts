@@ -18,7 +18,12 @@ export type SessionRow = {
  * cache identity governs what is *fetched*; this governs what is *shown*.
  */
 export function withoutSubagents<T extends SessionRow>(rows: T[]): T[] {
-  return rows.filter((row) => row.session_type !== 'sub_agent');
+  const kept = rows.filter((row) => row.session_type !== 'sub_agent');
+  // Identity-preserving when nothing was dropped — which is the overwhelmingly
+  // common case. React state setters and `useMemo` consumers bail out on an
+  // unchanged reference, so returning a fresh array every time would add a
+  // render pass to every list refresh for no change on screen.
+  return kept.length === rows.length ? rows : kept;
 }
 
 export function groupSessionsByParent<T extends SessionRow>(

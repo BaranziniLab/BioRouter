@@ -29,7 +29,7 @@ import { SearchView } from '../conversation/SearchView';
 import { SearchHighlighter } from '../../utils/searchHighlighter';
 import { MainPanelLayout } from '../Layout/MainPanelLayout';
 import { groupSessionsByDate, type DateGroup } from '../../utils/dateUtils';
-import { groupSessionsByParent } from './sessionGrouping';
+import { groupSessionsByParent, withoutSubagents } from './sessionGrouping';
 import { Skeleton } from '../ui/skeleton';
 import { ConfirmationModal } from '../ui/ConfirmationModal';
 import { ImportSessionModal } from './ImportSessionModal';
@@ -285,9 +285,14 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
     const initialSessions = useRef(getCachedSessionList()).current;
     const navigate = useNavigate();
     const [sessions, setSessions] = useState<Session[]>(initialSessions ?? []);
-    const [filteredSessions, setFilteredSessions] = useState<Session[]>(initialSessions ?? []);
+    // The toggle below starts off, so the warm cache — which a sibling pane may
+    // have filled with subagent rows — is filtered before it reaches the first
+    // paint.
+    const [filteredSessions, setFilteredSessions] = useState<Session[]>(() =>
+      withoutSubagents(initialSessions ?? [])
+    );
     const [dateGroups, setDateGroups] = useState<DateGroup[]>(() =>
-      groupSessionsByDate(initialSessions ?? [])
+      groupSessionsByDate(withoutSubagents(initialSessions ?? []))
     );
     const [isLoading, setIsLoading] = useState(initialSessions === null);
     const [showSkeleton, setShowSkeleton] = useState(initialSessions === null);
@@ -305,6 +310,17 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
     // not conversations the user started. Turning this on refetches with
     // `include_subagents` and nests each run under the session that spawned it.
     const [showSubagents, setShowSubagents] = useState(false);
+
+    // `showSubagents` is this pane's state, but the session cache behind it is
+    // module-global — a second History pane, or Home, can publish subagent rows
+    // into this one at any time (and an orphaned request can leave the cache
+    // holding the other identity for a moment). The toggle decides what is
+    // FETCHED; this decides what this pane will SHOW, so the two can never
+    // disagree on screen.
+    const visibleSessions = useMemo(
+      () => (showSubagents ? sessions : withoutSubagents(sessions)),
+      [sessions, showSubagents]
+    );
 
     // Edit modal state
     const [showEditModal, setShowEditModal] = useState(false);
@@ -390,7 +406,9 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
         // Use startTransition to make state updates non-blocking
         startTransition(() => {
           setSessions(refreshedSessions);
-          setFilteredSessions(refreshedSessions);
+          setFilteredSessions(
+            showSubagents ? refreshedSessions : withoutSubagents(refreshedSessions)
+          );
           setError(null);
         });
       } catch (err) {
@@ -477,7 +495,7 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
     useEffect(() => {
       if (!debouncedSearchTerm) {
         startTransition(() => {
-          setFilteredSessions(sessions);
+          setFilteredSessions(visibleSessions);
           setSearchResults(null);
         });
         return;
@@ -486,7 +504,7 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
       // Use startTransition to make search non-blocking
       startTransition(() => {
         const searchTerm = caseSensitive ? debouncedSearchTerm : debouncedSearchTerm.toLowerCase();
-        const filtered = sessions.filter((session) => {
+        const filtered = visibleSessions.filter((session) => {
           const description = session.name;
           const workingDir = session.working_dir;
           const sessionId = session.id;
@@ -509,7 +527,7 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
         setFilteredSessions(filtered);
         setSearchResults(filtered.length > 0 ? { count: filtered.length, currentIndex: 1 } : null);
       });
-    }, [debouncedSearchTerm, caseSensitive, sessions]);
+    }, [debouncedSearchTerm, caseSensitive, visibleSessions]);
 
     // Handle immediate search input (updates search term for debouncing)
     const handleSearch = useCallback((term: string, caseSensitive: boolean) => {

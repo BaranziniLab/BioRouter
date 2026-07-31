@@ -3,7 +3,8 @@ import type { ReactNode } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import SessionListView from './SessionListView';
-import { clearSessionListCache } from '../../utils/sessionListCache';
+import { clearSessionListCache, updateCachedSessionList } from '../../utils/sessionListCache';
+import type { Session } from '../../api';
 
 const mocks = vi.hoisted(() => ({
   listSessions: vi.fn(),
@@ -44,6 +45,17 @@ beforeEach(() => {
   clearSessionListCache();
   mocks.listSessions.mockResolvedValue({ data: { sessions: [] } });
 });
+
+function row(overrides: Partial<Session> & { id: string; name: string }): Session {
+  return {
+    working_dir: '/tmp',
+    created_at: '2026-07-14T12:00:00Z',
+    updated_at: '2026-07-14T12:00:00Z',
+    extension_data: {},
+    message_count: 2,
+    ...overrides,
+  } as Session;
+}
 
 describe('SessionListView loading and cache', () => {
   it('shows a heatmap-inspired row animation while the first history request is pending', async () => {
@@ -288,6 +300,59 @@ describe('SessionListView row actions', () => {
     // in the nesting.
     await waitFor(() => expect(screen.getByText('Subagent task').closest('.ml-6')).not.toBeNull());
     expect(screen.getByText('sub')).toBeTruthy();
+  });
+
+  // BR-71: `showSubagents` is per-component but the session cache it reads is
+  // module-global, so a second History pane (or Home) can publish subagent rows
+  // into a pane whose own toggle is off. The toggle governs what is FETCHED;
+  // each pane still has to say what it will SHOW.
+  it('never paints subagent runs from a warm shared cache while the toggle is off', () => {
+    mocks.listSessions.mockReturnValue(new Promise(() => {}));
+    updateCachedSessionList([
+      row({ id: 'p1', name: 'Parent', session_type: 'user' }),
+      row({ id: 'c1', name: 'Subagent task', session_type: 'sub_agent', parent_session_id: 'p1' }),
+    ]);
+
+    render(
+      <MemoryRouter>
+        <SessionListView onSelectSession={vi.fn()} />
+      </MemoryRouter>
+    );
+
+    expect(screen.getByText('Parent')).toBeInTheDocument();
+    expect(screen.queryByText('Subagent task')).not.toBeInTheDocument();
+  });
+
+  it('does not adopt subagent runs another pane pushed into the shared cache', async () => {
+    mocks.listSessions.mockResolvedValue({
+      data: { sessions: [row({ id: 'p1', name: 'Parent', session_type: 'user' })] },
+    });
+
+    render(
+      <MemoryRouter>
+        <SessionListView onSelectSession={vi.fn()} />
+      </MemoryRouter>
+    );
+    await screen.findByText('Parent');
+
+    // A sibling pane with its own toggle ON refetched and republished the list.
+    act(() => {
+      updateCachedSessionList([
+        row({ id: 'p1', name: 'Parent', session_type: 'user' }),
+        row({
+          id: 'c1',
+          name: 'Subagent task',
+          session_type: 'sub_agent',
+          parent_session_id: 'p1',
+        }),
+        row({ id: 'p2', name: 'Another chat', session_type: 'user' }),
+      ]);
+    });
+
+    // Waiting on the sibling row proves the push landed, so the negative
+    // assertion below cannot pass merely because the update had not flushed.
+    await screen.findByText('Another chat');
+    expect(screen.queryByText('Subagent task')).not.toBeInTheDocument();
   });
 
   it('uses the shared notification surface after editing a session', async () => {
