@@ -320,8 +320,11 @@ class ChatStreamController {
   /**
    * BR-71 — true while this controller is an OBSERVER of a session another
    * agent drives, rather than the driver of its own `/reply` turn. Set by
-   * `observeSession`, cleared by `stopObserving` and by the user taking the
-   * tab over (`submitPreparedMessage`).
+   * `observeSession`, cleared by `stopObserving` (the tab closed, or the user
+   * took it over via `submitPreparedMessage`) and, unconditionally, by the
+   * observer loop's own `finally` — anything that can end the loop without
+   * going through `stopObserving`, `stopStreaming` above all, would otherwise
+   * leave this flag claiming an observer that no longer exists.
    *
    * PERMANENT CONSEQUENCE FOR `expectedMessageIds` — state it here rather than
    * let the next reader discover it. `viewNamesEveryStoredRow` (above) is set
@@ -1062,9 +1065,11 @@ class ChatStreamController {
    * Owns its reconnects: the observer stream never "completes" from the
    * client's point of view (the session outlives any one connection), so on
    * stream end or transport error it re-subscribes with backoff until
-   * `stopObserving()` or a user-driven turn takes the controller over
+   * `stopObserving()`, a user-driven turn taking the controller over, or Stop
    * (design §4.3; the daemon side is generation-safe — a re-subscribe is just
-   * a new broadcast receiver + fresh snapshot).
+   * a new broadcast receiver + fresh snapshot). A stream that ends without a
+   * `Finish` is this loop's ordinary trigger, not a dead turn — which is why
+   * `streamFromResponse` is told which kind of connection it is draining.
    *
    * ⚠ This relay MUST NOT reorder, filter or buffer the frames it forwards.
    * The producer-side invariant "no `MessagesPersisted` may precede a

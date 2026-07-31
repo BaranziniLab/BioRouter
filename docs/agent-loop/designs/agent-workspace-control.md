@@ -406,6 +406,26 @@ ordering invariant that no `MessagesPersisted` precedes the `Message` frame carr
 id it publishes is a property of the stream order, and only survives if each relay
 preserves it.
 
+Three things follow from the observer holding the controller's socket, and each of them
+was wrong before it was written down. **One, an observer's subscription is not a turn.**
+`canSubmitMessage`, `retryTurn` and the post-load chat-state settle all used a live
+`abortController` to mean "a turn is running", which an observer has; reading it that way
+swallowed everything typed into a daemon-opened tab and left a quiet observed session
+showing a loading tab forever. They ask `hasLiveTurn()`, which excludes the feed, so the
+takeover named above is reachable — and a takeover attempted while the observed agent is
+mid-turn is answered by `/reply`'s existing 409, which the user can see. **Two, a dropped
+observer connection is not a dead turn.** A stream ending without a `Finish` is this
+loop's reconnect trigger, so it does not raise the `stream_interrupted` card a driver
+would; the residual is that a `Finish` falling inside the reconnect gap leaves the
+activity indicator stale until the next frame, since the reconnect's snapshot repairs the
+transcript but says nothing about turn state. **Three, only the loop's owner may tear it
+down.** `observeSession` refuses to take the socket from a live user turn (it is called
+on daemon input, including `annotate_tab` for a tab that already exists), `stopObserving`
+is a no-op on a controller that is driving, and the flag is generation-guarded and
+cleared in a `finally` — a flag that outlives its loop makes every later attach
+short-circuit, which is a permanently dead tab, because controllers are retained for the
+life of the renderer. Closing the tab detaches, on any close and not only a daemon frame.
+
 **Known, permanent consequence — an observer tab omits `expectedMessageIds`.** The store
 sends that optimistic-concurrency guard on an in-place `edit_message` only while
 `viewNamesEveryStoredRow` is true, and that flag is set in exactly the two places that
