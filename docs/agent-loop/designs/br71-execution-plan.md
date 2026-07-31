@@ -17131,6 +17131,41 @@ follow-up does:
   ownership and needs an abort path on the surviving half, which is why it is not a
   drive-by change.
 
+**Decision (Task 31, 2026-07-31): both are DEFERRED. Phase 2 does not close either.**
+Recorded here because the task above says to decide, and because
+`crates/biorouter-server/src/routes/workspace.rs` points its own `handle_workspace_socket`
+doc comment at this block for the outcome — a decision living only in a hand-off note
+would leave that pointer aimed at nothing. Neither gap is closed in the shipped code:
+the `select!` still has exactly two arms, and `socket_tx.send(...).await` still runs
+inside one of them.
+
+The reasoning, and its limits, plainly:
+
+- **Neither was falsified by the live pass, but neither was tested by it either.** Steps
+  1–7 drive one window with short frames over a loopback socket that is never
+  backpressured, and never sleep the machine or drop its network. That is not the
+  condition either gap needs. So "the live pass saw no keepalive problem and no stall" is
+  true and carries almost no information — it must not be read as evidence they are
+  benign. What the pass *did* establish is the precondition that makes them matter at
+  all: the socket now really connects (it did not, before this task's CSP fix), so
+  `gui_attached` is now load-bearing rather than uniformly false.
+- **Deferring is a judgement about blast radius, not about severity.** The keepalive gap
+  is the more serious of the two — a stale `gui_attached: true` defeats
+  `workspace_send_prompt`'s Decision 4 refusal, which exists to stop a detached turn
+  parking a tool confirmation where nobody can answer it — but its fix adds a third
+  `select!` arm and a new exit path to a loop whose concurrency Task 22 needed three fix
+  commits to get right, and it is not honestly testable without a fake transport. Landing
+  that under a gate task, after the gate's own suites have been run, is how a green gate
+  stops meaning anything.
+- **What would close each, unchanged from above:** a `tokio::time::interval` arm sending
+  `WsMessage::Ping` and breaking on send failure (keepalive); a reader/writer task split
+  with `detach` ownership moved and an abort path on the surviving half (head-of-line).
+  Both want the fake-transport harness neither has, which is the follow-up's real first
+  step.
+- **Until then the code comment is the mitigation**, and it must stay: it is the only
+  thing standing between the next engineer and reading `gui_attached: true` as a fact
+  about the world rather than about a socket that has not yet failed to write.
+
 - [ ] **Step 3: Update the design-doc status header** (Slice 2 shipped) and commit:
 
 ```bash
@@ -26467,6 +26502,11 @@ right. Every "Now at" value in Tasks 32's and 41's anchor tables was re-measured
   client resyncs" (reconciliation #9, tested).
 - `workspace_list`'s 20,000-row scan ceiling is reported rather than eliminated (new
   question 5).
+- `/ui/workspace` ships with both of Task 23's recorded gaps open — no keepalive (a
+  half-open connection holds `gui_attached: true`) and a writer that blocks the reader.
+  Task 31 decided to defer both rather than land a `select!` change under a gate task;
+  the decision, its reasoning and what closes each are recorded at that task, which is
+  where `handle_workspace_socket`'s doc comment points.
 - A `Task 19 → 19b` commit boundary exists at which both `subagent` and
   `workspace__subagent` are advertised (deliberate, and safer than the alternative).
 - Between the Task 12 and Task 17 commits the instruction block names five tools whose
