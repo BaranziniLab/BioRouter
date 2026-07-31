@@ -39,21 +39,39 @@ export function WorkspaceSettingsSection() {
     }
   };
 
+  // The App tab is a stack of titled `biorouter-settings-section` blocks
+  // (`AppSettingsSection`: Appearance / Theme / Updates …), each a header over a
+  // `biorouter-settings-list`. The task's snippet gave the ROW only; mounted
+  // bare it renders — the row class carries its own border, hover and
+  // min-height — but as an unlabelled orphan sitting under the previous
+  // section's heading, which reads as part of Updates. The shell is what makes
+  // it a Workspace setting.
   return (
-    <div className="biorouter-settings-row flex items-center justify-between px-3 py-2.5">
-      <div className="min-w-0">
-        <p className="text-sm font-medium text-text-default">Never open tabs automatically</p>
-        <p className="text-xs text-text-muted mt-0.5 max-w-md">
-          When an agent opens a conversation or starts a subagent, notify me instead of opening a
-          tab. Subagents still run; open them from History.
-        </p>
+    <div className="pb-8">
+      <div className="biorouter-settings-section">
+        <div className="biorouter-settings-section-header">
+          <h2 className="text-[11px] font-medium text-text-muted uppercase tracking-wider">
+            Workspace
+          </h2>
+        </div>
+        <div className="biorouter-settings-list">
+          <div className="biorouter-settings-row flex items-center justify-between px-3 py-2.5">
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-text-default">Never open tabs automatically</p>
+              <p className="text-xs text-text-muted mt-0.5 max-w-md">
+                When an agent opens a conversation or starts a subagent, notify me instead of
+                opening a tab. Subagents still run; open them from History.
+              </p>
+            </div>
+            <Switch
+              checked={announceOnly}
+              onCheckedChange={(next) => void onToggle(next)}
+              variant="mono"
+              aria-label="Never open tabs automatically"
+            />
+          </div>
+        </div>
       </div>
-      <Switch
-        checked={announceOnly}
-        onCheckedChange={(next) => void onToggle(next)}
-        variant="mono"
-        aria-label="Never open tabs automatically"
-      />
     </div>
   );
 }
