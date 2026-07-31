@@ -2594,10 +2594,21 @@ pub(crate) fn open_result_text(
     gui_result: &serde_json::Value,
 ) -> String {
     if announce_only {
+        // Deny what was actually ASKED for. `placement: "window"` answered with
+        // "no tab was opened" is true and useless: it reads as a statement about
+        // tabs, leaving the model free to conclude a window opened instead —
+        // the same false premise, one noun over. `apply_focus_etiquette`
+        // suppresses `open_window` exactly as it suppresses `open_tab`, so the
+        // two halves must say the same thing.
+        let noun = if placement == "window" {
+            "window"
+        } else {
+            "tab"
+        };
         return format!(
             "Session {session_id} is ready, but the user has turned OFF automatic tab \
-             opening, so no tab was opened — they were notified and can open it \
-             themselves. Do not tell the user you opened a tab."
+             opening, so no {noun} was opened — they were notified and can open it \
+             themselves. Do not tell the user you opened a {noun}."
         );
     }
     let ok = gui_result
@@ -6158,6 +6169,21 @@ mod tests {
         assert!(
             announced.contains("no tab was opened") && announced.contains("Do not tell the user"),
             "the model must be told, in words, not to claim a tab: {announced}"
+        );
+
+        // `placement: "window"` degrades the same way, and must say so in the
+        // CALLER'S vocabulary. Answering a window request with "no tab was
+        // opened" is literally true and reads as a denial about tabs only — it
+        // leaves the model free to conclude a window opened instead, which is
+        // the exact false premise this function exists to prevent.
+        let windowed = open_result_text("s-w", "window", false, true, &ok);
+        assert!(
+            windowed.contains("no window was opened"),
+            "a window request is denied in its own words: {windowed}"
+        );
+        assert!(
+            !windowed.contains("opened in the GUI") && !windowed.contains("Session s-w opened"),
+            "{windowed}"
         );
 
         let normal = open_result_text("s-child", "tab", false, false, &ok);
