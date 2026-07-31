@@ -188,6 +188,24 @@ fn category_of(args: &Map<String, Value>) -> Option<&str> {
     args.get("category").and_then(Value::as_str)
 }
 
+/// The body `remove_specific_memory` is about to destroy, so the card can name
+/// it. Not a disclosure: the model supplied this text, so the user is being
+/// shown what the call already contains.
+fn memory_content_of(args: &Map<String, Value>) -> Option<&str> {
+    args.get("memory_content").and_then(Value::as_str)
+}
+
+/// Keep an approval card readable when a memory runs to paragraphs. The user is
+/// identifying which memory, not re-reading it.
+fn elided(text: &str) -> String {
+    const MAX: usize = 240;
+    if text.chars().count() <= MAX {
+        return text.to_string();
+    }
+    let head: String = text.chars().take(MAX).collect();
+    format!("{}…", head.trim_end())
+}
+
 /// True for the code-execution tool, whose JS body carries the real (inner) tool
 /// calls. Those are dispatched straight through the extension manager and never
 /// reach an agent-layer inspector, so the body itself has to be inspected.
@@ -375,22 +393,47 @@ pub fn global_memory_gate(tool_name: &str, args: &Map<String, Value>) -> Option<
         // Clearing the whole store is asked about rather than refused: unlike a
         // bulk read, "wipe my global memories" is something a user can consent
         // to without being shown the contents.
+        //
+        // The three deletions below destroy three different amounts and each
+        // card says which. They shared one "delete from category" message, which
+        // told a user nothing about whether they were losing one note or the
+        // whole category, and consenting to an irreversible loss you cannot size
+        // is not consent (#63 review, finding 6).
         (REMOVE_MEMORY_CATEGORY, true) => GlobalMemoryGate::Ask(
             "🔒 Deletes every global memory.\n\
              This conversation is asking to clear the entire machine-wide memory store — every \
-             global category any session on this computer ever saved. This cannot be undone.\n\
+             global category any session on this computer ever saved, and everything in them. \
+             Biorouter keeps no copy: this cannot be undone.\n\
              Approve it only if you asked for your global memories to be wiped. To see what \
              would be lost, or to delete categories one at a time instead, open \
              Settings → Chat → Memory. Project-local memories (.biorouter/memory) are \
              unaffected."
                 .to_string(),
         ),
-        (REMOVE_MEMORY_CATEGORY | REMOVE_SPECIFIC_MEMORY, _) => GlobalMemoryGate::Ask(format!(
-            "🔒 Cross-session memory change.\n\
-             This conversation is asking to delete from the global memory category \
+        (REMOVE_MEMORY_CATEGORY, false) => GlobalMemoryGate::Ask(format!(
+            "🔒 Deletes a whole global memory category.\n\
+             This conversation is asking to delete every memory in the global category \
+             \"{category}\", and the category itself — from the machine-wide store shared by \
+             every Biorouter session on this computer, so it goes for every project. Biorouter \
+             keeps no copy: this cannot be undone.\n\
+             To see what is in \"{category}\" before you decide, or to delete single memories \
+             from it instead, open Settings → Chat → Memory."
+        )),
+        (REMOVE_SPECIFIC_MEMORY, _) => GlobalMemoryGate::Ask(format!(
+            "🔒 Deletes one global memory.\n\
+             This conversation is asking to delete one memory from the global category \
              \"{category}\" — the machine-wide store shared by every Biorouter session on this \
-             computer. Removing it here removes it for every project.\n\
-             Approve it, or deny it."
+             computer, so it goes for every project. The rest of \"{category}\" is kept. \
+             Biorouter keeps no copy of what is removed: this cannot be undone.\n\
+             {quoted}\n\
+             To see the whole category first, open Settings → Chat → Memory.",
+            quoted = match memory_content_of(args) {
+                // Quoting it is the only way the user can tell *which* memory is
+                // about to go; the model already has this text, so showing it
+                // discloses nothing the card does not already presuppose.
+                Some(body) => format!("The memory: \"{}\"", elided(body)),
+                None => "The call did not say which memory.".to_string(),
+            }
         )),
         // `memory_tool` returns one of the four constants above; a new tool
         // added to the server without a rule here fails closed.
@@ -616,6 +659,16 @@ mod tests {
                 "memory__remove_memory_category",
                 json!({"category": "*", "is_global": true}),
             ),
+            // The two deletions that name a category: what is in it is the
+            // whole question of whether to approve.
+            (
+                "memory__remove_memory_category",
+                json!({"category": "clinical", "is_global": true}),
+            ),
+            (
+                "memory__remove_specific_memory",
+                json!({"category": "clinical", "memory_content": "x", "is_global": true}),
+            ),
         ] {
             let gate = global_memory_gate(tool, &args(arguments));
             let Some(GlobalMemoryGate::Ask(message)) = gate else {
@@ -676,6 +729,73 @@ mod tests {
                     Some(GlobalMemoryGate::Ask(_))
                 ),
                 "{tool} against the global store must ask"
+            );
+        }
+    }
+
+    /// The three deletions destroy three different amounts, irreversibly, and
+    /// each card has to say which — a user reading "delete from the global
+    /// memory category `clinical`" cannot tell whether they are about to lose
+    /// one note or the whole category (#63 review, finding 6).
+    #[test]
+    fn each_deletion_card_states_its_own_blast_radius() {
+        let card = |tool: &str, arguments: Value| match global_memory_gate(tool, &args(arguments)) {
+            Some(GlobalMemoryGate::Ask(message)) => message,
+            other => panic!("{tool} must ask, got {other:?}"),
+        };
+
+        let one_entry = card(
+            "memory__remove_specific_memory",
+            json!({"category": "clinical", "memory_content": "cohort 4217 responded",
+                   "is_global": true}),
+        );
+        let whole_category = card(
+            "memory__remove_memory_category",
+            json!({"category": "clinical", "is_global": true}),
+        );
+        let whole_store = card(
+            "memory__remove_memory_category",
+            json!({"category": "*", "is_global": true}),
+        );
+
+        // Each says how much goes, in words the other two do not use — so the
+        // three cards cannot be told apart only by squinting at the arguments.
+        assert!(
+            one_entry.contains("one memory") && one_entry.contains("The rest of \"clinical\""),
+            "the single-entry card must say one memory goes and the rest stays: {one_entry}"
+        );
+        assert!(
+            !one_entry.contains("every memory in"),
+            "the single-entry card must not read as a whole-category delete: {one_entry}"
+        );
+        assert!(
+            one_entry.contains("cohort 4217 responded"),
+            "the single-entry card must quote the memory being destroyed — it is \
+             the only way the user can tell which one: {one_entry}"
+        );
+        assert!(
+            whole_category.contains("every memory in") && whole_category.contains("clinical"),
+            "the whole-category card must say the category and everything in it \
+             goes: {whole_category}"
+        );
+        assert!(
+            !whole_category.contains("one memory"),
+            "the whole-category card must not read as a single-memory delete: {whole_category}"
+        );
+        assert!(
+            whole_store.contains("every global category"),
+            "the whole-store card must say every category goes: {whole_store}"
+        );
+
+        for (what, message) in [
+            ("single entry", &one_entry),
+            ("whole category", &whole_category),
+            ("whole store", &whole_store),
+        ] {
+            assert!(
+                message.contains("cannot be undone"),
+                "the {what} card must say the loss is irreversible — Biorouter \
+                 keeps no copy: {message}"
             );
         }
     }
