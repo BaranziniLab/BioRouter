@@ -65,6 +65,8 @@ The project-local store is unaffected by all of this: it lives under the directo
 
 A stray file in the global store directory is ignored rather than fatal, and a category name is treated as a label — no control characters, and bounded in length — because those names are listed in every later session's system prompt.
 
+One shape is refused rather than put to you: reading the *whole* global store in a single call. The reason is that the disclosure should be no larger than the task — an answer needs the memories bearing on your question, not every memory every conversation on this computer has ever saved — and there is always a narrower way to get it, because the category names are in the model's prompt and it can ask for one by name. Nothing becomes unreachable: every global memory is still readable, one approved category at a time. Deleting the whole store is *not* refused, because "forget everything" has no narrower substitute — expressing it one category at a time would be more confirmations for a single intention, and could not reach a category you did not know about.
+
 ## Seeing and deleting what was remembered
 
 Open **Settings → Chat → Memory**. It lists both stores separately — the global one shared by every conversation on this computer, and the current project's local one — each with its directory path, its categories, and every memory inside them. Expand a category to read its contents.
@@ -84,6 +86,15 @@ A memory is a line in a flat text file, so nothing records **when an individual 
 
 Two delete controls sit alongside the listing: one on each memory, one on each category. Both ask first, and the confirmation says what is about to be lost — the number of memories going, who could read them, and that it cannot be undone. Deleting the last memory in a category deletes the category too, so its name stops being offered to future sessions. Nothing is recoverable afterwards; BioRouter keeps no copy.
 
+## What a delete does, exactly
+
+Deleting is precise and it is final, in both directions.
+
+- **"Forget X" removes one memory.** The model has to name a memory in full; a partial or approximate phrase deletes nothing and comes back as an error rather than a false report of success. Asking to forget "black" will not also remove "we use black for formatting".
+- **Deleting the last memory in a category removes the category**, so its name stops appearing in future sessions' prompts.
+- **"Forget everything" removes the memories, not the folder.** Anything else you keep in the store directory — your own notes, a subfolder — is left alone.
+- **A delete you confirmed applies to the list you were shown.** If a conversation writes to a category while a confirmation is open, the delete is refused and asks you to reload rather than acting on a list that has moved on. Reloading and clicking again works normally.
+
 ## Available tools
 
 | Tool | Description |
@@ -91,7 +102,7 @@ Two delete controls sit alongside the listing: one on each memory, one on each c
 | `remember_memory` | Store a memory in a category, with optional tags, in the local or global scope |
 | `retrieve_memories` | Read back stored memories |
 | `remove_memory_category` | Delete an entire category of memories |
-| `remove_specific_memory` | Delete one stored memory |
+| `remove_specific_memory` | Delete one stored memory, named in full |
 
 ## Trigger words and when to use them
 

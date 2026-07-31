@@ -59,19 +59,36 @@
 //!   use instead.
 //!
 //! Refusing the bulk *read* while merely asking about the bulk *delete*
-//! (`remove_memory_category(category="*", is_global=true)`) is deliberate:
+//! (`remove_memory_category(category="*", is_global=true)`) is deliberate. The
+//! reason is **data minimisation and functional necessity**, not that consent to
+//! the bulk read would be impossible to obtain — an earlier draft argued the
+//! latter and it does not hold. A card can describe an unseen corpus well enough
+//! to decide about ("every global memory on this computer"), a user can
+//! knowingly accept that in either direction, and since this branch shipped the
+//! inventory in Settings → Chat → Memory the corpus is not even unseen. So:
 //!
-//! 1. **A bulk read cannot be meaningfully consented to.** The approval card
-//!    can only say "every global memory"; neither it nor the user can enumerate
-//!    what is about to cross, because nothing in the UI surfaces the global
-//!    store's contents. Approving it is a blank cheque over text the user has
-//!    not seen. A bulk *delete* is the opposite — the user knows exactly what
-//!    "wipe my global memories" means without seeing them, so an ask is real
-//!    consent.
-//! 2. **It is never necessary.** The system prompt already carries every global
-//!    category name, so a named read is always available. `"*"` buys one round
-//!    trip and spends it on precisely the disclosure that ought to be itemised.
-//! 3. **It is not a refusal of the feature.** Every byte remains reachable —
+//! 1. **The disclosure must be no larger than the task.** An answer needs the
+//!    memories bearing on the question, and `"*"` hands over every global memory
+//!    every other session on the machine ever wrote in order to produce it. The
+//!    itemised call discloses what is needed and nothing else, which is the same
+//!    reduction issue #58 made when it took the *bodies* out of the system
+//!    prompt. Refusing the wide shape is how that reduction is kept: an
+//!    always-available bulk read is the one the model reaches for first.
+//! 2. **The bulk read is never necessary; the bulk delete has no substitute.**
+//!    The system prompt carries every global category name, so a named read is
+//!    always available and `"*"` buys exactly one round trip. There is no
+//!    equivalent for "forget everything": expressing it as N per-category
+//!    deletions is worse for the user, not better — N cards for one intention —
+//!    and it cannot reach a category they do not know about. An operation with a
+//!    cheap, strictly narrower substitute is refused; one without a substitute
+//!    is put to the user.
+//! 3. **The two operations leave different things behind.** A disclosure cannot
+//!    be withdrawn and it travels — into this transcript, to the provider, into
+//!    the context of a conversation that had no business with it. A deletion is
+//!    destructive but confined to the user's own machine and is the thing the
+//!    user asked for; the card states its blast radius, and the inventory shows
+//!    what would be lost beforehand.
+//! 4. **It is not a refusal of the feature.** Every byte remains reachable —
 //!    one approved category at a time — which is exactly the bar issue #58 set
 //!    and the reason the audit would not accept a blanket server-side refusal.
 //!
@@ -360,16 +377,16 @@ pub fn global_memory_gate(tool_name: &str, args: &Map<String, Value>) -> Option<
 
     Some(match (tool, all_categories) {
         // The whole-store read: refused, never asked about. See the module docs
-        // — a disclosure neither the card nor the user can enumerate is not
-        // something consent can be given for, and it is never necessary.
+        // — the disclosure must be no larger than the task, and this shape has a
+        // strictly narrower substitute that is always available.
         (RETRIEVE_MEMORIES, true) => GlobalMemoryGate::Refuse(
             "Refused: retrieve_memories(category=\"*\", is_global=true) would disclose the entire \
              machine-wide memory store — every global memory written by every other session on \
-             this computer — in one call, and the user cannot be shown what that is in order to \
-             consent to it. Read one category at a time instead: \
-             retrieve_memories(category=\"<name>\", is_global=true), which asks the user about \
-             that category by name. The global category names are listed in your system prompt. \
-             Local bulk retrieval (is_global=false) is unaffected."
+             this computer — in one call, to answer a question that needs some of it. Read one \
+             category at a time instead: retrieve_memories(category=\"<name>\", is_global=true), \
+             which asks the user about that category by name. The global category names are \
+             listed in your system prompt, so nothing is out of reach. Local bulk retrieval \
+             (is_global=false) is unaffected."
                 .to_string(),
         ),
         (RETRIEVE_MEMORIES, false) => GlobalMemoryGate::Ask(format!(
@@ -390,9 +407,9 @@ pub fn global_memory_gate(tool_name: &str, args: &Map<String, Value>) -> Option<
              Approve it to let this note follow you across projects, or deny it and ask for a \
              project-local memory instead."
         )),
-        // Clearing the whole store is asked about rather than refused: unlike a
-        // bulk read, "wipe my global memories" is something a user can consent
-        // to without being shown the contents.
+        // Clearing the whole store is asked about rather than refused: unlike
+        // the bulk read it has no narrower substitute, and the inventory shows
+        // the user what would be lost before they answer.
         //
         // The three deletions below destroy three different amounts and each
         // card says which. They shared one "delete from category" message, which
@@ -604,7 +621,8 @@ mod tests {
 
     /// The issue's exact demonstration: `category="*"` + `is_global=true` hands
     /// back the entire machine-wide store in one call. It is refused, not asked
-    /// about — see the module docs for why a bulk read cannot be consented to.
+    /// about — see the module docs: the disclosure must be no larger than the
+    /// task, and the itemised read is always available.
     #[test]
     fn the_whole_store_read_is_refused() {
         let gate = global_memory_gate(
@@ -800,9 +818,10 @@ mod tests {
         }
     }
 
-    /// Wiping the whole global store is asked about rather than refused: unlike a
-    /// bulk read, a user knows exactly what they are consenting to without being
-    /// shown the contents.
+    /// Wiping the whole global store is asked about rather than refused: unlike
+    /// the bulk read, it has no narrower substitute that achieves the same thing
+    /// — N per-category deletions are N cards for one intention, and cannot
+    /// reach a category the user does not know about.
     #[test]
     fn the_whole_store_delete_is_asked_about_not_refused() {
         let gate = global_memory_gate(

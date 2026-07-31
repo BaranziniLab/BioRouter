@@ -1223,10 +1223,10 @@ impl MemoryServer {
                 ErrorCode::INVALID_PARAMS,
                 "Reading the entire machine-wide memory store in one call is not allowed: it \
                  would disclose every global memory written by every other session on this \
-                 computer, and the user cannot be shown what that is in order to consent to it. \
-                 Read one category at a time — retrieve_memories(category=\"<name>\", \
-                 is_global=true) — which asks the user about that category by name. The global \
-                 category names are listed in your system prompt. Local bulk retrieval \
+                 computer, to answer a question that needs some of it. Read one category at a \
+                 time — retrieve_memories(category=\"<name>\", is_global=true) — which asks the \
+                 user about that category by name. The global category names are listed in your \
+                 system prompt, so nothing is out of reach. Local bulk retrieval \
                  (is_global=false) is unaffected."
                     .to_string(),
                 None,
