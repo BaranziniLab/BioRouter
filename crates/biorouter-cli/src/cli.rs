@@ -410,18 +410,12 @@ async fn lookup_session_id(identifier: Identifier) -> Result<String> {
     } else if let Some(name) = identifier.name {
         let session_manager = SessionManager::instance();
         // BR-71: subagent runs are addressable by name too — `list_sessions()`
-        // filters them out at the SQL level (User + Scheduled only).
-        let sessions = session_manager
-            .list_sessions_by_types(&[
-                SessionType::User,
-                SessionType::Scheduled,
-                SessionType::SubAgent,
-            ])
-            .await?;
-        sessions
-            .into_iter()
-            .find(|s| s.name == name || s.id == name)
-            .map(|s| s.id)
+        // filters them out at the SQL level (User + Scheduled only). The widened
+        // lookup lives beside the listing that shows those names, so the two
+        // cannot disagree about what is addressable, and so it is testable
+        // without this function's `SessionManager::instance()` singleton.
+        crate::commands::session::resolve_session_by_name(&session_manager, &name)
+            .await?
             .ok_or_else(|| anyhow::anyhow!("No session found with name '{}'", name))
     } else if let Some(path) = identifier.path {
         path.file_stem()

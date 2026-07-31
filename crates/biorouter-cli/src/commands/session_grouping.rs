@@ -47,6 +47,22 @@ pub struct Group {
     pub children: Vec<SessionRow>,
 }
 
+/// The session types a listing queries, in ONE place.
+///
+/// `SessionManager::list_sessions()` is exactly
+/// `list_sessions_by_types(&[User, Scheduled])`, so a `sub_agent` row is
+/// filtered out in SQL and no display change can reveal one — `--subagents` has
+/// to widen the query itself. Both CLI callers (the listing and the `--name`
+/// lookup) read this function rather than open-coding the array, so the two
+/// cannot drift into disagreeing about what is addressable.
+pub fn listed_session_types(subagents: bool) -> &'static [SessionType] {
+    if subagents {
+        &[SessionType::User, SessionType::Scheduled, SessionType::SubAgent]
+    } else {
+        &[SessionType::User, SessionType::Scheduled]
+    }
+}
+
 /// The parent a row would nest under, ignoring for now whether that parent is
 /// itself top level. `p != row.id` rejects a row that names itself as its own
 /// parent.

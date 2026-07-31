@@ -2,7 +2,7 @@ use crate::session::message_to_markdown;
 use anyhow::{Context, Result};
 
 use crate::commands::session_grouping::{
-    group_by_parent, liveness_label, render_child, Liveness, SessionRow,
+    group_by_parent, listed_session_types, liveness_label, render_child, Liveness, SessionRow,
 };
 use biorouter::session::session_manager::SessionType;
 use biorouter::session::{generate_diagnostics, Session, SessionManager};
@@ -133,6 +133,40 @@ pub async fn handle_session_remove(
     remove_sessions(&session_manager, matched_sessions).await
 }
 
+/// The rows a listing sees, for a given `--subagents`.
+///
+/// BR-71 Task 38b: `list_sessions()` filters `sub_agent` rows out in SQL, so the
+/// flag has to widen the *query* — a display-only change would show nothing new.
+/// Split out of `handle_session_list` (which is bound to the
+/// `SessionManager::instance()` singleton and so untestable) purely so that
+/// defect has a regression guard:
+/// `the_subagents_flag_widens_the_query_not_just_the_rendering`.
+///
+/// `subagents == false` is the historical behaviour byte for byte:
+/// `list_sessions()` IS `list_sessions_by_types(&[User, Scheduled])`.
+async fn fetch_sessions(session_manager: &SessionManager, subagents: bool) -> Result<Vec<Session>> {
+    Ok(session_manager
+        .list_sessions_by_types(listed_session_types(subagents))
+        .await?)
+}
+
+/// Resolve a session id from a name (or a literal id), including subagent runs.
+///
+/// BR-71 Task 38b fact 2: `lookup_session_id`'s name branch used
+/// `list_sessions()`, so `--name` could never reach a subagent while
+/// `--session-id` always could. Lives here, next to the listing that shows those
+/// names, and takes the manager as an argument so it is testable.
+pub async fn resolve_session_by_name(
+    session_manager: &SessionManager,
+    name: &str,
+) -> Result<Option<String>> {
+    let sessions = fetch_sessions(session_manager, true).await?;
+    Ok(sessions
+        .into_iter()
+        .find(|s| s.name == name || s.id == name)
+        .map(|s| s.id))
+}
+
 pub async fn handle_session_list(
     format: String,
     ascending: bool,
@@ -141,20 +175,7 @@ pub async fn handle_session_list(
     subagents: bool,
 ) -> Result<()> {
     let session_manager = SessionManager::instance();
-    // BR-71 Task 38b: `list_sessions()` filters `sub_agent` rows out in SQL, so
-    // the flag has to widen the *query* — a display-only change would show
-    // nothing new.
-    let mut sessions = if subagents {
-        session_manager
-            .list_sessions_by_types(&[
-                SessionType::User,
-                SessionType::Scheduled,
-                SessionType::SubAgent,
-            ])
-            .await?
-    } else {
-        session_manager.list_sessions().await?
-    };
+    let mut sessions = fetch_sessions(&session_manager, subagents).await?;
 
     if let Some(ref pat) = working_dir {
         let pat_lower = pat.to_string_lossy().to_lowercase();
@@ -539,5 +560,126 @@ pub async fn prompt_interactive_session_selection(
         Ok(session.id.clone())
     } else {
         Err(anyhow::anyhow!("Invalid selection"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use biorouter::conversation::message::Message;
+    use tempfile::TempDir;
+
+    /// A `SessionManager` over a throwaway directory, plus one `User` row and
+    /// one `SubAgent` row that are identical in every way except their type.
+    ///
+    /// ⚠ Each row gets a message. `list_sessions_by_types` INNER JOINs
+    /// `messages`, so a session with none is invisible whatever its type — a
+    /// fixture without this passes the "subagent is hidden" half for entirely
+    /// the wrong reason and then fails the other half.
+    async fn store_with_a_user_and_a_subagent_session(
+        dir: &TempDir,
+    ) -> (SessionManager, String, String) {
+        let sm = SessionManager::new(dir.path().to_path_buf());
+        let parent = sm
+            .create_session(
+                dir.path().to_path_buf(),
+                "Migration review".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        let child = sm
+            .create_session(
+                dir.path().to_path_buf(),
+                "Subagent: audit the migration".to_string(),
+                SessionType::SubAgent,
+            )
+            .await
+            .unwrap();
+        for id in [&parent.id, &child.id] {
+            sm.add_message(id, &Message::user().with_text("hello"))
+                .await
+                .unwrap();
+        }
+        (sm, parent.id, child.id)
+    }
+
+    /// BR-71 Task 38b, fact 1 — the defect this task exists to fix. A subagent
+    /// row is filtered out **in SQL**: `list_sessions()` is exactly
+    /// `list_sessions_by_types(&[User, Scheduled])`, so no amount of formatting
+    /// makes one appear. `--subagents` therefore has to widen the QUERY.
+    ///
+    /// This is the assertion that fails if `fetch_sessions` is ever reverted to
+    /// `list_sessions()`; the pure grouping tests cannot see that regression at
+    /// all, because grouping is only ever handed rows the query already
+    /// returned.
+    #[tokio::test]
+    async fn the_subagents_flag_widens_the_query_not_just_the_rendering() {
+        let dir = TempDir::new().unwrap();
+        let (sm, parent_id, child_id) = store_with_a_user_and_a_subagent_session(&dir).await;
+
+        let narrow = fetch_sessions(&sm, false).await.unwrap();
+        assert!(
+            narrow.iter().any(|s| s.id == parent_id),
+            "the default listing still shows user sessions"
+        );
+        assert!(
+            !narrow.iter().any(|s| s.id == child_id),
+            "without the flag a subagent row is invisible — this is the defect, \
+             and it lives in the SQL type filter"
+        );
+
+        let wide = fetch_sessions(&sm, true).await.unwrap();
+        assert!(
+            wide.iter().any(|s| s.id == child_id),
+            "--subagents must widen the query; a rendering-only change shows nothing new"
+        );
+        assert!(
+            wide.iter().any(|s| s.id == parent_id),
+            "widening must ADD a type, not swap one out"
+        );
+    }
+
+    /// BR-71 Task 38b, fact 2 — the same hole in `--name`. `--session-id`
+    /// always worked, which is why this one is easy to miss: by-id resolves,
+    /// by-name silently does not. A user cannot attach to a run they cannot
+    /// name.
+    #[tokio::test]
+    async fn a_subagent_run_is_addressable_by_name() {
+        let dir = TempDir::new().unwrap();
+        let (sm, parent_id, child_id) = store_with_a_user_and_a_subagent_session(&dir).await;
+
+        assert_eq!(
+            resolve_session_by_name(&sm, "Subagent: audit the migration")
+                .await
+                .unwrap(),
+            Some(child_id),
+            "a subagent must be resolvable by name, not only by id"
+        );
+        assert_eq!(
+            resolve_session_by_name(&sm, "Migration review")
+                .await
+                .unwrap(),
+            Some(parent_id),
+            "widening the lookup must not break the existing by-name path"
+        );
+        assert_eq!(
+            resolve_session_by_name(&sm, "no such session").await.unwrap(),
+            None,
+            "an unknown name is still not found"
+        );
+    }
+
+    /// The rule lives in exactly one place, so the listing and the `--name`
+    /// lookup cannot drift apart.
+    #[test]
+    fn the_widened_type_list_adds_subagents_and_removes_nothing() {
+        let narrow = listed_session_types(false);
+        let wide = listed_session_types(true);
+        assert!(!narrow.contains(&SessionType::SubAgent));
+        assert!(wide.contains(&SessionType::SubAgent));
+        for kind in narrow {
+            assert!(wide.contains(kind), "{kind:?} must survive the widening");
+        }
     }
 }
