@@ -220,7 +220,31 @@ impl Agent {
                     aggregate.decision
                 };
 
+                // Some approvals are questions for the human, not policy an
+                // automation may answer: a security finding, an Auto-mode
+                // sensitive-file escalation, a managed-policy ask, or (issue #63)
+                // a machine-wide memory disclosure. Those inspectors exist
+                // *because* automated grants must not decide the call, and a hook
+                // is an automated grant that runs after the escalation-only merge,
+                // where the lattice can no longer defend the verdict.
+                let requires_a_human =
+                    crate::tool_inspection::approval_requires_a_human(&request.id, inspection_results);
+
                 match hook_decision {
+                    // A hook `allow` on a non-delegable approval is dropped, not
+                    // honoured — the card below is shown as if no hook had run.
+                    // (Its `additionalContext` / `systemMessage` were already
+                    // staged above and still reach the turn.)
+                    Some(crate::hooks::HookDecision::Allow { reason }) if requires_a_human => {
+                        tracing::warn!(
+                            counter.biorouter.non_delegable_approval_hook_ignored = 1,
+                            tool_name = %tool_call.name,
+                            tool_request_id = %request.id,
+                            reason = reason.as_deref().unwrap_or(""),
+                            "PermissionRequest hook tried to auto-approve a security-raised \
+                             approval; asking the user instead"
+                        );
+                    }
                     Some(crate::hooks::HookDecision::Allow { reason }) => {
                         tracing::info!(
                             tool_name = %tool_call.name,
@@ -290,16 +314,11 @@ impl Agent {
                     );
                 }
 
-                // Find the corresponding inspection result for this tool request
-                let security_message = inspection_results.iter()
-                    .find(|result| result.tool_request_id == request.id)
-                    .and_then(|result| {
-                        if let crate::tool_inspection::InspectionAction::RequireApproval(Some(message)) = &result.action {
-                            Some(message.clone())
-                        } else {
-                            None
-                        }
-                    });
+                // What the card tells the user about *why* they are being asked.
+                let security_message = crate::tool_inspection::approval_prompt_for_request(
+                    &request.id,
+                    inspection_results,
+                );
 
                 // BR-63: give the card enough to decide with. The BR-18 registry
                 // already grades every tool it handed the model this turn, and

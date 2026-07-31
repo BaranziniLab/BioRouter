@@ -1,4 +1,5 @@
 pub mod classification_client;
+pub mod global_memory;
 pub mod patterns;
 pub mod policy;
 pub mod scanner;
@@ -30,6 +31,55 @@ const COMMAND_ARG_KEYS: &[&str] = &["command", "cmd", "commands", "shell_command
 /// Substrings in a tool name that mark it as a shell/command executor (scan all
 /// of its string arguments, not just the command-bearing keys above).
 const SHELL_TOOL_HINTS: &[&str] = &["shell", "bash", "terminal"];
+
+/// Object-argument keys whose string (or string-array) value is a filesystem
+/// path. Also matched by [`is_path_argument_key`]: any key ending in `_path`
+/// (`dest_path`, `src_path`, `image_path`, `workflow_path`), and the plural
+/// `paths`.
+///
+/// This list lives here, rather than in one of its callers, because more than
+/// one security check has to answer "is this argument a path?" and they were
+/// answering it differently. [`sensitive_ops`] classifies the blast radius of a
+/// path a tool is about to write; [`global_memory`] refuses a path that names
+/// the machine-wide memory store. A key missing from one list but present in
+/// the other is a gap in exactly one of them, silently.
+///
+/// Two lists elsewhere still disagree with this one and are deliberately left
+/// alone: `agents::code_execution_extension` and `agents::tool_dispatch_limits`
+/// each carry a shorter one for a different purpose. Folding those in would
+/// change what they escalate, which is not this module's decision to make.
+pub(crate) const PATH_ARG_KEYS: &[&str] = &[
+    "path",
+    "file_path",
+    "filepath",
+    "filename",
+    "file",
+    "target",
+    "target_path",
+    "dest",
+    "destination",
+    "output_path",
+    "output",
+    "to",
+    "new_path",
+];
+
+/// Does `key` name an argument whose value is a filesystem path?
+///
+/// Case-insensitive, and matches the `_path` suffix and the plural `paths` on
+/// top of [`PATH_ARG_KEYS`].
+pub(crate) fn is_path_argument_key(key: &str) -> bool {
+    let key = key.to_ascii_lowercase();
+    PATH_ARG_KEYS.iter().any(|candidate| key == *candidate)
+        || key.ends_with("_path")
+        || key == "paths"
+}
+
+/// Does `key` name an argument whose value is a shell command line?
+pub(crate) fn is_command_argument_key(key: &str) -> bool {
+    let key = key.to_ascii_lowercase();
+    COMMAND_ARG_KEYS.iter().any(|candidate| key == *candidate)
+}
 
 pub struct SecurityManager {
     scanner: OnceLock<PromptInjectionScanner>,

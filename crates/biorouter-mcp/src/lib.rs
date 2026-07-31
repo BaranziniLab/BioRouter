@@ -44,6 +44,15 @@ pub use computercontroller::ComputerControllerServer;
 pub use developer::rmcp_developer::{set_path_jail_relaxed, DeveloperServer};
 pub use knowledge::KnowledgeServer;
 pub use memory::MemoryServer;
+// The user-facing half of the memory feature (issue #63): what the Settings
+// surface lists, and the two deletions it offers.
+pub use memory::{
+    global_memory_dir, CategoryDeletion, EntryDeletion, MemoryCategoryInventory, MemoryEntry,
+    MemoryScope, MemoryStoreInventory,
+};
+// The barrier every generic file tool owes the machine-wide store
+// (#63 review, finding 2).
+pub use memory::{global_memory_store_refusal, is_in_global_memory_store, GlobalMemoryConsent};
 pub use tutorial::TutorialServer;
 
 /// Spawns a builtin MCP server onto the given duplex transport. The optional
@@ -119,7 +128,28 @@ pub static BUILTIN_EXTENSIONS: Lazy<HashMap<&'static str, BuiltinDef>> = Lazy::n
         ),
         builtin!(autovisualiser, AutoVisualiserRouter),
         builtin!(computercontroller, ComputerControllerServer),
-        builtin!(memory, MemoryServer),
+        (
+            "memory",
+            BuiltinDef {
+                name: "memory",
+                // Not built via `builtin!`: `MemoryServer::new()` fails closed on
+                // machine-wide memory (issue #63 review, finding 3), because the
+                // same server is also served standalone over stdio by
+                // `biorouter mcp memory` where nothing can ask the user. This is
+                // the one caller with the agent loop's consent gate in front of
+                // it, so it is the one caller that opts in.
+                spawn_server: {
+                    fn spawn(
+                        r: tokio::io::DuplexStream,
+                        w: tokio::io::DuplexStream,
+                        _working_dir: Option<std::path::PathBuf>,
+                    ) {
+                        spawn_and_serve("memory", MemoryServer::behind_consent_gate(), (r, w));
+                    }
+                    spawn
+                },
+            },
+        ),
         builtin!(tutorial, TutorialServer),
         builtin!(agent_drafter, AgentDrafterServer),
         (

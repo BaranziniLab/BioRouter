@@ -21,6 +21,11 @@ use crate::conversation::message::{Message, ToolRequest};
 use crate::managed::{ManagedPolicy, ManagedVerdict};
 use crate::tool_inspection::{InspectionAction, InspectionResult, ToolInspector};
 
+/// This inspector's name, as it appears on an [`InspectionResult`]. Named so
+/// [`crate::tool_inspection::NON_DELEGABLE_APPROVAL_INSPECTORS`] cannot drift
+/// from it.
+pub const MANAGED_INSPECTOR_NAME: &str = "managed";
+
 /// User-facing reason for a managed denial, so the block reads as an org policy
 /// rather than a generic decline (design open question #3).
 pub const MANAGED_DENY_REASON: &str = "Blocked by your organization's managed policy.";
@@ -41,7 +46,7 @@ impl ManagedPolicyInspector {
 #[async_trait]
 impl ToolInspector for ManagedPolicyInspector {
     fn name(&self) -> &'static str {
-        "managed"
+        MANAGED_INSPECTOR_NAME
     }
 
     fn as_any(&self) -> &dyn std::any::Any {

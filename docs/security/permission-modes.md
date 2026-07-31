@@ -38,6 +38,51 @@ to `/mode`; **Configure name** is how the mode appears in `biorouter configure`.
 > 'bash - rm, cp, mv' command. Read/write approval makes a best-effort attempt at classifying
 > read or write tools, and that classification is interpreted by your LLM provider.
 
+## What still asks, whatever your mode
+
+A small, fixed set of actions is put to you for approval even in Completely Autonomous. These
+are not mode settings and there is no toggle for them — they are the operations where acting
+without asking would be irreversible, or would move your data somewhere you cannot see.
+
+| What | What you see | Why it is not left to the mode |
+|---|---|---|
+| Writing or deleting under a protected system directory, your home directory itself, or a credential store (`~/.ssh`, keychains, browser logins, launchd) | *"Sensitive system operation in Fully-Automatic mode"* | Ordinary file work in Auto stays promptless; these are the writes you cannot undo. Reads are not affected. |
+| Reading a **global** memory category | *"Cross-session memory read"*, naming the category | Global memories are shared by every BioRouter session on the computer, in every project. A session reading one is seeing text another conversation wrote, so you decide each time. |
+| Saving or deleting a **global** memory | *"Cross-session memory write"* / *"Cross-session memory change"*, naming the category | Marking a note global is what makes it follow you into every other project. |
+| Clearing **all** global memories | *"Deletes every global memory"* | It cannot be undone. |
+
+Four related notes on memory:
+
+- **You can read the store yourself.** These approvals name a category; **Settings → Chat →
+  Memory** is where you see what is in it, and delete anything you would rather BioRouter did
+  not have. See [seeing and deleting what was remembered](../extensions/built-in/memory.md#seeing-and-deleting-what-was-remembered).
+- **Project-local memories never prompt.** They live in your project's `.biorouter/memory`, so
+  they only reach a session you opened that directory in. Nothing on this page changes them.
+- **There is no "read all my global memories" call.** BioRouter refuses it. Global memory is
+  read one named category at a time, precisely so each approval names something you can decide
+  about — an approval covering the whole store would be a prompt you cannot answer informedly.
+  Every global memory is still reachable, one approved category at a time.
+- **There is no way round the card, either.** The global store is a directory of text files, so
+  the approval would be worth little if the same files could simply be opened. They cannot:
+  the file tools refuse any path inside the store and point at the memory tools instead; a
+  script running under `execute_code` and the `/agent/call_tool` API are both refused, because
+  neither can show you the operation; and BioRouter's memory server started on its own — outside
+  the app, for another program — serves project-local memory only. In each case the machine-wide
+  store is reached the one way that asks you first.
+
+Two things these approvals are guaranteed against, so that "put to you" means what it says:
+
+- **Nothing can answer them for you.** In particular a `PermissionRequest`
+  [hook](../agent-loop/hooks/hooks-reference.md) returning `allow` — the automation you write to
+  stop being prompted for routine calls — is ignored on these, and the card is shown anyway. A
+  hook can still *deny* anything.
+- **They never reopen a refusal.** If the same call was already refused — by your own "never
+  allow" for that tool, by an administrator's [managed policy](managed-policy.md), or by the
+  always-on catastrophic-command block — it stays refused and no card appears. An approval prompt
+  is never a second chance at something that was already denied.
+
+An administrator's [managed policy](managed-policy.md) can add further tools to this list.
+
 ## Changing the mode in the desktop app
 
 You can change modes before or during a session, and the change takes effect immediately.

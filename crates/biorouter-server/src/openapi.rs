@@ -331,8 +331,33 @@ derive_utoipa!(ResourceContents as ResourceContentsSchema);
 derive_utoipa!(JsonObject as JsonObjectSchema);
 derive_utoipa!(Icon as IconSchema);
 
+/// Define the `api_key` security scheme the routes name.
+///
+/// Routes have declared `security(("api_key" = []))` for as long as any of them
+/// have declared security at all, but nothing ever defined the scheme — so every
+/// such declaration was a dangling reference, and a generator reading the
+/// document had nothing to honour. It is the daemon's `X-Secret-Key` header,
+/// checked by `auth::check_token` (#63 review, finding 7).
+struct ApiKeySecurity;
+
+impl utoipa::Modify for ApiKeySecurity {
+    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        use utoipa::openapi::security::{ApiKey, ApiKeyValue, SecurityScheme};
+        let components = openapi.components.get_or_insert_with(Default::default);
+        components.add_security_scheme(
+            "api_key",
+            SecurityScheme::ApiKey(ApiKey::Header(ApiKeyValue::with_description(
+                "X-Secret-Key",
+                "The daemon's secret key. Biorouter's server is loopback-only and \
+                 authenticates every route except /status with this header.",
+            ))),
+        );
+    }
+}
+
 #[derive(OpenApi)]
 #[openapi(
+    modifiers(&ApiKeySecurity),
     paths(
         super::routes::status::status,
         super::routes::status::system_info,
@@ -427,6 +452,9 @@ derive_utoipa!(Icon as IconSchema);
         super::routes::llamacpp::llamacpp_warmup,
         super::routes::llamacpp::llamacpp_delete,
         super::routes::llamacpp::llamacpp_stop,
+        super::routes::memory::memory_inventory,
+        super::routes::memory::memory_delete_entry,
+        super::routes::memory::memory_delete_category,
         super::routes::tunnel::start_tunnel,
         super::routes::tunnel::stop_tunnel,
         super::routes::tunnel::get_tunnel_status,
@@ -650,6 +678,15 @@ derive_utoipa!(Icon as IconSchema);
         biorouter::providers::llamacpp_sidecar::ModelCacheStatus,
         biorouter::providers::llamacpp_sidecar::SidecarStatus,
         biorouter::providers::llamacpp_sidecar::SidecarState,
+        super::routes::memory::MemoryInventoryResponse,
+        super::routes::memory::MemoryDeleteEntryRequest,
+        super::routes::memory::MemoryDeleteEntryResponse,
+        super::routes::memory::MemoryDeleteCategoryRequest,
+        super::routes::memory::MemoryDeleteCategoryResponse,
+        biorouter_mcp::MemoryStoreInventory,
+        biorouter_mcp::MemoryCategoryInventory,
+        biorouter_mcp::MemoryEntry,
+        biorouter_mcp::MemoryScope,
         super::tunnel::TunnelInfo,
         super::tunnel::TunnelState,
         biorouter::biorouter_apps::BioRouterApp,

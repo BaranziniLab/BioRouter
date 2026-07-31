@@ -1445,6 +1445,22 @@ impl ComputerControllerServer {
         let command = params.0.command;
         let path = params.0.path.as_deref();
 
+        // Issue #63 review, finding 2. `view` and `delete` take whatever path
+        // the model supplies, so this tool reaches Biorouter's machine-wide
+        // memory store as readily as the memory tools do — and the #63 consent
+        // gate, which matches tool *names*, never sees it. The store is refused
+        // as a place; see `biorouter_mcp::memory::is_in_global_memory_store`.
+        if let Some(path) = path {
+            let candidate = std::path::Path::new(path);
+            if crate::memory::is_in_global_memory_store(candidate) {
+                return Err(ErrorData::new(
+                    ErrorCode::INVALID_PARAMS,
+                    crate::memory::global_memory_store_refusal(candidate),
+                    None,
+                ));
+            }
+        }
+
         match command {
             CacheCommand::List => {
                 let mut files = Vec::new();

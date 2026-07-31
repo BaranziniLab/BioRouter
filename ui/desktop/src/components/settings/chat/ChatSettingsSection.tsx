@@ -4,6 +4,7 @@ import { CapabilitiesSection } from '../capabilities/CapabilitiesSection';
 import { BrsdkSection } from '../brsdk/BrsdkSection';
 import { BioRouterHintsSection } from './BioRouterHintsSection';
 import { SpellcheckToggle } from './SpellcheckToggle';
+import MemorySection from '../memory/MemorySection';
 
 export default function ChatSettingsSection() {
   return (
@@ -49,6 +50,10 @@ export default function ChatSettingsSection() {
           <CapabilitiesSection />
         </div>
       </div>
+
+      {/* Directly under Capabilities, which owns the switch that turns memory
+          on and off: the store and its own toggle belong together. */}
+      <MemorySection />
 
       <div className="biorouter-settings-section">
         <div className="biorouter-settings-section-header">

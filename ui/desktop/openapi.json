@@ -2620,6 +2620,143 @@
         }
       }
     },
+    "/memory/delete_category": {
+      "post": {
+        "tags": [
+          "Memory"
+        ],
+        "operationId": "memory_delete_category",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MemoryDeleteCategoryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The category was deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemoryDeleteCategoryResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid category, or a local scope with no working_dir"
+          },
+          "401": {
+            "description": "Unauthorized - Invalid or missing API key"
+          },
+          "404": {
+            "description": "No such category"
+          },
+          "409": {
+            "description": "The category changed since it was listed"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/memory/delete_entry": {
+      "post": {
+        "tags": [
+          "Memory"
+        ],
+        "operationId": "memory_delete_entry",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MemoryDeleteEntryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The memory was deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemoryDeleteEntryResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid category, or a local scope with no working_dir"
+          },
+          "401": {
+            "description": "Unauthorized - Invalid or missing API key"
+          },
+          "404": {
+            "description": "No memory at that position"
+          },
+          "409": {
+            "description": "The category changed since it was listed"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/memory/inventory": {
+      "get": {
+        "tags": [
+          "Memory"
+        ],
+        "operationId": "memory_inventory",
+        "parameters": [
+          {
+            "name": "working_dir",
+            "in": "query",
+            "description": "The project directory whose local store to list. Omit for global only.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "nullable": true
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Everything both memory stores hold",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemoryInventoryResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized - Invalid or missing API key"
+          },
+          "500": {
+            "description": "A store could not be read"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
     "/reply": {
       "post": {
         "tags": [
@@ -6746,6 +6883,224 @@
           }
         }
       },
+      "MemoryCategoryInventory": {
+        "type": "object",
+        "description": "One category file, listed in full.",
+        "required": [
+          "name",
+          "entries",
+          "revision",
+          "size_bytes"
+        ],
+        "properties": {
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MemoryEntry"
+            }
+          },
+          "modified": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The category file's modification time, Unix seconds.\n\n**Per category, not per entry.** Appending any memory restamps the whole\nfile, so this dates the most recent write to the category and says\nnothing about when the other entries arrived. `None` when the filesystem\ndoes not report one.",
+            "nullable": true
+          },
+          "name": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "string",
+            "description": "Digest of the whole category file as it was listed.\n\nThe compare-and-set token for every delete: any write to the category —\nan agent appending, another window deleting — changes it, so a delete\nthat still carries the listed revision is a delete of the category the\nuser was actually looking at. Without it the user confirms a list that\nhas since moved on and destroys something they were never shown."
+          },
+          "size_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The category file's size on disk.",
+            "minimum": 0
+          }
+        }
+      },
+      "MemoryDeleteCategoryRequest": {
+        "type": "object",
+        "required": [
+          "scope",
+          "category",
+          "revision"
+        ],
+        "properties": {
+          "category": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "string",
+            "description": "`MemoryCategoryInventory.revision` of the category as it was listed.\nDeleting a whole category is consent to lose the memories that were on\nthe screen, not whatever arrived while the confirmation was open."
+          },
+          "scope": {
+            "$ref": "#/components/schemas/MemoryScope"
+          },
+          "working_dir": {
+            "type": "string",
+            "description": "Required when `scope` is `local`.",
+            "nullable": true
+          }
+        }
+      },
+      "MemoryDeleteCategoryResponse": {
+        "type": "object",
+        "required": [
+          "removed_entries"
+        ],
+        "properties": {
+          "removed_entries": {
+            "type": "integer",
+            "description": "How many memories the category held.",
+            "minimum": 0
+          }
+        }
+      },
+      "MemoryDeleteEntryRequest": {
+        "type": "object",
+        "required": [
+          "scope",
+          "category",
+          "index",
+          "digest",
+          "revision"
+        ],
+        "properties": {
+          "category": {
+            "type": "string"
+          },
+          "digest": {
+            "type": "string",
+            "description": "`MemoryEntry.digest` of the row that was listed at that position — the\nrow's identity, over its tags as well as its body."
+          },
+          "index": {
+            "type": "integer",
+            "description": "The entry's position in the category, as listed.",
+            "minimum": 0
+          },
+          "revision": {
+            "type": "string",
+            "description": "`MemoryCategoryInventory.revision` of the category as it was listed. The\ndelete is a compare-and-set against it, so a list that went stale while\nan agent appended to the store deletes nothing and the caller reloads."
+          },
+          "scope": {
+            "$ref": "#/components/schemas/MemoryScope"
+          },
+          "working_dir": {
+            "type": "string",
+            "description": "Required when `scope` is `local`.",
+            "nullable": true
+          }
+        }
+      },
+      "MemoryDeleteEntryResponse": {
+        "type": "object",
+        "required": [
+          "remaining",
+          "category_removed"
+        ],
+        "properties": {
+          "category_removed": {
+            "type": "boolean",
+            "description": "Whether the category itself was removed because it emptied."
+          },
+          "remaining": {
+            "type": "integer",
+            "description": "Memories left in the category.",
+            "minimum": 0
+          }
+        }
+      },
+      "MemoryEntry": {
+        "type": "object",
+        "description": "One stored memory, exactly as it sits in the category file.",
+        "required": [
+          "index",
+          "tags",
+          "content",
+          "digest"
+        ],
+        "properties": {
+          "content": {
+            "type": "string",
+            "description": "The entry body, interior newlines preserved."
+          },
+          "digest": {
+            "type": "string",
+            "description": "Digest of this entry exactly as it is serialized on disk — tag line and\nbody together.\n\nThis is the row's identity, and it is what a delete has to name. The body\nalone is not an identity: two entries can carry the same text under\ndifferent tags, and a body-only guard is satisfied by whichever of them\nhappens to sit at the index (#63 review, finding 6)."
+          },
+          "index": {
+            "type": "integer",
+            "description": "Position within the category file, counting from zero.\n\nStable only for as long as the file is untouched, which is why\n[`MemoryServer::delete_entry`] takes [`MemoryEntry::digest`] back as a\nguard rather than trusting the index on its own.",
+            "minimum": 0
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Words from the entry's leading `# …` line; empty when it has none."
+          }
+        }
+      },
+      "MemoryInventoryResponse": {
+        "type": "object",
+        "description": "Both stores, as far as the caller can see them.",
+        "required": [
+          "global"
+        ],
+        "properties": {
+          "global": {
+            "$ref": "#/components/schemas/MemoryStoreInventory"
+          },
+          "local": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/MemoryStoreInventory"
+              }
+            ],
+            "nullable": true
+          }
+        }
+      },
+      "MemoryScope": {
+        "type": "string",
+        "description": "Which of the two stores an entry lives in.\n\nThe distinction is the whole subject of issue #63: `Local` is this project's\n`.biorouter/memory`, reachable only by a session opened in that directory;\n`Global` is the machine-wide store every Biorouter session on the computer\nshares.",
+        "enum": [
+          "global",
+          "local"
+        ]
+      },
+      "MemoryStoreInventory": {
+        "type": "object",
+        "description": "One store: where it is, and everything in it.",
+        "required": [
+          "scope",
+          "path",
+          "exists",
+          "categories"
+        ],
+        "properties": {
+          "categories": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MemoryCategoryInventory"
+            }
+          },
+          "exists": {
+            "type": "boolean",
+            "description": "Whether that directory exists yet. The store is created lazily on first\nwrite, so \"no directory\" is the ordinary empty state, not an error."
+          },
+          "path": {
+            "type": "string",
+            "description": "Absolute path of the store directory, shown to the user so \"global\" and\n\"local\" are not the only thing they have to go on."
+          },
+          "scope": {
+            "$ref": "#/components/schemas/MemoryScope"
+          }
+        }
+      },
       "Message": {
         "type": "object",
         "description": "A message to or from an LLM",
@@ -10387,6 +10742,14 @@
             "type": "string"
           }
         }
+      }
+    },
+    "securitySchemes": {
+      "api_key": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-Secret-Key",
+        "description": "The daemon's secret key. Biorouter's server is loopback-only and authenticates every route except /status with this header."
       }
     }
   }

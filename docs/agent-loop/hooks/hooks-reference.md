@@ -257,7 +257,16 @@ spelling is accepted as an alias.
   approval dialog with your reason attached. **`updatedInput`** rewrites the call
   instead of refusing it (see above).
 - **PermissionRequest `allow`** auto-approves a call that would otherwise prompt the
-  user — useful for trusted commands in trusted projects.
+  user — useful for trusted commands in trusted projects. It covers approvals the
+  *permission mode* raised, which is nearly all of them. It does **not** cover the
+  small fixed set of approvals BioRouter raises whatever your mode — a
+  prompt-injection finding, an Auto-mode write to a credential store, a global
+  (machine-wide) memory read or write, a managed-policy `ask`. Those exist
+  precisely because no automated grant should answer them, and a hook is an
+  automated grant: an `allow` on one is logged and dropped, and the card is shown
+  as if no hook had run. See
+  [what still asks, whatever your mode](../../security/permission-modes.md#what-still-asks-whatever-your-mode).
+  `deny` is unrestricted — a hook can always refuse anything.
 - **`additionalContext` and `systemMessage` work on every tool-path event**,
   `PreToolUse` and `PermissionRequest` included. The context reaches the model
   wrapped in the `<hook-context untrusted="true">` frame used for all injected hook

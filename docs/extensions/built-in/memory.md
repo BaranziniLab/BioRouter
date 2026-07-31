@@ -52,7 +52,48 @@ Memories are plain files on your machine, organized by category. There are two s
 | Global (user-wide) | `~/.config/biorouter/memory/` on macOS and Linux; `~\AppData\Roaming\BaranziniLab\Biorouter\config\memory` on Windows |
 | Local (project-specific) | `.biorouter/memory/` inside the working directory |
 
-Because they are ordinary files, you can inspect, edit or delete them directly when you want to audit or reset what BioRouter has learned.
+Because they are ordinary files, **you** can inspect, edit or delete them directly when you want to audit or reset what BioRouter has learned. You do not have to, though — the desktop app lists both stores and lets you prune them.
+
+BioRouter itself cannot take that shortcut on the global store. Reading, changing or deleting a machine-wide memory is put to you for approval by category, and that approval would be worth little if the same files could just be opened by other means — so the global store is closed to everything but the memory tools:
+
+- The file tools (`text_editor`, the computer-controller cache) refuse any path inside it and point at the memory tool to use instead.
+- Tool calls made from inside an `execute_code` script are refused: a script's calls are not shown to you one at a time, so there is nothing for you to approve. The model is told to make the memory call directly.
+- The `/agent/call_tool` API is refused for the same reason.
+- BioRouter's memory server run on its own — `biorouter mcp memory`, for another MCP client outside the app — serves the project-local store only. Nothing there can ask you, so nothing there reaches the machine-wide store.
+
+The project-local store is unaffected by all of this: it lives under the directory you opened, so it never crosses into another session.
+
+A stray file in the global store directory is ignored rather than fatal, and a category name is treated as a label — no control characters, and bounded in length — because those names are listed in every later session's system prompt.
+
+One shape is refused rather than put to you: reading the *whole* global store in a single call. The reason is that the disclosure should be no larger than the task — an answer needs the memories bearing on your question, not every memory every conversation on this computer has ever saved — and there is always a narrower way to get it, because the category names are in the model's prompt and it can ask for one by name. Nothing becomes unreachable: every global memory is still readable, one approved category at a time. Deleting the whole store is *not* refused, because "forget everything" has no narrower substitute — expressing it one category at a time would be more confirmations for a single intention, and could not reach a category you did not know about.
+
+## Seeing and deleting what was remembered
+
+Open **Settings → Chat → Memory**. It lists both stores separately — the global one shared by every conversation on this computer, and the current project's local one — each with its directory path, its categories, and every memory inside them. Expand a category to read its contents.
+
+This matters most for the global store. A conversation asking to read a global memory category has to be approved by you first, and that approval card names the category; this section is where you find out what is in it before deciding. The card names this path so you know where to look.
+
+What each memory shows is what the store actually records, and no more:
+
+| Shown | Where it comes from |
+|-------|---------------------|
+| Category name | The category file's name |
+| Scope, and the store's absolute path | Which of the two directories the file is in |
+| Tags | The memory's own `#` tag line, when the model attached one |
+| Category size and "Updated" date | The category file's size and modification time on disk |
+
+A memory is a line in a flat text file, so nothing records **when an individual memory was written, which conversation wrote it, or which model**. The date shown is per category — the last time anything was appended to that file — not per memory, and the section labels it that way rather than dating each row with a timestamp the file cannot support.
+
+Two delete controls sit alongside the listing: one on each memory, one on each category. Both ask first, and the confirmation says what is about to be lost — the number of memories going, who could read them, and that it cannot be undone. Deleting the last memory in a category deletes the category too, so its name stops being offered to future sessions. Nothing is recoverable afterwards; BioRouter keeps no copy.
+
+## What a delete does, exactly
+
+Deleting is precise and it is final, in both directions.
+
+- **"Forget X" removes one memory.** The model has to name a memory in full; a partial or approximate phrase deletes nothing and comes back as an error rather than a false report of success. Asking to forget "black" will not also remove "we use black for formatting".
+- **Deleting the last memory in a category removes the category**, so its name stops appearing in future sessions' prompts.
+- **"Forget everything" removes the memories, not the folder.** Anything else you keep in the store directory — your own notes, a subfolder — is left alone.
+- **A delete you confirmed applies to the list you were shown.** If a conversation writes to a category while a confirmation is open, the delete is refused and asks you to reload rather than acting on a list that has moved on. Reloading and clicking again works normally.
 
 ## Available tools
 
@@ -61,7 +102,7 @@ Because they are ordinary files, you can inspect, edit or delete them directly w
 | `remember_memory` | Store a memory in a category, with optional tags, in the local or global scope |
 | `retrieve_memories` | Read back stored memories |
 | `remove_memory_category` | Delete an entire category of memories |
-| `remove_specific_memory` | Delete one stored memory |
+| `remove_specific_memory` | Delete one stored memory, named in full |
 
 ## Trigger words and when to use them
 

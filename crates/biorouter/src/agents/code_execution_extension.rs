@@ -1808,6 +1808,87 @@ impl CodeExecutionClient {
         }
     }
 
+    /// Refuse one sub-call before it is dispatched: record the failure for
+    /// telemetry and hand the script its error.
+    ///
+    /// The two pre-dispatch guards (the tool-call limit and the global-memory
+    /// consent boundary) do the same three things in the same order, and both
+    /// must record *before* answering the script — a refusal the record misses
+    /// is a call the transparency view never shows.
+    async fn refuse_sub_call(
+        collected_artifacts: &Arc<Mutex<CollectedArtifacts>>,
+        tool_name: &str,
+        arguments: &str,
+        failure_kind: &'static str,
+        error: String,
+        response_tx: tokio::sync::oneshot::Sender<Result<String, String>>,
+    ) {
+        collected_artifacts
+            .lock()
+            .await
+            .push_tool_call(ToolCallRecord::failed(
+                tool_name,
+                arguments,
+                None,
+                failure_kind,
+            ));
+        let _ = response_tx.send(Err(error));
+    }
+
+    /// Dispatch one sub-call and report how it went.
+    ///
+    /// Returns the script-facing result plus the two telemetry facts the caller
+    /// records. Telemetry may only carry USER-audience error text (Codex review
+    /// of #28): the script-facing strings here are built from assistant-audience
+    /// content, so `user_error` is the sole verbatim text a record may keep, and
+    /// `failure_kind` names the failure class for the sanitized placeholder when
+    /// the tool produced none.
+    async fn dispatch_sub_call(
+        session_id: &str,
+        tool_name: &str,
+        arguments: &str,
+        extension_manager: Option<&std::sync::Weak<crate::agents::ExtensionManager>>,
+        collected_artifacts: &Arc<Mutex<CollectedArtifacts>>,
+        cancellation_token: &CancellationToken,
+    ) -> (Result<String, String>, &'static str, Option<String>) {
+        let Some(manager) = extension_manager.and_then(std::sync::Weak::upgrade) else {
+            return (
+                Err("Extension manager not available".to_string()),
+                "unavailable",
+                None,
+            );
+        };
+        let tool_call = CallToolRequestParams {
+            task: None,
+            name: tool_name.to_string().into(),
+            arguments: serde_json::from_str(arguments).ok(),
+            meta: None,
+        };
+        match manager
+            .dispatch_tool_call(session_id, tool_call, cancellation_token.clone())
+            .await
+        {
+            Ok(dispatch_result) => match dispatch_result.result.await {
+                Ok(result) => {
+                    let (value, kind, user) =
+                        Self::completed_sub_call_outcome(tool_name, &result, collected_artifacts)
+                            .await;
+                    (value, kind, user)
+                }
+                Err(e) => (
+                    Err(format!("Tool error from {tool_name}: {}", e.message)),
+                    "tool_failure",
+                    None,
+                ),
+            },
+            Err(e) => (
+                Err(format!("Dispatch error from {tool_name}: {e}")),
+                "dispatch_error",
+                None,
+            ),
+        }
+    }
+
     async fn run_tool_handler(
         session_id: String,
         mut call_rx: mpsc::UnboundedReceiver<ToolCallRequest>,
@@ -1832,63 +1913,53 @@ impl CodeExecutionClient {
             };
             tool_calls += 1;
             if tool_calls > MAX_JS_TOOL_CALLS {
-                let error = format!("JavaScript exceeded the {MAX_JS_TOOL_CALLS} tool-call limit");
-                collected_artifacts
-                    .lock()
-                    .await
-                    .push_tool_call(ToolCallRecord::failed(
-                        &tool_name,
-                        &arguments,
-                        None,
-                        "call_limit",
-                    ));
-                let _ = response_tx.send(Err(error));
+                Self::refuse_sub_call(
+                    &collected_artifacts,
+                    &tool_name,
+                    &arguments,
+                    "call_limit",
+                    format!("JavaScript exceeded the {MAX_JS_TOOL_CALLS} tool-call limit"),
+                    response_tx,
+                )
+                .await;
                 continue;
             }
-            // Telemetry may only carry USER-audience error text (Codex review
-            // of #28): the script-facing error strings below are built from
-            // assistant-audience content. `user_error` is the sole verbatim
-            // text a record may keep; `failure_kind` names the failure class
-            // for the sanitized placeholder when the tool produced none.
-            let mut failure_kind: &'static str = "tool_failure";
-            let mut user_error: Option<String> = None;
-            let result = match extension_manager.as_ref().and_then(|w| w.upgrade()) {
-                Some(manager) => {
-                    let tool_call = CallToolRequestParams {
-                        task: None,
-                        name: tool_name.clone().into(),
-                        arguments: serde_json::from_str(&arguments).ok(),
-                        meta: None,
-                    };
-                    match manager
-                        .dispatch_tool_call(&session_id, tool_call, cancellation_token.clone())
-                        .await
-                    {
-                        Ok(dispatch_result) => match dispatch_result.result.await {
-                            Ok(result) => {
-                                let (value, kind, user) = Self::completed_sub_call_outcome(
-                                    &tool_name,
-                                    &result,
-                                    &collected_artifacts,
-                                )
-                                .await;
-                                failure_kind = kind;
-                                user_error = user;
-                                value
-                            }
-                            Err(e) => Err(format!("Tool error from {tool_name}: {}", e.message)),
-                        },
-                        Err(e) => {
-                            failure_kind = "dispatch_error";
-                            Err(format!("Dispatch error from {tool_name}: {e}"))
-                        }
-                    }
-                }
-                None => {
-                    failure_kind = "unavailable";
-                    Err("Extension manager not available".to_string())
-                }
-            };
+            // Issue #63 review, finding 3. A script's tool calls go straight to
+            // the extension manager below, so no `ToolInspector` — the
+            // global-memory consent gate included — ever sees them. The gate
+            // compensated by scanning the *script text* for an embedded memory
+            // call, which a runtime-assembled call walks past
+            // (`is_global: flag`). This is the same decision taken where there
+            // is nothing left to compute: the dispatched name and the evaluated
+            // arguments. A boundary that cannot ask the user refuses.
+            if let Some(refusal) = crate::security::global_memory::uninspected_boundary_refusal(
+                &tool_name,
+                serde_json::from_str::<serde_json::Value>(&arguments)
+                    .ok()
+                    .as_ref()
+                    .and_then(serde_json::Value::as_object),
+                crate::security::global_memory::UninspectedBoundary::ExecuteCodeScript,
+            ) {
+                Self::refuse_sub_call(
+                    &collected_artifacts,
+                    &tool_name,
+                    &arguments,
+                    "global_memory_consent",
+                    refusal,
+                    response_tx,
+                )
+                .await;
+                continue;
+            }
+            let (result, mut failure_kind, user_error) = Self::dispatch_sub_call(
+                &session_id,
+                &tool_name,
+                &arguments,
+                extension_manager.as_ref(),
+                &collected_artifacts,
+                &cancellation_token,
+            )
+            .await;
             let result = result.and_then(|value| {
                 if value.len() > MAX_JS_TOOL_RESULT_BYTES {
                     failure_kind = "result_too_large";
