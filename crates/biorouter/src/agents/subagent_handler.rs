@@ -163,6 +163,27 @@ impl Drop for Deregister {
     }
 }
 
+/// The extension that carries the workspace tools (and, since BR-71 decision 22,
+/// the spawn tool). Not reachable from `Agent::SPAWN_EXTENSION`, which is
+/// private to `agent.rs`.
+const WORKSPACE_EXTENSION_NAME: &str = "workspace";
+
+/// BR-71 §5 belt-and-braces beside the dispatch guard: the workspace extension
+/// is never loaded into a child. NOTE the interaction with Task 18: a child has
+/// `SessionType::SubAgent`, so `subagents_enabled` is already false for it (the
+/// `Some(SessionType::SubAgent)` early return inside `subagents_enabled`) and
+/// the auto-injection never fires either — this strip covers the case where the
+/// PARENT's inherited extension list carries an explicitly user-enabled
+/// `workspace` entry.
+fn strip_workspace_extension(
+    extensions: Vec<crate::agents::extension::ExtensionConfig>,
+) -> Vec<crate::agents::extension::ExtensionConfig> {
+    extensions
+        .into_iter()
+        .filter(|e| e.name() != WORKSPACE_EXTENSION_NAME)
+        .collect()
+}
+
 /// Standalone function to run a complete subagent task, returning a structured
 /// result envelope. A run that fails, or one that ends on a tool call without a
 /// final text message, still yields a meaningful `SubagentResult` (BR-40) —
@@ -482,13 +503,17 @@ fn get_agent_messages(
 
         // Prep binding 1: the loop below consumes `task_config.extensions` by
         // value, so the grant list for the spawn-context record is taken first.
+        // §5: it must name what is ACTUALLY granted, so it excludes the
+        // workspace extension the loop below strips — otherwise the spawn
+        // record tells the user the child holds workspace control it does not.
         let extension_names: Vec<String> = task_config
             .extensions
             .iter()
+            .filter(|e| e.name() != WORKSPACE_EXTENSION_NAME)
             .map(|e| e.name().to_string())
             .collect();
 
-        for extension in task_config.extensions {
+        for extension in strip_workspace_extension(task_config.extensions) {
             if let Err(e) = agent.add_extension(extension.clone()).await {
                 debug!(
                     "Failed to add extension '{}' to subagent: {}",
@@ -761,6 +786,27 @@ mod tests {
     use crate::conversation::message::ProvenanceKind;
     use crate::session::session_manager::SessionType;
     use crate::workspace_services::{WorkspaceServices, WorkspaceTurnLease};
+
+    #[test]
+    fn workspace_extension_is_stripped_from_child_grants() {
+        let configs = vec![
+            crate::agents::extension::ExtensionConfig::Platform {
+                name: "workspace".into(),
+                description: String::new(),
+                bundled: None,
+                available_tools: vec![],
+            },
+            crate::agents::extension::ExtensionConfig::Platform {
+                name: "todo".into(),
+                description: String::new(),
+                bundled: None,
+                available_tools: vec![],
+            },
+        ];
+        let granted = strip_workspace_extension(configs);
+        assert_eq!(granted.len(), 1);
+        assert_eq!(granted[0].name(), "todo");
+    }
 
     /// The body of one `### `-delimited section of the spawn record, so a grant
     /// can be asserted to be in the RIGHT section. Six bare `contains` checks

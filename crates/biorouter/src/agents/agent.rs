@@ -465,6 +465,53 @@ pub(crate) fn is_spawn_tool_call(tool_name: &str) -> bool {
         || tool_name == crate::agents::subagent_tool::SUBAGENT_TOOL_NAME
 }
 
+/// BR-71 §5 + decision 25: subagents never get workspace control — no
+/// delegation-tree fan-out of cross-session control, no child steering its
+/// parent, and (since the spawn tool is now a workspace tool) no nesting.
+///
+/// Name forms: extension-advertised tools reach dispatch PREFIXED
+/// (`workspace__workspace_list`; the `format!("{}__{}", name, tool.name)` that
+/// makes the name lives in `extension_manager.rs`, behind the
+/// `config.is_tool_available` filter), and the bare forms cover prefix-stripping
+/// models (the `if !tool_name_str.contains("__")` block in
+/// `extension_manager.rs` that re-prefixes the three known `code_execution`
+/// tools is the precedent). The spawn tool is covered separately because it is
+/// named `subagent`, not `workspace_*`.
+///
+/// The names are ENUMERATED rather than prefix-matched. A bare
+/// `tool_name.starts_with("workspace_")` also matches any third-party extension
+/// whose *name* begins with `workspace_` — its tools arrive as
+/// `workspace_foo__bar`, which starts with `workspace_` — and every one of them
+/// would be refused inside a subagent with the misleading message "Subagents
+/// cannot use workspace tools." An explicit list cannot do that, and it is a
+/// closed set we control: when a `workspace_*` tool is added, this list is where
+/// the compiler-free reminder lives (the test below names all of them).
+const WORKSPACE_TOOL_NAMES: [&str; 7] = [
+    "workspace_list",
+    "workspace_open",
+    "workspace_read_conversation",
+    "workspace_send_prompt",
+    "workspace_set_tools",
+    "workspace_close",
+    "workspace_watch",
+];
+
+pub(crate) fn is_workspace_tool_refused_for(
+    session_type: crate::session::session_manager::SessionType,
+    tool_name: &str,
+) -> bool {
+    if session_type != crate::session::session_manager::SessionType::SubAgent {
+        return false;
+    }
+    if is_spawn_tool_call(tool_name) {
+        return true;
+    }
+    // Bare, or prefixed by OUR extension — not by anything that merely starts
+    // with the same letters.
+    let bare = tool_name.strip_prefix("workspace__").unwrap_or(tool_name);
+    WORKSPACE_TOOL_NAMES.contains(&bare)
+}
+
 /// Workspace tools that block on work happening in ANOTHER session, and must
 /// therefore not hold a global tool-dispatch permit while they do. Both name
 /// forms, like `is_spawn_tool_call`.
@@ -2857,17 +2904,19 @@ impl Agent {
         cancellation_token: Option<CancellationToken>,
         session: &Session,
     ) -> (String, Result<ToolCallResult, ErrorData>) {
-        // Prevent subagents from creating other subagents (decision 25:
-        // nesting stays flat). Both name forms, or a prefix-stripping model in
-        // a child session walks straight past the guard.
-        if session.session_type == SessionType::SubAgent
-            && is_spawn_tool_call(tool_call.name.as_ref())
-        {
+        // BR-71 §5: no workspace control, and no nesting, inside a delegation tree.
+        if is_workspace_tool_refused_for(session.session_type, tool_call.name.as_ref()) {
+            let message = if is_spawn_tool_call(tool_call.name.as_ref()) {
+                "Subagents cannot create other subagents. Do the work yourself, or \
+                 report back to your parent so it can delegate."
+            } else {
+                "Subagents cannot use workspace tools."
+            };
             return (
                 request_id,
                 Err(ErrorData::new(
                     ErrorCode::INVALID_REQUEST,
-                    "Subagents cannot create other subagents".to_string(),
+                    message.to_string(),
                     None,
                 )),
             );
@@ -7393,6 +7442,57 @@ mod tests {
         assert!(is_spawn_tool_call("subagent"));
         assert!(!is_spawn_tool_call("workspace__workspace_list"));
         assert!(!is_spawn_tool_call("subagent_status")); // never a spawn call
+    }
+
+    #[test]
+    fn subagent_sessions_are_refused_workspace_tools() {
+        use crate::session::session_manager::SessionType;
+        // Decision 25 + §5: no delegation-tree fan-out of workspace control,
+        // and no child steering its parent.
+        for tool in [
+            "workspace__workspace_list",
+            "workspace_list",
+            "workspace__workspace_send_prompt",
+            "workspace__subagent",
+            "subagent",
+        ] {
+            assert!(
+                is_workspace_tool_refused_for(SessionType::SubAgent, tool),
+                "{tool} must be refused inside a subagent"
+            );
+        }
+        assert!(!is_workspace_tool_refused_for(
+            SessionType::User,
+            "workspace_list"
+        ));
+        assert!(!is_workspace_tool_refused_for(
+            SessionType::SubAgent,
+            "developer__shell"
+        ));
+    }
+
+    #[test]
+    fn the_workspace_guard_does_not_swallow_a_third_party_extension() {
+        use crate::session::session_manager::SessionType;
+        // A third-party extension NAMED `workspace_foo` advertises its tools as
+        // `workspace_foo__bar`, which starts with "workspace_". It has nothing
+        // to do with BR-71 and must run inside a subagent like any other tool.
+        assert!(!is_workspace_tool_refused_for(
+            SessionType::SubAgent,
+            "workspace_foo__bar"
+        ));
+        assert!(!is_workspace_tool_refused_for(
+            SessionType::SubAgent,
+            "workspace_analytics__query"
+        ));
+        // …while every real workspace tool, in both spellings, still is.
+        for name in WORKSPACE_TOOL_NAMES {
+            assert!(is_workspace_tool_refused_for(SessionType::SubAgent, name));
+            assert!(is_workspace_tool_refused_for(
+                SessionType::SubAgent,
+                &format!("workspace__{name}")
+            ));
+        }
     }
 
     #[test]

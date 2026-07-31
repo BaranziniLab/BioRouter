@@ -73,6 +73,274 @@ pub fn inflight_subagent_count() -> usize {
     SUBAGENT_INFLIGHT.load(Ordering::SeqCst)
 }
 
+// --- BR-71 decisions 24 + 26: glass-box children, bounded ------------------
+
+/// BR-71 decision 26: how many children of ONE parent may hold a visible tab at
+/// once. Matches the injected-turn cap for the same reason — a fan-out must not
+/// become a tab storm. Beyond it, children run in the background and are
+/// reachable from History and from the parent's summary; a spawn is never
+/// refused for this.
+///
+/// Overridable, like the cap it is matched to: decision 26 says "**default** 4",
+/// and the sentence that justifies the number points at
+/// `BIOROUTER_WORKSPACE_MAX_INJECTED_TURNS`, which is an env var. A hard
+/// constant would be a limit, not a default — and a user on a 49" display has a
+/// legitimate reason to want six.
+pub const DEFAULT_MAX_VISIBLE_CHILD_TABS: usize = 4;
+pub const MAX_VISIBLE_CHILD_TABS_ENV: &str = "BIOROUTER_WORKSPACE_MAX_VISIBLE_CHILD_TABS";
+
+/// Pure half, so the parsing rules are testable without touching the process
+/// environment (which unit tests share).
+fn parse_visible_child_tabs(raw: Option<&str>) -> usize {
+    raw.and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(DEFAULT_MAX_VISIBLE_CHILD_TABS)
+}
+
+pub fn max_visible_child_tabs() -> usize {
+    parse_visible_child_tabs(std::env::var(MAX_VISIBLE_CHILD_TABS_ENV).ok().as_deref())
+}
+
+/// The resolved visibility of one child, with the reason, so the parent can be
+/// told why a tab did not appear instead of silently believing one did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChildVisibility {
+    /// A tab will be announced for this child.
+    Visible,
+    /// The caller passed `visible: false`.
+    OptedOut,
+    /// No GUI is attached (headless CLI, server-only) — today's behaviour.
+    Headless,
+    /// A GUI is attached, but the user turned on "never open tabs
+    /// automatically" (decision 7 / Task 29). No tab is opened; a notification
+    /// names the child instead.
+    AnnounceOnly,
+    /// The parent already holds `max_visible_child_tabs()` visible slots, so
+    /// `VisibleChildGuard::try_claim` refused one. `cap` is the value in force
+    /// at the time, which the env override can change.
+    BackgroundCapped { cap: usize },
+}
+
+impl ChildVisibility {
+    pub fn is_visible(&self) -> bool {
+        matches!(self, ChildVisibility::Visible)
+    }
+
+    /// One sentence for the parent's tool result. Only the capped and
+    /// announce-only cases need explaining; the others are what the caller
+    /// asked for or already knows.
+    pub fn parent_note(&self, child_session_id: &str) -> String {
+        match self {
+            ChildVisibility::BackgroundCapped { cap } => format!(
+                "Subagent {child_session_id} is running in the background: you already have \
+                 {cap} subagent tabs open, which is the limit. It is listed in History under \
+                 this conversation and you can read it with workspace_read_conversation."
+            ),
+            ChildVisibility::AnnounceOnly => format!(
+                "Subagent {child_session_id} is running, but no tab was opened: the user \
+                 turned on \"never open tabs automatically\". Do not tell them you opened a \
+                 tab. They can open it from History; you can read it with \
+                 workspace_read_conversation."
+            ),
+            _ => String::new(),
+        }
+    }
+}
+
+/// Decision 24: visible by default when there is a GUI to show it in.
+///
+/// **The cap is deliberately NOT decided here.** An earlier draft took a
+/// `visible_children: usize` argument, which made the sequence
+/// `resolve_visibility(…, visible_children_of(parent))` then
+/// `VisibleChildGuard::claim(parent)` — a check-then-act with no atomicity, in
+/// the one code path that is *specifically* concurrent. Subagent dispatch is
+/// excluded from the tool-dispatch semaphore on purpose (the `let bound_dispatch
+/// = !is_spawn_tool_call(…)` line in `agent.rs`) and concurrent tool calls in
+/// one assistant message are driven by `select_all`, so a fan-out of ten spawns
+/// can have all ten read `0` and all ten claim. The cap lives inside
+/// `VisibleChildGuard::try_claim`, under one lock: you either hold a slot or you
+/// do not.
+///
+/// `announce_only` is decision 7's user setting, and it is resolved HERE rather
+/// than left to the frame transform. `apply_focus_etiquette` (Task 29) rewrites
+/// an `open_tab` frame into a notification *after* a slot has been claimed —
+/// so with the setting on, every child would consume one of the four cap slots
+/// while no tab ever opens, and the fifth child would be told "you already have
+/// 4 subagent tabs open, which is the limit" when the true count is zero. That
+/// is the same class of lie Task 29 exists to prevent on the `workspace_open`
+/// path. Announce-only therefore claims no slot, like `Headless`.
+pub fn resolve_visibility(
+    requested: Option<bool>,
+    gui_attached: bool,
+    announce_only: bool,
+) -> ChildVisibility {
+    if requested == Some(false) {
+        return ChildVisibility::OptedOut;
+    }
+    if !gui_attached {
+        return ChildVisibility::Headless;
+    }
+    if announce_only {
+        return ChildVisibility::AnnounceOnly;
+    }
+    ChildVisibility::Visible
+}
+
+/// Live count of visible children per parent session. RAII, like the in-flight
+/// subagent counter above: the slot is released when the child's run ends, so a
+/// parent that spawns four, waits, and spawns four more shows tabs every time.
+static VISIBLE_CHILDREN: LazyLock<std::sync::Mutex<HashMap<String, usize>>> =
+    LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+
+pub struct VisibleChildGuard {
+    parent: String,
+}
+
+impl VisibleChildGuard {
+    /// Claim one visible-tab slot for `parent_session_id`, or `None` if the
+    /// parent is already at the cap. Check and increment happen under the SAME
+    /// lock acquisition — that single property is what makes the cap hold for a
+    /// parallel fan-out, which is the only case it exists for.
+    pub fn try_claim(parent_session_id: &str) -> Option<Self> {
+        let cap = max_visible_child_tabs();
+        let mut map = VISIBLE_CHILDREN
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let count = map.entry(parent_session_id.to_string()).or_insert(0);
+        if *count >= cap {
+            // Leave the entry at its current value; `Drop` only decrements
+            // slots that were actually granted.
+            return None;
+        }
+        *count += 1;
+        Some(Self {
+            parent: parent_session_id.to_string(),
+        })
+    }
+}
+
+impl Drop for VisibleChildGuard {
+    fn drop(&mut self) {
+        let mut map = VISIBLE_CHILDREN
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(count) = map.get_mut(&self.parent) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                map.remove(&self.parent);
+            }
+        }
+    }
+}
+
+pub fn visible_children_of(parent_session_id: &str) -> usize {
+    VISIBLE_CHILDREN
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(parent_session_id)
+        .copied()
+        .unwrap_or(0)
+}
+
+/// BR-71 §4.5 step 3: announce the child over the WorkspaceBridge. Background
+/// open (never steals the composer) + a subagent badge carrying the parent link.
+/// Returns the resolved visibility so the caller can fold
+/// `ChildVisibility::parent_note` into the tool result.
+///
+/// Fire-and-forget on the wire: a refused split or a disconnecting window must
+/// never break a spawn.
+fn announce_subagent_tab(
+    child_session_id: &str,
+    parent_session_id: &str,
+    params: &SubagentParams,
+) -> (ChildVisibility, Option<VisibleChildGuard>) {
+    let services = crate::workspace_services::get();
+    let gui_attached = services.as_ref().is_some_and(|s| s.gui_attached());
+    let announce_only = crate::agents::workspace_extension::announce_only_enabled();
+    let visibility = resolve_visibility(params.visible, gui_attached, announce_only);
+
+    // Nothing reaches the GUI for these two.
+    if matches!(
+        visibility,
+        ChildVisibility::OptedOut | ChildVisibility::Headless
+    ) {
+        return (visibility, None);
+    }
+
+    // A SLOT IS CLAIMED ONLY FOR A REAL TAB. `AnnounceOnly` still tells the user
+    // about the child (the frame below is downgraded to a notification by
+    // `apply_focus_etiquette`), but it opens nothing, so claiming would have the
+    // fifth child of a fan-out told "you already have 4 subagent tabs open,
+    // which is the limit" while zero tabs exist.
+    let guard = if visibility.is_visible() {
+        // The cap is the claim: no separate read of the counter, so a parallel
+        // fan-out cannot slip past it. Failing to claim is not a refusal — the
+        // child runs, it just runs in the background, and `parent_note` tells
+        // the model why (decision 26).
+        match VisibleChildGuard::try_claim(parent_session_id) {
+            Some(guard) => Some(guard),
+            None => {
+                return (
+                    ChildVisibility::BackgroundCapped {
+                        cap: max_visible_child_tabs(),
+                    },
+                    None,
+                );
+            }
+        }
+    } else {
+        None
+    };
+
+    let Some(services) = services else {
+        return (visibility, guard);
+    };
+
+    let placement = params
+        .placement
+        .clone()
+        .unwrap_or_else(|| "tab".to_string());
+    let child = child_session_id.to_string();
+    let parent = parent_session_id.to_string();
+    tokio::spawn(async move {
+        // Frame vocabulary parity with workspace_open (Task 24): "window" is
+        // its own cmd; tab/split ride open_tab. Focus etiquette (Task 29)
+        // downgrades either to a notification when announce-only is on — which
+        // is exactly the `ChildVisibility::AnnounceOnly` path.
+        let open_frame = if placement == "window" {
+            serde_json::json!({
+                "type": "workspace", "cmd": "open_window", "session_id": child,
+            })
+        } else {
+            serde_json::json!({
+                "type": "workspace", "cmd": "open_tab",
+                "session_id": child, "placement": placement, "focus": false,
+            })
+        };
+        let _ = services
+            .gui_command(
+                crate::agents::workspace_extension::apply_focus_etiquette(
+                    open_frame,
+                    announce_only,
+                ),
+                false,
+            )
+            .await;
+        // The badge is NOT focus-stealing, so it is sent regardless: a child the
+        // user opens later from History still shows as a subagent of its parent.
+        let _ = services
+            .gui_command(
+                serde_json::json!({
+                    "type": "workspace", "cmd": "annotate_tab",
+                    "session_id": child, "badge": "subagent", "parent_session_id": parent,
+                }),
+                false,
+            )
+            .await;
+    });
+    (visibility, guard)
+}
+
 const SUMMARY_INSTRUCTIONS: &str = r#"
 Important: Your parent agent will only receive your final message as a summary of your work.
 Make sure your last message provides a comprehensive summary of:
@@ -380,7 +648,7 @@ async fn execute_subagent(
             config,
             workflow,
             task_config,
-            params.summary,
+            &params,
             session.id,
             inflight,
         ));
@@ -395,6 +663,13 @@ async fn execute_subagent(
 
     let session =
         create_subagent_session(&config, working_dir, &task_config.parent_session_id).await?;
+
+    // BR-71 decision 24: glass-box by default. The guard lives for the child's
+    // whole run, so the slot is released exactly when the child finishes.
+    let (visibility, _visible_guard) =
+        announce_subagent_tab(&session.id, &task_config.parent_session_id, &params);
+    let visibility_note = visibility.parent_note(&session.id);
+
     let task_config = overridden_task_config(task_config, &params).await?;
 
     // The result envelope encodes success, an incomplete (tool-call-ending)
@@ -410,7 +685,11 @@ async fn execute_subagent(
     )
     .await;
 
-    Ok(result.into_call_tool_result())
+    let mut call_result = result.into_call_tool_result();
+    if !visibility_note.is_empty() {
+        call_result.content.push(Content::text(visibility_note));
+    }
+    Ok(call_result)
 }
 
 /// Create the child session and stamp its `parent_session_id` (BR-71) at birth.
@@ -492,10 +771,11 @@ fn spawn_background_subagent(
     config: AgentConfig,
     workflow: Workflow,
     task_config: TaskConfig,
-    summary: bool,
+    params: &SubagentParams,
     child_session_id: String,
     inflight: InflightGuard,
 ) -> CallToolResult {
+    let summary = params.summary;
     let title = background_title(&workflow);
     let cancel = CancellationToken::new();
     let handle = BackgroundSubagent::register(
@@ -507,10 +787,17 @@ fn spawn_background_subagent(
         cancel.clone(),
     );
 
+    // BR-71 decision 24 on the detached path. The guard moves into the task, so
+    // the visible-tab slot is released when the child's run ends, not when this
+    // function returns (which is immediately).
+    let (visibility, visible_guard) =
+        announce_subagent_tab(&child_session_id, &task_config.parent_session_id, params);
+
     let task_handle = handle.clone();
     tokio::spawn(async move {
         // Held for the child's whole life, exactly as on the blocking path.
         let _inflight = inflight;
+        let _visible = visible_guard;
         let _permit = match SUBAGENT_SEMAPHORE.acquire().await {
             Ok(permit) => permit,
             Err(e) => {
@@ -533,8 +820,11 @@ fn spawn_background_subagent(
         task_handle.complete(result);
     });
 
-    // Task 36 replaces the empty note with `ChildVisibility::parent_note`.
-    let text = background_started_message(&handle.id, &handle.child_session_id, "");
+    let text = background_started_message(
+        &handle.id,
+        &handle.child_session_id,
+        &visibility.parent_note(&handle.child_session_id),
+    );
 
     CallToolResult {
         content: vec![Content::text(text)],
@@ -733,6 +1023,139 @@ mod tests {
     #[test]
     fn test_tool_name() {
         assert_eq!(SUBAGENT_TOOL_NAME, "subagent");
+    }
+
+    #[test]
+    fn visibility_defaults_to_visible_with_a_gui_and_invisible_headless() {
+        // Decision 24: glass-box is the default when there is somewhere to show it.
+        // (requested, gui_attached, announce_only)
+        assert!(resolve_visibility(None, true, false).is_visible());
+        assert!(!resolve_visibility(None, false, false).is_visible());
+        // Explicit opt-out wins in both cases.
+        assert!(!resolve_visibility(Some(false), true, false).is_visible());
+        // Explicit opt-IN cannot conjure a GUI.
+        assert!(!resolve_visibility(Some(true), false, false).is_visible());
+    }
+
+    /// Decisions 7 × 26 must not collide. With announce-only ON, no tab is ever
+    /// opened — so a child must NOT consume one of the four visible-tab slots,
+    /// or the fifth spawn of a fan-out is told "you already have 4 subagent tabs
+    /// open, which is the limit" when the true count is zero. That is the same
+    /// fabricated constraint Task 29's `handle_open` rewrite exists to prevent
+    /// on the `workspace_open` path.
+    #[test]
+    fn announce_only_opens_no_tab_and_therefore_claims_no_slot() {
+        let v = resolve_visibility(
+            None, /* gui_attached */ true, /* announce_only */ true,
+        );
+        assert_eq!(v, ChildVisibility::AnnounceOnly);
+        assert!(
+            !v.is_visible(),
+            "announce-only must not claim a visible-tab slot"
+        );
+        // …and the parent is told the truth rather than nothing.
+        let note = v.parent_note("child-9");
+        assert!(note.contains("no tab was opened"), "got: {note}");
+        assert!(note.contains("child-9"));
+    }
+
+    #[test]
+    fn the_fan_out_cap_is_claimed_atomically_and_pushes_extras_to_the_background() {
+        // Decision 26: N visible tabs, then background — never a refusal.
+        let cap = max_visible_child_tabs();
+        let guards: Vec<_> = (0..cap)
+            .map(|i| {
+                VisibleChildGuard::try_claim("cap-parent")
+                    .unwrap_or_else(|| panic!("child {i} is within the cap"))
+            })
+            .collect();
+        assert_eq!(visible_children_of("cap-parent"), cap);
+        // The next one gets no slot — and that IS the cap decision, expressed as
+        // the absence of a guard rather than as a number someone else read a
+        // moment ago.
+        assert!(VisibleChildGuard::try_claim("cap-parent").is_none());
+        drop(guards);
+        assert_eq!(visible_children_of("cap-parent"), 0);
+    }
+
+    /// The cap must hold under FAN-OUT, which is the only situation it exists
+    /// for. `resolve_visibility(…, visible_children_of(parent))` followed by a
+    /// separate `claim` is check-then-act: subagent dispatch is deliberately
+    /// excluded from the tool-dispatch semaphore (the `let bound_dispatch = …`
+    /// line in `agent.rs`) and concurrent tool calls in one assistant message
+    /// are driven by `select_all`, so N simultaneous spawns all observe 0 and
+    /// all claim. A sequential test cannot catch that; this one can.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_parallel_fan_out_cannot_exceed_the_visible_tab_cap() {
+        let cap = max_visible_child_tabs();
+        let attempts = cap * 4;
+        let mut handles = Vec::with_capacity(attempts);
+        for _ in 0..attempts {
+            handles.push(tokio::spawn(async {
+                VisibleChildGuard::try_claim("storm-parent")
+            }));
+        }
+        let mut granted = Vec::new();
+        for handle in handles {
+            if let Some(guard) = handle.await.unwrap() {
+                granted.push(guard);
+            }
+        }
+        assert_eq!(
+            granted.len(),
+            cap,
+            "exactly {cap} of {attempts} parallel claims may succeed"
+        );
+        assert_eq!(visible_children_of("storm-parent"), cap);
+        drop(granted);
+        assert_eq!(visible_children_of("storm-parent"), 0);
+    }
+
+    #[test]
+    fn the_capped_reason_is_told_to_the_model_not_swallowed() {
+        let capped = ChildVisibility::BackgroundCapped {
+            cap: max_visible_child_tabs(),
+        };
+        let note = capped.parent_note("child-7");
+        assert!(note.contains("child-7"));
+        assert!(note.contains("background"));
+        assert!(note.contains("History"));
+    }
+
+    #[test]
+    fn the_visible_tab_cap_is_env_overridable_like_the_injected_turn_cap() {
+        // Decision 26 says "default 4", and the sentence that justifies the
+        // number points at BIOROUTER_WORKSPACE_MAX_INJECTED_TURNS — which is an
+        // env var. A hard constant is not a default, it is a limit.
+        assert_eq!(
+            parse_visible_child_tabs(None),
+            DEFAULT_MAX_VISIBLE_CHILD_TABS
+        );
+        assert_eq!(parse_visible_child_tabs(Some("8")), 8);
+        // Nonsense and zero fall back rather than disabling tabs entirely.
+        assert_eq!(
+            parse_visible_child_tabs(Some("0")),
+            DEFAULT_MAX_VISIBLE_CHILD_TABS
+        );
+        assert_eq!(
+            parse_visible_child_tabs(Some("lots")),
+            DEFAULT_MAX_VISIBLE_CHILD_TABS
+        );
+    }
+
+    #[tokio::test]
+    async fn the_visible_tab_counter_is_per_parent_and_released_when_a_child_ends() {
+        let guard_a = VisibleChildGuard::try_claim("parent-1").unwrap();
+        let guard_b = VisibleChildGuard::try_claim("parent-1").unwrap();
+        assert_eq!(visible_children_of("parent-1"), 2);
+        // A different parent has its own budget — one busy fan-out must not
+        // silence another conversation's first subagent.
+        let _other = VisibleChildGuard::try_claim("parent-2").unwrap();
+        assert_eq!(visible_children_of("parent-1"), 2);
+        assert_eq!(visible_children_of("parent-2"), 1);
+        drop(guard_a);
+        drop(guard_b);
+        assert_eq!(visible_children_of("parent-1"), 0);
     }
 
     #[test]
