@@ -297,6 +297,7 @@ fn announce_subagent_tab(
     // `apply_focus_etiquette`), but it opens nothing, so claiming would have the
     // fifth child of a fan-out told "you already have 4 subagent tabs open,
     // which is the limit" while zero tabs exist.
+    let mut visibility = visibility;
     let guard = if visibility.is_visible() {
         // The cap is the claim: no separate read of the counter, so a parallel
         // fan-out cannot slip past it. Failing to claim is not a refusal — the
@@ -305,12 +306,10 @@ fn announce_subagent_tab(
         match VisibleChildGuard::try_claim(parent_session_id) {
             Some(guard) => Some(guard),
             None => {
-                return (
-                    ChildVisibility::BackgroundCapped {
-                        cap: max_visible_child_tabs(),
-                    },
-                    None,
-                );
+                visibility = ChildVisibility::BackgroundCapped {
+                    cap: max_visible_child_tabs(),
+                };
+                None
             }
         }
     } else {
@@ -321,6 +320,15 @@ fn announce_subagent_tab(
         return (visibility, guard);
     };
 
+    // A capped child opens NOTHING — that is the whole of decision 26 — but it
+    // still gets its badge below. It does not fall out here with the opted-out
+    // and headless children, because a capped child is precisely the one the
+    // user opens later from History, and `ChatGroupsContext` stores
+    // `annotate_tab` in `tabAnnotations` keyed by session id whether or not a
+    // tab exists yet. Sending it now is what makes that later tab show as a
+    // subagent of its parent.
+    let open_a_tab = !matches!(visibility, ChildVisibility::BackgroundCapped { .. });
+
     // `handle_subagent_tool` already rejected anything outside the vocabulary,
     // before a session was created. Defaulting here as well means no frame can
     // carry an unknown placement even if a future caller reaches this function
@@ -330,31 +338,14 @@ fn announce_subagent_tab(
     let child = child_session_id.to_string();
     let parent = parent_session_id.to_string();
     tokio::spawn(async move {
-        // Frame vocabulary parity with workspace_open (Task 24): "window" is
-        // its own cmd; tab/split ride open_tab. Focus etiquette (Task 29)
-        // downgrades either to a notification when announce-only is on — which
-        // is exactly the `ChildVisibility::AnnounceOnly` path.
-        let open_frame = if placement == "window" {
-            serde_json::json!({
-                "type": "workspace", "cmd": "open_window", "session_id": child,
-            })
-        } else {
-            serde_json::json!({
-                "type": "workspace", "cmd": "open_tab",
-                "session_id": child, "placement": placement, "focus": false,
-            })
-        };
-        let _ = services
-            .gui_command(
-                crate::agents::workspace_extension::apply_focus_etiquette(
-                    open_frame,
-                    announce_only,
-                ),
-                false,
-            )
-            .await;
-        // The badge is NOT focus-stealing, so it is sent regardless: a child the
-        // user opens later from History still shows as a subagent of its parent.
+        if open_a_tab {
+            announce_open_frame(services.as_ref(), &child, placement, announce_only).await;
+        }
+        // The badge is NOT focus-stealing, so it is sent for every child this
+        // function announced at all — including a capped one, which has no tab
+        // yet and is exactly the child the user opens later from History. The
+        // renderer stores it by session id (`ChatGroupsContext`'s
+        // `tabAnnotations`), so it is already waiting when that tab appears.
         let _ = services
             .gui_command(
                 serde_json::json!({
@@ -366,6 +357,55 @@ fn announce_subagent_tab(
             .await;
     });
     (visibility, guard)
+}
+
+/// The `open_tab` / `open_window` half of [`announce_subagent_tab`], split out so
+/// the capped path can skip it without duplicating the badge send.
+async fn announce_open_frame(
+    services: &dyn crate::workspace_services::WorkspaceServices,
+    child_session_id: &str,
+    placement: &'static str,
+    announce_only: bool,
+) {
+    // Frame vocabulary parity with workspace_open (Task 24): "window" is its
+    // own cmd; tab/split ride open_tab. Focus etiquette (Task 29) downgrades
+    // either to a notification when announce-only is on — which is exactly the
+    // `ChildVisibility::AnnounceOnly` path.
+    let open_frame = if placement == "window" {
+        serde_json::json!({
+            "type": "workspace", "cmd": "open_window", "session_id": child_session_id,
+        })
+    } else {
+        serde_json::json!({
+            "type": "workspace", "cmd": "open_tab",
+            "session_id": child_session_id, "placement": placement, "focus": false,
+        })
+    };
+    // ⚠ KNOWN TRADE-OFF, stated because it is otherwise invisible.
+    // `wait_result: false` means a GUI *refusal* — `refuse("split refused:
+    // already at 4 groups")`, or `open_tab` failing for any other reason — is
+    // discarded here, while the caller has already been handed
+    // `ChildVisibility::Visible` (whose `parent_note` is empty). So in that
+    // narrow case the model believes a tab opened when none did, and the cap
+    // slot stays claimed for the child's whole run. `workspace_open` does
+    // better on its own path because `place_in_gui` can afford to park on the
+    // round-trip and thread the answer into `open_result_text`.
+    //
+    // Not fixed here, deliberately: turning the note honest would mean awaiting
+    // this frame before `announce_subagent_tab` returns, which couples every
+    // spawn to the renderer — `emit_and_wait` gives up only after 10 s, so one
+    // wedged window would stall every fan-out. The rule for this path is
+    // fire-and-forget: a refused split or a disconnecting window must never
+    // break a spawn, and a spawn is far more expensive to lose than a misplaced
+    // tab is to notice. The lie is also bounded — the child exists, runs, and is
+    // reachable from History and `workspace_read_conversation` wherever its tab
+    // did or did not land.
+    let _ = services
+        .gui_command(
+            crate::agents::workspace_extension::apply_focus_etiquette(open_frame, announce_only),
+            false,
+        )
+        .await;
 }
 
 const SUMMARY_INSTRUCTIONS: &str = r#"
@@ -703,13 +743,20 @@ async fn execute_subagent(
     let session =
         create_subagent_session(&config, working_dir, &task_config.parent_session_id).await?;
 
+    // Settings overrides are resolved BEFORE the announce, matching the
+    // background path's order. `overridden_task_config` can fail with `?` (an
+    // unknown provider, a model that will not construct), and announcing first
+    // would leave a tab open — and one of the four cap slots claimed until the
+    // guard drops — for a child that never runs a turn. `apply_settings_overrides`
+    // touches only `provider` and `extensions`, so `parent_session_id` below is
+    // the same value either way.
+    let task_config = overridden_task_config(task_config, &params).await?;
+
     // BR-71 decision 24: glass-box by default. The guard lives for the child's
     // whole run, so the slot is released exactly when the child finishes.
     let (visibility, _visible_guard) =
         announce_subagent_tab(&session.id, &task_config.parent_session_id, &params);
     let visibility_note = visibility.parent_note(&session.id);
-
-    let task_config = overridden_task_config(task_config, &params).await?;
 
     // The result envelope encodes success, an incomplete (tool-call-ending)
     // run, or a failure — all as structured content — so this always returns a
@@ -1269,6 +1316,312 @@ mod tests {
             sm.list_sessions().await.unwrap().is_empty(),
             "the refusal must precede session creation"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // The ANNOUNCE CALL SITE (decisions 24 and 26).
+    //
+    // ⚠ Why these exist (2026-07-31 review). Every other test in this block is
+    // a test of a pure function this module also defines — `resolve_visibility`,
+    // `try_claim`, `parent_note`, `parse_visible_child_tabs`. All of them pass
+    // against a perfect implementation that NOTHING CALLS: a child that never
+    // announces, and a cap that is never claimed. The single behavioural rule
+    // the `AnnounceOnly` doc-comment spends twelve lines justifying — a slot is
+    // claimed only for a real tab — lived entirely in an untested branch.
+    // -----------------------------------------------------------------------
+
+    /// A GUI stand-in that records every frame. Only `gui_attached` and
+    /// `gui_command` carry meaning here; the rest of the trait is unreachable
+    /// from `announce_subagent_tab` and panics rather than pretending.
+    #[derive(Default)]
+    struct FakeGui {
+        gui: bool,
+        frames: std::sync::Mutex<Vec<Value>>,
+    }
+
+    impl FakeGui {
+        fn install(gui: bool) -> std::sync::Arc<Self> {
+            let me = std::sync::Arc::new(Self {
+                gui,
+                frames: std::sync::Mutex::new(Vec::new()),
+            });
+            crate::workspace_services::set_for_tests(Some(me.clone()));
+            me
+        }
+        fn frames(&self) -> Vec<Value> {
+            self.frames.lock().unwrap().clone()
+        }
+        fn cmds(&self) -> Vec<String> {
+            self.frames()
+                .iter()
+                .map(|f| f["cmd"].as_str().unwrap_or_default().to_string())
+                .collect()
+        }
+        /// The announce rides a detached `tokio::spawn`, so the frames arrive
+        /// after the call returns. Poll rather than sleep a fixed span.
+        async fn settle(&self, expected: usize) -> Vec<Value> {
+            for _ in 0..400 {
+                if self.frames().len() >= expected {
+                    // One more yield, so an unexpected EXTRA frame still lands
+                    // before an assertion that there are exactly `expected`.
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                    return self.frames();
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            panic!("expected {expected} frames, saw {:?}", self.cmds());
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::workspace_services::WorkspaceServices for FakeGui {
+        fn gui_attached(&self) -> bool {
+            self.gui
+        }
+        fn layout_snapshot(&self) -> Option<Value> {
+            None
+        }
+        fn is_turn_active(&self, _session_id: &str) -> bool {
+            false
+        }
+        fn cancel_turn(&self, _session_id: &str) -> Option<String> {
+            None
+        }
+        fn begin_turn(
+            &self,
+            _session_id: &str,
+            _cancel: CancellationToken,
+        ) -> Result<Box<dyn crate::workspace_services::WorkspaceTurnLease>, String> {
+            unreachable!("the announce path takes no turn lease")
+        }
+        async fn stop_agent(&self, _session_id: &str) -> Result<(), String> {
+            unreachable!("the announce path stops nothing")
+        }
+        async fn start_detached_turn(
+            &self,
+            _session_id: &str,
+            _message: crate::conversation::message::Message,
+        ) -> Result<String, String> {
+            unreachable!("the announce path starts no turn")
+        }
+        async fn start_session(
+            &self,
+            _working_dir: PathBuf,
+            _extensions: Option<Vec<String>>,
+            _knowledge_bases: Vec<String>,
+            _primary: crate::workspace_services::KbPrimaryChoice,
+        ) -> Result<String, String> {
+            unreachable!("the child session already exists by the time we announce")
+        }
+        fn set_knowledge_bases(
+            &self,
+            _session_id: &str,
+            _kbs: &[String],
+            _primary: crate::workspace_services::KbPrimaryChoice,
+        ) -> Result<crate::workspace_services::KbSelectionView, String> {
+            unreachable!("the announce path grants nothing")
+        }
+        fn knowledge_selection(
+            &self,
+            _session_id: &str,
+        ) -> crate::workspace_services::KbSelectionView {
+            Default::default()
+        }
+        async fn gui_command(&self, frame: Value, _wait_result: bool) -> Result<Value, String> {
+            self.frames.lock().unwrap().push(frame);
+            Ok(serde_json::json!({ "ok": true }))
+        }
+    }
+
+    fn spawn_params(visible: Option<bool>, placement: Option<&str>) -> SubagentParams {
+        let mut args = serde_json::Map::new();
+        args.insert("instructions".into(), json!("do the thing"));
+        if let Some(v) = visible {
+            args.insert("visible".into(), json!(v));
+        }
+        if let Some(p) = placement {
+            args.insert("placement".into(), json!(p));
+        }
+        serde_json::from_value(Value::Object(args)).unwrap()
+    }
+
+    /// Decision 24 at the call site: with a GUI attached and nothing opted out,
+    /// the child claims a slot AND the tab frame really goes on the wire, with
+    /// the placement it asked for and `focus: false` (never steals the composer).
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn announcing_a_visible_child_claims_a_slot_and_emits_the_open_frame() {
+        let gui = FakeGui::install(true);
+        let parent = "announce-visible-parent";
+
+        let (visibility, guard) =
+            announce_subagent_tab("child-a", parent, &spawn_params(None, Some("split")));
+
+        assert_eq!(visibility, ChildVisibility::Visible);
+        assert!(guard.is_some(), "a visible child must hold a slot");
+        assert_eq!(visible_children_of(parent), 1);
+        assert_eq!(
+            visibility.parent_note("child-a"),
+            "",
+            "a tab that really opened needs no explanation"
+        );
+
+        let frames = gui.settle(2).await;
+        assert_eq!(gui.cmds(), vec!["open_tab", "annotate_tab"]);
+        assert_eq!(frames[0]["session_id"], "child-a");
+        assert_eq!(frames[0]["placement"], "split");
+        assert_eq!(frames[0]["focus"], false);
+        assert_eq!(frames[1]["badge"], "subagent");
+        assert_eq!(frames[1]["parent_session_id"], parent);
+
+        // The slot is released with the guard, not with the function.
+        drop(guard);
+        assert_eq!(visible_children_of(parent), 0);
+        crate::workspace_services::clear_test_override();
+    }
+
+    /// `placement: "window"` is a DIFFERENT frame, not a field on `open_tab` —
+    /// the same vocabulary split `workspace_open` uses. A single `open_tab`
+    /// carrying `placement: "window"` silently opens a tab.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn a_windowed_child_gets_open_window_not_an_open_tab() {
+        let gui = FakeGui::install(true);
+        let parent = "announce-window-parent";
+
+        let (_visibility, guard) =
+            announce_subagent_tab("child-w", parent, &spawn_params(None, Some("window")));
+
+        let frames = gui.settle(2).await;
+        assert_eq!(gui.cmds(), vec!["open_window", "annotate_tab"]);
+        assert_eq!(frames[0]["session_id"], "child-w");
+        assert!(
+            frames[0].get("placement").is_none(),
+            "open_window carries no placement: {:?}",
+            frames[0]
+        );
+
+        drop(guard);
+        crate::workspace_services::clear_test_override();
+    }
+
+    /// Decision 26 at the call site. The cap+1st child of one parent is pushed
+    /// to the background: no slot, no tab frame — and the model is TOLD, which
+    /// is the half a silent implementation gets wrong. It still gets its badge,
+    /// because a capped child is precisely the one the user opens later from
+    /// History and the renderer stores annotations by session id.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn the_child_past_the_cap_is_backgrounded_but_still_badged() {
+        let gui = FakeGui::install(true);
+        let parent = "announce-cap-parent";
+        let cap = max_visible_child_tabs();
+
+        let mut guards = Vec::new();
+        for i in 0..cap {
+            let (visibility, guard) =
+                announce_subagent_tab(&format!("child-{i}"), parent, &spawn_params(None, None));
+            assert_eq!(visibility, ChildVisibility::Visible, "child {i}");
+            guards.push(guard.expect("within the cap"));
+        }
+        assert_eq!(visible_children_of(parent), cap);
+        gui.settle(cap * 2).await;
+
+        let (visibility, guard) =
+            announce_subagent_tab("child-past-cap", parent, &spawn_params(None, None));
+        assert_eq!(visibility, ChildVisibility::BackgroundCapped { cap });
+        assert!(guard.is_none(), "the capped child holds no slot");
+        assert_eq!(
+            visible_children_of(parent),
+            cap,
+            "a refused claim must not consume a slot either"
+        );
+        let note = visibility.parent_note("child-past-cap");
+        assert!(note.contains("background"), "got: {note}");
+        assert!(note.contains("History"), "got: {note}");
+
+        // Exactly one more frame, and it is the badge — no tab was opened.
+        let frames = gui.settle(cap * 2 + 1).await;
+        assert_eq!(
+            frames.len(),
+            cap * 2 + 1,
+            "a capped child opens no tab: {:?}",
+            gui.cmds()
+        );
+        let last = frames.last().unwrap();
+        assert_eq!(last["cmd"], "annotate_tab");
+        assert_eq!(last["session_id"], "child-past-cap");
+        assert_eq!(last["parent_session_id"], parent);
+
+        drop(guards);
+        assert_eq!(visible_children_of(parent), 0);
+        crate::workspace_services::clear_test_override();
+    }
+
+    /// Decision 7 × 26 at the call site, the interaction the pure test can only
+    /// half-see: announce-only opens no tab, so the child must claim NO slot —
+    /// otherwise a fan-out of five is told "you already have 4 subagent tabs
+    /// open" while zero tabs exist. `with_config_overrides` is a task-local, so
+    /// the setting is pinned without mutating the process environment.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn an_announce_only_child_is_announced_but_claims_no_slot() {
+        let gui = FakeGui::install(true);
+        let parent = "announce-only-parent";
+        let overrides = HashMap::from([(
+            crate::agents::workspace_extension::ANNOUNCE_ONLY_KEY.to_string(),
+            "true".to_string(),
+        )]);
+
+        let (visibility, guard) = crate::config::with_config_overrides(overrides, async {
+            announce_subagent_tab("child-quiet", parent, &spawn_params(None, None))
+        })
+        .await;
+
+        assert_eq!(visibility, ChildVisibility::AnnounceOnly);
+        assert!(guard.is_none(), "announce-only must claim no visible slot");
+        assert_eq!(visible_children_of(parent), 0);
+        assert!(visibility.parent_note("child-quiet").contains("no tab"));
+
+        // It is still ANNOUNCED — `apply_focus_etiquette` downgrades the open
+        // frame to a notification rather than dropping it.
+        let frames = gui.settle(2).await;
+        assert_eq!(frames[0]["cmd"], "notify");
+        assert_eq!(frames[1]["cmd"], "annotate_tab");
+        crate::workspace_services::clear_test_override();
+    }
+
+    /// `visible: false` and "no GUI" both reach the GUI with nothing at all —
+    /// the two early returns. Without this, an implementation that announced
+    /// unconditionally passes every other test in this file.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn an_opted_out_or_headless_child_claims_nothing_and_sends_nothing() {
+        let gui = FakeGui::install(true);
+        let (visibility, guard) = announce_subagent_tab(
+            "child-silent",
+            "announce-optout-parent",
+            &spawn_params(Some(false), None),
+        );
+        assert_eq!(visibility, ChildVisibility::OptedOut);
+        assert!(guard.is_none());
+        assert_eq!(visible_children_of("announce-optout-parent"), 0);
+
+        // A GUI is attached, so silence here is a decision, not an accident.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(gui.frames().is_empty(), "got: {:?}", gui.cmds());
+
+        // Headless: no daemon at all.
+        crate::workspace_services::set_for_tests(None);
+        let (visibility, guard) = announce_subagent_tab(
+            "child-headless",
+            "announce-headless-parent",
+            &spawn_params(None, None),
+        );
+        assert_eq!(visibility, ChildVisibility::Headless);
+        assert!(guard.is_none());
+        assert_eq!(visible_children_of("announce-headless-parent"), 0);
+        crate::workspace_services::clear_test_override();
     }
 
     #[test]
