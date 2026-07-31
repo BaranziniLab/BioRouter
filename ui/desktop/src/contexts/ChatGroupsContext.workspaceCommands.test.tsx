@@ -13,7 +13,22 @@ import { leafGroupIds } from '../components/chatGroups/chatGroupsTypes';
 const mocks = vi.hoisted(() => ({
   observeSession: vi.fn(),
   success: vi.fn(),
+  error: vi.fn(),
   createChatWindow: vi.fn(),
+  /**
+   * ONE array, for the life of the file — never `() => []`.
+   *
+   * The real `useRunningChats` is a `useSyncExternalStore` snapshot
+   * (`chatStreamStore.tsx`: `getRunningSnapshot = () => this.lastRunningSnapshot`),
+   * so its identity is stable across renders and the provider's context `useMemo`
+   * only recomputes when one of its declared deps actually changes. A mock that
+   * returns a fresh `[]` every call makes `runningSessionIds` change on EVERY
+   * render, which recomputes the memo unconditionally and renders its dependency
+   * array inert — including the `tabAnnotations` entry the badge case below
+   * exists to protect. Measured: with `() => []`, deleting `tabAnnotations` from
+   * the deps left all five cases green.
+   */
+  runningChats: [] as { sessionId: string; completedAt?: number }[],
 }));
 
 // The provider imports `useRunningChats` from this module and the executor calls
@@ -22,7 +37,7 @@ const mocks = vi.hoisted(() => ({
 // only `useRunningChats`, which is safe there only because it never dispatches a
 // workspace command.
 vi.mock('../hooks/chatStreamStore', () => ({
-  useRunningChats: () => [],
+  useRunningChats: () => mocks.runningChats,
   defaultChatStreamRegistry: {
     getController: () => ({ observeSession: mocks.observeSession }),
   },
@@ -115,6 +130,12 @@ describe('ChatGroupsProvider — the workspace command executor', () => {
     // with `tabAnnotations` missing from the deps, the state updates and the
     // context value does not, so the badge never reaches a consumer and every
     // other test in Tasks 26 and 37 stays green.
+    //
+    // It only catches it because `useRunningChats` is mocked with a STABLE array
+    // (see `mocks.runningChats`). `annotate_tab` dispatches no reducer action, so
+    // `state` and `activeSessionId` are unchanged here and the memo's only reason
+    // to recompute is `tabAnnotations` — unless a fresh-identity mock gives it
+    // another one, at which point this assertion silently stops meaning anything.
     await waitFor(() => expect(screen.getByTestId('badges').textContent).toContain('subagent'));
   });
 
