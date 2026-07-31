@@ -1092,13 +1092,39 @@ impl MemoryServer {
         Ok(())
     }
 
+    /// Delete every memory in one store — and only the memories.
+    ///
+    /// This used to be `remove_dir_all`, which destroys the store *directory*
+    /// and everything under it whether or not the inventory would call it a
+    /// memory: a note the user left beside the categories, a nested directory, a
+    /// file some later Biorouter feature keeps there, the store's own mutation
+    /// lock. The user approves "delete every global memory"; what they got was
+    /// "delete `~/.config/biorouter/memory`", with the extra losses unnamed and
+    /// uncounted (#63 review, finding 6).
+    ///
+    /// So it enumerates instead, and removes exactly what
+    /// [`MemoryServer::category_names`] would list — the same two rules every
+    /// other reader applies: a `.txt` *suffix*, and a name that
+    /// [`validated_category`] accepts. A file this refuses to delete is a file
+    /// no memory tool would ever have read.
     pub fn clear_all_global_or_local_memories(&self, is_global: bool) -> io::Result<()> {
         let Some(_lock) = self.lock_store_if_present(is_global)? else {
             return Ok(());
         };
-        let base_dir = self.base_dir(is_global);
-        if base_dir.exists() {
-            fs::remove_dir_all(base_dir)?;
+        for category in self.category_names(is_global) {
+            // Through `get_memory_file`, so the #73 containment checks govern
+            // this path too rather than being skipped by a `join` here.
+            match self.get_memory_file(&category, is_global) {
+                Ok(path) => {
+                    if path.exists() {
+                        fs::remove_file(&path)?;
+                    }
+                }
+                // `category_names` already filtered on the same rule, so this is
+                // unreachable in practice; skipping is the safe reading either
+                // way — a name the tools would refuse is not a memory to delete.
+                Err(_) => continue,
+            }
         }
         Ok(())
     }
@@ -2684,6 +2710,72 @@ mod tests {
                 .len(),
             1,
             "nothing may be deleted when nothing matched"
+        );
+    }
+
+    /// `remove_memory_category(category="*")` used `remove_dir_all`, so it
+    /// destroyed the store *directory* — everything in it, whether or not the
+    /// inventory would call it a memory. The user approves "delete every global
+    /// memory"; what they got was "delete `~/.config/biorouter/memory` and
+    /// whatever else is in there". Anything a user, a backup tool or a future
+    /// Biorouter feature put beside the categories went with it, unnamed and
+    /// uncounted (#63 review, finding 6).
+    #[tokio::test]
+    async fn clearing_a_store_removes_its_categories_and_nothing_else() {
+        let temp = tempdir().unwrap();
+        let server = server_at(temp.path());
+        let store = temp.path().join("global");
+
+        server
+            .remember("context", "clinical", "cohort 4217", &[], true)
+            .unwrap();
+        server
+            .remember("context", "personal", "Wanjun", &[], true)
+            .unwrap();
+
+        // Three things beside the categories that a wipe must not take: a file
+        // the inventory does not classify as a memory, a nested directory, and
+        // the store's own mutation lock.
+        fs::write(store.join("NOTES.md"), "not a memory").unwrap();
+        fs::create_dir_all(store.join("archive")).unwrap();
+        fs::write(store.join("archive/old.txt"), "kept by hand").unwrap();
+        assert!(store.join(STORE_LOCK_FILE).exists(), "fixture precondition");
+
+        server
+            .remove_memory_category(Parameters(RemoveMemoryCategoryParams {
+                category: "*".into(),
+                is_global: true,
+            }))
+            .await
+            .unwrap();
+
+        assert!(
+            server.category_names(true).is_empty(),
+            "every memory category must be gone"
+        );
+        assert!(store.exists(), "the store directory itself was removed");
+        assert_eq!(
+            fs::read_to_string(store.join("NOTES.md")).unwrap(),
+            "not a memory",
+            "a file the inventory does not call a memory was destroyed"
+        );
+        assert_eq!(
+            fs::read_to_string(store.join("archive/old.txt")).unwrap(),
+            "kept by hand",
+            "a nested directory was destroyed"
+        );
+        assert!(
+            store.join(STORE_LOCK_FILE).exists(),
+            "the store's own mutation lock was destroyed"
+        );
+
+        // And the other store is untouched, as ever.
+        server
+            .remember("context", "development", "black", &[], false)
+            .unwrap();
+        assert_eq!(
+            server.category_names(false),
+            vec!["development".to_string()]
         );
     }
 
