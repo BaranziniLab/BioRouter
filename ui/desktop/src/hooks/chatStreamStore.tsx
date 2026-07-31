@@ -942,7 +942,14 @@ class ChatStreamController {
   private async streamFromResponse(
     stream: AsyncIterable<MessageEvent>,
     initialMessages: Message[],
-    streamId: number
+    streamId: number,
+    /**
+     * Which kind of connection produced this stream. It changes exactly one
+     * thing — what the END of the stream means when no `Finish` arrived; see
+     * the branch below. Everything else about the pipeline is identical, which
+     * is the point of BR-71 reusing it.
+     */
+    source: 'driver' | 'observer' = 'driver'
   ): Promise<void> {
     let currentMessages = initialMessages;
 
@@ -1000,7 +1007,30 @@ class ChatStreamController {
         }
       }
 
-      if (this.activeStreamId === streamId && !this.abortController?.signal.aborted) {
+      // The stream ended without a `Finish`. For a DRIVER that is a dead turn
+      // and the error card is the truth. For an OBSERVER it is the ordinary
+      // reconnect trigger the loop in `observeSession` is built on — the
+      // generated SSE client ends its generator rather than throwing once
+      // `sseMaxRetryAttempts` is spent, and the daemon replacing a broadcast
+      // receiver ends it too — so painting a turn failure here would put a red
+      // card in the tab on every dropped feed and then silently repair it a
+      // second later, for a session this window does not drive and the user
+      // cannot act on.
+      //
+      // Residual, deliberately not papered over: the observer does not learn
+      // that a turn ENDED while it was disconnected, so if the `Finish` falls
+      // inside the reconnect gap the activity indicator stays as the last frame
+      // left it until the next one arrives. The transcript itself is repaired
+      // by the fresh `UpdateConversation` snapshot on reconnect. Settling to
+      // Idle here instead would be the opposite lie — claiming a turn is over
+      // when all we know is that we stopped listening — and would fire the
+      // whole turn-boundary battery (notification, name poll, finish
+      // listeners) once per dropped connection.
+      if (
+        source === 'driver' &&
+        this.activeStreamId === streamId &&
+        !this.abortController?.signal.aborted
+      ) {
         await this.finishCurrentStream({
           message: 'The connection closed before Biorouter received a completion status.',
           code: 'stream_interrupted',
@@ -1077,7 +1107,9 @@ class ChatStreamController {
             sseMaxRetryAttempts: 1,
           });
           retryMs = 1000;
-          await this.streamFromResponse(stream, this.messagesRef, streamId);
+          // `'observer'`: a stream that ends without a `Finish` is this loop's
+          // reconnect trigger, not a dead turn — see the branch it gates.
+          await this.streamFromResponse(stream, this.messagesRef, streamId, 'observer');
         } catch (error) {
           // Rarely reached: `serverSentEvents` returns `{ stream }` from a lazy
           // async generator, so the await above resolves before a byte is

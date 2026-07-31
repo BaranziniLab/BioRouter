@@ -323,6 +323,49 @@ describe('ChatStreamController.observeSession — who owns the socket', () => {
     }
   });
 
+  it('does not paint a transport error when the observed connection drops', async () => {
+    vi.useFakeTimers();
+    try {
+      const registry = new ChatStreamRegistry();
+      const dropped = createControlledStream();
+      const reconnected = createControlledStream();
+      mocks.observeSessionEvents
+        .mockResolvedValueOnce({ stream: dropped.stream })
+        .mockResolvedValueOnce({ stream: reconnected.stream });
+
+      const controller = registry.getController('obs-dropped-feed');
+      void controller.observeSession();
+      await vi.advanceTimersByTimeAsync(0);
+      dropped.push({
+        type: 'Message',
+        message: assistantMessage('a1', 'mid turn'),
+        token_state: tokenState,
+      });
+      await vi.advanceTimersByTimeAsync(0);
+
+      // The feed drops mid-turn: the stream ends with no `Finish`. For a driver
+      // that means the turn died and the red "connection closed before Biorouter
+      // received a completion status" card is right (pinned in the sibling suite).
+      // For an observer it is the ordinary reconnect trigger this whole loop is
+      // built on — the session is untouched and the next subscribe re-snapshots
+      // it — so painting a turn failure the user cannot act on, and then silently
+      // repairing it behind the card, is telling them something untrue.
+      dropped.close();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(controller.getSnapshot().turnError).toBeUndefined();
+
+      await vi.advanceTimersByTimeAsync(1100);
+      expect(mocks.observeSessionEvents).toHaveBeenCalledTimes(2);
+      expect(controller.getSnapshot().turnError).toBeUndefined();
+
+      controller.stopObserving();
+      reconnected.close();
+      await vi.advanceTimersByTimeAsync(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('does not abort a live user turn when stopObserving is called on a driver', async () => {
     vi.useFakeTimers();
     try {
