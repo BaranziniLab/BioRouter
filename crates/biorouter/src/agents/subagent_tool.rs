@@ -242,6 +242,31 @@ pub fn visible_children_of(parent_session_id: &str) -> usize {
         .unwrap_or(0)
 }
 
+/// The CLOSED placement vocabulary for a spawned child's tab.
+///
+/// It is *checked* rather than forwarded for the same reason `workspace_open`
+/// checks it (`handle_open` in `workspace_extension.rs`, which carries the
+/// original note): `announce_subagent_tab` below branches on
+/// `placement == "window"` and hands everything else to `open_tab` verbatim,
+/// and the GUI planner (`workspaceCommandPlanner.ts`, `case 'open_tab'`) only
+/// special-cases `"split"`. So an unvalidated typo — `"windows"`, `"Window"` —
+/// is not an error the renderer reports; it is a tab, silently, which is the one
+/// outcome the caller did not ask for. The tool schema's `enum` is advice to the
+/// model, not a constraint on the JSON that arrives: `serde` does not enforce it.
+///
+/// Returns `&'static str` so the accepted spellings are the only values that can
+/// ever reach a frame.
+fn validate_placement(requested: Option<&str>) -> Result<&'static str, String> {
+    match requested.unwrap_or("tab") {
+        "tab" => Ok("tab"),
+        "split" => Ok("split"),
+        "window" => Ok("window"),
+        other => Err(format!(
+            "unknown placement {other:?} — use \"tab\" (default), \"split\" or \"window\""
+        )),
+    }
+}
+
 /// BR-71 §4.5 step 3: announce the child over the WorkspaceBridge. Background
 /// open (never steals the composer) + a subagent badge carrying the parent link.
 /// Returns the resolved visibility so the caller can fold
@@ -296,10 +321,12 @@ fn announce_subagent_tab(
         return (visibility, guard);
     };
 
-    let placement = params
-        .placement
-        .clone()
-        .unwrap_or_else(|| "tab".to_string());
+    // `handle_subagent_tool` already rejected anything outside the vocabulary,
+    // before a session was created. Defaulting here as well means no frame can
+    // carry an unknown placement even if a future caller reaches this function
+    // without going through that check — the failure mode is a silent tab, so
+    // the belt is cheaper than the diagnosis.
+    let placement = validate_placement(params.placement.as_deref()).unwrap_or("tab");
     let child = child_session_id.to_string();
     let parent = parent_session_id.to_string();
     tokio::spawn(async move {
@@ -579,6 +606,18 @@ pub fn handle_subagent_tool(
         return ToolCallResult::from(Err(ErrorData {
             code: ErrorCode::INVALID_PARAMS,
             message: Cow::from("'parameters' can only be used with 'subworkflow'"),
+            data: None,
+        }));
+    }
+
+    // BR-71 decision 24: checked HERE, before a session, an inflight slot or a
+    // visible-tab slot exists — the same order `workspace_open` uses. A rejected
+    // typo costs the caller one retry; a forwarded one costs it a tab where it
+    // asked for a window, and it is never told.
+    if let Err(e) = validate_placement(parsed_params.placement.as_deref()) {
+        return ToolCallResult::from(Err(ErrorData {
+            code: ErrorCode::INVALID_PARAMS,
+            message: Cow::from(e),
             data: None,
         }));
     }
@@ -1156,6 +1195,80 @@ mod tests {
         drop(guard_a);
         drop(guard_b);
         assert_eq!(visible_children_of("parent-1"), 0);
+    }
+
+    /// `placement` is a closed vocabulary, and the failure of an open one is
+    /// SILENT: `announce_subagent_tab` branches on `== "window"` and forwards
+    /// everything else verbatim as `open_tab`'s `placement`, which the GUI
+    /// planner only special-cases for `"split"`. So `"Window"` is not a renderer
+    /// error — it is a tab, which is the one thing the caller did not ask for.
+    /// `workspace_open` guards this on its own path; the spawn path must too.
+    #[test]
+    fn an_unknown_placement_is_refused_rather_than_silently_becoming_a_tab() {
+        assert_eq!(validate_placement(None), Ok("tab"));
+        assert_eq!(validate_placement(Some("tab")), Ok("tab"));
+        assert_eq!(validate_placement(Some("split")), Ok("split"));
+        assert_eq!(validate_placement(Some("window")), Ok("window"));
+        // The near-misses a model actually produces. Each one used to become a
+        // tab with no error anywhere.
+        for bad in ["windows", "Window", "WINDOW", "Split", " tab", "pane", ""] {
+            let err = validate_placement(Some(bad))
+                .expect_err(&format!("placement {bad:?} was accepted"));
+            assert!(err.contains("unknown placement"), "got: {err}");
+            // The message teaches the vocabulary rather than just refusing.
+            assert!(err.contains("\"split\""), "got: {err}");
+        }
+    }
+
+    /// The CALL SITE, not the predicate: a bad placement must be refused by the
+    /// tool entry point, before a child session, an inflight slot or a
+    /// visible-tab slot exists. Deleting the check in `handle_subagent_tool`
+    /// leaves the pure test above green.
+    #[tokio::test]
+    async fn the_spawn_tool_refuses_an_unknown_placement_before_creating_anything() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let sm = std::sync::Arc::new(crate::session::SessionManager::new(
+            temp.path().to_path_buf(),
+        ));
+        let config = AgentConfig::new(
+            sm.clone(),
+            crate::config::permission::PermissionManager::instance(),
+            None,
+            crate::config::BioRouterMode::Auto,
+        );
+        let provider: std::sync::Arc<dyn crate::providers::base::Provider> = std::sync::Arc::new(
+            crate::providers::testprovider::TestProvider::new_replaying(
+                temp.path().join("no-such-cassette.json").to_string_lossy(),
+            )
+            .unwrap(),
+        );
+        let task_config = TaskConfig::new(provider, "parent-placement", temp.path(), vec![]);
+
+        let refused = handle_subagent_tool(
+            &config,
+            json!({ "instructions": "do the thing", "placement": "Window" }),
+            task_config,
+            HashMap::new(),
+            temp.path().to_path_buf(),
+            None,
+        );
+        let err = refused
+            .result
+            .await
+            .expect_err("an unknown placement must not spawn");
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+        assert!(
+            err.message.contains("unknown placement"),
+            "got: {}",
+            err.message
+        );
+
+        // …and nothing was created on the way to the refusal: a child session
+        // would be an orphan the parent is never told about.
+        assert!(
+            sm.list_sessions().await.unwrap().is_empty(),
+            "the refusal must precede session creation"
+        );
     }
 
     #[test]
