@@ -166,33 +166,41 @@ All three documents are on `main`. Confirm you have them before writing a line:
 
 ```bash
 cd /Users/wgu/Desktop/BioRouter
-git log --oneline -5 -- docs/security/privacy-tiers-execution-plan.md
-# The most recent entry must be 0d37998e ("land DR-16, the user-only tier raise, on main").
 git rev-parse --abbrev-ref HEAD          # main
-grep -c "DR-16" docs/security/privacy-tiers-execution-plan.md   # 4 — if 0, your checkout is stale
+git log --oneline -5 -- docs/security/privacy-tiers-execution-plan.md
+# Every ruling through DR-18 must be present. Measured on main, 2026-07-31:
+grep -c DR-16 docs/security/privacy-tiers-execution-plan.md   # 30
+grep -c DR-17 docs/security/privacy-tiers-execution-plan.md   # 64
+grep -c DR-18 docs/security/privacy-tiers-execution-plan.md   # 19
 ```
 
-A stale checkout is the cheapest possible way to lose a day, and this feature has already lost a
-ruling to one (below).
+⚠ **Treat those three counts as "must be non-zero", not as equalities.** The plan is being amended
+while you read this, so an exact match is not the test — a **zero** is, and a zero on DR-17 or DR-18
+means your checkout predates the scope narrowing and every judgement you make from it will be wrong
+about what is in scope. A stale checkout is the cheapest possible way to lose a day, and this feature
+has already lost a ruling to one.
 
-### Do **not** use `feat/privacy-tiers`, and do not use `/Users/wgu/Desktop/BioRouter-privacy`
+### `feat/privacy-tiers` is gone, and there is nothing to recover from it
 
-The branch name and the worktree both look like the obvious place to work. They are not.
+Both the branch and the `/Users/wgu/Desktop/BioRouter-privacy` worktree have been **deleted** —
+verified 2026-07-31: `git branch -a --list '*privacy*'` is empty (no local or remote ref) and the
+worktree path does not exist. This subsection is history, not instruction. It is kept only so that
+nobody who finds the name in an older document goes looking.
 
-- The branch carried the **documents only**. `git diff --name-only main...feat/privacy-tiers` shows no
-  production code that belongs to #56 — the non-doc files in that diff are `main`'s own commits the
-  branch does not have.
-- It is **stale in both directions**, measured: `git rev-list --left-right --count main...feat/privacy-tiers`
-  → `63 1`. `main` is 63 commits ahead. The branch's copy of `privacy-tiers.md` is 1,881 lines against
-  `main`'s 2,257 — it is missing the whole two-layer read-deny rewrite (`35bf782e`, `6d6a7eca`,
-  `72dc9de2`).
+What was on it, and why none of it is wanted:
+
+- It carried the **documents only** — no #56 production code at any point. That is the measurement
+  behind the register's note that every killed approach was a document proposal.
+- It was stale in both directions, `main` far ahead, and its copy of `privacy-tiers.md` was missing
+  the whole two-layer read-deny rewrite (`35bf782e`, `6d6a7eca`, `72dc9de2`).
 - Its one unmerged commit was a **settled operator ruling that never reached main**: `500e9b1d`
-  recorded DR-16 (the user-only tier raise) and the merge that landed 18,000 lines of plan did not
-  carry it. It has now been cherry-picked onto `main` as `0d37998e`. Nothing else on the branch is
-  wanted.
+  recorded DR-16 (the user-only tier raise), and the merge that landed 18,000 lines of plan did not
+  carry it. It was cherry-picked onto `main` before the branch was deleted; the ruling is on `main`
+  now, which is what the `grep -c DR-16` check above confirms.
 
-Continuing on that branch would fork the docs — you would be editing an execution plan whose design
-document is 376 lines behind the one everyone else reads.
+The lesson outlives the branch and is the reason it is still written down: **a ruling can be lost by
+a merge**, and the only thing that catches it is grepping the tree you are about to work in for the
+rulings you expect to find.
 
 ### One fresh branch and worktree per stage
 
