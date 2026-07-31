@@ -574,10 +574,13 @@ impl WorkspaceClient {
         // NOTE for the unit tests: `AgentManager::instance()` resolves
         // `Paths::data_dir()` and the process-global `SessionManager::instance()`,
         // and its first initialization runs `run_first_run_init` (seeds built-in
-        // skills, installs the Soul KB + a 3 AM schedule). Run every test that
-        // reaches this handler under a sandboxed `BIOROUTER_PATH_ROOT` (or
-        // `XDG_CONFIG_HOME`) so it cannot touch the developer's real
-        // `~/.config/biorouter`. The same caveat applies to Tasks 14, 15 and 17.
+        // skills, installs the Soul KB + a 3 AM schedule) — so an unsandboxed run
+        // writes into the developer's real `~/.config/biorouter`. This is no
+        // longer left to the caller: `crate::test_sandbox`'s `ctor` pins
+        // `BIOROUTER_PATH_ROOT` under a temp dir before any test in the lib
+        // binary runs, and an outer `BIOROUTER_PATH_ROOT` (the Task 33 gate's)
+        // still wins. The same hazard applies to Tasks 14, 15, 17 and 33, all of
+        // which are covered by that one ctor.
         let agent_manager = crate::execution::manager::AgentManager::instance()
             .await
             .map_err(|e| format!("agent manager unavailable: {e}"))?;
