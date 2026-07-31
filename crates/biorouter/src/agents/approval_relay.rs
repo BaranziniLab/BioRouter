@@ -286,11 +286,30 @@ impl DelegationPolicy {
 
 // ---------------------------------------------------------------- the relay
 
+/// Where a remembered decision applies: the delegation tree, and the directory
+/// the call was judged in.
+///
+/// This is **scope, not identity** — the ask's identity is [`AskKey`] and this
+/// task invents no second one. `root_session_id` was always here; `working_dir`
+/// joins it because a memo hit replays a human's grant with **no inspection at
+/// all**, and [`DelegationPolicy::ask_ancestor`] documents at length why the
+/// directory may not be dropped: BR-24 grants are matched against the paths a
+/// call actually names, resolved against `session.working_dir`. Without it two
+/// sibling children of one root with different working dirs share a memo entry
+/// for a byte-identical *relative-path* call, so approving `rm -rf build` once
+/// in `/work/a` silently deletes `/work/b/build` — amplification along exactly
+/// the axis `ask_ancestor` is built to avoid, arriving through the back door.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct MemoScope {
+    root_session_id: String,
+    working_dir: String,
+}
+
 struct Pending {
     key: AskKey,
     class: AskClass,
-    /// Root of the delegation chain — the memo's scope (A-5).
-    root_session_id: String,
+    /// Where a decision on this ask may be replayed (A-5).
+    scope: MemoScope,
     /// Sessions currently rendering a card for this ask (A-4). At most two: the
     /// origin's own tab, and wherever a human was asked.
     surfaces: Vec<String>,
@@ -302,10 +321,10 @@ struct Pending {
 struct Relay {
     pending: HashMap<AskId, Pending>,
     /// A-5: decisions already made in a delegation tree, keyed by
-    /// `(root_session_id, AskKey)`. In memory and for this process only —
+    /// [`MemoScope`] + [`AskKey`]. In memory and for this process only —
     /// deliberately NOT `ToolPermissionStore`, whose grants are machine-wide
     /// and permanent.
-    memo: HashMap<(String, AskKey), Permission>,
+    memo: HashMap<(MemoScope, AskKey), Permission>,
 }
 
 static RELAY: LazyLock<Mutex<Relay>> = LazyLock::new(|| Mutex::new(Relay::default()));
@@ -334,13 +353,25 @@ pub enum ResolveOutcome {
     Unknown,
 }
 
-pub fn register(origin: AskId, key: AskKey, class: AskClass, root_session_id: String) {
+/// Start tracking an ask. `working_dir` is the **origin session's** working
+/// directory: it scopes any memo this ask produces, so a grant is replayed only
+/// where the paths it named still mean the same thing.
+pub fn register(
+    origin: AskId,
+    key: AskKey,
+    class: AskClass,
+    root_session_id: String,
+    working_dir: String,
+) {
     lock().pending.insert(
         origin,
         Pending {
             key,
             class,
-            root_session_id,
+            scope: MemoScope {
+                root_session_id,
+                working_dir,
+            },
             surfaces: Vec::new(),
             decision: None,
         },
@@ -423,8 +454,8 @@ pub fn resolve(origin: &AskId, decision: Permission, decided_by: &str) -> Resolv
         // makes this ask closed; `forget` is what makes it gone.
         // Decision 31: an always-confirm ask is answered once per call, never
         // remembered for the tree.
-        let memo_key = (entry.class == AskClass::Delegable)
-            .then(|| (entry.root_session_id.clone(), entry.key.clone()));
+        let memo_key =
+            (entry.class == AskClass::Delegable).then(|| (entry.scope.clone(), entry.key.clone()));
         (notify, memo_key)
     };
     if let Some(key) = memo_key {
@@ -433,12 +464,15 @@ pub fn resolve(origin: &AskId, decision: Permission, decided_by: &str) -> Resolv
     ResolveOutcome::Resolved { decision, notify }
 }
 
-/// A-5: a decision already made for this exact ask, anywhere in this tree.
-pub fn remembered(root_session_id: &str, key: &AskKey) -> Option<Permission> {
-    lock()
-        .memo
-        .get(&(root_session_id.to_string(), key.clone()))
-        .cloned()
+/// A-5: a decision already made for this exact ask, anywhere in this tree —
+/// and in the same working directory, so that replaying it cannot mean
+/// something the human was never shown. See [`MemoScope`].
+pub fn remembered(root_session_id: &str, working_dir: &str, key: &AskKey) -> Option<Permission> {
+    let scope = MemoScope {
+        root_session_id: root_session_id.to_string(),
+        working_dir: working_dir.to_string(),
+    };
+    lock().memo.get(&(scope, key.clone())).cloned()
 }
 
 /// Drop a finished ask. Idempotent — called once per prompt beside
@@ -492,15 +526,19 @@ pub async fn begin_delegated_approval(
         request_id: request.id.clone(),
     };
 
+    // The directory the call's paths resolve against, and therefore the scope a
+    // decision about it may be replayed in.
+    let working_dir = session.working_dir.to_string_lossy().to_string();
+
     // A-5: the same ask, already answered in this tree.
     if DelegationPolicy::may_decide(class) {
-        if let Some(decision) = remembered(&root, &key) {
+        if let Some(decision) = remembered(&root, &working_dir, &key) {
             deliver(agent, &origin, decision.clone()).await;
             return Delegation::DecidedByAncestor(decision);
         }
     }
 
-    register(origin.clone(), key, class, root.clone());
+    register(origin.clone(), key, class, root.clone(), working_dir);
     // A-4, surface one: the sub-agent's own conversation tab.
     add_surface(&origin, &session.id);
 
@@ -832,6 +870,7 @@ mod tests {
             AskKey::for_request(&request("call-1", "acme__widget", serde_json::json!({}))).unwrap(),
             AskClass::Delegable,
             "root-1".to_string(),
+            "/work/a".to_string(),
         );
         add_surface(&origin, "child-1"); // the subagent's own tab
         add_surface(&origin, "root-1"); // where the escalation surfaced
@@ -866,14 +905,24 @@ mod tests {
         );
 
         // A-5: satisfied for the whole chain, by ask identity.
+        let same_ask =
+            AskKey::for_request(&request("call-9", "acme__widget", serde_json::json!({}))).unwrap();
         assert_eq!(
-            remembered(
-                "root-1",
-                &AskKey::for_request(&request("call-9", "acme__widget", serde_json::json!({})))
-                    .unwrap()
-            ),
+            remembered("root-1", "/work/a", &same_ask),
             Some(crate::permission::Permission::AllowOnce)
         );
+        // …but NOT into a sibling's working directory. A memo hit replays the
+        // grant with no inspection at all, and the very same byte-identical call
+        // means a different set of files there. This is the directory-axis
+        // amplification `DelegationPolicy::ask_ancestor` refuses to allow when
+        // it asks an ancestor; the memo must not reintroduce it.
+        assert_eq!(
+            remembered("root-1", "/work/b", &same_ask),
+            None,
+            "a grant made in one working directory must not replay in another"
+        );
+        // …and not into another tree, which was already true.
+        assert_eq!(remembered("root-9", "/work/a", &same_ask), None);
         forget(&origin);
     }
 
@@ -893,13 +942,14 @@ mod tests {
             key.clone(),
             AskClass::HumanOnly,
             "root-2".into(),
+            "/work/b".into(),
         );
         add_surface(&origin, "child-2");
         assert!(matches!(
             resolve(&origin, crate::permission::Permission::AllowOnce, "root-2"),
             ResolveOutcome::Resolved { .. }
         ));
-        assert_eq!(remembered("root-2", &key), None);
+        assert_eq!(remembered("root-2", "/work/b", &key), None);
         forget(&origin);
     }
 
@@ -918,6 +968,7 @@ mod tests {
             AskKey::for_request(&request("call-3", "acme__widget", serde_json::json!({}))).unwrap(),
             AskClass::Delegable,
             "root-3".into(),
+            "/work/c".into(),
         );
         add_surface(&origin, "child-3");
         add_surface(&origin, "root-3");
@@ -957,6 +1008,7 @@ mod tests {
             AskKey::for_request(&request("call-4", "acme__widget", serde_json::json!({}))).unwrap(),
             AskClass::Delegable,
             "root-4".into(),
+            "/work/d".into(),
         );
         add_surface(&origin, "child-4");
         assert_eq!(lookup("call-4", "child-4"), Some(origin.clone()));
@@ -989,6 +1041,7 @@ mod tests {
                     .unwrap(),
                 AskClass::Delegable,
                 "root-5".into(),
+                "/work/e".into(),
             );
             add_surface(origin, child);
             add_surface(origin, "root-5");
