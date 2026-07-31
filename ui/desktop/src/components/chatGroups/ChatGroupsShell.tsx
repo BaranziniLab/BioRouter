@@ -282,6 +282,7 @@ export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
         groupId={groupId}
         groupActive={isActiveGroup}
         runningSessionIds={groups.runningSessionIds}
+        tabAnnotations={groups.tabAnnotations}
         onSelect={handleSelect}
         onClose={handleClose}
         onReorder={handleReorder}
