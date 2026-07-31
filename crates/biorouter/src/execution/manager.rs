@@ -127,9 +127,30 @@ impl AgentManager {
     /// subagent, or a consulted Agent Drafter worker) into the registry under
     /// its session id, so every server resolution path — `POST /interrupt`,
     /// `POST /reply`, workspace steer — returns the LIVE instance instead of
-    /// minting a default agent that no running loop drains. Overwrites any
-    /// placeholder entry an early racing resolution created (the live child
-    /// wins).
+    /// minting a default agent that no running loop drains.
+    ///
+    /// **It SHADOWS a racing placeholder; it does not replace one.** This is a
+    /// correction (2026-07-31 review): the comment here used to say "overwrites
+    /// any placeholder entry an early racing resolution created", and no such
+    /// mechanism exists. [`Self::get_or_create_agent`] consults the pin, drops
+    /// that guard, and only then reads the cache — so a resolution landing
+    /// between the run's `begin_turn` and its `register_agent` mints a bare
+    /// agent and `put`s it in the LRU under the same id. Nothing here evicts it.
+    /// The pin outranks it for every read while the run lasts (which is the
+    /// window this whole API is about), and it resurfaces once the pin goes.
+    ///
+    /// Both halves of that are deliberate, and the tests say so
+    /// (`a_registration_shadows_a_racing_placeholder_it_does_not_replace_it`):
+    ///
+    /// - Not evicting is *required*. From in here a placeholder is
+    ///   indistinguishable from the entry a consulted Agent Drafter worker got
+    ///   from an ordinary `get_agent` (`routes/apps.rs:1663`), which
+    ///   `deregistering_does_not_evict_a_cache_entry_it_did_not_create` requires
+    ///   survive — evicting would nuke a cached worker on every consult.
+    /// - Leaving it is *harmless*. A placeholder is exactly what
+    ///   `get_or_create_agent` would have produced for that id anyway (same
+    ///   constructor, same default provider), so a post-run resolution is no
+    ///   worse off than if the run had never registered at all.
     ///
     /// **Pinned out of the LRU** (decision 10). The `sessions` cache holds 100
     /// agents and evicts the least-recently-used; a registered child is
@@ -543,6 +564,79 @@ mod tests {
         assert!(
             Arc::ptr_eq(&cached, &after),
             "the LRU entry predates the registration and must outlive it"
+        );
+    }
+
+    /// What a registration does to an entry that is ALREADY in the LRU under the
+    /// same id: it shadows it, it does not replace it.
+    ///
+    /// The entry in question is the placeholder a resolution racing the
+    /// registration leaves behind — `get_or_create_agent` consults the pin,
+    /// drops that guard, and only then reads the cache, so a `/reply` or a steer
+    /// landing between the run's `begin_turn` and its `register_agent` mints a
+    /// bare agent and caches it under the child's id.
+    ///
+    /// This exists because the doc on `register_agent` claimed the opposite
+    /// ("overwrites any placeholder entry…") for a mechanism that was never
+    /// written. Behaviour was fine; the sentence was evidence for a property
+    /// nothing checked. Now something checks it — in both directions, because
+    /// each direction is load-bearing for a different caller: the pin must win
+    /// DURING the run (this task's whole point), and the cache entry must
+    /// survive AFTER it (`deregistering_does_not_evict_a_cache_entry_it_did_not_create`
+    /// — from in here a placeholder and a consulted worker's own cached agent
+    /// are the same thing).
+    #[tokio::test]
+    async fn a_registration_shadows_a_racing_placeholder_it_does_not_replace_it() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = create_test_manager(&temp_dir).await;
+
+        // The race: a resolution gets there first and caches a bare agent.
+        let placeholder = manager
+            .get_or_create_agent("child-2".to_string())
+            .await
+            .unwrap();
+
+        let session_manager = Arc::new(SessionManager::new(temp_dir.path().to_path_buf()));
+        let live = Arc::new(crate::agents::Agent::with_config(
+            crate::agents::AgentConfig::new(
+                session_manager,
+                crate::config::permission::PermissionManager::instance(),
+                None,
+                crate::config::BioRouterMode::Auto,
+            ),
+        ));
+        manager
+            .register_agent("child-2".to_string(), live.clone())
+            .await;
+
+        // For the run's whole duration the LIVE child wins anyway — the pin is
+        // consulted before the cache, so losing the race costs nothing.
+        let during = manager
+            .get_or_create_agent("child-2".to_string())
+            .await
+            .unwrap();
+        assert!(
+            Arc::ptr_eq(&live, &during),
+            "the pin must outrank a cache entry that got there first, or a steer \
+             mid-run reaches the placeholder no loop drains"
+        );
+        assert!(
+            Arc::ptr_eq(&live, &manager.peek_agent("child-2").await.expect("pinned")),
+            "…and on the peek path too, which is how `workspace_send_prompt` reads \
+             the target's permission mode"
+        );
+
+        // Afterwards the placeholder is still there: shadowed, never replaced.
+        manager.deregister_agent_if_same("child-2", &live).await;
+        let after = manager
+            .get_or_create_agent("child-2".to_string())
+            .await
+            .unwrap();
+        assert!(
+            Arc::ptr_eq(&placeholder, &after),
+            "the placeholder must resurface — `register_agent` deliberately does \
+             not evict the LRU, because from in here it cannot tell a placeholder \
+             from a consulted worker's own cached agent"
         );
     }
 
