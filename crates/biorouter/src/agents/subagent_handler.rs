@@ -118,6 +118,51 @@ impl Drop for BusTurnBracket {
     }
 }
 
+/// RAII release of a child's `AgentManager` registration, on every exit path a
+/// run can take — including a panic unwinding through it and the future being
+/// dropped outright.
+///
+/// Module scope, not a nested `struct` inside `get_agent_messages`, so the
+/// no-runtime path below can be tested.
+struct Deregister {
+    manager: Option<(
+        std::sync::Arc<crate::execution::manager::AgentManager>,
+        std::sync::Arc<Agent>,
+    )>,
+    session_id: String,
+}
+
+impl Drop for Deregister {
+    fn drop(&mut self) {
+        let Some((manager, agent)) = self.manager.take() else {
+            return;
+        };
+        let session_id = std::mem::take(&mut self.session_id);
+        // `tokio::spawn` PANICS when there is no runtime, and this guard can be
+        // dropped without one: a future dropped during runtime shutdown, or
+        // moved out of the runtime that built it. A panic inside `Drop` while
+        // another panic unwinds ABORTS the process, so an unconditional spawn
+        // here turns a shutdown race into a crash. Ask for the handle instead.
+        //
+        // The release is spawned, not awaited, because `Drop` cannot be async —
+        // so a child stays resolvable for a scheduler-dependent moment after its
+        // run ends (which is why the tests poll rather than assume) and, with no
+        // runtime, not released at all. Leaking a pin in a process that is
+        // exiting costs nothing; aborting it costs the user's session.
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                handle.spawn(async move {
+                    manager.deregister_agent_if_same(&session_id, &agent).await;
+                });
+            }
+            Err(_) => tracing::debug!(
+                "no tokio runtime while releasing the subagent registration for {session_id}; \
+                 the pin is left to the process exit"
+            ),
+        }
+    }
+}
+
 /// Standalone function to run a complete subagent task, returning a structured
 /// result envelope. A run that fails, or one that ends on a tool call without a
 /// final text message, still yields a meaningful `SubagentResult` (BR-40) —
@@ -403,23 +448,6 @@ fn get_agent_messages(
             }
         };
         // Deregister on every exit path (scopeguard-free: a small Drop struct).
-        struct Deregister {
-            manager: Option<(
-                std::sync::Arc<crate::execution::manager::AgentManager>,
-                std::sync::Arc<Agent>,
-            )>,
-            session_id: String,
-        }
-        impl Drop for Deregister {
-            fn drop(&mut self) {
-                if let Some((manager, agent)) = self.manager.take() {
-                    let session_id = std::mem::take(&mut self.session_id);
-                    tokio::spawn(async move {
-                        manager.deregister_agent_if_same(&session_id, &agent).await;
-                    });
-                }
-            }
-        }
         let _deregister = Deregister {
             manager: registration,
             session_id: session_id.clone(),
@@ -1003,6 +1031,51 @@ mod tests {
         // assertion above would already have fired — but make the failure mode
         // unambiguous for whoever reads the output.
         manager.deregister_agent_if_same(&child.id, &sentinel).await;
+    }
+
+    /// Releasing a registration with no runtime alive must not panic.
+    ///
+    /// `tokio::spawn` panics when there is no reactor, and this guard is dropped
+    /// from `Drop` — where a panic during an unwind ABORTS the process. The
+    /// shapes that reach it are real: a future dropped by runtime shutdown, or
+    /// one moved out of the runtime that created it. The pin then leaks, which
+    /// is the right trade for a process that is going away; crashing is not.
+    ///
+    /// The runtime is dropped BEFORE the guard, which is exactly the ordering
+    /// that makes `tokio::spawn` panic here — swap `Handle::try_current` back
+    /// for a bare `tokio::spawn` and this test fails on that panic.
+    #[test]
+    fn releasing_a_registration_without_a_runtime_does_not_panic() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let guard = runtime.block_on(async {
+            let sm = std::sync::Arc::new(SessionManager::new(temp.path().to_path_buf()));
+            let manager = std::sync::Arc::new(
+                crate::execution::manager::AgentManager::new(
+                    sm.clone(),
+                    temp.path().join("schedule.json"),
+                    Some(4),
+                )
+                .await
+                .unwrap(),
+            );
+            let agent = std::sync::Arc::new(Agent::with_config(AgentConfig::new(
+                sm,
+                crate::config::permission::PermissionManager::instance(),
+                None,
+                crate::config::BioRouterMode::Auto,
+            )));
+            manager
+                .register_agent("orphan-child".to_string(), agent.clone())
+                .await;
+            Deregister {
+                manager: Some((manager, agent)),
+                session_id: "orphan-child".to_string(),
+            }
+        });
+
+        drop(runtime); // the runtime is gone …
+        drop(guard); // … and this must still be survivable.
     }
 
     /// The turn id [`LeaseSpy`]'s lease hands out. Distinct from the synthetic
