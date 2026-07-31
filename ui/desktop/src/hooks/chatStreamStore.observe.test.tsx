@@ -231,6 +231,37 @@ describe('ChatStreamController.observeSession', () => {
 describe('ChatStreamController.observeSession — who owns the socket', () => {
   afterEach(() => vi.clearAllMocks());
 
+  it('caps the generated SSE client at one attempt and hands it an abortable signal', async () => {
+    // Both options are load-bearing and both are invisible to every other test
+    // here, because they are consumed by the generated client this file mocks —
+    // delete either and the suite stays green while the feature stops working.
+    //
+    // `sseMaxRetryAttempts` has NO default in `api/core/serverSentEvents.gen.ts`:
+    // omitted, the client reconnects forever on its own 3 s→30 s schedule, the
+    // stream never ends, and the backoff loop below it never regains control on
+    // a transport error. Two reconnect policies, only one of which runs, and it
+    // is not the one this task documents. `/reply` passes the same value.
+    //
+    // The signal is what makes a detach or a takeover actually close the socket,
+    // so it is asserted by aborting through it rather than by its mere presence.
+    const registry = new ChatStreamRegistry();
+    const open = createControlledStream();
+    mocks.observeSessionEvents.mockResolvedValue({ stream: open.stream });
+
+    const controller = registry.getController('obs-transport-options');
+    void controller.observeSession();
+    await Promise.resolve();
+
+    const options = mocks.observeSessionEvents.mock.calls[0][0];
+    expect(options.sseMaxRetryAttempts).toBe(1);
+    expect(options.path).toEqual({ session_id: 'obs-transport-options' });
+    const signal = options.signal as AbortSignal;
+    expect(signal.aborted).toBe(false);
+    controller.stopObserving();
+    expect(signal.aborted).toBe(true);
+    open.close();
+  });
+
   it('can re-attach after Stop tore the observer loop down mid-stream', async () => {
     vi.useFakeTimers();
     try {
