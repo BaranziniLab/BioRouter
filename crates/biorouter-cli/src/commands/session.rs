@@ -200,10 +200,21 @@ pub async fn handle_session_list(
 
     // The daemon owns liveness. With none reachable, say "unknown" rather than
     // printing "done" over a run that is still going.
+    //
+    // ⚠ The reason is reported ONCE on stderr rather than guessed at per row.
+    // "no daemon" is frequently the wrong diagnosis: an agent-spawned shell has
+    // `BIOROUTER_SERVER__SECRET_KEY` stripped by `strip_daemon_private_env`, so
+    // this fails with a daemon running perfectly well, and a row that blamed a
+    // missing daemon would send someone hunting a problem that does not exist.
+    // stderr, so a `--format json` consumer reading stdout is unaffected.
     let live: Option<std::collections::HashSet<String>> =
-        crate::commands::session_watch::running_session_ids()
-            .await
-            .ok();
+        match crate::commands::session_watch::running_session_ids().await {
+            Ok(ids) => Some(ids),
+            Err(err) => {
+                eprintln!("note: subagent liveness is unknown — {err}");
+                None
+            }
+        };
 
     let rows: Vec<SessionRow> = sessions
         .iter()

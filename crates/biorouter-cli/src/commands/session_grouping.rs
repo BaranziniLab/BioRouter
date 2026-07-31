@@ -130,7 +130,12 @@ pub fn render_child(row: &SessionRow, liveness: Liveness) -> String {
     let state = match liveness {
         Liveness::Running => "● live",
         Liveness::Finished => "○ done",
-        Liveness::Unknown => "· state unknown (no daemon)",
+        // ⚠ Not "(no daemon)". A missing daemon is only one of several reasons
+        // liveness can be unknown — a stripped secret, a non-200 and an
+        // unreadable body reach here too — and naming the wrong one sends the
+        // reader after a problem that does not exist. `handle_session_list`
+        // prints the actual reason once, on stderr.
+        Liveness::Unknown => "· state unknown",
     };
     format!(
         "  └─ {} [{}]  {}  {} msgs  {}",

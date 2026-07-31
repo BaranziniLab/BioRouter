@@ -249,10 +249,15 @@ fn print_frames(frames: &[serde_json::Value], stop_on_terminal: bool) -> bool {
 
 /// The sessions holding a turn right now, read from the daemon (BR-71 Task 38b).
 ///
-/// Returns `Err` — never an empty set — when no daemon answers, so the caller
-/// can render `state unknown` instead of printing "done" over a run that is
-/// still going. Deliberately a one-shot read rather than `stream_frames`: the
-/// response is a single JSON object, not SSE.
+/// Returns `Err` — never an empty set — whenever the answer is not actually
+/// known: no daemon listening, no usable secret, a non-200, a stalled read, or
+/// a body this client cannot parse. The caller renders those as `state unknown`
+/// instead of printing "done" over a run that is still going. `Ok(empty set)`
+/// therefore means one specific thing: the daemon answered and nothing is
+/// running.
+///
+/// Deliberately a one-shot read rather than `stream_frames`: the response is a
+/// single JSON object, not SSE.
 pub async fn running_session_ids() -> Result<std::collections::HashSet<String>> {
     let secret = secret_key()?;
     let port = configured_port();
@@ -262,20 +267,33 @@ pub async fn running_session_ids() -> Result<std::collections::HashSet<String>> 
              liveness is not knowable from here"
         ));
     }
-    let mut stream = tokio::net::TcpStream::connect(format!("{DAEMON_HOST}:{port}")).await?;
-    stream
-        .write_all(build_get_request("/sessions/running", DAEMON_HOST, &secret).as_bytes())
-        .await?;
+    // ⚠ A DEADLINE, unlike `handle_session_watch`'s deliberately unbounded SSE
+    // read. This is one small request inside a listing: a daemon that answers
+    // `/status` but stalls here (or trickles bytes) must not hang
+    // `biorouter session list` forever. Timing out yields `Err`, which the
+    // caller renders as `state unknown` — the honest answer.
+    let raw = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        let mut stream = tokio::net::TcpStream::connect(format!("{DAEMON_HOST}:{port}")).await?;
+        stream
+            .write_all(build_get_request("/sessions/running", DAEMON_HOST, &secret).as_bytes())
+            .await?;
 
-    let mut raw = Vec::new();
-    let mut chunk = [0u8; 8192];
-    loop {
-        let read = stream.read(&mut chunk).await?;
-        if read == 0 {
-            break;
+        let mut raw = Vec::new();
+        let mut chunk = [0u8; 8192];
+        loop {
+            let read = stream.read(&mut chunk).await?;
+            if read == 0 {
+                break;
+            }
+            raw.extend_from_slice(&chunk[..read]);
         }
-        raw.extend_from_slice(&chunk[..read]);
-    }
+        Ok::<Vec<u8>, std::io::Error>(raw)
+    })
+    .await
+    .map_err(|_| {
+        anyhow!("the daemon did not answer GET /sessions/running within 5s, so turn liveness is not knowable from here")
+    })??;
+
     let text = String::from_utf8_lossy(&raw).to_string();
     let (head, body) = text
         .split_once("\r\n\r\n")
@@ -287,29 +305,36 @@ pub async fn running_session_ids() -> Result<std::collections::HashSet<String>> 
              (401 usually means BIOROUTER_SERVER__SECRET_KEY does not match the daemon's)"
         ));
     }
-    Ok(parse_running_ids(body))
+    parse_running_ids(body).ok_or_else(|| {
+        anyhow!(
+            "the daemon answered GET /sessions/running with a body this client could not \
+             read, so turn liveness is not knowable from here"
+        )
+    })
 }
 
 /// Pull the id set out of a `/sessions/running` body. Tolerates HTTP/1.1
 /// chunked framing by reading from the first `{` to the last `}` rather than
 /// parsing the whole body — the same defensiveness `feed` applies to SSE.
-pub(crate) fn parse_running_ids(body: &str) -> std::collections::HashSet<String> {
-    let json = body
+///
+/// ⚠ `None` means "this body did not answer the question", and the caller MUST
+/// turn it into an error rather than an empty set. An empty set is a real
+/// answer — "nothing is running" — so degrading into one would render every
+/// child `○ done`, which is precisely the wrong answer the three-valued
+/// `Liveness` exists to avoid. Only a well-formed, empty `session_ids` array
+/// may produce `Some(empty)`.
+pub(crate) fn parse_running_ids(body: &str) -> Option<std::collections::HashSet<String>> {
+    let value: serde_json::Value = body
         .find('{')
         .zip(body.rfind('}'))
         .and_then(|(start, end)| body.get(start..=end))
-        .and_then(|slice| serde_json::from_str::<serde_json::Value>(slice).ok());
-    json.and_then(|value| {
-        value
-            .get("session_ids")
-            .and_then(serde_json::Value::as_array)
-            .map(|ids| {
-                ids.iter()
-                    .filter_map(|id| id.as_str().map(str::to_string))
-                    .collect()
-            })
-    })
-    .unwrap_or_default()
+        .and_then(|slice| serde_json::from_str(slice).ok())?;
+    let ids = value.get("session_ids")?.as_array()?;
+    Some(
+        ids.iter()
+            .filter_map(|id| id.as_str().map(str::to_string))
+            .collect(),
+    )
 }
 
 /// `biorouter sessions watch <id>` — read-only observation of a live session.
@@ -412,6 +437,42 @@ mod tests {
         }))
         .unwrap();
         assert!(err.contains("provider_forbidden"));
+    }
+
+    /// The three-valued liveness design exists so a listing never prints "done"
+    /// over a run that is still going. A parser that answers `Some(empty set)`
+    /// for a body it could not read defeats it from the inside: an empty set is
+    /// indistinguishable from "nothing is running", so every child renders
+    /// `○ done`. Only a genuinely empty `session_ids` array may say that.
+    #[test]
+    fn an_unreadable_running_body_is_unknown_not_an_empty_set() {
+        // The real thing.
+        let ids = parse_running_ids("{\"session_ids\":[\"a\",\"b\"]}").unwrap();
+        assert_eq!(ids, ["a", "b"].map(str::to_string).into_iter().collect());
+
+        // Genuinely nothing running — the ONE case that may be an empty set.
+        assert!(parse_running_ids("{\"session_ids\":[]}")
+            .expect("a well-formed empty list is knowledge, not ignorance")
+            .is_empty());
+
+        // Everything a caller must NOT read as "nothing is running".
+        assert_eq!(parse_running_ids(""), None, "empty body");
+        assert_eq!(parse_running_ids("not json at all"), None, "no object");
+        assert_eq!(
+            parse_running_ids("{\"session_ids\":[\"a\""),
+            None,
+            "truncated body — the shape a chunked or compressed read would leave"
+        );
+        assert_eq!(
+            parse_running_ids("{\"error\":\"boom\"}"),
+            None,
+            "a 200 carrying some other object is not an answer to this question"
+        );
+        assert_eq!(
+            parse_running_ids("{\"session_ids\":\"a\"}"),
+            None,
+            "session_ids present but not an array"
+        );
     }
 
     #[test]
