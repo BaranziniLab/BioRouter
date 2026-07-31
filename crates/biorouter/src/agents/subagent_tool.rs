@@ -797,11 +797,23 @@ async fn execute_subagent(
 /// Falls back to the historical literal so a paramless spawn is never nameless.
 pub(crate) fn subagent_session_label(params: &SubagentParams) -> String {
     const MAX: usize = 60;
+    // ⚠ This is MODEL-authored text that `biorouter session list` prints
+    // straight to a terminal, so control characters are stripped here rather
+    // than at each print site. `lines()` + `trim` already drop `\n` and `\r\n`;
+    // they do NOT drop an embedded `\x1b[` (which would let a paraphrased file
+    // excerpt repaint the listing), a bare `\r` (which rewrites the line just
+    // printed), or `\x07`. Subagent instructions routinely paraphrase content
+    // the parent agent has just read, so this needs no ill intent to trigger.
     let first_line = |s: &str| -> Option<String> {
         s.lines()
-            .map(str::trim)
+            .map(|line| {
+                line.chars()
+                    .filter(|c| !c.is_control())
+                    .collect::<String>()
+                    .trim()
+                    .to_string()
+            })
             .find(|line| !line.is_empty())
-            .map(str::to_string)
     };
     let source = params
         .subworkflow
@@ -1888,5 +1900,43 @@ mod tests {
         // not produce an empty name.
         let empty: SubagentParams = serde_json::from_value(serde_json::json!({})).unwrap();
         assert_eq!(subagent_session_label(&empty), "Subagent task");
+    }
+
+    /// The label is MODEL-authored text that `biorouter session list` prints
+    /// straight to a terminal, so it must not be able to carry an escape
+    /// sequence there. Subagent instructions routinely paraphrase file contents
+    /// the parent agent just read, which is how a stray `\x1b[` or a lone `\r`
+    /// gets in without anyone intending it.
+    ///
+    /// `lines()` + `trim` already remove `\n`, `\r\n` and surrounding
+    /// whitespace; they do NOT remove an embedded CSI introducer, a bare `\r`
+    /// (which rewrites the line already printed), or `\x07`.
+    #[test]
+    fn a_session_label_carries_no_control_characters_to_the_terminal() {
+        let nasty: SubagentParams = serde_json::from_value(serde_json::json!({
+            "instructions": "Audit \u{1b}[31mthe\u{1b}[0m migration\u{7}\u{d}now"
+        }))
+        .unwrap();
+        let label = subagent_session_label(&nasty);
+        assert!(
+            !label.chars().any(char::is_control),
+            "a model-authored label reaches a TTY verbatim: {label:?}"
+        );
+        // The readable text survives — stripping must not gut the label.
+        assert!(label.contains("Audit"));
+        assert!(label.contains("migration"));
+        // ⚠ Only the CONTROL characters go. The printable tail of a CSI
+        // sequence (`[31m`) is left behind as inert text on purpose: removing
+        // the `\x1b` is what neutralises the sequence, and pattern-matching CSI
+        // grammar to strip the rest would just as happily eat a legitimate
+        // `[TODO]` out of a real instruction.
+
+        // A label that is ONLY control characters must fall back rather than
+        // become the bare prefix "Subagent: ".
+        let blank: SubagentParams = serde_json::from_value(serde_json::json!({
+            "instructions": "\u{7}\u{1b}\u{d}\u{0}"
+        }))
+        .unwrap();
+        assert_eq!(subagent_session_label(&blank), "Subagent task");
     }
 }
