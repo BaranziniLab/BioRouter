@@ -12,8 +12,10 @@ import { leafGroupIds } from '../components/chatGroups/chatGroupsTypes';
 
 const mocks = vi.hoisted(() => ({
   observeSession: vi.fn(),
-  success: vi.fn(),
+  info: vi.fn(),
+  warning: vi.fn(),
   error: vi.fn(),
+  success: vi.fn(),
   createChatWindow: vi.fn(),
   /**
    * ONE array, for the life of the file — never `() => []`.
@@ -43,7 +45,12 @@ vi.mock('../hooks/chatStreamStore', () => ({
   },
 }));
 vi.mock('../utils/sessionNameSync', () => ({ subscribeSessionNameChanges: () => () => undefined }));
-vi.mock('../toasts', () => ({ toastService: { success: mocks.success, error: vi.fn() } }));
+vi.mock('../toasts', () => ({
+  toastInfo: mocks.info,
+  toastWarning: mocks.warning,
+  toastError: mocks.error,
+  toastService: { success: mocks.success, error: vi.fn() },
+}));
 
 function Probe() {
   const ctx = useChatGroups();
@@ -221,7 +228,51 @@ describe('ChatGroupsProvider — the workspace command executor', () => {
         message: 'An agent wants to show you something',
       });
     });
-    await waitFor(() => expect(mocks.success).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(mocks.info).toHaveBeenCalledWith(
+        expect.objectContaining({ msg: 'An agent wants to show you something' })
+      )
+    );
     expect(screen.getByTestId('sessions').textContent).toBe(before);
+  });
+
+  it('routes a notify by its level, so a failure is not reported as a success', async () => {
+    // The daemon stamps every notify with a level (`workspace_extension.rs`
+    // sends "info" today; §5's autonomous-mode visibility is the reason the
+    // frame exists at all). Collapsing them onto one channel is not cosmetic —
+    // a failure rendered with a green check mark is a lie the user acts on, and
+    // an informational cross-session notice dressed as a confirmation reads as
+    // "your thing worked" when nothing of the user's did.
+    mount();
+    const channels = [mocks.info, mocks.warning, mocks.error];
+    for (const [level, expected] of [
+      ['info', mocks.info],
+      // No level at all is a notice, not a success.
+      [undefined, mocks.info],
+      ['warn', mocks.warning],
+      ['warning', mocks.warning],
+      ['error', mocks.error],
+    ] as const) {
+      vi.clearAllMocks();
+      act(() => {
+        applyWorkspaceCommand({
+          type: 'workspace',
+          cmd: 'notify',
+          level,
+          message: `at ${String(level)}`,
+        });
+      });
+      await waitFor(() =>
+        expect(expected).toHaveBeenCalledWith(
+          expect.objectContaining({ title: 'Workspace', msg: `at ${String(level)}` })
+        )
+      );
+      for (const other of channels) {
+        if (other !== expected) expect(other).not.toHaveBeenCalled();
+      }
+      // And never the success channel: nothing about a workspace notice is a
+      // confirmation of something the user asked for.
+      expect(mocks.success).not.toHaveBeenCalled();
+    }
   });
 });

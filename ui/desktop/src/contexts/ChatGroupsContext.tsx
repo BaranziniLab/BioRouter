@@ -55,7 +55,36 @@ import {
   type TabAnnotation,
 } from '../components/chatGroups/workspaceCommandPlanner';
 import { useWorkspaceChannel, buildEchoFrame } from '../hooks/useWorkspaceChannel';
-import { toastService } from '../toasts';
+import { toastError, toastInfo, toastWarning } from '../toasts';
+
+/**
+ * BR-71 §5: a workspace `notify` carries a level, and it has to survive the trip
+ * to the screen. The daemon stamps one on every frame (`workspace_extension.rs`
+ * sends "info" for the cross-session actions autonomous mode must not perform
+ * silently), so collapsing them onto one channel is not cosmetic: a failure
+ * rendered as a green success check is a lie the user acts on, and an
+ * informational notice about ANOTHER agent's action, dressed as a confirmation,
+ * reads as "your thing worked".
+ *
+ * `toastService` has only success/error/loading, which is why this reaches for
+ * the module-level helpers instead — the same ones MCPUIResourceRenderer uses.
+ * Nothing in the app configures `toastService`'s silent/shouldThrow flags, so no
+ * policy is being bypassed.
+ */
+function notifyToast(level: string | undefined): (props: { title: string; msg: string }) => void {
+  switch (level?.toLowerCase()) {
+    case 'error':
+    case 'fatal':
+    case 'critical':
+      return toastError;
+    case 'warn':
+    case 'warning':
+      return toastWarning;
+    default:
+      // Including no level at all: a notice, never a confirmation.
+      return toastInfo;
+  }
+}
 
 /**
  * BR-71: a daemon-opened tab is a session this renderer is not driving, so it
@@ -274,9 +303,7 @@ export function ChatGroupsProvider({ children }: { children: React.ReactNode }) 
         );
       }
       if (plan.notify) {
-        // toastService has success/error/loading; info-level workspace notices
-        // use success with a Workspace title.
-        toastService.success({ title: 'Workspace', msg: plan.notify.message });
+        notifyToast(plan.notify.level)({ title: 'Workspace', msg: plan.notify.message });
       }
       if (plan.annotate) {
         const { sessionId, annotation } = plan.annotate;
