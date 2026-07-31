@@ -120,10 +120,19 @@ export default function ExtensionsSection({
       // and `silent` is sticky once set — `handleError`'s options flow into
       // `configure()`. Burning the flag first would spend decision 14's single
       // suggestion on a toast the user never saw.
-      toastService.success({
-        title: 'Workspace Control enabled',
-        msg: 'Chat Recall pairs with it: Workspace reads and steers live conversations, Chat Recall searches past ones. Turn it on under Settings → Chat → Capabilities.',
-      });
+      toastService.success(
+        {
+          title: 'Workspace Control enabled',
+          msg: 'Chat Recall pairs with it: Workspace reads and steers live conversations, Chat Recall searches past ones. Turn it on under Settings → Chat → Capabilities.',
+        },
+        // No auto-close: this is a once-per-install prompt whose flag is burned
+        // as soon as it is shown, so the shared 3s default would let decision
+        // 14's only suggestion expire long before its message can be read. It
+        // stays until the user dismisses it — which is also what separates it
+        // from `toggleExtensionDefault`'s own "Extension enabled in defaults"
+        // toast, fired for the same click and gone after 3s.
+        { autoClose: false }
+      );
       markChatrecallSuggestionSeen();
     }
 

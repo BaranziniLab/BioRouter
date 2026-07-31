@@ -85,6 +85,22 @@ describe('ExtensionsSection chatrecall suggestion', () => {
     expect(mocks.success).toHaveBeenCalledTimes(1);
   });
 
+  // The suggestion is fired once per install and the flag is burned the moment it
+  // is shown, so a 3s auto-close (`toastSuccess`'s default) would let decision
+  // 14's single prompt expire before a 150-character message can be read — and it
+  // never comes back. It must wait to be dismissed.
+  it('shows the suggestion as a toast that does not auto-close', async () => {
+    render(<ExtensionsSection hideButtons />);
+
+    fireEvent.click(await screen.findByRole('switch', { name: WORKSPACE_SWITCH }));
+    await waitFor(() => expect(mocks.success).toHaveBeenCalledTimes(1));
+
+    expect(mocks.success).toHaveBeenCalledWith(
+      expect.objectContaining({ title: 'Workspace Control enabled' }),
+      expect.objectContaining({ autoClose: false })
+    );
+  });
+
   it('does not suggest chatrecall when it is already enabled', async () => {
     mocks.extensionsList = [
       { type: 'platform', name: 'workspace', description: 'Workspace Control', enabled: false },
