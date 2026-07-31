@@ -720,8 +720,13 @@ async fn execute_subagent(
     // BR-40: detached run — create the child session (so the handle can name it),
     // register the handle, and hand it straight back to the parent.
     if params.background && subagent_handle::background_enabled() {
-        let session =
-            create_subagent_session(&config, working_dir, &task_config.parent_session_id).await?;
+        let session = create_subagent_session(
+            &config,
+            working_dir,
+            &task_config.parent_session_id,
+            &params,
+        )
+        .await?;
         let task_config = overridden_task_config(task_config, &params).await?;
         return Ok(spawn_background_subagent(
             config,
@@ -740,8 +745,13 @@ async fn execute_subagent(
     })?;
     let _inflight = inflight;
 
-    let session =
-        create_subagent_session(&config, working_dir, &task_config.parent_session_id).await?;
+    let session = create_subagent_session(
+        &config,
+        working_dir,
+        &task_config.parent_session_id,
+        &params,
+    )
+    .await?;
 
     // Settings overrides are resolved BEFORE the announce, matching the
     // background path's order. `overridden_task_config` can fail with `?` (an
@@ -778,6 +788,36 @@ async fn execute_subagent(
     Ok(call_result)
 }
 
+/// A one-line label for a spawned child, so two siblings of one fan-out are
+/// distinguishable everywhere a session is listed — `biorouter session list`,
+/// Task 38's grouped History, and `workspace_list` all read `Session.name`.
+///
+/// Prefers the subworkflow name (a run of a named workflow is best identified by
+/// it) and otherwise the first non-empty line of the ad-hoc instructions.
+/// Falls back to the historical literal so a paramless spawn is never nameless.
+pub(crate) fn subagent_session_label(params: &SubagentParams) -> String {
+    const MAX: usize = 60;
+    let first_line = |s: &str| -> Option<String> {
+        s.lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .map(str::to_string)
+    };
+    let source = params
+        .subworkflow
+        .as_deref()
+        .and_then(first_line)
+        .or_else(|| params.instructions.as_deref().and_then(first_line));
+    let Some(source) = source else {
+        return "Subagent task".to_string();
+    };
+    let mut label: String = source.chars().take(MAX).collect();
+    if source.chars().count() > MAX {
+        label.push('…');
+    }
+    format!("Subagent: {label}")
+}
+
 /// Create the child session and stamp its `parent_session_id` (BR-71) at birth.
 ///
 /// `persist_spawn_context` stamps it too, but only once `get_agent_messages` has
@@ -801,6 +841,7 @@ async fn create_subagent_session(
     config: &AgentConfig,
     working_dir: PathBuf,
     parent_session_id: &str,
+    params: &SubagentParams,
 ) -> Result<crate::session::Session, ErrorData> {
     let internal = |e: &dyn std::fmt::Display| ErrorData {
         code: ErrorCode::INTERNAL_ERROR,
@@ -812,7 +853,7 @@ async fn create_subagent_session(
         .session_manager
         .create_session(
             working_dir,
-            "Subagent task".to_string(),
+            subagent_session_label(params),
             crate::session::session_manager::SessionType::SubAgent,
         )
         .await
@@ -1784,9 +1825,14 @@ mod tests {
             crate::config::BioRouterMode::Auto,
         );
 
-        let session = create_subagent_session(&config, temp.path().to_path_buf(), "parent-99")
-            .await
-            .expect("session creation succeeds");
+        let params: SubagentParams = serde_json::from_value(serde_json::json!({
+            "instructions": "stamp the parent at birth"
+        }))
+        .unwrap();
+        let session =
+            create_subagent_session(&config, temp.path().to_path_buf(), "parent-99", &params)
+                .await
+                .expect("session creation succeeds");
 
         // The handle the caller gets back agrees with the row (the background
         // path returns this value and never re-reads).
@@ -1804,5 +1850,43 @@ mod tests {
             crate::session::session_manager::SessionType::SubAgent
         );
         assert_eq!(reread.message_count, 0, "birth writes no message");
+    }
+
+    /// Two children of one fan-out must be distinguishable in every listing.
+    /// Before this, `create_subagent_session` named all of them "Subagent task".
+    ///
+    /// `SubagentParams` derives only `Debug, Deserialize` (no `Default`), so the
+    /// fixtures are built through serde rather than a struct literal — a literal
+    /// here is a compile error the day a field is added.
+    #[test]
+    fn a_subagent_session_is_named_after_its_own_task() {
+        let a: SubagentParams = serde_json::from_value(serde_json::json!({
+            "instructions": "Audit the migration for data loss\nand then report back"
+        }))
+        .unwrap();
+        let b: SubagentParams = serde_json::from_value(serde_json::json!({
+            "instructions": "Benchmark the new covering index"
+        }))
+        .unwrap();
+
+        assert_ne!(subagent_session_label(&a), subagent_session_label(&b));
+        assert!(subagent_session_label(&a).contains("Audit the migration"));
+        // ONE line: a multi-paragraph instruction must not become a multi-line
+        // session name, which every listing renders as broken rows.
+        assert!(!subagent_session_label(&a).contains("report back"));
+        assert!(!subagent_session_label(&a).contains('\n'));
+
+        // A subworkflow run is named for the workflow, not for the ad-hoc
+        // instructions it also carries.
+        let w: SubagentParams = serde_json::from_value(serde_json::json!({
+            "subworkflow": "triage-failures", "instructions": "extra context"
+        }))
+        .unwrap();
+        assert!(subagent_session_label(&w).contains("triage-failures"));
+
+        // …and the fallback is still the old literal, so a paramless spawn does
+        // not produce an empty name.
+        let empty: SubagentParams = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(subagent_session_label(&empty), "Subagent task");
     }
 }
