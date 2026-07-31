@@ -800,7 +800,13 @@ class ChatStreamController {
               accumulatedOutputTokens: loadedSession?.accumulated_output_tokens ?? 0,
               accumulatedTotalTokens: loadedSession?.accumulated_total_tokens ?? 0,
             },
-            chatState: this.abortController ? prev.chatState : ChatState.Idle,
+            // BR-71: `hasLiveTurn()`, not a bare `abortController` — an
+            // observer holds one of those too, and reading its feed as a
+            // running turn leaves `prev.chatState` (LoadingConversation, set at
+            // the top of this load) pinned until some frame happens to move it.
+            // On a quiet observed session that is a tab stuck on the loading
+            // state forever.
+            chatState: this.hasLiveTurn() ? prev.chatState : ChatState.Idle,
             sessionLoadError: undefined,
             turnError: undefined,
           }));
@@ -1180,12 +1186,14 @@ class ChatStreamController {
     currentMessages: Message[],
     updateMessageList: boolean
   ): Promise<void> => {
-    // BR-71 — a user-driven turn converts an observer tab into a driver. The
-    // `activeStreamId` bump below already trips the observer loop's staleness
-    // check; clearing the flag makes the conversion explicit and lets a later
-    // `observeSession()` start fresh rather than short-circuit on the
-    // idempotence guard.
-    this.observing = false;
+    // BR-71 — a user-driven turn converts an observer tab into a driver.
+    // Detach FIRST and properly: the observer holds this controller's
+    // `abortController` and a live socket, and the turn about to start replaces
+    // the field without aborting what was there, so a bare flag clear would
+    // leave the feed streaming into the transcript alongside the user's own
+    // reply. `stopObserving()` is a no-op on a controller that was already
+    // driving, which is every ordinary submit.
+    this.stopObserving();
     if (updateMessageList) {
       this.updateMessages(currentMessages);
     }
@@ -1259,7 +1267,12 @@ class ChatStreamController {
     return (
       !!this.snapshot.session &&
       this.snapshot.chatState !== ChatState.LoadingConversation &&
-      !(this.abortController && !this.abortController.signal.aborted)
+      // BR-71: an OBSERVER's subscription is not a turn in flight. Reading it
+      // as one silently drops every message typed into a daemon-opened tab —
+      // the takeover §4.3 promises ("until the tab detaches or the user takes
+      // the session over") would be unreachable, and `submitPreparedMessage`'s
+      // own conversion back to driver would be dead code.
+      !this.hasLiveTurn()
     );
   }
 
@@ -1349,7 +1362,10 @@ class ChatStreamController {
    *    load failure) the reload alone is the retry.
    */
   retryTurn = async (): Promise<void> => {
-    if (this.abortController && !this.abortController.signal.aborted) return;
+    // BR-71: same reading as `canSubmitMessage` — an observer's feed is not a
+    // turn this controller is running, and Retry in an observed tab is a
+    // takeover like any other submit.
+    if (this.hasLiveTurn()) return;
     this.updateSnapshot((prev) => ({ ...prev, turnError: undefined }));
 
     await this.loadSession();

@@ -323,6 +323,67 @@ describe('ChatStreamController.observeSession — who owns the socket', () => {
     }
   });
 
+  it('lets the user take an observed tab over, and re-attach once their turn ends', async () => {
+    vi.useFakeTimers();
+    try {
+      const registry = new ChatStreamRegistry();
+      const observed = createControlledStream();
+      const driving = createControlledStream();
+      const reattached = createControlledStream();
+      mocks.observeSessionEvents
+        .mockResolvedValueOnce({ stream: observed.stream })
+        .mockResolvedValueOnce({ stream: reattached.stream });
+      mocks.resumeAgent.mockResolvedValue({ data: { session: session('obs-takeover') } });
+      mocks.reply.mockResolvedValue({ stream: driving.stream });
+
+      const controller = registry.getController('obs-takeover');
+      void controller.observeSession();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(mocks.observeSessionEvents).toHaveBeenCalledTimes(1);
+      const observerSignal = mocks.observeSessionEvents.mock.calls[0][0].signal as AbortSignal;
+
+      // Typing in a subagent tab takes it over — the case `submitPreparedMessage`
+      // clears the flag for, and the case §4.3 names ("until the tab detaches or
+      // the user takes the session over"). The observer holds a live
+      // `abortController` and its subscription leaves the load parked in
+      // `LoadingConversation`; both are read as "a turn is already running", so
+      // the submit is dropped on the floor before it ever reaches the line that
+      // does the converting.
+      const submit = controller.handleSubmit('actually, do it this way');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(mocks.reply).toHaveBeenCalledTimes(1);
+      // Taking over closes the feed it took the tab from: two live sockets
+      // writing into one transcript is the thing the streamId dance exists to
+      // avoid, and the observer's would otherwise stay open until it happened to
+      // notice it was stale.
+      expect(observerSignal.aborted).toBe(true);
+
+      driving.push({
+        type: 'Message',
+        message: assistantMessage('a1', 'driving it myself now'),
+        token_state: tokenState,
+      });
+      driving.push({ type: 'Finish', reason: 'done', token_state: tokenState });
+      driving.close();
+      await submit;
+      expect(JSON.stringify(controller.getSnapshot().messages)).toContain('driving it myself now');
+
+      // The other half of clearing the flag: the tab can go back to observing
+      // once the user's own turn is over, instead of short-circuiting forever on
+      // the idempotence guard.
+      void controller.observeSession();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(mocks.observeSessionEvents).toHaveBeenCalledTimes(2);
+
+      controller.stopObserving();
+      observed.close();
+      reattached.close();
+      await vi.advanceTimersByTimeAsync(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('does not paint a transport error when the observed connection drops', async () => {
     vi.useFakeTimers();
     try {
