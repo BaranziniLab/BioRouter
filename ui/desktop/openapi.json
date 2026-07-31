@@ -3266,6 +3266,29 @@
         ]
       }
     },
+    "/sessions/running": {
+      "get": {
+        "tags": [
+          "workspace"
+        ],
+        "operationId": "running_sessions",
+        "responses": {
+          "200": {
+            "description": "Sessions with a turn in flight",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunningSessionsResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized - invalid secret key"
+          }
+        }
+      }
+    },
     "/sessions/sidebar": {
       "get": {
         "tags": [
@@ -8410,6 +8433,21 @@
         "properties": {
           "session_id": {
             "type": "string"
+          }
+        }
+      },
+      "RunningSessionsResponse": {
+        "type": "object",
+        "description": "BR-71: the sessions holding a turn right now.",
+        "required": [
+          "session_ids"
+        ],
+        "properties": {
+          "session_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         }
       },

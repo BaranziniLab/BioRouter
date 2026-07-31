@@ -1565,6 +1565,13 @@ export type RunNowResponse = {
     session_id: string;
 };
 
+/**
+ * BR-71: the sessions holding a turn right now.
+ */
+export type RunningSessionsResponse = {
+    session_ids: Array<string>;
+};
+
 export type SaveWorkflowRequest = {
     id?: string | null;
     workflow: Workflow;
@@ -4877,6 +4884,29 @@ export type GetSessionInsightsResponses = {
 };
 
 export type GetSessionInsightsResponse = GetSessionInsightsResponses[keyof GetSessionInsightsResponses];
+
+export type RunningSessionsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/sessions/running';
+};
+
+export type RunningSessionsErrors = {
+    /**
+     * Unauthorized - invalid secret key
+     */
+    401: unknown;
+};
+
+export type RunningSessionsResponses = {
+    /**
+     * Sessions with a turn in flight
+     */
+    200: RunningSessionsResponse;
+};
+
+export type RunningSessionsResponse2 = RunningSessionsResponses[keyof RunningSessionsResponses];
 
 export type ListSidebarSessionsData = {
     body?: never;

@@ -1043,10 +1043,36 @@ async fn get_session_extensions(
     Ok(Json(SessionExtensionsResponse { extensions }))
 }
 
+/// BR-71: the sessions holding a turn right now.
+#[derive(Debug, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct RunningSessionsResponse {
+    pub session_ids: Vec<String>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/sessions/running",
+    // EXPLICIT tag, not utoipa's default module path. Task 42b's parity gate
+    // selects the workspace-control route surface by this tag; a BR-71 route
+    // that lands under "Session Management" with the other fifteen operations
+    // is invisible to it.
+    tag = "workspace",
+    responses(
+        (status = 200, description = "Sessions with a turn in flight", body = RunningSessionsResponse),
+        (status = 401, description = "Unauthorized - invalid secret key")
+    )
+)]
+async fn running_sessions(State(state): State<Arc<AppState>>) -> Json<RunningSessionsResponse> {
+    Json(RunningSessionsResponse {
+        session_ids: state.active_turn_session_ids(),
+    })
+}
+
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/sessions", get(list_sessions))
         .route("/sessions/sidebar", get(list_sidebar_sessions))
+        .route("/sessions/running", get(running_sessions))
         .route("/sessions/{session_id}", get(get_session))
         .route("/sessions/{session_id}", delete(delete_session))
         .route("/sessions/{session_id}/export", get(export_session))
@@ -1551,6 +1577,74 @@ mod diverge_tests {
 
         manager.delete_session(&new_id).await.unwrap();
         manager.delete_session(&original.id).await.unwrap();
+    }
+
+    async fn get_running(state: Arc<AppState>) -> Vec<String> {
+        let app = routes(state);
+        let req = Request::builder()
+            .method("GET")
+            .uri("/sessions/running")
+            .body(Body::empty())
+            .unwrap();
+        let res = app.oneshot(req).await.unwrap();
+        let bytes = to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value =
+            serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+        json["session_ids"]
+            .as_array()
+            .map(|ids| {
+                ids.iter()
+                    .filter_map(|id| id.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// BR-71 / CLI parity: the daemon is the ONLY authority on liveness
+    /// (`AppState::active_turns` is an in-process map), so it has to publish it.
+    ///
+    /// ⚠ **No session is created and none is deleted.** `try_begin_turn_idempotent`
+    /// inserts into the in-memory `active_turns` map and never consults the store,
+    /// so fabricated ids exercise the whole path — which keeps this test inside
+    /// this module's READ-ONLY rule (`AppState::new()` opens the real user DB).
+    /// The `#[serial]` attribute is not optional: `active_turns` is process-wide
+    /// and a concurrent route test holding a turn would make the first assertion
+    /// flake.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn running_sessions_reports_exactly_the_sessions_holding_a_turn() {
+        let state = AppState::new().await.unwrap();
+        // ⚠ NOT `uuid::Uuid::new_v4()`: `uuid` is not a dependency of
+        // `biorouter-server`, so that would be an unresolved-crate error. A
+        // nanosecond stamp is unique enough for two ids in one test.
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let busy = format!("parity-busy-{stamp}");
+        let idle = format!("parity-idle-{stamp}");
+
+        let before = get_running(state.clone()).await;
+        assert!(!before.contains(&busy), "precondition: {before:?}");
+
+        let guard = state
+            .try_begin_turn_idempotent(&busy, CancellationToken::new(), None)
+            .expect("nothing holds this fabricated session");
+
+        let during = get_running(state.clone()).await;
+        assert!(during.contains(&busy), "a held turn must be reported");
+        assert!(
+            !during.contains(&idle),
+            "a session with no turn must not be reported running"
+        );
+
+        drop(guard);
+        assert!(
+            !get_running(state.clone()).await.contains(&busy),
+            "TurnGuard::drop clears the slot, so the route must read LIVE state — \
+             a snapshot taken at construction passes every assertion above and \
+             fails this one"
+        );
     }
 }
 

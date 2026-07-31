@@ -249,6 +249,20 @@ impl AppState {
             .contains_key(session_id)
     }
 
+    /// Every session with a turn in flight right now (BR-71 CLI parity).
+    ///
+    /// `is_turn_active` answers for one session; a listing needs the set, and
+    /// N round-trips for an N-row page is both slower and racier — the rows
+    /// would be read at N different instants.
+    pub fn active_turn_session_ids(&self) -> Vec<String> {
+        self.active_turns
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .keys()
+            .cloned()
+            .collect()
+    }
+
     pub fn has_active_turns(&self) -> bool {
         !self
             .active_turns
