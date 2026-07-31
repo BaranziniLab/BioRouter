@@ -495,6 +495,22 @@ mod tests {
     use crate::conversation::message::ProvenanceKind;
     use crate::session::session_manager::SessionType;
 
+    /// The body of one `### `-delimited section of the spawn record, so a grant
+    /// can be asserted to be in the RIGHT section. Six bare `contains` checks
+    /// pass just as happily on a record that renders the skills under
+    /// "Granted extensions" and the extensions under "Granted skills".
+    fn section<'a>(body: &'a str, heading: &str) -> &'a str {
+        let start = body
+            .find(heading)
+            .unwrap_or_else(|| panic!("spawn record has no {heading} section:\n{body}"))
+            + heading.len();
+        let rest = &body[start..];
+        match rest.find("\n### ") {
+            Some(end) => &rest[..end],
+            None => rest,
+        }
+    }
+
     #[tokio::test]
     async fn spawn_context_is_persisted_visible_to_user_not_agent() {
         let temp = tempfile::TempDir::new().unwrap();
@@ -524,7 +540,18 @@ mod tests {
         let reread = sm.get_session(&child.id, true).await.unwrap();
         assert_eq!(reread.parent_session_id.as_deref(), Some("parent-1"));
         let msgs = reread.conversation.unwrap().messages().to_vec();
+        // Exactly one row: the record is written once per spawn. Without this a
+        // double-write would still leave a correct-looking first message.
+        assert_eq!(
+            msgs.len(),
+            1,
+            "one spawn call must write exactly one record, got {msgs:#?}"
+        );
         let record = msgs.first().expect("spawn context is the first message");
+        // `MessageMetadata::default()` is already `user_visible: true`, so this
+        // assertion documents the requirement rather than discriminating; the
+        // discriminating half of the pair is the `agent_visible` one below,
+        // whose default is `true`.
         assert!(record.metadata.user_visible);
         assert!(
             !record.metadata.agent_visible,
@@ -543,5 +570,64 @@ mod tests {
         assert!(text.contains("kb-papers"));
         // Issue #45: the record shows EVERY active base, not just the first.
         assert!(text.contains("kb-methods"));
+
+        // …and each grant is under its OWN heading. The `contains` checks above
+        // are satisfied by a record that files every grant in the wrong section.
+        assert_eq!(
+            section(&text, "### Task instructions").trim(),
+            "task: count the files"
+        );
+        assert_eq!(section(&text, "### Granted extensions").trim(), "developer");
+        assert_eq!(section(&text, "### Granted skills").trim(), "single-cell");
+        assert_eq!(
+            section(&text, "### Knowledge bases").trim(),
+            "kb-papers, kb-methods"
+        );
+        assert_eq!(
+            section(&text, "### Rendered system prompt").trim(),
+            "SYSTEM PROMPT RENDERED HERE"
+        );
+        // The parent is named in the record body too, not only in `provenance`.
+        assert!(text.contains("Spawned by session: parent-1"));
+    }
+
+    /// The empty-grant rendering is its own case: a spawn with no extensions
+    /// must say "(parent defaults)", not silently render an empty section that
+    /// reads as "no extensions were granted".
+    #[tokio::test]
+    async fn spawn_context_names_the_empty_grants_explicitly() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let sm = std::sync::Arc::new(SessionManager::new(temp.path().to_path_buf()));
+        let child = sm
+            .create_session(
+                temp.path().to_path_buf(),
+                "Subagent task".into(),
+                SessionType::SubAgent,
+            )
+            .await
+            .unwrap();
+
+        persist_spawn_context(
+            &sm,
+            &child.id,
+            "parent-2",
+            "PROMPT",
+            "do a thing",
+            &[],
+            &[],
+            &[],
+        )
+        .await
+        .unwrap();
+
+        let reread = sm.get_session(&child.id, true).await.unwrap();
+        let msgs = reread.conversation.unwrap().messages().to_vec();
+        let text: String = msgs[0].content.iter().filter_map(|c| c.as_text()).collect();
+        assert_eq!(
+            section(&text, "### Granted extensions").trim(),
+            "(parent defaults)"
+        );
+        assert_eq!(section(&text, "### Granted skills").trim(), "(none)");
+        assert_eq!(section(&text, "### Knowledge bases").trim(), "(none)");
     }
 }

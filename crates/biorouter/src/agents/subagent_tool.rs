@@ -876,4 +876,44 @@ mod tests {
         assert!(text.contains("background"));
         assert!(text.contains("History"));
     }
+
+    /// BR-71: the child's `parent_session_id` is durable from BIRTH, not from
+    /// the later `persist_spawn_context` call. The `background: true` path hands
+    /// the child's id back to the parent before the run starts, so a child that
+    /// dies before its first turn would otherwise be a permanently unparented
+    /// row in History.
+    #[tokio::test]
+    async fn create_subagent_session_stamps_the_parent_at_birth() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let sm = std::sync::Arc::new(crate::session::SessionManager::new(
+            temp.path().to_path_buf(),
+        ));
+        let config = AgentConfig::new(
+            sm.clone(),
+            crate::config::permission::PermissionManager::instance(),
+            None,
+            crate::config::BioRouterMode::Auto,
+        );
+
+        let session = create_subagent_session(&config, temp.path().to_path_buf(), "parent-99")
+            .await
+            .expect("session creation succeeds");
+
+        // The handle the caller gets back agrees with the row (the background
+        // path returns this value and never re-reads).
+        assert_eq!(session.parent_session_id.as_deref(), Some("parent-99"));
+
+        // …and the STORE agrees, before a single turn has run.
+        let reread = sm.get_session(&session.id, false).await.unwrap();
+        assert_eq!(
+            reread.parent_session_id.as_deref(),
+            Some("parent-99"),
+            "the parent stamp must be durable at birth, not only after the first turn"
+        );
+        assert_eq!(
+            reread.session_type,
+            crate::session::session_manager::SessionType::SubAgent
+        );
+        assert_eq!(reread.message_count, 0, "birth writes no message");
+    }
 }
