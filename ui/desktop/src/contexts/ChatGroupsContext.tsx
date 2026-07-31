@@ -14,6 +14,7 @@ import {
   activeSessionIdOf,
   activeGroupOf,
   activeTabOf,
+  findTabBySession,
 } from '../components/chatGroups/chatGroupsReducer';
 import {
   loadChatGroupsOrInitial,
@@ -312,11 +313,24 @@ export function ChatGroupsProvider({ children }: { children: React.ReactNode }) 
       // Daemon-opened tabs are, by definition, sessions this renderer is not
       // driving: attach the observer stream (§4.3; Task 27) so the tab renders
       // live without owning a /reply stream.
-      if ((cmd.cmd === 'open_tab' || cmd.cmd === 'annotate_tab') && cmd.session_id) {
-        const stream = defaultChatStreamRegistry.getController(
-          cmd.session_id
-        ) as unknown as ObservableStream;
-        stream.observeSession?.();
+      //
+      // Only when the frame really produced a tab, though. `getController` is
+      // not a lookup — it CREATES a ChatStreamController and retains it in a map
+      // keyed by session id for the life of the renderer. Calling it for a
+      // session that has no tab (an annotate for a chat this window never
+      // opened, or an open_tab the planner refused at MAX_GROUPS) both starts a
+      // stream for a chat that is nowhere on screen and leaks the controller,
+      // once per frame, on input the daemon fully controls.
+      if (cmd.session_id && plan.result.ok) {
+        const opened = cmd.cmd === 'open_tab';
+        const annotated =
+          cmd.cmd === 'annotate_tab' && !!findTabBySession(stateRef.current, cmd.session_id);
+        if (opened || annotated) {
+          const stream = defaultChatStreamRegistry.getController(
+            cmd.session_id
+          ) as unknown as ObservableStream;
+          stream.observeSession?.();
+        }
       }
       return plan.result;
     };

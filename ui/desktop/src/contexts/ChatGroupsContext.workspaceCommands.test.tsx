@@ -9,6 +9,7 @@ import {
   type WorkspaceCommandResult,
 } from '../components/chatGroups/workspaceCommandRegistry';
 import { leafGroupIds } from '../components/chatGroups/chatGroupsTypes';
+import { MAX_GROUPS } from '../components/chatGroups/chatGroupsLayout';
 
 const mocks = vi.hoisted(() => ({
   observeSession: vi.fn(),
@@ -52,8 +53,18 @@ vi.mock('../toasts', () => ({
   toastService: { success: mocks.success, error: vi.fn() },
 }));
 
+/**
+ * The mounted provider's context value, so a case can drive the reducer the way
+ * a user would (drag a tab into a new pane) instead of only through workspace
+ * frames. The MAX_GROUPS fixture below needs it: nothing the daemon can send
+ * builds six panes, and a refusal that cannot be reached is a refusal that
+ * cannot be tested.
+ */
+let captured: ReturnType<typeof useChatGroups> = null;
+
 function Probe() {
   const ctx = useChatGroups();
+  captured = ctx;
   return (
     <div>
       <span data-testid="sessions">
@@ -203,6 +214,63 @@ describe('ChatGroupsProvider — the workspace command executor', () => {
     // to recompute is `tabAnnotations` — unless a fresh-identity mock gives it
     // another one, at which point this assertion silently stops meaning anything.
     await waitFor(() => expect(screen.getByTestId('badges').textContent).toContain('subagent'));
+  });
+
+  it('attaches the observer stream only when the frame really produced a tab', async () => {
+    // `getController` is not a lookup — it CREATES a ChatStreamController and
+    // retains it in a map keyed by session id, for the life of the renderer.
+    // Calling it for a session this frame did not open therefore both starts a
+    // stream for a chat that is nowhere on screen and leaks the controller, once
+    // per frame, on input the daemon fully controls.
+    mount();
+
+    // (a) annotate_tab for a session with no tab: a badge for a tab that does
+    // not exist observes nothing.
+    act(() => {
+      applyWorkspaceCommand({
+        type: 'workspace',
+        cmd: 'annotate_tab',
+        session_id: 's-nowhere',
+        badge: 'subagent',
+      });
+    });
+    await waitFor(() => expect(screen.getByTestId('badges').textContent).toContain('subagent'));
+    expect(mocks.observeSession).not.toHaveBeenCalled();
+
+    // (b) a refused open_tab. Six panes is the ceiling, and only a real drag can
+    // build them — each move splits one tab off the first pane into a new one.
+    act(() => {
+      for (let i = 0; i < MAX_GROUPS; i++) applyWorkspaceCommand(openTab(`s-${i}`));
+    });
+    await waitFor(() => expect(screen.getByTestId('sessions').textContent).toContain('s-5'));
+    for (let i = 1; i < MAX_GROUPS; i++) {
+      act(() => {
+        const state = captured!.state;
+        const leaves = leafGroupIds(state.layout);
+        captured!.dispatch({
+          type: 'moveTabToGroup',
+          tabId: state.groups[leaves[0]].tabs[0].tabId,
+          targetGroupId: leaves[leaves.length - 1],
+          zone: 'right',
+        });
+      });
+    }
+    await waitFor(() => expect(leafGroupIds(captured!.state.layout)).toHaveLength(MAX_GROUPS));
+
+    mocks.observeSession.mockClear();
+    let refused: WorkspaceCommandResult | undefined;
+    act(() => {
+      refused = applyWorkspaceCommand({
+        type: 'workspace',
+        cmd: 'open_tab',
+        session_id: 's-refused',
+        placement: 'split',
+        focus: true,
+      });
+    });
+    expect(refused?.ok).toBe(false);
+    expect(screen.getByTestId('sessions').textContent).not.toContain('s-refused');
+    expect(mocks.observeSession).not.toHaveBeenCalled();
   });
 
   it('relays open_window to the main process instead of opening a tab', async () => {
