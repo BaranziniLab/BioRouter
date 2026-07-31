@@ -3150,7 +3150,28 @@ mod tests {
     /// `AgentManager`'s PINNED sidecar, never in the `sessions` LRU — so this
     /// passes only because Task 33 makes `has_session` consult the pin. Delete
     /// that one line and this is the test that goes red.
+    ///
+    /// ⚠ **Two keys, and both are load-bearing.**
+    ///
+    /// `serial(agent_manager_pin)`: the pin is a process-global map keyed by
+    /// session **id**, and ids are minted per *store* as `<date>_<n>`
+    /// (`session_manager.rs`'s `SELECT MAX(CAST(SUBSTR(id, 10) AS INTEGER))`),
+    /// so every test that stands up its own `TempDir` `SessionManager` and
+    /// registers its FIRST session is fighting over the single key `<today>_1`.
+    /// `subagent_handler`'s two real-subagent tests are the other claimants.
+    /// Unserialized, this test can pass on one of THEIR pins (vacuous) or their
+    /// poll can expire against ours (a flake) — the same `<today>_1` collision
+    /// that already had to be fixed one layer down on the session bus.
+    ///
+    /// `parallel(workspace_services)`: this test READS the process-global
+    /// services slot and needs the headless answer — `running` false for every
+    /// row and no layout — because `has_session` is then the ONLY branch of the
+    /// `"open"` predicate that can be true, which is the whole point. A test
+    /// that overrode the slot with a stand-in reporting the target busy would
+    /// make this pass with the pin consult deleted.
     #[tokio::test]
+    #[serial_test::parallel(workspace_services)]
+    #[serial_test::serial(agent_manager_pin)]
     async fn the_default_scope_sees_a_registered_child_with_no_gui_tab() {
         let c = client();
         let sm = c.context.session_manager.clone();

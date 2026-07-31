@@ -898,7 +898,7 @@ mod tests {
     /// spy's lease — which is how the omission was found, not theorised.
     #[tokio::test]
     #[serial_test::parallel(workspace_services)]
-    #[serial_test::serial(subagent_session_bus)]
+    #[serial_test::serial(subagent_session_bus, agent_manager_pin)]
     async fn subagent_run_without_daemon_services_still_completes() {
         let temp = tempfile::TempDir::new().unwrap();
         let sm = std::sync::Arc::new(SessionManager::new(temp.path().to_path_buf()));
@@ -1465,9 +1465,16 @@ mod tests {
     /// `subagent_run_without_daemon_services_still_completes`). A new one must
     /// join the key — or use an id no store would mint, as the two bracket
     /// tests below do.
+    ///
+    /// `agent_manager_pin` is the SAME collision one layer up: this run
+    /// registers `<today>_1` in the process-global `AgentManager` pin, and
+    /// `workspace_extension`'s `the_default_scope_sees_a_registered_child_…`
+    /// registers its own `<today>_1` there and then asserts on it. The bus key
+    /// cannot cover that test — it publishes nothing — so the pin needs a key
+    /// of its own, shared across both files.
     #[tokio::test]
     #[serial_test::parallel(workspace_services)]
-    #[serial_test::serial(subagent_session_bus)]
+    #[serial_test::serial(subagent_session_bus, agent_manager_pin)]
     async fn subagent_run_publishes_lifecycle_to_the_bus() {
         use crate::session_events::{self, SessionBusEvent};
         // A run with no provider fails fast — but must still bracket itself,
