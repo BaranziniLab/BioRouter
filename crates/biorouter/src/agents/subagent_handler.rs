@@ -731,6 +731,7 @@ mod tests {
     use super::*;
     use crate::conversation::message::ProvenanceKind;
     use crate::session::session_manager::SessionType;
+    use crate::workspace_services::{WorkspaceServices, WorkspaceTurnLease};
 
     /// The body of one `### `-delimited section of the spawn record, so a grant
     /// can be asserted to be in the RIGHT section. Six bare `contains` checks
@@ -890,7 +891,13 @@ mod tests {
     /// remove would also evict a *live* agent registered by someone else.
     /// Serialized against the other test that runs a real subagent — see
     /// `subagent_run_publishes_lifecycle_to_the_bus` for why.
+    /// `parallel(workspace_services)`: this run READS the process-global
+    /// services slot and asserts the HEADLESS answer, so it must never overlap
+    /// the lease tests, which override that slot for every thread in the
+    /// binary. Without the key those overrides leak in and this run takes a
+    /// spy's lease — which is how the omission was found, not theorised.
     #[tokio::test]
+    #[serial_test::parallel(workspace_services)]
     #[serial_test::serial(subagent_session_bus)]
     async fn subagent_run_without_daemon_services_still_completes() {
         let temp = tempfile::TempDir::new().unwrap();
@@ -998,6 +1005,451 @@ mod tests {
         manager.deregister_agent_if_same(&child.id, &sentinel).await;
     }
 
+    /// The turn id [`LeaseSpy`]'s lease hands out. Distinct from the synthetic
+    /// `subagent-<id>` a headless run mints, so a bracket that adopted the
+    /// wrong one is visible in the frame itself.
+    const LEASE_TURN_ID: &str = "lease-turn-33";
+
+    /// What the run looked like from INSIDE, at [`LeaseSpy`]'s observation
+    /// point.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct MidRun {
+        /// Was the server turn lease still held? `false` for a run that took the
+        /// lease and dropped it immediately (`let _ = services.begin_turn(..)`),
+        /// which reads as correct at every other seam.
+        lease_held: bool,
+        /// What `AgentManager` resolved for the child at that moment.
+        pinned: PinnedMidRun,
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum PinnedMidRun {
+        /// No sentinel was parked, so the spy did not look.
+        NotChecked,
+        /// Nothing at all is registered for the child.
+        Nothing,
+        /// Still the agent the test parked — so the run never registered.
+        Sentinel,
+        /// An agent that is neither: the live child the run registered.
+        Registered,
+    }
+
+    /// A daemon stand-in that records what a run does with the **server turn
+    /// lease** — the half of this task its title names.
+    ///
+    /// ⚠ Why this exists (2026-07-31 review). Every other test in this file runs
+    /// headless: `workspace_services::get()` is `None`, so the whole `begin_turn`
+    /// block in `run_complete_subagent_task` takes its `None => None` arm and
+    /// deleting the block outright — lease, conflict return and all — was
+    /// indistinguishable to the entire lib suite. Four properties were asserted
+    /// only in prose: the lease is taken for the child, it is *held* for the
+    /// run, `cancel_turn` on it trips the run's own token, and a busy session is
+    /// refused instead of double-run.
+    ///
+    /// The mid-run observation point is `knowledge_selection`, which
+    /// `get_agent_messages` calls after it has taken the lease and registered the
+    /// child agent and before the reply stream. It is the only seam inside the
+    /// run a `WorkspaceServices` implementation can observe, and it is what turns
+    /// "the lease is still held while the child works" from an inference into an
+    /// assertion.
+    struct LeaseSpy {
+        /// Every `begin_turn` call: the session id and the token it was handed.
+        /// Holding the token is what lets `cancel_turn` behave like the daemon's.
+        begun: std::sync::Mutex<Vec<(String, CancellationToken)>>,
+        /// Sessions whose lease is alive: inserted by `begin_turn`, removed by
+        /// `SpyLease::drop`. Shared with the lease, hence the `Arc`.
+        active: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+        cancels: std::sync::Mutex<Vec<String>>,
+        /// `Some(msg)` refuses the lease, the way a session with a turn already
+        /// in flight does.
+        conflict: Option<String>,
+        /// Call `cancel_turn` from the mid-run hook — a `POST /agent/cancel`
+        /// landing while the child is working, at a deterministic point instead
+        /// of a raced one.
+        cancel_mid_run: bool,
+        /// The agent parked under the child's id before the run, so the mid-run
+        /// peek can tell "the run registered its own" from "nothing did".
+        sentinel: Option<Arc<Agent>>,
+        mid_run: std::sync::Mutex<Option<MidRun>>,
+    }
+
+    struct SpyLease {
+        session_id: String,
+        active: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+    }
+
+    impl WorkspaceTurnLease for SpyLease {
+        fn turn_id(&self) -> &str {
+            LEASE_TURN_ID
+        }
+    }
+
+    /// Releasing the session is what dropping a lease MEANS; the real one drops
+    /// the server's `TurnGuard`.
+    impl Drop for SpyLease {
+        fn drop(&mut self) {
+            self.active.lock().unwrap().remove(self.session_id.as_str());
+        }
+    }
+
+    impl LeaseSpy {
+        fn new() -> Self {
+            Self {
+                begun: std::sync::Mutex::new(Vec::new()),
+                active: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
+                cancels: std::sync::Mutex::new(Vec::new()),
+                conflict: None,
+                cancel_mid_run: false,
+                sentinel: None,
+                mid_run: std::sync::Mutex::new(None),
+            }
+        }
+        fn refusing(mut self, message: &str) -> Self {
+            self.conflict = Some(message.to_string());
+            self
+        }
+        fn cancelling_mid_run(mut self) -> Self {
+            self.cancel_mid_run = true;
+            self
+        }
+        fn watching_for(mut self, sentinel: Arc<Agent>) -> Self {
+            self.sentinel = Some(sentinel);
+            self
+        }
+        fn install(self) -> Arc<Self> {
+            let me = Arc::new(self);
+            crate::workspace_services::set_for_tests(Some(me.clone()));
+            me
+        }
+        fn begun(&self) -> Vec<String> {
+            self.begun
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(id, _)| id.clone())
+                .collect()
+        }
+        fn mid_run(&self) -> MidRun {
+            self.mid_run
+                .lock()
+                .unwrap()
+                .expect("the run must reach the mid-run observation point")
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl WorkspaceServices for LeaseSpy {
+        fn gui_attached(&self) -> bool {
+            false
+        }
+        fn layout_snapshot(&self) -> Option<serde_json::Value> {
+            None
+        }
+        fn is_turn_active(&self, session_id: &str) -> bool {
+            self.active.lock().unwrap().contains(session_id)
+        }
+        /// The daemon's shape: find the running turn's token, trip it, name the
+        /// turn. A session with no lease has nothing to cancel.
+        fn cancel_turn(&self, session_id: &str) -> Option<String> {
+            self.cancels.lock().unwrap().push(session_id.to_string());
+            let begun = self.begun.lock().unwrap();
+            let (_, token) = begun.iter().find(|(id, _)| id == session_id)?;
+            token.cancel();
+            Some(LEASE_TURN_ID.to_string())
+        }
+        fn begin_turn(
+            &self,
+            session_id: &str,
+            cancel: CancellationToken,
+        ) -> Result<Box<dyn WorkspaceTurnLease>, String> {
+            if let Some(conflict) = &self.conflict {
+                return Err(conflict.clone());
+            }
+            self.begun
+                .lock()
+                .unwrap()
+                .push((session_id.to_string(), cancel));
+            self.active.lock().unwrap().insert(session_id.to_string());
+            Ok(Box::new(SpyLease {
+                session_id: session_id.to_string(),
+                active: Arc::clone(&self.active),
+            }))
+        }
+        async fn stop_agent(&self, _session_id: &str) -> Result<(), String> {
+            Ok(())
+        }
+        async fn start_detached_turn(
+            &self,
+            _session_id: &str,
+            _message: Message,
+        ) -> Result<String, String> {
+            Err("LeaseSpy starts no turns".into())
+        }
+        async fn start_session(
+            &self,
+            _working_dir: std::path::PathBuf,
+            _extensions: Option<Vec<String>>,
+            _knowledge_bases: Vec<String>,
+            _primary: crate::workspace_services::KbPrimaryChoice,
+        ) -> Result<String, String> {
+            Err("LeaseSpy starts no sessions".into())
+        }
+        fn set_knowledge_bases(
+            &self,
+            _session_id: &str,
+            _kbs: &[String],
+            _primary: crate::workspace_services::KbPrimaryChoice,
+        ) -> Result<crate::workspace_services::KbSelectionView, String> {
+            Err("LeaseSpy sets no knowledge bases".into())
+        }
+        /// **The observation point.** `get_agent_messages` calls this from
+        /// inside the run — after the lease and after the registration, before
+        /// the reply stream — so what it sees here is what the daemon would see
+        /// while the child works.
+        ///
+        /// The `block_on` is legal because that call site wraps this in
+        /// `spawn_blocking`: a blocking-pool thread is not a runtime worker. If
+        /// it is ever changed to a direct await, this panics loudly rather than
+        /// silently recording nothing.
+        fn knowledge_selection(
+            &self,
+            session_id: &str,
+        ) -> crate::workspace_services::KbSelectionView {
+            let pinned = match &self.sentinel {
+                None => PinnedMidRun::NotChecked,
+                Some(sentinel) => {
+                    let live = tokio::runtime::Handle::current().block_on(async {
+                        crate::execution::manager::AgentManager::instance()
+                            .await
+                            .expect("agent manager")
+                            .peek_agent(session_id)
+                            .await
+                    });
+                    match live {
+                        None => PinnedMidRun::Nothing,
+                        Some(a) if Arc::ptr_eq(sentinel, &a) => PinnedMidRun::Sentinel,
+                        Some(_) => PinnedMidRun::Registered,
+                    }
+                }
+            };
+            *self.mid_run.lock().unwrap() = Some(MidRun {
+                lease_held: self.is_turn_active(session_id),
+                pinned,
+            });
+            if self.cancel_mid_run {
+                self.cancel_turn(session_id);
+            }
+            crate::workspace_services::KbSelectionView::default()
+        }
+        async fn gui_command(
+            &self,
+            _frame: serde_json::Value,
+            _wait_result: bool,
+        ) -> Result<serde_json::Value, String> {
+            Err("no GUI attached".into())
+        }
+    }
+
+    /// With the daemon present, the run takes the server's per-session turn
+    /// lock, **holds it for the whole run**, publishes its bracket under the
+    /// lease's turn id, and has its live child registered while it works.
+    ///
+    /// Those are the four claims path 1 and path 3 of this task stand on
+    /// (`is_turn_active(child)` true → `POST /interrupt` passes its
+    /// precondition → `get_agent_for_route` resolves the REGISTERED child).
+    /// Each is separately falsifiable here: drop the `begin_turn` block and
+    /// `begun` is empty; bind the lease to `_` and `lease_held` is false; pass
+    /// the lease's id nowhere and the bracket carries `subagent-<id>`; drop the
+    /// `register_agent` call and the mid-run peek still finds the sentinel.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn the_run_holds_the_server_turn_lease_for_its_whole_run() {
+        use crate::session_events::{self, SessionBusEvent};
+        let temp = tempfile::TempDir::new().unwrap();
+        let sm = std::sync::Arc::new(SessionManager::new(temp.path().to_path_buf()));
+        // An id no store would mint, so this test shares neither a bus ring nor
+        // an `AgentManager` pin with any other test in the binary.
+        let child = "ghost-session-lease-held".to_string();
+        let mut rx = session_events::subscribe(&child);
+
+        let manager = crate::execution::manager::AgentManager::instance()
+            .await
+            .expect("AgentManager::instance (config root sandboxed by crate::test_sandbox)");
+        let sentinel = std::sync::Arc::new(Agent::with_config(AgentConfig::new(
+            sm.clone(),
+            crate::config::permission::PermissionManager::instance(),
+            None,
+            crate::config::BioRouterMode::Auto,
+        )));
+        manager
+            .register_agent(child.clone(), sentinel.clone())
+            .await;
+
+        let spy = LeaseSpy::new().watching_for(sentinel.clone()).install();
+        let (config, workflow, task_config) = bracket_fixture(&temp, &sm);
+        let result =
+            run_complete_subagent_task(config, workflow, task_config, true, child.clone(), None)
+                .await;
+        crate::workspace_services::clear_test_override();
+
+        assert_eq!(
+            result.status,
+            crate::agents::subagent_result::SubagentStatus::Error,
+            "fixture precondition: this session was never created, so the run must fail \
+             at the reply stream; got {result:?}"
+        );
+        assert_eq!(
+            spy.begun(),
+            vec![child.clone()],
+            "the run must take the server turn lease exactly once, for the CHILD session"
+        );
+        let mid_run = spy.mid_run();
+        assert!(
+            mid_run.lease_held,
+            "the lease must still be HELD while the child works — a run that released it \
+             immediately reports the child idle for its whole run, and `mode:\"turn\"` on a \
+             busy child would be accepted instead of refused"
+        );
+        assert_eq!(
+            mid_run.pinned,
+            PinnedMidRun::Registered,
+            "…and the live child must be registered by then, or a mid-run steer resolves \
+             the sentinel (here) / a freshly minted agent (in production) that no loop drains"
+        );
+        assert!(
+            !spy.is_turn_active(&child),
+            "the lease must be RELEASED when the run ends, or the child's session is busy \
+             forever and its next turn is refused"
+        );
+
+        let events: Vec<SessionBusEvent> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        assert!(
+            matches!(
+                events.first(),
+                Some(SessionBusEvent::TurnStarted { turn_id }) if turn_id == LEASE_TURN_ID
+            ),
+            "the bracket must adopt the LEASE's turn id, so an observer can correlate the \
+             child's turn with the id `POST /agent/cancel` reports; got {events:?}"
+        );
+
+        // `Deregister::drop` releases on a spawned task, so poll.
+        for _ in 0..100 {
+            if !manager.has_session(&child).await {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(
+            !manager.has_session(&child).await,
+            "and the registration must not outlive the run"
+        );
+        manager.deregister_agent_if_same(&child, &sentinel).await;
+    }
+
+    /// Path 2 (Stop/abort): `cancel_turn` on the CHILD ends the child's run, and
+    /// does not touch the parent's turn.
+    ///
+    /// The token the spy trips is the one the run handed to `begin_turn` — so a
+    /// run that handed over anything else (a fresh token, or one it does not
+    /// itself observe) closes its bracket as `error` here instead of
+    /// `cancelled`. The parent assertion is the other half of reconciliation
+    /// #2's "one token per run": the run's token is a CHILD of the parent's, so
+    /// stopping the delegate must not stop the conversation that delegated.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn cancel_turn_on_the_child_stops_the_run_and_spares_the_parent() {
+        use crate::session_events::{self, SessionBusEvent};
+        let temp = tempfile::TempDir::new().unwrap();
+        let sm = std::sync::Arc::new(SessionManager::new(temp.path().to_path_buf()));
+        let child = "ghost-session-lease-cancelled".to_string();
+        let mut rx = session_events::subscribe(&child);
+
+        let spy = LeaseSpy::new().cancelling_mid_run().install();
+        let (config, workflow, task_config) = bracket_fixture(&temp, &sm);
+        let parent_token = CancellationToken::new();
+        let _ = run_complete_subagent_task(
+            config,
+            workflow,
+            task_config,
+            true,
+            child.clone(),
+            Some(parent_token.clone()),
+        )
+        .await;
+        crate::workspace_services::clear_test_override();
+
+        assert_eq!(
+            spy.cancels.lock().unwrap().as_slice(),
+            std::slice::from_ref(&child),
+            "fixture precondition: the mid-run hook must have called cancel_turn once"
+        );
+        let events: Vec<SessionBusEvent> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        assert!(
+            matches!(
+                events.last(),
+                Some(SessionBusEvent::TurnFinished { reason, .. }) if reason == "cancelled"
+            ),
+            "tripping the token the run handed to `begin_turn` must stop THE RUN — it is \
+             the run's own token, not a fresh one made to satisfy the signature; got {events:?}"
+        );
+        assert!(
+            !parent_token.is_cancelled(),
+            "cancelling the child must not cancel the parent's turn: the run token is a \
+             CHILD of the parent's, not the parent's own"
+        );
+    }
+
+    /// A child session the daemon says is already busy must be REFUSED, not
+    /// double-run — the one-turn-per-session invariant, from the side that can
+    /// break it silently.
+    ///
+    /// Refused means refused: no bracket on the bus (an observer would see a
+    /// turn that never ran) and no agent registered (a `/reply` would resolve a
+    /// child nothing is driving).
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn a_busy_child_session_is_refused_instead_of_double_run() {
+        use crate::session_events::{self, SessionBusEvent};
+        let temp = tempfile::TempDir::new().unwrap();
+        let sm = std::sync::Arc::new(SessionManager::new(temp.path().to_path_buf()));
+        let child = "ghost-session-lease-conflict".to_string();
+        let mut rx = session_events::subscribe(&child);
+
+        let _spy = LeaseSpy::new()
+            .refusing("turn-77 is already running")
+            .install();
+        let (config, workflow, task_config) = bracket_fixture(&temp, &sm);
+        let result =
+            run_complete_subagent_task(config, workflow, task_config, true, child.clone(), None)
+                .await;
+        crate::workspace_services::clear_test_override();
+
+        assert_eq!(
+            result.status,
+            crate::agents::subagent_result::SubagentStatus::Error,
+            "a refused lease is a failed run; got {result:?}"
+        );
+        assert!(
+            result
+                .error
+                .as_deref()
+                .is_some_and(|e| e.contains("turn-77") && e.contains("busy")),
+            "…and the envelope must name the conflict the daemon reported; got {result:?}"
+        );
+        let events: Vec<SessionBusEvent> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        assert!(
+            events.is_empty(),
+            "a refused run must never open a bracket; got {events:?}"
+        );
+        let manager = crate::execution::manager::AgentManager::instance()
+            .await
+            .expect("AgentManager::instance (config root sandboxed by crate::test_sandbox)");
+        assert!(
+            !manager.has_session(&child).await,
+            "…and must never register an agent for a turn it did not start"
+        );
+    }
+
     /// ⚠ **Serialized, and it has to be.** The session bus is a process-global
     /// map keyed by session **id**, but ids are minted per *store* as
     /// `<date>_<n>` (`INSERT … SELECT MAX(CAST(SUBSTR(id, 10) AS INTEGER))`), so
@@ -1014,6 +1466,7 @@ mod tests {
     /// join the key — or use an id no store would mint, as the two bracket
     /// tests below do.
     #[tokio::test]
+    #[serial_test::parallel(workspace_services)]
     #[serial_test::serial(subagent_session_bus)]
     async fn subagent_run_publishes_lifecycle_to_the_bus() {
         use crate::session_events::{self, SessionBusEvent};
@@ -1282,6 +1735,7 @@ mod tests {
     /// input a caller controls. They are covered by the guard itself, gated by
     /// `an_unclosed_bracket_still_publishes_a_terminal_when_dropped` below.
     #[tokio::test]
+    #[serial_test::parallel(workspace_services)]
     async fn subagent_run_with_no_stream_events_still_brackets_itself() {
         use crate::session_events::{self, SessionBusEvent};
         let temp = tempfile::TempDir::new().unwrap();
@@ -1333,6 +1787,7 @@ mod tests {
     /// user stopped is not a run that failed — the previous implementation
     /// hardcoded `"error"` on this path.
     #[tokio::test]
+    #[serial_test::parallel(workspace_services)]
     async fn a_cancelled_run_that_never_reached_the_stream_closes_as_cancelled() {
         use crate::session_events::{self, SessionBusEvent};
         let temp = tempfile::TempDir::new().unwrap();
@@ -1385,6 +1840,7 @@ mod tests {
     /// stream instead and the "exactly 2 frames" assertion below fails loudly
     /// rather than going quietly vacuous.
     #[tokio::test]
+    #[serial_test::parallel(workspace_services)]
     async fn a_run_that_panics_before_the_stream_still_closes_its_bracket() {
         use crate::session_events::{self, SessionBusEvent};
         let temp = tempfile::TempDir::new().unwrap();
