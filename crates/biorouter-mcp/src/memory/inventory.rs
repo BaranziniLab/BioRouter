@@ -283,6 +283,13 @@ impl MemoryServer {
         expected_content: &str,
     ) -> io::Result<EntryDeletion> {
         let path = self.get_memory_file(category, scope.is_global())?;
+        // The read, the guard and the rewrite are one critical section. Without
+        // it an agent's append lands between the read and the write and is
+        // silently discarded — and on the last-entry path below, the whole
+        // category file (including that append) is removed (#63 review, 6).
+        let Some(_lock) = self.lock_store_if_present(scope.is_global())? else {
+            return Ok(EntryDeletion::OutOfRange);
+        };
         if !path.exists() {
             return Ok(EntryDeletion::OutOfRange);
         }
@@ -310,7 +317,7 @@ impl MemoryServer {
         for (position, entry) in entries.iter_mut().enumerate() {
             entry.index = position;
         }
-        fs::write(&path, render_entries(&entries))?;
+        super::replace_category_file(&path, &render_entries(&entries))?;
         Ok(EntryDeletion::Deleted {
             remaining: entries.len(),
             category_removed: false,
@@ -321,6 +328,11 @@ impl MemoryServer {
     /// caller can tell the user what they actually lost.
     pub fn delete_category(&self, category: &str, scope: MemoryScope) -> io::Result<Option<usize>> {
         let path = self.get_memory_file(category, scope.is_global())?;
+        // Counting and removing under one lock, so the count reported to the
+        // user is the count that was actually destroyed.
+        let Some(_lock) = self.lock_store_if_present(scope.is_global())? else {
+            return Ok(None);
+        };
         if !path.exists() {
             return Ok(None);
         }

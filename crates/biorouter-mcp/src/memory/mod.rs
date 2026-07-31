@@ -235,6 +235,64 @@ fn canonical_realish(p: &Path) -> PathBuf {
     }
 }
 
+/// The file every *mutation* of a store takes an exclusive advisory lock on
+/// (issue #63 review, finding 6).
+///
+/// It is not a category — no `.txt` suffix — so every lister in this module
+/// skips it, and the wildcard clear (which now removes validated category files
+/// rather than the directory) leaves it in place. Its contents are irrelevant;
+/// only the lock on it matters.
+const STORE_LOCK_FILE: &str = ".lock";
+
+/// An exclusive advisory lock over one memory store, held for the whole of a
+/// read-modify-write.
+///
+/// Why a *file* lock rather than a process-local mutex: the store is shared by
+/// every Biorouter process on the machine — a chat window's daemon, a terminal
+/// `biorouter` CLI, a scheduled job — and a mutex is invisible across the
+/// process boundary. `flock` is held per open file description, so two `open`s
+/// contend identically whether they are in one process or two.
+///
+/// Why one lock per *store* rather than the per-category lock the review names:
+/// `remove_memory_category("*")` and `clear_all_global_or_local_memories` act on
+/// the whole directory, and no per-category lock can serialize them against an
+/// append to a category they are about to remove. A store-wide lock is strictly
+/// stronger, and the contention it costs is nil — memory operations are rare,
+/// touch a few kilobytes, and are never held across an await.
+struct StoreLock(fs::File);
+
+impl Drop for StoreLock {
+    fn drop(&mut self) {
+        // Closing the descriptor would release it anyway; unlocking explicitly
+        // means the release does not depend on when the `File` is dropped.
+        let _ = fs2::FileExt::unlock(&self.0);
+    }
+}
+
+/// Replace a category file **atomically**, so a concurrent reader — which takes
+/// no lock, because it does not need one — never sees a half-written store.
+///
+/// `fs::write` truncates and then writes, so a reader interleaving with it gets
+/// an empty or partial category and concludes the memories are gone. The
+/// temporary lands in the store directory so the rename is same-filesystem, and
+/// its name does not end in `.txt`, so a crash between the two steps leaves
+/// something every lister ignores rather than a phantom category.
+fn replace_category_file(path: &Path, body: &str) -> io::Result<()> {
+    let name = path
+        .file_name()
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "category path has no file name",
+            )
+        })?
+        .to_string_lossy()
+        .into_owned();
+    let tmp = path.with_file_name(format!("{name}.tmp"));
+    fs::write(&tmp, body)?;
+    fs::rename(&tmp, path)
+}
+
 /// Does `path` land inside the machine-wide memory store?
 ///
 /// The store is a directory of text files, so every generic file tool in the
@@ -676,12 +734,7 @@ impl MemoryServer {
     /// and watching which test goes red.
     fn get_memory_file(&self, category: &str, is_global: bool) -> io::Result<PathBuf> {
         let category = validated_category(category)?;
-        // Defaults to local memory if no is_global flag is provided
-        let base_dir = if is_global {
-            &self.global_memory_dir
-        } else {
-            &self.local_memory_dir
-        };
+        let base_dir = self.base_dir(is_global);
         let path = base_dir.join(format!("{}.txt", category));
 
         let escaped = |detail: &str| {
@@ -708,6 +761,45 @@ impl MemoryServer {
         }
 
         Ok(path)
+    }
+
+    /// The directory backing one scope. `is_global=false` is the project-local
+    /// store, which is also where a malformed flag lands — never the
+    /// machine-wide one.
+    fn base_dir(&self, is_global: bool) -> &Path {
+        if is_global {
+            &self.global_memory_dir
+        } else {
+            &self.local_memory_dir
+        }
+    }
+
+    /// Take the store's exclusive mutation lock, creating the store directory if
+    /// it does not exist yet. For writes, which need the directory anyway.
+    fn lock_store(&self, is_global: bool) -> io::Result<StoreLock> {
+        let base = self.base_dir(is_global);
+        fs::create_dir_all(base)?;
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(base.join(STORE_LOCK_FILE))?;
+        fs2::FileExt::lock_exclusive(&file)?;
+        Ok(StoreLock(file))
+    }
+
+    /// The same lock, or `None` when the store does not exist yet.
+    ///
+    /// A *delete* must not bring a store into existence — the store is created
+    /// lazily on first write, and "no directory" is the ordinary empty state
+    /// that [`MemoryServer::inventory`] reports as such. There is also nothing
+    /// to serialize against in a directory nothing has ever written to.
+    fn lock_store_if_present(&self, is_global: bool) -> io::Result<Option<StoreLock>> {
+        if !self.base_dir(is_global).exists() {
+            return Ok(None);
+        }
+        self.lock_store(is_global).map(Some)
     }
 
     /// The precondition every machine-wide operation carries: somebody in front
@@ -847,18 +939,28 @@ impl MemoryServer {
     ) -> io::Result<()> {
         let memory_file_path = self.get_memory_file(category, is_global)?;
 
-        if let Some(parent) = memory_file_path.parent() {
-            fs::create_dir_all(parent)?;
+        // Held until this function returns: an append is one record, and a
+        // delete rewriting the same category must not interleave with it. See
+        // [`StoreLock`] — without this an append landing inside a delete's
+        // read-modify-write is silently discarded (#63 review, finding 6).
+        let _lock = self.lock_store(is_global)?;
+
+        let mut record = String::new();
+        if !tags.is_empty() {
+            record.push_str("# ");
+            record.push_str(&tags.join(" "));
+            record.push('\n');
         }
+        record.push_str(data);
+        record.push_str("\n\n");
 
         let mut file = fs::OpenOptions::new()
             .append(true)
             .create(true)
             .open(&memory_file_path)?;
-        if !tags.is_empty() {
-            writeln!(file, "# {}", tags.join(" "))?;
-        }
-        writeln!(file, "{}\n", data)?;
+        // One write, not one per line: a reader takes no lock, so a record that
+        // reached disk in two parts could be read as a tag line with no body.
+        file.write_all(record.as_bytes())?;
 
         Ok(())
     }
@@ -909,6 +1011,11 @@ impl MemoryServer {
         is_global: bool,
     ) -> io::Result<()> {
         let memory_file_path = self.get_memory_file(category, is_global)?;
+        // The read, the filter and the rewrite are one critical section: an
+        // append landing between them would be overwritten by the rewrite.
+        let Some(_lock) = self.lock_store_if_present(is_global)? else {
+            return Ok(());
+        };
         if !memory_file_path.exists() {
             return Ok(());
         }
@@ -924,13 +1031,16 @@ impl MemoryServer {
             .map(|s| s.to_string())
             .collect();
 
-        fs::write(memory_file_path, new_content.join("\n\n"))?;
+        replace_category_file(&memory_file_path, &new_content.join("\n\n"))?;
 
         Ok(())
     }
 
     pub fn clear_memory(&self, category: &str, is_global: bool) -> io::Result<()> {
         let memory_file_path = self.get_memory_file(category, is_global)?;
+        let Some(_lock) = self.lock_store_if_present(is_global)? else {
+            return Ok(());
+        };
         if memory_file_path.exists() {
             fs::remove_file(memory_file_path)?;
         }
@@ -939,11 +1049,10 @@ impl MemoryServer {
     }
 
     pub fn clear_all_global_or_local_memories(&self, is_global: bool) -> io::Result<()> {
-        let base_dir = if is_global {
-            &self.global_memory_dir
-        } else {
-            &self.local_memory_dir
+        let Some(_lock) = self.lock_store_if_present(is_global)? else {
+            return Ok(());
         };
+        let base_dir = self.base_dir(is_global);
         if base_dir.exists() {
             fs::remove_dir_all(base_dir)?;
         }
@@ -2392,5 +2501,86 @@ mod tests {
             .values()
             .any(|v| v.iter().any(|content| content.contains("keep_this")));
         assert!(has_kept);
+    }
+
+    // --- concurrency (#63 review, finding 6) ------------------------------
+
+    /// A delete is a read-modify-write over the whole category file, and the
+    /// same store is appended to by an agent that may be running at the same
+    /// moment — in this process, in another window's session, or in a second
+    /// Biorouter process entirely. With no lock, an append that lands between
+    /// the delete's read and its rewrite is silently overwritten: the user is
+    /// told the delete succeeded, and a memory that was accepted is gone with
+    /// nothing to say so.
+    ///
+    /// The threads here exercise the *cross-process* mechanism, not merely an
+    /// in-process one: each mutation opens the lock file afresh, and an advisory
+    /// file lock is held per open file description, so two `open`s in one
+    /// process contend exactly as two processes do.
+    #[test]
+    fn an_append_is_never_lost_to_a_concurrent_delete() {
+        const APPENDS: usize = 120;
+        const VICTIMS: usize = 40;
+
+        let temp = tempdir().unwrap();
+        let server = server_at(temp.path());
+        for victim in 0..VICTIMS {
+            server
+                .remember(
+                    "context",
+                    "clinical",
+                    &format!("victim-{victim}"),
+                    &[],
+                    true,
+                )
+                .unwrap();
+        }
+
+        let appender = {
+            let server = server.clone();
+            std::thread::spawn(move || {
+                for i in 0..APPENDS {
+                    server
+                        .remember("context", "clinical", &format!("keep-{i}"), &[], true)
+                        .unwrap();
+                }
+            })
+        };
+        let deleter = {
+            let server = server.clone();
+            std::thread::spawn(move || {
+                for victim in 0..VICTIMS {
+                    server
+                        .remove_specific_memory_internal(
+                            "clinical",
+                            &format!("victim-{victim}"),
+                            true,
+                        )
+                        .unwrap();
+                }
+            })
+        };
+        appender.join().unwrap();
+        deleter.join().unwrap();
+
+        let left = server
+            .list_entries("clinical", MemoryScope::Global)
+            .unwrap();
+        let bodies: Vec<&str> = left.iter().map(|e| e.content.as_str()).collect();
+        let missing: Vec<String> = (0..APPENDS)
+            .map(|i| format!("keep-{i}"))
+            .filter(|kept| !bodies.contains(&kept.as_str()))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "{} of {APPENDS} memories accepted by remember() were destroyed by a \
+             concurrent delete: {missing:?}",
+            missing.len()
+        );
+        assert!(
+            !bodies.iter().any(|body| body.starts_with("victim-")),
+            "the deletes did not all take effect, so the test proves nothing \
+             about them: {bodies:?}"
+        );
     }
 }
