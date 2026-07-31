@@ -278,12 +278,25 @@ same weight:
 
 ## The killed-approaches register
 
-This is the most valuable section in the brief. Everything below was tried, shipped past its own
-green test suite, and then killed by a reviewer. **Do not re-propose any of it.**
+This is the most valuable section in the brief, and a gap in it is the most expensive kind of gap
+there is: the register is the only thing that stops a fifth attempt repeating the first four.
+**Do not re-propose any of it.**
+
+⚠ **What "killed" means here, stated precisely, because an earlier version of this section
+overstated it.** Everything below was a **document proposal** — a design paragraph or a prescribed
+task unit — that its own author and the previous round's reviewer had already accepted, and that a
+later adversarial round then defeated on paper. **None of it was ever built.** This brief records
+the measurement itself: `feat/privacy-tiers` carried the three documents and no #56 production code,
+and each review round examined a diff in which only `privacy-tiers-execution-plan.md` had changed.
+Nothing here "shipped past a green suite", because there has never been a suite to ship past.
+
+That makes the register *more* useful, not less. These are not defects someone was careless enough
+to ship. They are the designs a competent author reaches for **first** — which is exactly why they
+will be reached for again, by you, unless you have read them here.
 
 ### The one lesson: every enforcement design that enumerates gets defeated one level down
 
-Enumeration has now lost **four** times, at four different levels of abstraction, and each loss was
+Enumeration has now lost **three** times, at three different levels of abstraction, and each loss was
 invisible to the level above it:
 
 | Round | The enumeration | How it was defeated | Evidence |
@@ -291,9 +304,29 @@ invisible to the level above it:
 | **1** | Enumerate **tools** — classify the tools that touch private data | Missed the arbitrary-execution builtins entirely. `developer__shell` runs any command, the shell is explicitly not jailed by the file tools' base, and the OS sandbox that could confine it defaults to **Off**. A public model never has to defeat a tool gate; it reads `sessions.db` — which carries a *contentful* FTS mirror of every message by design — straight off disk. | `shell_sandbox/mod.rs:271` (`_ => SandboxMode::Off`), `session_manager.rs:29`, `secret_guard.rs:33` (`DEFAULT_SECRET_PATTERNS` covers credentials, not the data roots) |
 | **2** | Enumerate a **tool list** — guard `developer` and `computercontroller` | The OS sandbox cannot constrain tools that read files **in-process** inside `biorouterd`. `computercontroller__cache` accepts an arbitrary path and reads it with `tokio::fs::read_to_string`; the Agent Drafter readers do the same. **They *are* the daemon.** No sandbox the daemon installs on its children can constrain the daemon. Round 1 named the two servers; round 2 found `cache` *inside* one of them. | `computercontroller/mod.rs:1482`, `agent_drafter/store.rs:637`, `developer/text_editor.rs:641` |
 | **3** | Enumerate **argument shapes** — guard any path-shaped argument at the choke point | Handlers compute their own paths. `read_app` receives an app id and a *relative* path; `ArtifactStore` supplies the denied root via `self.root.join(id)`. `export_app` reads the app root implicitly and writes to a caller-named destination — a copy primitive. And **only the Developer server receives the session cwd**, so every other built-in resolves a relative path against the *daemon's* cwd while the guard resolved it against the session's. All three pass the plan's own "surprise tool" test. | `agent_drafter/store.rs:447` (`fn dir`), `crates/biorouter-mcp/src/lib.rs:49`, `:77` |
-| **4** | The tier is **advisory anyway** | A caller could raise its **own** session to Private with one credential-free `POST /agent/update_provider {provider:"llamacpp"}`. The rule that would stop it forbids *"switch this chat to a private model"* — which is step 1 of the two-ways-out message in **every refusal this feature ships**. | `routes/agent.rs`; recorded as AR-15, ruled on as **DR-16** |
 
-Why a mechanical fix is impossible, measured: **125 `#[tool(…)]` declarations in
+#### Round 4 is a different failure, and counting it as a fourth enumeration hides what it teaches
+
+Round 4 found a **privilege escalation**, not a fourth defeated enumeration. It belongs beside the
+table, not in it.
+
+A caller could raise its **own** session to Private with one credential-free
+`POST /agent/update_provider {provider:"llamacpp"}` (`routes/agent.rs`). No enumeration was defeated.
+The **lattice** was: every gate below can be individually correct and complete and still enforce
+nothing, because the value they all branch on is a value their subject can set. That is a different
+class of defect from "the list was short", and it needs a different kind of fix — which is why the
+answer was a ruling (DR-16) rather than a better choke point.
+
+What makes it sharper than an ordinary bypass: the rule that would stop it forbids *"switch this chat
+to a private model"*, and that is **step 1 of the two-ways-out message in every refusal this feature
+ships**. A blanket refusal would break the product's own remediation advice, so the fix has to
+distinguish the **user's** act from the **model's** — which no HTTP route can do without something
+that proves a human acted.
+
+Recorded as AR-15, ruled on as **DR-16**, and ⚠ **DR-16 still has no task written for it**; see
+[Stage 4](#stage-4--the-master-toggle-the-user-only-tier-raise-and-the-ui) and open questions 23–24.
+
+Why a mechanical fix to the enumeration problem is impossible, measured: **125 `#[tool(…)]` declarations in
 `crates/biorouter-mcp/src`**, and a `grep` for `fs::`/`File::open` structurally cannot find the
 readers — `computercontroller__xlsx_tool` goes through `umya_spreadsheet`, `pdf_tool` through `lopdf`,
 `datasql__data_query` through `sqlx`, and none of those lines contains an `fs::` token. A mechanical
@@ -440,9 +473,9 @@ root's own resolver**) and Layer B (the OS read-deny sandbox, spawned children o
 14D (the readers that never reach the choke point), 14E (**the roots' own doors** — this is the one
 that answers round 3), 14F (`export_app`'s write target).
 
-**Be honest about this stage: it is the one that has failed review four times.** All four entries in
-the enumeration table above are Stage 3's subject. Budget for a re-plan; do not budget for it going
-green first time.
+**Be honest about this stage: it is the one that has failed review three times.** All three entries in
+the enumeration table above are Stage 3's subject — round 4's escalation is Stage 4's, via DR-16.
+Budget for a re-plan; do not budget for it going green first time.
 
 **The two structural commitments, which are what round 3 bought:**
 
@@ -527,10 +560,16 @@ cannot, which is why they are questions. Raise them; do not invent an answer ins
 
 ## The verification regime
 
-**A green suite is necessary and not sufficient.** Say it once and then behave as if it is true: every
-batch of work in this campaign passed its full suite before review, and every review still found real
-defects. Three rounds found gates that *could not fail the wrong implementation they named*. The suite
-proves you did not break what exists. It does not prove you built a barrier.
+**A green suite is necessary and not sufficient.** Say it once and then behave as if it is true —
+but note *why* it is true here, because the obvious argument is not available. This campaign has
+produced no #56 code, so nobody can claim a green suite hid a defect in it. The real evidence is
+about **gates**, and it is worse: three rounds found gates that *could not fail the wrong
+implementation they named*, and in each case the same round then constructed that wrong
+implementation. Those gates would have run green over a design already proved unsound.
+
+A suite proves you did not break what exists. **A gate proves nothing at all unless you can name the
+wrong implementation it rejects** — which is why item 5 of [the reviewer's
+checklist](#the-reviewers-checklist) asks you to name one for every gate you write.
 
 ### Half one — the mechanical regime
 
