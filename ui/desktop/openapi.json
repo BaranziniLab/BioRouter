@@ -2623,7 +2623,7 @@
     "/memory/delete_category": {
       "post": {
         "tags": [
-          "super::routes::memory"
+          "Memory"
         ],
         "operationId": "memory_delete_category",
         "requestBody": {
@@ -2650,19 +2650,27 @@
           "400": {
             "description": "Invalid category, or a local scope with no working_dir"
           },
+          "401": {
+            "description": "Unauthorized - Invalid or missing API key"
+          },
           "404": {
             "description": "No such category"
           },
           "409": {
             "description": "The category changed since it was listed"
           }
-        }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
       }
     },
     "/memory/delete_entry": {
       "post": {
         "tags": [
-          "super::routes::memory"
+          "Memory"
         ],
         "operationId": "memory_delete_entry",
         "requestBody": {
@@ -2689,19 +2697,27 @@
           "400": {
             "description": "Invalid category, or a local scope with no working_dir"
           },
+          "401": {
+            "description": "Unauthorized - Invalid or missing API key"
+          },
           "404": {
             "description": "No memory at that position"
           },
           "409": {
             "description": "The category changed since it was listed"
           }
-        }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
       }
     },
     "/memory/inventory": {
       "get": {
         "tags": [
-          "super::routes::memory"
+          "Memory"
         ],
         "operationId": "memory_inventory",
         "parameters": [
@@ -2727,10 +2743,18 @@
               }
             }
           },
+          "401": {
+            "description": "Unauthorized - Invalid or missing API key"
+          },
           "500": {
             "description": "A store could not be read"
           }
-        }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
       }
     },
     "/reply": {
@@ -10718,6 +10742,14 @@
             "type": "string"
           }
         }
+      }
+    },
+    "securitySchemes": {
+      "api_key": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-Secret-Key",
+        "description": "The daemon's secret key. Biorouter's server is loopback-only and authenticates every route except /status with this header."
       }
     }
   }

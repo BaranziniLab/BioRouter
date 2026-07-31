@@ -91,7 +91,11 @@ export const cancelTurn = <ThrowOnError extends boolean = false>(options: Option
     }
 });
 
-export const listApps = <ThrowOnError extends boolean = false>(options?: Options<ListAppsData, ThrowOnError>) => (options?.client ?? client).get<ListAppsResponses, ListAppsErrors, ThrowOnError>({ url: '/agent/list_apps', ...options });
+export const listApps = <ThrowOnError extends boolean = false>(options?: Options<ListAppsData, ThrowOnError>) => (options?.client ?? client).get<ListAppsResponses, ListAppsErrors, ThrowOnError>({
+    security: [{ name: 'X-Secret-Key', type: 'apiKey' }],
+    url: '/agent/list_apps',
+    ...options
+});
 
 export const readResource = <ThrowOnError extends boolean = false>(options: Options<ReadResourceData, ThrowOnError>) => (options.client ?? client).post<ReadResourceResponses, ReadResourceErrors, ThrowOnError>({
     url: '/agent/read_resource',
@@ -512,6 +516,7 @@ export const llamacppWarmup = <ThrowOnError extends boolean = false>(options: Op
 export const mcpUiProxy = <ThrowOnError extends boolean = false>(options?: Options<McpUiProxyData, ThrowOnError>) => (options?.client ?? client).get<McpUiProxyResponses, unknown, ThrowOnError>({ url: '/mcp-ui-proxy', ...options });
 
 export const memoryDeleteCategory = <ThrowOnError extends boolean = false>(options: Options<MemoryDeleteCategoryData, ThrowOnError>) => (options.client ?? client).post<MemoryDeleteCategoryResponses, MemoryDeleteCategoryErrors, ThrowOnError>({
+    security: [{ name: 'X-Secret-Key', type: 'apiKey' }],
     url: '/memory/delete_category',
     ...options,
     headers: {
@@ -521,6 +526,7 @@ export const memoryDeleteCategory = <ThrowOnError extends boolean = false>(optio
 });
 
 export const memoryDeleteEntry = <ThrowOnError extends boolean = false>(options: Options<MemoryDeleteEntryData, ThrowOnError>) => (options.client ?? client).post<MemoryDeleteEntryResponses, MemoryDeleteEntryErrors, ThrowOnError>({
+    security: [{ name: 'X-Secret-Key', type: 'apiKey' }],
     url: '/memory/delete_entry',
     ...options,
     headers: {
@@ -529,7 +535,11 @@ export const memoryDeleteEntry = <ThrowOnError extends boolean = false>(options:
     }
 });
 
-export const memoryInventory = <ThrowOnError extends boolean = false>(options?: Options<MemoryInventoryData, ThrowOnError>) => (options?.client ?? client).get<MemoryInventoryResponses, MemoryInventoryErrors, ThrowOnError>({ url: '/memory/inventory', ...options });
+export const memoryInventory = <ThrowOnError extends boolean = false>(options?: Options<MemoryInventoryData, ThrowOnError>) => (options?.client ?? client).get<MemoryInventoryResponses, MemoryInventoryErrors, ThrowOnError>({
+    security: [{ name: 'X-Secret-Key', type: 'apiKey' }],
+    url: '/memory/inventory',
+    ...options
+});
 
 export const reply = <ThrowOnError extends boolean = false>(options: Options<ReplyData, ThrowOnError>) => (options.client ?? client).sse.post<ReplyResponses, ReplyErrors, ThrowOnError>({
     url: '/reply',
@@ -585,11 +595,20 @@ export const sessionsHandler = <ThrowOnError extends boolean = false>(options: O
 
 export const unpauseSchedule = <ThrowOnError extends boolean = false>(options: Options<UnpauseScheduleData, ThrowOnError>) => (options.client ?? client).post<UnpauseScheduleResponses, UnpauseScheduleErrors, ThrowOnError>({ url: '/schedule/{id}/unpause', ...options });
 
-export const listSessions = <ThrowOnError extends boolean = false>(options?: Options<ListSessionsData, ThrowOnError>) => (options?.client ?? client).get<ListSessionsResponses, ListSessionsErrors, ThrowOnError>({ url: '/sessions', ...options });
+export const listSessions = <ThrowOnError extends boolean = false>(options?: Options<ListSessionsData, ThrowOnError>) => (options?.client ?? client).get<ListSessionsResponses, ListSessionsErrors, ThrowOnError>({
+    security: [{ name: 'X-Secret-Key', type: 'apiKey' }],
+    url: '/sessions',
+    ...options
+});
 
-export const getSessionActivity = <ThrowOnError extends boolean = false>(options?: Options<GetSessionActivityData, ThrowOnError>) => (options?.client ?? client).get<GetSessionActivityResponses, GetSessionActivityErrors, ThrowOnError>({ url: '/sessions/activity', ...options });
+export const getSessionActivity = <ThrowOnError extends boolean = false>(options?: Options<GetSessionActivityData, ThrowOnError>) => (options?.client ?? client).get<GetSessionActivityResponses, GetSessionActivityErrors, ThrowOnError>({
+    security: [{ name: 'X-Secret-Key', type: 'apiKey' }],
+    url: '/sessions/activity',
+    ...options
+});
 
 export const importSession = <ThrowOnError extends boolean = false>(options: Options<ImportSessionData, ThrowOnError>) => (options.client ?? client).post<ImportSessionResponses, ImportSessionErrors, ThrowOnError>({
+    security: [{ name: 'X-Secret-Key', type: 'apiKey' }],
     url: '/sessions/import',
     ...options,
     headers: {
@@ -598,13 +617,29 @@ export const importSession = <ThrowOnError extends boolean = false>(options: Opt
     }
 });
 
-export const getSessionInsights = <ThrowOnError extends boolean = false>(options?: Options<GetSessionInsightsData, ThrowOnError>) => (options?.client ?? client).get<GetSessionInsightsResponses, GetSessionInsightsErrors, ThrowOnError>({ url: '/sessions/insights', ...options });
+export const getSessionInsights = <ThrowOnError extends boolean = false>(options?: Options<GetSessionInsightsData, ThrowOnError>) => (options?.client ?? client).get<GetSessionInsightsResponses, GetSessionInsightsErrors, ThrowOnError>({
+    security: [{ name: 'X-Secret-Key', type: 'apiKey' }],
+    url: '/sessions/insights',
+    ...options
+});
 
-export const listSidebarSessions = <ThrowOnError extends boolean = false>(options?: Options<ListSidebarSessionsData, ThrowOnError>) => (options?.client ?? client).get<ListSidebarSessionsResponses, ListSidebarSessionsErrors, ThrowOnError>({ url: '/sessions/sidebar', ...options });
+export const listSidebarSessions = <ThrowOnError extends boolean = false>(options?: Options<ListSidebarSessionsData, ThrowOnError>) => (options?.client ?? client).get<ListSidebarSessionsResponses, ListSidebarSessionsErrors, ThrowOnError>({
+    security: [{ name: 'X-Secret-Key', type: 'apiKey' }],
+    url: '/sessions/sidebar',
+    ...options
+});
 
-export const deleteSession = <ThrowOnError extends boolean = false>(options: Options<DeleteSessionData, ThrowOnError>) => (options.client ?? client).delete<DeleteSessionResponses, DeleteSessionErrors, ThrowOnError>({ url: '/sessions/{session_id}', ...options });
+export const deleteSession = <ThrowOnError extends boolean = false>(options: Options<DeleteSessionData, ThrowOnError>) => (options.client ?? client).delete<DeleteSessionResponses, DeleteSessionErrors, ThrowOnError>({
+    security: [{ name: 'X-Secret-Key', type: 'apiKey' }],
+    url: '/sessions/{session_id}',
+    ...options
+});
 
-export const getSession = <ThrowOnError extends boolean = false>(options: Options<GetSessionData, ThrowOnError>) => (options.client ?? client).get<GetSessionResponses, GetSessionErrors, ThrowOnError>({ url: '/sessions/{session_id}', ...options });
+export const getSession = <ThrowOnError extends boolean = false>(options: Options<GetSessionData, ThrowOnError>) => (options.client ?? client).get<GetSessionResponses, GetSessionErrors, ThrowOnError>({
+    security: [{ name: 'X-Secret-Key', type: 'apiKey' }],
+    url: '/sessions/{session_id}',
+    ...options
+});
 
 /**
  * Diverge (branch) a session into a brand-new session that inherits the full
@@ -615,6 +650,7 @@ export const getSession = <ThrowOnError extends boolean = false>(options: Option
  * continue a fresh conversation from exactly where they left off.
  */
 export const divergeSession = <ThrowOnError extends boolean = false>(options: Options<DivergeSessionData, ThrowOnError>) => (options.client ?? client).post<DivergeSessionResponses, DivergeSessionErrors, ThrowOnError>({
+    security: [{ name: 'X-Secret-Key', type: 'apiKey' }],
     url: '/sessions/{session_id}/diverge',
     ...options,
     headers: {
@@ -639,6 +675,7 @@ export const divergeSession = <ThrowOnError extends boolean = false>(options: Op
  * body's `missing_message_ids` says which, so you can re-read and retry.
  */
 export const editMessage = <ThrowOnError extends boolean = false>(options: Options<EditMessageData, ThrowOnError>) => (options.client ?? client).post<EditMessageResponses, EditMessageErrors, ThrowOnError>({
+    security: [{ name: 'X-Secret-Key', type: 'apiKey' }],
     url: '/sessions/{session_id}/edit_message',
     ...options,
     headers: {
@@ -647,11 +684,20 @@ export const editMessage = <ThrowOnError extends boolean = false>(options: Optio
     }
 });
 
-export const exportSession = <ThrowOnError extends boolean = false>(options: Options<ExportSessionData, ThrowOnError>) => (options.client ?? client).get<ExportSessionResponses, ExportSessionErrors, ThrowOnError>({ url: '/sessions/{session_id}/export', ...options });
+export const exportSession = <ThrowOnError extends boolean = false>(options: Options<ExportSessionData, ThrowOnError>) => (options.client ?? client).get<ExportSessionResponses, ExportSessionErrors, ThrowOnError>({
+    security: [{ name: 'X-Secret-Key', type: 'apiKey' }],
+    url: '/sessions/{session_id}/export',
+    ...options
+});
 
-export const getSessionExtensions = <ThrowOnError extends boolean = false>(options: Options<GetSessionExtensionsData, ThrowOnError>) => (options.client ?? client).get<GetSessionExtensionsResponses, GetSessionExtensionsErrors, ThrowOnError>({ url: '/sessions/{session_id}/extensions', ...options });
+export const getSessionExtensions = <ThrowOnError extends boolean = false>(options: Options<GetSessionExtensionsData, ThrowOnError>) => (options.client ?? client).get<GetSessionExtensionsResponses, GetSessionExtensionsErrors, ThrowOnError>({
+    security: [{ name: 'X-Secret-Key', type: 'apiKey' }],
+    url: '/sessions/{session_id}/extensions',
+    ...options
+});
 
 export const updateSessionName = <ThrowOnError extends boolean = false>(options: Options<UpdateSessionNameData, ThrowOnError>) => (options.client ?? client).put<UpdateSessionNameResponses, UpdateSessionNameErrors, ThrowOnError>({
+    security: [{ name: 'X-Secret-Key', type: 'apiKey' }],
     url: '/sessions/{session_id}/name',
     ...options,
     headers: {
@@ -660,9 +706,14 @@ export const updateSessionName = <ThrowOnError extends boolean = false>(options:
     }
 });
 
-export const getSessionUsage = <ThrowOnError extends boolean = false>(options: Options<GetSessionUsageData, ThrowOnError>) => (options.client ?? client).get<GetSessionUsageResponses, GetSessionUsageErrors, ThrowOnError>({ url: '/sessions/{session_id}/usage', ...options });
+export const getSessionUsage = <ThrowOnError extends boolean = false>(options: Options<GetSessionUsageData, ThrowOnError>) => (options.client ?? client).get<GetSessionUsageResponses, GetSessionUsageErrors, ThrowOnError>({
+    security: [{ name: 'X-Secret-Key', type: 'apiKey' }],
+    url: '/sessions/{session_id}/usage',
+    ...options
+});
 
 export const updateSessionUserWorkflowValues = <ThrowOnError extends boolean = false>(options: Options<UpdateSessionUserWorkflowValuesData, ThrowOnError>) => (options.client ?? client).put<UpdateSessionUserWorkflowValuesResponses, UpdateSessionUserWorkflowValuesErrors, ThrowOnError>({
+    security: [{ name: 'X-Secret-Key', type: 'apiKey' }],
     url: '/sessions/{session_id}/user_workflow_values',
     ...options,
     headers: {
@@ -690,9 +741,17 @@ export const getTunnelStatus = <ThrowOnError extends boolean = false>(options?: 
  */
 export const stopTunnel = <ThrowOnError extends boolean = false>(options?: Options<StopTunnelData, ThrowOnError>) => (options?.client ?? client).post<StopTunnelResponses, StopTunnelErrors, ThrowOnError>({ url: '/tunnel/stop', ...options });
 
-export const getUsageReport = <ThrowOnError extends boolean = false>(options?: Options<GetUsageReportData, ThrowOnError>) => (options?.client ?? client).get<GetUsageReportResponses, GetUsageReportErrors, ThrowOnError>({ url: '/usage/report', ...options });
+export const getUsageReport = <ThrowOnError extends boolean = false>(options?: Options<GetUsageReportData, ThrowOnError>) => (options?.client ?? client).get<GetUsageReportResponses, GetUsageReportErrors, ThrowOnError>({
+    security: [{ name: 'X-Secret-Key', type: 'apiKey' }],
+    url: '/usage/report',
+    ...options
+});
 
-export const getUsageSummary = <ThrowOnError extends boolean = false>(options?: Options<GetUsageSummaryData, ThrowOnError>) => (options?.client ?? client).get<GetUsageSummaryResponses, GetUsageSummaryErrors, ThrowOnError>({ url: '/usage/summary', ...options });
+export const getUsageSummary = <ThrowOnError extends boolean = false>(options?: Options<GetUsageSummaryData, ThrowOnError>) => (options?.client ?? client).get<GetUsageSummaryResponses, GetUsageSummaryErrors, ThrowOnError>({
+    security: [{ name: 'X-Secret-Key', type: 'apiKey' }],
+    url: '/usage/summary',
+    ...options
+});
 
 export const createWorkflow = <ThrowOnError extends boolean = false>(options: Options<CreateWorkflowData, ThrowOnError>) => (options.client ?? client).post<CreateWorkflowResponses, CreateWorkflowErrors, ThrowOnError>({
     url: '/workflows/create',

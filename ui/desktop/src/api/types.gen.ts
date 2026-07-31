@@ -4465,6 +4465,10 @@ export type MemoryDeleteCategoryErrors = {
      */
     400: unknown;
     /**
+     * Unauthorized - Invalid or missing API key
+     */
+    401: unknown;
+    /**
      * No such category
      */
     404: unknown;
@@ -4495,6 +4499,10 @@ export type MemoryDeleteEntryErrors = {
      * Invalid category, or a local scope with no working_dir
      */
     400: unknown;
+    /**
+     * Unauthorized - Invalid or missing API key
+     */
+    401: unknown;
     /**
      * No memory at that position
      */
@@ -4527,6 +4535,10 @@ export type MemoryInventoryData = {
 };
 
 export type MemoryInventoryErrors = {
+    /**
+     * Unauthorized - Invalid or missing API key
+     */
+    401: unknown;
     /**
      * A store could not be read
      */
