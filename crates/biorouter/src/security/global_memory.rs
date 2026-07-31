@@ -123,11 +123,35 @@
 //! warning — deliberately over-inclusive, and harmless when it is wrong because
 //! the worst outcome is one approval card — and the card says plainly that the
 //! script's memory calls will be refused either way.
+//!
+//! # Naming the store by path, and merely naming it
+//!
+//! [`references_global_store`] refuses any tool — not just the four memory ones
+//! — that points at the store's path, because the store is a directory of text
+//! files and `cat <store>/clinical.txt` is the disclosure the card exists for.
+//!
+//! It reads only the arguments that carry a *place*: a path, a directory, a
+//! shell command line, a script body ([`ArgumentRole`]). Applied to every string
+//! in the payload — as it was when #63 first landed — it also refused
+//! `text_editor(path="docs/foo.md", file_text="…`~/.config/biorouter/memory`…")`,
+//! because [`names_path`] ends a match on a backtick or a space and that is how
+//! prose spells a path. The result was an agent that could not document the
+//! memory feature, edit this repository's own
+//! `docs/extensions/built-in/memory.md`, or commit either.
+//!
+//! Being unable to *say* where the store is protects nothing: the text is
+//! written to the file named beside it, and the model composed the text. What
+//! protects the store is the storage boundary in `biorouter-mcp` (see
+//! `crates/biorouter-mcp/tests/global_memory_file_barrier.rs`), which resolves
+//! the path and refuses the place. This check is the layer above it, and its
+//! job is to catch the shell — which resolves no path — naming the store
+//! literally.
 
 use serde_json::{Map, Value};
 
 use crate::config::BioRouterMode;
 use crate::conversation::message::{Message, ToolRequest};
+use crate::security::policy::command::{redirect_targets, ParsedCommand};
 use crate::tool_inspection::{InspectionAction, InspectionResult, ToolInspector};
 use anyhow::Result;
 use async_trait::async_trait;
@@ -292,21 +316,172 @@ fn names_path(text: &str, store: &str) -> bool {
     })
 }
 
-/// Does any string anywhere in `args` name the machine-wide memory store?
+/// What an argument's value *is*, which decides how a mention of the store's
+/// path inside it should be read.
 ///
-/// Walks nested objects and arrays, because a path can arrive as
-/// `{"opts": {"paths": ["…"]}}` as readily as a top-level `path`.
+/// The distinction is the whole of the #63 second-round fix. The check used to
+/// walk **every string in the payload**, and `names_path` ends a match on a
+/// backtick, a quote or whitespace — which is precisely how prose spells a
+/// path. So `text_editor(command="write", path="docs/foo.md", file_text="Global
+/// memories live in `~/.config/biorouter/memory`…")` was refused: an agent
+/// could not document the memory feature, edit this repository's own
+/// `docs/extensions/built-in/memory.md`, or write the release notes for the
+/// gate itself.
+///
+/// Nothing in that call goes near the store. `file_text` is written to the
+/// `path` beside it; the path is a *quotation*. So the check now asks which
+/// argument carries the mention, and only refuses the ones where naming the
+/// store means opening it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ArgumentRole {
+    /// A filesystem path the tool will resolve and open.
+    Path,
+    /// A shell command line, read as the shell reads it (see
+    /// [`shell_command_names_store`]).
+    ShellCommand,
+    /// Executable source text — a script body, whose own literal references are
+    /// scanned whole.
+    Script,
+}
+
+/// Argument keys whose value is a **directory**, on top of the shared
+/// [`crate::security::is_path_argument_key`] list.
+///
+/// The store is a directory, so a tool pointed at it by a directory-valued
+/// argument reaches it just as surely as one given a file path:
+/// `shell(working_directory=<store>)` runs `ls` inside it, and
+/// `create_app(capabilities.files.entries[].local_dir=<store>)` mounts it into
+/// an app's workspace. Enumerated from the declared schemas —
+/// `ShellParams::working_directory`, `files_server::ListParams::dir`,
+/// `agent_drafter` `export_app.target_dir` and `WorkspaceEntry::local_dir` —
+/// not guessed.
+///
+/// They are kept here rather than added to the shared list because widening
+/// that list also widens what [`crate::security::sensitive_ops`] escalates,
+/// which is a separate decision with its own regression suite.
+const DIRECTORY_ARG_KEYS: &[&str] = &["dir", "directory", "working_directory", "local_dir"];
+
+/// Argument keys whose value is executable source text.
+///
+/// `execute_code.code` and `compute_python.code` (JS / Python bodies), and
+/// `automation_script.script` / `computer_control.script` (shell, batch,
+/// PowerShell, AppleScript).
+const SCRIPT_ARG_KEYS: &[&str] = &["code", "script"];
+
+/// How the value under `key` should be read, or `None` if a path inside it is
+/// not a reference to a place.
+fn argument_role(key: &str) -> Option<ArgumentRole> {
+    let lowered = key.to_ascii_lowercase();
+    if crate::security::is_path_argument_key(&lowered)
+        || DIRECTORY_ARG_KEYS.contains(&lowered.as_str())
+    {
+        return Some(ArgumentRole::Path);
+    }
+    if crate::security::is_command_argument_key(&lowered) {
+        return Some(ArgumentRole::ShellCommand);
+    }
+    if SCRIPT_ARG_KEYS.contains(&lowered.as_str()) {
+        return Some(ArgumentRole::Script);
+    }
+    None
+}
+
+/// Does this shell command line name the store *as a path operand*?
+///
+/// A raw substring search cannot answer this, because the same characters mean
+/// two different things in a command line:
+///
+/// ```text
+/// cat ~/.config/biorouter/memory/clinical.txt          <- reads the store
+/// git commit -m "docs: ~/.config/biorouter/memory is shared"   <- talks about it
+/// ```
+///
+/// So the command is handed to [`ParsedCommand`], the policy engine's tokenizer,
+/// and each resulting argv token is tested. Quoting is what separates the two
+/// cases: `shlex` gives the commit message back as **one token** ("docs: … is
+/// shared"), which is not a path, while the `cat` operand is a token that *is*
+/// the store. Reusing the parser rather than splitting on whitespace also buys
+/// the pipeline/`;` split, redirect targets, and — because it recurses through
+/// `sh -c` — a store reference nested inside `bash -c "cat <store>/x"`.
+///
+/// A token *starts* with the store and continues with a path separator, or is
+/// the store exactly. Unlike [`names_path`] a whitespace boundary does not
+/// count here: whitespace inside a token means the token is a quoted sentence,
+/// which is the case this function exists to let through.
+///
+/// Not caught: `--dir=<store>`, and any command that computes the path rather
+/// than writing it. That is the same limit the module docs already state — this
+/// check is a literal-reference warning, and the store's actual guarantee is the
+/// storage boundary in `biorouter-mcp`, which resolves paths and cannot be
+/// out-computed.
+fn shell_command_names_store(command: &str, forms: &[String]) -> bool {
+    let token_is_store = |token: &str| {
+        forms.iter().any(|form| {
+            token.strip_prefix(form.as_str()).is_some_and(|rest| {
+                rest.is_empty() || rest.starts_with('/') || rest.starts_with('\\')
+            })
+        })
+    };
+    let parsed = ParsedCommand::parse(command, std::path::Path::new("."));
+    parsed
+        .segments
+        .iter()
+        .flat_map(|segment| segment.argv.iter())
+        .any(|token| token_is_store(token))
+        // `> <store>/x` is a write target and not an argv token.
+        || redirect_targets(command).iter().any(|t| token_is_store(t))
+}
+
+/// Does `args` name the machine-wide memory store *in an argument that would
+/// open it*?
+///
+/// Walks nested objects and arrays, because a path arrives as
+/// `{"opts": {"paths": ["…"]}}` or `{"params": {"image_path": "…"}}` as readily
+/// as a top-level `path`; the walk descends through keys with no role of their
+/// own, looking for one that has.
+///
+/// The alternative shape considered and rejected was to keep scanning every
+/// string and merely downgrade a prose match from a refusal to an approval
+/// card. That still breaks the case: in Auto mode a card stops an autonomous
+/// run, so every documentation edit that quotes the path would block on a human
+/// — and the card would be asking consent for a disclosure that is not
+/// happening, since the model wrote the text it is being asked about. A prose
+/// mention is not a memory operation and should not be treated as one.
 fn references_global_store(args: &Map<String, Value>) -> bool {
-    fn walk(value: &Value, forms: &[String]) -> bool {
+    fn in_map(map: &Map<String, Value>, forms: &[String]) -> bool {
+        map.iter().any(|(key, value)| match argument_role(key) {
+            Some(role) => in_role(value, forms, role),
+            // Not a path-bearing key itself; a path-bearing one may be nested
+            // under it.
+            None => descend(value, forms),
+        })
+    }
+
+    fn descend(value: &Value, forms: &[String]) -> bool {
         match value {
-            Value::String(s) => forms.iter().any(|form| names_path(s, form)),
-            Value::Array(items) => items.iter().any(|v| walk(v, forms)),
-            Value::Object(map) => map.values().any(|v| walk(v, forms)),
+            Value::Object(map) => in_map(map, forms),
+            Value::Array(items) => items.iter().any(|item| descend(item, forms)),
             _ => false,
         }
     }
+
+    fn in_role(value: &Value, forms: &[String], role: ArgumentRole) -> bool {
+        match value {
+            Value::String(text) => match role {
+                ArgumentRole::Path | ArgumentRole::Script => {
+                    forms.iter().any(|form| names_path(text, form))
+                }
+                ArgumentRole::ShellCommand => shell_command_names_store(text, forms),
+            },
+            // `paths: [...]`, and the odd tool that nests a path one level down.
+            Value::Array(items) => items.iter().any(|item| in_role(item, forms, role)),
+            Value::Object(map) => map.values().any(|v| in_role(v, forms, role)),
+            _ => false,
+        }
+    }
+
     let forms = global_store_path_forms();
-    args.values().any(|v| walk(v, &forms))
+    in_map(args, &forms)
 }
 
 /// What the model is told when a tool argument points at the store's path.
@@ -369,6 +544,11 @@ pub fn global_memory_gate(tool_name: &str, args: &Map<String, Value>) -> Option<
     // bodies included. It does **not** close the general hole: an obfuscated or
     // computed shell command still reads any file on the machine. That is the
     // filesystem barrier of issue #56, deliberately not built here.
+    //
+    // What it checks is the arguments that *carry a place* — see
+    // [`ArgumentRole`]. Applied to the whole payload it refused any call that
+    // merely quoted the path, which took documentation, release notes and
+    // commit messages about this very feature with it.
     if references_global_store(args) {
         return Some(GlobalMemoryGate::Refuse(named_by_path_refusal(tool_name)));
     }
@@ -1102,6 +1282,194 @@ record_result(all);"#;
                 "{tool} {arguments} is not the machine-wide store and must not be refused"
             );
         }
+    }
+
+    /// #63 review, second round. Denying by path must not deny by *mention*.
+    ///
+    /// The first version of the check above walked every string in the payload,
+    /// so any argument that contained the store's path anywhere was refused —
+    /// and `names_path` ends a match on a quote, a backtick or whitespace, which
+    /// is exactly how prose spells a path. The result was that documenting the
+    /// memory feature became impossible: this repository's own
+    /// `docs/extensions/built-in/memory.md` quotes the store's path in a table,
+    /// so an agent could not edit it, could not write the release notes for this
+    /// very feature, and could not commit either of them.
+    ///
+    /// Nothing here reaches the store. A `file_text` is written to the `path`
+    /// beside it, and a commit message is not a file at all. The store's real
+    /// protection is the storage boundary (`global_memory_file_barrier.rs`),
+    /// which resolves paths and cannot be talked out of it.
+    #[test]
+    fn prose_that_merely_quotes_the_store_path_is_not_refused() {
+        for store in store_path_spellings() {
+            for (tool, arguments) in [
+                // The regression as review found it: documentation about the
+                // memory feature, written to an ordinary docs file.
+                (
+                    "developer__text_editor",
+                    json!({
+                        "command": "write",
+                        "path": "docs/foo.md",
+                        "file_text": format!(
+                            "Global memories live in `{store}` and are shared by every session.\n"
+                        ),
+                    }),
+                ),
+                // The same path in a plain sentence, no backticks — `names_path`
+                // ends a match on whitespace too.
+                (
+                    "developer__text_editor",
+                    json!({
+                        "command": "write",
+                        "path": "docs/releases/notes/v1.88.6.md",
+                        "file_text": format!(
+                            "The consent gate protects {store}, the machine-wide store.\n"
+                        ),
+                    }),
+                ),
+                // An edit to an existing doc: the quoted path is in the text
+                // being replaced and in its replacement.
+                (
+                    "developer__text_editor",
+                    json!({
+                        "command": "str_replace",
+                        "path": "docs/extensions/built-in/memory.md",
+                        "old_str": format!("| Global (user-wide) | `{store}/` |"),
+                        "new_str": format!("| Global (machine-wide) | `{store}/` |"),
+                    }),
+                ),
+                // Committing that documentation. The store's path is inside the
+                // `-m` message: one shell word, and an English sentence rather
+                // than a path operand.
+                (
+                    "developer__shell",
+                    json!({"command": format!(
+                        "git commit -m \"docs(memory): say that {store} is shared machine-wide\""
+                    )}),
+                ),
+                (
+                    "developer__shell",
+                    json!({"command": format!(
+                        "git commit -m 'docs: the global store lives at {store} on macOS'"
+                    )}),
+                ),
+                // Telling the *user* where their memories are is the whole job
+                // of the consent card, so the agent must be able to say it.
+                (
+                    "developer__text_editor",
+                    json!({
+                        "command": "write",
+                        "path": "README.md",
+                        "file_text": format!("Your global memories are in {store}. Delete them\n\
+                                              from Settings → Chat → Memory.\n"),
+                    }),
+                ),
+            ] {
+                assert!(
+                    global_memory_gate(tool, &args(arguments.clone())).is_none(),
+                    "{tool} {arguments} only *mentions* the store and must not be refused"
+                );
+            }
+        }
+    }
+
+    /// The narrowing above must not become a bypass: an argument that is a path,
+    /// or a shell word in a path position, still names the store operatively and
+    /// is still refused. This is the discriminating half of the test above — a
+    /// fix that let these through would be worse than the regression.
+    #[test]
+    fn a_path_argument_naming_the_store_is_still_refused_after_the_narrowing() {
+        for store in store_path_spellings() {
+            for (tool, arguments) in [
+                (
+                    "developer__text_editor",
+                    json!({"command": "view", "path": format!("{store}/clinical.txt")}),
+                ),
+                // The same call whose *content* is innocent: the target is the
+                // store, which is all that matters.
+                (
+                    "developer__text_editor",
+                    json!({
+                        "command": "write",
+                        "path": format!("{store}/planted.txt"),
+                        "file_text": "an ordinary sentence\n",
+                    }),
+                ),
+                (
+                    "developer__shell",
+                    json!({"command": format!("cat {store}/clinical.txt")}),
+                ),
+                (
+                    "developer__shell",
+                    json!({"command": format!("rm -rf {store}")}),
+                ),
+                // Quoted, because a path with a space would have to be.
+                (
+                    "developer__shell",
+                    json!({"command": format!("cat \"{store}/clinical.txt\"")}),
+                ),
+            ] {
+                assert!(
+                    matches!(
+                        global_memory_gate(tool, &args(arguments.clone())),
+                        Some(GlobalMemoryGate::Refuse(_))
+                    ),
+                    "{tool} {arguments} points at the machine-wide store and must be refused"
+                );
+            }
+        }
+    }
+
+    /// The check is now keyed on *which argument* carries the path, so it is
+    /// worth stating what the key set is for — and that a documentation file
+    /// this repository actually ships passes it.
+    ///
+    /// Constructed as a real tool call against the real file contents rather
+    /// than argued about: `docs/extensions/built-in/memory.md` quotes the
+    /// store's path in its storage table, and rewriting it is an ordinary edit.
+    #[test]
+    fn this_repositorys_own_documentation_can_still_be_edited() {
+        let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|p| p.parent())
+            .expect("crates/biorouter has a workspace root above it")
+            .to_path_buf();
+        let forms = store_path_spellings();
+
+        let mut checked_one_that_quotes_the_store = false;
+        for doc in [
+            "CLAUDE.md",
+            "docs/security/permission-modes.md",
+            "docs/extensions/built-in/memory.md",
+            "docs/agent-loop/designs/cross-session-memory.md",
+        ] {
+            let path = repo.join(doc);
+            let Ok(body) = std::fs::read_to_string(&path) else {
+                // A worktree may not carry every doc; the point is the ones it
+                // does carry.
+                continue;
+            };
+            if forms.iter().any(|form| names_path(&body, form)) {
+                checked_one_that_quotes_the_store = true;
+            }
+            let gate = global_memory_gate(
+                "developer__text_editor",
+                &args(json!({
+                    "command": "write",
+                    "path": doc,
+                    "file_text": body,
+                })),
+            );
+            assert!(
+                gate.is_none(),
+                "an agent can no longer rewrite {doc}: {gate:?}"
+            );
+        }
+        assert!(
+            checked_one_that_quotes_the_store,
+            "none of the sampled docs quote the store path, so this test proved \
+             nothing — re-point it at a doc that does"
+        );
     }
 
     // --- the uninspected dispatch boundaries ------------------------------
