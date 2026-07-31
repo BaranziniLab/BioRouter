@@ -21,8 +21,10 @@
 Privacy tiers give every model, session, extension and knowledge base one of two tiers. A session's
 **capability** is the least-privileged model bound to it; its **classification** is the most
 sensitive thing it has touched, ratcheted permanently. The single invariant is that a public-capability
-model must never reach private material — not once, not read-only, not indirectly. That invariant is
-easy to state and has proved genuinely hard to enforce: the design and the plan have been rewritten
+model must never reach private material — not once, not read-only, not indirectly. ⚠ **That is the
+goal, and it is not what v1 delivers**; DR-17 draws the enforced boundary at the agent-mediated
+channels, and [what is actually true](#dr-3-says-not-indirectly-ar-11-concedes-an-indirect-path-and-dr-17-decides-which-one-binds)
+says exactly where it falls. The invariant is easy to state and has proved genuinely hard to enforce: the design and the plan have been rewritten
 ten times, and four independent review rounds each found real defects the previous round's authors
 and reviewers had missed. This brief exists so that the fifth round does not repeat the first four.
 
