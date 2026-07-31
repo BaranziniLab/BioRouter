@@ -1094,7 +1094,23 @@ impl WorkspaceClient {
                         "focus": focus,
                     })
                 };
-                let result = s.gui_command(frame, true).await?;
+                let result = match s.gui_command(frame, true).await {
+                    Ok(result) => result,
+                    // The session is already committed — extensions, knowledge
+                    // grants and any seeded first turn — so failing the call
+                    // here would leave the model holding an orphan whose id it
+                    // was never told, and it would create another. Report both
+                    // halves instead: it exists, and the GUI did not place it.
+                    Err(e) if created.is_some() => {
+                        return Ok(vec![Content::text(format!(
+                            "Session {session_id} was created but the GUI did not place it \
+                             ({e}).{dir_note} It exists and can be reached with \
+                             workspace_send_prompt — do NOT create another."
+                        ))]);
+                    }
+                    // Nothing was created, so there is nothing to orphan.
+                    Err(e) => return Err(e),
+                };
                 let ok = result
                     .get("ok")
                     .and_then(serde_json::Value::as_bool)
@@ -3757,6 +3773,9 @@ mod tests {
         stops: Mutex<Vec<String>>,
         /// When set, `stop_agent` fails with it (and records the call anyway).
         stop_error: Mutex<Option<String>>,
+        /// When set, `gui_command` fails with it (and records the frame anyway),
+        /// the way a wedged renderer does: `emit_and_wait` gives up after 10s.
+        gui_error: Mutex<Option<String>>,
         turn_seq: AtomicUsize,
     }
 
@@ -3783,6 +3802,12 @@ mod tests {
         /// as a tool error instead of a cheerful "stopped and evicted".
         fn stop_fails(self, message: &str) -> Self {
             *self.stop_error.lock().unwrap() = Some(message.to_string());
+            self
+        }
+        /// Make the GUI round-trip fail — a renderer that never answers, which
+        /// `emit_and_wait` reports as an error after its 10 s timeout.
+        fn gui_fails(self, message: &str) -> Self {
+            *self.gui_error.lock().unwrap() = Some(message.to_string());
             self
         }
         fn install(self) -> std::sync::Arc<Self> {
@@ -3948,7 +3973,13 @@ mod tests {
             _wait_result: bool,
         ) -> Result<serde_json::Value, String> {
             self.frames.lock().unwrap().push(frame);
-            Ok(serde_json::json!({ "ok": true }))
+            // Bind out of the guard before the early return: a live `MutexGuard`
+            // across the tail of an `async fn` makes the future `!Send`.
+            let failure = self.gui_error.lock().unwrap().clone();
+            match failure {
+                Some(message) => Err(message),
+                None => Ok(serde_json::json!({ "ok": true })),
+            }
         }
     }
 
@@ -5594,6 +5625,72 @@ mod tests {
             recorder.started.lock().unwrap().is_empty(),
             "no prompt means no turn"
         );
+
+        crate::workspace_services::clear_test_override();
+    }
+
+    /// A GUI round-trip that fails AFTER the session exists must not throw the
+    /// id away.
+    ///
+    /// `gui_command(frame, true)` parks for the renderer's `workspace_result`
+    /// with a 10 s timeout, and a wedged or merely slow renderer used to turn the
+    /// whole call into `Error: …` — with the session, its extension set, its
+    /// knowledge grants and its seeded first turn all already committed. The
+    /// model is then holding an orphan it cannot name, and near-certainly makes a
+    /// second one. Note the tell: fully headless behaved BETTER than a slow GUI.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn a_failed_gui_round_trip_still_reports_the_new_session_id() {
+        let recorder = FakeServices::with_gui(true)
+            .gui_fails("no workspace_result within 10s")
+            .install();
+
+        let c = client();
+        let dir = std::env::temp_dir().join("br71-wedged-renderer");
+        std::fs::create_dir_all(&dir).unwrap();
+        let r = open_as(
+            &c,
+            "caller",
+            serde_json::json!({ "new": { "working_dir": dir.to_str().unwrap() } }),
+        )
+        .await;
+        assert_eq!(recorder.session_dirs(), vec![dir.clone()], "it WAS created");
+        assert_ne!(
+            r.is_error,
+            Some(true),
+            "a created session must not be lost to a GUI failure: {}",
+            text_of(&r)
+        );
+        let text = text_of(&r);
+        assert!(text.contains("s-new"), "the id survives: {text}");
+        assert!(
+            text.contains("no workspace_result within 10s"),
+            "…and the GUI failure is still reported, not hidden: {text}"
+        );
+        assert!(
+            text.contains(&dir.display().to_string()),
+            "…as is the directory: {text}"
+        );
+
+        // An EXISTING session the GUI will not place is a plain failure: nothing
+        // was created, so there is nothing to orphan and nothing to soften.
+        let existing = c
+            .context
+            .session_manager
+            .create_session(
+                dir.clone(),
+                "existing".into(),
+                crate::session::session_manager::SessionType::User,
+            )
+            .await
+            .unwrap();
+        let r = open_as(
+            &c,
+            "caller",
+            serde_json::json!({ "session_id": existing.id }),
+        )
+        .await;
+        assert_eq!(r.is_error, Some(true), "got: {}", text_of(&r));
 
         crate::workspace_services::clear_test_override();
     }
