@@ -16,9 +16,11 @@
 //!   That is lossy in exactly the way a management view must not be — the user
 //!   is being shown what is on their disk, and what would be disclosed if they
 //!   approved a read.
-//! * [`MemoryServer::remove_specific_memory_internal`] deletes every entry that
-//!   *contains* the given text as a substring. A user clicking delete on one row
-//!   must lose that row, not every row it happens to be a prefix of.
+//! * [`MemoryServer::remove_specific_memory_internal`] identifies a memory by
+//!   its *body*, which is what a model has to hand. Two rows can share a body
+//!   and differ only in their tags, and a user clicking delete on one of them
+//!   must lose that row — so this door identifies a row by a digest of the whole
+//!   serialized entry, and by the revision of the category it was listed in.
 //!
 //! What it does share is [`MemoryServer::get_memory_file`], and that is the
 //! point: the containment checks issue #73 put there — a category is one plain
@@ -199,7 +201,7 @@ pub enum CategoryDeletion {
 /// body that itself contains a blank line was already two entries as far as
 /// every existing reader is concerned, and a management view that silently
 /// re-joined them would show the user something the store does not contain.
-fn parse_entries(content: &str) -> Vec<MemoryEntry> {
+pub(super) fn parse_entries(content: &str) -> Vec<MemoryEntry> {
     let mut entries = Vec::new();
     for chunk in content.split("\n\n") {
         let mut lines = chunk.lines();
@@ -248,7 +250,7 @@ fn render_entry(tags: &[String], content: &str) -> String {
 
 /// Re-serialize entries into the on-disk format, so a delete leaves a file the
 /// memory tools still parse identically.
-fn render_entries(entries: &[MemoryEntry]) -> String {
+pub(super) fn render_entries(entries: &[MemoryEntry]) -> String {
     entries
         .iter()
         .map(|entry| render_entry(&entry.tags, &entry.content))
@@ -640,9 +642,9 @@ mod tests {
         );
     }
 
-    /// Deleting one row deletes that row. `remove_specific_memory` deletes
-    /// every entry *containing* the text, which for a user clicking a trash
-    /// icon on "black" would silently take "we use black for formatting" too.
+    /// Deleting one row deletes that row, not the rows it is a prefix of — a
+    /// user clicking the trash icon on "black" must not lose "we use black for
+    /// formatting" with it.
     #[test]
     fn deleting_one_entry_leaves_the_entries_that_merely_contain_it() {
         let temp = tempdir().unwrap();

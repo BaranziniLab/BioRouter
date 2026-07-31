@@ -1005,6 +1005,28 @@ impl MemoryServer {
         Ok(memories)
     }
 
+    /// Remove **one** memory from a category: the entry whose body is
+    /// `memory_content`, and nothing else.
+    ///
+    /// This used to drop every entry that *contained* the text as a substring.
+    /// "Forget that I use black" then also took "we use black for formatting",
+    /// and since the model chooses the string, the blast radius of a delete the
+    /// user approved by category was whatever that string happened to be a
+    /// prefix of — a consent card saying "delete from `development`" is not
+    /// consent to lose the rest of it (#63 review, finding 6).
+    ///
+    /// So it is the same primitive [`MemoryServer::delete_entry`] uses: identify
+    /// one entry, remove that entry, and take the category with it when it
+    /// empties — an emptied file would keep its *name* in the global category
+    /// index, in every later session's system prompt, pointing at nothing.
+    ///
+    /// Bodies are compared after trimming surrounding whitespace, because the
+    /// text the model passes back has usually been round-tripped through a
+    /// `retrieve_memories` result. That is still an entry-for-entry match, not a
+    /// substring one.
+    ///
+    /// Matching nothing is an error rather than a silent success: the caller
+    /// otherwise reports a memory forgotten that is still on disk.
     pub fn remove_specific_memory_internal(
         &self,
         category: &str,
@@ -1012,27 +1034,48 @@ impl MemoryServer {
         is_global: bool,
     ) -> io::Result<()> {
         let memory_file_path = self.get_memory_file(category, is_global)?;
-        // The read, the filter and the rewrite are one critical section: an
+        let no_such_memory = || {
+            Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "No memory in category {category:?} has exactly that text, so nothing was \
+                     deleted. This deletes one memory, identified by its whole body — not every \
+                     memory the text appears in. Read the category first with \
+                     retrieve_memories(category={category:?}, is_global={is_global}) and pass one \
+                     of its entries back verbatim, or use remove_memory_category to delete the \
+                     category outright."
+                ),
+            ))
+        };
+
+        // The read, the match and the rewrite are one critical section: an
         // append landing between them would be overwritten by the rewrite.
         let Some(_lock) = self.lock_store_if_present(is_global)? else {
-            return Ok(());
+            return no_such_memory();
         };
         if !memory_file_path.exists() {
-            return Ok(());
+            return no_such_memory();
         }
 
         let mut file = fs::File::open(&memory_file_path)?;
         let mut content = String::new();
         file.read_to_string(&mut content)?;
 
-        let memories: Vec<&str> = content.split("\n\n").collect();
-        let new_content: Vec<String> = memories
-            .into_iter()
-            .filter(|entry| !entry.contains(memory_content))
-            .map(|s| s.to_string())
-            .collect();
+        let mut entries = inventory::parse_entries(&content);
+        let wanted = memory_content.trim();
+        let Some(found) = entries
+            .iter()
+            .position(|entry| entry.content.trim() == wanted)
+        else {
+            return no_such_memory();
+        };
+        entries.remove(found);
 
-        replace_category_file(&memory_file_path, &new_content.join("\n\n"))?;
+        if entries.is_empty() {
+            fs::remove_file(&memory_file_path)?;
+            return Ok(());
+        }
+        replace_category_file(&memory_file_path, &inventory::render_entries(&entries))?;
 
         Ok(())
     }
@@ -1208,7 +1251,11 @@ impl MemoryServer {
     /// Removes a specific memory within a specified category
     #[tool(
         name = "remove_specific_memory",
-        description = "Removes a specific memory within a specified category"
+        description = "Removes ONE memory from a category: the entry whose body is exactly \
+                       memory_content. It is not a search — a partial or approximate text \
+                       deletes nothing and is reported as an error. Retrieve the category first \
+                       and pass one of its entries back verbatim. Deleting the last memory in a \
+                       category removes the category too."
     )]
     pub async fn remove_specific_memory(
         &self,
@@ -1224,9 +1271,25 @@ impl MemoryServer {
         )
         .map_err(|e| Self::tool_error(&e))?;
 
+        // Say which store, for the same reason `remember_memory` does: a
+        // machine-wide deletion is irreversible everywhere, and "removed from
+        // category: x" was indistinguishable from a project-local one.
+        let remaining = self
+            .category_names(params.is_global)
+            .contains(&params.category);
         Ok(CallToolResult::success(vec![Content::text(format!(
-            "Removed specific memory from category: {}",
-            params.category
+            "Removed one memory from the {store} category: {category}.{emptied}",
+            store = if params.is_global {
+                "machine-wide (global)"
+            } else {
+                "project-local"
+            },
+            category = params.category,
+            emptied = if remaining {
+                ""
+            } else {
+                " That was its last memory, so the category is gone too."
+            }
         ))]))
     }
 }
@@ -2502,6 +2565,126 @@ mod tests {
             .values()
             .any(|v| v.iter().any(|content| content.contains("keep_this")));
         assert!(has_kept);
+    }
+
+    // --- precise deletion (#63 review, finding 6) -------------------------
+
+    /// `remove_specific_memory` removed every entry *containing* the given text.
+    /// "Forget that I use black" then also took "we use black for formatting",
+    /// and — because the model chooses the string — the blast radius of a delete
+    /// the user approved by category was whatever that string happened to be a
+    /// prefix of. A consent card that says "delete from `development`" is not
+    /// consent to lose the rest of the category.
+    #[tokio::test]
+    async fn removing_a_specific_memory_takes_the_one_named_and_no_other() {
+        let temp = tempdir().unwrap();
+        let server = server_at(temp.path());
+        for body in [
+            "black",
+            "we use black for formatting",
+            "black is not the default",
+        ] {
+            server
+                .remember("context", "development", body, &[], false)
+                .unwrap();
+        }
+
+        server
+            .remove_specific_memory(Parameters(RemoveSpecificMemoryParams {
+                category: "development".into(),
+                memory_content: "black".into(),
+                is_global: false,
+            }))
+            .await
+            .expect("removing an entry that exists succeeds");
+
+        let left: Vec<String> = server
+            .list_entries("development", MemoryScope::Local)
+            .unwrap()
+            .into_iter()
+            .map(|e| e.content)
+            .collect();
+        assert_eq!(
+            left,
+            vec![
+                "we use black for formatting".to_string(),
+                "black is not the default".to_string()
+            ],
+            "a substring match destroyed memories the caller did not name"
+        );
+    }
+
+    /// Deleting the last memory in a category has to take the category with it.
+    /// An emptied file keeps its *name* in the global category index — in the
+    /// system prompt of every later session on the machine — pointing at
+    /// nothing, which is the disclosure #58 was about with none of the value.
+    #[tokio::test]
+    async fn removing_the_last_memory_removes_the_category_file() {
+        let temp = tempdir().unwrap();
+        let server = server_at(temp.path());
+        server
+            .remember("context", "clinical", "the only note", &[], true)
+            .unwrap();
+
+        server
+            .remove_specific_memory(Parameters(RemoveSpecificMemoryParams {
+                category: "clinical".into(),
+                memory_content: "the only note".into(),
+                is_global: true,
+            }))
+            .await
+            .unwrap();
+
+        assert!(
+            !temp.path().join("global/clinical.txt").exists(),
+            "an emptied category must not linger as a name in the prompt index"
+        );
+        assert!(
+            server.category_names(true).is_empty(),
+            "the prompt index still lists a category with nothing behind it"
+        );
+    }
+
+    /// A text that matches no memory used to report success while deleting
+    /// nothing, so a model believed a memory was forgotten when it was not — and
+    /// told the user so. It is now the caller's mistake, said plainly, without
+    /// listing the category's contents (which is the disclosure the whole gate
+    /// exists to put to the user).
+    #[tokio::test]
+    async fn removing_a_memory_that_is_not_there_says_so_instead_of_claiming_success() {
+        let temp = tempdir().unwrap();
+        let server = server_at(temp.path());
+        server
+            .remember("context", "clinical", "cohort 4217 responded", &[], true)
+            .unwrap();
+
+        let refused = server
+            .remove_specific_memory(Parameters(RemoveSpecificMemoryParams {
+                category: "clinical".into(),
+                memory_content: "cohort".into(),
+                is_global: true,
+            }))
+            .await
+            .expect_err("a partial match must not be reported as a deletion");
+        assert_eq!(refused.code, ErrorCode::INVALID_PARAMS);
+        assert!(
+            !refused.message.contains("cohort 4217 responded"),
+            "the refusal must not disclose the category it refused to change: {}",
+            refused.message
+        );
+        assert!(
+            refused.message.contains("retrieve_memories"),
+            "the refusal has to say how to get the exact text: {}",
+            refused.message
+        );
+        assert_eq!(
+            server
+                .list_entries("clinical", MemoryScope::Global)
+                .unwrap()
+                .len(),
+            1,
+            "nothing may be deleted when nothing matched"
+        );
     }
 
     // --- concurrency (#63 review, finding 6) ------------------------------
