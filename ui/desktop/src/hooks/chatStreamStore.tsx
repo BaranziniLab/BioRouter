@@ -342,6 +342,13 @@ class ChatStreamController {
    * deliberately not done yet.
    */
   private observing = false;
+  /**
+   * Which observer loop `observing` belongs to. Bumped on every attach and on
+   * every detach, so a loop that is still unwinding — parked in a drain or a
+   * backoff when it was torn down — can tell that the flag it is about to clear
+   * is no longer its own.
+   */
+  private observerGeneration = 0;
   private abortController: AbortController | null = null;
   private activeStreamId = 0;
   private lastInteractionTime = Date.now();
@@ -1038,42 +1045,101 @@ class ChatStreamController {
    */
   async observeSession(): Promise<void> {
     if (this.observing) return; // idempotent — tab re-mounts must not stack loops
+    // Never take the socket away from a turn the USER is driving. This is
+    // reached on daemon input — `ChatGroupsContext` attaches on every qualifying
+    // workspace frame, `annotate_tab` for a tab that already exists included —
+    // so without this check a tab the user has taken over has its live `/reply`
+    // stream torn down by a frame it never asked for, and silently reverts to
+    // being an observer while the user believes they are driving.
+    if (this.hasLiveTurn()) return;
+    // Generation guard, `UiBridge`-style: `stopObserving()` (or a takeover) can
+    // clear the flag and let a NEW loop start while this one is still parked in
+    // a drain or a backoff. Without the generation, the old loop's unwinding
+    // would clear the new loop's flag and a third attach would then run two
+    // loops against one controller.
+    const generation = ++this.observerGeneration;
     this.observing = true;
     let retryMs = 1000;
-    while (this.observing) {
-      const streamId = ++this.activeStreamId;
-      this.abortController?.abort();
-      this.abortController = new AbortController();
-      try {
-        const { stream } = await observeSessionEvents({
-          path: { session_id: this.sessionId },
-          throwOnError: true,
-          signal: this.abortController.signal,
-          // NOT optional. Without it the generated SSE client retries forever
-          // on its own (`api/core/serverSentEvents.gen.ts` — `sseMaxRetryAttempts`
-          // has no default) and the loop below never regains control on a
-          // transport error. `/reply` passes the same value for the same reason.
-          sseMaxRetryAttempts: 1,
-        });
-        retryMs = 1000;
-        await this.streamFromResponse(stream, this.messagesRef, streamId);
-      } catch (error) {
-        // Rarely reached: `serverSentEvents` returns `{ stream }` from a lazy
-        // async generator, so the await above resolves before a byte is
-        // fetched and transport errors surface inside `streamFromResponse`.
-        // Kept for the client-side throws that DO land here (a malformed URL).
-        if (error instanceof Error && error.name === 'AbortError') return;
-        // fall through to retry
+    try {
+      while (this.observing && this.observerGeneration === generation) {
+        const streamId = ++this.activeStreamId;
+        this.abortController?.abort();
+        this.abortController = new AbortController();
+        try {
+          const { stream } = await observeSessionEvents({
+            path: { session_id: this.sessionId },
+            throwOnError: true,
+            signal: this.abortController.signal,
+            // NOT optional. Without it the generated SSE client retries forever
+            // on its own (`api/core/serverSentEvents.gen.ts` — `sseMaxRetryAttempts`
+            // has no default) and the loop below never regains control on a
+            // transport error. `/reply` passes the same value for the same reason.
+            sseMaxRetryAttempts: 1,
+          });
+          retryMs = 1000;
+          await this.streamFromResponse(stream, this.messagesRef, streamId);
+        } catch (error) {
+          // Rarely reached: `serverSentEvents` returns `{ stream }` from a lazy
+          // async generator, so the await above resolves before a byte is
+          // fetched and transport errors surface inside `streamFromResponse`.
+          // Kept for the client-side throws that DO land here (a malformed URL).
+          if (error instanceof Error && error.name === 'AbortError') return;
+          // fall through to retry
+        }
+        if (this.observerIsStale(streamId, generation)) return;
+        await new Promise((resolve) => setTimeout(resolve, retryMs));
+        retryMs = Math.min(retryMs * 2, 15000);
+        // The backoff is a window in which anything can happen — Stop, a user
+        // submit, a detach — and each of those either clears the flag or bumps
+        // `activeStreamId`. Re-check BOTH before reconnecting: the loop
+        // condition alone tests only the flag, so a Stop pressed during backoff
+        // (which bumps the id and does not know about observing) would be undone
+        // by the very next tick, leaving Stop doing nothing except firing
+        // `cancelTurn` at a session another agent drives.
+        if (this.observerIsStale(streamId, generation)) return;
       }
-      if (!this.observing || this.activeStreamId !== streamId) return;
-      await new Promise((resolve) => setTimeout(resolve, retryMs));
-      retryMs = Math.min(retryMs * 2, 15000);
+    } finally {
+      // The flag must never outlive its loop. Every `return` above leaves this
+      // controller with no observer running, and a flag still claiming
+      // otherwise makes every later attach short-circuit on the idempotence
+      // guard — a tab dead for the life of the renderer, since `getController`
+      // retains controllers forever. `stopStreaming` is the ordinary way in: it
+      // bumps `activeStreamId` and knows nothing about observing.
+      if (this.observerGeneration === generation) this.observing = false;
     }
+  }
+
+  /** This observer iteration has been torn down or taken over: something
+   * bumped the stream id, cleared the flag, or started a newer loop. */
+  private observerIsStale(streamId: number, generation: number): boolean {
+    return (
+      !this.observing || this.activeStreamId !== streamId || this.observerGeneration !== generation
+    );
+  }
+
+  /**
+   * A turn THIS controller drives is in flight. An observer holds an
+   * `abortController` too — its read-only feed's — and that is not a turn:
+   * anything that asks "is this controller busy?" to decide whether it may take
+   * the socket must exclude it, or the observer's own subscription looks exactly
+   * like a user's live `/reply`.
+   */
+  private hasLiveTurn(): boolean {
+    return !this.observing && !!this.abortController && !this.abortController.signal.aborted;
   }
 
   /** Detach from the observed session (tab closed / user takes over). */
   stopObserving(): void {
+    // Only ever tears down a socket this controller is OBSERVING on. On a
+    // controller that is driving — the user took the tab over, or it was never
+    // an observer at all — the abort below would cancel their live turn, and
+    // "the tab closed" is not a reason to do that (BR-62b: the server keeps
+    // running either way).
+    if (!this.observing) return;
     this.observing = false;
+    // Retires the parked loop's generation, so its unwinding cannot clear the
+    // flag of a loop started after this detach.
+    this.observerGeneration++;
     this.abortController?.abort();
   }
 

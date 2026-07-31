@@ -1,15 +1,30 @@
-import { describe, expect, it, vi, afterEach } from 'vitest';
+import { beforeEach, describe, expect, it, vi, afterEach } from 'vitest';
+import type { Message, MessageEvent, Session, TokenState } from '../api';
 
 const mocks = vi.hoisted(() => ({
   observeSessionEvents: vi.fn(),
+  // The rest of the surface a driving controller touches. Mocked so the
+  // ownership tests below can put a REAL /reply turn in flight without any of
+  // it reaching the generated client (and so nothing in this file depends on
+  // `fetch` or on how fast the machine is).
+  reply: vi.fn(),
+  resumeAgent: vi.fn(),
+  cancelTurn: vi.fn(async () => ({ data: { cancelled: true } })),
+  getSession: vi.fn(async () => ({ data: null })),
+  listApps: vi.fn(async () => ({ data: { apps: [] } })),
+  listSessions: vi.fn(async () => ({ data: { sessions: [] } })),
+  // Part of agent readiness, which a submit AWAITS: left real, it reaches the
+  // generated client and the turn never launches.
+  updateFromSession: vi.fn(async () => ({ data: {} })),
+  updateSessionUserWorkflowValues: vi.fn(async () => ({ data: {} })),
 }));
 
 vi.mock('../api', async (importOriginal) => {
   const actual = (await importOriginal()) as Record<string, unknown>;
-  return { ...actual, observeSessionEvents: mocks.observeSessionEvents };
+  return { ...actual, ...mocks };
 });
 
-import { defaultChatStreamRegistry } from './chatStreamStore';
+import { ChatStreamRegistry, defaultChatStreamRegistry } from './chatStreamStore';
 
 /** The `{ stream }` shape the generated .sse.get returns: an AsyncIterable of
  * parsed MessageEvent frames. */
@@ -27,6 +42,114 @@ async function* frames() {
   };
   yield { type: 'Finish', reason: 'stop', token_state: {} };
 }
+
+const tokenState: TokenState = {
+  accumulatedInputTokens: 0,
+  accumulatedOutputTokens: 0,
+  accumulatedTotalTokens: 0,
+  inputTokens: 0,
+  outputTokens: 0,
+  totalTokens: 0,
+};
+
+function session(id: string): Session {
+  return {
+    id,
+    name: `Session ${id}`,
+    working_dir: '/tmp',
+    conversation: [],
+    message_count: 0,
+    total_tokens: 0,
+    created_at: '',
+    updated_at: '',
+    extension_data: {},
+    user_set_name: false,
+  } as Session;
+}
+
+function assistantMessage(id: string, text: string): Message {
+  return {
+    id,
+    role: 'assistant',
+    created: 1,
+    content: [{ type: 'text', text }],
+    metadata: { userVisible: true, agentVisible: true },
+  };
+}
+
+/** A stream whose frames and end are driven by the test — the same helper the
+ * sibling store suite uses, so an observer connection can be held open, dropped
+ * mid-turn, or closed cleanly on demand. */
+function createControlledStream() {
+  const events: MessageEvent[] = [];
+  let resolveNext: (() => void) | null = null;
+  let closed = false;
+
+  async function* stream() {
+    while (!closed || events.length > 0) {
+      if (events.length === 0) {
+        await new Promise<void>((resolve) => {
+          resolveNext = resolve;
+        });
+      }
+      const event = events.shift();
+      if (event) {
+        yield event;
+      }
+    }
+  }
+
+  return {
+    stream: stream(),
+    push(event: MessageEvent) {
+      events.push(event);
+      resolveNext?.();
+      resolveNext = null;
+    },
+    close() {
+      closed = true;
+      resolveNext?.();
+      resolveNext = null;
+    },
+  };
+}
+
+/** Puts a real user-driven `/reply` turn in flight on a fresh controller and
+ * hands back the pieces the ownership tests assert on. */
+async function drivingController(sessionId: string) {
+  const registry = new ChatStreamRegistry();
+  const driving = createControlledStream();
+  mocks.resumeAgent.mockResolvedValue({ data: { session: session(sessionId) } });
+  mocks.reply.mockResolvedValue({ stream: driving.stream });
+
+  const controller = registry.getController(sessionId);
+  const submit = controller.handleSubmit('drive this myself');
+  await vi.advanceTimersByTimeAsync(0);
+  expect(mocks.reply).toHaveBeenCalledTimes(1);
+  const signal = mocks.reply.mock.calls[0][0].signal as AbortSignal;
+  expect(signal.aborted).toBe(false);
+
+  return { controller, driving, submit, signal };
+}
+
+beforeEach(() => {
+  // Each test configures these itself; a leftover `…Once` queue from the
+  // previous one must not decide what this one sees. `mockReset` restores the
+  // implementation passed to `vi.fn(impl)`, so the always-succeed stubs above
+  // survive it.
+  mocks.observeSessionEvents.mockReset();
+  mocks.reply.mockReset();
+  mocks.resumeAgent.mockReset();
+});
+
+afterEach(() => {
+  // Belt for the suspenders in each test's `finally`. A test that TIMES OUT
+  // never reaches its own `finally` — its await simply never settles — so fake
+  // timers would stay installed and the NEXT test would hang on a real-timer
+  // wait that can no longer fire. That is one failure masquerading as two, and
+  // it is what an `afterEach` (which does run) is for.
+  vi.useRealTimers();
+});
 
 describe('ChatStreamController.observeSession', () => {
   afterEach(() => vi.clearAllMocks());
@@ -99,6 +222,127 @@ describe('ChatStreamController.observeSession', () => {
       await vi.advanceTimersByTimeAsync(1100); // past the 1 s first backoff
       expect(mocks.observeSessionEvents.mock.calls.length).toBeGreaterThanOrEqual(2);
       controller.stopObserving();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('ChatStreamController.observeSession — who owns the socket', () => {
+  afterEach(() => vi.clearAllMocks());
+
+  it('can re-attach after Stop tore the observer loop down mid-stream', async () => {
+    vi.useFakeTimers();
+    try {
+      const registry = new ChatStreamRegistry();
+      const first = createControlledStream();
+      const second = createControlledStream();
+      mocks.observeSessionEvents
+        .mockResolvedValueOnce({ stream: first.stream })
+        .mockResolvedValueOnce({ stream: second.stream });
+
+      const controller = registry.getController('obs-stop-midstream');
+      void controller.observeSession();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(mocks.observeSessionEvents).toHaveBeenCalledTimes(1);
+
+      // Stop, pressed while the observed agent is mid-turn — which is exactly
+      // when a user presses it. It bumps `activeStreamId` and aborts, so the
+      // observer loop unwinds through its staleness check and is gone.
+      controller.stopStreaming();
+      first.close();
+      await vi.advanceTimersByTimeAsync(0);
+
+      // The FLAG has to unwind with the loop. If `observing` outlives it, every
+      // later attach short-circuits on the idempotence guard and the tab is dead
+      // until the window reloads — `getController` retains this controller for
+      // the life of the renderer, and the daemon re-annotating the tab is the
+      // ordinary way an attach is retried.
+      void controller.observeSession();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(mocks.observeSessionEvents).toHaveBeenCalledTimes(2);
+
+      controller.stopObserving();
+      second.close();
+      await vi.advanceTimersByTimeAsync(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not resurrect the observer stream when Stop lands during backoff', async () => {
+    vi.useFakeTimers();
+    try {
+      const registry = new ChatStreamRegistry();
+      mocks.observeSessionEvents.mockResolvedValue({ stream: frames() });
+
+      const controller = registry.getController('obs-stop-backoff');
+      void controller.observeSession();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(mocks.observeSessionEvents).toHaveBeenCalledTimes(1);
+
+      // Parked in the 1 s backoff now — the mirror of the case above, and wrong
+      // in the opposite direction. Stop has to mean stop: it already fired
+      // `cancelTurn` at a session another agent drives, so a loop that wakes up
+      // and re-subscribes anyway leaves Stop doing nothing except harm.
+      controller.stopStreaming();
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(mocks.observeSessionEvents).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not tear down a live user turn when a daemon frame re-attaches the tab', async () => {
+    vi.useFakeTimers();
+    try {
+      const idle = createControlledStream();
+      mocks.observeSessionEvents.mockResolvedValue({ stream: idle.stream });
+      const { controller, driving, submit, signal } = await drivingController('obs-driver-attach');
+
+      // `ChatGroupsContext` calls `observeSession()` on every qualifying
+      // workspace frame — `annotate_tab` for a tab that already exists included,
+      // which is input the daemon fully controls. If the user has taken this tab
+      // over, that frame must not abort the socket their live turn streams on.
+      void controller.observeSession();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(mocks.observeSessionEvents).not.toHaveBeenCalled();
+      expect(signal.aborted).toBe(false);
+
+      driving.push({
+        type: 'Message',
+        message: assistantMessage('a1', 'still driving'),
+        token_state: tokenState,
+      });
+      driving.push({ type: 'Finish', reason: 'done', token_state: tokenState });
+      driving.close();
+      await submit;
+      expect(JSON.stringify(controller.getSnapshot().messages)).toContain('still driving');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not abort a live user turn when stopObserving is called on a driver', async () => {
+    vi.useFakeTimers();
+    try {
+      const { controller, driving, submit, signal } = await drivingController('obs-driver-detach');
+
+      // The documented caller is "tab closed", and a closed tab does not cancel
+      // the turn it was showing (BR-62b: the server keeps running either way).
+      // On a controller that never observed anything, detaching is a no-op.
+      controller.stopObserving();
+      expect(signal.aborted).toBe(false);
+
+      driving.push({
+        type: 'Message',
+        message: assistantMessage('a1', 'survived the detach'),
+        token_state: tokenState,
+      });
+      driving.push({ type: 'Finish', reason: 'done', token_state: tokenState });
+      driving.close();
+      await submit;
+      expect(JSON.stringify(controller.getSnapshot().messages)).toContain('survived the detach');
     } finally {
       vi.useRealTimers();
     }
