@@ -7,9 +7,16 @@
 > set at runtime — and, as its flagship embodiment, turns today's opaque subagents into
 > **glass-box subagents**: every spawned subagent appears as a live, ordinary chat tab
 > that a human can watch, talk to, and intervene in, exactly as the parent agent can.
-> **Status:** Current — **proposal only; nothing below is implemented.** BR-71 is a new
-> post-campaign proposal, numbered as the next free identifier after the campaign's
-> BR-1…BR-70; it does not appear in the campaign master list.
+> **Status:** Current — **Slices 1 and 2 are implemented; Slice 3 (glass-box subagents)
+> is not.** Slice 1 shipped the session model, the event spine, the one turn runner and
+> the headless `workspace_*` tools; Slice 2 shipped the GUI bridge (`GET /ui/workspace`),
+> `workspace_open`, the observer-backed tab, provenance chips, the focus-etiquette
+> setting and the chatrecall suggestion — verified end to end against the real desktop
+> app, where `workspace_list` reports `gui_attached: true` and a background tab under
+> `gui`. Everything below about subagents (§4.4, §6, the `subagent` merge's glass-box
+> half) is still design. BR-71 is a post-campaign proposal, numbered as the next free
+> identifier after the campaign's BR-1…BR-70; it does not appear in the campaign master
+> list.
 > **Audience:** developers working on the agent loop, `biorouter-server`, and the desktop GUI.
 
 ---
