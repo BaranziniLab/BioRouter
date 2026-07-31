@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { SubagentTabHeader } from './SubagentTabHeader';
 
@@ -15,6 +15,10 @@ const props = {
 };
 
 describe('SubagentTabHeader', () => {
+  // `props` is module scope and its handlers are live spies, so without this a
+  // call-count assertion depends on which earlier test happened to click what.
+  afterEach(() => vi.clearAllMocks());
+
   it('shows lineage, grants, and an expandable spawn context', () => {
     render(<SubagentTabHeader {...props} />);
     expect(screen.getByText(/spawned by/i)).toBeTruthy();
@@ -37,5 +41,20 @@ describe('SubagentTabHeader', () => {
   it('hides Stop when the child is idle', () => {
     render(<SubagentTabHeader {...props} running={false} />);
     expect(screen.queryByRole('button', { name: /stop subagent/i })).toBeNull();
+  });
+
+  it('the spawned-by name is the control that opens the parent', () => {
+    // The lineage link is the whole point of the "spawned by" line, and it is
+    // what BaseChat wires to the reducer's open-or-focus dispatch. Nothing else
+    // in the suite ever clicks it.
+    render(<SubagentTabHeader {...props} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Planning chat' }));
+    expect(props.onOpenParent).toHaveBeenCalledOnce();
+  });
+
+  it('falls back to the parent session id when the parent has no name yet', () => {
+    render(<SubagentTabHeader {...props} parentSessionName={undefined} />);
+    fireEvent.click(screen.getByRole('button', { name: 'parent-1' }));
+    expect(props.onOpenParent).toHaveBeenCalledOnce();
   });
 });
