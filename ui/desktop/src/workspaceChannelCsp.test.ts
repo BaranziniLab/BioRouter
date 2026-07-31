@@ -148,10 +148,10 @@ function sourceAllows(source: string, url: URL): boolean {
   if (source.startsWith("'")) return false;
   const urlScheme = url.protocol.replace(/:$/, '');
 
-  const schemeOnly = /^([a-z][a-z0-9+.\-]*):$/i.exec(source);
+  const schemeOnly = /^([a-z][a-z0-9+.-]*):$/i.exec(source);
   if (schemeOnly) return schemeMatches(schemeOnly[1].toLowerCase(), urlScheme);
 
-  const hostSource = /^([a-z][a-z0-9+.\-]*):\/\/([^/:]+)(?::(\*|\d+))?$/i.exec(source);
+  const hostSource = /^([a-z][a-z0-9+.-]*):\/\/([^/:]+)(?::(\*|\d+))?$/i.exec(source);
   if (!hostSource) throw new Error(`unmodelled CSP source expression: ${source}`);
   const [, scheme, host, port] = hostSource;
   if (!schemeMatches(scheme.toLowerCase(), urlScheme)) return false;
