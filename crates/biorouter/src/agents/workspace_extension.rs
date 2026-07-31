@@ -288,7 +288,8 @@ struct WorkspaceOpenParams {
     /// Start a fresh conversation. Mutually exclusive with `session_id`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     new: Option<WorkspaceOpenNew>,
-    /// "tab" (default) | "split" | "window".
+    /// "tab" (default) | "split" | "window". Anything else is refused rather
+    /// than treated as "tab".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     placement: Option<String>,
     /// Default false: open in the background, never steal the user's composer.
@@ -915,7 +916,19 @@ impl WorkspaceClient {
         arguments: Option<JsonObject>,
     ) -> Result<Vec<Content>, String> {
         let args: WorkspaceOpenParams = parse_args(arguments)?;
-        let placement = args.placement.as_deref().unwrap_or("tab").to_string();
+        // A CLOSED vocabulary, checked before anything is created. The GUI half
+        // below branches on `placement == "window"` and forwards everything else
+        // verbatim as `open_tab`'s `placement`, so an unvalidated typo
+        // ("windows", "Window") is not an error the renderer reports — it is a
+        // tab, silently, which is the one outcome the caller did not ask for.
+        let placement = match args.placement.as_deref().unwrap_or("tab") {
+            valid @ ("tab" | "split" | "window") => valid.to_string(),
+            other => {
+                return Err(format!(
+                    "unknown placement {other:?} — use \"tab\" (default), \"split\" or \"window\""
+                ));
+            }
+        };
         let focus = args.focus.unwrap_or(false);
         let services = workspace_services::get();
 
@@ -5285,6 +5298,36 @@ mod tests {
         assert_eq!(result.is_error, Some(true));
         let text = result.content[0].as_text().unwrap().text.clone();
         assert!(text.contains("not both"), "got: {text}");
+
+        // `placement` is a CLOSED vocabulary, and the failure of an open one is
+        // silent: anything that is not exactly "window" took the open_tab branch
+        // and was forwarded verbatim as its `placement` field, so "windows" or
+        // "Window" opened a tab — the one outcome the caller did not ask for,
+        // reported as success. The refusal must also land BEFORE any session
+        // work: nothing here exists, and a typo is not a reason to create.
+        for bad in ["windows", "Window", "popup"] {
+            let args: rmcp::model::JsonObject = serde_json::from_value(serde_json::json!({
+                "session_id": "s-x", "placement": bad
+            }))
+            .unwrap();
+            let result = c
+                .call_tool(
+                    "workspace_open",
+                    Some(args),
+                    test_meta(),
+                    CancellationToken::new(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                result.is_error,
+                Some(true),
+                "placement {bad:?} was accepted"
+            );
+            let text = result.content[0].as_text().unwrap().text.clone();
+            assert!(text.contains(bad), "the refusal names the value: {text}");
+            assert!(text.contains("window"), "…and the vocabulary: {text}");
+        }
     }
 
     /// Call `workspace_open` as `caller`. Mirrors [`send_prompt`].
