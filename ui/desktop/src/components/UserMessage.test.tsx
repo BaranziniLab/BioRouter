@@ -36,4 +36,31 @@ describe('UserMessage edit actions', () => {
 
     expect(onMessageUpdate).toHaveBeenCalledWith('message-1', 'updated prompt', 'diverge');
   });
+
+  it('labels a message another agent injected (BR-71 §5)', () => {
+    render(
+      <UserMessage
+        message={{
+          ...message,
+          id: 'message-2',
+          metadata: {
+            userVisible: true,
+            agentVisible: true,
+            provenance: {
+              kind: 'agent_injection',
+              fromSessionId: 's-parent',
+              fromSessionName: 'Planning chat',
+            },
+          },
+        }}
+        onMessageUpdate={vi.fn()}
+      />
+    );
+    expect(screen.getByText(/injected by Planning chat/i)).toBeTruthy();
+  });
+
+  it('shows no chip on an ordinary same-session message', () => {
+    render(<UserMessage message={message} onMessageUpdate={vi.fn()} />);
+    expect(document.querySelector('[data-provenance-kind]')).toBeNull();
+  });
 });
