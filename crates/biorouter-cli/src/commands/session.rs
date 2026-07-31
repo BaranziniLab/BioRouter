@@ -4,7 +4,6 @@ use anyhow::{Context, Result};
 use crate::commands::session_grouping::{
     group_by_parent, listed_session_types, liveness_label, render_child, Liveness, SessionRow,
 };
-use biorouter::session::session_manager::SessionType;
 use biorouter::session::{generate_diagnostics, Session, SessionManager};
 use biorouter::utils::safe_truncate;
 use cliclack::{confirm, multiselect, select};
@@ -145,9 +144,9 @@ pub async fn handle_session_remove(
 /// `subagents == false` is the historical behaviour byte for byte:
 /// `list_sessions()` IS `list_sessions_by_types(&[User, Scheduled])`.
 async fn fetch_sessions(session_manager: &SessionManager, subagents: bool) -> Result<Vec<Session>> {
-    Ok(session_manager
+    session_manager
         .list_sessions_by_types(listed_session_types(subagents))
-        .await?)
+        .await
 }
 
 /// Resolve a session id from a name (or a literal id), including subagent runs.
@@ -290,7 +289,7 @@ pub async fn handle_session_list(
                 .map(|group| {
                     serde_json::json!({
                         "session": as_json(&group.session),
-                        "children": group.children.iter().map(|c| as_json(c)).collect::<Vec<_>>(),
+                        "children": group.children.iter().map(&as_json).collect::<Vec<_>>(),
                         // The group-level `live` is the group session's, repeated
                         // here so a consumer can read a group's state without
                         // descending into it. Children carry their own inline.
@@ -576,6 +575,7 @@ pub async fn prompt_interactive_session_selection(
 mod tests {
     use super::*;
     use biorouter::conversation::message::Message;
+    use biorouter::session::session_manager::SessionType;
     use tempfile::TempDir;
 
     /// A `SessionManager` over a throwaway directory, plus one `User` row and
@@ -673,7 +673,9 @@ mod tests {
             "widening the lookup must not break the existing by-name path"
         );
         assert_eq!(
-            resolve_session_by_name(&sm, "no such session").await.unwrap(),
+            resolve_session_by_name(&sm, "no such session")
+                .await
+                .unwrap(),
             None,
             "an unknown name is still not found"
         );

@@ -57,7 +57,11 @@ pub struct Group {
 /// cannot drift into disagreeing about what is addressable.
 pub fn listed_session_types(subagents: bool) -> &'static [SessionType] {
     if subagents {
-        &[SessionType::User, SessionType::Scheduled, SessionType::SubAgent]
+        &[
+            SessionType::User,
+            SessionType::Scheduled,
+            SessionType::SubAgent,
+        ]
     } else {
         &[SessionType::User, SessionType::Scheduled]
     }
