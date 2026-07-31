@@ -140,10 +140,66 @@ describe('useSubagentSession', () => {
   });
 
   it('is inert for ordinary sessions', async () => {
-    mocks.getSession.mockResolvedValue({ data: { id: 's', session_type: 'user' } });
+    // Everything a subagent session has EXCEPT the type, so the only thing that
+    // can keep the header away is the `session_type` check itself.
+    mocks.getSession.mockResolvedValue({
+      data: { id: 's', session_type: 'user', parent_session_id: 'parent-1' },
+    });
     const { result } = renderHook(() => useSubagentSession('s'));
+
+    // Settle the whole load, not merely the moment the request went out.
+    // `getSession` having been CALLED resolves one microtask before the hook's
+    // own `await` continuation runs, so asserting the negative there passes
+    // even for a hook that mishandles `session_type` — the extensions read has
+    // simply not been reached yet. Awaiting the mock's own promise puts this
+    // test after the continuation that would have fired it.
     await waitFor(() => expect(mocks.getSession).toHaveBeenCalled());
+    await mocks.getSession.mock.results[0].value;
+
     expect(result.current.isSubagent).toBe(false);
+    expect(result.current.parentSessionId).toBeUndefined();
     expect(mocks.getSessionExtensions).not.toHaveBeenCalled();
+  });
+
+  it('clears the previous child when the tab is rebound to another session', async () => {
+    // ChatGroupsShell keys BaseChat by TAB id, not session id (the session is
+    // explicitly rebindable), so one hook instance can outlive a sessionId
+    // change. If the effect early-returns for the new, ordinary session without
+    // clearing, the previous child's lineage, grants and Stop button stay
+    // rendered over a chat they have nothing to do with.
+    mocks.getSession.mockImplementation(async ({ path }: { path: { session_id: string } }) =>
+      path.session_id === 'child-1'
+        ? {
+            data: {
+              id: 'child-1',
+              session_type: 'sub_agent',
+              parent_session_id: 'parent-1',
+              conversation: [
+                {
+                  role: 'user',
+                  created: 1,
+                  content: [{ type: 'text', text: '## Subagent spawn context\ntask: count' }],
+                  metadata: { provenance: { kind: 'spawn_context' } },
+                },
+              ],
+            },
+          }
+        : { data: { id: path.session_id, session_type: 'user' } }
+    );
+    mocks.getSessionExtensions.mockResolvedValue({
+      data: { extensions: [{ type: 'platform', name: 'developer' }] },
+    });
+
+    const { result, rerender } = renderHook(({ id }) => useSubagentSession(id), {
+      initialProps: { id: 'child-1' },
+    });
+    await waitFor(() => expect(result.current.isSubagent).toBe(true));
+    expect(result.current.extensions).toEqual(['developer']);
+
+    rerender({ id: 'ordinary-1' });
+    await waitFor(() => expect(result.current.isSubagent).toBe(false));
+    expect(result.current.parentSessionId).toBeUndefined();
+    expect(result.current.spawnContext).toBeUndefined();
+    expect(result.current.extensions).toEqual([]);
   });
 });

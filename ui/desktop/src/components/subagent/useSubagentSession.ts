@@ -77,6 +77,16 @@ export function useSubagentSession(sessionId: string): SubagentSessionInfo {
   });
 
   useEffect(() => {
+    // Drop the previous child BEFORE anything is awaited. ChatGroupsShell keys
+    // BaseChat by TAB id, not session id — the session behind a tab is
+    // explicitly rebindable — so one instance of this hook outlives a sessionId
+    // change. Without this, the early returns below leave the old child's
+    // lineage, grants and Stop button rendered over a session they have nothing
+    // to do with, and even a subagent→subagent switch would show the previous
+    // child's spawn context for the length of the fetch. A functional update, so
+    // an already-clear state costs no re-render.
+    setInfo((prev) => (prev.isSubagent ? { isSubagent: false, extensions: [] } : prev));
+
     let cancelled = false;
     (async () => {
       // BaseChat mounts with an empty sessionId before the sidebar's "New
