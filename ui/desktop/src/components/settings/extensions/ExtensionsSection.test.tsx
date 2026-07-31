@@ -47,18 +47,41 @@ import ExtensionsSection from './ExtensionsSection';
 
 // `ExtensionItem` labels its Radix switch `Toggle ${getFriendlyTitle(extension)}
 // extension` (`subcomponents/ExtensionItem.tsx`), and `getFriendlyTitle` for a
-// `platform` entry named `workspace` is `formatExtensionName('workspace')` =
+// `platform` entry named `Workspace` is `formatExtensionName('Workspace')` =
 // 'Workspace' (it is not in PLATFORM_EXTENSION_DISPLAY_NAMES).
 const WORKSPACE_SWITCH = 'Toggle Workspace extension';
+
+/**
+ * ⚠ These fixtures use the names the DAEMON sends, not the config keys.
+ * `PlatformExtensionDef.name` is the extension's `EXTENSION_NAME` constant —
+ * `"Workspace"` and `"Chat Recall"` (`crates/biorouter/src/agents/extension.rs`
+ * + `workspace_extension.rs:44` / `chatrecall_extension.rs:14`) — which is what
+ * `useConfig().extensionsList` carries. Verified off the live React props in
+ * the dev GUI during Task 31's pass.
+ *
+ * They used to read `'workspace'` / `'chatrecall'`, and that is exactly why the
+ * whole of decision 14 shipped inert: this suite was green while a real click
+ * on the real switch suggested nothing, because neither the `name === 'workspace'`
+ * arm nor the `find(e => e.name === 'chatrecall')` lookup could ever match.
+ */
+const workspaceEntry = (enabled: boolean) => ({
+  type: 'platform',
+  name: 'Workspace',
+  description: 'Workspace Control',
+  enabled,
+});
+const chatrecallEntry = (enabled: boolean) => ({
+  type: 'platform',
+  name: 'Chat Recall',
+  description: 'Recall chats',
+  enabled,
+});
 
 describe('ExtensionsSection chatrecall suggestion', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     resetChatrecallSuggestionForTests();
-    mocks.extensionsList = [
-      { type: 'platform', name: 'workspace', description: 'Workspace Control', enabled: false },
-      { type: 'platform', name: 'chatrecall', description: 'Recall chats', enabled: false },
-    ];
+    mocks.extensionsList = [workspaceEntry(false), chatrecallEntry(false)];
   });
 
   it('suggests chatrecall once when Workspace Control is switched on', async () => {
@@ -102,10 +125,7 @@ describe('ExtensionsSection chatrecall suggestion', () => {
   });
 
   it('does not suggest chatrecall when it is already enabled', async () => {
-    mocks.extensionsList = [
-      { type: 'platform', name: 'workspace', description: 'Workspace Control', enabled: false },
-      { type: 'platform', name: 'chatrecall', description: 'Recall chats', enabled: true },
-    ];
+    mocks.extensionsList = [workspaceEntry(false), chatrecallEntry(true)];
     render(<ExtensionsSection hideButtons />);
 
     fireEvent.click(await screen.findByRole('switch', { name: WORKSPACE_SWITCH }));
@@ -114,10 +134,7 @@ describe('ExtensionsSection chatrecall suggestion', () => {
   });
 
   it('does not suggest chatrecall when Workspace Control is switched OFF', async () => {
-    mocks.extensionsList = [
-      { type: 'platform', name: 'workspace', description: 'Workspace Control', enabled: true },
-      { type: 'platform', name: 'chatrecall', description: 'Recall chats', enabled: false },
-    ];
+    mocks.extensionsList = [workspaceEntry(true), chatrecallEntry(false)];
     render(<ExtensionsSection hideButtons />);
 
     fireEvent.click(await screen.findByRole('switch', { name: WORKSPACE_SWITCH }));
@@ -127,5 +144,19 @@ describe('ExtensionsSection chatrecall suggestion', () => {
       )
     );
     expect(mocks.success).not.toHaveBeenCalled();
+  });
+
+  // The config keys are the other shape this seam sees — `.brxt` and custom
+  // entries carry the key itself — so both must keep working. Pinning only the
+  // display names would just move the blind spot.
+  it('still works when the entries carry the config keys instead', async () => {
+    mocks.extensionsList = [
+      { type: 'platform', name: 'workspace', description: 'Workspace Control', enabled: false },
+      { type: 'platform', name: 'chatrecall', description: 'Recall chats', enabled: false },
+    ];
+    render(<ExtensionsSection hideButtons />);
+
+    fireEvent.click(await screen.findByRole('switch', { name: WORKSPACE_SWITCH }));
+    await waitFor(() => expect(mocks.success).toHaveBeenCalledTimes(1));
   });
 });

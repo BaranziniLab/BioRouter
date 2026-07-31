@@ -9,11 +9,16 @@ import {
   ExtensionFormData,
   extensionToFormData,
   getDefaultFormData,
+  nameToKey,
 } from './utils';
 
 import { activateExtensionDefault, deleteExtension, toggleExtensionDefault } from './index';
 import { isCapabilityExtension } from '../capabilities/capabilities';
-import { markChatrecallSuggestionSeen, shouldSuggestChatrecall } from './chatrecallSuggestion';
+import {
+  CHATRECALL_KEY,
+  markChatrecallSuggestionSeen,
+  shouldSuggestChatrecall,
+} from './chatrecallSuggestion';
 import { toastService } from '../../../toasts';
 import type { ExtensionConfig } from '../../../api/types.gen';
 import { BrxtInstallModal } from '../../BrxtInstallModal';
@@ -111,7 +116,12 @@ export default function ExtensionsSection({
       shouldSuggestChatrecall(
         { name: extensionConfig.name, nowEnabled: !extensionConfig.enabled },
         {
-          chatrecallEnabled: extensionsList.find((e) => e.name === 'chatrecall')?.enabled ?? false,
+          // Keyed, not name-matched: the entry the daemon sends is called
+          // "Chat Recall", so `e.name === 'chatrecall'` never matched and this
+          // read `false` even with chatrecall already on — which would have
+          // suggested it to someone who has it.
+          chatrecallEnabled:
+            extensionsList.find((e) => nameToKey(e.name) === CHATRECALL_KEY)?.enabled ?? false,
         }
       )
     ) {
