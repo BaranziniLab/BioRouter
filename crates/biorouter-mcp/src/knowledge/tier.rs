@@ -249,7 +249,20 @@ pub fn assert_reachable(root: &Path, kb_id: &str, caller_is_private: bool) -> Re
 }
 
 /// Monotone. Registers `kb_id` at the caller's tier if absent, raises it to
-/// private if the caller is private, and can never lower it.
+/// private if the caller is private, and can never lower an existing ENTRY.
+///
+/// ⚠ "Absent entry" is not the same as "public". A base with an entry-less
+/// **directory** reads private by inference (decision 3, and
+/// `a_base_that_never_went_through_create_or_import_reads_private`), so a
+/// public caller registering it here does move it from private to public. That
+/// is deliberate for the one caller that owns the directory it is stamping —
+/// `create_base_as` creates it in the same transaction, and refusing there
+/// would lock a public session out of the base it just made — and it is closed
+/// for the callers that do not: Task 10C's `assert_reachable` sits on the line
+/// above every ratchet (CP1, CP2, CP3), so a public session's write to a base
+/// that reads private is refused before it can reach this function.
+/// **10C must keep that ordering**; a raise placed above the barrier at any
+/// choke point re-opens it.
 pub fn raise_unlocked(root: &Path, kb_id: &str, caller_is_private: bool) -> Result<()> {
     let mut store = load_for_write(root)?;
     match store.bases.get(kb_id) {
