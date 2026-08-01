@@ -329,12 +329,31 @@ async fn stream_frames(request: String, stop_on_terminal: bool, render: Render) 
     }
 }
 
-/// Returns true when a terminal frame was seen and the caller should stop.
+/// The lines one frame contributes to the terminal — and nothing else, no I/O,
+/// so the join latch below can be pinned by a test.
 ///
 /// `joined` latches the first `UpdateConversation` under `Render::JoinThenLines`
 /// so only the *join* is expanded into a transcript. A later one is a mid-stream
 /// resync (`bus_lag_resync_frame`), and re-printing the whole conversation for it
 /// would bury the live output it exists to correct.
+fn stream_frame_lines(frame: &serde_json::Value, render: Render, joined: &mut bool) -> Vec<String> {
+    let kind = frame.get("type").and_then(serde_json::Value::as_str);
+    match render {
+        Render::Silent => Vec::new(),
+        Render::JoinThenLines if !*joined && kind == Some("UpdateConversation") => {
+            *joined = true;
+            let mut lines = render_join_snapshot(frame);
+            if lines.is_empty() {
+                lines.push("(this session has no messages yet)".to_string());
+            }
+            lines.push("── live from here ──".to_string());
+            lines
+        }
+        Render::Lines | Render::JoinThenLines => render_frame(frame).into_iter().collect(),
+    }
+}
+
+/// Returns true when a terminal frame was seen and the caller should stop.
 fn print_frames(
     frames: &[serde_json::Value],
     stop_on_terminal: bool,
@@ -343,28 +362,15 @@ fn print_frames(
 ) -> bool {
     let mut done = false;
     for frame in frames {
-        let kind = frame.get("type").and_then(serde_json::Value::as_str);
-        match render {
-            Render::Silent => {}
-            Render::JoinThenLines if !*joined && kind == Some("UpdateConversation") => {
-                *joined = true;
-                let lines = render_join_snapshot(frame);
-                if lines.is_empty() {
-                    println!("(this session has no messages yet)");
-                } else {
-                    for line in &lines {
-                        println!("{line}");
-                    }
-                }
-                println!("── live from here ──");
-            }
-            Render::Lines | Render::JoinThenLines => {
-                if let Some(line) = render_frame(frame) {
-                    println!("{line}");
-                }
-            }
+        for line in stream_frame_lines(frame, render, joined) {
+            println!("{line}");
         }
-        if stop_on_terminal && matches!(kind, Some("Finish") | Some("Error")) {
+        if stop_on_terminal
+            && matches!(
+                frame.get("type").and_then(serde_json::Value::as_str),
+                Some("Finish") | Some("Error")
+            )
+        {
             done = true;
         }
     }
@@ -1226,6 +1232,57 @@ mod tests {
             render_frame(&frame).as_deref(),
             Some("[snapshot] conversation resynced")
         );
+    }
+
+    /// The latch is the whole difference between "here is where this
+    /// conversation is" and burying the live output under a full re-print.
+    ///
+    /// `the_join_snapshot_is_rendered_as_a_transcript_not_a_one_liner` does NOT
+    /// cover this: it pins `render_join_snapshot` and `render_frame`, neither of
+    /// which knows whether a join has already happened. An implementation that
+    /// expanded *every* `UpdateConversation` — the first failure the gate names —
+    /// passes every other test in this module.
+    #[test]
+    fn only_the_first_snapshot_is_expanded_the_rest_stay_one_liners() {
+        let snapshot = serde_json::json!({
+            "type": "UpdateConversation",
+            "conversation": [
+                { "role": "user", "content": [{ "type": "text", "text": "audit the migration" }],
+                  "metadata": { "userVisible": true } }
+            ],
+            "token_state": { "totalTokens": 12 }
+        });
+
+        let mut joined = false;
+        let first = stream_frame_lines(&snapshot, Render::JoinThenLines, &mut joined);
+        assert!(joined, "the first snapshot latches the join");
+        assert!(
+            first.iter().any(|l| l.contains("audit the migration")),
+            "the join is the transcript: {first:?}"
+        );
+
+        // A mid-stream resync (`bus_lag_resync_frame`) corrects the live output;
+        // re-printing the whole conversation would bury it.
+        let second = stream_frame_lines(&snapshot, Render::JoinThenLines, &mut joined);
+        assert_eq!(
+            second,
+            vec!["[snapshot] conversation resynced".to_string()],
+            "a later resync is one line, not a second transcript"
+        );
+
+        // `watch`/`send` never expand a snapshot at all, latch or no latch.
+        let mut never_joins = false;
+        assert_eq!(
+            stream_frame_lines(&snapshot, Render::Lines, &mut never_joins),
+            vec!["[snapshot] conversation resynced".to_string()]
+        );
+        assert!(!never_joins, "Render::Lines has no join to latch");
+
+        // The `/reply` fallback prints nothing whatever it is handed — the
+        // observer stream is already rendering that turn.
+        let mut silent = false;
+        assert!(stream_frame_lines(&snapshot, Render::Silent, &mut silent).is_empty());
+        assert!(!silent);
     }
 
     #[test]
