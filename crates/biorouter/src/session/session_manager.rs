@@ -3582,6 +3582,19 @@ impl SessionStorage {
         // an `mcp:` one. The vocabulary is `Session::privacy_reason`'s; SQLite's
         // LIKE is ASCII-case-insensitive, which only ever grades a session more
         // strictly.
+        //
+        // ⚠ Both dominance arms are guarded on the row being ALREADY non-public;
+        // the trailing `ELSE ?` writes the incoming reason unconditionally. That
+        // is right today, because on a public row there is no provenance worth
+        // keeping. It stops being right the moment §12.5 declassification starts
+        // leaving `declassified_by_user` in `privacy_reason` on a row it has just
+        // returned to `public` — a later `raise_privacy(Public, ..)` would then
+        // erase the record of the declassification, and
+        // `every_projection_that_builds_a_session_reads_the_column` already
+        // treats a reason on a public row as meaningful data. Whoever lands
+        // Task 13 or Task 38 has to decide here whether the `ELSE` arm preserves
+        // a `declassified_by_user` provenance the way the `mcp:` arm preserves
+        // its own.
         if builder.privacy_raise.is_some() {
             if !updates.is_empty() {
                 query.push_str(", ");
