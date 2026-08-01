@@ -785,12 +785,12 @@ curl -s -H "X-Secret-Key: $KEY" http://127.0.0.1:$PORT/sessions/<private-id>/exp
 
 returns the private session's entire transcript as JSON. **The `printenv` step no longer works** —
 see the status note below — but everything that made it worth reading still holds, so the finding
-stays. Verified: `ui/desktop/src/biorouterd.ts:134-135` puts `BIOROUTER_PORT` and
-`BIOROUTER_SERVER__SECRET_KEY` into `additionalEnv`, spread into
-`processEnv = {...process.env, ...additionalEnv}` at `:149-151`, so the *daemon* still holds the
+stays. Verified: `ui/desktop/src/biorouterd.ts:305-306` puts `BIOROUTER_PORT` and
+`BIOROUTER_SERVER__SECRET_KEY` into `additionalEnv` (`:299`), spread into
+`processEnv = {...process.env, ...additionalEnv}` at `:320-322`, so the *daemon* still holds the
 secret in its own environment and every in-process code path can read it with `env::var`.
-`auth.rs:115-126` is a plain header equality; rate limiting is keyed on peer IP, which is
-`127.0.0.1`. `routes/session.rs:769/771/772` expose `GET /sessions/{id}`, `/export` and
+`auth.rs:131-142` is a plain header equality; rate limiting is keyed on peer IP, which is
+`127.0.0.1`. `routes/session.rs:1076/1078/1079` expose `GET /sessions/{id}`, `/export` and
 `POST /sessions/import`. Possession of the string is still total authority over the daemon, and
 nothing distinguishes the renderer presenting it from anyone else.
 
@@ -810,16 +810,31 @@ the user's own UI, not a model."
 > `child_process_client` (`:448`, called at `:850` and `:920`), and inside `configure_shell_command`
 > (`developer/shell.rs:433`), which is the Developer server's `shell`. Landed in `b249a203` and
 > `8e7407fe` (issue #57). Fix (1) below is therefore **done**, and pinned by
-> `daemon_secret_never_reaches_an_extension_child` (`extension_manager.rs:3476`), which re-invokes
-> the test binary with the secret exported and spawns a real child through the real
-> `prepare_child_environment` — covering both the inherited copy and a manifest that names a
-> daemon-private key in its own `env_keys`.
+> `daemon_secret_never_reaches_an_extension_child` (`extension_manager.rs:3541`), which re-invokes
+> the test binary with the secret exported and spawns four real children through the real
+> `prepare_child_environment` — clean manifest and hostile, `None` working dir and `Some(..)` —
+> covering the inherited copy, a manifest that names a daemon-private key in its own `env_keys`, and
+> the `Some(&working_dir)` argument both production spawns actually pass.
+>
+> ⚠ **"Closed" means the child's own environment, not "the model cannot get the secret".** That is
+> the whole of what the strip does and the whole of what the test proves.
+> [AR-11](privacy-tiers-execution-plan.md#ar-11--amended-by-dr-17--the-daemons-own-api-secret-is-recoverable)
+> measured two channels that survive it, because the *daemon* still holds the secret: on macOS a
+> child reads its parent's environment with `ps -Ewww -p $PPID` (under a hardened, notarized binary,
+> and under every sandbox profile that can be constructed, because `sysctl-read` is not gated), and
+> on Linux `computercontroller__cache view /proc/self/environ` returns it in-process. So a
+> tool-capable session can still obtain the secret; what it can no longer do is find it lying in its
+> own environment. Fix (2) is what closes those channels, and it is open.
 >
 > Fixes (2) and (3) remain open. (2) — stop carrying the secret in the environment at all — is
-> unaddressed and is the reason this finding is not simply deleted: the strip is a filter, and a
-> filter is only as good as its key list. (3) — bind declassification to a one-shot capability token
-> rather than to `X-Secret-Key` — is [Open question 13](privacy-tiers-execution-plan.md#open-questions)
-> and is why Task 29's R9 property is "only a human *through the GUI*", not "only a human".
+> unaddressed and is the reason this finding is not simply deleted: the strip is a filter, a filter
+> is only as good as its key list, and AR-11's two channels do not care about the key list at all.
+> (3) — bind declassification to a proof the daemon never hands its own children, rather than to
+> `X-Secret-Key` — is designed as the `X-User-Action` digest in
+> [Task 18A](privacy-tiers-execution-plan.md#task-18a-the-two-http-channels-that-raise-a-sessions-own-tier-and-the-user-proof-neither-of-them-has),
+> with the residual local-caller half carried by
+> [Open question 20](privacy-tiers-execution-plan.md#open-questions). It is why Task 29's R9 property
+> is "only a human *through the GUI*", not "only a human".
 
 Three fixes were called for. (1) **Done** — strip the daemon's credentials from every child spawned
 on an agent's behalf, on the extension spawn path as well as the shell one. (2) **Open** — stop
@@ -932,11 +947,14 @@ routes read a base by a caller-supplied path id with no visible-set filtering ei
 `:543`), `history` (`:46`), `preview` (`:47`) and `export` (`:55` → `:1522`), plus the two raw-source
 handlers at `:1604`/`:1636`. Those are the GUI's own path and are user-driven rather than
 model-driven, so scoping the *tool* ratchet to the seven MCP entry points is the right call — but
-§9.3 A1 establishes that the daemon secret is an ambient bearer credential — no longer reachable
-from a tool process, but held in the daemon's own environment and equal to full authority for
-anything that can read it — and AR-15 that a secret-holder can raise its own session's capability,
-so any future path that re-exposes it would reach a KB through the HTTP side without touching any
-of the seven. The implementing task must decide deliberately whether
+§9.3 A1 establishes that the daemon secret is an ambient bearer credential — no longer sitting in a
+tool child's own environment, but still held in the daemon's, and equal to full authority for
+anything that can read it — and AR-15 that a secret-holder can raise its own session's capability.
+⚠ **Do not read that as "a tool cannot get it".** [AR-11](privacy-tiers-execution-plan.md#ar-11--amended-by-dr-17--the-daemons-own-api-secret-is-recoverable)
+measured a child recovering its parent's environment with `ps -Ewww -p $PPID` on macOS and
+`/proc/self/environ` in-process on Linux, so a shell-capable session can still reach a KB through
+the HTTP side without touching any of the seven — which is why fix (2) of A1, not the strip, is what
+would close this. The implementing task must decide deliberately whether
 the HTTP routes carry the check too, and record the answer; it must not conclude from this paragraph
 that seven checks are the whole job.
 
@@ -2320,7 +2338,7 @@ effect next turn — a first-class, agent-callable path to attach a public model
 | P5 | **Gate D** — both chatrecall builders + the LOAD-mode check | today's most direct cross-session read path; LOAD has verified zero filtering |
 | P6 | `create_session` carries `privacy_tier` + `provider_name` + `model_config` for all three copy paths | a live laundering path, verified |
 | P7 | The generator's second and third outputs + `--check` | the badge cannot exist in Rust without it |
-| P8 | A1, B3 from §9.3 | the two findings that would have let a public model read private content on day one; both scrubs have since shipped (#57, #58, #63), leaving A1's fixes (2) and (3) |
+| P8 | A1, B3 from §9.3 | the two findings that would have let a public model read private content on day one; the scrubs named in each have since shipped (#57, #58, #63). **Neither finding is closed by that.** A1's fixes (2) and (3) are open, and AR-11 measures the secret still recoverable from the *parent* process on both platforms; B3's global-memory injection is gone, but local memories are still inlined in full, so a private session's local note reaches every later session in that directory |
 
 ### 18.2 Additions to named BR-71 tasks
 
@@ -2410,8 +2428,13 @@ re-plan of an approved, about-to-be-built feature does not get built.**
 2. **A1's remaining half (the secret off the environment entirely)** and
    **B3 (refuse a global `remember_memory` from a private-capability session)**. Both halves of A1's
    scrub — shell and extension spawn — and both of B3's original channels have already shipped as
-   #57, #58 and #63, so nothing here is a live leak; what is left of A1 is hardening that removes
-   the need for a filter rather than widening one.
+   #57, #58 and #63, so **neither of the two original repros still works**. What is left of A1 is
+   not merely cosmetic hardening: AR-11 measures the secret still recoverable from the daemon's own
+   environment through the *parent* process (`ps -Ewww -p $PPID` on macOS, `/proc/self/environ`
+   in-process on Linux), which no key list can filter, so taking the secret off the environment is
+   what turns the filter into a guarantee. And B3 keeps one live channel of its own — local
+   memories are still inlined in full into every session opened in that directory
+   ([open question 14](privacy-tiers-execution-plan.md#open-questions)).
 3. **P1 + P2 + P3 (types, Gate A, Gate B)** together with **the typed 409 and the `throwOnError`
    fix**, in one commit. Gate A without them ships as "Internal server error" over a green success
    toast.
