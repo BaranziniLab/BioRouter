@@ -175,6 +175,12 @@ pub struct Session {
     /// `mcp:<extension>`, `inherited:<parent_id>`, `diverged:<parent_id>`,
     /// `backfill:<provider>`, `declassified_by_user`. §12.4 grades the
     /// declassification confirmation on whether it has ever been `mcp:*`.
+    ///
+    /// It therefore holds the **dominant** provenance, not the first or the
+    /// latest one: the storage layer lets an `mcp:` raise displace a non-`mcp:`
+    /// reason and lets nothing displace an `mcp:` reason. Freezing it on the
+    /// first raise would answer "has it ever been `mcp:*`" with a flat no, since
+    /// Gate B's `turn:*` always lands before Gate C's `mcp:*`.
     #[serde(default)]
     pub privacy_reason: Option<String>,
 }
@@ -1036,9 +1042,13 @@ impl<'a> SessionUpdateBuilder<'a> {
     }
 
     /// Raise the classification and record why. Monotone: passing `Public` to a
-    /// row that is already `private` is a no-op in SQL, so no caller — a route
-    /// handler, a CLI command, a test, a future BR-71 tool, a hand-written
+    /// row that is not exactly `public` is a no-op in SQL, so no caller — a
+    /// route handler, a CLI command, a test, a future BR-71 tool, a hand-written
     /// query through this builder — can lower the tier.
+    ///
+    /// `reason` is likewise monotone, by dominance rather than by recency: an
+    /// `mcp:` reason displaces a non-`mcp:` one and nothing displaces an `mcp:`
+    /// one, so §12.4 can ask whether a private data source was ever reached.
     pub fn raise_privacy(mut self, to: SessionClassification, reason: &str) -> Self {
         self.privacy_raise = Some((to, reason.to_string()));
         self
@@ -3521,6 +3531,22 @@ impl SessionStorage {
         // exists to make impossible. A non-canonical value is preserved verbatim
         // rather than canonicalised, so the anomaly stays visible; it reads
         // Private either way.
+        //
+        // `privacy_reason` is not merely frozen alongside it: it accumulates by
+        // DOMINANCE, `mcp:*` over everything else. §12.4 grades the
+        // declassification confirmation on whether a private data source was
+        // ever reached (`mcp:*` ⇒ typed confirmation) or whether the session only
+        // ran a turn against a private endpoint (`turn:*` ⇒ single click with
+        // undo). Gate B raises at reply entry and Gate C on dispatch, and Gate C
+        // can only fire in a session already bound to a private provider — so
+        // `turn:*` always lands first and every `mcp:` event arrives at a row
+        // that is already private. A plainly frozen reason would hide every
+        // `mcp:` event that has ever happened. Last-write-wins is equally wrong
+        // in the other direction: the next ordinary turn would erase it. So an
+        // `mcp:` raise displaces a non-`mcp:` provenance, and nothing displaces
+        // an `mcp:` one. The vocabulary is `Session::privacy_reason`'s; SQLite's
+        // LIKE is ASCII-case-insensitive, which only ever grades a session more
+        // strictly.
         if builder.privacy_raise.is_some() {
             if !updates.is_empty() {
                 query.push_str(", ");
@@ -3529,8 +3555,12 @@ impl SessionStorage {
             query.push_str(
                 "privacy_tier = CASE WHEN IFNULL(privacy_tier, '') <> 'public' \
                  THEN privacy_tier ELSE ? END, \
-                 privacy_reason = CASE WHEN IFNULL(privacy_tier, '') <> 'public' \
-                 THEN privacy_reason ELSE ? END",
+                 privacy_reason = CASE \
+                 WHEN IFNULL(privacy_tier, '') <> 'public' \
+                 AND IFNULL(privacy_reason, '') NOT LIKE 'mcp:%' \
+                 AND ? LIKE 'mcp:%' THEN ? \
+                 WHEN IFNULL(privacy_tier, '') <> 'public' THEN privacy_reason \
+                 ELSE ? END",
             );
         }
 
@@ -3616,10 +3646,13 @@ impl SessionStorage {
         if let Some(parent_session_id) = builder.parent_session_id {
             q = q.bind(parent_session_id);
         }
-        // Same relative position as the clause pair appended above: tier first,
-        // then the reason.
+        // Same relative position as the clause pair appended above: the tier's
+        // one placeholder, then the reason's three — the dominance test, the
+        // escalated value, and the value written when the row was assignable.
         if let Some((to, reason)) = builder.privacy_raise {
             q = q.bind(to.as_sql());
+            q = q.bind(reason.clone());
+            q = q.bind(reason.clone());
             q = q.bind(reason);
         }
 
@@ -11732,6 +11765,63 @@ mod tests {
             "a value the reader refuses must not become one it accepts"
         );
         assert_eq!(reason.as_deref(), Some("turn:versa_azure"));
+    }
+
+    /// A session already raised by a turn, then reached into a private data
+    /// source. Both orderings live here because the pair is the whole property.
+    async fn reason_after(first: &str, second: &str) -> Option<String> {
+        let temp = tempfile::TempDir::new().unwrap();
+        let manager = SessionManager::new(temp.path().to_path_buf());
+        let s = manager
+            .create_session(temp.path().to_path_buf(), "s".into(), SessionType::User)
+            .await
+            .unwrap();
+        for reason in [first, second] {
+            manager
+                .update(&s.id)
+                .raise_privacy(SessionClassification::Private, reason)
+                .apply()
+                .await
+                .unwrap();
+        }
+        let row = manager.get_session(&s.id, false).await.unwrap();
+        assert_eq!(row.privacy_tier, SessionClassification::Private);
+        row.privacy_reason
+    }
+
+    #[tokio::test]
+    async fn a_later_mcp_event_escalates_the_recorded_provenance() {
+        // §12.4 grades the declassification confirmation on whether a private
+        // data source was ever REACHED (`mcp:*`) or whether the session merely
+        // ran a turn against a private endpoint (`turn:*`) — typed confirmation
+        // versus single-click-with-undo. Gate B raises at reply entry and Gate C
+        // on dispatch, and Gate C can only fire in a session whose bound
+        // provider is already private, so `turn:*` ALWAYS lands first and every
+        // `mcp:` event arrives at a row that is already private. A reason frozen
+        // on the first raise therefore hides every `mcp:` event there has ever
+        // been, and an OMOP cohort session is offered the weak control.
+        assert_eq!(
+            reason_after("turn:versa_azure", "mcp:ucsfomopagent").await,
+            Some("mcp:ucsfomopagent".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn a_later_turn_does_not_erase_an_mcp_provenance() {
+        // The other ordering, and the reason this is dominance rather than
+        // last-write-wins: once a private data source has been reached, no
+        // number of ordinary turns afterwards may grade the session back down to
+        // "text was only sent to a private endpoint".
+        assert_eq!(
+            reason_after("mcp:ucsfomopagent", "turn:versa_azure").await,
+            Some("mcp:ucsfomopagent".to_string())
+        );
+        // And within the dominant class the first event still stands, so the
+        // provenance names the source that was actually reached first.
+        assert_eq!(
+            reason_after("mcp:ucsfomopagent", "mcp:cdwagent").await,
+            Some("mcp:ucsfomopagent".to_string())
+        );
     }
 
     #[tokio::test]
