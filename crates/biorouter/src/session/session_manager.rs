@@ -11841,24 +11841,53 @@ mod tests {
             .await
             .unwrap();
 
+        // `privacy_reason` needs its own sentinel, and it needs one on a row that
+        // is public. Its reader IS tolerant (`try_get(..).ok().flatten()`), so a
+        // projection that drops it hands back `None` and every assertion about
+        // the tier still passes — the exact silent shape the fail-closed tier
+        // read exists to avoid, one column to the right. A public row carrying a
+        // reason is not a contrivance either: it is what §12.5 leaves behind
+        // after a declassification (`declassified_by_user`), and the reason is
+        // the only remaining record of what the session had been. Seeded in SQL
+        // rather than through the builder so the projection test does not also
+        // depend on the ratchet's semantics.
+        let db = temp.path().join(SESSIONS_FOLDER).join(DB_NAME);
+        let pool = raw_pool(&db).await;
+        sqlx::query("UPDATE sessions SET privacy_reason = 'declassified_by_user' WHERE id = ?1")
+            .bind(&s.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+
+        let fetched = manager.get_session(&s.id, false).await.unwrap();
         assert_eq!(
-            manager
-                .get_session(&s.id, false)
-                .await
-                .unwrap()
-                .privacy_tier,
+            fetched.privacy_tier,
             SessionClassification::Public,
             "get_session"
+        );
+        assert_eq!(
+            fetched.privacy_reason.as_deref(),
+            Some("declassified_by_user"),
+            "get_session dropped privacy_reason"
         );
         let listed = manager
             .list_sessions_by_types(&[SessionType::User])
             .await
             .unwrap();
+        let listed = listed.iter().find(|x| x.id == s.id).unwrap();
         assert_eq!(
-            listed.iter().find(|x| x.id == s.id).unwrap().privacy_tier,
+            listed.privacy_tier,
             SessionClassification::Public,
             "list_sessions_by_types"
         );
+        assert_eq!(
+            listed.privacy_reason.as_deref(),
+            Some("declassified_by_user"),
+            "list_sessions_by_types dropped privacy_reason"
+        );
+        // `SessionSummary` deliberately carries only the tier — the sidebar
+        // badges, it does not explain — so there is no reason to assert here.
         let summaries = manager
             .list_session_summaries(50, 0, false, false)
             .await
