@@ -222,8 +222,8 @@ mod tests {
     }
 
     /// Occurrences of `needle` in `code` whose preceding character is not `.`, so
-    /// `session_manager.rs:751`'s `pos.floor()` — an `f64` method with nothing to
-    /// do with this module — can never be counted as a crossing.
+    /// `session_manager.rs`'s `pos.floor()` — an `f64` method with nothing to do
+    /// with this module — can never be counted as a crossing.
     fn count_calls_not_method(code: &str, needle: &str) -> usize {
         let mut found = 0;
         let mut from = 0;
@@ -248,10 +248,13 @@ mod tests {
         //
         //  (a) A total is defeated by an UNRELATED symbol. The first version
         //      matched `line.contains("floor(")`, which already matches
-        //      `session_manager.rs:688`'s `let lo = pos.floor() as usize;` — an f64
-        //      method with nothing to do with this module. Its "baseline 0" was
-        //      really 1 before a single line of #56 existed. Matching only the
-        //      QUALIFIED path `privacy::floor(` cannot see a float method, ever.
+        //      `session_manager.rs`'s `let lo = pos.floor() as usize;` — an f64
+        //      method with nothing to do with this module. (This comment used to
+        //      cite a line number for it; the number had already drifted by 63
+        //      lines, so the symbol is the anchor and the number is gone.) Its
+        //      "baseline 0" was really 1 before a single line of #56 existed.
+        //      Matching only the QUALIFIED path `privacy::floor(` cannot see a
+        //      float method, ever.
         //  (b) A total is defeated by the plan's OWN later additions, silently: a
         //      task that adds two crossings where the number says one still passes
         //      if another task removed one. A set names the file.
