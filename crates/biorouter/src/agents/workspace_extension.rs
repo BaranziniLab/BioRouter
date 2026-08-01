@@ -74,6 +74,22 @@ pub static EXTENSION_TITLE: &str = "Workspace Control";
 /// (`workspace_open_is_advertised_and_completes_the_surface`: every name this
 /// block mentions is registered in `get_tools()`, and vice versa) so the two can
 /// never drift again.
+///
+/// **This whole block ships even when only `subagent` is callable.** The common
+/// injection mode is `Agent::ensure_spawn_extension`, which loads this extension
+/// with `available_tools: ["subagent"]` for any session that merely has
+/// delegation enabled. `available_tools` filters the *tool list*; instructions
+/// are a single server string that `ExtensionManager::get_extensions_info`
+/// copies verbatim, so a spawn-only session still reads all eight bullets.
+///
+/// That is fine for a bullet describing a tool the model simply does not have —
+/// it cannot act on it either way. It is NOT fine for a negative imperative
+/// about a fallback the model can always reach, because there the instruction
+/// stays live after the tool it depends on is gone. `workspace_set_tools` is the
+/// one such case: "never tell the user to change Settings" left a spawn-only
+/// session with no legal answer to "give that other chat a skill", since
+/// Settings is exactly where a user without the tool must go. Hence the
+/// availability clause. Keep any future imperative here similarly scoped.
 const INSTRUCTIONS: &str = indoc! {r#"
     Workspace Control
 
@@ -96,7 +112,7 @@ const INSTRUCTIONS: &str = indoc! {r#"
       you. Use wait:"final_message" to get its answer synchronously.
     - workspace_set_tools: add/remove extensions, scope skills to one
       conversation (add_skills), switch its model, or set its knowledge bases.
-      Do it yourself; never tell the user to change Settings.
+      When you have it, do this yourself instead of pointing at Settings.
     - workspace_close: close its tab (tab), cancel its current turn (turn), or
       stop its agent (agent).
     - workspace_watch: wait until one of several conversations finishes. Use it
