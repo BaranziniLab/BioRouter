@@ -142,6 +142,17 @@ fn tier_word(caller_is_private: bool) -> &'static str {
     }
 }
 
+/// The value the daemon writes under [`CAPABILITY_TIER_META_KEY`].
+///
+/// The KEY was already shared so the two sides cannot drift; the VALUE was not —
+/// `mcp_client.rs` spelled "private"/"public" itself and [`caller_is_private`]
+/// compared against this module's own consts, and a test on each side asserting
+/// its own literal would have caught neither half of a drift. One spelling, one
+/// function, both sides.
+pub fn capability_meta_value(caller_is_private: bool) -> &'static str {
+    tier_word(caller_is_private)
+}
+
 /// The caller's capability, PUBLIC unless the meta says private.
 ///
 /// Absent means one of: an older daemon, a non-built-in transport, or a direct

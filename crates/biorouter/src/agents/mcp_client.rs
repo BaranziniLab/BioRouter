@@ -190,11 +190,16 @@ impl McpMeta {
         if let Some(private) = self.capability_private {
             // Issue #56. The SAME `_meta` object the session id rides in, for
             // the same wire-collision reason the progress token below gives.
-            // The key comes from the shared const, never a second spelling.
+            // BOTH halves come from the shared module — the key from its const
+            // and the value from `capability_meta_value` — because the reader
+            // (`tier::caller_is_private`) compares against that module's own
+            // spelling, and a hand-typed literal here would drift silently.
             let mut meta = extensions.get::<Meta>().cloned().unwrap_or_default();
             meta.0.insert(
                 biorouter_mcp::knowledge::tier::CAPABILITY_TIER_META_KEY.to_string(),
-                serde_json::Value::String(if private { "private" } else { "public" }.to_string()),
+                serde_json::Value::String(
+                    biorouter_mcp::knowledge::tier::capability_meta_value(private).to_string(),
+                ),
             );
             extensions.insert(meta);
         }
@@ -1090,6 +1095,43 @@ mod tests {
                 .and_then(|v| v.as_str()),
             Some("private")
         );
+    }
+
+    /// Issue #56, the OTHER half: what the daemon writes is what the barrier
+    /// reads. The test above pins the wire format against a literal on this
+    /// side, and `tier.rs`'s tests compare against consts on that side — so a
+    /// drift in the VALUE (the key is already a shared const) would have been
+    /// caught by neither. This composes the writer with the real reader and is
+    /// the only test that crosses the seam.
+    #[test]
+    fn the_injected_capability_tier_is_read_back_as_the_same_decision() {
+        for private in [true, false] {
+            let ext = McpMeta::new(
+                "sess-1",
+                crate::privacy::CallCapability::for_test_restricted(),
+            )
+            .with_capability_private(private)
+            .inject_into_extensions(Extensions::default());
+            let m = ext.get::<Meta>().unwrap();
+            assert_eq!(
+                biorouter_mcp::knowledge::tier::caller_is_private(m),
+                private,
+                "the daemon wrote {:?} and the barrier read it back as {}",
+                m.0.get(biorouter_mcp::knowledge::tier::CAPABILITY_TIER_META_KEY),
+                !private
+            );
+        }
+        // And an extension that is never told — decision (4)'s third parties —
+        // reads PUBLIC, which is the safe direction for every gate that
+        // consumes it.
+        let ext = McpMeta::new(
+            "sess-1",
+            crate::privacy::CallCapability::for_test_restricted(),
+        )
+        .inject_into_extensions(Extensions::default());
+        assert!(!biorouter_mcp::knowledge::tier::caller_is_private(
+            ext.get::<Meta>().unwrap()
+        ));
     }
 
     #[tokio::test]
