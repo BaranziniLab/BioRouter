@@ -190,7 +190,7 @@
     "/agent/cancel": {
       "post": {
         "tags": [
-          "super::routes::reply"
+          "workspace"
         ],
         "summary": "Hard cancel: trip the cancellation token of the turn in flight for this",
         "description": "session (BR-62).\n\nBefore this route, cancelling meant dropping the SSE socket — the only thing\nthat closed `tx` and tripped the token — so a turn could not be stopped by a\nsecond client, the CLI, or a script, and `/agent/stop` merely evicted the\nagent from the LRU while the in-flight reply task ran on happily against its\nown `Arc<Agent>`. Tripping the token unwinds the agent loop at its next\nboundary and unblocks a tool-permission prompt it may be parked on.\n\nDeliberately **idempotent**: cancelling a session with no turn in flight (a\ndouble-clicked Stop button, a cancel that raced the turn's own completion) is\na 200 with `cancelled: false`, never an error. A cancel that reports failure\nbecause the thing was already stopped is exactly the unreliability this BR\nexists to remove.",
@@ -1462,7 +1462,7 @@
     "/interrupt": {
       "post": {
         "tags": [
-          "super::routes::reply"
+          "workspace"
         ],
         "summary": "Soft interrupt: queue a user message to be injected into the session's",
         "description": "running turn at the next safe loop boundary, instead of cancelling the turn\nand re-sending the whole context. Returns 202 Accepted; the message surfaces\nas a normal user message in the active reply stream on the next loop step.\n\nBR-61: rejected with 409 when the session has no turn in flight — with no\nrunning loop to drain the queue the text would sit on the agent until some\nunrelated later turn injected it. Clients treat 409 as \"just send it as a\nnormal message\".\n\n#69: the 409 is now decided by the *agent's own queue*, not by the turn-lock\ncheck above it. Checking the lock and then queueing are two steps against\nstate the reply loop changes underneath them: a steer could be accepted (202)\nafter the loop had already performed its final empty-queue check, and the text\nthen surfaced in an unrelated later turn. `try_queue_soft_interrupt` decides\nacceptance and enqueues in one critical section, and reports back *which* turn\ntook the message — so a 202 names something real.",
@@ -2630,7 +2630,7 @@
     "/reply": {
       "post": {
         "tags": [
-          "super::routes::reply"
+          "workspace"
         ],
         "operationId": "reply",
         "requestBody": {
@@ -3563,7 +3563,7 @@
     "/sessions/{session_id}/events": {
       "get": {
         "tags": [
-          "super::routes::session_events"
+          "workspace"
         ],
         "operationId": "observe_session_events",
         "parameters": [

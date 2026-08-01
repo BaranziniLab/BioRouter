@@ -48,6 +48,14 @@ struct Cli {
     command: Option<Command>,
 }
 
+/// The real clap command tree, for tests that must assert against the CLI's
+/// actual surface rather than a description of it (Task 42b).
+///
+/// `Cli` stays private; only the built `Command` escapes.
+pub fn command_tree() -> clap::Command {
+    <Cli as clap::CommandFactory>::command()
+}
+
 #[derive(Args, Debug, Clone)]
 #[group(required = false, multiple = false)]
 pub struct Identifier {

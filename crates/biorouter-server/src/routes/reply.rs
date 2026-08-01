@@ -892,6 +892,11 @@ async fn record_workflow_run(state: &Arc<AppState>, session_id: &str, request: &
 #[utoipa::path(
     post,
     path = "/reply",
+    // EXPLICIT tag, not utoipa's default module path. Task 42b's CLI-parity gate
+    // selects the workspace-control route surface by this tag; a BR-71 route that
+    // is not tagged is invisible to it, which is how a capability ships
+    // GUI-or-daemon-only.
+    tag = "workspace",
     request_body = ChatRequest,
     responses(
         (status = 200, description = "Streaming response initiated",
@@ -1072,6 +1077,8 @@ pub struct InterruptAccepted {
 #[utoipa::path(
     post,
     path = "/interrupt",
+    // See `/reply` above: the tag is what Task 42b's parity gate selects on.
+    tag = "workspace",
     request_body = InterruptRequest,
     responses(
         (status = 202, description = "Message queued for injection into the running turn", body = InterruptAccepted),
@@ -1164,6 +1171,8 @@ pub struct CancelTurnResponse {
 #[utoipa::path(
     post,
     path = "/agent/cancel",
+    // See `/reply` above: the tag is what Task 42b's parity gate selects on.
+    tag = "workspace",
     request_body = CancelTurnRequest,
     responses(
         (status = 200, description = "Cancel processed; `cancelled` reports whether a turn was running", body = CancelTurnResponse),

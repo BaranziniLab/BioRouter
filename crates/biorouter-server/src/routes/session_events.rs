@@ -163,6 +163,9 @@ pub(crate) async fn bus_lag_resync_frame(
 #[utoipa::path(
     get,
     path = "/sessions/{session_id}/events",
+    // EXPLICIT tag, not utoipa's default module path: Task 42b's CLI-parity gate
+    // selects the workspace-control route surface by this tag.
+    tag = "workspace",
     params(("session_id" = String, Path, description = "Session to observe")),
     responses(
         (status = 200, description = "Read-only observer stream of the session's live events",

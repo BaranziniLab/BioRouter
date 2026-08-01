@@ -498,11 +498,12 @@ impl WorkspaceClient {
         )
     }
 
-    /// `pub(crate)` so `agent.rs` can cross-check `WORKSPACE_TOOL_NAMES` (the
-    /// BR-71 §5 subagent refusal list) against what is actually advertised.
-    /// A hand-maintained mirror of this function is the one place that guard
-    /// can rot silently.
-    pub(crate) fn get_tools() -> Vec<Tool> {
+    /// `pub` so `agent.rs` can cross-check `WORKSPACE_TOOL_NAMES` (the
+    /// BR-71 §5 subagent refusal list) against what is actually advertised,
+    /// and so Task 42b's CLI-parity gate in `biorouter-cli` can compare the
+    /// advertised tool surface against the capability table. A hand-maintained
+    /// mirror of this function is the one place either guard can rot silently.
+    pub fn get_tools() -> Vec<Tool> {
         vec![
             Self::tool(
                 "workspace_list",

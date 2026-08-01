@@ -16,3 +16,4 @@ pub mod term;
 pub mod usage;
 pub mod web;
 pub mod workflow;
+pub mod workspace_parity;
