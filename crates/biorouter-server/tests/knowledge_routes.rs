@@ -2264,3 +2264,177 @@ async fn the_users_own_export_route_is_not_subject_to_the_models_location_rule()
     // model's rule writes `<root>/.exports/`, and the user's route writes nothing.
     assert!(!biorouter_mcp::knowledge::paths::model_export_dir(&root).exists());
 }
+
+// ── Issue #56, Task 10B: the caller-provenance matrix for the macro routes ───
+
+mod privacy_ratchet {
+    use super::{build_test_router_with_root, create_kb};
+    use axum::{body::Body, http::Request, Router};
+    use tower::ServiceExt;
+
+    /// Restore every variable this module touches, whatever the test does.
+    struct EnvGuard(Vec<(&'static str, Option<String>)>);
+
+    impl EnvGuard {
+        fn set(pairs: &[(&'static str, Option<String>)]) -> Self {
+            let mut saved = Vec::new();
+            for (k, v) in pairs {
+                saved.push((*k, std::env::var(k).ok()));
+                match v {
+                    Some(val) => std::env::set_var(k, val),
+                    None => std::env::remove_var(k),
+                }
+            }
+            EnvGuard(saved)
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (k, v) in &self.0 {
+                match v {
+                    Some(val) => std::env::set_var(k, val),
+                    None => std::env::remove_var(k),
+                }
+            }
+        }
+    }
+
+    /// ⚠ `BIOROUTER_KNOWLEDGE_TEST_MODE` must be OFF: `build_completer`'s early
+    /// return hands back a `TestModeCompleter` and Public before any provider
+    /// exists, which would make both rows Public and the matrix vacuous.
+    ///
+    /// The PROVIDER NAME is `ollama` in both rows and only `OLLAMA_HOST` moves
+    /// — Task 5 makes a loopback Ollama Private and a non-loopback one Public —
+    /// so an implementation keyed on `body.model.provider` gives the same answer
+    /// twice and fails one row, and so does either hardcoded literal.
+    fn env_for(host: &str) -> Vec<(&'static str, Option<String>)> {
+        vec![
+            ("BIOROUTER_KNOWLEDGE_TEST_MODE", None),
+            ("BIOROUTER_LEAD_MODEL", None),
+            ("BIOROUTER_LEAD_PROVIDER", None),
+            ("OLLAMA_HOST", Some(host.to_string())),
+            ("OLLAMA_TIMEOUT", Some("1".to_string())),
+        ]
+    }
+
+    async fn post_json(app: &Router, uri: &str, body: serde_json::Value) {
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(uri)
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            200,
+            "{uri} must build a provider and start streaming"
+        );
+        // Drain the SSE body so the macro task gets to run to completion.
+        let _ = axum::body::to_bytes(res.into_body(), usize::MAX).await;
+    }
+
+    /// The macro raise happens inside a `tokio::spawn`ed task, so give it a
+    /// bounded chance to land rather than racing it.
+    async fn await_private(root: &std::path::Path, kb: &str) -> bool {
+        for _ in 0..200 {
+            if biorouter_mcp::knowledge::tier::is_private(root, kb) {
+                return true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        false
+    }
+
+    fn model(provider: &str, model: &str) -> serde_json::Value {
+        serde_json::json!({ "provider": provider, "model": model })
+    }
+
+    /// Builds one macro route's request body around a `ModelRef`.
+    type BodyFor = fn(serde_json::Value) -> serde_json::Value;
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn each_macro_route_ratchets_from_the_provider_it_constructed_both_ways() {
+        // The gate a `grep -c caller_is_private` cannot be: every route reports
+        // NON-ZERO whether it passes the right value, a hardcoded `true`, or a
+        // hardcoded `false`. Both rows, per route — the PUBLIC row is the one
+        // the previous gate could not fail, and under-ratcheting is the
+        // direction that launders (a private transcript into a base that stays
+        // public).
+        //
+        // `ingest-conversation` is absent on purpose: it loads sessions from the
+        // process-global `SessionManager`, i.e. the developer's real session
+        // database. Its capability is the same `build_completer` value the three
+        // routes below pin, and it is covered structurally.
+        let routes: Vec<(&str, BodyFor)> = vec![
+            (
+                "ingest",
+                |m| serde_json::json!({ "source": {"text": "n=412", "title": "t"}, "model": m }),
+            ),
+            (
+                "query",
+                |m| serde_json::json!({ "question": "what is n?", "model": m }),
+            ),
+            (
+                "lint",
+                |m| serde_json::json!({ "autofix": true, "model": m }),
+            ),
+        ];
+
+        for (route, body) in routes {
+            for (host, caller_is_private) in [
+                ("http://127.0.0.1:11434", true),
+                ("http://ollama.invalid:11434", false),
+            ] {
+                let _env = EnvGuard::set(&env_for(host));
+                let (_d, root, app) = build_test_router_with_root();
+                create_kb(app.clone(), "kb", "KB").await;
+                assert!(!biorouter_mcp::knowledge::tier::is_private(&root, "kb"));
+
+                post_json(
+                    &app,
+                    &format!("/bases/kb/{route}"),
+                    body(model("ollama", "qwen3.5:4b")),
+                )
+                .await;
+
+                if caller_is_private {
+                    assert!(
+                        await_private(&root, "kb").await,
+                        "{route} with a private model did not ratchet the base"
+                    );
+                } else {
+                    assert!(
+                        !biorouter_mcp::knowledge::tier::is_private(&root, "kb"),
+                        "{route} with a public model privatised the base"
+                    );
+                }
+            }
+        }
+    }
+
+    // ⚠ The other half of provenance — that `providers::create` intercepts
+    // `BIOROUTER_LEAD_MODEL` BEFORE the registry lookup, so the INSTANCE it
+    // returns need not be the requested name's provider — is asserted in
+    // `biorouter-cli`'s
+    // `the_cli_capability_follows_the_instance_not_the_name_the_user_typed`,
+    // which reads `build_completer`'s returned tier directly and runs no macro.
+    //
+    // It cannot be asserted here. These routes only expose the tier by running
+    // a macro, and a lead/worker composite whose lead is a public provider makes
+    // that macro issue a real request on a client with a 600-second timeout —
+    // the run this replaces sat there for thirteen minutes. What this file DOES
+    // pin is the property that matters at the route: the matrix above sends the
+    // SAME provider name (`ollama`) in both rows and varies only `OLLAMA_HOST`,
+    // so a route keyed on `body.model.provider` gives one answer twice and fails
+    // a row. That the tier and the completer come from one `Arc` is
+    // `the_completer_and_the_capability_come_from_the_same_provider`, and every
+    // production caller of `ProviderCompleter::new` is gone.
+}

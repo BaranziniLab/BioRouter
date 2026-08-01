@@ -2739,6 +2739,28 @@ fn cap_kb_result(mut v: serde_json::Value) -> serde_json::Value {
     v
 }
 
+/// Issue #56 (CP3). The capability of one agent, read off the provider it is
+/// actually bound to.
+///
+/// A dead or unbound provider resolves to **Public**, the same fail-safe
+/// direction `CallCapability::sample` takes: a provider that cannot be read is
+/// unknown, and unknown must be the *less* privileged answer.
+///
+/// ⚠ Which agent is passed in is the whole decision. See the three
+/// `handle_kb_frame` call sites: the two between-turns ones read the app's main
+/// `agent`, and the mid-turn one reads `turn_agent` — a worker profile really
+/// can be on a different provider (`configure_worker_provider` builds one from
+/// the profile's own `cfg.model`), so both are in scope at the mid-turn site and
+/// the wrong one compiles.
+async fn caller_is_private_of(agent: &Arc<biorouter::agents::Agent>) -> bool {
+    agent
+        .provider()
+        .await
+        .map(|p| p.tier())
+        .unwrap_or(biorouter::privacy::ProviderTier::Public)
+        .is_private()
+}
+
 /// Emit a `kb_result` error frame (never kills the socket).
 fn emit_kb_error(ui_bridge: &UiBridge, req_id: &str, msg: &str) {
     ui_bridge.emit_frame(json!({ "type":"kb_result", "reqId": req_id, "error": msg }));
@@ -2754,6 +2776,10 @@ async fn handle_kb_frame(
     ui_bridge: &UiBridge,
     knowledge: &Arc<KnowledgeService>,
     cfg: Option<&AgentConfig>,
+    // Issue #56 (CP3). The capability of the agent whose access this is — the
+    // TURN's agent mid-turn, the main agent between turns; see the three call
+    // sites and `caller_is_private_of`.
+    caller_is_private: bool,
     op: &str,
     params: &serde_json::Value,
     req_id: &str,
@@ -2793,6 +2819,15 @@ async fn handle_kb_frame(
                          (design §3.4)"
                     ),
                 );
+                return;
+            }
+            // Issue #56. `resolve_kb_grant` above reads the app manifest, which
+            // the drafting model authored — an integrity control over WHICH
+            // base, not a privacy control over WHICH CALLER. The ratchet has to
+            // be here, and before the spawn: a raise that only lands on success
+            // leaves content in a base whose tier never moved.
+            if let Err(e) = knowledge.raise_tier(&kb_id, caller_is_private) {
+                emit_kb_error(ui_bridge, req_id, &e.to_string());
                 return;
             }
             let input = match kb_ingest_input(params) {
@@ -3568,6 +3603,10 @@ async fn handle_agent_socket(
                                         &ui_bridge,
                                         &state.knowledge_service,
                                         manifest.agent.as_ref(),
+                                        // Issue #56: no turn is running here, so
+                                        // there is no other agent to attribute
+                                        // this to — it is the main agent's.
+                                        caller_is_private_of(&agent).await,
                                         &op,
                                         &params,
                                         &req_id,
@@ -3793,6 +3832,10 @@ async fn handle_agent_socket(
                     &ui_bridge,
                     &state.knowledge_service,
                     manifest.agent.as_ref(),
+                    // Issue #56: this arm `continue`s BELOW, before `turn_agent`
+                    // is resolved — no turn has started, so this is the main
+                    // agent's access by definition.
+                    caller_is_private_of(&agent).await,
                     &op,
                     &params,
                     &req_id,
@@ -4127,6 +4170,19 @@ async fn handle_agent_socket(
                                     &ui_bridge,
                                     &state.knowledge_service,
                                     manifest.agent.as_ref(),
+                                    // ⚠ Issue #56: `turn_agent`, NOT `agent`.
+                                    // This runs inside the turn loop, and a
+                                    // worker profile can be on a different
+                                    // provider with a different tier. Both are
+                                    // in scope and `agent` compiles, type-checks
+                                    // and passes every single-agent test — while
+                                    // attributing a worker's ingest to the main
+                                    // agent in both directions. The precedent is
+                                    // `handle_action_required`, four cases down
+                                    // this same `match`, which takes
+                                    // `&turn_agent` under the comment "Uses THIS
+                                    // turn's agent/session (main or worker)".
+                                    caller_is_private_of(&turn_agent).await,
                                     &op,
                                     &params,
                                     &req_id,
@@ -7367,6 +7423,72 @@ mod tests {
         }
 
         // ── model_status shape ───────────────────────────────────────────────
+
+        // ── Issue #56, Task 10B: CP3 ────────────────────────────────────────
+
+        /// `br.kb ingest` never touches `KnowledgeServer`, so CP1 is blind to
+        /// it; `resolve_kb_grant` reads the app manifest, which the DRAFTING
+        /// MODEL authored — an integrity control over which base, not a privacy
+        /// control over which caller. The ratchet has to be here.
+        #[tokio::test]
+        async fn a_br_kb_ingest_from_a_private_app_session_ratchets_the_base() {
+            let tmp = tempfile::TempDir::new().unwrap();
+            let root = tmp.path().to_path_buf();
+            let svc = std::sync::Arc::new(KnowledgeService::new(root.clone()));
+            svc.create_base("kbx", "KBX", None).unwrap();
+            assert!(!biorouter_mcp::knowledge::tier::is_private(&root, "kbx"));
+
+            let cfg = cfg_with(vec![knowledge_src(&["kbx"], false)], Some("kbx"));
+            let bridge = biorouter_mcp::agent_drafter::control::UiBridge::new();
+            let (_rx, _tok) = bridge.attach();
+
+            super::super::handle_kb_frame(
+                &bridge,
+                &svc,
+                Some(&cfg),
+                /* caller_is_private */ true,
+                "ingest",
+                &serde_json::json!({ "kb_id": "kbx", "text": "n=412" }),
+                "r1",
+            )
+            .await;
+
+            assert!(
+                biorouter_mcp::knowledge::tier::is_private(&root, "kbx"),
+                "a private app session's ingest did not ratchet the base"
+            );
+        }
+
+        /// The mirror: a public app session must not lower a base that a
+        /// private one already ratcheted.
+        #[tokio::test]
+        async fn a_public_br_kb_ingest_never_lowers_a_ratcheted_base() {
+            let tmp = tempfile::TempDir::new().unwrap();
+            let root = tmp.path().to_path_buf();
+            let svc = std::sync::Arc::new(KnowledgeService::new(root.clone()));
+            svc.create_base("kby", "KBY", None).unwrap();
+            biorouter_mcp::knowledge::tier::raise_unlocked(&root, "kby", true).unwrap();
+
+            let cfg = cfg_with(vec![knowledge_src(&["kby"], false)], Some("kby"));
+            let bridge = biorouter_mcp::agent_drafter::control::UiBridge::new();
+            let (_rx, _tok) = bridge.attach();
+
+            super::super::handle_kb_frame(
+                &bridge,
+                &svc,
+                Some(&cfg),
+                /* caller_is_private */ false,
+                "ingest",
+                &serde_json::json!({ "kb_id": "kby", "text": "public note" }),
+                "r2",
+            )
+            .await;
+
+            assert!(
+                biorouter_mcp::knowledge::tier::is_private(&root, "kby"),
+                "a public app session lowered a ratcheted base"
+            );
+        }
 
         #[test]
         fn model_status_frame_shape_is_stable() {

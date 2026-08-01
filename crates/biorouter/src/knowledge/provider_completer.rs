@@ -27,6 +27,32 @@ impl ProviderCompleter {
     pub fn new(provider: Arc<dyn Provider>) -> Self {
         Self { provider }
     }
+
+    /// The completer **and** the tier of the provider behind it, from one
+    /// binding (issue #56).
+    ///
+    /// Every caller that builds macro `Args` uses this instead of [`Self::new`],
+    /// which is what makes "the tier came from a different provider than the
+    /// completer" unrepresentable rather than merely discouraged — the defect a
+    /// ban on hardcoded literals leaves open, and the one the CLI and the probe
+    /// are most exposed to because they resolve a provider by NAME.
+    ///
+    /// [`Provider::tier`] is an instance method for exactly this reason:
+    /// `providers::create("ollama", ..)` can return a lead/worker composite
+    /// (the factory intercepts `BIOROUTER_LEAD_MODEL` *before* the registry
+    /// lookup), and the composite's tier is the *least* of its two halves, not
+    /// the name that was asked for.
+    ///
+    /// Returns `Self`, not `Box<dyn Completer>`: each caller boxes it where it
+    /// already did, and the concrete type keeps `self.provider` (a **pub**
+    /// field) readable, which is what lets
+    /// `the_completer_and_the_capability_come_from_the_same_provider` assert
+    /// the completer and the tier came from the same `Arc` rather than merely
+    /// from two calls that agreed.
+    pub fn paired(provider: Arc<dyn Provider>) -> (Self, crate::privacy::ProviderTier) {
+        let tier = provider.tier();
+        (Self::new(provider), tier)
+    }
 }
 
 #[async_trait]
@@ -575,6 +601,73 @@ mod tests {
         assert!(
             tool_resp_ids.contains(&"tc-2".to_string()),
             "ToolResponse for tc-2 missing"
+        );
+    }
+
+    // ── Issue #56, Task 10B ─────────────────────────────────────────────────
+
+    /// A provider whose only interesting property is its tier.
+    struct TieredProvider(crate::privacy::ProviderTier);
+
+    #[async_trait]
+    impl Provider for TieredProvider {
+        fn metadata() -> ProviderMetadata
+        where
+            Self: Sized,
+        {
+            unimplemented!()
+        }
+
+        fn get_name(&self) -> &str {
+            "tiered"
+        }
+
+        fn tier(&self) -> crate::privacy::ProviderTier {
+            self.0
+        }
+
+        async fn complete_with_model(
+            &self,
+            _model_config: &ModelConfig,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[Tool],
+        ) -> Result<(Message, ProviderUsage), ProviderError> {
+            let usage = ProviderUsage::new("tiered".into(), Usage::new(None, None, None));
+            Ok((Message::assistant().with_text("ok"), usage))
+        }
+
+        fn get_model_config(&self) -> ModelConfig {
+            ModelConfig::new_or_fail("claude-3-5-sonnet-20241022")
+        }
+    }
+
+    fn stub_provider_with_tier(tier: crate::privacy::ProviderTier) -> Arc<dyn Provider> {
+        Arc::new(TieredProvider(tier))
+    }
+
+    #[tokio::test]
+    async fn the_completer_and_the_capability_come_from_the_same_provider() {
+        use crate::privacy::ProviderTier;
+
+        // The unit under the CLI's, the routes' and the probe's rows. Both
+        // directions, and the third assertion is the one that matters: `paired`
+        // cannot be implemented as "wrap A, look up B" because there is only one
+        // argument.
+        let (_c, tier) = ProviderCompleter::paired(stub_provider_with_tier(ProviderTier::Private));
+        assert_eq!(tier, ProviderTier::Private);
+        let (_c, tier) = ProviderCompleter::paired(stub_provider_with_tier(ProviderTier::Public));
+        assert_eq!(tier, ProviderTier::Public);
+
+        // The completer really wraps the provider whose tier was reported —
+        // `ProviderCompleter.provider` is a pub field, so this is a plain
+        // pointer comparison and needs no downcast.
+        let p = stub_provider_with_tier(ProviderTier::Private);
+        let (c, tier) = ProviderCompleter::paired(Arc::clone(&p));
+        assert_eq!(tier, ProviderTier::Private);
+        assert!(
+            Arc::ptr_eq(&c.provider, &p),
+            "the tier was read from a different Arc than the completer wraps"
         );
     }
 }

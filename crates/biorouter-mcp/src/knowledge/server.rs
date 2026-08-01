@@ -10,12 +10,46 @@ use rmcp::{
     model::{CallToolResult, Content, Implementation, ServerCapabilities, ServerInfo},
     schemars::JsonSchema,
     service::RequestContext,
-    tool, tool_handler, tool_router, ErrorData, RoleServer, ServerHandler,
+    tool, tool_router, ErrorData, RoleServer, ServerHandler,
 };
 use serde::{Deserialize, Serialize};
 use std::{cmp::Ordering, collections::HashSet};
 
 const SESSION_ID_META_KEY: &str = "biorouter-session-id";
+
+/// Tools whose `kb_id` argument names a base the caller must be allowed to
+/// reach. One list, one rule — so a twentieth `kb_*` tool is gated the day it
+/// is written, and opting out means editing a list this task's test enumerates.
+const KB_ID_GATED_TOOLS: &[&str] = &[
+    "kb_list_pages",
+    "kb_read_page",
+    "kb_get_graph",
+    "kb_list_history",
+    "kb_search",
+    "kb_search_raw_sources",
+    "kb_export",
+    "kb_write_page",
+    "kb_add_raw_source",
+    "kb_append_log",
+    "kb_restore_state",
+    "kb_begin_txn",
+    "kb_commit_txn",
+    "kb_abort_txn",
+];
+
+/// The subset that resolves an omitted `kb_id` to the session's primary (see
+/// [`KnowledgeServer::kb_id_or_primary`]). For these an ABSENT id must be
+/// resolved and checked too, or "just drop the kb_id" is the bypass.
+const KB_PRIMARY_RESOLVING_TOOLS: &[&str] = &[
+    "kb_list_pages",
+    "kb_read_page",
+    "kb_get_graph",
+    "kb_list_history",
+];
+
+/// Content-bearing writes by a model: the base takes the caller's tier BEFORE
+/// the write runs (issue #56).
+const KB_RATCHETING_TOOLS: &[&str] = &["kb_write_page", "kb_add_raw_source", "kb_append_log"];
 
 #[derive(Clone)]
 pub struct KnowledgeServer {
@@ -232,13 +266,46 @@ impl KnowledgeServer {
     /// [`crate::knowledge::tier::caller_is_private`] rather than re-reading the
     /// key, so CP1 here and CP4 in `agent_drafter` cannot drift.
     ///
-    /// Consumed by Task 10C's hand-written `call_tool` (CP1); nothing reads it
-    /// yet, which is the same Phase-1 separation O1 uses.
-    #[allow(dead_code)]
+    /// Consumed by the hand-written `call_tool` below (CP1) and by
+    /// `kb_create_base` / `kb_import`, the two tools whose subject id does not
+    /// exist before the call.
     fn caller_is_private(context: Option<&RequestContext<RoleServer>>) -> bool {
         context
             .map(|c| crate::knowledge::tier::caller_is_private(&c.meta))
             .unwrap_or(false)
+    }
+
+    /// The base this call names, or `None` when it names none (issue #56).
+    fn gated_kb_id(
+        &self,
+        tool: &str,
+        args: Option<&rmcp::model::JsonObject>,
+        context: Option<&RequestContext<RoleServer>>,
+    ) -> Result<Option<String>, ErrorData> {
+        if !KB_ID_GATED_TOOLS.contains(&tool) {
+            return Ok(None);
+        }
+        if let Some(id) = args
+            .and_then(|a| a.get("kb_id"))
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            return Ok(Some(id.to_string()));
+        }
+        if !KB_PRIMARY_RESOLVING_TOOLS.contains(&tool) {
+            // `kb_search` / `kb_search_raw_sources` with no kb_id fan out over
+            // the visible set and filter per base (`search_visible_bases`) —
+            // Task 10C's fan-out check is per-hit, not all-or-nothing.
+            // `kb_export` and the writes REQUIRE kb_id, so an absent one is the
+            // tool's own 400 and not ours to pre-empt.
+            return Ok(None);
+        }
+        // Resolve exactly as the tool will (`kb_id_or_primary`), so omitting the
+        // kb_id is not the bypass. Its error case — no id and no primary — is
+        // the tool's own message and must NOT become a privacy refusal, so
+        // `None` falls through and the tool answers.
+        self.primary_kb_for_context(context)
     }
 
     fn hidden_kbs_for_session(&self, session_id: Option<&str>) -> Result<Vec<String>, ErrorData> {
@@ -371,11 +438,22 @@ impl KnowledgeServer {
     pub async fn kb_create_base(
         &self,
         p: Parameters<CreateBaseParams>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
         let m = self
             .service
             .create_base(&p.id, &p.name, p.color.as_deref())
+            .map_err(into_err)?;
+        // Issue #56. One of exactly TWO tools that take a `RequestContext` for
+        // the ratchet, because their subject id is not knowable before the
+        // call. AFTER, not before: the base did not exist to be stamped, and an
+        // entry for a base that failed to create would block the id forever.
+        // The "raise before the write" rule does not apply — a *create* that
+        // fails leaves no content at all, so there is nothing to strand in an
+        // under-tiered base.
+        self.service
+            .raise_tier(&p.id, Self::caller_is_private(Some(&context)))
             .map_err(into_err)?;
         ok_json(&m)
     }
@@ -821,24 +899,26 @@ impl KnowledgeServer {
     pub async fn kb_import(
         &self,
         p: Parameters<ImportArchiveParams>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
         let bytes = std::fs::read(&p.src_path)
             .map_err(|e| into_err(anyhow::anyhow!("read .brkb '{}': {e}", p.src_path)))?;
-        // Issue #56. `kb_import` takes no `RequestContext`, so the importer's
-        // own tier is not knowable here — the archive's marker still applies as
-        // a floor. Task 10B stamps the caller's tier after the import returns
-        // (safe because `brkb::import`'s collision loop always lands on a fresh
-        // id, so the stamp can never hit an existing base).
+        // Issue #56. The second of exactly TWO tools that take a
+        // `RequestContext`: the new base's id is chosen by `brkb::import`'s
+        // collision loop, so it is not knowable before the call. The importer's
+        // tier and the archive's marker are a disjunction inside `import_brkb`
+        // — the marker can only raise, never lower — and because the loop
+        // always lands on a FRESH id, classifying there can never re-tier an
+        // existing base.
         let new_id = self
             .service
-            .import_brkb(&bytes, /* importer_is_private */ false)
+            .import_brkb(&bytes, Self::caller_is_private(Some(&context)))
             .map_err(into_err)?;
         ok_json(&serde_json::json!({ "imported_kb_id": new_id }))
     }
 }
 
-#[tool_handler(router = self.tool_router)]
 impl ServerHandler for KnowledgeServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo {
@@ -853,6 +933,56 @@ impl ServerHandler for KnowledgeServer {
             instructions: Some(self.instructions.clone()),
             ..Default::default()
         }
+    }
+
+    /// Verbatim what `#[tool_handler]` generated
+    /// (`rmcp-macros-0.14.0/src/tool_handler.rs`); re-check that file when
+    /// bumping rmcp.
+    async fn list_tools(
+        &self,
+        _request: Option<rmcp::model::PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<rmcp::model::ListToolsResult, ErrorData> {
+        Ok(rmcp::model::ListToolsResult {
+            tools: self.tool_router.list_all(),
+            meta: None,
+            next_cursor: None,
+        })
+    }
+
+    /// Issue #56, design §9.3 B4 as ruled. ONE seam for all nineteen `kb_*`
+    /// tools, including the EIGHT that take no `RequestContext` and therefore
+    /// cannot learn the caller's capability inside their own body — among them
+    /// `kb_write_page`, `kb_add_raw_source` and `kb_append_log`, i.e. every
+    /// content-bearing write there is.
+    ///
+    /// This is `#[tool_handler]`'s generated body plus the gate: the last two
+    /// statements are exactly what the macro emitted.
+    async fn call_tool(
+        &self,
+        request: rmcp::model::CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let caller_private = Self::caller_is_private(Some(&context));
+        let name = request.name.to_string();
+
+        if let Some(kb_id) = self.gated_kb_id(&name, request.arguments.as_ref(), Some(&context))? {
+            // Task 10C adds `self.assert_kb_reachable(&kb_id, caller_private)?;`
+            // HERE, on the line above the raise.
+            if KB_RATCHETING_TOOLS.contains(&name.as_str()) {
+                // BEFORE the write: a raise that only lands on success leaves
+                // content in a base whose tier never moved if the write panics
+                // or the process dies mid-commit. The failure direction of an
+                // over-raise is a badge the user can see; the failure direction
+                // of an under-raise is silent.
+                self.service
+                    .raise_tier(&kb_id, caller_private)
+                    .map_err(into_err)?;
+            }
+        }
+
+        let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
+        self.tool_router.call(tcc).await
     }
 }
 
@@ -1381,5 +1511,382 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ── Issue #56, Task 10B: the ratchet at CP1 ──────────────────────────────
+
+    /// The capability a test drives a tool call with. An enum rather than a
+    /// `bool` so the call sites read as `Private` / `Public` and cannot be
+    /// transposed silently.
+    #[derive(Clone, Copy, PartialEq, Debug)]
+    enum Caller {
+        Public,
+        Private,
+    }
+    use Caller::{Private, Public};
+
+    impl Caller {
+        fn is_private(self) -> bool {
+            matches!(self, Caller::Private)
+        }
+    }
+
+    fn migrated_server_with_bases(ids: &[&str]) -> (KnowledgeServer, tempfile::TempDir, PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().to_path_buf();
+        let server = server_with_root(root.clone());
+        for id in ids {
+            server.service.create_base(id, id, None).unwrap();
+        }
+        (server, tmp, root)
+    }
+
+    /// Drive `KnowledgeServer::call_tool` BY NAME with a request whose meta
+    /// carries the caller's capability — the only way to express "as a private
+    /// caller" for the eight `kb_*` tools that take no `RequestContext` at all,
+    /// and therefore the whole reason CP1 is a hand-written `call_tool` rather
+    /// than a per-tool argument.
+    ///
+    /// A `RequestContext` needs a live `Peer`, which only `serve_directly`
+    /// mints; the duplex transport is drained and dropped with the call. This
+    /// mirrors `developer/rmcp_developer.rs`'s `create_test_transport`.
+    async fn call_tool_as(
+        srv: &KnowledgeServer,
+        name: &str,
+        args: serde_json::Value,
+        caller: Caller,
+    ) -> Result<CallToolResult, ErrorData> {
+        use tokio::io::AsyncReadExt as _;
+
+        let (mut client, server_side) = tokio::io::duplex(64 * 1024);
+        tokio::spawn(async move {
+            let mut buffer = [0_u8; 8192];
+            while client.read(&mut buffer).await.unwrap_or(0) != 0 {}
+        });
+        let running = rmcp::service::serve_directly(srv.clone(), server_side, None);
+        let mut meta = rmcp::model::Meta::new();
+        meta.0.insert(
+            crate::knowledge::tier::CAPABILITY_TIER_META_KEY.to_string(),
+            serde_json::Value::String(
+                crate::knowledge::tier::capability_meta_value(caller.is_private()).to_string(),
+            ),
+        );
+        let context = RequestContext {
+            ct: Default::default(),
+            id: rmcp::model::NumberOrString::Number(1),
+            meta,
+            extensions: Default::default(),
+            peer: running.peer().clone(),
+        };
+        let request = rmcp::model::CallToolRequestParams {
+            name: name.to_string().into(),
+            arguments: args.as_object().cloned(),
+            task: None,
+            meta: None,
+        };
+        let out = ServerHandler::call_tool(srv, request, context).await;
+        drop(running);
+        out
+    }
+
+    /// A `.brkb` archive of a base whose tier is `tier`, written to a file and
+    /// returned with the `TempDir` that owns it — bind BOTH or the path is
+    /// unlinked before the import reads it.
+    fn brkb_fixture(tier: Caller) -> (tempfile::TempDir, String) {
+        let tmp = tempfile::tempdir().unwrap();
+        let src_root = tmp.path().join("src-root");
+        std::fs::create_dir_all(&src_root).unwrap();
+        let svc = KnowledgeService::new(src_root.clone());
+        svc.create_base("shipped", "Shipped", None).unwrap();
+        seed_page(&src_root, "shipped", "knowledge/x.md", "SENTINEL");
+        if tier.is_private() {
+            crate::knowledge::tier::raise_unlocked(&src_root, "shipped", true).unwrap();
+        }
+        let bytes = svc.export_brkb("shipped").unwrap();
+        let path = tmp.path().join("shipped.brkb");
+        std::fs::write(&path, &bytes).unwrap();
+        (tmp, path.to_string_lossy().to_string())
+    }
+
+    fn imported_kb_id(out: &CallToolResult) -> String {
+        let text = out
+            .content
+            .iter()
+            .find_map(|c| c.as_text())
+            .expect("kb_import returns a text payload");
+        let v: serde_json::Value = serde_json::from_str(&text.text).expect("valid json");
+        v["imported_kb_id"]
+            .as_str()
+            .expect("an imported id")
+            .to_string()
+    }
+
+    #[tokio::test]
+    async fn a_private_session_writing_one_page_ratchets_the_whole_base() {
+        // THE test for the ruling: one page from one private chat privatises the
+        // machine-wide base.
+        let (srv, _tmp, root) = migrated_server_with_bases(&["default"]);
+        call_tool_as(
+            &srv,
+            "kb_write_page",
+            serde_json::json!({
+                "kb_id": "default", "path": "knowledge/omop.md",
+                "content": "n=412 T2D patients", "commit_message": "x"
+            }),
+            Private,
+        )
+        .await
+        .unwrap();
+        assert!(crate::knowledge::tier::is_private(&root, "default"));
+    }
+
+    #[tokio::test]
+    async fn a_public_session_writing_never_lowers_a_ratcheted_base() {
+        let (srv, _tmp, root) = migrated_server_with_bases(&["default"]);
+        crate::knowledge::tier::raise_unlocked(&root, "default", true).unwrap();
+        // Task 10C has not landed, so this write still SUCCEEDS. What must not
+        // happen is the tier moving.
+        call_tool_as(
+            &srv,
+            "kb_append_log",
+            serde_json::json!({ "kb_id": "default", "kind": "manual", "summary": "hi" }),
+            Public,
+        )
+        .await
+        .unwrap();
+        assert!(
+            crate::knowledge::tier::is_private(&root, "default"),
+            "a public write lowered the tier"
+        );
+    }
+
+    /// name, arguments against the base "default", and whether the call must
+    /// leave "default" private when made by a private caller.
+    struct ToolProbe {
+        name: &'static str,
+        args: fn() -> serde_json::Value,
+        ratchets: bool,
+    }
+
+    /// All nineteen `kb_*` tools. The exclusion list as data, reviewable in one
+    /// place:
+    ///   ratchets "default":      kb_write_page, kb_add_raw_source, kb_append_log
+    ///   ratchets its OWN new id: kb_create_base, kb_import
+    ///   does not ratchet:        the other fourteen
+    const KB_TOOL_PROBES: &[ToolProbe] = &[
+        ToolProbe {
+            name: "kb_list_bases",
+            args: || serde_json::json!({}),
+            ratchets: false,
+        },
+        ToolProbe {
+            name: "kb_list_pages",
+            args: || serde_json::json!({ "kb_id": "default" }),
+            ratchets: false,
+        },
+        ToolProbe {
+            name: "kb_read_page",
+            args: || serde_json::json!({ "kb_id": "default", "path": "index.md" }),
+            ratchets: false,
+        },
+        ToolProbe {
+            name: "kb_write_page",
+            args: || {
+                serde_json::json!({
+                    "kb_id": "default", "path": "knowledge/p.md",
+                    "content": "body", "commit_message": "m"
+                })
+            },
+            ratchets: true,
+        },
+        ToolProbe {
+            name: "kb_add_raw_source",
+            args: || {
+                serde_json::json!({
+                    "kb_id": "default",
+                    "source": { "kind": "text", "text": "n=412", "title": "note" }
+                })
+            },
+            ratchets: true,
+        },
+        ToolProbe {
+            name: "kb_append_log",
+            args: || serde_json::json!({ "kb_id": "default", "kind": "manual", "summary": "s" }),
+            ratchets: true,
+        },
+        ToolProbe {
+            name: "kb_get_graph",
+            args: || serde_json::json!({ "kb_id": "default" }),
+            ratchets: false,
+        },
+        ToolProbe {
+            name: "kb_list_history",
+            args: || serde_json::json!({ "kb_id": "default" }),
+            ratchets: false,
+        },
+        ToolProbe {
+            name: "kb_restore_state",
+            args: || serde_json::json!({ "kb_id": "default", "commit_sha": "HEAD" }),
+            ratchets: false,
+        },
+        ToolProbe {
+            name: "kb_begin_txn",
+            args: || serde_json::json!({ "kb_id": "default", "label": "t" }),
+            ratchets: false,
+        },
+        ToolProbe {
+            name: "kb_commit_txn",
+            args: || {
+                serde_json::json!({
+                    "kb_id": "default", "txn": "txn/t", "kind": "manual", "summary": "s"
+                })
+            },
+            ratchets: false,
+        },
+        ToolProbe {
+            name: "kb_abort_txn",
+            args: || serde_json::json!({ "kb_id": "default", "txn": "txn/t" }),
+            ratchets: false,
+        },
+        ToolProbe {
+            name: "kb_search",
+            args: || serde_json::json!({ "kb_id": "default", "query": "n" }),
+            ratchets: false,
+        },
+        ToolProbe {
+            name: "kb_search_raw_sources",
+            args: || serde_json::json!({ "kb_id": "default", "query": "n" }),
+            ratchets: false,
+        },
+        ToolProbe {
+            name: "kb_set_active",
+            args: || serde_json::json!({ "kb_id": "default" }),
+            ratchets: false,
+        },
+        ToolProbe {
+            name: "kb_get_active",
+            args: || serde_json::json!({}),
+            ratchets: false,
+        },
+        ToolProbe {
+            name: "kb_export",
+            args: || serde_json::json!({ "kb_id": "default" }),
+            ratchets: false,
+        },
+    ];
+
+    #[tokio::test]
+    async fn every_tool_that_writes_content_ratchets_and_the_plumbing_ones_do_not() {
+        // Parameterised over the seventeen `default`-addressing tools, driven
+        // through `call_tool` BY NAME — which is the point of CP1: eight of them
+        // take no `RequestContext`, so a test that calls the `#[tool]` fn
+        // directly cannot express "as a private caller" for them at all. A test
+        // on kb_write_page alone passes an implementation that misses
+        // kb_add_raw_source — the tool the GUI ingest panel and the `ingest`
+        // macro actually call — so the whole ingest path would launder.
+        //
+        // `kb_create_base` and `kb_import` are the other two of the nineteen;
+        // they ratchet their OWN new id and have their own tests below.
+        for probe in KB_TOOL_PROBES {
+            let (srv, _tmp, root) = migrated_server_with_bases(&["default"]);
+            let _ = call_tool_as(&srv, probe.name, (probe.args)(), Private).await;
+            assert_eq!(
+                crate::knowledge::tier::is_private(&root, "default"),
+                probe.ratchets,
+                "{} ratchets={} but the store says otherwise",
+                probe.name,
+                probe.ratchets
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_base_created_from_a_private_chat_is_born_private() {
+        let (srv, _tmp, root) = migrated_server_with_bases(&["default"]);
+        call_tool_as(
+            &srv,
+            "kb_create_base",
+            serde_json::json!({ "id": "omop", "name": "OMOP" }),
+            Private,
+        )
+        .await
+        .unwrap();
+        assert!(crate::knowledge::tier::is_private(&root, "omop"));
+        assert!(
+            !crate::knowledge::tier::is_private(&root, "default"),
+            "creating one base moved another"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_public_chat_can_still_create_and_import_a_knowledge_base() {
+        // The regression the sixteen-site enumeration encoded, as a test. A
+        // public session must be able to make its own base; `assert_reachable`
+        // permits a kb id with no directory on disk (Task 10A, decision 3).
+        let (srv, _tmp, root) = migrated_server_with_bases(&["default"]);
+        call_tool_as(
+            &srv,
+            "kb_create_base",
+            serde_json::json!({ "id": "notes", "name": "Notes" }),
+            Public,
+        )
+        .await
+        .unwrap();
+        assert!(!crate::knowledge::tier::is_private(&root, "notes"));
+
+        let (_fx, path) = brkb_fixture(Public);
+        let out = call_tool_as(
+            &srv,
+            "kb_import",
+            serde_json::json!({ "src_path": path }),
+            Public,
+        )
+        .await
+        .unwrap();
+        assert!(!crate::knowledge::tier::is_private(
+            &root,
+            &imported_kb_id(&out)
+        ));
+    }
+
+    #[tokio::test]
+    async fn an_imported_base_takes_the_importing_sessions_tier_or_the_archives_floor() {
+        // `brkb::import` resolves collisions by suffixing, so an import always
+        // lands on a FRESH id — which is what makes stamping after the call safe.
+        let (srv, _tmp, root) = migrated_server_with_bases(&["default"]);
+        let (_fx, public_path) = brkb_fixture(Public);
+        let out = call_tool_as(
+            &srv,
+            "kb_import",
+            serde_json::json!({ "src_path": public_path }),
+            Private,
+        )
+        .await
+        .unwrap();
+        assert!(crate::knowledge::tier::is_private(
+            &root,
+            &imported_kb_id(&out)
+        ));
+
+        // ⚠ The line above is the SAFE direction and, on its own, it is what let
+        // export-private / import-public through a whole review round: a private
+        // importer privatising what it imports proves nothing about a public one.
+        // The unsafe direction is Task 10A's
+        // `a_private_export_cannot_be_laundered_by_importing_it_into_a_public_chat`;
+        // this is its tool-level twin, so the bypass is closed at the surface a
+        // model actually calls and not only in the store.
+        let (_fx2, private_path) = brkb_fixture(Private);
+        let out = call_tool_as(
+            &srv,
+            "kb_import",
+            serde_json::json!({ "src_path": private_path }),
+            Public,
+        )
+        .await
+        .unwrap();
+        assert!(
+            crate::knowledge::tier::is_private(&root, &imported_kb_id(&out)),
+            "a public chat imported a private base's archive and got a public base"
+        );
     }
 }

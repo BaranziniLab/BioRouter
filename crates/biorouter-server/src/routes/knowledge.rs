@@ -894,14 +894,34 @@ pub async fn restore_state(
 // Task 9: SSE-streamed macro routes (ingest / query / lint)
 // ──────────────────────────────────────────────────────────────────────────────
 
-/// Build a `Provider + ProviderCompleter` for the given `ModelRef`.
+/// Build a `Provider + ProviderCompleter` for the given `ModelRef`, **and** the
+/// tier of the provider that was actually constructed (issue #56).
+///
 /// Returns a 400 error if the provider name is unknown or model config is invalid.
+///
+/// The tier comes back from here rather than being re-derived by each caller,
+/// because `providers::create` intercepts `BIOROUTER_LEAD_MODEL` *before* the
+/// registry lookup and can hand back a composite that is not the requested
+/// name's provider at all. `ProviderCompleter::paired` reads it off the same
+/// `Arc` the completer wraps, so the two cannot come from different providers.
 async fn build_completer(
     model: &ModelRef,
-) -> Result<Box<dyn biorouter_mcp::knowledge::subagent::loop_::Completer>, (StatusCode, String)> {
+) -> Result<
+    (
+        Box<dyn biorouter_mcp::knowledge::subagent::loop_::Completer>,
+        biorouter::privacy::ProviderTier,
+    ),
+    (StatusCode, String),
+> {
     if biorouter_mcp::knowledge::test_mode::env_enabled() {
-        return Ok(Box::new(
-            biorouter_mcp::knowledge::test_mode::TestModeCompleter,
+        // ⚠ The FIRST of the two named literal exemptions (the CLI's
+        // `build_completer` early return is the other). There is no provider
+        // here to read a tier from, and the fail-safe direction for a *ratchet*
+        // is not to privatise a base on a test path — a test-mode completer
+        // reaches no network at all.
+        return Ok((
+            Box::new(biorouter_mcp::knowledge::test_mode::TestModeCompleter),
+            biorouter::privacy::ProviderTier::Public,
         ));
     }
 
@@ -910,7 +930,8 @@ async fn build_completer(
     let provider = biorouter::providers::create(&model.provider, model_config)
         .await
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
-    Ok(Box::new(ProviderCompleter::new(provider)))
+    let (completer, tier) = ProviderCompleter::paired(provider);
+    Ok((Box::new(completer), tier))
 }
 
 /// Build a well-formed SSE error frame. Uses `serde_json` for proper escaping so
@@ -1084,7 +1105,7 @@ pub async fn check_model(
     Json(body): Json<CheckModelBody>,
 ) -> Result<Json<CheckModelResponse>, (StatusCode, Json<CheckModelResponse>)> {
     let completer = match build_completer(&body.model).await {
-        Ok(c) => c,
+        Ok((c, _tier)) => c,
         Err((_status, msg)) => {
             return Err((
                 StatusCode::BAD_GATEWAY,
@@ -1127,7 +1148,7 @@ pub async fn ingest(
 ) -> Result<crate::routes::reply::SseResponse, (StatusCode, String)> {
     let (source, model, focus) = parse_ingest_request(&headers, req).await?;
 
-    let completer = build_completer(&model).await?;
+    let (completer, caller_capability) = build_completer(&model).await?;
 
     let cancel = std::sync::Arc::new(tokio::sync::Notify::new());
 
@@ -1141,6 +1162,10 @@ pub async fn ingest(
     let macro_handle = tokio::spawn(async move {
         let args = ingest_macro::IngestArgs {
             kb_id: id,
+            // Issue #56. The tier of the provider `build_completer` actually
+            // constructed — never `body.model.provider`, the string the caller
+            // supplied, which `providers::create` is free to ignore.
+            caller_is_private: caller_capability.is_private(),
             source,
             completer,
             focus,
@@ -1211,7 +1236,7 @@ pub async fn ingest_conversation(
         }
     }
 
-    let completer = build_completer(&body.model).await?;
+    let (completer, caller_capability) = build_completer(&body.model).await?;
     let cancel = std::sync::Arc::new(tokio::sync::Notify::new());
 
     let (sse_tx, sse_rx) = mpsc::channel::<String>(64);
@@ -1223,6 +1248,9 @@ pub async fn ingest_conversation(
     let macro_handle = tokio::spawn(async move {
         let args = biorouter::knowledge::conversation_ingest::ConversationIngestArgs {
             kb_id: id,
+            // Issue #56. Same rule as the other three macro routes: the tier of
+            // the constructed provider, not of the requested name.
+            caller_capability,
             sessions,
             completer,
             focus,
@@ -1271,7 +1299,7 @@ pub async fn query_kb(
     Path(id): Path<String>,
     Json(body): Json<QueryBody>,
 ) -> Result<crate::routes::reply::SseResponse, (StatusCode, String)> {
-    let completer = build_completer(&body.model).await?;
+    let (completer, caller_capability) = build_completer(&body.model).await?;
 
     let cancel = std::sync::Arc::new(tokio::sync::Notify::new());
 
@@ -1283,6 +1311,9 @@ pub async fn query_kb(
     let macro_handle = tokio::spawn(async move {
         let args = query_macro::QueryArgs {
             kb_id: id,
+            // Issue #56. `query` writes — its sub-agent holds kb_write_page,
+            // kb_append_log and kb_add_raw_source unconditionally.
+            caller_is_private: caller_capability.is_private(),
             question: body.question,
             completer,
             file_as_page: body.file_as_page.unwrap_or(false),
@@ -1329,12 +1360,20 @@ pub async fn lint(
 ) -> Result<crate::routes::reply::SseResponse, (StatusCode, String)> {
     let autofix = body.autofix.unwrap_or(false);
     // Only build a completer when autofix is requested (it requires an LLM).
-    let completer: Option<Box<dyn biorouter_mcp::knowledge::subagent::loop_::Completer>> =
-        if autofix {
-            Some(build_completer(&body.model).await?)
-        } else {
-            None
-        };
+    //
+    // Issue #56: a lint with no autofix constructs no provider, so there is no
+    // instance to read a tier from and nothing a model can write. It reports
+    // Public and the ratchet is a no-op — the same reasoning as the test-mode
+    // branch of `build_completer`, and it is not a caller-supplied literal.
+    let (completer, caller_capability): (
+        Option<Box<dyn biorouter_mcp::knowledge::subagent::loop_::Completer>>,
+        biorouter::privacy::ProviderTier,
+    ) = if autofix {
+        let (c, tier) = build_completer(&body.model).await?;
+        (Some(c), tier)
+    } else {
+        (None, biorouter::privacy::ProviderTier::Public)
+    };
 
     let cancel = std::sync::Arc::new(tokio::sync::Notify::new());
 
@@ -1346,6 +1385,8 @@ pub async fn lint(
     let macro_handle = tokio::spawn(async move {
         let args = lint_macro::LintArgs {
             kb_id: id,
+            // Issue #56. The tier of the provider the autofix will run on.
+            caller_is_private: caller_capability.is_private(),
             completer,
             autofix,
             bounds: SubAgentBounds::default(),

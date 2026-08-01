@@ -171,6 +171,18 @@ fn truncate_block(s: &str, max: usize) -> String {
 /// the caller already controls.
 pub struct ConversationIngestArgs {
     pub kb_id: String,
+    /// The capability of whoever is asking (issue #56). Added by Task 10B
+    /// because `ingest_conversation` must have something to put in
+    /// `IngestArgs.caller_is_private`; **Task 11 adds the refusal that consumes
+    /// it**, and the two are deliberately separate — this task plumbs, Task 11
+    /// gates, exactly as 10B/10C split for the KB choke points.
+    ///
+    /// Required and non-`Option`, so all three production constructors (the
+    /// platform tool, `POST /ingest-conversation`, the CLI) are a compile error
+    /// rather than an omission. A hardcoded `false` here would reproduce
+    /// verbatim the failure this task exists to prevent: every file would
+    /// report a non-zero `caller_is_private` count while ratcheting nothing.
+    pub caller_capability: crate::privacy::ProviderTier,
     pub sessions: Vec<Session>,
     pub completer: Box<dyn Completer>,
     pub focus: Option<String>,
@@ -204,6 +216,10 @@ pub async fn ingest_conversation(
         svc,
         IngestArgs {
             kb_id: args.kb_id,
+            // Issue #56. The ProviderTier -> bool crossing, and the only one:
+            // `IngestArgs` lives in biorouter-mcp, which cannot name
+            // ProviderTier. Task 11 adds the refusal that reads the same field.
+            caller_is_private: args.caller_capability.is_private(),
             source: SourceInput::Text {
                 text: rendered.markdown,
                 title: Some(format!("Conversation — {}", rendered.title)),
@@ -359,6 +375,7 @@ mod tests {
             &svc,
             ConversationIngestArgs {
                 kb_id: "soul".into(),
+                caller_capability: crate::privacy::ProviderTier::Public,
                 sessions: vec![session],
                 completer: Box::new(SilentCompleter),
                 focus: None,

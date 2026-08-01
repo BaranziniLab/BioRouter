@@ -23,6 +23,7 @@ use biorouter::knowledge::service::{KnowledgeService, PrimaryUpdate};
 use biorouter::knowledge::subagent::loop_::{Completer, SubAgentBounds};
 use biorouter::knowledge::ProviderCompleter;
 use biorouter::model::ModelConfig;
+use biorouter::privacy::ProviderTier;
 use console::{style, Color};
 
 /// Brand warm tan-brown accent (xterm-256 137 ≈ #af875f), Biorouter's light cream palette
@@ -63,16 +64,31 @@ fn resolve_kb(
 }
 
 /// Build an LLM completer from the configured (or overridden) provider/model,
-/// mirroring how the server builds one for the HTTP macros.
+/// mirroring how the server builds one for the HTTP macros — **and** the tier of
+/// the provider that was actually constructed (issue #56).
+///
+/// The tier comes back from here rather than being re-derived by each handler,
+/// because `providers::create` intercepts `BIOROUTER_LEAD_MODEL` *before* the
+/// registry lookup: `--provider ollama` can construct a lead/worker composite
+/// whose tier is `least(lead, worker)` and therefore not the requested name's.
+/// `ProviderCompleter::paired` reads the tier off the same `Arc` the completer
+/// wraps, so the two cannot come from different providers.
 async fn build_completer(
     provider: Option<String>,
     model: Option<String>,
-) -> Result<Box<dyn Completer>> {
+) -> Result<(Box<dyn Completer>, ProviderTier)> {
     // Honour the same offline test-mode switch the server uses, so CLI knowledge
     // macros (ingest / query / ingest-conversation) can be exercised without a
     // reachable LLM provider.
     if biorouter::knowledge::test_mode::env_enabled() {
-        return Ok(Box::new(biorouter::knowledge::test_mode::TestModeCompleter));
+        // ⚠ The SECOND of the two named literal exemptions (the other is
+        // `routes/knowledge.rs`'s twin branch). There is no provider here to
+        // read a tier from, and the fail-safe direction for a *ratchet* is not
+        // to privatise a base on a test path.
+        return Ok((
+            Box::new(biorouter::knowledge::test_mode::TestModeCompleter),
+            ProviderTier::Public,
+        ));
     }
     let config = Config::global();
     let provider = provider
@@ -84,7 +100,8 @@ async fn build_completer(
 
     let model_config = ModelConfig::new(&model)?;
     let provider = biorouter::providers::create(&provider, model_config).await?;
-    Ok(Box::new(ProviderCompleter::new(provider)))
+    let (completer, tier) = ProviderCompleter::paired(provider);
+    Ok((Box::new(completer), tier))
 }
 
 /// First 10 characters of a commit sha, for compact display.
@@ -447,7 +464,7 @@ pub async fn handle_ingest(
         _ => bail!("Provide exactly one of --url, --file, or --text"),
     };
 
-    let completer = build_completer(provider, model).await?;
+    let (completer, caller_capability) = build_completer(provider, model).await?;
 
     let spinner = cliclack::spinner();
     spinner.start(format!("ingesting into {}...", kb_id));
@@ -456,6 +473,9 @@ pub async fn handle_ingest(
         &svc,
         ingest_macro::IngestArgs {
             kb_id: kb_id.clone(),
+            // Issue #56. The tier of the provider that was CONSTRUCTED, never
+            // of the `--provider` name the user typed.
+            caller_is_private: caller_capability.is_private(),
             source,
             completer,
             focus,
@@ -563,7 +583,7 @@ pub async fn handle_ingest_conversation(
         );
     }
 
-    let completer = build_completer(provider, model).await?;
+    let (completer, caller_capability) = build_completer(provider, model).await?;
 
     let spinner = cliclack::spinner();
     spinner.start(format!("digesting {} conversation(s)...", loaded.len()));
@@ -572,6 +592,8 @@ pub async fn handle_ingest_conversation(
         &svc,
         ConversationIngestArgs {
             kb_id: kb_id.clone(),
+            // Issue #56. The tier of the provider that was CONSTRUCTED.
+            caller_capability,
             sessions: loaded,
             completer,
             focus,
@@ -625,10 +647,15 @@ pub async fn handle_lint(
         println!("{notice}");
     }
 
-    let completer = if fix {
-        Some(build_completer(provider, model).await?)
+    // Issue #56: with no `--fix` no provider is constructed, so there is no
+    // instance to read a tier from and no model that can write. Public, for the
+    // same reason as the test-mode branch above — and Task 10C's barrier still
+    // refuses a public caller reading a private base.
+    let (completer, caller_capability) = if fix {
+        let (c, tier) = build_completer(provider, model).await?;
+        (Some(c), tier)
     } else {
-        None
+        (None, ProviderTier::Public)
     };
 
     let spinner = cliclack::spinner();
@@ -638,6 +665,8 @@ pub async fn handle_lint(
         &svc,
         lint_macro::LintArgs {
             kb_id: kb_id.clone(),
+            // Issue #56. The tier of the provider the autofix will run on.
+            caller_is_private: caller_capability.is_private(),
             completer,
             autofix: fix,
             bounds: SubAgentBounds::default(),
@@ -708,7 +737,7 @@ pub async fn handle_query(
     if let Some(notice) = notice {
         println!("{notice}");
     }
-    let completer = build_completer(provider, model).await?;
+    let (completer, caller_capability) = build_completer(provider, model).await?;
 
     let spinner = cliclack::spinner();
     spinner.start(format!("querying {}...", kb_id));
@@ -717,6 +746,8 @@ pub async fn handle_query(
         &svc,
         query_macro::QueryArgs {
             kb_id: kb_id.clone(),
+            // Issue #56. `query` writes — see `QueryArgs::caller_is_private`.
+            caller_is_private: caller_capability.is_private(),
             question,
             completer,
             file_as_page: save,
@@ -1081,5 +1112,162 @@ mod tests {
             vec!["alpha".to_string(), "beta".to_string()]
         );
         Ok(())
+    }
+
+    // ── Issue #56, Task 10B: the CLI's capability ───────────────────────────
+
+    mod privacy_tier {
+        use super::super::{build_completer, handle_ingest};
+        use biorouter::privacy::ProviderTier;
+        use serial_test::serial;
+
+        /// Restore every variable this module touches, whatever the test does.
+        struct EnvGuard(Vec<(&'static str, Option<String>)>);
+
+        impl EnvGuard {
+            fn set(pairs: &[(&'static str, Option<String>)]) -> Self {
+                let mut saved = Vec::new();
+                for (k, v) in pairs {
+                    saved.push((*k, std::env::var(k).ok()));
+                    match v {
+                        Some(val) => std::env::set_var(k, val),
+                        None => std::env::remove_var(k),
+                    }
+                }
+                EnvGuard(saved)
+            }
+        }
+
+        impl Drop for EnvGuard {
+            fn drop(&mut self) {
+                for (k, v) in &self.0 {
+                    match v {
+                        Some(val) => std::env::set_var(k, val),
+                        None => std::env::remove_var(k),
+                    }
+                }
+            }
+        }
+
+        /// The variables every row below pins. `BIOROUTER_KNOWLEDGE_TEST_MODE`
+        /// must be OFF: `build_completer`'s early return hands back a
+        /// `TestModeCompleter` and Public before any provider exists, which
+        /// would make every row Public and the whole matrix vacuous.
+        fn base_env(host: &str) -> Vec<(&'static str, Option<String>)> {
+            vec![
+                ("BIOROUTER_KNOWLEDGE_TEST_MODE", None),
+                ("BIOROUTER_LEAD_MODEL", None),
+                ("BIOROUTER_LEAD_PROVIDER", None),
+                ("OLLAMA_HOST", Some(host.to_string())),
+                ("OLLAMA_TIMEOUT", Some("1".to_string())),
+            ]
+        }
+
+        #[tokio::test]
+        #[serial]
+        async fn the_cli_sources_its_capability_from_the_provider_it_constructed() {
+            // ⚠ THE PROVIDER NAME IS `ollama` IN BOTH ROWS, and that is the whole
+            // construction: an implementation that keys on the requested name
+            // gives the same answer twice and fails one row, and so does either
+            // hardcoded literal.
+            //
+            // What varies is `OLLAMA_HOST`: Task 5 makes a loopback Ollama
+            // Private and a non-loopback one Public (`is_loopback_host`), which
+            // is exactly a same-name/different-tier pair with no credential and
+            // no network anywhere in it. `ModelConfig::new` accepts an unknown
+            // model name, so neither row needs a real model either.
+            for (host, want) in [
+                ("http://127.0.0.1:11434", ProviderTier::Private),
+                ("http://ollama.invalid:11434", ProviderTier::Public),
+            ] {
+                let _env = EnvGuard::set(&base_env(host));
+                let (_c, tier) = build_completer(Some("ollama".into()), Some("qwen3.5:4b".into()))
+                    .await
+                    .unwrap();
+                assert_eq!(tier, want, "OLLAMA_HOST={host}");
+            }
+        }
+
+        #[tokio::test]
+        #[serial]
+        async fn the_cli_capability_follows_the_instance_not_the_name_the_user_typed() {
+            // The row that fails `provider_name == "ollama"`. `providers::create`
+            // intercepts BIOROUTER_LEAD_MODEL *before* the registry lookup, so
+            // `--provider ollama` can construct a lead/worker composite whose
+            // tier is `least(lead, worker)` — and a PUBLIC lead makes the whole
+            // instance Public even though the name typed was the private one.
+            let mut env = base_env("http://127.0.0.1:11434");
+            env.push(("BIOROUTER_LEAD_MODEL", Some("gpt-5".to_string())));
+            env.push((
+                "BIOROUTER_LEAD_PROVIDER",
+                Some("github_copilot".to_string()),
+            ));
+            let _env = EnvGuard::set(&env);
+
+            let (_c, tier) = build_completer(Some("ollama".into()), Some("qwen3.5:4b".into()))
+                .await
+                .unwrap();
+            assert_eq!(
+                tier,
+                ProviderTier::Public,
+                "the CLI keyed its capability on the name the user typed"
+            );
+        }
+
+        /// `service()` is `KnowledgeService::new_default()`, whose root is
+        /// `paths::knowledge_root()` → `$BIOROUTER_PATH_ROOT/config/knowledge`
+        /// when the override is set. That is how this row gets a throwaway store
+        /// instead of the developer's own.
+        ///
+        /// ⚠ Returns the `TempDir` and it must be BOUND — a dropped one deletes
+        /// the tree before the call runs.
+        fn cli_knowledge_root_with_base(id: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+            let tmp = tempfile::TempDir::new().unwrap();
+            std::env::set_var("BIOROUTER_PATH_ROOT", tmp.path());
+            let root = tmp.path().join("config").join("knowledge");
+            std::fs::create_dir_all(&root).unwrap();
+            let svc = biorouter::knowledge::service::KnowledgeService::new(root.clone());
+            svc.create_base(id, id, None).unwrap();
+            (tmp, root)
+        }
+
+        #[tokio::test]
+        #[serial]
+        async fn the_cli_ingest_handler_ratchets_from_the_instance_and_the_name_is_the_same_in_both_legs(
+        ) {
+            // Round 3 §7: a handler can call `paired`, ignore its tier, and derive
+            // the capability from the requested provider name — every structural
+            // count in Step 5 still passes. Only a handler-level behavioural row
+            // sees that, and only if the NAME is constant across the legs.
+            for (host, want_private) in [
+                ("http://127.0.0.1:11434", true),
+                ("http://ollama.invalid:11434", false),
+            ] {
+                let mut env = base_env(host);
+                env.push(("BIOROUTER_PATH_ROOT", None));
+                let _env = EnvGuard::set(&env);
+                let (_tmp, root) = cli_knowledge_root_with_base("k");
+
+                // The sub-agent WILL fail — nothing answers on either host — and
+                // that is the point: CP2 raises before it runs, so the ratchet is
+                // observable without an LLM.
+                let _ = handle_ingest(
+                    Some("k".into()),
+                    None,
+                    None,
+                    Some("n=412".into()),
+                    None,
+                    Some("ollama".into()),
+                    Some("qwen3.5:4b".into()),
+                )
+                .await;
+
+                assert_eq!(
+                    biorouter::knowledge::tier::is_private(&root, "k"),
+                    want_private,
+                    "OLLAMA_HOST={host}: the handler did not read the constructed instance"
+                );
+            }
+        }
     }
 }

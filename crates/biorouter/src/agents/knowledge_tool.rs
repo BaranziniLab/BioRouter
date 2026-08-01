@@ -15,6 +15,7 @@ use crate::knowledge::conversation_ingest::{ingest_conversation, ConversationIng
 use crate::knowledge::ProviderCompleter;
 use crate::mcp_utils::ToolResult;
 use crate::model::ModelConfig;
+use crate::privacy::ProviderTier;
 use crate::session::session_manager::{Session, SessionType};
 use biorouter_mcp::knowledge::service::KnowledgeService;
 use biorouter_mcp::knowledge::subagent::loop_::{Completer, SubAgentBounds};
@@ -54,7 +55,7 @@ impl Agent {
             }
         }
 
-        let completer = self
+        let (completer, caller_capability) = self
             .conversation_ingest_completer(&svc, &kb_id, session)
             .await?;
 
@@ -62,6 +63,10 @@ impl Agent {
             &svc,
             ConversationIngestArgs {
                 kb_id: kb_id.clone(),
+                // Issue #56. The tier of the provider this ingest will actually
+                // run on — the KB's default model when a scheduled job names
+                // one, otherwise this agent's own.
+                caller_capability,
                 sessions,
                 completer,
                 focus: arguments
@@ -85,12 +90,15 @@ impl Agent {
         ))])
     }
 
+    /// The completer this ingest will run on, **and** the tier of the provider
+    /// behind it (issue #56) — from `ProviderCompleter::paired`, so the two can
+    /// never come from different providers.
     async fn conversation_ingest_completer(
         &self,
         svc: &KnowledgeService,
         kb_id: &str,
         session: &Session,
-    ) -> Result<Box<dyn Completer>, ErrorData> {
+    ) -> Result<(Box<dyn Completer>, ProviderTier), ErrorData> {
         if should_use_knowledge_default_model(session) {
             let manifest = svc.get_base(kb_id).map_err(internal)?;
             if let Some(model) = manifest.default_model {
@@ -107,7 +115,8 @@ impl Agent {
                 "a model provider is required to digest conversations: {e}"
             ))
         })?;
-        Ok(Box::new(ProviderCompleter::new(provider)))
+        let (completer, tier) = ProviderCompleter::paired(provider);
+        Ok((Box::new(completer), tier))
     }
 }
 
@@ -180,16 +189,23 @@ fn should_use_knowledge_default_model(session: &Session) -> bool {
     session.session_type == SessionType::Scheduled || session.schedule_id.is_some()
 }
 
-async fn build_model_ref_completer(model: &ModelRef) -> anyhow::Result<Box<dyn Completer>> {
+async fn build_model_ref_completer(
+    model: &ModelRef,
+) -> anyhow::Result<(Box<dyn Completer>, ProviderTier)> {
     if biorouter_mcp::knowledge::test_mode::env_enabled() {
-        return Ok(Box::new(
-            biorouter_mcp::knowledge::test_mode::TestModeCompleter,
+        // No provider exists on this path, so there is no instance to read a
+        // tier from — the same fail-safe-for-a-ratchet reasoning as the two
+        // `build_completer` test-mode branches.
+        return Ok((
+            Box::new(biorouter_mcp::knowledge::test_mode::TestModeCompleter),
+            ProviderTier::Public,
         ));
     }
 
     let model_config = ModelConfig::new(&model.model)?;
     let provider = crate::providers::create(&model.provider, model_config).await?;
-    Ok(Box::new(ProviderCompleter::new(provider)))
+    let (completer, tier) = ProviderCompleter::paired(provider);
+    Ok((Box::new(completer), tier))
 }
 
 /// Slugify a display name into a valid KB id (lowercase, a-z0-9-, no leading /

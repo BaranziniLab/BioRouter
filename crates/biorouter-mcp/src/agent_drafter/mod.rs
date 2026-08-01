@@ -1391,6 +1391,10 @@ fn stage_full_payload(
     manifest: &Manifest,
     target: &std::path::Path,
     include: Option<&serde_json::Value>,
+    // Issue #56 (CP4). The capability of the session that asked for the export.
+    // Task 10B only plumbs it here; **Task 10C adds the check that consumes it**,
+    // so the diff a reviewer reads there is one `if`. Unused today on purpose.
+    #[allow(unused_variables)] caller_is_private: bool,
 ) -> StagedPayload {
     let agent = manifest.agent.clone().unwrap_or_default();
 
@@ -1562,6 +1566,22 @@ fn stage_current_daemon(target: &std::path::Path) -> (Option<serde_json::Value>,
             None,
             "biorouterd not found for a fat export; thin export instead (the launcher locates or installs a daemon at run time)".to_string(),
         ),
+    }
+}
+
+/// Issue #56 (CP4). `export_app` gained a `RequestContext` so it can read the
+/// caller's capability; no unit test fabricates one, and the ten export tests
+/// below are all public-caller cases. This is the same split `create_app` /
+/// `create_app_inner` already uses, named so the caller's tier is legible at
+/// each call site rather than hidden in a default.
+#[cfg(test)]
+impl AgentDrafterServer {
+    async fn export_app_public(
+        &self,
+        params: Parameters<ExportAppParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.export_app_inner(params.0, /* caller_is_private */ false)
+            .await
     }
 }
 
@@ -2739,8 +2759,26 @@ impl AgentDrafterServer {
     pub async fn export_app(
         &self,
         params: Parameters<ExportAppParams>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        let p = params.0;
+        // Issue #56 (CP4). Read through the SHARED reader that CP1 uses, so the
+        // two sides cannot spell the meta key differently.
+        //
+        // Split into an `_inner` exactly like `create_app`/`create_app_inner`
+        // above: the eight unit tests below drive the body without fabricating a
+        // `RequestContext`, and the capability still enters at the one seam.
+        self.export_app_inner(
+            params.0,
+            crate::knowledge::tier::caller_is_private(&context.meta),
+        )
+        .await
+    }
+
+    async fn export_app_inner(
+        &self,
+        p: ExportAppParams,
+        caller_is_private: bool,
+    ) -> Result<CallToolResult, ErrorData> {
         let store = self.store();
         if !store.exists(&p.id) {
             return Err(err(ErrorCode::INVALID_PARAMS, format!("no app '{}'", p.id)));
@@ -2787,7 +2825,7 @@ impl AgentDrafterServer {
         let manifest = store.load_manifest(&p.id).map_err(internal)?;
 
         let staged = if mode == "full" {
-            stage_full_payload(&manifest, &target, p.include.as_ref())
+            stage_full_payload(&manifest, &target, p.include.as_ref(), caller_is_private)
         } else {
             StagedPayload::empty()
         };
@@ -3562,7 +3600,7 @@ br.run("hello", "#missing");
 
         let out = TempDir::new().unwrap();
         assert!(s
-            .export_app(Parameters(ExportAppParams {
+            .export_app_public(Parameters(ExportAppParams {
                 id: "broken-harness".into(),
                 target_dir: out.path().to_string_lossy().to_string(),
                 endpoint: None,
@@ -3684,7 +3722,7 @@ br.run("hello", "#missing");
 
         let out = TempDir::new().unwrap();
         let res = s
-            .export_app(Parameters(ExportAppParams {
+            .export_app_public(Parameters(ExportAppParams {
                 id: "exporter".into(),
                 target_dir: out.path().to_string_lossy().to_string(),
                 endpoint: None,
@@ -3748,7 +3786,7 @@ br.run("hello", "#missing");
         std::fs::write(vault_dir.join("API_KEY.enc"), "sealed-bytes").unwrap();
 
         let out = TempDir::new().unwrap();
-        s.export_app(Parameters(ExportAppParams {
+        s.export_app_public(Parameters(ExportAppParams {
             id: "vaulted".into(),
             target_dir: out.path().to_string_lossy().to_string(),
             endpoint: None,
@@ -3766,7 +3804,7 @@ br.run("hello", "#missing");
     async fn export_rejects_missing_app() {
         let (_d, s) = server();
         assert!(s
-            .export_app(Parameters(ExportAppParams {
+            .export_app_public(Parameters(ExportAppParams {
                 id: "ghost".into(),
                 target_dir: "/tmp/x".into(),
                 endpoint: None,
@@ -3803,7 +3841,7 @@ br.run("hello", "#missing");
         s.create_app_inner(p, None).await.unwrap();
 
         let out = TempDir::new().unwrap();
-        s.export_app(Parameters(ExportAppParams {
+        s.export_app_public(Parameters(ExportAppParams {
             id: "launcher".into(),
             target_dir: out.path().to_string_lossy().to_string(),
             mode: Some("launcher".into()),
@@ -3861,7 +3899,7 @@ br.run("hello", "#missing");
 
         let out = TempDir::new().unwrap();
         let res = s
-            .export_app(Parameters(ExportAppParams {
+            .export_app_public(Parameters(ExportAppParams {
                 id: "cohort".into(),
                 target_dir: out.path().to_string_lossy().to_string(),
                 mode: Some("full".into()),
@@ -3928,7 +3966,7 @@ br.run("hello", "#missing");
 
         let out = TempDir::new().unwrap();
         let res = s
-            .export_app(Parameters(ExportAppParams {
+            .export_app_public(Parameters(ExportAppParams {
                 id: "ghostkb".into(),
                 target_dir: out.path().to_string_lossy().to_string(),
                 mode: Some("full".into()),
@@ -3966,7 +4004,7 @@ br.run("hello", "#missing");
         s.create_app_inner(p, None).await.unwrap();
 
         let out = TempDir::new().unwrap();
-        s.export_app(Parameters(ExportAppParams {
+        s.export_app_public(Parameters(ExportAppParams {
             id: "opt-out".into(),
             target_dir: out.path().to_string_lossy().to_string(),
             mode: Some("full".into()),
@@ -4001,7 +4039,7 @@ br.run("hello", "#missing");
 
         let out = TempDir::new().unwrap();
         let res = s
-            .export_app(Parameters(ExportAppParams {
+            .export_app_public(Parameters(ExportAppParams {
                 id: "fat".into(),
                 target_dir: out.path().to_string_lossy().to_string(),
                 bundle_daemon: Some("current".into()),
@@ -4051,7 +4089,7 @@ br.run("hello", "#missing");
 
         let out = TempDir::new().unwrap();
         let res = s
-            .export_app(Parameters(ExportAppParams {
+            .export_app_public(Parameters(ExportAppParams {
                 id: "nodaemon".into(),
                 target_dir: out.path().to_string_lossy().to_string(),
                 bundle_daemon: Some("current".into()),

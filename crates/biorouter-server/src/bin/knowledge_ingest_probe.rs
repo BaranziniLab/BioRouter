@@ -99,12 +99,20 @@ async fn main() -> Result<()> {
         let kb_id = cli.kb_id.clone();
         let file_path = file.clone();
         let ingest_task = tokio::spawn(async move {
+            // Issue #56. The probe holds the `Arc<dyn Provider>` it wraps, so it
+            // destructures `paired` rather than re-deriving a tier from
+            // `cli.provider` — the completer and the capability come from the
+            // one binding, which is this caller's whole gate (it has no
+            // behavioural row: `[[bin]]` targets are never compiled by
+            // `cargo test --lib`).
+            let (completer, caller_capability) = ProviderCompleter::paired(provider_for_task);
             ingest(
                 &svc_for_task,
                 IngestArgs {
                     kb_id,
+                    caller_is_private: caller_capability.is_private(),
                     source: SourceInput::Path(file_path),
-                    completer: Box::new(ProviderCompleter::new(provider_for_task)),
+                    completer: Box::new(completer),
                     focus: None,
                     bounds: SubAgentBounds {
                         max_steps: 60,

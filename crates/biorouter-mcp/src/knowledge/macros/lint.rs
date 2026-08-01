@@ -194,6 +194,9 @@ fn resolve_wiki_link(pages: &HashMap<String, String>, target: &str) -> Option<St
 
 pub struct LintArgs {
     pub kb_id: String,
+    /// The capability of the model this macro will run (issue #56). Required,
+    /// so every production caller is a compile error rather than an omission.
+    pub caller_is_private: bool,
     pub completer: Option<Box<dyn Completer>>,
     pub autofix: bool,
     pub bounds: SubAgentBounds,
@@ -216,6 +219,10 @@ pub struct LintResult {
 
 pub async fn lint(svc: &KnowledgeService, args: LintArgs) -> Result<LintResult> {
     let _lock = svc.lock_kb(&args.kb_id).await?;
+    // Issue #56. Before the sub-agent, not after: an autofix that fails halfway
+    // has already written pages. Task 10C adds `tier::assert_reachable(..)`
+    // on the line above.
+    svc.raise_tier(&args.kb_id, args.caller_is_private)?;
     let kb_root = paths::kb_root(svc.root(), &args.kb_id);
 
     // Idempotently upgrade legacy schema.md files that pre-date the
@@ -479,6 +486,7 @@ mod tests {
             &svc,
             LintArgs {
                 kb_id: "k".into(),
+                caller_is_private: false,
                 completer: None,
                 autofix: false,
                 bounds: SubAgentBounds::default(),
@@ -545,6 +553,7 @@ mod tests {
             &svc,
             LintArgs {
                 kb_id: "k".into(),
+                caller_is_private: false,
                 completer: Some(Box::new(NothingToFix)),
                 autofix: true,
                 bounds: SubAgentBounds::default(),
@@ -566,6 +575,36 @@ mod tests {
         assert!(
             !log.iter().any(|e| e.kind == ChangeKind::Lint),
             "no lint commit may appear in the change log; log: {log:?}"
+        );
+    }
+
+    // ── Issue #56, Task 10B: CP2 ────────────────────────────────────────────
+
+    /// The raise runs at the macro entry, before anything is scanned or fixed —
+    /// so a lint that never reaches its autofix has still stamped the base.
+    #[tokio::test]
+    async fn the_lint_macro_ratchets_at_its_entry() {
+        let (dir, svc) = fresh_svc();
+        let root = dir.path().to_path_buf();
+        assert!(!crate::knowledge::tier::is_private(&root, "k"));
+
+        let _ = lint(
+            &svc,
+            LintArgs {
+                kb_id: "k".into(),
+                caller_is_private: true,
+                completer: None,
+                autofix: false,
+                bounds: SubAgentBounds::default(),
+                event_sink: None,
+                cancel: None,
+            },
+        )
+        .await;
+
+        assert!(
+            crate::knowledge::tier::is_private(&root, "k"),
+            "the lint macro did not raise at its entry"
         );
     }
 }
