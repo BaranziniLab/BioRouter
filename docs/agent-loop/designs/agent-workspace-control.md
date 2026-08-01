@@ -7,8 +7,8 @@
 > set at runtime — and, as its flagship embodiment, turns today's opaque subagents into
 > **glass-box subagents**: every spawned subagent appears as a live, ordinary chat tab
 > that a human can watch, talk to, and intervene in, exactly as the parent agent can.
-> **Status:** Current — **Slices 1 and 2 are implemented; Slice 3 (glass-box subagents)
-> is not.** Slice 1 shipped the session model, the event spine, the one turn runner and
+> **Status:** Current — **Slices 1, 2 and 3 are implemented; Slice 4 (polish + docs) is
+> not.** Slice 1 shipped the session model, the event spine, the one turn runner and
 > the headless `workspace_*` tools; Slice 2 shipped the GUI bridge (`GET /ui/workspace`),
 > `workspace_open`, the observer-backed tab, provenance chips, the focus-etiquette
 > setting and the chatrecall suggestion — verified end to end against the **dev build**,
@@ -16,10 +16,40 @@
 > The **packaged** app has not been run end to end; its one materially different input,
 > the renderer origin, was measured separately (see §4.3): a `file://` document in
 > Electron 39.8.10 / Chromium 142 sends `Origin: file://`, not `null`, which is exactly
-> what `check_workspace_ws_auth` admits. Everything below about subagents (§4.4, §6, the
-> `subagent` merge's glass-box half) is still design. BR-71 is a post-campaign proposal,
-> numbered as the next free identifier after the campaign's BR-1…BR-70; it does not
-> appear in the campaign master list.
+> what `check_workspace_ws_auth` admits. Slice 3 shipped the glass-box subagents
+> themselves — child sessions on the detached runner, the spawn-context record, the
+> auto-opened badged tab and its header, the human steer path, `human_intervened` in the
+> parent's result, the Stop control, History grouping by parent, and the CLI half
+> (`session list --subagents`, `session attach`, `session cancel`).
+>
+> **What Slice 3's gate actually measured** (read this before quoting the line above).
+> The flagship chain is verified end to end **headlessly**, against a running daemon, by
+> `scripts/workspace/glassbox-harness.mjs`: with `BIOROUTER_HARNESS_LIVE=1` a real parent
+> spawns a real child and all 22 assertions pass — `open_tab` + `annotate_tab` naming the
+> parent, the child observer stream, the spawn-context record, `POST /interrupt` into the
+> **running** child returning 202 (the turn lease, not a 409), the steer landing stamped
+> `user_direct`, `cancelled:true` **with** a turn id, the tab-composer `/reply` stamped
+> `user_direct`, and `"human_intervened":true` in the parent's transcript. The CLI half
+> was driven by hand against the same daemon with no desktop app attached: children nest
+> under their parent with distinct labels and a `● live` marker, `attach` renders the
+> conversation so far as a transcript before following it live, a typed line returns
+> `[steered turn …]` in the same turn, `cancel` reports the turn id and is idempotent,
+> and ctrl-C detaches without cancelling. **The live GUI acceptance pass in the desktop
+> app has not been run** — the tab/badge/header, the four-tab fan-out cap (decision 26)
+> and the elicitation-in-a-child-tab check are covered by unit and component tests only.
+>
+> **One open defect found by that gate, not yet diagnosed.** A subagent that calls an
+> Auto Visualiser tool aborts the daemon with `fatal runtime error: stack overflow` in a
+> `tokio-runtime-worker` — reproduced 3/3 on fresh daemons, with and without
+> `BIOROUTER_AUTOVIS_CDN=1`, and **not** reproducible for the same tool in an ordinary
+> session. It is not the cancel path (it reproduces with no cancel). The blocking
+> delegation path awaits the child's whole agent loop inside the parent's
+> `dispatch_tool_call`, so the child's frames sit on the parent's stack; that nesting
+> predates this campaign, so whether Slice 3 merely pushed an already-marginal stack over
+> the edge is unresolved and needs a baseline build to settle.
+>
+> BR-71 is a post-campaign proposal, numbered as the next free identifier after the
+> campaign's BR-1…BR-70; it does not appear in the campaign master list.
 > **Audience:** developers working on the agent loop, `biorouter-server`, and the desktop GUI.
 
 ---
