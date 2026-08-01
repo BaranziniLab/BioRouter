@@ -14,6 +14,15 @@
  *  snapshot-then-live ordering; and the §8.4 resync-cost measurement. It does
  *  NOT touch the spawn bridge, so it can never mask the live tier.
  *
+ *  ⚠ The baseline canNOT check decision 21's two-tier tool surface either,
+ *  and an earlier revision of this file tried. A bare `POST /agent/start`
+ *  session has no non-injected extension loaded — measured: its whole tool list
+ *  is `["platform__ingest_conversation", "platform__manage_schedule"]` — and
+ *  `subagents_enabled` ends on `has_non_injected_extensions()`, so the gate
+ *  correctly answers "no delegation here" and the missing `workspace__subagent`
+ *  says nothing about decision 21. The check moved to the LIVE tier, where the
+ *  parent has a provider AND has demonstrably spawned a child.
+ *
  *  ⚠ The baseline SENDS a `workspace_echo` but does not assert anything about
  *  it, and an earlier revision of this header listed "the echo round trip"
  *  among the validated items. There is no daemon route that reads a stored echo
@@ -41,6 +50,11 @@
  *  /reply into the now-idle child is stamped user_direct too (Task 35's OTHER
  *  call site — the tab composer — which nothing else in this plan exercises);
  *  and the parent's final transcript carries "human_intervened":true.
+ *
+ *  It also settles decision 21 here rather than in the GUI, because the parent
+ *  is exactly the gate's subject — a session nobody enabled Workspace Control
+ *  for — and by that point it has provably delegated: the spawn tool IS
+ *  advertised to it and `workspace_list` is NOT.
  *
  * Exit codes: 0 = every assertion that ran passed. 1 = an assertion failed.
  *             2 = the harness crashed. 3 = the LIVE tier could not conclude
@@ -547,6 +561,8 @@ async function main() {
     skip('LIVE tier attaches a provider to the parent session', 'set BIOROUTER_HARNESS_LIVE=1');
     skip('spawn announces open_tab + annotate_tab frames', 'set BIOROUTER_HARNESS_LIVE=1');
     skip('annotate_tab names the parent', 'live only');
+    skip('decision 21: the delegating session IS offered the spawn tool', 'live only');
+    skip('decision 21: the delegating session is NOT offered workspace_list', 'live only');
     skip('child observer stream opens', 'live only');
     skip('spawn-context record is messages[0] with provenance spawn_context', 'live only');
     skip('the tab-composer /reply is accepted by the now-idle child', 'live only');
@@ -658,6 +674,65 @@ async function main() {
         'annotate_tab names the parent',
         childFromFrames.badge.parent_session_id === parentId
       );
+
+      // ---- decision 21: the two-tier surface, on the session that just
+      // delegated ---------------------------------------------------------
+      //
+      // Task 40's gate asks for this in the GUI: "in a session where the user
+      // has NEVER enabled Workspace Control, verify delegation still works and
+      // that `workspace_list` is not offered". Both halves are answerable here,
+      // and only here. The FIRST half is already proved, by execution rather
+      // than by inspection: `parentId` came from a bare `POST /agent/start`,
+      // nothing enabled the extension for it, and it just spawned a real child.
+      //
+      // The second half is one HTTP call, because `GET /agent/tools` is a thin
+      // wrapper over `Agent::list_tools` — the function decision 21 lives in.
+      // It calls `ensure_spawn_extension`, which injects `workspace` with
+      // `available_tools: ["subagent"]` so delegation rides along WITHOUT the
+      // cross-session control surface (§5 blast radius unchanged).
+      //
+      // ⚠ Skipped, not failed, on a daemon whose operator enabled Workspace
+      // Control in config — `workspace_list` is then offered and SHOULD be.
+      // That is a different configuration, not a regression, and a gate that
+      // reddens on it teaches the operator to ignore it.
+      const extensionsBody = (await json('/config/extensions')).body;
+      const workspaceEnabledInConfig = (extensionsBody?.extensions ?? []).some(
+        (entry) =>
+          entry?.enabled &&
+          String(entry?.name ?? '')
+            .replace(/\s+/g, '')
+            .toLowerCase() === 'workspace'
+      );
+      if (workspaceEnabledInConfig) {
+        skip(
+          'decision 21: the delegating session is NOT offered workspace_list',
+          'this daemon enables Workspace Control in its config, so the two-tier split is ' +
+            'not observable here'
+        );
+      } else {
+        const parentTools = await json(`/agent/tools?session_id=${encodeURIComponent(parentId)}`);
+        const toolNames = Array.isArray(parentTools.body)
+          ? parentTools.body.map((tool) => tool?.name)
+          : [];
+        // ⚠ Asserted as a PAIR, for the reason the wrong-secret control is:
+        // `workspace_list` is absent from an empty list too, so on its own the
+        // check below would go green for a route that 404ed or answered `[]`.
+        // The spawn tool being present is what makes its absence mean "the
+        // injection was scoped" rather than "nothing was read".
+        assert(
+          'decision 21: the delegating session IS offered the spawn tool',
+          parentTools.status === 200 && toolNames.includes('workspace__subagent'),
+          `GET /agent/tools → ${parentTools.status}, ${toolNames.length} tools, no ` +
+            'workspace__subagent — yet this session just spawned a child, so the tool list ' +
+            'and the dispatch path disagree'
+        );
+        assert(
+          'decision 21: the delegating session is NOT offered workspace_list',
+          !toolNames.includes('workspace__workspace_list'),
+          'workspace__workspace_list is advertised to a session that never enabled Workspace ' +
+            'Control — the auto-injection handed over the full surface instead of the spawn tool'
+        );
+      }
 
       // Child observer: snapshot first, then live frames; spawn context is
       // messages[0] with provenance spawn_context. ONE stream, kept open across
