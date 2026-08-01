@@ -235,9 +235,11 @@
 >
 > **The six gates, and what each now rejects.** Task 4b's evidence column witnessed itself inside its
 > own heredoc, and its loop treated any positive count as success — so the exact pre-counts it exists
-> to establish, including the `knowledge:: = 190` correction, were decorative; the evidence is now
-> searched over the plan minus the table (measured: 18 rows stripped, all eighteen still resolve, a
-> fabricated row drops to 0) and the 41 counts are asserted by equality. Task 10B's CLI rows tested
+> to establish, including the `knowledge::` correction, were decorative; the evidence is now
+> searched over the plan minus the table (all rows still resolve, a fabricated row drops to 0) and
+> the counts are asserted by equality. (⚠ Superseded in detail by Task 4b's actual run at
+> `fd14ef9a`: the sets are now 46 resolved and 12 deferred, and `knowledge::` is **198**, not the
+> 190 this round recorded — see that task.) Task 10B's CLI rows tested
 > `build_completer`'s tuple, so a handler could call `paired`, discard the tier and key on the
 > provider name; the new row drives `handle_ingest` with the name `ollama` in **both** legs and varies
 > only `OLLAMA_HOST`. Task 10D's `META_RE` ended at `(` and missed function items — widened to `\b`,
@@ -306,14 +308,16 @@
 > *"nothing has been compiled or run"*, and the last verifier named an actual `cargo test -- --list`
 > after Task 4 as the single thing that would most change its confidence. That is now
 > **[Task 4b](#task-4b-resolve-every-test-filter-against-a-real-cargo---list-docs-only)**, a short
-> docs-only task placed immediately after Task 4, and its Step 1 was executed while writing this
-> revision — against `main` at `89c1f026`, whose only difference from the plan's anchor is six
-> developer-only files. Four of the five packages listed clean and the measured counts are pasted
-> into the task. Two of the plan's own numbers were wrong and are corrected there;
+> docs-only task placed immediately after Task 4, and it has now been **run for real** — all five
+> packages listed clean at `fd14ef9a` on 2026-08-01, 58 `(package, filter)` pairs audited, 46
+> measured and 12 deferred, gate exit 0. A first run against `main` at `89c1f026` three days earlier
+> is superseded: `main` advanced past that commit and **eighteen** of its figures are already wrong
+> here (`agents::agent` 21 → 58, `memory` 12 → 53, `routes::session` 20 → 29), which is the
+> arithmetic-on-a-stale-base defect the task exists to catch, caught on the task's own numbers.
 > `agents::chatrecall_extension` and `session::chat_history_search` really are **0**, as claimed, and
-> `routes::agent` = 8 / `routes::session` = 20 are confirmed exactly. What remains unrun is stated in
-> the task rather than implied: seven modules this plan creates cannot be listed until they exist,
-> and Tasks 20 and 40 re-run the audit with a shrinking and then an empty deferred set.
+> `routes::agent` = 8 is confirmed exactly. What remains unrun is stated in the task rather than
+> implied: twelve modules this plan creates cannot be listed until they exist, and Tasks 20 and 40
+> re-run the audit with a shrinking and then an empty deferred set.
 
 **Goal.** Two lattices, one column pair, five gates plus four the design did not name. A session's
 **capability** (what it may *do*) is the least-privileged model bound to it; its **classification**
@@ -1505,8 +1509,9 @@ The adversarial verifiers could not run a single `cargo test` filter, and named 
 biggest hole in my own coverage", because BR-71's most expensive defect was *a filter that names a
 nested module by the wrong path, prints `0 passed`, and exits 0*. This section closes as much of that
 hole as is closable by reading; **[Task 4b](#task-4b-resolve-every-test-filter-against-a-real-cargo---list-docs-only)
-closes the rest by running it**, and its Step 3 carries the measured pre-count of all 30 filters that
-resolve today. Where this section and Task 4b disagree, **Task 4b wins** — it is the measurement.
+closes the rest by running it**, and its Step 3 carries the measured pre-count of all 46 pairs that
+resolve today, dated and tied to a commit. Where this section and Task 4b disagree, **Task 4b wins**
+— it is the measurement.
 
 **How each filter was checked.** For every `cargo test` line in this plan, the module path it implies
 was resolved against the tree: for an existing module, that the file exists at the path the filter
@@ -1528,16 +1533,18 @@ expect `0 passed` reads `8 passed` as "my tests landed" when in fact none of the
 modules already have **two** `#[cfg(test)]` blocks each, neither of them named `tests`, so a filter
 on the module path picks them up:
 
-| Filter | Module today — **measured at `9558c346`, confirmed by Task 4b's `--list`** | Task |
+| Filter | Module today — **measured by Task 4b's `--list` at `fd14ef9a`, 2026-08-01** | Task |
 |---|---|---|
-| `cargo test -p biorouter-server --lib routes::agent` | **8 tests**, in `mod working_dir_lock_tests` (`routes/agent.rs:1279`, 4 tests) and `mod knowledge_selection_tests` (`:1380`, 4 tests) | 12, 14 |
-| `cargo test -p biorouter-server --lib routes::session` | **20 tests**, in `mod diverge_tests` (`routes/session.rs:1038`, 11 tests) and `mod edit_message_tests` (`:1417`, 9 tests) | 22, 29 |
+| `cargo test -p biorouter-server --lib routes::agent` | **8 tests**, in `mod working_dir_lock_tests` (4) and `mod knowledge_selection_tests` (4) | 12, 14 |
+| `cargo test -p biorouter-server --lib routes::session` | **29 tests** — `mod diverge_tests` (15) and `mod edit_message_tests` (9), **plus 5 in `routes::session_events::tests`**, a different module the substring reaches. The hand count said 20 | 22, 29 |
 
-⚠ **And a third, which the hand search missed: `agents::agent` spans three test modules**, not one —
-`agents::agent::tests` (14), `agents::agent::rewrite_basis_tests` (2), `agents::agent::stall_seam_tests`
-(5), total **21**. Task 4b found it by listing. The general lesson is stated below and is worth
-repeating here: **do not assume `mod tests` is the only shape, and do not trust a hand search to have
-found every module that isn't.**
+⚠ **And a third, which the hand search missed: `agents::agent` spans five test modules**, not one —
+`agents::agent::tests` (44), `::persisted_ordering::tests` (4), `::persisted_ordering_guard` (3),
+`::stall_seam_tests` (5), `::rewrite_basis_tests` (2), total **58**. Task 4b found it by listing, and
+found it *growing*: the same command three days earlier reported three modules and 21 tests. The
+general lesson is stated below and is worth repeating here: **do not assume `mod tests` is the only
+shape, do not trust a hand search to have found every module that isn't, and do not trust any count
+that is not tied to a commit.**
 
 So Tasks 12, 14, 22 and 29 must record the **pre-count** with the same command before Step 3 and
 assert `post == pre + N`, exactly as Task 2 and Task 6 already do — never "expect a non-zero count",
@@ -1571,7 +1578,7 @@ count is therefore paired with either a named-test filter or a pre/post delta th
 
 **(a) is closed by [Task 4b](#task-4b-resolve-every-test-filter-against-a-real-cargo---list-docs-only)**,
 which runs `cargo test -p <pkg> --lib -- --list` for all five packages this plan filters on and
-resolves every one of its **42** `(package, filter)` pairs against the real listing. It is placed
+resolves every one of its **58** `(package, filter)` pairs against the real listing. It is placed
 immediately after Task 4 because Task 4 is the first commit that produces a `privacy::` module, and
 it is docs-only. What it cannot close is the modules later tasks create
 (`privacy::{extensions,refusal,alt_provider,visibility,declassify}`, `providers::tier_tests`,
@@ -1582,8 +1589,8 @@ with a shrinking and then an empty list. ⚠ **Superseded by [DR-17](#scope-ruli
 `--test read_deny`. Both belong to deferred tasks, so the sweep is five packages and there is no
 second binary. The self-checking property still holds and is worth keeping in mind for a revival: a
 `--test` filter naming a binary that does not exist is a cargo hard error rather than a silent zero. Two further facts Task 4b's design turns on, both easy to get
-wrong: this plan spells its filters in **two** forms (`--lib <FILTER>`, 34 occurrences, and
-`--lib -- <NAME> <NAME>`, 7 — an audit of only the first misses `privacy::refusal` and
+wrong: this plan spells its filters in **two** forms (`--lib <FILTER>`, 80 occurrences in fenced
+code, and `--lib -- <NAME> <NAME>`, 25 — an audit of only the first misses `privacy::refusal` and
 `privacy::alt_provider` entirely), and a libtest filter is a **substring** match, not a prefix, so
 `privacy` matches more than `privacy::…` and the pre-counts must be measured rather than reasoned.
 
@@ -2410,100 +2417,119 @@ output. Three tests exist at this point (Task 4 Step 1 wrote two, Step 5 added a
 lines are expected; **paste what the command printed, not what this sentence predicts.**
 
 ```text
-PASTE HERE (Task 4b Step 1 output, run after Task 4 lands):
-privacy::tests::…
-privacy::tests::…
-privacy::tests::…
+$ grep '^privacy' /tmp/56-filters/biorouter.txt      # run 2026-08-01, at Task 4's commit fd14ef9a
+privacy::tests::an_unparseable_or_absent_classification_reads_private
+privacy::tests::capability_is_a_least_and_classification_is_a_max
+privacy::tests::deriving_ord_on_provider_tier_would_be_caught_here
 ```
 
-⚠ **Everything below in Step 3 was already measured**, against `main` at `89c1f026` on 2026-07-29,
-by running Step 1 verbatim (`89c1f026` differs from this plan's anchor `9558c346` in six
-developer-only files, none of which is a module any filter names). What Step 2 adds is the one thing
-that run could not produce: the `privacy::` paths, which do not exist until Task 4 lands. Everything
-else is a **re-run to confirm**, not a first measurement.
+Three tests, all under `privacy::tests`, so the three spellings this plan uses — `privacy`,
+`privacy::` and `privacy::tests` — all resolve to the same **3** and all three move out of the
+deferred set into the resolved table below. The five listings behind every number in Step 3:
+`biorouter` 1983 lib tests, `biorouter-server` 247, `biorouter-mcp` 948, `biorouter-cli` 294,
+`biorouter-sandbox` 18.
+
+⚠ **Step 3 is a FIRST measurement, not a re-run to confirm, and that is the finding.** An earlier
+draft of this task carried figures measured against `main` at `89c1f026` on 2026-07-29 and said
+everything below was "already measured". Re-running Step 1 verbatim on 2026-08-01 against this
+worktree — `main` at `e89d3742` plus Phase 0 and Task 4 — contradicted **eighteen** of them, several
+by more than a factor of two (`agents::agent` 21 → **58**, `memory` 12 → **53**, `routes::session`
+20 → **29**). `89c1f026` *is* an ancestor of this tree, but `main` advanced past it: the Workspace
+Control merge (#30), the `MessagesPersisted` ordering work (#66) and the developer file-tool jail
+(#68) all add lib tests to modules this plan filters on. **A pre-count is only true of the commit it
+was measured at**, which is precisely the arithmetic-on-the-wrong-base error this task exists to
+catch, and it re-appeared here in the space of three days. Every figure below is dated and
+commit-anchored for that reason; re-measure rather than inherit.
 
 - [ ] **Step 3: Resolve every filter, and correct the ones that disagree — MEASURED**
 
 Every `cargo test -p <pkg> --lib <FILTER>` line in this plan falls into exactly one of two sets, and
-the gate in Step 5 asserts that partition. **58** `(package, filter)` pairs, all of them below.
+the gate in Step 5 asserts that partition. **58** `(package, filter)` pairs — 63 were harvested
+before this task struck the five retirements below — and all 58 are here.
 
-**Resolves today — 41 pairs, with the pre-count the owning task must build its `pre + N` on:**
+**Resolves today — 46 pairs, measured 2026-08-01 at `fd14ef9a` (Task 4's commit), with the pre-count
+the owning task must build its `pre + N` on:**
 
 | Package | Filter | **Measured** |
 |---|---|---|
-| `biorouter` | `agents::agent` | **21** (`::tests` 14, `::rewrite_basis_tests` 2, `::stall_seam_tests` 5 — *three* modules, none discoverable from the filter) |
-| `biorouter` | `agents::agent::tests` | 14 |
-| `biorouter` | `agents::code_execution_extension` | 69 |
-| `biorouter` | `agents::extension_manager` | **37** — ⚠ `::tests` is 33; the filter also catches `agents::extension_manager_extension::tests` (4) by substring |
+| `biorouter` | `agents::agent` | **58** — *five* test modules, only one of them named `tests`: `::tests` 44, `::persisted_ordering::tests` 4, `::persisted_ordering_guard` 3, `::stall_seam_tests` 5, `::rewrite_basis_tests` 2. None is discoverable from the filter |
+| `biorouter` | `agents::agent::tests` | 44 |
+| `biorouter` | `agents::code_execution_extension` | 71 |
+| `biorouter` | `agents::extension_manager` | **40** — ⚠ `::tests` is 36 (30 directly, plus 6 in a `generate_extension_name_tests` nested *inside* `tests`); the filter also catches `agents::extension_manager_extension::tests` (4) by substring |
 | `biorouter` | `agents::extension_manager_extension` | 4 |
 | `biorouter` | `agents::knowledge_tool` | 4 |
 | `biorouter` | `agents::mcp_client` | 12 |
-| `biorouter` | `agents::reply_parts` | 2 |
-| `biorouter` | `agents::subagent_tool` | 16 |
+| `biorouter` | `agents::reply_parts` | 3 |
+| `biorouter` | `agents::subagent_tool` | 27 |
 | `biorouter` | `agents::tool_execution` | 8 |
-| `biorouter` | `daemon_secret_never_reaches_an_extension_child` | 1 — a bare **test name** (Task 14C) that already exists |
+| `biorouter` | `daemon_secret_never_reaches_an_extension_child` | 1 — a bare **test name** that already exists (its task is ⛔ deferred; the test is not) |
 | `biorouter` | `hooks` | 93 |
-| `biorouter` | `knowledge::conversation_ingest` | 2 |
-| `biorouter` | `knowledge::provider_completer` | 4 |
-| `biorouter` | `providers` | 359 |
+| `biorouter` | `knowledge::conversation_ingest` | 3 |
+| `biorouter` | `knowledge::provider_completer` | 6 |
+| `biorouter` | `privacy` | **3** — no longer deferred: Task 4 has landed. All three are `privacy::tests::…` (Step 2) |
+| `biorouter` | `privacy::` | **3** — the trailing-`::` spelling is a *different* filter and this plan uses both; here they agree because every privacy test is nested |
+| `biorouter` | `privacy::tests` | **3** |
+| `biorouter` | `providers` | 360 |
 | `biorouter` | `scheduler` | 3 |
-| `biorouter` | `session::session_manager` | 139 |
+| `biorouter` | `session::session_manager` | 145 |
 | `biorouter-cli` | `commands::knowledge` | 9 |
-| `biorouter-cli` | `session` | 166 |
+| `biorouter-cli` | `session` | 195 — substring, so it spans sixteen modules including `commands::session*` and `commands::term` |
 | `biorouter-mcp` | `agent_drafter::` | 244 |
 | `biorouter-mcp` | `agent_drafter::catalog` | 5 |
+| `biorouter-mcp` | `agent_drafter::store` | 20 — all in `agent_drafter::store::tests`. Its sibling `agent_drafter::tier` is retired below |
 | `biorouter-mcp` | `agent_drafter::validate` | 9 |
-| `biorouter-mcp` | `daemon_secret_never_reaches_a_shell_child` | 1 — a bare test name (Task 14C) |
+| `biorouter-mcp` | `daemon_secret_never_reaches_a_shell_child` | 1 — a bare test name that already exists |
 | `biorouter-mcp` | `developer::background` | 23 |
-| `biorouter-mcp` | `developer::rmcp_developer::tests` | 64 |
-| `biorouter-mcp` | `developer::shell` | 16 |
-| `biorouter-mcp` | `knowledge::` | **190** — ⚠ the plan said "~122"; see Task 10A Step 4 |
-| `biorouter-mcp` | `knowledge::macros` | 10 |
-| `biorouter-mcp` | `knowledge::macros::ingest` | 3 |
+| `biorouter-mcp` | `developer::rmcp_developer::tests` | 68 |
+| `biorouter-mcp` | `developer::shell` | 24 |
+| `biorouter-mcp` | `knowledge::` | **198** — ⚠ `CLAUDE.md` and an earlier draft of this task said "~122" and "190"; see Task 10A Step 4 |
+| `biorouter-mcp` | `knowledge::macros` | 18 |
+| `biorouter-mcp` | `knowledge::macros::ingest` | 9 |
 | `biorouter-mcp` | `knowledge::server` | 11 |
 | `biorouter-mcp` | `knowledge::service` | 38 |
-| `biorouter-mcp` | `memory` | 12 |
-| `biorouter-mcp` | `memory::` | **10** — ⚠ *not* 12. The trailing `::` excludes two tests whose path contains `memory` without the separator, and the plan uses **both** spellings (Task 14D `--lib -- memory::`, Task 20 `--lib memory`). They are different filters and different numbers |
+| `biorouter-mcp` | `memory` | 53 |
+| `biorouter-mcp` | `memory::` | **51** — ⚠ *not* 53. The trailing `::` excludes two `developer::undo_history` tests whose names contain `in_memory`, and the plan uses **both** spellings (Task 14D `--lib -- memory::`, Task 20 `--lib memory`). They are different filters and different numbers |
 | `biorouter-mcp` | `paths::` | 9 |
-| `biorouter-mcp` | `secret_guard::` | **19** — ⚠ *not* 20, for the same reason. Task 14A/14B's "expect the SAME count as before" is 19 |
+| `biorouter-mcp` | `secret_guard::` | **19** — ⚠ *not* 20, for the same reason: `secret_guard` without the separator also catches `developer::rmcp_developer::tests::secret_guard_is_rerooted_onto_the_session_working_directory` |
 | `biorouter-sandbox` | `environment` | 1 |
-| `biorouter-server` | `auth` | 4 |
-| `biorouter-server` | `routes::agent` | **8** ✓ confirms the hand-measured figure |
-| `biorouter-server` | `routes::apps` | 90 |
+| `biorouter-server` | `auth` | **6** — ⚠ only **3** of these are in `auth::tests`; the other three merely contain the word (`routes::apps`, `routes::audio`, `routes::workspace`). Task 18A writes `auth::`, which is the 3 |
+| `biorouter-server` | `auth::` | **3** |
+| `biorouter-server` | `routes::agent` | **8** — `working_dir_lock_tests` 4 + `knowledge_selection_tests` 4, and **no module named `tests`** |
+| `biorouter-server` | `routes::apps` | 94 |
 | `biorouter-server` | `routes::config_management` | 3 |
-| `biorouter-server` | `routes::session` | **20** ✓ confirms the hand-measured figure |
+| `biorouter-server` | `routes::session` | **29** — `::diverge_tests` 15 + `::edit_message_tests` 9, plus 5 in `routes::session_events::tests`, which the substring catches from a *different module* |
 
-**Deferred — 18 pairs, each with the task that creates it. A filter in neither list is the defect:**
+**Deferred — 12 pairs, each with the task that creates it. A filter in neither list is the defect:**
 
 | Package | Filter | Created by | Pre-count today |
 |---|---|---|---|
-| `biorouter` | `privacy` | Task 4 | **0** ✓ |
-| `biorouter` | `privacy::` | Task 4 | **0** ✓ — the trailing-`::` spelling is a *different* filter from `privacy`; both appear in this plan |
-| `biorouter` | `privacy::tests` | Task 4 | **0** ✓ |
 | `biorouter` | `providers::tier_tests` | Task 5 | **0** ✓ |
 | `biorouter` | `privacy::extensions` | Task 8 | **0** ✓ |
 | `biorouter` | `agents::chatrecall_extension` | Tasks 10, 17 | **0** ✓ confirms "no `#[cfg(test)]` at all" |
 | `biorouter-mcp` | `knowledge::tier` | Task 10A | **0** ✓ |
 | `biorouter` | `privacy::refusal` | Task 12 | **0** ✓ |
-| `biorouter-mcp` | `private_roots` | Task 14B | **0** ✓ — `crates/biorouter-mcp/src/private_roots.rs`, the resolver |
-| `biorouter` | `privacy::private_roots` | Task 14B | **0** ✓ — the `biorouter` re-export plus its tests |
-| `biorouter` | `privacy::path_policy` | Task 14B | **0** ✓ — Layer A's verdict |
-| `biorouter-mcp` | `agent_drafter::tier` | Task 14E | **0** ✓ — measured by absence: `crates/biorouter-mcp/src/agent_drafter/tier.rs` does not exist and `agent_drafter/mod.rs` declares no `mod tier` (`grep -c '^mod tier\|^pub mod tier'` → 0), so the module path cannot resolve. Its sibling `agent_drafter::store` is **not** deferred — `store.rs` has a `#[cfg(test)]` block today and that filter resolves |
-| `biorouter-server` | `call_tool_dispatches_through_the_barrier` | Task 14C | **0**, and ⚠ **this row is the live BR-71 defect this task exists to catch, found by running the command.** Task 14C spelled it `routes::agent::tests::call_tool_dispatches_through_the_barrier`, and `routes/agent.rs` has **no module named `tests`** — measured: its two `#[cfg(test)]` blocks are `working_dir_lock_tests` (4 tests) and `knowledge_selection_tests` (4), and `grep -c 'routes::agent::tests::'` over the real listing returns **0**. As written it could never resolve, no matter what Task 14C implemented, and would print `0 passed` with exit 0 for ever. Corrected in Task 14C Step 4 to the **bare test name**, which libtest matches by substring wherever the test lands |
 | `biorouter` | `session::chat_history_search` | Task 17 | **0** ✓ confirms "no `#[cfg(test)]` at all" |
 | `biorouter` | `privacy::alt_provider` | Task 19 | **0** ✓ |
 | `biorouter` | `privacy::visibility` | Task 21 | **0** ✓ |
 | `biorouter` | `every_copy_path_carries_the_tier_and_the_provider` | Task 22 | **0** ✓ — a bare **test name**, not a module; it is in the `--lib -- …` form and is invisible to an audit of only the plain form |
 | `biorouter` | `privacy::declassify` | Task 29 | **0** ✓ |
+| `biorouter-mcp` | `knowledge::tier_user` | Task 29A | **0** ✓ — added by [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store) |
+| `biorouter` | `privacy::disclosure` | Task 30A | **0** ✓ — added by [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store) |
 
-⚠ **This table is 18 rows and [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store) changes it to 15 — five out, two in. Fix it in the same
-commit as the deferral, not later.** Task 4b's own gate asserts that *every deferred entry is
-something this plan actually creates*, and Task 40 asserts the deferred set is **empty**. Both fail a
-**correct** tree once Tasks 14A–14F are out of scope, which is the precise failure mode this section
-exists to prevent — a gate that reports a shortfall for work nobody was supposed to do.
+⚠ **This table was 18 rows before this run and is 12 after: five out, two in, three resolved.** Fix
+it in the same commit as the change that moves a row, not later. Task 4b's own gate asserts that
+*every deferred entry is something this plan actually creates*, and Task 40 asserts the deferred set
+is **empty**; both fail a **correct** tree if a row lingers after its task lands or after its task is
+descoped, which is the precise failure mode this section exists to prevent — a gate that reports a
+shortfall for work nobody was supposed to do.
 
-**Five rows retire with the deferred tasks**, and the filters that quote them must go with them —
-they name modules v1 does not create:
+**Three rows resolved and moved up**, because Task 4 landed before this task ran: `privacy`,
+`privacy::` and `privacy::tests` are **3** each, not 0, and are now in the resolved table. This is the
+mechanism (c) at the end of Step 5 describes, exercised for the first time — a row leaves the deferred
+set by being *created*, and the same commit that creates it re-baselines the row.
+
+**Five rows retire with the deferred tasks**, and the filters that quote them go with them — they
+name modules v1 does not create:
 
 | Package | Filter | Owning task |
 |---|---|---|
@@ -2513,53 +2539,69 @@ they name modules v1 does not create:
 | `biorouter-mcp` | `agent_drafter::tier` | 14E ⛔ |
 | `biorouter-server` | `call_tool_dispatches_through_the_barrier` | 14C ⛔ |
 
+⚠ **Retiring the row is not enough — the *command* has to stop being a command.** Tasks 14A–14F are
+kept in this document for a possible revival, so their Step 4 blocks still contained these five
+filters, and the harvest (which reads fenced code, and cannot know a task is ⛔) went on reporting
+them. Each is now struck **in place** in its own task, as a `#`-prefixed line that says which ruling
+retired it and can be uncommented if the barrier ever returns. Three lines carried a live filter
+alongside a retired one and were split rather than deleted: `paths::` (Task 14B) and
+`agent_drafter::store` (Task 14E) survive as commands, `private_roots`, `privacy::path_policy`,
+`privacy::private_roots`, `agent_drafter::tier` and `call_tool_dispatches_through_the_barrier` do not.
+
 With them go the **sixth package** and the second integration binary: `biorouter-sandbox`
 `private_data` (14B) and `--test read_deny` (14A) are not created in v1, so Task 4b sweeps **five**
 packages again, not six, and the paragraph below that says otherwise is superseded here.
 
-**Two rows join**, from the two tasks the same ruling added:
+✅ **And one row that was missing is now measured.** Task 18A's Step 2 runs
+`cargo test -p biorouter-server --lib -- auth::` and `(biorouter-server, auth::)` was in **neither**
+table, so the audit reported it MISSING and exited non-zero — a real finding about a real filter,
+not a consequence of DR-17. It resolves to **3** (`auth::tests`, three tests) and is now in the
+resolved table. Its unseparated sibling `auth`, which Task 14C writes, is **6**: three of those tests
+are not in `auth` at all but in `routes::apps`, `routes::audio` and `routes::workspace`. A `pre + N`
+built on the wrong one of that pair is off by three.
 
-| Package | Filter | Owning task | Evidence |
-|---|---|---|---|
-| `biorouter-mcp` | `knowledge::tier_user` | 29A | `crates/biorouter-mcp/src/knowledge/tier_user.rs` |
-| `biorouter` | `privacy::disclosure` | 30A | `crates/biorouter/src/privacy/disclosure.rs` |
-
-Both measure **0** today, for the same reason every other deferred row does: nothing creates them yet.
-
-⚠ **And one row is missing that is not DR-17's doing.** Task 18A's Step 4 runs
-`cargo test -p biorouter-server --lib -- auth::`, and `(biorouter-server, auth::)` appears in
-**neither** table — so Task 4b's audit reports it MISSING and exits non-zero, which is a real finding
-about a real filter rather than a consequence of this ruling. It is not resolved here because the
-count must be **measured** against a `cargo test -- --list`, not reasoned: `auth.rs` has a
-pre-existing test module, so the row belongs in the *resolved* table with its number, and a guessed
-number is the defect this whole section exists to catch.
-
-**What the measurement changed.** Five things, and none of them was catchable by reading:
+**What the measurement changed.** Six things, and none of them was catchable by reading:
 
 0. **A filter that names a module the tree does not have.** Task 14C's Step 4 said
    `-p biorouter-server --lib -- routes::agent::tests::call_tool_dispatches_through_the_barrier`,
    and `routes::agent` has no `tests` module — its two `#[cfg(test)]` blocks are
    `working_dir_lock_tests` and `knowledge_selection_tests` — so the filter matched nothing and
    exited 0. This is the exact defect the task was written for, found by running the command rather
-   than by reading the plan, and it survived six review rounds. Corrected to the bare test name.
-0b. **`secret_guard::` is 19 and `memory::` is 10**, while `secret_guard` is 20 and `memory` is 12.
+   than by reading the plan, and it survived six review rounds. Corrected to the bare test name in
+   Task 14C, and the row has since retired with that task under DR-17.
+0b. **`secret_guard::` is 19 and `memory::` is 51**, while `secret_guard` is 20 and `memory` is 53.
    The trailing `::` is part of the filter and this plan uses both spellings; an audit that
-   normalises it away measures a different command from the one written down.
+   normalises it away measures a different command from the one written down. The same trap in
+   `biorouter-server`: `auth::` is **3** and `auth` is **6**, and only 3 of the 6 are in `auth.rs`.
 
-1. `knowledge::` is **190**, not "~122" (a stale figure inherited from `CLAUDE.md`). Task 10A's
-   `pre + 10` assertion built on 122 would have read a 68-test shortfall as a pass. Corrected in
-   Task 10A Step 4.
-2. `agents::extension_manager::tests` is **33**, not the 27 an earlier draft asserted, and the
-   *filter* reports **37** because libtest substring-matches
-   `agents::extension_manager_extension::tests`. Corrected in Task 10A Step 1's comment.
-3. `agents::agent` spans **three** test modules — `tests`, `rewrite_basis_tests`, `stall_seam_tests`
-   — of which only the first is named `tests`. That is the same shape as `routes::agent` and
-   `routes::session`, which §"Which test filters are validated" found by hand; the pattern is
-   general, and a hand search should not be trusted to have found all of it.
+1. **A pre-count is only true of the commit it was measured at.** Eighteen of the 41 figures an
+   earlier draft carried — measured at `89c1f026`, three days before this run — no longer hold on
+   this tree, because `main` advanced past that commit before the worktree was cut. The largest:
+   `agents::agent` 21 → **58**, `memory` 12 → **53**, `agents::agent::tests` 14 → **44**,
+   `session::session_manager` 139 → **145**, `routes::session` 20 → **29**, `agents::subagent_tool`
+   16 → **27**, `developer::shell` 16 → **24**, `knowledge::macros` 10 → **18**. Every one of them
+   is a `pre + N` assertion that would have reported a shortfall as a pass, and no reader could have
+   spotted a single one. The whole table is re-measured at `fd14ef9a` and dated.
+2. `knowledge::` is **198**, not "~122" (the stale figure inherited from `CLAUDE.md`) and not the
+   190 an earlier draft of this task recorded. Task 10A's `pre + 16` assertion built on 122 would
+   have read a 76-test shortfall as a pass. Corrected in Task 10A Step 4.
+3. `agents::extension_manager::tests` is **36**, not the 27 an earlier draft asserted nor the 33 the
+   previous measurement found, and the *filter* reports **40** because libtest substring-matches
+   `agents::extension_manager_extension::tests`. Six of the 36 are in a `generate_extension_name_tests`
+   nested *inside* `tests` — the "helper `mod` inside `mod tests`" shape §"Which test filters are
+   validated" names as failure mode (a), instantiated. Corrected in Task 10A Step 1's comment.
+4. `agents::agent` spans **five** test modules — `tests`, `persisted_ordering::tests`,
+   `persisted_ordering_guard`, `stall_seam_tests`, `rewrite_basis_tests` — of which only the first
+   is named `tests`; the previous run found three, and two more arrived with #66. That is the same
+   shape as `routes::agent` and `routes::session`, which §"Which test filters are validated" found by
+   hand; the pattern is general, it *grows*, and a hand search should not be trusted to have found
+   all of it. `routes::session` is now the sharpest case: 5 of its 29 are not in `routes::session` at
+   all but in `routes::session_events`, a **different module** the substring reaches.
 
 **What it confirmed.** Every "0 today" claim this plan makes: `agents::chatrecall_extension` and
-`session::chat_history_search` really do have no tests, and `routes::agent` = 8 / `routes::session`
-= 20 are exact. No filter in this plan names a path that resolves to *something else* — the failure
+`session::chat_history_search` really do have no tests, every deferred module is absent, and
+`routes::agent` = 8 is still exact — the one figure from the earlier run that survived a moving
+`main` unchanged. No filter in this plan names a path that resolves to *something else* — the failure
 mode that would have been worst — and none is misspelled.
 
 For every filter that resolves, record the pre-count above in its owning task, so the task asserts
@@ -2598,13 +2640,10 @@ want() {  # want <label> <expected> <actual>
 # and exits 0 — reintroduced by the gate meant to catch it. The `PKG` column is
 # what closes it.
 #
-# The 18 deferred rows from Step 3's second table, verbatim: package, filter,
+# The 12 deferred rows from Step 3's second table, verbatim: package, filter,
 # owning task, and the EVIDENCE grep that proves this plan really creates it.
 # Every one measured 0 today.
 cat > /tmp/56-filters/deferred.txt <<'ROWS'
-biorouter|privacy|4|crates/biorouter/src/privacy/mod.rs
-biorouter|privacy::|4|crates/biorouter/src/privacy/mod.rs
-biorouter|privacy::tests|4|crates/biorouter/src/privacy/mod.rs
 biorouter|providers::tier_tests|5|crates/biorouter/src/providers/tier_tests.rs
 biorouter|privacy::extensions|8|crates/biorouter/src/privacy/extensions.rs
 biorouter|agents::chatrecall_extension|10,17|crates/biorouter/src/agents/chatrecall_extension.rs
@@ -2618,66 +2657,79 @@ biorouter|privacy::declassify|29|crates/biorouter/src/privacy/declassify.rs
 biorouter-mcp|knowledge::tier_user|29A|crates/biorouter-mcp/src/knowledge/tier_user.rs
 biorouter|privacy::disclosure|30A|crates/biorouter/src/privacy/disclosure.rs
 ROWS
-# ⚠ FIFTEEN, not eighteen, and the difference is DR-17. Five rows left with the
-# deferred barrier — `private_roots` (14B), `privacy::private_roots` (14B),
-# `privacy::path_policy` (14B), `agent_drafter::tier` (14E) and
-# `call_tool_dispatches_through_the_barrier` (14C) — because nothing in v1
-# creates them, and a deferred entry nothing creates is a filter that stays
-# green for ever, which assertion (b) below exists to reject. Two arrived with
-# Tasks 29A and 30A. If this number moves again, the table three sections up
-# moved with it or one of them is wrong.
-want "deferred rows" 15 "$(wc -l < /tmp/56-filters/deferred.txt | tr -d ' ')"
-# ⚠ AND THE OTHER 41. Step 3's first table claims an EXACT measured count for
+# ⚠ TWELVE, not eighteen, and the difference is two rulings and one landed task.
+# Five rows left with the deferred barrier — `private_roots` (14B),
+# `privacy::private_roots` (14B), `privacy::path_policy` (14B),
+# `agent_drafter::tier` (14E) and `call_tool_dispatches_through_the_barrier`
+# (14C) — because nothing in v1 creates them, and a deferred entry nothing
+# creates is a filter that stays green for ever, which assertion (b) below
+# exists to reject; their COMMANDS were struck in the same commit, or the
+# harvest would keep finding them and MISSING would fire. Two arrived with Tasks
+# 29A and 30A. Three left by RESOLVING: `privacy`, `privacy::` and
+# `privacy::tests` are 3 apiece now that Task 4 has landed, and they moved to the
+# resolved table. If this number moves again, the table three sections up moved
+# with it or one of them is wrong.
+want "deferred rows" 12 "$(wc -l < /tmp/56-filters/deferred.txt | tr -d ' ')"
+# ⚠ AND THE OTHER 46. Step 3's first table claims an EXACT measured count for
 # every filter that resolves, and every `pre + N` assertion in this plan is
 # arithmetic on one of those numbers. Until this round the loop below treated
-# ANY positive count as OK, so the table could claim 122 while the tree said 190
+# ANY positive count as OK, so the table could claim 122 while the tree said 198
 # and nothing failed — which is the `knowledge::` error this task itself found,
 # reintroduced as a hole in the gate that found it. Same shape as Task 10D's
 # metadata baseline, same rule: a difference you cannot NAME is the defect.
+# ⚠ These 46 numbers are dated: measured 2026-08-01 at fd14ef9a. Eighteen of the
+# figures measured at 89c1f026 three days earlier are already wrong here, so a
+# DRIFT line usually means main moved, not that you broke something — RE-MEASURE
+# and re-baseline the row in the commit that noticed, never guess the delta.
 cat > /tmp/56-filters/resolved.txt <<'ROWS'
-biorouter|agents::agent|21
-biorouter|agents::agent::tests|14
-biorouter|agents::code_execution_extension|69
-biorouter|agents::extension_manager|37
+biorouter|agents::agent|58
+biorouter|agents::agent::tests|44
+biorouter|agents::code_execution_extension|71
+biorouter|agents::extension_manager|40
 biorouter|agents::extension_manager_extension|4
 biorouter|agents::knowledge_tool|4
 biorouter|agents::mcp_client|12
-biorouter|agents::reply_parts|2
-biorouter|agents::subagent_tool|16
+biorouter|agents::reply_parts|3
+biorouter|agents::subagent_tool|27
 biorouter|agents::tool_execution|8
 biorouter|daemon_secret_never_reaches_an_extension_child|1
 biorouter|hooks|93
-biorouter|knowledge::conversation_ingest|2
-biorouter|knowledge::provider_completer|4
-biorouter|providers|359
+biorouter|knowledge::conversation_ingest|3
+biorouter|knowledge::provider_completer|6
+biorouter|privacy|3
+biorouter|privacy::|3
+biorouter|privacy::tests|3
+biorouter|providers|360
 biorouter|scheduler|3
-biorouter|session::session_manager|139
+biorouter|session::session_manager|145
 biorouter-cli|commands::knowledge|9
-biorouter-cli|session|166
+biorouter-cli|session|195
 biorouter-mcp|agent_drafter::|244
 biorouter-mcp|agent_drafter::catalog|5
+biorouter-mcp|agent_drafter::store|20
 biorouter-mcp|agent_drafter::validate|9
 biorouter-mcp|daemon_secret_never_reaches_a_shell_child|1
 biorouter-mcp|developer::background|23
-biorouter-mcp|developer::rmcp_developer::tests|64
-biorouter-mcp|developer::shell|16
-biorouter-mcp|knowledge::|190
-biorouter-mcp|knowledge::macros|10
-biorouter-mcp|knowledge::macros::ingest|3
+biorouter-mcp|developer::rmcp_developer::tests|68
+biorouter-mcp|developer::shell|24
+biorouter-mcp|knowledge::|198
+biorouter-mcp|knowledge::macros|18
+biorouter-mcp|knowledge::macros::ingest|9
 biorouter-mcp|knowledge::server|11
 biorouter-mcp|knowledge::service|38
-biorouter-mcp|memory|12
-biorouter-mcp|memory::|10
+biorouter-mcp|memory|53
+biorouter-mcp|memory::|51
 biorouter-mcp|paths::|9
 biorouter-mcp|secret_guard::|19
 biorouter-sandbox|environment|1
-biorouter-server|auth|4
+biorouter-server|auth|6
+biorouter-server|auth::|3
 biorouter-server|routes::agent|8
-biorouter-server|routes::apps|90
+biorouter-server|routes::apps|94
 biorouter-server|routes::config_management|3
-biorouter-server|routes::session|20
+biorouter-server|routes::session|29
 ROWS
-want "resolved rows" 41 "$(wc -l < /tmp/56-filters/resolved.txt | tr -d ' ')"
+want "resolved rows" 46 "$(wc -l < /tmp/56-filters/resolved.txt | tr -d ' ')"
 # ⚠ HARVEST FROM FENCED CODE BLOCKS ONLY, WITH `#` COMMENTS STRIPPED. Two
 # measured reasons, both of which made this gate fail on itself:
 #   * the sentence "This gate rejects: a `cargo test -p biorouter-mcp --lib
@@ -2688,8 +2740,9 @@ want "resolved rows" 41 "$(wc -l < /tmp/56-filters/resolved.txt | tr -d ' ')"
 #   Only a command inside a fence and outside a comment is a command anyone runs.
 # ⚠ AND THE TRAILING `::` IS PART OF THE FILTER: `[a-z_]+(::[a-z_]*)*`, not
 #   `(::[a-z_]+)*`. `secret_guard::` is 19 tests and `secret_guard` is 20;
-#   `memory::` is 10 and `memory` is 12. Normalising the separator away audits a
-#   different command from the one written down, which is this task's own defect.
+#   `memory::` is 51 and `memory` is 53; `auth::` is 3 and `auth` is 6.
+#   Normalising the separator away audits a different command from the one
+#   written down, which is this task's own defect.
 awk '/^```/{f=!f; next} f' "$PLAN" | sed 's/#.*//' > /tmp/56-filters/plan-code.txt
 { grep -oE 'cargo test -p [a-z-]+ --lib [a-z_]+(::[a-z_]*)*' /tmp/56-filters/plan-code.txt \
     | sed -E 's/cargo test -p ([a-z-]+) --lib /\1 /'
@@ -2762,7 +2815,7 @@ echo "  NO module called tests. That filter is unresolvable as written."
 # (b) Every DEFERRED entry is something this plan actually creates. A deferred
 #     entry nothing creates is a filter that stays green forever.
 #
-# ⚠ ALL SEVENTEEN, from the same table, in a loop — not a hand-written list of
+# ⚠ ALL TWELVE, from the same table, in a loop — not a hand-written list of
 #     the ones that happen to be new .rs files under `privacy/`. The rows this
 #     used to omit are exactly the ones that are NOT a new file in that
 #     directory, and they are the ones where "does the plan create it?" is a
@@ -2781,18 +2834,18 @@ echo "  NO module called tests. That filter is unresolvable as written."
 # column names a function this plan never writes. The check was vacuous in
 # exactly the direction it was written to close. Strip the rows first: they are the only
 # lines in the document with four `|`-separated fields and no leading `|`
-# (markdown table rows all start with `| `). The 41 resolved rows have three
+# (markdown table rows all start with `| `). The 46 resolved rows have three
 # fields and are left alone — they carry no path and no `fn`, so they cannot
 # witness anything.
 awk -F'|' 'NF == 4 && $0 !~ /^\|/ && $1 ~ /^biorouter(-[a-z]+)?$/ { next } { print }' \
   "$PLAN" > /tmp/56-filters/plan-minus-table.txt
 d=$(( $(wc -l < "$PLAN") - $(wc -l < /tmp/56-filters/plan-minus-table.txt) ))
-# Self-check on the stripper: exactly the 18 deferred rows, and NOTHING else.
+# Self-check on the stripper: exactly the 12 deferred rows, and NOTHING else.
 # MEASURED against this plan. If this number moves, the awk filter has started
 # eating prose and every UNBACKED verdict below is unsound — which is the failure
 # mode where a too-greedy strip makes real evidence vanish and the gate turns
 # into a wall of false UNBACKEDs that the next reader "fixes" by deleting it.
-want "rows stripped before the evidence search" 18 "$d"
+want "rows stripped before the evidence search" 12 "$d"
 unbacked=0
 while IFS='|' read -r pkg filter task evidence; do
   n=$(grep -c -- "$evidence" /tmp/56-filters/plan-minus-table.txt) || n=0
@@ -2801,13 +2854,18 @@ while IFS='|' read -r pkg filter task evidence; do
        unbacked=$((unbacked + 1)); fi
 done < /tmp/56-filters/deferred.txt
 want "UNBACKED rows" 0 "$unbacked"
-# (c) Re-runnable, and the phase gates re-run it: after Task 20 the DEFERRED set
-#     must have lost knowledge::tier, privacy::extensions and privacy::refusal
+# (c) Re-runnable, and the phase gates re-run it: this run itself moved
+#     privacy, privacy:: and privacy::tests OUT of the deferred set because Task
+#     4 created them, which is the mechanism. After Task 20 the set must also
+#     have lost knowledge::tier, privacy::extensions and privacy::refusal
 #     (⚠ NOT agent_drafter::tier — DR-17 defers Task 14E, and that row is struck
 #     from the table along with the other four barrier rows);
-#     after Task 40 it must be EMPTY — which it can only be because the five
-#     deferred rows were REMOVED, not because they resolved. Those runs edit the heredoc above — which
-#     assertion (2) then re-checks — rather than relaxing anything here.
+#     after Task 40 it must be EMPTY. A row leaves in exactly one of two ways:
+#     it RESOLVES (move it to resolved.txt with its measured count, as the three
+#     privacy rows just did) or its task is DESCOPED (delete the row AND strike
+#     the commands that name it, or the harvest reports MISSING). Those runs edit
+#     the heredocs above — which assertions (2) and "resolved rows" then
+#     re-check — rather than relaxing anything here.
 #
 # ── LAST LINE. This block's exit status IS the verdict.
 if [ "$rc" -eq 0 ]; then echo "Task 4b gate: PASS"; else echo "Task 4b gate: FAIL"; fi
@@ -2842,20 +2900,20 @@ as it stands it prints `Task 4b gate: PASS` and exits **0**; with one deferred r
 
 **This gate rejects: a deferred row whose evidence is its own fourth column.** Round 3 §7 built it —
 add `…|fn <a name nothing writes>` to the heredoc and the `UNBACKED` loop searched the *whole plan*,
-which contains that row, so it counted 1 and reported OK. Every one of the eighteen real rows passed
+which contains that row, so it counted 1 and reported OK. Every one of the real rows passed
 for the same reason, which means the check was measuring nothing. The evidence is now searched over
-the plan **minus the eighteen rows** (they are the only lines with four `|`-fields and no leading
-`|`), the stripper's own output is asserted at exactly 18 lines removed, and the fabricated row now
-counts 0 and fails. Verified both ways on this plan: all eighteen real rows still resolve, with
-between 1 and 17 supporting mentions each, and the fabricated one drops to 0. ⚠ **A consequence for
+the plan **minus those rows** (they are the only lines with four `|`-fields and no leading
+`|`), the stripper's own output is asserted at exactly 12 lines removed, and the fabricated row now
+counts 0 and fails. Verified both ways on this plan: all twelve real rows still resolve, and the
+fabricated one drops to 0. ⚠ **A consequence for
 whoever edits this task: do not write a deferred row's evidence string into prose.** That is the same
 trap as (i) below, wearing the other face — prose naming `fn <deferred test name>` re-creates the
 self-witness that this strip removes, because prose is not stripped.
 
 **This gate rejects: Step 3's first table claiming a pre-count the tree does not have.** Until this
 round the loop treated *any* positive count as `OK`, so `knowledge:: = 122` — the stale figure that
-would have read a 68-test shortfall as a pass, and the single most valuable thing this task found —
-was invisible to the gate that found it. The 41 measured pairs are now a second heredoc keyed on the
+would have read a 76-test shortfall as a pass, and the single most valuable thing this task found —
+was invisible to the gate that found it. The 46 measured pairs are now a second heredoc keyed on the
 same `(package, filter)` pair, and a listing that disagrees with the recorded number is a `DRIFT`
 line, not an `OK`. It is an **equality**, not `n >= recorded`: tasks in this plan add tests, and the
 rule is that the task which grew a count re-baselines its row in the same commit — the identical
@@ -2869,18 +2927,21 @@ plan failed and the next reader would have "fixed" it by loosening the audit. Th
 only fenced code blocks with `#` comments stripped: a command inside a fence and outside a comment is
 a command someone runs, and nothing else is. (ii) The old pattern `[a-z_]+(::[a-z_]+)*` silently
 dropped a **trailing `::`**, so `--lib secret_guard::` (19 tests) was audited as `secret_guard`
-(20) and `--lib -- memory::` (10) as `memory` (12). It resolved either way, so nothing failed — and a
+(20) and `--lib -- memory::` (51) as `memory` (53). It resolved either way, so nothing failed — and a
 `pre + N` built on the wrong one of those pairs is the exact arithmetic-on-the-wrong-base error this
 task exists to prevent.
 
-⚠ **This task does not close the risk for the seventeen deferred filters** — they name modules and
-two test names that do not exist yet and cannot be listed. It converts "unruled-out for all 58" into
-"unruled-out for 17, each owned by a named task", which is a different order of risk: **41 of 58
-pairs are now measured**, every "0 today" claim in this plan is confirmed, and four wrong figures
-were found and corrected — `knowledge::` 190-not-122, `agents::extension_manager` 37-not-27,
-`secret_guard::` 19-not-20, `memory::` 10-not-12 — plus one filter (Task 14C's
-`routes::agent::tests::…`) that can never resolve at all Task 20's Step 4b and Task 40's Step 2b re-run Step 5 with a shrunk and
-then an **empty** `DEFERRED` set, which is what finishes the job.
+⚠ **This task does not close the risk for the twelve deferred filters** — they name modules and one
+test name that do not exist yet and cannot be listed. It converts "unruled-out for all 58" into
+"unruled-out for 12, each owned by a named task", which is a different order of risk: **46 of 58
+pairs are now measured**, every "0 today" claim in this plan is confirmed, and the wrong figures were
+found and corrected — eighteen counts that `main` had moved past since 2026-07-29 (`agents::agent`
+58-not-21, `memory` 53-not-12, `routes::session` 29-not-20 among them), `knowledge::` 198-not-122,
+`agents::extension_manager` 40-not-27, `secret_guard::` 19-not-20, `memory::` 51-not-53, `auth::`
+3-not-6 — plus one filter (Task 14C's `routes::agent::tests::…`) that can never resolve at all, and
+five filters belonging to descoped tasks that were still live commands. Task 20's Step 4b and Task
+40's Step 2b re-run Step 5 with a shrunk and then an **empty** `DEFERRED` set, which is what finishes
+the job.
 
 - [ ] **Step 6: Commit**
 
@@ -5012,10 +5073,12 @@ fn a_base_created_by_any_surface_is_registered_public_rather_than_unknown() {
 // (:1833 — NOT mcp_client.rs's `mod tests` at :891, which holds only
 //  BioRouterClient helpers and none of the ExtensionManager fixtures.)
 //
-// ⚠ MEASURED by Task 4b, not counted by hand: `agents::extension_manager::tests`
-// holds **33** tests, and the FILTER `agents::extension_manager` reports **37**,
-// because libtest matches substrings and `agents::extension_manager_extension::tests`
-// (4) contains it. An earlier draft said "27 tests" here. Assert 37 + N, not 27 + N.
+// ⚠ MEASURED by Task 4b at fd14ef9a (2026-08-01), not counted by hand:
+// `agents::extension_manager::tests` holds **36** tests — 30 directly plus 6 in a
+// `generate_extension_name_tests` nested INSIDE `tests` — and the FILTER
+// `agents::extension_manager` reports **40**, because libtest matches substrings
+// and `agents::extension_manager_extension::tests` (4) contains it. Earlier drafts
+// said 27, then 33/37; `main` moved. Assert 40 + N, and RE-MEASURE before you do.
 
 #[tokio::test]
 async fn a_third_party_extension_never_learns_the_capability_tier() {
@@ -5319,7 +5382,7 @@ inside it is built at execution time, on the far side of the dispatch semaphore.
 ```bash
 cargo test -p biorouter-mcp --lib knowledge::tier
 cargo test -p biorouter-mcp --lib knowledge::server    # 11 today (MEASURED, Task 4b); assert 11 + 2
-cargo test -p biorouter-mcp --lib knowledge::          # 190 today (MEASURED, Task 4b); assert 190 + 16
+cargo test -p biorouter-mcp --lib knowledge::          # 198 today (MEASURED, Task 4b); assert 198 + 16
 cargo test -p biorouter --lib agents::mcp_client
 cargo test -p biorouter --lib agents::extension_manager
 cargo test -p biorouter-server --test knowledge_routes # ~19 today; assert unchanged + 1
@@ -5335,12 +5398,15 @@ total alone cannot tell "they landed in the right module" from "they landed anyw
 an integration test, because the route is the thing under test. The last two lines are the evidence
 for decision (5a): if `create_base`'s signature had changed, they would not compile.
 
-⚠ **190, not "~122".** An earlier draft carried the figure from `CLAUDE.md`, which is stale.
+⚠ **198, not "~122" — and not the 190 an earlier draft of Task 4b recorded.**
+`CLAUDE.md`'s figure is stale, and so is any figure not tied to a commit.
 [Task 4b](#task-4b-resolve-every-test-filter-against-a-real-cargo---list-docs-only) ran
-`cargo test -p biorouter-mcp --lib -- --list` and measured **190** matching `knowledge::`, across 35
-submodules (`knowledge::service::tests` alone is 38, `knowledge::store::tests` 14,
-`knowledge::server::tests` 11). A `pre + 10` assertion built on 122 would have read a **68-test
-shortfall** as a pass. The `+ 16` is 10 for the tier store and its two service tests, three
+`cargo test -p biorouter-mcp --lib -- --list` on 2026-08-01 at `fd14ef9a` and measured **198**
+matching `knowledge::`, across 35 submodules (`knowledge::service::tests` alone is 38,
+`knowledge::store::tests` 14, `knowledge::server::tests` 11). A `pre + 16` assertion built on 122
+would have read a **76-test shortfall** as a pass, and one built on the three-day-old 190 would have
+read an 8-test shortfall the same way. **Re-measure before you assert.** The `+ 16` is 10 for the
+tier store and its two service tests, three
 archive-provenance tests from decision (2)(a), and the two `server.rs` export-location rows decision
 (2)(b) gained this round — the third of those, the user's own route, is in `--test knowledge_routes`
 and so is outside the `--lib` count. Re-derive this arithmetic if a test is added or dropped; a `+ N`
@@ -6285,13 +6351,13 @@ the value, so the diff a reviewer reads at 10C is one `if`.
 # changes three struct signatures that an integration test constructs.
 cargo check --workspace --all-targets
 # Pre-counts are MEASURED (Task 4b), so these assert `pre + N`, not "non-zero".
-cargo test -p biorouter-mcp --lib knowledge::   2>&1 | grep "test result:"  # 190 + 4 (server) + 1 (ingest)
+cargo test -p biorouter-mcp --lib knowledge::   2>&1 | grep "test result:"  # 198 + 4 (server) + 1 (ingest)
 cargo test -p biorouter-mcp --lib agent_drafter:: 2>&1 | grep "test result:"  # 244, unchanged: 10B only plumbs CP4
 cargo test -p biorouter-mcp --test knowledge_macros_e2e
 cargo test -p biorouter-server --test knowledge_routes
-cargo test -p biorouter-server --lib routes::apps 2>&1 | grep "test result:"  # 90 + 1
-cargo test -p biorouter --lib knowledge::conversation_ingest 2>&1 | grep "test result:"  # 2, unchanged
-cargo test -p biorouter --lib knowledge::provider_completer 2>&1 | grep "test result:"  # 4 + 1
+cargo test -p biorouter-server --lib routes::apps 2>&1 | grep "test result:"  # 94 + 1
+cargo test -p biorouter --lib knowledge::conversation_ingest 2>&1 | grep "test result:"  # 3, unchanged
+cargo test -p biorouter --lib knowledge::provider_completer 2>&1 | grep "test result:"  # 6 + 1
 cargo test -p biorouter-cli --lib commands::knowledge 2>&1 | grep "test result:"  # 9 + 3
 ```
 
@@ -6299,8 +6365,8 @@ Expected: **PASS**, and `cargo check --workspace --all-targets` clean. The CLI l
 decoration — it is the only crate that constructs all four Args types and never goes near an MCP
 server, so it is the evidence that the required field reached every caller rather than only the ones
 with tests, and after this round it carries the CLI's two behavioural rows (`9 + 2`, a pre-count
-measured in Task 4b — never "non-zero"). `knowledge::provider_completer` is **4** today (measured,
-Task 4b) and gains the pairing test. The `--test knowledge_macros_e2e` line is the one that used to
+measured in Task 4b — never "non-zero"). `knowledge::provider_completer` is **6** today (measured
+2026-08-01 at `fd14ef9a`, Task 4b — it was 4 three days earlier) and gains the pairing test. The `--test knowledge_macros_e2e` line is the one that used to
 be missing: it is the sole out-of-lib constructor of `IngestArgs`/`QueryArgs`, and without it this
 commit and the eight after it leave `cargo test` red.
 
@@ -7773,7 +7839,7 @@ async fn a_public_worker_profile_is_not_granted_a_private_base() {
 cargo test -p biorouter-mcp --lib agent_drafter::catalog    # 5 today (measured, Task 4b); assert 5 + 1
 cargo test -p biorouter-mcp --lib agent_drafter::validate
 cargo test -p biorouter-mcp --lib agent_drafter::           # 244 today (measured); assert 244 + 6
-cargo test -p biorouter-server --lib routes::apps           # 90 today (measured); assert 90 + 2
+cargo test -p biorouter-server --lib routes::apps           # 94 today (measured); assert 94 + 2
 ```
 
 Expected: **COMPILE ERROR** first — `Catalog::discover` takes 0 arguments, `capability_report` takes
@@ -12112,8 +12178,12 @@ Layer A keeps every in-process tool working there.
 
 ```bash
 cargo test -p biorouter-mcp --lib secret_guard::          # expect the SAME count as before (a)
-cargo test -p biorouter-mcp --lib -- private_roots paths::
-cargo test -p biorouter --lib -- privacy::path_policy privacy::private_roots
+cargo test -p biorouter-mcp --lib -- paths::
+# ⛔ RETIRED WITH THIS TASK by DR-17, and struck by Task 4b so the filter audit
+# stops harvesting a command nothing in v1 makes resolvable. Uncomment together
+# with the task if the barrier is ever revived:
+#   cargo test -p biorouter-mcp --lib -- private_roots
+#   cargo test -p biorouter --lib -- privacy::path_policy privacy::private_roots
 cargo test -p biorouter --lib -- agents::extension_manager
 cargo test -p biorouter-mcp --lib -- developer::shell
 cargo test -p biorouter --test path_resolver_agreement
@@ -12704,7 +12774,9 @@ would leave two spawn paths to keep in step and is the divergence this task exis
 ```bash
 cargo test -p biorouter-mcp --lib -- developer::background
 cargo test -p biorouter-server --lib auth
-cargo test -p biorouter-server --lib -- call_tool_dispatches_through_the_barrier
+# ⛔ RETIRED WITH THIS TASK by DR-17, and struck by Task 4b so the audit stops
+# harvesting a command v1 never makes resolvable. Revive as:
+#   cargo test -p biorouter-server --lib -- call_tool_dispatches_through_the_barrier
 # ⚠ The BARE TEST NAME, not `routes::agent::tests::…`. Measured by Task 4b against a
 # real `--list`: `routes/agent.rs` has NO module named `tests` — its two `#[cfg(test)]`
 # blocks are `working_dir_lock_tests` and `knowledge_selection_tests` — so the
@@ -13963,7 +14035,11 @@ so a tool-side caller is a failing gate rather than a silent hole.
 - [ ] **Step 4: Run**
 
 ```bash
-cargo test -p biorouter-mcp --lib -- agent_drafter::tier agent_drafter::store
+cargo test -p biorouter-mcp --lib -- agent_drafter::store
+# ⛔ `agent_drafter::tier` RETIRED WITH THIS TASK by DR-17, and struck by Task 4b
+# so the audit stops harvesting it; `agent_drafter::store` above is real (20
+# tests today) and stays. Revive as:
+#   cargo test -p biorouter-mcp --lib -- agent_drafter::tier agent_drafter::store
 cargo test -p biorouter-mcp --lib -- knowledge::                 # pre-count is MEASURED, assert pre + N
 cargo test -p biorouter-mcp --lib -- memory::
 cargo test -p biorouter-mcp --test agent_drafter_registered      # the real-transport leg
@@ -15959,20 +16035,31 @@ curl -s -X POST http://127.0.0.1:3000/agent/call_tool -H 'X-Secret-Key: test' \
 - [ ] **Step 4b: Re-run Task 4b's filter audit with a shrunk deferred set**
 
 ```bash
-# Nine of Task 4b's twelve deferred filters were created by Tasks 4-19, so only
-# three may still be deferred here. Re-run Task 4b Steps 1 and 5, deleting the
-# nine landed ROWS from /tmp/56-filters/deferred.txt and keeping these three:
+# Seven of Task 4b's TWELVE deferred rows are created by Tasks 5-19, so exactly
+# five may still be deferred here. Re-run Task 4b Steps 1 and 5, deleting the
+# seven landed ROWS from /tmp/56-filters/deferred.txt and keeping these five:
 #   biorouter|privacy::visibility|21|crates/biorouter/src/privacy/visibility.rs
-#   biorouter|privacy::declassify|29|crates/biorouter/src/privacy/declassify.rs
 #   biorouter|every_copy_path_carries_the_tier_and_the_provider|22|fn every_copy_path_carries_the_tier_and_the_provider
+#   biorouter|privacy::declassify|29|crates/biorouter/src/privacy/declassify.rs
+#   biorouter-mcp|knowledge::tier_user|29A|crates/biorouter-mcp/src/knowledge/tier_user.rs
+#   biorouter|privacy::disclosure|30A|crates/biorouter/src/privacy/disclosure.rs
+# …and add each of the seven landed filters to resolved.txt with the count the
+# --list now reports. `privacy`, `privacy::` and `privacy::tests` are ALREADY in
+# resolved.txt at 3 apiece (Task 4 landed before Task 4b ran) and every task
+# since has added to them, so re-baseline those three too.
 # Delete rows rather than editing a regex: the deferral is keyed on the
-# (package, filter) PAIR, and a nine-term alternation is where a package gets
+# (package, filter) PAIR, and a seven-term alternation is where a package gets
 # dropped (Task 4b's "What this catches").
-# Expect: 0 MISSING, 3 DEFER, 0 UNUSED, and OK with a non-zero count for all nine of
-# privacy, privacy::tests, privacy::extensions, privacy::refusal,
+# ⚠ EXPECT DRIFT LINES, AND FIX THEM BY RE-MEASURING, NOT BY LOOSENING THE GATE.
+# Twenty tasks of new tests have moved the pre-counts recorded at fd14ef9a, and
+# main may have moved under the branch as well; the rule is Task 10D's — the
+# commit that grows a count re-baselines its row. A count you cannot NAME the
+# source of is the defect.
+# Expect: 0 MISSING, 5 DEFER, 0 UNBACKED, 0 DRIFT after re-baselining, and OK
+# with a non-zero count for all seven of privacy::extensions, privacy::refusal,
 # privacy::alt_provider, providers::tier_tests, knowledge::tier,
 # agents::chatrecall_extension and session::chat_history_search.
-# A DEFER on any of those nine means the module landed under a different path
+# A DEFER on any of those seven means the module landed under a different path
 # from the one this plan filters on — the BR-71 defect, caught here rather than
 # at the release gate, where forty tasks of gates have already quoted it.
 ```
@@ -16145,7 +16232,7 @@ three hand-rolled builders into one shared helper is a better trade and closes t
 | Action | Path | Anchor (re-verified at `9558c346`) |
 |---|---|---|
 | Modify | `crates/biorouter/src/session/session_manager.rs` | `copy_session` `:4710-4741` (`create_session` `:4718-4724`, builder `:4726-4733`, `replace_conversation` `:4736`); `diverge_session_for_edit` `:4743-4773`; `diverge_session` `:4776-4841` (**the primary GUI diverge, and it does NOT call `copy_session`** — `create_session` `:4816-4822`, builder `:4824-4836`, `replace_conversation` `:4838`); `import_session` `:4668-4707` (builder `:4683-4700`, `replace_conversation` `:4703`); the two builder setters this helper must use correctly — `provider_name(impl Into<String>)` `:972-975` and `model_config(ModelConfig)` `:977-980`, **both taking values, not `Option`s** |
-| Reference | `crates/biorouter-server/src/routes/session.rs` | `POST /sessions/{id}/diverge` at `:1029`. ⚠ **`routes/session.rs` already has 20 tests** in two `#[cfg(test)]` blocks — `mod diverge_tests` (`:1038`, 11) and `mod edit_message_tests` (`:1417`, 9). Neither is named `tests`, and the module-path filter picks up both, so Step 4's `cargo test -p biorouter-server --lib routes::session` prints **`20 passed`** before this task, not `0 passed`. A previous version of this row said the module was empty. **Record the pre-count and assert `pre + N`** — `mod diverge_tests` is also exactly where this task's route test belongs |
+| Reference | `crates/biorouter-server/src/routes/session.rs` | `POST /sessions/{id}/diverge` at `:1029`. ⚠ **the filter `routes::session` reports 29 tests** (measured by Task 4b at `fd14ef9a`): `mod diverge_tests` (15) and `mod edit_message_tests` (9) in this file — neither named `tests`, both picked up by the module-path filter — **plus 5 in `routes::session_events::tests`, a different file the substring also reaches**. So Step 4's `cargo test -p biorouter-server --lib routes::session` prints **`29 passed`** before this task, not `0 passed` and not the 20 an earlier hand count claimed. A previous version of this row said the module was empty. **Re-measure and record the pre-count, then assert `pre + N`** — `mod diverge_tests` is also exactly where this task's route test belongs |
 | Reference | `crates/biorouter/src/session/session_manager.rs` | `diverge_session_at` `:1562` — checked, and it is a thin wrapper onto the same storage `diverge_session` at `:4776`, so the three-path coverage below really is complete. Say so, or the next reviewer re-derives it |
 
 - [ ] **Step 1: Write the failing tests — one per path, and one that enumerates**
@@ -19663,8 +19750,9 @@ the assertion: a `0 passed` is not "nothing to run", it is a suite that did not 
 looks.
 
 ⚠ **The other two are NOT zero, and "assert non-zero" is worthless for them.**
-`routes::agent` reports **8 passed** on `main` and `routes::session` reports **20 passed**, from four
-pre-existing `#[cfg(test)]` blocks that are not named `tests`. A release gate that only demands
+`routes::agent` reports **8 passed** and `routes::session` **29 passed** (measured by Task 4b at
+`fd14ef9a`; `routes::session` was 20 three days earlier, so re-measure rather than inherit these),
+from five pre-existing `#[cfg(test)]` blocks, none named `tests`. A release gate that only demands
 "non-zero" from those two is satisfied by a tree in which #56 added no route tests whatsoever. Run
 them and compare against the recorded baselines:
 
@@ -19672,7 +19760,7 @@ them and compare against the recorded baselines:
 cargo test -p biorouter-server --lib routes::agent   2>&1 | grep "test result:"
 echo "expect: strictly MORE than 8 passed  (8 is the untouched baseline)"
 cargo test -p biorouter-server --lib routes::session 2>&1 | grep "test result:"
-echo "expect: strictly MORE than 20 passed (20 is the untouched baseline)"
+echo "expect: strictly MORE than 29 passed (29 is the untouched baseline at fd14ef9a — re-measure)"
 cargo test -p biorouter --lib agents::chatrecall_extension 2>&1 | grep "test result:"
 echo "expect: non-zero (0 is the untouched baseline)"
 cargo test -p biorouter --lib session::chat_history_search 2>&1 | grep "test result:"
@@ -19685,7 +19773,12 @@ echo "expect: non-zero (0 is the untouched baseline)"
 # Every module this plan creates now exists, so nothing may be deferred. Re-run
 # Task 4b Steps 1 and 5 with an EMPTY deferred table:
 #   : > /tmp/56-filters/deferred.txt   # nothing may be missing at the release gate
-# Expect: 0 MISSING, 0 DEFER and 0 UNUSED across all 42 (package, filter) pairs.
+# …and with resolved.txt re-baselined: every one of Task 4b's 12 deferred rows
+# has moved into it with a measured count, and forty tasks of new tests have
+# moved the 46 that were already there. Re-measure — a DRIFT line here is fixed
+# by running the --list again, never by relaxing the equality.
+# Expect: 0 MISSING, 0 DEFER, 0 DRIFT, 0 UNRECORDED and 0 UNBACKED across all 58
+# (package, filter) pairs — and `want "deferred rows" 0`.
 # A single DEFER here means a filter this plan has been quoting for forty tasks
 # names a module that never came to exist — a gate that has been printing
 # `0 passed` and exiting 0 the whole time. That is BR-71's most expensive defect,
