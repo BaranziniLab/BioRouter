@@ -5000,6 +5000,8 @@ mod tests {
             .await
             .unwrap();
 
+        let mut rx = biorouter::session_events::subscribe(&worker.id);
+
         let answer = run_bounded_turn(
             state.clone(),
             &agent,
@@ -5016,8 +5018,97 @@ mod tests {
         );
 
         // …and the turn released its lock, so the next consult on this durable
-        // worker is not refused by the lease it just took.
+        // worker is not refused by the lease it just took. This pins RELEASE
+        // only — on its own it passes against an implementation that never took
+        // the lock at all. Acquisition is pinned mid-flight by
+        // `an_abandoned_worker_turn_still_closes_its_bracket`.
         assert!(!state.is_turn_active(&worker.id));
+
+        // Observability is the property this task exists to deliver, and the
+        // bracket alone does not pin it: an implementation that published
+        // `TurnStarted`/`TurnFinished` and dropped every `Agent(…)` event on the
+        // floor satisfies the bus test next door while being worth nothing to
+        // the `workspace_open` tab watching this worker.
+        use biorouter::agents::AgentEvent;
+        use biorouter::session_events::SessionBusEvent;
+        let mut relayed = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            relayed.push(event);
+        }
+
+        assert!(
+            relayed.iter().any(|e| matches!(
+                e,
+                SessionBusEvent::Agent(AgentEvent::Message(m))
+                    if m.as_concat_text().contains("collected answer")
+            )),
+            "the worker's assistant message must reach the BUS, not just the caller: {relayed:#?}"
+        );
+
+        // One terminal per turn, exactly — `TerminalOnDrop` closes the bracket
+        // when the deadline abandons the future, and a path that forgot to
+        // disarm it would publish a second one that no count-blind boolean
+        // assertion could see.
+        let terminals = relayed
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    SessionBusEvent::TurnFinished { .. } | SessionBusEvent::TurnError { .. }
+                )
+            })
+            .count();
+        assert_eq!(terminals, 1, "exactly one terminal frame: {relayed:#?}");
+
+        // Reconciliation #59, through this relay: **no `MessagesPersisted` may
+        // precede a `Message` frame carrying one of the ids it publishes**
+        // (`agents/agent.rs`, `messages_then_persisted`). The agent guarantees it
+        // producer-side; this relay's only job is not to reorder, and nothing
+        // but a sequence assertion can tell that it didn't.
+        //
+        // Scoped to ids the stream actually yields as content, which is what the
+        // invariant says and not a weakening of it: the FIRST accounting frame
+        // of a consult names the caller's own prompt — `run_bounded_turn` builds
+        // that `Message::user()` itself and hands it to `agent.reply`, so it is
+        // never yielded back — and the doc names that case ("rows that are never
+        // yielded at all"). `checked` is what keeps the scoping from quietly
+        // turning the whole assertion vacuous.
+        let carried_ids: std::collections::HashSet<String> = relayed
+            .iter()
+            .filter_map(|e| match e {
+                SessionBusEvent::Agent(AgentEvent::Message(m)) => m.id.clone(),
+                _ => None,
+            })
+            .collect();
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut checked = false;
+        for event in &relayed {
+            match event {
+                SessionBusEvent::Agent(AgentEvent::Message(m)) => {
+                    if let Some(id) = &m.id {
+                        seen.insert(id.clone());
+                    }
+                }
+                SessionBusEvent::Agent(AgentEvent::MessagesPersisted(rows)) => {
+                    for row in rows.iter().filter(|r| carried_ids.contains(&r.id)) {
+                        checked = true;
+                        assert!(
+                            seen.contains(&row.id),
+                            "MessagesPersisted named {} before the Message frame carrying it: \
+                             {relayed:#?}",
+                            row.id
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
+        assert!(
+            checked,
+            "the accounting frame must survive the relay and name a yielded row — a consult \
+             that drops it leaves an observer unable to satisfy `expectedMessageIds`: \
+             {relayed:#?}"
+        );
     }
 
     /// The consult deadline **drops** the worker's future rather than unwinding
