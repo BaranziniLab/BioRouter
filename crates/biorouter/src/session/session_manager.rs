@@ -3510,14 +3510,27 @@ impl SessionStorage {
         // declassification dialog grades on (§12.4). Both right-hand sides read
         // the row's pre-UPDATE `privacy_tier`, which is what makes the pair
         // agree with each other.
+        //
+        // The predicate is "the row is exactly `public`", NOT "the row is not
+        // `private`", so that it is the same predicate
+        // `SessionClassification::from_stored` reads with. That reader fails
+        // closed: NULL, `PUBLIC` and anything else unrecognised all come back
+        // Private. Keying the SQL on `= 'private'` instead would leave every one
+        // of those rows — private to the whole Rust tree — assignable to a
+        // canonical `public` by any caller, which is the reversal this fragment
+        // exists to make impossible. A non-canonical value is preserved verbatim
+        // rather than canonicalised, so the anomaly stays visible; it reads
+        // Private either way.
         if builder.privacy_raise.is_some() {
             if !updates.is_empty() {
                 query.push_str(", ");
             }
             updates.push("privacy_tier");
             query.push_str(
-                "privacy_tier = CASE WHEN privacy_tier = 'private' THEN 'private' ELSE ? END, \
-                 privacy_reason = CASE WHEN privacy_tier = 'private' THEN privacy_reason ELSE ? END",
+                "privacy_tier = CASE WHEN IFNULL(privacy_tier, '') <> 'public' \
+                 THEN privacy_tier ELSE ? END, \
+                 privacy_reason = CASE WHEN IFNULL(privacy_tier, '') <> 'public' \
+                 THEN privacy_reason ELSE ? END",
             );
         }
 
@@ -11657,6 +11670,68 @@ mod tests {
         // The reason must not be rewritten by the refused write either, or the
         // provenance the declassify dialog grades on (§12.4) is destroyed.
         assert_eq!(reread.privacy_reason.as_deref(), Some("turn:versa_azure"));
+    }
+
+    #[tokio::test]
+    async fn a_stored_tier_the_reader_refuses_cannot_be_assigned_away() {
+        // `SessionClassification::from_stored` maps NULL, `PUBLIC`, and anything
+        // else it does not recognise to Private, deliberately and loudly. The SQL
+        // has to agree with it on the same predicate, or a row the entire Rust
+        // tree treats as private is still assignable to a canonical `public` by
+        // any caller — and that write is exactly the reversal the ratchet exists
+        // to make impossible. The rule is therefore "only an exactly-`public` row
+        // is assignable", not "a `private` row is frozen".
+        let temp = tempfile::TempDir::new().unwrap();
+        let manager = SessionManager::new(temp.path().to_path_buf());
+        let s = manager
+            .create_session(temp.path().to_path_buf(), "s".into(), SessionType::User)
+            .await
+            .unwrap();
+
+        // Damage the column the way a hand-edited database, a restored backup or
+        // a future writer that forgot `as_sql()` would.
+        let db = temp.path().join(SESSIONS_FOLDER).join(DB_NAME);
+        let pool = raw_pool(&db).await;
+        sqlx::query(
+            "UPDATE sessions SET privacy_tier = 'PUBLIC', privacy_reason = 'turn:versa_azure' WHERE id = ?1",
+        )
+        .bind(&s.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool.close().await;
+
+        assert_eq!(
+            manager
+                .get_session(&s.id, false)
+                .await
+                .unwrap()
+                .privacy_tier,
+            SessionClassification::Private,
+            "the reader fails closed on a non-canonical value"
+        );
+
+        manager
+            .update(&s.id)
+            .raise_privacy(SessionClassification::Public, "oops")
+            .apply()
+            .await
+            .unwrap();
+
+        manager.close().await;
+        let pool = raw_pool(&db).await;
+        let (tier, reason): (String, Option<String>) =
+            sqlx::query_as("SELECT privacy_tier, privacy_reason FROM sessions WHERE id = ?1")
+                .bind(&s.id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        pool.close().await;
+        assert_eq!(
+            tier, "PUBLIC",
+            "a value the reader refuses must not become one it accepts"
+        );
+        assert_eq!(reason.as_deref(), Some("turn:versa_azure"));
     }
 
     #[tokio::test]
