@@ -1027,6 +1027,7 @@ dependencies = [
  "urlencoding",
  "utoipa",
  "uuid",
+ "walkdir",
  "webbrowser",
  "which 8.0.0",
  "winapi",

@@ -220,4 +220,146 @@ mod tests {
         assert_eq!(cap, ProviderTier::Public);
         assert_eq!(cls, SessionClassification::Private);
     }
+
+    #[test]
+    fn floor_is_crossed_only_where_a_capability_establishes_a_classification() {
+        // The two lattices are independent by construction; `floor` is the only
+        // crossing. This test is what keeps that true over the next thirty tasks.
+        //
+        // It asserts the exact (file, count) SET, not a total. Three reasons, each
+        // learned from the first version of this test, which could not pass at any
+        // point in this plan:
+        //
+        //  (a) A total is defeated by an UNRELATED symbol. The first version
+        //      matched `line.contains("floor(")`, which already matches
+        //      `session_manager.rs:688`'s `let lo = pos.floor() as usize;` — an f64
+        //      method with nothing to do with this module. Its "baseline 0" was
+        //      really 1 before a single line of #56 existed. Matching only the
+        //      QUALIFIED path `privacy::floor(` cannot see a float method, ever.
+        //  (b) A total is defeated by the plan's OWN later additions, silently: a
+        //      task that adds two crossings where the number says one still passes
+        //      if another task removed one. A set names the file.
+        //  (c) The failure message has to be actionable. `assert_eq!` on a Vec of
+        //      (file, count) prints exactly which file changed.
+        //
+        // The qualified-path rule needs a second assertion to hold: nobody may
+        // `use` the bare name, or rule (a) is evaded by an import.
+        //
+        // EXPECTED grows twice, and each growth is one uncommented line in the diff
+        // that causes it — Task 13 (Gate B's ratchet) and Task 23 (the spawn stamp).
+        // A test written to accept `<= 2` would let a third crossing appear
+        // unnoticed, which is the entire point of having this test.
+        const EXPECTED: &[(&str, usize)] = &[
+            // ("crates/biorouter/src/agents/agent.rs", 1),          // uncomment in Task 13
+            // ("crates/biorouter/src/agents/subagent_tool.rs", 1),  // uncomment in Task 23
+        ];
+
+        // CARGO_MANIFEST_DIR is <workspace>/crates/biorouter; go up twice.
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let mut calls: std::collections::BTreeMap<String, usize> = Default::default();
+        let mut imports: Vec<String> = vec![];
+        for entry in walkdir::WalkDir::new(root.join("crates"))
+            .into_iter()
+            .filter_map(Result::ok)
+        {
+            let p = entry.path();
+            if p.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let rel = p
+                .strip_prefix(&root)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/");
+            if rel.ends_with("privacy/mod.rs") {
+                continue; // the definition, and the induction test below, live here
+            }
+            let src = std::fs::read_to_string(p).unwrap_or_default();
+            for (i, line) in src.lines().enumerate() {
+                let code = line.trim_start();
+                if code.starts_with("//") {
+                    continue;
+                }
+                if code.contains("privacy::floor(") {
+                    *calls.entry(rel.clone()).or_default() += 1;
+                }
+                if code.contains("use crate::privacy::floor")
+                    || (code.contains("privacy::{") && code.contains("floor"))
+                {
+                    imports.push(format!("{rel}:{}", i + 1));
+                }
+            }
+        }
+        assert!(
+            imports.is_empty(),
+            "`floor` must be called through its qualified `privacy::floor(..)` path so this \
+             audit can see it — do not import the bare name: {imports:#?}"
+        );
+        let found: Vec<(String, usize)> = calls.into_iter().collect();
+        let want: Vec<(String, usize)> = EXPECTED
+            .iter()
+            .map(|(f, n)| ((*f).to_string(), *n))
+            .collect();
+        assert_eq!(
+            found, want,
+            "the set of `floor` callers changed. A new crossing between the capability and \
+             classification lattices is a design change, not a refactor: argue it in the PR."
+        );
+    }
+
+    /// Every word of length `n` over `alphabet`, in lexicographic order by index.
+    /// `alphabet.len().pow(n)` of them — the induction below uses 2^6 = 64, which
+    /// is exhaustive over every bind order a session of six binds can experience.
+    fn all_sequences_of_length<T: Copy>(n: usize, alphabet: &[T]) -> Vec<Vec<T>> {
+        let mut out: Vec<Vec<T>> = vec![vec![]];
+        for _ in 0..n {
+            out = out
+                .into_iter()
+                .flat_map(|prefix| {
+                    alphabet.iter().map(move |sym| {
+                        let mut next = prefix.clone();
+                        next.push(*sym);
+                        next
+                    })
+                })
+                .collect();
+        }
+        out
+    }
+
+    #[test]
+    fn capability_never_falls_below_classification_for_any_legal_sequence() {
+        use ProviderTier::{Private, Public};
+        // The design's induction (§4), made executable. Every legal bind followed
+        // by its ratchet must preserve capability >= classification.
+        for binds in all_sequences_of_length(6, &[Private, Public]) {
+            let mut classification = SessionClassification::Public;
+            let mut capability = Public;
+            // The induction's BASE case. Asserting it is not decoration: without a
+            // read here the initializer is dead, `unused_assignments` fires, and
+            // `scripts/clippy-lint.sh`'s `-D warnings` turns the whole lint gate
+            // red. Silencing that with an `#[allow]` would have thrown away the one
+            // half of §4's proof the plan's loop does not cover.
+            assert!(
+                visible_to(capability, classification),
+                "a fresh session must start with capability >= classification"
+            );
+            for incoming in binds {
+                if !bind_allowed(incoming, classification) {
+                    continue; // Gate A refuses; state unchanged
+                }
+                capability = incoming; // the bind succeeds
+                classification = classification.max(floor(capability)); // Gate B ratchets
+                assert!(
+                    visible_to(capability, classification),
+                    "capability {capability:?} fell below classification {classification:?}"
+                );
+            }
+        }
+    }
 }
