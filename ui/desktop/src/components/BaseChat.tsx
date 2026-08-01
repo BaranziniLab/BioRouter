@@ -33,6 +33,7 @@ import { useIsMobile } from '../hooks/use-mobile';
 import { useSidebar } from './ui/sidebar';
 import { cn } from '../utils';
 import { useChatStream } from '../hooks/useChatStream';
+import { isRunningState } from '../hooks/chatStreamStore';
 import { useNavigation } from '../hooks/useNavigation';
 import { WorkflowHeader } from './WorkflowHeader';
 import { WorkflowWarningModal } from './ui/WorkflowWarningModal';
@@ -95,6 +96,9 @@ import {
   previewPanelMode,
   SIDEBAR_COMPACT_WIDTH as SIDEBAR_COMPACT_TITLE_WIDTH,
 } from './Layout/yieldLadder';
+import { SubagentTabHeader } from './subagent/SubagentTabHeader';
+import { extractKnowledgeBases, useSubagentSession } from './subagent/useSubagentSession';
+import { useChatGroups } from '../contexts/ChatGroupsContext';
 
 // Context for sharing current model info
 const CurrentModelContext = createContext<{ model: string; mode: string } | null>(null);
@@ -1372,6 +1376,16 @@ function BaseChatContent({
     onStreamFinish,
   });
 
+  // BR-71 §4.5 — the glass-box header on a subagent's tab. Inert (and silent on
+  // the wire) for an ordinary session.
+  const subagent = useSubagentSession(sessionId);
+  // Returns null outside a ChatGroupsProvider (useChatGroups does NOT throw).
+  // BaseChat is mounted per tab by ChatGroupsShell, so in practice this is
+  // non-null wherever a subagent tab exists; the optional call below is what
+  // keeps the standalone mounts (which have no tab strip to open a parent into)
+  // from crashing.
+  const chatGroups = useChatGroups();
+
   const canDivergeSession = useMemo(
     () => messages.some((message) => message.role === 'assistant'),
     [messages]
@@ -2144,6 +2158,30 @@ function BaseChatContent({
                 )}
                 {renderSessionHeaderActions()}
               </div>
+              {subagent.isSubagent && subagent.parentSessionId && (
+                <SubagentTabHeader
+                  sessionId={sessionId}
+                  parentSessionId={subagent.parentSessionId}
+                  spawnContext={subagent.spawnContext}
+                  extensions={subagent.extensions}
+                  knowledgeBases={extractKnowledgeBases(subagent.spawnContext)}
+                  // The store's own predicate, NOT `!== ChatState.Idle`: every
+                  // session load starts in LoadingConversation, so the naive
+                  // form offered Stop for the whole of every subagent tab open
+                  // — a kill switch for a turn that had already finished.
+                  running={isRunningState(chatState)}
+                  onOpenParent={() =>
+                    // The reducer's own DEDUPE rule makes this "open or focus":
+                    // a sessionId already open anywhere activates that tab (and
+                    // focuses its group) instead of opening a second one.
+                    chatGroups?.dispatch({
+                      type: 'openTab',
+                      payload: { sessionId: subagent.parentSessionId! },
+                    })
+                  }
+                  onStop={() => void subagent.stop()}
+                />
+              )}
               {isCleanConversation ? (
                 <div
                   className="biorouter-clean-conversation flex-1 min-h-0 flex items-center justify-center overflow-y-auto px-4 py-10 sm:px-6 sm:py-16"
