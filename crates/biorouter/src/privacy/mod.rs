@@ -306,8 +306,12 @@ mod tests {
                 .unwrap()
                 .to_string_lossy()
                 .replace('\\', "/");
-            if rel.ends_with("privacy/mod.rs") {
-                continue; // the definition, and the induction test below, live here
+            // The definition, and the induction test below, live here. Match the
+            // EXACT path: `ends_with` also exempted any future
+            // `crates/<other-crate>/src/privacy/mod.rs` from the audit entirely —
+            // a blind spot shaped exactly like the one this test exists to prevent.
+            if rel == "crates/biorouter/src/privacy/mod.rs" {
+                continue;
             }
             scanned += 1;
             let src = std::fs::read_to_string(p)
