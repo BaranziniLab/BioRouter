@@ -991,6 +991,22 @@ impl ServerHandler for KnowledgeServer {
                 // or the process dies mid-commit. The failure direction of an
                 // over-raise is a badge the user can see; the failure direction
                 // of an under-raise is silent.
+                //
+                // ⚠ Residual of raising first: a write naming a kb_id that has
+                // no base registers that id at the caller's tier even though the
+                // call then fails, and nothing ever removes it (`forget_tier`
+                // fires on delete, and this base was never created). It is NOT a
+                // new denial-of-service on the id, which is the shape it looks
+                // like: `lock_kb` and `store::write_page` both `create_dir_all`
+                // their way to the target, so the same failed call already
+                // leaves `<root>/<kb_id>/.internal/` behind and `create_base`
+                // bails on "already exists" whatever the tier store says — that
+                // is pre-existing behaviour, independent of #56. And a directory
+                // with no entry already READS private (decision 3), so for a
+                // private caller the entry only makes explicit what `is_private`
+                // was inferring anyway. What it costs is a public caller's
+                // stamp landing on that litter, which discloses nothing because
+                // the failed write left no content.
                 self.service
                     .raise_tier(&kb_id, caller_private)
                     .map_err(into_err)?;

@@ -2826,6 +2826,16 @@ async fn handle_kb_frame(
             // base, not a privacy control over WHICH CALLER. The ratchet has to
             // be here, and before the spawn: a raise that only lands on success
             // leaves content in a base whose tier never moved.
+            //
+            // Task 10C adds `tier::assert_reachable(root, &kb_id,
+            // caller_is_private)?` HERE, on the line above the raise — the same
+            // position as CP1 and CP2, and it matters at this choke point for
+            // one extra reason. `raise_unlocked` registers an ABSENT entry at
+            // the caller's tier, and a base with a directory but no entry reads
+            // private (decision 3), so a public write is the one path that can
+            // turn such a base explicitly public. CP1 and CP2 will refuse that
+            // caller before reaching the raise; without the same line here, this
+            // arm would still be able to.
             if let Err(e) = knowledge.raise_tier(&kb_id, caller_is_private) {
                 emit_kb_error(ui_bridge, req_id, &e.to_string());
                 return;
