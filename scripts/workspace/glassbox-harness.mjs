@@ -51,6 +51,11 @@ const BASE = process.env.BIOROUTER_HARNESS_BASE ?? 'http://127.0.0.1:3000';
 const SECRET = process.env.BIOROUTER_SERVER__SECRET_KEY ?? 'test';
 const LIVE = process.env.BIOROUTER_HARNESS_LIVE === '1';
 
+/** The steer injected into the running child, matched verbatim in its stream. */
+const STEER_TEXT = 'Stop at number 3 and summarize.';
+/** The tab-composer message, matched verbatim in the child's stored rows. */
+const COMPOSER_TEXT = 'typed straight into the subagent tab';
+
 let failures = 0;
 let inconclusive = 0;
 function assert(name, condition, detail = '') {
@@ -412,11 +417,33 @@ async function main() {
     }).then((r) => r.text());
 
     // Frames must arrive for SOME child within 60 s.
+    //
+    // ⚠ The pair must be CORRELATED. The plan searched for the open frame and
+    // the badge independently, so with two children in flight the harness could
+    // take `childId` from one and assert the parent link from the other — and
+    // then steer a session that was never the one it identified.
+    //
+    // ⚠ `open_tab` is not the only open frame. `announce_open_frame` emits
+    // `open_window` when the spawn's `placement` is "window" (frame-vocabulary
+    // parity with `workspace_open`), and a model that picks that placement would
+    // have read as "the spawn bridge is broken". Both are accepted; the badge —
+    // which is sent for every announced child, capped ones included — is what
+    // carries the parent link either way.
     const childFromFrames = await (async () => {
       const deadline = Date.now() + 60000;
       while (Date.now() < deadline) {
-        const open = receivedFrames.find((f) => f.cmd === 'open_tab' && f.session_id !== parentId);
-        const badge = receivedFrames.find((f) => f.cmd === 'annotate_tab' && f.badge === 'subagent');
+        const open = receivedFrames.find(
+          (f) =>
+            (f.cmd === 'open_tab' || f.cmd === 'open_window') && f.session_id !== parentId
+        );
+        const badge =
+          open &&
+          receivedFrames.find(
+            (f) =>
+              f.cmd === 'annotate_tab' &&
+              f.badge === 'subagent' &&
+              f.session_id === open.session_id
+          );
         if (open && badge) return { open, badge };
         await new Promise((r) => setTimeout(r, 500));
       }
@@ -445,40 +472,68 @@ async function main() {
         (frames) => frames.some((f) => f.type === 'Message'),
         30000
       );
-      const snapshot = childFrames.find((f) => f.type === 'UpdateConversation');
-      const first = snapshot?.conversation?.[0] ?? snapshot?.conversation?.messages?.[0];
+      // ⚠ The spawn-context record is NOT reliably in the FIRST snapshot, and
+      // the plan read `childFrames.find(UpdateConversation)` — i.e. exactly
+      // that one. The open/badge frames come from a detached `tokio::spawn` at
+      // session creation, while `persist_spawn_context` runs later, inside
+      // `get_agent_messages`, behind a `spawn_blocking` knowledge-base scan. A
+      // subscription that wins that race snapshots an EMPTY conversation, and
+      // the assertion failed with `null` against blameless code. So: take the
+      // most recent snapshot that actually has rows, and if none does yet, poll
+      // storage — the record is persisted either way, and `GET /sessions/{id}`
+      // is the same source the snapshot is built from.
+      const spawnContextRow = await (async () => {
+        const deadline = Date.now() + 30000;
+        const fromFrames = () =>
+          [...childFrames]
+            .reverse()
+            .find(
+              (f) =>
+                f.type === 'UpdateConversation' &&
+                conversationRows({ conversation: f.conversation }).length > 0
+            );
+        for (;;) {
+          const framed = fromFrames();
+          if (framed) return conversationRows({ conversation: framed.conversation })[0];
+          const stored = conversationRows((await json(`/sessions/${childId}`)).body);
+          if (stored.length > 0) return stored[0];
+          if (Date.now() >= deadline) return null;
+          await new Promise((r) => setTimeout(r, 1000));
+        }
+      })();
       assert(
         'spawn-context record is messages[0] with provenance spawn_context',
-        first?.metadata?.provenance?.kind === 'spawn_context',
-        JSON.stringify(first?.metadata ?? null)
+        spawnContextRow?.metadata?.provenance?.kind === 'spawn_context',
+        JSON.stringify(spawnContextRow?.metadata ?? null)
       );
 
       // THE FLAGSHIP CHAIN (Task 33): steer the RUNNING child.
       const steer = await api('/interrupt', {
         method: 'POST',
-        body: JSON.stringify({ session_id: childId, text: 'Stop at number 3 and summarize.' }),
+        body: JSON.stringify({ session_id: childId, text: STEER_TEXT }),
       });
       assert(
         'POST /interrupt into the RUNNING child returns 202 (lease + registered agent)',
         steer.status === 202,
         `got ${steer.status} (409 = lease missing; the control plane bridge failed)`
       );
-      const { frames: steered } = await childObserver.collect(
-        (frames) =>
-          frames.some(
-            (f) =>
-              f.type === 'Message' &&
-              f.message?.metadata?.provenance?.kind === 'user_direct'
-          ),
-        30000
-      );
-      assert(
-        'injected steer appears in the child stream stamped user_direct',
-        steered.some(
+      // ⚠ Match the injected TEXT, not merely the provenance. `user_direct` is
+      // stamped on every human message into a subagent session, so a bare
+      // kind check is satisfied by any of them — including the tab-composer
+      // message this same script sends later. The composer assertion below
+      // already matches its own text; this one was the asymmetric half.
+      const steerLanded = (frames) =>
+        frames.some(
           (f) =>
             f.type === 'Message' &&
-            f.message?.metadata?.provenance?.kind === 'user_direct'
-        )
+            f.message?.metadata?.provenance?.kind === 'user_direct' &&
+            JSON.stringify(f.message?.content ?? '').includes(STEER_TEXT)
+        );
+      const { frames: steered } = await childObserver.collect(steerLanded, 30000);
+      assert(
+        'injected steer appears in the child stream stamped user_direct',
+        steerLanded(steered),
+        `no user_direct Message carrying the steer text among ${steered.length} frames`
       );
       await childObserver.close();
 
@@ -518,19 +573,49 @@ async function main() {
         const cancel = await json('/agent/cancel', {
           method: 'POST', body: JSON.stringify({ session_id: childId }),
         });
-        // `CancelTurnResponse { cancelled: bool, turn_id: Option<String> }`
-        // (`pub struct CancelTurnResponse`, routes/reply.rs:1065-1071 at
-        // `03ad602c`; the `:1027-1033` here was measured at `ea15a4de`).
-        // `cancelled: true` WITH a turn id is the
-        // lease's observable effect: `state.cancel_turn` found an `ActiveTurn`
-        // registered under the CHILD's session id, which only Task 33 puts there.
-        assert(
-          'cancel of the child returns cancelled:true with a turn id (Task 33 lease held)',
+        const cancelHeldTheLease =
           cancel.body?.cancelled === true &&
-            typeof cancel.body?.turn_id === 'string' &&
-            cancel.body.turn_id.length > 0,
-          JSON.stringify(cancel.body)
-        );
+          typeof cancel.body?.turn_id === 'string' &&
+          cancel.body.turn_id.length > 0;
+        // ⚠ The liveness probe proves the lease at time T; the cancel runs at
+        // T + one round trip. `cancel_turn` returns `None` the instant the turn
+        // guard drops, so a child that finished in that window answers
+        // `cancelled:false` — reported, before this, as "Task 33's lease is not
+        // held". The misdiagnosis the probe was added to prevent had merely
+        // moved one step later. So when the cancel finds nothing, ask again
+        // whether a turn is still there: `/interrupt` and `/agent/cancel` read
+        // the SAME `active_turns` map (`is_turn_active` / `cancel_turn` in
+        // `state.rs`), so a 409 now means the turn ended in the window — the
+        // world moved, which is inconclusive, not a failure. A 202 now would be
+        // a genuine contradiction (a turn is registered, yet the cancel found
+        // none) and must fail.
+        const afterwards = cancelHeldTheLease
+          ? null
+          : await api('/interrupt', {
+              method: 'POST',
+              body: JSON.stringify({ session_id: childId, text: 'still there?' }),
+            });
+        if (afterwards && afterwards.status !== 202) {
+          inconclusiveLive(
+            'cancel of the child returns cancelled:true with a turn id (Task 33 lease held)',
+            `the turn ended between the liveness probe and the cancel ` +
+              `(/agent/cancel → ${JSON.stringify(cancel.body)}, /interrupt afterwards → ` +
+              `${afterwards.status}); lengthen the delegated task and re-run`
+          );
+        } else {
+          // `pub struct CancelTurnResponse { cancelled: bool, turn_id:
+          // Option<String> }` (routes/reply.rs). `cancelled: true` WITH a turn
+          // id is the lease's observable effect: `state.cancel_turn` found an
+          // `ActiveTurn` registered under the CHILD's session id, which only
+          // Task 33 puts there.
+          assert(
+            'cancel of the child returns cancelled:true with a turn id (Task 33 lease held)',
+            cancelHeldTheLease,
+            `${JSON.stringify(cancel.body)}${
+              afterwards ? ' — yet /interrupt afterwards still returned 202' : ''
+            }`
+          );
+        }
       }
 
       // Task 35's OTHER call site: the tab composer. A human typing into the
@@ -552,7 +637,7 @@ async function main() {
           method: 'POST',
           body: JSON.stringify({
             session_id: childId,
-            user_message: userMessage('typed straight into the subagent tab'),
+            user_message: userMessage(COMPOSER_TEXT),
           }),
         });
         composedStatus = res.status;
@@ -567,17 +652,15 @@ async function main() {
         composedStatus === 200,
         `POST /reply → ${composedStatus} (409 = the cancelled turn never unwound)`
       );
-      const composed = await json(`/sessions/${childId}`);
-      const rows = composed.body?.conversation?.messages ?? composed.body?.conversation ?? [];
+      const rows = conversationRows((await json(`/sessions/${childId}`)).body);
       assert(
         '/reply into a subagent session is stamped user_direct (the tab composer path)',
-        Array.isArray(rows) &&
-          rows.some(
-            (m) =>
-              m?.metadata?.provenance?.kind === 'user_direct' &&
-              JSON.stringify(m?.content ?? '').includes('typed straight into the subagent tab')
-          ),
-        `no user_direct row for the composed message among ${Array.isArray(rows) ? rows.length : '?'} rows`
+        rows.some(
+          (m) =>
+            m?.metadata?.provenance?.kind === 'user_direct' &&
+            JSON.stringify(m?.content ?? '').includes(COMPOSER_TEXT)
+        ),
+        `no user_direct row for the composed message among ${rows.length} rows`
       );
 
       // Parent resolution: the tool result must carry human_intervened.
