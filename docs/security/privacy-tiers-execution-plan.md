@@ -2496,7 +2496,7 @@ the owning task must build its `pre + N` on:**
 | `biorouter-mcp` | `knowledge::service` | 38 |
 | `biorouter-mcp` | `memory` | 53 |
 | `biorouter-mcp` | `memory::` | **51** — ⚠ *not* 53. The trailing `::` excludes two `developer::undo_history` tests whose names contain `in_memory`, and the plan uses **both** spellings (Task 14D `--lib -- memory::`, Task 20 `--lib memory`). They are different filters and different numbers |
-| `biorouter-mcp` | `paths::` | 9 |
+| `biorouter-mcp` | `paths::` | **9** — ⚠ **three** modules, and the third is a substring surprise: `paths::tests` 3 + `knowledge::paths::tests` 3 + **`knowledge::source_paths::tests` 3**, because `source_paths::` *contains* `paths::`. A reviewer who enumerated `mod paths` (three declarations, one of which — `developer/paths.rs` — has no tests at all) concluded this row should be 6 and filed it as a defect. The row is right and the method was wrong: libtest matches a substring of the full path, not a module name |
 | `biorouter-mcp` | `secret_guard::` | **19** — ⚠ *not* 20, for the same reason: `secret_guard` without the separator also catches `developer::rmcp_developer::tests::secret_guard_is_rerooted_onto_the_session_working_directory` |
 | `biorouter-sandbox` | `environment` | 1 |
 | `biorouter-server` | `auth` | **6** — ⚠ only **3** of these are in `auth::tests`; the other three merely contain the word (`routes::apps`, `routes::audio`, `routes::workspace`). Task 18A writes `auth::`, which is the 3 |
