@@ -650,14 +650,28 @@ mod tests {
         // Park the call AFTER `Agent::dispatch_tool_call` has returned its future
         // and BEFORE anything drives it — i.e. exactly where a real queued call
         // sits.
-        let held = seams::hold_dispatch_queue();
+        //
+        // Keyed on this caller session and this tool name, so the rendezvous can
+        // only be taken by the dispatch below. An unkeyed one is worse than no
+        // test: another test's dispatch takes it, this call runs un-parked
+        // BEFORE the swap, and every assertion still passes — the ordering under
+        // test quietly stops being exercised.
+        let held = seams::hold_dispatch_queue(&s.id, "chatrecall__chatrecall");
         let call = tokio::spawn({
             let agent = agent.clone();
             let caller = s.clone();
             let id = target.id.clone();
             async move { chatrecall_load(&agent, &caller, &id).await }
         });
-        let release = held.await.unwrap();
+        // And under a timeout, so a key or a hold point that has drifted fails
+        // with that sentence instead of hanging the test binary.
+        let release = tokio::time::timeout(std::time::Duration::from_secs(60), held)
+            .await
+            .expect(
+                "the chatrecall dispatch never reached the seam: the rendezvous key or the \
+                 hold point has drifted",
+            )
+            .unwrap();
 
         agent
             .update_provider(private_provider(), &s.id)

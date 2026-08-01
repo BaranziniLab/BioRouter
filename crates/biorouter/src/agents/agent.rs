@@ -1215,37 +1215,61 @@ pub(super) fn fire_compaction_hook_on(
 /// already been sampled — and before anything drives it. Tasks 12 and 14B/14D
 /// add their own rendezvous to this same module.
 ///
-/// ⚠ Process-global and single-slot. Exactly one test may hold it armed at a
-/// time, and while it is armed any other test that DRIVES an
+/// ⚠ The rendezvous is process-global, so it is KEYED rather than first-come.
+/// An unkeyed slot degrades the test that uses it to a SILENT PASS: `cargo test`
+/// runs `--lib` tests concurrently in one process, so any other test driving an
 /// `Agent::dispatch_tool_call` future would take the rendezvous meant for the
-/// armer. No `--lib` test does today; a new one must not.
+/// armer, whose own call then sails through un-parked and completes before the
+/// provider swap it exists to order against — and still asserts green, because
+/// the capability it read was the one it started with either way. The ordering
+/// simply stops being tested. Keying on `(session id, tool name)` makes the
+/// caught call the intended call by construction, and holding a LIST of arms
+/// means two tests can be armed at once without clobbering each other.
 #[cfg(test)]
 pub mod seams {
     use tokio::sync::oneshot;
 
-    /// Set while a test is waiting to catch a dispatch. Holds the channel the
-    /// caught future announces itself on.
-    static ARMED: std::sync::Mutex<Option<oneshot::Sender<oneshot::Sender<()>>>> =
-        std::sync::Mutex::new(None);
+    /// One armed rendezvous: the caller session id and tool name it is waiting
+    /// for, and the channel the matching call announces itself on.
+    type ArmedDispatch = (String, String, oneshot::Sender<oneshot::Sender<()>>);
 
-    /// Arm the rendezvous. Await the returned receiver to learn that a dispatch
-    /// has arrived and to get the sender that releases it.
-    pub fn hold_dispatch_queue() -> oneshot::Receiver<oneshot::Sender<()>> {
+    /// The rendezvous a test armed but no dispatch has matched yet.
+    static ARMED: std::sync::Mutex<Vec<ArmedDispatch>> = std::sync::Mutex::new(Vec::new());
+
+    /// Arm the rendezvous for ONE specific dispatch — the next call of
+    /// `tool_name` made from `session_id`. Await the returned receiver to learn
+    /// that call has arrived and to get the sender that releases it.
+    ///
+    /// `tool_name` is the wire name the agent dispatches, i.e. the prefixed
+    /// `"<extension>__<tool>"` form, because that is what reaches the hold
+    /// point. A key that matches nothing parks the caller forever, so a test
+    /// should await the receiver under a `tokio::time::timeout` and fail
+    /// loudly rather than hang.
+    pub fn hold_dispatch_queue(
+        session_id: &str,
+        tool_name: &str,
+    ) -> oneshot::Receiver<oneshot::Sender<()>> {
         let (arrived_tx, arrived_rx) = oneshot::channel();
-        *ARMED
+        ARMED
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(arrived_tx);
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((session_id.to_string(), tool_name.to_string(), arrived_tx));
         arrived_rx
     }
 
-    /// The hold point itself. A no-op — one uncontended mutex lock — unless a
-    /// test armed it, and it disarms as it fires so only the first dispatch is
-    /// caught.
-    pub(super) async fn dispatch_queue_hold() {
-        let armed = ARMED
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
+    /// The hold point itself. A no-op — one uncontended mutex lock — for every
+    /// dispatch except one a test armed for by name, and the arm is consumed as
+    /// it fires so only the first matching dispatch is caught.
+    pub(super) async fn dispatch_queue_hold(session_id: &str, tool_name: &str) {
+        let armed = {
+            let mut slots = ARMED
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            slots
+                .iter()
+                .position(|(s, t, _)| s == session_id && t == tool_name)
+                .map(|i| slots.remove(i).2)
+        };
         if let Some(arrived_tx) = armed {
             let (release_tx, release_rx) = oneshot::channel();
             if arrived_tx.send(release_tx).is_ok() {
@@ -3477,9 +3501,15 @@ impl Agent {
                     // Issue #56: the far side of the permit-to-execution gap.
                     // A test parks here to prove that a provider swap landing
                     // between admission and execution does NOT change what this
-                    // call may do. Compiled out entirely in a non-test build.
+                    // call may do. Keyed on this call's session and tool name so
+                    // it can only catch the dispatch that armed it. Compiled out
+                    // entirely in a non-test build.
                     #[cfg(test)]
-                    seams::dispatch_queue_hold().await;
+                    seams::dispatch_queue_hold(
+                        &large_response_ctx.session_id,
+                        &large_response_ctx.tool_name,
+                    )
+                    .await;
                     let _dispatch_guard = if bound_dispatch {
                         Some(
                             super::tool_dispatch_limits::acquire(
