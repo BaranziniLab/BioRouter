@@ -257,7 +257,6 @@ async fn stream_request(
     render: Render,
     accepted: Option<tokio::sync::oneshot::Sender<()>>,
 ) -> Result<u16> {
-    let mut accepted = accepted;
     let port = configured_port();
     if !daemon_ok(DAEMON_HOST, port).await {
         return Err(anyhow!(
@@ -267,7 +266,22 @@ async fn stream_request(
     }
     let mut stream = tokio::net::TcpStream::connect(format!("{DAEMON_HOST}:{port}")).await?;
     stream.write_all(request.as_bytes()).await?;
+    read_response(&mut stream, stop_on_terminal, render, accepted).await
+}
 
+/// Read one HTTP response off `stream` and return the status it carried.
+///
+/// Generic over the stream so the rules below — a non-200 answered from the
+/// status line alone, a 200 consumed to its terminal frame, and a response that
+/// never completes reported as an ERROR — can be pinned over an in-memory pipe
+/// rather than only against a live daemon.
+async fn read_response<S: tokio::io::AsyncRead + Unpin>(
+    stream: &mut S,
+    stop_on_terminal: bool,
+    render: Render,
+    accepted: Option<tokio::sync::oneshot::Sender<()>>,
+) -> Result<u16> {
+    let mut accepted = accepted;
     let mut raw = Vec::new();
     let mut buffer = String::new();
     let mut headers_done = false;
@@ -314,6 +328,18 @@ async fn stream_request(
         if print_frames(&frames, stop_on_terminal, render, &mut joined) {
             return Ok(200);
         }
+    }
+    // ⚠ Reaching here without headers means the socket closed part-way through
+    // the response — NOT that the daemon said 200. Falling through to `Ok(200)`
+    // made `post_reply_quiet` answer `Started`, so attach printed "the turn you
+    // started has ended" for a message the daemon never received: the one place
+    // a non-delivery read as a delivery. `watch`/`send` inherited it as a silent
+    // clean exit over a session that was still going.
+    if !headers_done {
+        return Err(anyhow!(
+            "the daemon closed the connection before sending a complete response, \
+             so it is not known whether the request was accepted"
+        ));
     }
     Ok(200)
 }
@@ -1306,6 +1332,93 @@ mod tests {
         let mut silent = false;
         assert!(stream_frame_lines(&snapshot, Render::Silent, &mut silent).is_empty());
         assert!(!silent);
+    }
+
+    /// Reading a response off an in-memory pipe, so the status/termination rules
+    /// below are pinned without a daemon, a port or a race.
+    async fn read_from(script: &'static [u8], stop_on_terminal: bool) -> Result<u16> {
+        let (mut client, mut daemon) = tokio::io::duplex(4096);
+        tokio::spawn(async move {
+            let _ = daemon.write_all(script).await;
+            // and the connection closes here.
+        });
+        read_response(&mut client, stop_on_terminal, Render::Silent, None).await
+    }
+
+    /// A response whose headers never arrive is NOT a 200.
+    ///
+    /// The read loop ended when the socket closed and `Ok(200)` fell out of the
+    /// bottom — so `post_reply_quiet` answered `Started` and attach printed "the
+    /// turn you started has ended" for a message the daemon never received. It
+    /// is the one place a non-delivery could read as a delivery, and `watch`
+    /// inherits the same lie as a silent clean exit.
+    #[tokio::test]
+    async fn a_response_that_dies_before_its_headers_is_an_error_not_a_200() {
+        let err = read_from(b"HTTP/1.1 200 OK\r\nContent-Type: text/ev", true)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("closed the connection"),
+            "the error must say the response never completed: {err}"
+        );
+
+        // Nothing at all on the wire is the same failure.
+        let empty = read_from(b"", true).await.unwrap_err().to_string();
+        assert!(empty.contains("closed the connection"), "{empty}");
+    }
+
+    /// The positive controls, so the check above cannot be satisfied by simply
+    /// failing more often.
+    #[tokio::test]
+    async fn a_complete_response_still_reports_its_status() {
+        // A turn that reaches its terminal frame.
+        assert_eq!(
+            read_from(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n\
+                  data: {\"type\":\"Ping\"}\n\n\
+                  data: {\"type\":\"Finish\",\"reason\":\"stop\"}\n\n",
+                true,
+            )
+            .await
+            .unwrap(),
+            200
+        );
+        // A stream the daemon simply ends (`watch --follow`, session over).
+        assert_eq!(
+            read_from(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n\
+                  data: {\"type\":\"Ping\"}\n\n",
+                false,
+            )
+            .await
+            .unwrap(),
+            200
+        );
+    }
+
+    /// A refusal is answered from the status line alone: the ladder must not
+    /// wait on a body it is not going to read, still less on the socket closing.
+    #[tokio::test]
+    async fn a_refusal_is_returned_without_waiting_for_the_body() {
+        let (mut client, mut daemon) = tokio::io::duplex(4096);
+        daemon
+            .write_all(
+                b"HTTP/1.1 409 Conflict\r\nContent-Type: application/json\r\n\r\n\
+                  {\"running_turn_id\":\"t-1\",\"duplicate\":false}",
+            )
+            .await
+            .unwrap();
+        let code = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            read_response(&mut client, true, Render::Silent, None),
+        )
+        .await
+        .expect("a 409 must not block on the socket closing")
+        .unwrap();
+        assert_eq!(code, 409);
+        // The daemon half is still open — deliberately, that is the point.
+        drop(daemon);
     }
 
     #[test]
