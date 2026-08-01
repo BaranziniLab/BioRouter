@@ -16063,12 +16063,25 @@ curl -s -X POST http://127.0.0.1:3000/agent/call_tool -H 'X-Secret-Key: test' \
 ```bash
 # Seven of Task 4b's TWELVE deferred rows are created by Tasks 5-19, so exactly
 # five may still be deferred here. Re-run Task 4b Steps 1 and 5, deleting the
-# seven landed ROWS from /tmp/56-filters/deferred.txt and keeping these five:
-#   biorouter|privacy::visibility|21|crates/biorouter/src/privacy/visibility.rs
-#   biorouter|every_copy_path_carries_the_tier_and_the_provider|22|fn every_copy_path_carries_the_tier_and_the_provider
-#   biorouter|privacy::declassify|29|crates/biorouter/src/privacy/declassify.rs
-#   biorouter-mcp|knowledge::tier_user|29A|crates/biorouter-mcp/src/knowledge/tier_user.rs
-#   biorouter|privacy::disclosure|30A|crates/biorouter/src/privacy/disclosure.rs
+# seven landed ROWS from /tmp/56-filters/deferred.txt and keeping these five —
+# named by (package, filter, task) ONLY, with the evidence column deliberately
+# omitted; copy each row's fourth field from Task 4b's own heredoc, do not
+# retype it here:
+#   biorouter                privacy::visibility                              21
+#   biorouter                every_copy_path_carries_the_tier_and_the_provider 22
+#   biorouter                privacy::declassify                              29
+#   biorouter-mcp            knowledge::tier_user                             29A
+#   biorouter                privacy::disclosure                              30A
+# ⚠ THE OMISSION IS THE POINT, and it is Task 4b's own rule ("do not write a
+# deferred row's evidence string into prose"). The UNBACKED check greps each
+# row's evidence over the plan MINUS the deferred heredoc, and the stripper that
+# removes that heredoc keys on a line whose first `|`-field is exactly a package
+# name. A `#`-prefixed copy has `#   biorouter` in that field, so it is NOT
+# stripped — it survives into the searched text and witnesses the very row it
+# is a copy of. Five rows reproduced in full here would each gain a witness that
+# is nothing but themselves, which is exactly the self-witnessing defect Round 3
+# §7 found and the strip exists to remove. Reintroducing it in a re-run of the
+# audit that removed it is the shape of bug this plan keeps catching.
 # …and add each of the seven landed filters to resolved.txt with the count the
 # --list now reports. `privacy`, `privacy::` and `privacy::tests` are ALREADY in
 # resolved.txt at 3 apiece (Task 4 landed before Task 4b ran) and every task
