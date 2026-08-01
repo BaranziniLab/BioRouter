@@ -844,7 +844,11 @@ remembered to filter this name" into "there is nothing to filter"; the filter's 
 (`is_daemon_private_env_key`, `environment.rs:36-50`) is deny-by-default only inside
 `BIOROUTER_SERVER__`/`GOOSE_SERVER__` and falls back to name-shaped markers elsewhere, so a future
 daemon-private variable named outside those prefixes and without a credential-shaped word in it
-would pass straight through. (3) **Open** — bind declassify to a one-shot capability token minted by
+would pass straight through. The same list is also only consulted for names that are valid UTF-8 —
+`doomed_env_keys` filters on `key.to_str().is_some_and(..)` (`environment.rs:85`), so a non-UTF-8
+key is never even offered to it. That is out of reach for any name BioRouter sets itself, but it is
+a second reason the guarantee is "we filter this list" rather than "there is nothing to filter".
+(3) **Open** — bind declassify to a one-shot capability token minted by
 the renderer, not to `X-Secret-Key`, or R9's "only a human" property is documentation rather than
 mechanism.
 
