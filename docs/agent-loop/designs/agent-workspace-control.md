@@ -763,6 +763,23 @@ than deleted: the question is what makes the answer legible.
    2026-07-31). Read that with its subject attached — it is the floor, not evidence that
    resync is free at any transcript length, which is why the harness prints the message
    count beside the latency and this bullet repeats it.
+
+   ⚠ **And read it as a proxy, not as the `Lagged` arm.** The harness opens a fresh
+   observer and times its first frame, which is the unconditional join-mid-turn snapshot
+   at the top of the stream task — not the `RecvError::Lagged` branch below it. The two
+   are timed because they do the same dominant work: `bus_lag_resync_frame` is a
+   `session_manager().get_session(id, true)` plus one `UpdateConversation`, which is the
+   same storage read the initial snapshot performs. What the harness therefore does
+   **not** cover is that the lag branch is reached at all — delete it and this
+   measurement stays green.
+
+   Coverage of the branch itself lives in unit tests, and only for one of the two
+   consumers. `reply::a_lagged_sse_loop_resyncs_the_client_from_storage` overruns the
+   real broadcast ring (`BUS_CAPACITY + 1` publishes with nothing reading) so the loop's
+   first `recv` deterministically returns `Lagged`, and asserts the client is sent the
+   stored conversation; replacing the resync with a bare `continue` makes it time out.
+   The **observer stream**'s identical arm in `session_events.rs` has no such test — that
+   is the real gap here, and it is a gap in tests, not in the implementation.
 5. **CLI surface.** *Worth building `session watch` / `session send` as free verification
    tooling?* **Yes — decision 9, built in Task 20**, and it grew past the question:
    `session watch`, `session send`, `session list --subagents`, `session attach`
