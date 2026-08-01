@@ -24561,10 +24561,19 @@ cargo fmt --check
 
 Expected: green. The two that matter here are (a) the ≤2,500-character injection budget
 (§6) and (b) the loop in that same test asserting that **every tool named in a `- tool:`
-line of `INSTRUCTIONS` is registered by `get_tools()`** — so a routing sentence that
-mentions `workspace_spawn_subagent` or the deleted `subagent_status` fails the build
-rather than shipping an instruction the model cannot act on. That is precisely the failure
-mode Step 1's probe 3 and probe 6 are hunting for by hand.
+line of `INSTRUCTIONS` is registered by `get_tools()`**.
+
+⚠ Corrected 2026-07-31 by the Task 42 fixup: this step used to claim (b) meant "a routing
+sentence that mentions `workspace_spawn_subagent` or the deleted `subagent_status` fails
+the build". It did not, and reviewers of the Task 42 commit caught it. The `- tool:` loop
+reads bullet **heads** only, so it never sees prose; the neighbouring token scan filters on
+the `workspace_` prefix, so it catches `workspace_spawn_subagent` and is blind to
+`subagent_status` — the very name decision 23 retired. Between them a stale routing
+sentence shipped clean. The fixup closes the gap with a third assertion over
+`RETIRED_TOOL_NAMES`, a plain substring scan of the whole block, verified by poisoning
+`INSTRUCTIONS` and watching only the new assertion fire. The claim above is now true of
+the gate as it stands — which is the half of Step 1's probe 3 and probe 6 that a unit test
+can own. The other half, whether a real model routes correctly, still needs the probes.
 
 - [ ] **Step 3: Commit**
 

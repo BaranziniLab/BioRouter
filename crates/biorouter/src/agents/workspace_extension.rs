@@ -428,6 +428,31 @@ fn session_liveness(
 /// stronger claim that nothing is currently staged.
 const PENDING_TOOLS: &[(&str, &str)] = &[];
 
+/// Tool names that once existed and must never reappear in [`INSTRUCTIONS`],
+/// checked as plain substrings of the whole block.
+///
+/// The two structural scans this sits beside both have blind spots, and the
+/// gap between them is exactly where a stale routing sentence lives:
+///
+/// - the `workspace_*` token scan in
+///   `advertises_no_tool_whose_handler_is_still_a_placeholder` filters on the
+///   `workspace_` prefix, so it catches `workspace_spawn_subagent` and is blind
+///   to `subagent_status`;
+/// - the `- name:` loop in
+///   `workspace_open_is_advertised_and_completes_the_surface` reads bullet
+///   *heads* only, so it is blind to every name mentioned in prose.
+///
+/// A retired name in a routing sentence — "poll subagent_status until it
+/// finishes" — therefore passed both. That is not hypothetical: decision 23
+/// folded `subagent_status` into `workspace_watch`, and Task 42's probe 6
+/// exists to catch a model still trying to poll, by hand, against a real
+/// provider. This table makes the instruction half of that a build failure
+/// instead, which is the half a unit test can actually own.
+///
+/// Add a row whenever a tool is renamed or removed. Removing one is only
+/// correct if the name is genuinely live again.
+const RETIRED_TOOL_NAMES: &[&str] = &["subagent_status", "workspace_spawn_subagent"];
+
 pub struct WorkspaceClient {
     info: InitializeResult,
     pub(crate) context: PlatformExtensionContext,
@@ -2836,6 +2861,16 @@ mod tests {
             mentioned.contains("workspace_list"),
             "the token scan found nothing; got: {mentioned:?}"
         );
+
+        // …and no retired name anywhere in the block, prefix or not, bullet head
+        // or prose. Neither scan around this one can see those; see
+        // [`RETIRED_TOOL_NAMES`].
+        for retired in RETIRED_TOOL_NAMES {
+            assert!(
+                !INSTRUCTIONS.contains(retired),
+                "the instructions name `{retired}`, which no longer exists"
+            );
+        }
         for name in &mentioned {
             assert!(
                 advertised.contains(name)
