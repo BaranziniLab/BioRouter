@@ -541,7 +541,7 @@ enum SessionCommand {
         #[arg(
             long,
             value_name = "NAME",
-            help = "Attach by session name instead of id"
+            help = "Attach by session name instead of id (refuses if several sessions share it)"
         )]
         name: Option<String>,
         #[arg(

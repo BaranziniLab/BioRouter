@@ -999,6 +999,41 @@ fn pick_running_child(
     }
 }
 
+/// The one session called `name`, or an error naming the candidates.
+///
+/// Never guesses, for the same reason `pick_running_child` does not. Subagent
+/// names are authored by the model, so one fan-out routinely leaves several
+/// children sharing a name — and for attach `--name` is a WRITE target, not the
+/// listing lookup `resolve_session_by_name` was written for. Taking its first
+/// match here would steer the wrong run with no way for the user to tell.
+fn pick_named(rows: &[SessionRow], name: &str) -> Result<String> {
+    // An id is unique by construction, so matching one is not a guess. It is
+    // also the escape hatch the ambiguity error below points at.
+    if let Some(row) = rows.iter().find(|r| r.id == name) {
+        return Ok(row.id.clone());
+    }
+    let matches: Vec<&SessionRow> = rows.iter().filter(|r| r.name == name).collect();
+    match matches.as_slice() {
+        [only] => Ok(only.id.clone()),
+        [] => Err(anyhow!(
+            "no session is named {name:?}. \
+             `biorouter session list --subagents` lists them."
+        )),
+        many => Err(anyhow!(
+            "{} sessions are named {name:?}; say which one by id:\n{}",
+            many.len(),
+            many.iter()
+                .map(|r| format!(
+                    "  biorouter session attach {}   # last active {}",
+                    r.id,
+                    r.updated_at.format("%Y-%m-%d %H:%M")
+                ))
+                .collect::<Vec<_>>()
+                .join("\n")
+        )),
+    }
+}
+
 /// Which session `attach` is about: a positional id, a `--name`, or the running
 /// child of `--of <parent>`. Exactly one of the three.
 async fn resolve_attach_target(
@@ -1024,20 +1059,10 @@ async fn resolve_attach_target(
     if let Some(id) = session_id {
         return Ok(id);
     }
-    let session_manager = SessionManager::instance();
-    if let Some(name) = name {
-        return crate::commands::session::resolve_session_by_name(&session_manager, &name)
-            .await?
-            .ok_or_else(|| {
-                anyhow!(
-                    "no session is named {name:?}. \
-                     `biorouter session list --subagents` lists them."
-                )
-            });
-    }
-    let parent = of.expect("--of, by elimination");
+    // Both remaining paths resolve against the same listing.
     // `listed_session_types(true)` rather than an open-coded array: a subagent
     // row is filtered out in SQL, so the query itself has to widen.
+    let session_manager = SessionManager::instance();
     let sessions = session_manager
         .list_sessions_by_types(listed_session_types(true))
         .await?;
@@ -1052,6 +1077,10 @@ async fn resolve_attach_target(
             message_count: s.message_count,
         })
         .collect();
+    if let Some(name) = name {
+        return pick_named(&rows, &name);
+    }
+    let parent = of.expect("--of, by elimination");
     // The daemon owns liveness; an unreadable answer is an error, never an
     // empty set (see `running_session_ids`).
     let running = running_session_ids().await?;
@@ -1822,6 +1851,44 @@ mod tests {
         );
         window.close();
         assert_eq!(window.on_ctrl_c(), CtrlCAction::Detach);
+    }
+
+    /// `--name` is a WRITE target for attach, and subagent names are authored by
+    /// the model, so one fan-out routinely leaves several children sharing a
+    /// name. `resolve_session_by_name` answers with the FIRST match — right for
+    /// the listing lookup it was written for, and for attach a silent steer into
+    /// the wrong run. `--of` already refuses to guess; `--name` must too.
+    #[test]
+    fn attaching_by_name_refuses_when_the_name_is_not_unique() {
+        let rows = vec![
+            row("p1", None, "Migration review"),
+            row("c1", Some("p1"), "Subagent: audit"),
+            row("c2", Some("p1"), "Subagent: audit"),
+            row("c3", Some("p1"), "Subagent: summarise"),
+        ];
+
+        // A name that identifies exactly one session still resolves, subagent or
+        // not — widening the lookup (Task 38b) must not regress.
+        assert_eq!(pick_named(&rows, "Subagent: summarise").unwrap(), "c3");
+        assert_eq!(pick_named(&rows, "Migration review").unwrap(), "p1");
+        // An id is unique by construction, so matching one is not a guess. It is
+        // also the escape hatch the ambiguity error points at.
+        assert_eq!(pick_named(&rows, "c2").unwrap(), "c2");
+
+        let ambiguous = pick_named(&rows, "Subagent: audit").unwrap_err().to_string();
+        assert!(
+            ambiguous.contains("c1") && ambiguous.contains("c2"),
+            "both candidates must be named: {ambiguous}"
+        );
+        assert!(
+            !ambiguous.contains("c3"),
+            "only the sessions that actually match: {ambiguous}"
+        );
+
+        let missing = pick_named(&rows, "nothing like this")
+            .unwrap_err()
+            .to_string();
+        assert!(missing.contains("nothing like this"), "{missing}");
     }
 
     #[test]
