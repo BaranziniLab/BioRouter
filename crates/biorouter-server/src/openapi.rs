@@ -8,7 +8,7 @@ use biorouter::config::ExtensionEntry;
 use biorouter::conversation::Conversation;
 use biorouter::model::ModelConfig;
 use biorouter::permission::permission_confirmation::PrincipalType;
-use biorouter::privacy::ProviderTier;
+use biorouter::privacy::{ProviderTier, SessionClassification};
 use biorouter::providers::base::{ConfigKey, ModelInfo, ProviderMetadata, ProviderType};
 use biorouter::session::{
     ActivityWindow, DailyActivity, ModelUsageRow, Session, SessionInsights, SessionType,
@@ -522,6 +522,13 @@ impl utoipa::Modify for ApiKeySecurity {
         super::routes::session::SessionListResponse,
         super::routes::session::SidebarSessionListResponse,
         biorouter::session::SessionSummary,
+        // #56: `Session::privacy_tier` and `SessionSummary::privacy_tier`.
+        // utoipa emits a `$ref` for a nested `ToSchema`, so without the
+        // component registered both schemas point at a definition that is not
+        // in the document and the generated TS client has no
+        // `SessionClassification` union for the sidebar badge to switch on.
+        // Same reason `ProviderTier` is registered below.
+        SessionClassification,
         super::routes::session::UpdateSessionNameRequest,
         super::routes::session::UpdateSessionUserWorkflowValuesRequest,
         super::routes::session::UpdateSessionUserWorkflowValuesResponse,

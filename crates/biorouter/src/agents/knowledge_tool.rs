@@ -315,6 +315,8 @@ mod tests {
             diverged_from: None,
             branch_point_msg_uid: None,
             parent_session_id: None,
+            privacy_tier: crate::privacy::SessionClassification::Public,
+            privacy_reason: None,
         }
     }
 }
