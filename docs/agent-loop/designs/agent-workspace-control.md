@@ -25,20 +25,30 @@
 > **What Slice 3's gate actually measured** (read this before quoting the line above).
 > The flagship chain is verified end to end **headlessly**, against a running daemon, by
 > `scripts/workspace/glassbox-harness.mjs`: with `BIOROUTER_HARNESS_LIVE=1` a real parent
-> spawns a real child and all 22 assertions pass — `open_tab` + `annotate_tab` naming the
+> spawns a real child and all 25 assertions pass — `open_tab` + `annotate_tab` naming the
 > parent, the child observer stream, the spawn-context record, `POST /interrupt` into the
 > **running** child returning 202 (the turn lease, not a 409), the steer landing stamped
 > `user_direct`, `cancelled:true` **with** a turn id, the tab-composer `/reply` stamped
-> `user_direct`, and `"human_intervened":true` in the parent's transcript. The CLI half
-> was driven by hand against the same daemon with no desktop app attached: children nest
+> `user_direct`, `"human_intervened":true` in the parent's transcript, and decision 21's
+> two-tier surface on that same never-configured parent (`workspace__subagent` offered,
+> `workspace__workspace_list` withheld). The CLI half was
+> driven by hand against the same daemon with no desktop app attached: children nest
 > under their parent with distinct labels and a `● live` marker, `attach` renders the
 > conversation so far as a transcript before following it live, a typed line returns
 > `[steered turn …]` in the same turn, `cancel` reports the turn id and is idempotent,
-> and ctrl-C detaches without cancelling. **The live GUI acceptance pass in the desktop
-> app has not been run** — the tab/badge/header, the four-tab fan-out cap (decision 26)
-> and the elicitation-in-a-child-tab check are covered by unit and component tests only.
+> and ctrl-C detaches without cancelling.
 >
-> **One open defect found by that gate, not yet diagnosed.** A subagent that calls an
+> **What it did NOT measure**, in full, so the paragraph above cannot be quoted as more
+> than it is: **the live GUI acceptance pass in the desktop app has not been run.** Four
+> of Task 40's bullets rest on unit and component tests only — the auto-opened tab with
+> its badge and header (decision 24), the four-tab fan-out cap (decision 26), the
+> refusal of nesting from inside a child's own tab (decision 25), and the
+> elicitation-in-a-child-tab check (reconciliation #8). Decision 21 used to be a fifth
+> and is not any more: it is asserted by the live tier above on every run.
+>
+> **One open defect found by that gate, not yet diagnosed — tracked as Task 40b** in
+> [`br71-execution-plan.md`](br71-execution-plan.md), where it blocks the release gate.
+> A subagent that calls an
 > Auto Visualiser tool aborts the daemon with `fatal runtime error: stack overflow` in a
 > `tokio-runtime-worker` — reproduced 3/3 on fresh daemons, with and without
 > `BIOROUTER_AUTOVIS_CDN=1`, and **not** reproducible for the same tool in an ordinary
