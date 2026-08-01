@@ -479,7 +479,35 @@ mod tests {
         // fails CLOSED and locks the user out of their own knowledge base.
         let (_d, root) = tempdir_with_bases(&["default"]);
         ensure_migrated_unlocked(&root).unwrap();
+
+        // ⚠ The final-state half below — the file is there, no `*.tmp` beside it
+        // — is satisfied just as well by a plain `fs::write` straight to the
+        // target, which is the very implementation this test exists to reject.
+        // The inode is what tells the two apart: `rename` puts a DIFFERENT file
+        // at the path, while `fs::write` truncates the one already there and
+        // keeps its inode. That is the atomicity, observed rather than described.
+        #[cfg(unix)]
+        let before = {
+            use std::os::unix::fs::MetadataExt;
+            std::fs::metadata(crate::knowledge::paths::kb_tiers_path(&root))
+                .unwrap()
+                .ino()
+        };
+
         raise_unlocked(&root, "default", true).unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let after = std::fs::metadata(crate::knowledge::paths::kb_tiers_path(&root))
+                .unwrap()
+                .ino();
+            assert_ne!(
+                before, after,
+                "the store was written in place: a reader can see a half-written file"
+            );
+        }
+
         let names: Vec<_> = std::fs::read_dir(&root)
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
