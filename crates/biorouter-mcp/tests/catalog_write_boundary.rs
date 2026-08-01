@@ -51,7 +51,7 @@ fn catalog(kbs: &[&str], skills: &[&str]) -> Catalog {
                 description: String::new(),
             })
             .collect(),
-        extensions: Catalog::discover().extensions,
+        extensions: Catalog::discover(/* caller_is_private */ false).extensions,
     }
 }
 

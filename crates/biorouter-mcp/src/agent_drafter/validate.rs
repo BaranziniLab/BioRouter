@@ -158,7 +158,47 @@ pub fn unmet_requirements<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent_drafter::catalog::{KbEntry, SkillEntry};
+    use crate::agent_drafter::catalog::{drafter_catalog_root_with_kbs, KbEntry, SkillEntry};
+    use crate::knowledge::tier;
+
+    /// Issue #56, CP5. `:33`, `:42` and `:52` render
+    /// `Catalog::render_list(&catalog.kb_ids())` into `INVALID_PARAMS` strings the
+    /// model reads back, so a deliberately-invalid `configure_app` is an
+    /// enumeration oracle that needs no valid input at all. `br.kb` is the exact
+    /// string the 100-app test drive produced, so this is the live path.
+    ///
+    /// The fix is upstream — a private base is absent from the catalog these
+    /// three read — which is why nothing in this file changes.
+    #[test]
+    fn a_rejection_message_cannot_be_used_to_enumerate_private_bases() {
+        let (_d, root, _env) = drafter_catalog_root_with_kbs(&["default", "omop"]);
+        tier::raise_unlocked(&root, "omop", true).unwrap();
+        let public = Catalog::discover(/* caller_is_private */ false);
+        for probe in ["br.kb", "NOT A VALID ID", "clinvar"] {
+            let e = check_knowledge_base(probe, &public).unwrap_err();
+            assert!(
+                !e.contains("omop"),
+                "{probe} enumerated a private base: {e}"
+            );
+            assert!(
+                e.contains("default"),
+                "{probe} lost the public bases too: {e}"
+            );
+        }
+    }
+
+    /// Omission, not refusal: the message must read "not installed", which is
+    /// what a public caller can truthfully be told. A message that said "private"
+    /// would confirm the base exists — the leak in a politer sentence.
+    #[test]
+    fn a_public_session_cannot_configure_an_app_against_a_private_base() {
+        let (_d, root, _env) = drafter_catalog_root_with_kbs(&["omop"]);
+        tier::raise_unlocked(&root, "omop", true).unwrap();
+        let e = check_knowledge_base("omop", &Catalog::discover(false)).unwrap_err();
+        assert!(e.contains("not installed"), "{e}");
+        assert!(!e.to_lowercase().contains("private"), "{e}");
+        assert!(check_knowledge_base("omop", &Catalog::discover(true)).is_ok());
+    }
 
     fn catalog_with(kbs: &[&str], skills: &[&str]) -> Catalog {
         Catalog {
@@ -176,7 +216,7 @@ mod tests {
                     description: String::new(),
                 })
                 .collect(),
-            extensions: Catalog::discover().extensions,
+            extensions: Catalog::discover(/* caller_is_private */ false).extensions,
         }
     }
 
@@ -247,7 +287,7 @@ mod tests {
     /// Built-ins must never be rejected — every app names some of them.
     #[test]
     fn builtin_extensions_are_always_available() {
-        let catalog = Catalog::discover();
+        let catalog = Catalog::discover(false);
         let exts = vec![
             "developer".to_string(),
             "autovisualiser".to_string(),
@@ -258,7 +298,7 @@ mod tests {
 
     #[test]
     fn an_invented_extension_is_rejected() {
-        let catalog = Catalog::discover();
+        let catalog = Catalog::discover(false);
         let err = check_extensions(&["spoke_agent".to_string()], &catalog).unwrap_err();
         assert!(err.contains("spoke_agent"));
         assert!(

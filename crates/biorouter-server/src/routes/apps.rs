@@ -765,11 +765,20 @@ fn valid_profile_count_is_zero(cfg: &AgentConfig) -> bool {
     cfg.orchestration.agents.is_empty()
 }
 
-fn capability_report(cfg: &AgentConfig) -> CapabilityReport {
+/// What this install can actually give **this** agent.
+///
+/// `caller_is_private` is issue #56's CP5 crossing: `biorouter-mcp` cannot
+/// depend on `biorouter`, so `Catalog::discover` takes a `bool` and the
+/// `ProviderTier → bool` conversion happens here, at the one call site. A public
+/// agent's catalog omits every private knowledge base, so `missing_knowledge_base`
+/// reports one it may not reach exactly as it reports one that is not installed —
+/// which is the omission semantics the whole task chose, not a refusal that would
+/// itself confirm the base exists.
+fn capability_report(cfg: &AgentConfig, caller_is_private: bool) -> CapabilityReport {
     // What this install actually has. Everything below is intersected against
     // it: we never arm a tool for a grant that cannot be satisfied, because
     // doing so is what made the app's first turn fail by construction.
-    let catalog = biorouter_mcp::agent_drafter::catalog::Catalog::discover();
+    let catalog = biorouter_mcp::agent_drafter::catalog::Catalog::discover(caller_is_private);
     let (granted_skills, missing_skills) = cfg
         .skills
         .iter()
@@ -1254,10 +1263,31 @@ async fn configure_agent(
     let Some(cfg) = manifest.agent.as_ref() else {
         return CapabilityReport::default();
     };
-    let mut report = capability_report(cfg);
-
     configure_main_provider(agent, session_id, manifest, cfg).await;
     warn_invalid_model_routes(manifest, cfg).await;
+
+    // Issue #56. AFTER the bind, never before: `capability_report` used to run
+    // above `configure_main_provider`, so it read whatever provider the session
+    // held before the manifest's `model` was applied — and an app's manifest
+    // routinely names a different one. Both inversions are silent. A global-private
+    // install would hand a public manifest model the private catalog AND grant it
+    // the base below, arming its KB tools; a global-public install would strip a
+    // private manifest model of its own base for the whole session, for no reason
+    // the user can see.
+    //
+    // Reading the provider the agent ACTUALLY ended up with is also the only value
+    // that survives `configure_main_provider`'s fallbacks — the same rule the HTTP
+    // macro routes apply: the constructed instance, never the requested name.
+    //
+    // A dead or unbound provider resolves to Public, the same fail-safe direction
+    // `caller_is_private_of` takes: unknown must be the less privileged answer.
+    let caller_is_private = agent
+        .provider()
+        .await
+        .map(|p| p.tier())
+        .unwrap_or(biorouter::privacy::ProviderTier::Public)
+        .is_private();
+    let mut report = capability_report(cfg, caller_is_private);
 
     configure_main_extensions(agent, manifest, cfg, &report).await;
 
@@ -1558,7 +1588,27 @@ async fn configure_worker_agent(
         // one per profile), not the app's main session — so the profile's
         // declared base is this worker's write target, exactly as the main
         // agent's declared base is the main session's.
-        if let Err(e) = grant_knowledge_base(&state.knowledge_service, session_id, kb) {
+        //
+        // Issue #56 (CP5). Gated on the WORKER's OWN capability:
+        // `configure_worker_provider` ran four lines up and may have bound a
+        // different tier than the main agent's. This path had no
+        // `capability_report` at all, and `grant_knowledge_base` is
+        // `include_kb(.., PrimaryUpdate::Set(kb))` — so a public worker profile
+        // naming a private base got that base un-hidden in its session AND pinned
+        // as its KB-less write target. Task 10C refuses the reads and Task 10B
+        // stamps the writes, so this is not a content crossing; it is the same
+        // "never arm a tool for a grant that cannot be satisfied" rule
+        // `capability_report` exists to enforce, plus a moved pointer.
+        let worker_is_private = agent
+            .provider()
+            .await
+            .map(|p| p.tier())
+            .unwrap_or(biorouter::privacy::ProviderTier::Public)
+            .is_private();
+        if !biorouter_mcp::agent_drafter::catalog::Catalog::discover(worker_is_private).has_kb(kb) {
+            warn!(app = %manifest.id, profile = %profile_name, kb = %kb,
+                  "profile names a knowledge base that is not available to it");
+        } else if let Err(e) = grant_knowledge_base(&state.knowledge_service, session_id, kb) {
             warn!(app = %manifest.id, profile = %profile_name, kb = %kb, "worker grant knowledge base failed: {e}");
         }
     }
@@ -8005,6 +8055,329 @@ mod tests {
             // Main turn → unchanged (no agent field), preserving back-compat.
             let plain = stamp_agent(base, None);
             assert!(plain.get("agent").is_none());
+        }
+    }
+
+    // ── Issue #56, Task 10D: CP5 at the app runtime ─────────────────────────
+
+    /// The capability the app's agents are scoped by, and **where** it is read.
+    ///
+    /// `capability_report` used to run above `configure_main_provider`, so it saw
+    /// whatever provider the session held *before* the manifest's own `model` was
+    /// bound — and an app's manifest routinely names a different one. Both
+    /// inversions are silent, so both are driven here.
+    mod privacy_capability {
+        use super::super::{configure_agent, configure_worker_agent};
+        use biorouter_mcp::agent_drafter::control::UiBridge;
+        use biorouter_mcp::agent_drafter::store::{
+            AgentConfig, ArtifactKind, Manifest, ModelSelection,
+        };
+        use biorouter_mcp::knowledge::service::KnowledgeService;
+        use std::sync::Arc;
+
+        /// A loopback Ollama is Private and a non-loopback one is Public
+        /// (`providers::self_hosted_tier`), so the PROVIDER NAME is `ollama` in
+        /// every row and only the host moves — an implementation keyed on the
+        /// provider name gives the same answer twice, and so does either
+        /// hardcoded literal.
+        ///
+        /// ⚠ The private host's port is **1**, not 11434: `is_loopback_host`
+        /// reads the host and ignores the port, and pointing a test at the real
+        /// Ollama port drives a live local model on any machine running one.
+        const PRIVATE_HOST: &str = "http://127.0.0.1:1";
+        const PUBLIC_HOST: &str = "http://ollama.invalid:11434";
+
+        /// Pin everything these rows depend on, and restore it on drop.
+        ///
+        /// `BIOROUTER_PROVIDER` names a provider that cannot be created, which is
+        /// what makes `configure_main_provider`'s global fallback (`:834-854`)
+        /// deterministic: without it the fallback would bind whatever the
+        /// developer has configured, at an unknown tier, and silently decide the
+        /// assertion.
+        fn lock_env_for(root: &std::path::Path, host: &str) -> env_lock::EnvGuard<'static> {
+            env_lock::lock_env([
+                (
+                    "BIOROUTER_PATH_ROOT",
+                    Some(root.to_string_lossy().into_owned()),
+                ),
+                ("OLLAMA_HOST", Some(host.to_string())),
+                ("OLLAMA_TIMEOUT", Some("1".to_string())),
+                ("BIOROUTER_LEAD_MODEL", None),
+                ("BIOROUTER_LEAD_PROVIDER", None),
+                (
+                    "BIOROUTER_PROVIDER",
+                    Some("no-such-provider-for-this-test".to_string()),
+                ),
+            ])
+        }
+
+        /// A provider bound to a fixed tier, standing in for "whatever this
+        /// session was already running on" before the manifest was applied.
+        #[derive(Clone)]
+        struct TierProvider(biorouter::privacy::ProviderTier);
+
+        #[async_trait::async_trait]
+        impl biorouter::providers::base::Provider for TierProvider {
+            fn metadata() -> biorouter::providers::base::ProviderMetadata {
+                biorouter::providers::base::ProviderMetadata::empty()
+            }
+            fn get_name(&self) -> &str {
+                "tier-mock"
+            }
+            fn get_model_config(&self) -> biorouter::model::ModelConfig {
+                biorouter::model::ModelConfig::new("test-model").unwrap()
+            }
+            fn tier(&self) -> biorouter::privacy::ProviderTier {
+                self.0
+            }
+            async fn complete_with_model(
+                &self,
+                _model_config: &biorouter::model::ModelConfig,
+                _system: &str,
+                _messages: &[biorouter::conversation::message::Message],
+                _tools: &[rmcp::model::Tool],
+            ) -> anyhow::Result<
+                (
+                    biorouter::conversation::message::Message,
+                    biorouter::providers::base::ProviderUsage,
+                ),
+                biorouter::providers::errors::ProviderError,
+            > {
+                Ok((
+                    biorouter::conversation::message::Message::assistant().with_text("ok"),
+                    biorouter::providers::base::ProviderUsage::new(
+                        "tier-mock".to_string(),
+                        biorouter::providers::base::Usage::default(),
+                    ),
+                ))
+            }
+        }
+
+        fn manifest_with(model: Option<ModelSelection>, kb: &str) -> Manifest {
+            Manifest {
+                id: "privacyapp".to_string(),
+                title: "Privacy App".to_string(),
+                description: String::new(),
+                kind: ArtifactKind::Agentic,
+                entry: "index.html".to_string(),
+                created_at: 0,
+                updated_at: 0,
+                agent: Some(AgentConfig {
+                    model,
+                    knowledge_base: Some(kb.to_string()),
+                    ..Default::default()
+                }),
+                width: None,
+                height: None,
+                built_at: None,
+                sdk_hash: None,
+                session_id: None,
+                surface: Default::default(),
+                theme: Default::default(),
+            }
+        }
+
+        fn ollama(model: &str) -> Option<ModelSelection> {
+            Some(ModelSelection {
+                provider: Some("ollama".to_string()),
+                model: Some(model.to_string()),
+                settings: None,
+            })
+        }
+
+        /// The write target `grant_knowledge_base` sets. This is the observable
+        /// that separates "granted" from "not granted": nothing is hidden by
+        /// default, so an un-granted base is *also* in the visible set and only
+        /// the primary pointer moves.
+        fn stored_primary(svc: &KnowledgeService, session: &str) -> Option<String> {
+            svc.get_primary_for_session(session).unwrap()
+        }
+
+        fn session_kb_ids(svc: &KnowledgeService, session: &str) -> Vec<String> {
+            svc.selection(Some(session)).unwrap().kb_ids
+        }
+
+        /// A knowledge root under `dir` holding one PRIVATE base, plus an
+        /// `AppState` whose service is rooted at it.
+        async fn state_with_private_omop(
+            dir: &tempfile::TempDir,
+        ) -> (Arc<crate::state::AppState>, std::path::PathBuf) {
+            let kroot = dir.path().join("config").join("knowledge");
+            let svc = KnowledgeService::new(kroot.clone());
+            svc.create_base("omop", "OMOP Cohort", None).unwrap();
+            biorouter_mcp::knowledge::tier::raise_unlocked(&kroot, "omop", true).unwrap();
+            let state = crate::state::AppState::new_with_knowledge_root(kroot.clone())
+                .await
+                .unwrap();
+            (state, kroot)
+        }
+
+        async fn agent_for(
+            state: &Arc<crate::state::AppState>,
+            name: &str,
+            dir: &std::path::Path,
+        ) -> (String, Arc<biorouter::agents::Agent>) {
+            let session = state
+                .session_manager()
+                .create_session(
+                    dir.to_path_buf(),
+                    name.to_string(),
+                    biorouter::session::session_manager::SessionType::User,
+                )
+                .await
+                .unwrap();
+            let agent = state.get_agent(session.id.clone()).await.unwrap();
+            (session.id, agent)
+        }
+
+        #[tokio::test]
+        #[serial_test::serial]
+        async fn the_app_capability_report_follows_the_manifests_provider_not_the_global_one() {
+            // Warm the process-global `SessionManager` against the REAL path root
+            // BEFORE the env lock relocates it — otherwise this test could be the
+            // one that creates the session database inside a `TempDir` that is
+            // then unlinked, breaking every sibling test in the binary.
+            let _warm = crate::state::AppState::new().await.unwrap();
+
+            // Both inversions, because each is silent on its own and a fix that
+            // hardcodes either literal passes one of them. In each row the agent
+            // is pre-bound to the OPPOSITE tier, which is what the report used to
+            // read at `:1257`.
+            for (host, manifest_is_private) in [(PUBLIC_HOST, false), (PRIVATE_HOST, true)] {
+                let dir = tempfile::TempDir::new().unwrap();
+                let _env = lock_env_for(dir.path(), host);
+                let (state, kroot) = state_with_private_omop(&dir).await;
+                let svc = KnowledgeService::new(kroot.clone());
+
+                let label = if manifest_is_private { "priv" } else { "pub" };
+                let (session, agent) =
+                    agent_for(&state, &format!("privacy-report-{label}"), dir.path()).await;
+
+                // The tier the session held BEFORE the manifest was applied —
+                // deliberately the OPPOSITE of what the manifest will bind, so
+                // reading the provider two lines early gives the wrong answer in
+                // both rows.
+                let pre_bound = if manifest_is_private {
+                    biorouter::privacy::ProviderTier::Public
+                } else {
+                    biorouter::privacy::ProviderTier::Private
+                };
+                agent
+                    .update_provider(Arc::new(TierProvider(pre_bound)), &session)
+                    .await
+                    .unwrap();
+
+                let manifest = manifest_with(ollama("qwen3.5:4b"), "omop");
+                let bridge = UiBridge::new();
+                let report =
+                    configure_agent(&agent, &state, &session, &manifest, &bridge, false).await;
+
+                // The manifest's provider really did bind — otherwise the row
+                // measures the pre-bound mock and proves nothing.
+                assert_eq!(
+                    agent
+                        .provider()
+                        .await
+                        .map(|p| p.get_name().to_string())
+                        .ok(),
+                    Some("ollama".to_string()),
+                    "the manifest's model must be what the agent ends up on"
+                );
+
+                if manifest_is_private {
+                    assert_eq!(
+                        report.granted_knowledge_base.as_deref(),
+                        Some("omop"),
+                        "a private manifest model wrongly lost its own base"
+                    );
+                    assert_eq!(stored_primary(&svc, &session).as_deref(), Some("omop"));
+                } else {
+                    assert_eq!(
+                        report.granted_knowledge_base, None,
+                        "a public manifest model received the private catalog"
+                    );
+                    assert_eq!(report.missing_knowledge_base.as_deref(), Some("omop"));
+                    // And the grant really did not happen — the report is only a
+                    // claim.
+                    assert_ne!(stored_primary(&svc, &session).as_deref(), Some("omop"));
+                }
+            }
+        }
+
+        #[tokio::test]
+        #[serial_test::serial]
+        async fn a_public_worker_profile_is_not_granted_a_private_base() {
+            // `configure_worker_agent` grants `cfg.knowledge_base` with no report
+            // between it and `configure_worker_provider`, and
+            // `grant_knowledge_base` is `include_kb(.., PrimaryUpdate::Set(kb))`
+            // — so the base is un-hidden in that worker's session AND made its
+            // KB-less write target.
+            let _warm = crate::state::AppState::new().await.unwrap();
+
+            let dir = tempfile::TempDir::new().unwrap();
+            // PUBLIC host: the worker's `ollama` model resolves Public. The main
+            // agent is made Private by a bound mock instead, so both tiers exist
+            // under one process-global host setting.
+            let _env = lock_env_for(dir.path(), PUBLIC_HOST);
+            let (state, kroot) = state_with_private_omop(&dir).await;
+            let svc = KnowledgeService::new(kroot.clone());
+
+            let (main_session, main_agent) =
+                agent_for(&state, "privacy-worker-main", dir.path()).await;
+            main_agent
+                .update_provider(
+                    Arc::new(TierProvider(biorouter::privacy::ProviderTier::Private)),
+                    &main_session,
+                )
+                .await
+                .unwrap();
+
+            // Main agent: no manifest model, so `configure_main_provider` leaves
+            // the private mock in place (the global fallback cannot create
+            // `no-such-provider-for-this-test`).
+            let main_manifest = manifest_with(None, "omop");
+            let bridge = UiBridge::new();
+            let report = configure_agent(
+                &main_agent,
+                &state,
+                &main_session,
+                &main_manifest,
+                &bridge,
+                false,
+            )
+            .await;
+            assert_eq!(
+                report.granted_knowledge_base.as_deref(),
+                Some("omop"),
+                "the PRIVATE main agent must keep its own base"
+            );
+            assert!(session_kb_ids(&svc, &main_session).contains(&"omop".to_string()));
+
+            // Worker profile: its own public `ollama` model.
+            let (worker_session, worker_agent) =
+                agent_for(&state, "privacy-worker-analyst", dir.path()).await;
+            let worker_cfg = AgentConfig {
+                model: ollama("qwen3.5:4b"),
+                knowledge_base: Some("omop".to_string()),
+                ..Default::default()
+            };
+            configure_worker_agent(
+                &worker_agent,
+                &state,
+                &worker_session,
+                &main_manifest,
+                "analyst",
+                &worker_cfg,
+                &bridge,
+            )
+            .await;
+
+            assert_ne!(
+                stored_primary(&svc, &worker_session).as_deref(),
+                Some("omop"),
+                "a public worker profile was pinned to a private base as its \
+                 KB-less write target"
+            );
         }
     }
 }
