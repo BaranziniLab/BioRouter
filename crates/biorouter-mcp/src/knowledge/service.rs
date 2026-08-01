@@ -571,7 +571,18 @@ impl KnowledgeService {
                 path,
             },
         )?;
-        crate::knowledge::tier::register_public_if_absent_unlocked(&self.root, &new_id)?;
+        // Issue #56. ONE store write, not a register followed by a raise.
+        // `raise_unlocked` registers an absent id at the caller's tier
+        // (`raise_is_monotone_and_registers_an_absent_base_at_the_callers_tier`),
+        // so the pair was redundant — and it was worse than redundant: each call
+        // ends in its own `save`, and `is_private` is deliberately lock-free, so
+        // a reader landing between the two renames would have seen a base whose
+        // private content was already fully extracted on disk classified PUBLIC.
+        // With a single write the reader sees either the pre-import state (a
+        // directory with no entry, which reads private) or the final tier.
+        //
+        // The floor is a disjunction, never the marker alone: a hostile archive
+        // claiming "public" must not lower a private importer's base.
         crate::knowledge::tier::raise_unlocked(
             &self.root,
             &new_id,
