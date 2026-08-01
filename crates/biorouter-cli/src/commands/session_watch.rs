@@ -1329,6 +1329,75 @@ mod tests {
         assert_eq!(ctrl_c_action(true, true), CtrlCAction::ForceExit);
     }
 
+    fn row(id: &str, parent: Option<&str>, name: &str) -> SessionRow {
+        SessionRow {
+            id: id.to_string(),
+            name: name.to_string(),
+            session_type: if parent.is_some() {
+                SessionType::SubAgent
+            } else {
+                SessionType::User
+            },
+            parent_session_id: parent.map(str::to_string),
+            updated_at: chrono::Utc::now(),
+            message_count: 3,
+        }
+    }
+
+    fn running(ids: &[&str]) -> std::collections::HashSet<String> {
+        ids.iter().map(|id| (*id).to_string()).collect()
+    }
+
+    /// `--of` is a WRITE target: whatever it picks is what the next line the
+    /// user types gets steered into. A fan-out routinely leaves several children
+    /// running at once, so "the first one" is not an answer — it is a silent
+    /// steer into the wrong run. Each refusal must instead name the candidates,
+    /// the same shape `#45`'s "no write target" failure uses.
+    #[test]
+    fn attaching_to_a_parents_child_never_guesses_which_child() {
+        let rows = vec![
+            row("p1", None, "Migration review"),
+            row("c1", Some("p1"), "Subagent: audit schema"),
+            row("c2", Some("p1"), "Subagent: audit data"),
+            row("p2", None, "Other work"),
+            row("c3", Some("p2"), "Subagent: elsewhere"),
+        ];
+
+        // Exactly one running child is the only case that may resolve.
+        assert_eq!(
+            pick_running_child(&rows, "p1", &running(&["c2"])).unwrap(),
+            "c2"
+        );
+        // …and a running child of ANOTHER parent is not a candidate.
+        let wrong_parent = pick_running_child(&rows, "p1", &running(&["c3"])).unwrap_err();
+        assert!(
+            wrong_parent.to_string().contains("no subagent of p1"),
+            "{wrong_parent}"
+        );
+
+        // Two running: refuse, and name BOTH so the user can choose.
+        let ambiguous = pick_running_child(&rows, "p1", &running(&["c1", "c2"])).unwrap_err();
+        let ambiguous = ambiguous.to_string();
+        assert!(ambiguous.contains("c1"), "{ambiguous}");
+        assert!(ambiguous.contains("c2"), "{ambiguous}");
+        assert!(
+            ambiguous.contains("attach"),
+            "the refusal must be runnable, not just a complaint: {ambiguous}"
+        );
+
+        // Children exist but none is live: say which ones ran, so the user can
+        // tell "finished" from "never started".
+        let none_live = pick_running_child(&rows, "p1", &running(&[])).unwrap_err();
+        let none_live = none_live.to_string();
+        assert!(none_live.contains("c1") && none_live.contains("c2"), "{none_live}");
+
+        // Never spawned anything: a different error, because a different fix.
+        let barren = pick_running_child(&rows, "p2-with-no-children", &running(&[]))
+            .unwrap_err()
+            .to_string();
+        assert!(barren.contains("has not spawned any subagent"), "{barren}");
+    }
+
     #[test]
     fn a_cancel_that_found_nothing_to_stop_is_reported_as_success() {
         let nothing = serde_json::json!({ "cancelled": false, "turn_id": null });
