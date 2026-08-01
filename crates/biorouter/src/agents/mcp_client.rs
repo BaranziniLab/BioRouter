@@ -1,5 +1,6 @@
 use crate::action_required_manager::ActionRequiredManager;
 use crate::agents::types::SharedProvider;
+use crate::privacy::CallCapability;
 use crate::session_context::SESSION_ID_HEADER;
 use rmcp::model::{
     Content, CreateElicitationRequestParams, CreateElicitationResult, ElicitationAction, ErrorCode,
@@ -141,13 +142,19 @@ pub struct McpMeta {
     /// letting a pooled (shared) client route those notifications to exactly this
     /// dispatch's session (BR-54). `None` on the unpooled path (legacy broadcast).
     pub progress_token: Option<String>,
+    /// Issue #56. The capability this call was ADMITTED on. Set from
+    /// `dispatch_tool_call`'s parameter, never re-derived: an in-process
+    /// extension that re-reads the provider mutex from inside the driven future
+    /// reads it minutes later, past the dispatch semaphore.
+    pub capability: CallCapability,
 }
 
 impl McpMeta {
-    pub fn new(session_id: impl Into<String>) -> Self {
+    pub fn new(session_id: impl Into<String>, capability: CallCapability) -> Self {
         Self {
             session_id: session_id.into(),
             progress_token: None,
+            capability,
         }
     }
 
@@ -1013,7 +1020,11 @@ mod tests {
     /// id, so both ride the wire together and neither clobbers the other.
     #[tokio::test]
     async fn test_meta_carries_session_and_progress_token_together() {
-        let meta = McpMeta::new("sess-1").with_progress_token("tok-xyz");
+        let meta = McpMeta::new(
+            "sess-1",
+            crate::privacy::CallCapability::for_test_restricted(),
+        )
+        .with_progress_token("tok-xyz");
         let ext = meta.inject_into_extensions(Default::default());
         let m = ext.get::<Meta>().expect("meta present");
         assert_eq!(

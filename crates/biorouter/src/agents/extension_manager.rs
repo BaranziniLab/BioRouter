@@ -1675,10 +1675,20 @@ impl ExtensionManager {
         }
     }
 
+    /// Dispatch one tool call to the extension that owns it.
+    ///
+    /// Issue #56: `cap` is the capability this call was ADMITTED on, sampled
+    /// once at the entry that admitted it. This function has **no way to
+    /// sample** — deliberately. Every barrier downstream (Gate C here, the
+    /// built-in `_meta` bit, and the Platform extensions through `McpMeta`)
+    /// reads that one value, so they cannot disagree, and none of them can
+    /// re-derive a *newer* provider tier from inside the driven future, which is
+    /// what would let a Public-admitted call run with Private reach.
     pub async fn dispatch_tool_call(
         &self,
         session_id: &str,
         tool_call: CallToolRequestParams,
+        cap: crate::privacy::CallCapability,
         cancellation_token: CancellationToken,
     ) -> Result<ToolCallResult> {
         // Some models strip the tool prefix, so auto-add it for known code_execution tools
@@ -1784,6 +1794,16 @@ impl ExtensionManager {
         drop(register_call);
         let session_id = session_id.to_string();
 
+        // Issue #56: built HERE, not inside the future below. `register_dispatch()`
+        // already runs on this side of the boundary, so it costs nothing — and it
+        // is what keeps the capability a value that was decided at admission
+        // rather than something re-derived on the far side of the dispatch
+        // semaphore, minutes later, against whatever provider is bound by then.
+        let mut meta = McpMeta::new(&session_id, cap);
+        if let Some(token) = progress_token {
+            meta = meta.with_progress_token(token);
+        }
+
         let fut = async move {
             tracing::debug!(
                 "dispatch_tool_call fut: calling client.call_tool tool={} session_id={}",
@@ -1797,10 +1817,6 @@ impl ExtensionManager {
             // are internally synchronized, so the guard (and its
             // `mcp.client_lock_wait` span) is gone and calls now overlap.
             let _call_phase = crate::agents::phase_timing::Phase::start("mcp.call_tool");
-            let mut meta = McpMeta::new(&session_id);
-            if let Some(token) = progress_token {
-                meta = meta.with_progress_token(token);
-            }
             client
                 .call_tool(&tool_name, arguments, meta, cancellation_token)
                 .await
@@ -2322,7 +2338,12 @@ mod tests {
                 meta: None,
             };
             let dispatched = extension_manager
-                .dispatch_tool_call("test-session-id", tool_call, CancellationToken::default())
+                .dispatch_tool_call(
+                    "test-session-id",
+                    tool_call,
+                    crate::privacy::CallCapability::for_test_restricted(),
+                    CancellationToken::default(),
+                )
                 .await
                 .expect("dispatch should succeed");
             futures.push(dispatched.result);
@@ -2451,7 +2472,12 @@ mod tests {
             meta: None,
         };
         let dispatched = em
-            .dispatch_tool_call("test-session", call, CancellationToken::default())
+            .dispatch_tool_call(
+                "test-session",
+                call,
+                crate::privacy::CallCapability::for_test_restricted(),
+                CancellationToken::default(),
+            )
             .await
             .expect("dispatch ok");
         let output = dispatched.result.await.expect("tool result ok");
@@ -2495,7 +2521,12 @@ mod tests {
             meta: None,
         };
         let rejected = match em
-            .dispatch_tool_call("test-session", bad, CancellationToken::default())
+            .dispatch_tool_call(
+                "test-session",
+                bad,
+                crate::privacy::CallCapability::for_test_restricted(),
+                CancellationToken::default(),
+            )
             .await
         {
             Err(_) => true,
@@ -2543,7 +2574,12 @@ mod tests {
         };
 
         let result = extension_manager
-            .dispatch_tool_call("test-session-id", tool_call, CancellationToken::default())
+            .dispatch_tool_call(
+                "test-session-id",
+                tool_call,
+                crate::privacy::CallCapability::for_test_restricted(),
+                CancellationToken::default(),
+            )
             .await;
         assert!(result.is_ok());
 
@@ -2555,7 +2591,12 @@ mod tests {
         };
 
         let result = extension_manager
-            .dispatch_tool_call("test-session-id", tool_call, CancellationToken::default())
+            .dispatch_tool_call(
+                "test-session-id",
+                tool_call,
+                crate::privacy::CallCapability::for_test_restricted(),
+                CancellationToken::default(),
+            )
             .await;
         assert!(result.is_ok());
 
@@ -2568,7 +2609,12 @@ mod tests {
         };
 
         let result = extension_manager
-            .dispatch_tool_call("test-session-id", tool_call, CancellationToken::default())
+            .dispatch_tool_call(
+                "test-session-id",
+                tool_call,
+                crate::privacy::CallCapability::for_test_restricted(),
+                CancellationToken::default(),
+            )
             .await;
         assert!(result.is_ok());
 
@@ -2581,7 +2627,12 @@ mod tests {
         };
 
         let result = extension_manager
-            .dispatch_tool_call("test-session-id", tool_call, CancellationToken::default())
+            .dispatch_tool_call(
+                "test-session-id",
+                tool_call,
+                crate::privacy::CallCapability::for_test_restricted(),
+                CancellationToken::default(),
+            )
             .await;
         assert!(result.is_ok());
 
@@ -2593,7 +2644,12 @@ mod tests {
         };
 
         let result = extension_manager
-            .dispatch_tool_call("test-session-id", tool_call, CancellationToken::default())
+            .dispatch_tool_call(
+                "test-session-id",
+                tool_call,
+                crate::privacy::CallCapability::for_test_restricted(),
+                CancellationToken::default(),
+            )
             .await;
         assert!(result.is_ok());
 
@@ -2609,6 +2665,7 @@ mod tests {
             .dispatch_tool_call(
                 "test-session-id",
                 invalid_tool_call,
+                crate::privacy::CallCapability::for_test_restricted(),
                 CancellationToken::default(),
             )
             .await
@@ -2636,6 +2693,7 @@ mod tests {
             .dispatch_tool_call(
                 "test-session-id",
                 invalid_tool_call,
+                crate::privacy::CallCapability::for_test_restricted(),
                 CancellationToken::default(),
             )
             .await;
@@ -2672,7 +2730,12 @@ mod tests {
             meta: None,
         };
         let result = extension_manager
-            .dispatch_tool_call("test-session-id", secret_call, CancellationToken::default())
+            .dispatch_tool_call(
+                "test-session-id",
+                secret_call,
+                crate::privacy::CallCapability::for_test_restricted(),
+                CancellationToken::default(),
+            )
             .await;
         match result {
             Err(err) => {
@@ -2690,7 +2753,12 @@ mod tests {
             meta: None,
         };
         let result = extension_manager
-            .dispatch_tool_call("test-session-id", benign_call, CancellationToken::default())
+            .dispatch_tool_call(
+                "test-session-id",
+                benign_call,
+                crate::privacy::CallCapability::for_test_restricted(),
+                CancellationToken::default(),
+            )
             .await;
         assert!(result.is_ok(), "benign path must not be blocked");
     }
@@ -2780,6 +2848,7 @@ mod tests {
             .dispatch_tool_call(
                 "test-session-id",
                 unavailable_tool_call,
+                crate::privacy::CallCapability::for_test_restricted(),
                 CancellationToken::default(),
             )
             .await;
@@ -2805,6 +2874,7 @@ mod tests {
             .dispatch_tool_call(
                 "test-session-id",
                 available_tool_call,
+                crate::privacy::CallCapability::for_test_restricted(),
                 CancellationToken::default(),
             )
             .await;

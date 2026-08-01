@@ -2742,7 +2742,10 @@ mod tests {
     }
 
     fn test_meta() -> crate::agents::mcp_client::McpMeta {
-        crate::agents::mcp_client::McpMeta::new("caller")
+        crate::agents::mcp_client::McpMeta::new(
+            "caller",
+            crate::privacy::CallCapability::for_test_restricted(),
+        )
     }
 
     /// Call `workspace_list` and return the parsed payload.
@@ -3880,7 +3883,10 @@ mod tests {
             "session_id": target.id, "text": "context for later", "mode": "note"
         }))
         .unwrap();
-        let meta = crate::agents::mcp_client::McpMeta::new(caller.id.clone());
+        let meta = crate::agents::mcp_client::McpMeta::new(
+            caller.id.clone(),
+            crate::privacy::CallCapability::for_test_restricted(),
+        );
         let result = c
             .call_tool(
                 "workspace_send_prompt",
@@ -4308,7 +4314,10 @@ mod tests {
         c.call_tool(
             "workspace_send_prompt",
             Some(args),
-            crate::agents::mcp_client::McpMeta::new(caller.to_string()),
+            crate::agents::mcp_client::McpMeta::new(
+                caller.to_string(),
+                crate::privacy::CallCapability::for_test_restricted(),
+            ),
             CancellationToken::new(),
         )
         .await
@@ -5032,7 +5041,10 @@ mod tests {
         c.call_tool(
             "workspace_close",
             Some(args),
-            crate::agents::mcp_client::McpMeta::new(caller.to_string()),
+            crate::agents::mcp_client::McpMeta::new(
+                caller.to_string(),
+                crate::privacy::CallCapability::for_test_restricted(),
+            ),
             CancellationToken::new(),
         )
         .await
@@ -5743,7 +5755,10 @@ mod tests {
             c.call_tool(
                 "workspace_open",
                 Some(args),
-                crate::agents::mcp_client::McpMeta::new(caller.to_string()),
+                crate::agents::mcp_client::McpMeta::new(
+                    caller.to_string(),
+                    crate::privacy::CallCapability::for_test_restricted(),
+                ),
                 CancellationToken::new(),
             ),
         )

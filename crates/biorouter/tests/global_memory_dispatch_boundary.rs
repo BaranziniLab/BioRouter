@@ -114,7 +114,12 @@ async fn dispatch(
         arguments: arguments.as_object().cloned(),
     };
     match manager
-        .dispatch_tool_call(SESSION, call, CancellationToken::new())
+        .dispatch_tool_call(
+            SESSION,
+            call,
+            biorouter::privacy::CallCapability::public_enforced(),
+            CancellationToken::new(),
+        )
         .await
     {
         Err(e) => (true, e.to_string()),

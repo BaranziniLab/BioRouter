@@ -1181,9 +1181,20 @@ async fn call_tool(
         meta: None,
     };
 
+    // Issue #56: this entry has NO caller identity. It arrives outside the agent
+    // loop, so there is no admitted turn whose capability it could inherit, and
+    // the session's currently-bound provider is not this caller's — reading it
+    // would hand an HTTP client whatever reach the user's chat happens to have.
+    // Public + enforced is the most restrictive pair, and it is a constant, so
+    // there is nothing here to race with `update_provider`.
     let tool_result = agent
         .extension_manager
-        .dispatch_tool_call(&payload.session_id, tool_call, CancellationToken::default())
+        .dispatch_tool_call(
+            &payload.session_id,
+            tool_call,
+            biorouter::privacy::CallCapability::public_enforced(),
+            CancellationToken::default(),
+        )
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 

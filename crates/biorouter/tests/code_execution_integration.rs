@@ -82,7 +82,12 @@ async fn exec(manager: &Arc<ExtensionManager>, code: &str) -> String {
         arguments: Some(object!({ "code": code })),
     };
     let dispatched = manager
-        .dispatch_tool_call(SESSION, call, CancellationToken::new())
+        .dispatch_tool_call(
+            SESSION,
+            call,
+            biorouter::privacy::CallCapability::public_enforced(),
+            CancellationToken::new(),
+        )
         .await
         .expect("dispatch");
     let result = dispatched.result.await.expect("tool result");
@@ -113,7 +118,12 @@ async fn exec_raw(manager: &Arc<ExtensionManager>, code: &str) -> (bool, String)
         arguments: Some(object!({ "code": code })),
     };
     let dispatched = manager
-        .dispatch_tool_call(SESSION, call, CancellationToken::new())
+        .dispatch_tool_call(
+            SESSION,
+            call,
+            biorouter::privacy::CallCapability::public_enforced(),
+            CancellationToken::new(),
+        )
         .await
         .expect("dispatch");
     let result = dispatched.result.await.expect("tool result");
@@ -155,7 +165,12 @@ async fn call_tool(manager: &Arc<ExtensionManager>, tool: &str, args: serde_json
         arguments: Some(args.as_object().unwrap().clone()),
     };
     let dispatched = manager
-        .dispatch_tool_call(SESSION, call, CancellationToken::new())
+        .dispatch_tool_call(
+            SESSION,
+            call,
+            biorouter::privacy::CallCapability::public_enforced(),
+            CancellationToken::new(),
+        )
         .await
         .expect("dispatch");
     let result = dispatched.result.await.expect("tool result");
@@ -543,7 +558,12 @@ async fn search_modules_no_match_is_a_success_with_guidance() {
         })),
     };
     let dispatched = m
-        .dispatch_tool_call(SESSION, call, CancellationToken::new())
+        .dispatch_tool_call(
+            SESSION,
+            call,
+            biorouter::privacy::CallCapability::public_enforced(),
+            CancellationToken::new(),
+        )
         .await
         .expect("dispatch");
     let result = dispatched.result.await.expect("tool result");
@@ -820,7 +840,12 @@ async fn case22_autovisualiser_blob_resource_is_collected_and_rendered_inline() 
         "# })),
     };
     let result = m
-        .dispatch_tool_call(SESSION, call, CancellationToken::new())
+        .dispatch_tool_call(
+            SESSION,
+            call,
+            biorouter::privacy::CallCapability::public_enforced(),
+            CancellationToken::new(),
+        )
         .await
         .expect("dispatch")
         .result
@@ -888,7 +913,12 @@ async fn case23_agent_drafter_preview_and_launch_metadata_survive_execute_code()
         "# })),
     };
     let result = m
-        .dispatch_tool_call(SESSION, call, CancellationToken::new())
+        .dispatch_tool_call(
+            SESSION,
+            call,
+            biorouter::privacy::CallCapability::public_enforced(),
+            CancellationToken::new(),
+        )
         .await
         .expect("dispatch")
         .result
@@ -1005,12 +1035,17 @@ async fn exec_result(m: &Arc<ExtensionManager>, code: &str) -> rmcp::model::Call
         name: "code_execution__execute_code".into(),
         arguments: Some(object!({ "code": code })),
     };
-    m.dispatch_tool_call(SESSION, call, CancellationToken::new())
-        .await
-        .expect("dispatch")
-        .result
-        .await
-        .expect("tool result")
+    m.dispatch_tool_call(
+        SESSION,
+        call,
+        biorouter::privacy::CallCapability::public_enforced(),
+        CancellationToken::new(),
+    )
+    .await
+    .expect("dispatch")
+    .result
+    .await
+    .expect("tool result")
 }
 
 // ---------------------------------------------------------------------------

@@ -17,10 +17,29 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod capability;
 pub mod extensions;
 mod registry_private;
 
+pub use capability::CallCapability;
 pub use extensions::classify_extension;
+
+/// The master opt-out (DR-15), read **inside** every gate rather than through
+/// an `is_enabled()` wrapper, so a mid-session change is honoured and the
+/// opt-out is one auditable line rather than an absent gate.
+///
+/// It is read exactly once per tool call, by [`CallCapability::sample`], and
+/// carried with the tier — the two are halves of one decision and reading them
+/// at two different instants is the same class of race the capability itself
+/// exists to close.
+///
+/// A `const fn … { true }` stub until Task 30 turns it into a `pub use` of the
+/// `biorouter-mcp` atomic. Task 30's own file table calls it a stub "since
+/// Task 14"; it lands here instead because Task 10's `CallCapability::sample`
+/// is its first caller and comes first.
+pub const fn privacy_tiers_enabled() -> bool {
+    true
+}
 
 /// CAPABILITY — the least-privileged model currently bound to a session.
 ///
@@ -43,7 +62,9 @@ impl ProviderTier {
         }
     }
 
-    pub fn is_private(self) -> bool {
+    /// `const` so [`CallCapability::restricts_private_data`] — the predicate
+    /// every barrier asks — can itself be a `const fn`.
+    pub const fn is_private(self) -> bool {
         matches!(self, Self::Private)
     }
 }

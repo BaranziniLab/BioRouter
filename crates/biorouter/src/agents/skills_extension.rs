@@ -1427,7 +1427,10 @@ Content
             .call_tool(
                 "listSkills",
                 Some(args),
-                McpMeta::new("test-session"),
+                McpMeta::new(
+                    "test-session",
+                    crate::privacy::CallCapability::for_test_restricted(),
+                ),
                 CancellationToken::new(),
             )
             .await
@@ -1505,7 +1508,10 @@ Content
             .call_tool(
                 "searchSkills",
                 Some(args),
-                McpMeta::new("test-session"),
+                McpMeta::new(
+                    "test-session",
+                    crate::privacy::CallCapability::for_test_restricted(),
+                ),
                 CancellationToken::new(),
             )
             .await
@@ -1525,7 +1531,10 @@ Content
             .call_tool(
                 "searchSkills",
                 Some(args),
-                McpMeta::new("test-session"),
+                McpMeta::new(
+                    "test-session",
+                    crate::privacy::CallCapability::for_test_restricted(),
+                ),
                 CancellationToken::new(),
             )
             .await
@@ -1544,7 +1553,10 @@ Content
             .call_tool(
                 "searchSkills",
                 Some(args),
-                McpMeta::new("test-session"),
+                McpMeta::new(
+                    "test-session",
+                    crate::privacy::CallCapability::for_test_restricted(),
+                ),
                 CancellationToken::new(),
             )
             .await
@@ -2032,7 +2044,10 @@ Working dir biorouter content
 
         // A COLD client: the override exists only in the session row.
         let client = client_with(&["alpha", "beta"], temp.path(), session_manager.clone());
-        let meta = McpMeta::new(session.id.clone());
+        let meta = McpMeta::new(
+            session.id.clone(),
+            crate::privacy::CallCapability::for_test_restricted(),
+        );
 
         let listed = client
             .call_tool("listSkills", None, meta.clone(), CancellationToken::new())
@@ -2141,7 +2156,10 @@ Working dir biorouter content
                                     .unwrap()
                                     .clone(),
                             ),
-                            McpMeta::new(session_id),
+                            McpMeta::new(
+                                session_id,
+                                crate::privacy::CallCapability::for_test_restricted(),
+                            ),
                             CancellationToken::new(),
                         )
                         .await
@@ -2196,7 +2214,10 @@ Working dir biorouter content
             .call_tool(
                 "listSkills",
                 None,
-                McpMeta::new(session.id.clone()),
+                McpMeta::new(
+                    session.id.clone(),
+                    crate::privacy::CallCapability::for_test_restricted(),
+                ),
                 CancellationToken::new(),
             )
             .await

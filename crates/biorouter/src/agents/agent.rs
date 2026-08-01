@@ -1205,6 +1205,56 @@ pub(super) fn fire_compaction_hook_on(
     );
 }
 
+/// Rendezvous points inside the agent loop that a test needs to stop the world
+/// at, because the property under test is an ORDERING and no amount of
+/// `tokio::time::sleep` makes an ordering deterministic.
+///
+/// Issue #56. The first of them, [`hold_dispatch_queue`], parks a dispatched
+/// tool call exactly where a real queued call sits: after
+/// `Agent::dispatch_tool_call` has returned its future — so the capability has
+/// already been sampled — and before anything drives it. Tasks 12 and 14B/14D
+/// add their own rendezvous to this same module.
+///
+/// ⚠ Process-global and single-slot. Exactly one test may hold it armed at a
+/// time, and while it is armed any other test that DRIVES an
+/// `Agent::dispatch_tool_call` future would take the rendezvous meant for the
+/// armer. No `--lib` test does today; a new one must not.
+#[cfg(test)]
+pub mod seams {
+    use tokio::sync::oneshot;
+
+    /// Set while a test is waiting to catch a dispatch. Holds the channel the
+    /// caught future announces itself on.
+    static ARMED: std::sync::Mutex<Option<oneshot::Sender<oneshot::Sender<()>>>> =
+        std::sync::Mutex::new(None);
+
+    /// Arm the rendezvous. Await the returned receiver to learn that a dispatch
+    /// has arrived and to get the sender that releases it.
+    pub fn hold_dispatch_queue() -> oneshot::Receiver<oneshot::Sender<()>> {
+        let (arrived_tx, arrived_rx) = oneshot::channel();
+        *ARMED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(arrived_tx);
+        arrived_rx
+    }
+
+    /// The hold point itself. A no-op — one uncontended mutex lock — unless a
+    /// test armed it, and it disarms as it fires so only the first dispatch is
+    /// caught.
+    pub(super) async fn dispatch_queue_hold() {
+        let armed = ARMED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(arrived_tx) = armed {
+            let (release_tx, release_rx) = oneshot::channel();
+            if arrived_tx.send(release_tx).is_ok() {
+                let _ = release_rx.await;
+            }
+        }
+    }
+}
+
 impl Agent {
     pub fn new() -> Self {
         Self::with_config(AgentConfig::new(
@@ -2135,6 +2185,10 @@ impl Agent {
         tool_name: &str,
         arguments: serde_json::Map<String, Value>,
     ) -> Result<String> {
+        // Issue #56: one of the four production entries that sample a capability.
+        // The pre-turn prefetch is its own entry because it dispatches outside
+        // `Self::dispatch_tool_call` entirely.
+        let cap = crate::privacy::CallCapability::sample(&self.provider).await;
         let tool = self
             .extension_manager
             .dispatch_tool_call(
@@ -2145,6 +2199,7 @@ impl Agent {
                     meta: None,
                     task: None,
                 },
+                cap,
                 CancellationToken::default(),
             )
             .await
@@ -3333,12 +3388,20 @@ impl Agent {
             // resolved secret there would leak. No-op unless a vault is installed.
             self.apply_vault(&mut tool_call).await;
 
+            // Issue #56: THE sample for the agent loop's tool calls. Taken here,
+            // once, and carried the rest of the way — every barrier downstream
+            // reads this value rather than the provider mutex, so a swap that
+            // lands while the call sits behind the dispatch semaphore cannot
+            // change what the call already got permission to do.
+            let cap = crate::privacy::CallCapability::sample(&self.provider).await;
+
             // Clone the result to ensure no references to extension_manager are returned
             let result = self
                 .extension_manager
                 .dispatch_tool_call(
                     &session.id,
                     tool_call.clone(),
+                    cap,
                     cancellation_token.unwrap_or_default(),
                 )
                 .await;
@@ -3411,6 +3474,12 @@ impl Agent {
             Ok(ToolCallResult {
                 notification_stream: result.notification_stream,
                 result: Box::new(Box::pin(async move {
+                    // Issue #56: the far side of the permit-to-execution gap.
+                    // A test parks here to prove that a provider swap landing
+                    // between admission and execution does NOT change what this
+                    // call may do. Compiled out entirely in a non-test build.
+                    #[cfg(test)]
+                    seams::dispatch_queue_hold().await;
                     let _dispatch_guard = if bound_dispatch {
                         Some(
                             super::tool_dispatch_limits::acquire(
@@ -8065,6 +8134,7 @@ mod tests {
                     ),
                     task: None,
                 },
+                crate::privacy::CallCapability::for_test_restricted(),
                 tokio_util::sync::CancellationToken::new(),
             )
             .await;

@@ -1447,6 +1447,7 @@ impl CodeExecutionClient {
     async fn handle_execute_code(
         &self,
         session_id: &str,
+        cap: crate::privacy::CallCapability,
         arguments: Option<JsonObject>,
         cancellation_token: CancellationToken,
     ) -> Result<CallToolResult, String> {
@@ -1462,6 +1463,12 @@ impl CodeExecutionClient {
         let (call_tx, call_rx) = mpsc::unbounded_channel();
         let tool_handler = tokio::spawn(Self::run_tool_handler(
             session_id.to_string(),
+            // Issue #56: the capability this `execute_code` call was admitted
+            // on, carried down to every sub-call the script makes. The bridge
+            // holds a `Weak<ExtensionManager>` and no provider handle, so there
+            // is nothing here it could sample even if it wanted to — which is
+            // the point: a script's tool call inherits the script's permission.
+            cap,
             call_rx,
             self.context.extension_manager.clone(),
             Arc::clone(&collected_artifacts),
@@ -1843,8 +1850,10 @@ impl CodeExecutionClient {
     /// content, so `user_error` is the sole verbatim text a record may keep, and
     /// `failure_kind` names the failure class for the sanitized placeholder when
     /// the tool produced none.
+    #[allow(clippy::too_many_arguments)]
     async fn dispatch_sub_call(
         session_id: &str,
+        cap: crate::privacy::CallCapability,
         tool_name: &str,
         arguments: &str,
         extension_manager: Option<&std::sync::Weak<crate::agents::ExtensionManager>>,
@@ -1865,7 +1874,7 @@ impl CodeExecutionClient {
             meta: None,
         };
         match manager
-            .dispatch_tool_call(session_id, tool_call, cancellation_token.clone())
+            .dispatch_tool_call(session_id, tool_call, cap, cancellation_token.clone())
             .await
         {
             Ok(dispatch_result) => match dispatch_result.result.await {
@@ -1891,6 +1900,7 @@ impl CodeExecutionClient {
 
     async fn run_tool_handler(
         session_id: String,
+        cap: crate::privacy::CallCapability,
         mut call_rx: mpsc::UnboundedReceiver<ToolCallRequest>,
         extension_manager: Option<std::sync::Weak<crate::agents::ExtensionManager>>,
         collected_artifacts: Arc<Mutex<CollectedArtifacts>>,
@@ -1953,6 +1963,7 @@ impl CodeExecutionClient {
             }
             let (result, mut failure_kind, user_error) = Self::dispatch_sub_call(
                 &session_id,
+                cap,
                 &tool_name,
                 &arguments,
                 extension_manager.as_ref(),
@@ -2174,7 +2185,12 @@ impl McpClientTrait for CodeExecutionClient {
     ) -> Result<CallToolResult, Error> {
         if name == "execute_code" {
             return Ok(self
-                .handle_execute_code(&meta.session_id, arguments, cancellation_token)
+                .handle_execute_code(
+                    &meta.session_id,
+                    meta.capability,
+                    arguments,
+                    cancellation_token,
+                )
                 .await
                 .unwrap_or_else(|error| {
                     CallToolResult::error(vec![Content::text(format!("Error: {error}"))])
@@ -2260,7 +2276,10 @@ mod tests {
             .call_tool(
                 "execute_code",
                 Some(args),
-                McpMeta::new("test-session-id"),
+                McpMeta::new(
+                    "test-session-id",
+                    crate::privacy::CallCapability::for_test_restricted(),
+                ),
                 CancellationToken::new(),
             )
             .await
@@ -2297,7 +2316,10 @@ mod tests {
             .call_tool(
                 "execute_code",
                 Some(args),
-                McpMeta::new("test-session-id"),
+                McpMeta::new(
+                    "test-session-id",
+                    crate::privacy::CallCapability::for_test_restricted(),
+                ),
                 CancellationToken::new(),
             )
             .await
@@ -2367,7 +2389,10 @@ mod tests {
             .call_tool(
                 "execute_code",
                 Some(args),
-                McpMeta::new("cancelled-session"),
+                McpMeta::new(
+                    "cancelled-session",
+                    crate::privacy::CallCapability::for_test_restricted(),
+                ),
                 cancellation,
             )
             .await
@@ -2770,6 +2795,7 @@ mod tests {
         let token = CancellationToken::new();
         let handler = tokio::spawn(CodeExecutionClient::run_tool_handler(
             "cancel-session".to_string(),
+            crate::privacy::CallCapability::for_test_restricted(),
             call_rx,
             None,
             Arc::clone(&collected),
@@ -2790,6 +2816,7 @@ mod tests {
         let (call_tx, call_rx) = mpsc::unbounded_channel();
         let handler = tokio::spawn(CodeExecutionClient::run_tool_handler(
             "telemetry-session".to_string(),
+            crate::privacy::CallCapability::for_test_restricted(),
             call_rx,
             None,
             Arc::clone(&collected),
