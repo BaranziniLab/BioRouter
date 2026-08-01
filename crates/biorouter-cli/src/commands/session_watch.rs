@@ -113,11 +113,7 @@ fn take_complete_utf8(pending: &mut Vec<u8>) -> String {
 /// The step both branches of `read_response` share, factored out so the decode
 /// rule can be pinned against the frames it really produces rather than against
 /// a copy of the loop.
-fn absorb(
-    pending: &mut Vec<u8>,
-    buffer: &mut String,
-    chunk: &[u8],
-) -> Vec<serde_json::Value> {
+fn absorb(pending: &mut Vec<u8>, buffer: &mut String, chunk: &[u8]) -> Vec<serde_json::Value> {
     pending.extend_from_slice(chunk);
     let text = take_complete_utf8(pending);
     let mut frames = Vec::new();
@@ -346,7 +342,9 @@ async fn read_response<S: tokio::io::AsyncRead + Unpin>(
             let head = String::from_utf8_lossy(&raw[..end]).into_owned();
             let status_line = head.lines().next().unwrap_or_default();
             let code = status_code(status_line).ok_or_else(|| {
-                anyhow!("the daemon answered with a response carrying no status code: {status_line}")
+                anyhow!(
+                    "the daemon answered with a response carrying no status code: {status_line}"
+                )
             })?;
             // Reported for EVERY code, before the branch: the ladder's middle
             // rung needs the 409 as promptly as it needs the 200, and a caller
@@ -1681,7 +1679,10 @@ mod tests {
         // Genuinely invalid bytes are consumed, not hoarded.
         let mut pending = vec![b'a', 0xFF, b'b'];
         assert!(take_complete_utf8(&mut pending).contains('a'));
-        assert!(pending.is_empty(), "a stalled buffer would freeze the stream");
+        assert!(
+            pending.is_empty(),
+            "a stalled buffer would freeze the stream"
+        );
     }
 
     /// Attach must be able to steer a turn it started itself.
@@ -1788,7 +1789,11 @@ mod tests {
                 1 => vec![Delivery::Steer, Delivery::NewTurn],
                 _ => vec![Delivery::Steer, Delivery::NewTurn, Delivery::Steer],
             };
-            assert_eq!(*attempted.borrow(), expected_attempts, "accept_on={accept_on}");
+            assert_eq!(
+                *attempted.borrow(),
+                expected_attempts,
+                "accept_on={accept_on}"
+            );
             match accept_on {
                 0 | 2 => assert_eq!(
                     outcome,
@@ -1897,7 +1902,10 @@ mod tests {
         // tell "finished" from "never started".
         let none_live = pick_running_child(&rows, "p1", &running(&[])).unwrap_err();
         let none_live = none_live.to_string();
-        assert!(none_live.contains("c1") && none_live.contains("c2"), "{none_live}");
+        assert!(
+            none_live.contains("c1") && none_live.contains("c2"),
+            "{none_live}"
+        );
 
         // Never spawned anything: a different error, because a different fix.
         let barren = pick_running_child(&rows, "p2-with-no-children", &running(&[]))
@@ -1978,7 +1986,9 @@ mod tests {
         // also the escape hatch the ambiguity error points at.
         assert_eq!(pick_named(&rows, "c2").unwrap(), "c2");
 
-        let ambiguous = pick_named(&rows, "Subagent: audit").unwrap_err().to_string();
+        let ambiguous = pick_named(&rows, "Subagent: audit")
+            .unwrap_err()
+            .to_string();
         assert!(
             ambiguous.contains("c1") && ambiguous.contains("c2"),
             "both candidates must be named: {ambiguous}"
