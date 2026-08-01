@@ -221,6 +221,22 @@ mod tests {
         assert_eq!(cls, SessionClassification::Private);
     }
 
+    /// Occurrences of `needle` in `code` whose preceding character is not `.`, so
+    /// `session_manager.rs:751`'s `pos.floor()` — an `f64` method with nothing to
+    /// do with this module — can never be counted as a crossing.
+    fn count_calls_not_method(code: &str, needle: &str) -> usize {
+        let mut found = 0;
+        let mut from = 0;
+        while let Some(offset) = code[from..].find(needle) {
+            let at = from + offset;
+            if code[..at].chars().next_back() != Some('.') {
+                found += 1;
+            }
+            from = at + needle.len();
+        }
+        found
+    }
+
     #[test]
     fn floor_is_crossed_only_where_a_capability_establishes_a_classification() {
         // The two lattices are independent by construction; `floor` is the only
@@ -243,7 +259,10 @@ mod tests {
         //      (file, count) prints exactly which file changed.
         //
         // The qualified-path rule needs a second assertion to hold: nobody may
-        // `use` the bare name, or rule (a) is evaded by an import.
+        // `use` the bare name, or rule (a) is evaded by an import — through
+        // `crate::privacy`, and equally through the `super`/`self` paths a module
+        // beside this one would use. Inside `src/privacy/` the audit does not rely
+        // on the import assertion at all; see `beside_the_definition` below.
         //
         // EXPECTED grows twice, and each growth is one uncommented line in the diff
         // that causes it — Task 13 (Gate B's ratchet) and Task 23 (the spawn stamp).
@@ -280,16 +299,38 @@ mod tests {
                 continue; // the definition, and the induction test below, live here
             }
             let src = std::fs::read_to_string(p).unwrap_or_default();
+            // A file that lives BESIDE the definition reaches `floor` through
+            // `super`, not through `privacy::` — and Task 8 creates exactly such a
+            // sibling (`privacy::extensions`). For those files the audit counts the
+            // CALL instead of trusting an import spelling, because the form this
+            // evasion would really take is not a named import anyone would notice:
+            // it is the `use super::*;` that every `mod tests` in this tree already
+            // writes, which makes the bare name available with nothing to grep for.
+            let beside_the_definition = rel.starts_with("crates/biorouter/src/privacy/");
             for (i, line) in src.lines().enumerate() {
                 let code = line.trim_start();
                 if code.starts_with("//") {
                     continue;
                 }
-                if code.contains("privacy::floor(") {
-                    *calls.entry(rel.clone()).or_default() += 1;
+                let crossings = if beside_the_definition {
+                    // Every `floor(` that is not a `.floor()`: covers `privacy::floor(`,
+                    // `super::floor(`, `self::floor(` and the bare glob-imported name.
+                    count_calls_not_method(code, "floor(")
+                } else if code.contains("privacy::floor(") {
+                    1
+                } else {
+                    0
+                };
+                if crossings > 0 {
+                    *calls.entry(rel.clone()).or_default() += crossings;
                 }
                 if code.contains("use crate::privacy::floor")
-                    || (code.contains("privacy::{") && code.contains("floor"))
+                    || code.contains("use super::floor")
+                    || code.contains("use self::floor")
+                    || ((code.contains("privacy::{")
+                        || code.contains("use super::{")
+                        || code.contains("use self::{"))
+                        && code.contains("floor"))
                 {
                     imports.push(format!("{rel}:{}", i + 1));
                 }
