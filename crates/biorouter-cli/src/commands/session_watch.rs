@@ -652,6 +652,52 @@ pub(crate) fn ctrl_c_action(reply_socket_open: bool, already_warned: bool) -> Ct
     }
 }
 
+/// A ctrl-c source that holds ONE registration for the whole attach loop.
+///
+/// ⚠ Not `tokio::signal::ctrl_c()` called per `select!` iteration. That is an
+/// `async fn`: it registers its listener when the future is first polled and
+/// drops it when the future is dropped, so rebuilding it each time round leaves
+/// a window — between one branch completing and the next poll — with no listener
+/// registered at all. Tokio's driver still swaps the signal's `pending` flag and
+/// broadcasts it ("ignore errors if there are no listeners"), and the receiver
+/// created a moment later is `tx.subscribe()`, which starts from the *current*
+/// version. That SIGINT is simply gone.
+///
+/// And it is gone *silently*, because the first registration replaced the
+/// process's default SIGINT disposition permanently — tokio's own docs: "Even if
+/// this `Signal` instance is dropped, subsequent `SIGINT` deliveries will end up
+/// captured by Tokio, and the default platform behavior will NOT be reset." So
+/// nothing terminates either: the user presses ctrl-c, attach does nothing, and
+/// they cannot detach. The window is widest exactly when frames are arriving
+/// fastest, which is when someone is most likely to want out.
+///
+/// Not unit-tested, deliberately: raising a real SIGINT is process-global and
+/// would hit the whole test binary, and installing the handler at all would
+/// change SIGINT behaviour for every other test in the process. The fix is
+/// structural — the registration lives in this struct, which outlives the loop.
+struct CtrlC {
+    #[cfg(unix)]
+    signal: tokio::signal::unix::Signal,
+    #[cfg(windows)]
+    signal: tokio::signal::windows::CtrlC,
+}
+
+impl CtrlC {
+    fn listen() -> Result<Self> {
+        #[cfg(unix)]
+        let signal = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
+        #[cfg(windows)]
+        let signal = tokio::signal::windows::ctrl_c()?;
+        Ok(Self { signal })
+    }
+
+    /// Cancel-safe (both platforms document `recv` as such): losing a `select!`
+    /// race leaves the registration in place, which is the entire point.
+    async fn recv(&mut self) {
+        self.signal.recv().await;
+    }
+}
+
 /// What `POST /interrupt` answered.
 ///
 /// Two named outcomes rather than an `Option<String>`: which of them came back
@@ -1094,6 +1140,9 @@ pub async fn handle_session_attach(
     );
     tokio::pin!(observer);
 
+    // Registered ONCE, before the loop: see `CtrlC`.
+    let mut interrupts = CtrlC::listen()?;
+
     loop {
         tokio::select! {
             observed = &mut observer => {
@@ -1130,7 +1179,7 @@ pub async fn handle_session_attach(
                     }
                 }
             }
-            _ = tokio::signal::ctrl_c() => {
+            _ = interrupts.recv() => {
                 match window.on_ctrl_c() {
                     CtrlCAction::Detach => {
                         eprintln!(
