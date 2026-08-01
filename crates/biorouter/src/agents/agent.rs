@@ -8840,3 +8840,135 @@ mod stall_seam_tests {
         assert_eq!(action, StallAction::Proceed, "no provider → no verdict");
     }
 }
+
+/// #66: the guard that keeps the `MessagesPersisted` ordering invariant a
+/// MECHANISM instead of an audited convention.
+///
+/// The invariant itself, and why it exists, is stated on the `persisted_ordering`
+/// seam above. What *this* module gates is the only remaining way to break it:
+/// reaching around the seam. Rust's module privacy already makes the frame
+/// builder uncallable from out here — that is the real gate, and it is a compile
+/// error, not an assertion. These tests cover the two things privacy alone
+/// cannot say:
+///
+///  1. that no site outside the seam so much as names the builder, so the
+///     compile error is a fact about the file rather than a fact about what
+///     nobody has tried yet; and
+///  2. that nobody hand-rolls a [`PersistedMessage`] out here and hands it
+///     straight to the frame, which would reproduce the pre-#66 state under a
+///     different spelling — privacy on the builder cannot stop that, because the
+///     row type has to stay publicly constructible for the server's fixtures.
+#[cfg(test)]
+mod persisted_ordering_guard {
+    /// This file, read as text. Resolved at compile time, so the check cannot
+    /// silently start scanning something else.
+    const SOURCE: &str = include_str!("agent.rs");
+
+    /// The sentinel comments that bracket the seam. Assembled at runtime for the
+    /// same reason the needles below are: spelling either marker literally out
+    /// here would move the split and make the whole guard vacuous.
+    fn markers() -> (String, String) {
+        let stem = concat!("#66 PERSISTED", "-ORDERING-SEAM");
+        (format!("// {stem}:BEGIN"), format!("// {stem}:END"))
+    }
+
+    /// `(inside the seam, everything else)`.
+    ///
+    /// With the markers absent the whole file is "everything else", which is the
+    /// honest answer when there is no seam — and makes this guard fail loudly on
+    /// a tree where the seam was deleted, rather than pass on an empty scan.
+    fn split_on_seam(src: &str) -> (String, String) {
+        let (begin, end) = markers();
+        let Some(start) = src.find(&begin) else {
+            return (String::new(), src.to_string());
+        };
+        let Some(stop) = src[start..].find(&end).map(|off| start + off + end.len()) else {
+            return (String::new(), src.to_string());
+        };
+        (
+            src[start..stop].to_string(),
+            format!("{}{}", &src[..start], &src[stop..]),
+        )
+    }
+
+    /// The private frame builder must have no callers outside the seam.
+    ///
+    /// The compile error is the gate; this is the statement that the gate is
+    /// load-bearing today. A new publication site that reaches for the builder
+    /// directly cannot compile, and one that reaches for it *and* moves itself
+    /// inside the seam to make it compile trips the surface check below.
+    #[test]
+    fn nothing_outside_the_seam_calls_the_private_frame_builder() {
+        let (seam, outside) = split_on_seam(SOURCE);
+        // Assembled at runtime: spelling the identifier literally anywhere in
+        // this file — including here — would make the guard pass vacuously.
+        let builder = concat!("persisted", "_event(");
+        let calls = outside.matches(builder).count();
+        assert_eq!(
+            calls, 0,
+            "{calls} call(s) to the private frame builder live outside the \
+             ordering seam. Every publication site must name which of the three \
+             legitimate shapes it is — `yielded_then_named`, \
+             `named_but_never_yielded` or `named_after_earlier_yield` — so the \
+             invariant can be audited by reading the constructor instead of \
+             tracing control flow out from it."
+        );
+        assert!(
+            !seam.is_empty(),
+            "the ordering seam's sentinel comments are gone; without them this \
+             guard scans nothing and passes for the wrong reason"
+        );
+    }
+
+    /// Nobody builds a published row by hand out here.
+    ///
+    /// `PersistedMessage`'s fields stay public because the server's SSE and relay
+    /// tests construct fixtures from them, so privacy cannot close this door. A
+    /// struct literal outside the seam is the one way left to assemble a
+    /// `MessagesPersisted` payload without going through a named shape.
+    #[test]
+    fn nothing_outside_the_seam_hand_rolls_a_published_row() {
+        let (_seam, outside) = split_on_seam(SOURCE);
+        let literal = concat!("PersistedMessage", " {");
+        let hand_rolled = outside.matches(literal).count();
+        assert_eq!(
+            hand_rolled, 0,
+            "{hand_rolled} hand-rolled published row(s) outside the ordering \
+             seam. Deriving a row from a `Message` is the seam's job; doing it \
+             out here re-opens the exact hole the seam closes."
+        );
+    }
+
+    /// The seam's public surface is exactly the three shapes.
+    ///
+    /// Deliberately hard-coded. A fourth escape hatch is not necessarily wrong —
+    /// but it is a new claim about when publishing early is safe, and it should
+    /// cost an edit here and a reviewer's attention, not slip in as one more
+    /// exported function.
+    #[test]
+    fn the_seam_exposes_only_the_three_named_shapes() {
+        let (seam, _outside) = split_on_seam(SOURCE);
+        let exported_fn = concat!("pub", "(super) fn ");
+        let mut exported: Vec<&str> = seam
+            .lines()
+            .filter_map(|line| line.trim_start().strip_prefix(exported_fn))
+            .map(|rest| {
+                rest.split(|c: char| !c.is_alphanumeric() && c != '_')
+                    .next()
+                    .unwrap_or("")
+            })
+            .collect();
+        exported.sort_unstable();
+        assert_eq!(
+            exported,
+            [
+                "named_after_earlier_yield",
+                "named_but_never_yielded",
+                "yielded_then_named",
+            ],
+            "the ordering seam grew (or lost) a shape. Each name is a claim \
+             about when a `MessagesPersisted` may be emitted; adding one means \
+             adding a case to the audit."
+        );
+    }
+}
