@@ -200,7 +200,11 @@ pub fn is_private(root: &Path, kb_id: &str) -> bool {
         // The migration has not run, so every base is public (AR-2).
         StoreState::Missing => false,
         StoreState::Parsed(store) => match store.bases.get(kb_id) {
-            Some(tier) => tier == PRIVATE,
+            // Only the exact word `public` permits. Anything else parseable but
+            // unrecognised — a hand-edit, a future schema's word read by an
+            // older binary — is unknown, and unknown fails in the same direction
+            // as an unparseable file.
+            Some(tier) => tier != PUBLIC,
             // Unknown provenance if the base is really there; nothing to leak
             // if it is not.
             None => super::paths::kb_root(root, kb_id).exists(),
@@ -222,7 +226,10 @@ pub fn assert_reachable(root: &Path, kb_id: &str, caller_is_private: bool) -> Re
 pub fn raise_unlocked(root: &Path, kb_id: &str, caller_is_private: bool) -> Result<()> {
     let mut store = load_for_write(root)?;
     match store.bases.get(kb_id) {
-        Some(current) if current == PRIVATE => return Ok(()),
+        // Anything that is not the exact word `public` already reads private
+        // (see `is_private`), so a raise is a no-op and must not overwrite it —
+        // replacing an unrecognised word with `public` would be a lowering.
+        Some(current) if current != PUBLIC => return Ok(()),
         Some(_) if !caller_is_private => return Ok(()),
         _ => {}
     }
@@ -548,6 +555,31 @@ mod tests {
         // …and it is not extracted back out into the imported base either.
         let new_id = import_brkb_as(&root, &bytes, false);
         assert!(!root.join(&new_id).join(".brkb-provenance").exists());
+    }
+
+    #[test]
+    fn an_unrecognised_tier_word_reads_private_and_no_public_write_replaces_it() {
+        // The file is machine-local and user-writable, which the task accepts —
+        // but "parseable JSON carrying a word we do not recognise" must fail in
+        // the same direction as "unparseable file" (PRIVATE), not the opposite
+        // one. `tier == PRIVATE` read a typo as public; `tier != PUBLIC` does
+        // not, and only the exact word `public` can ever permit.
+        let (_d, root) = tempdir_with_bases(&["omop"]);
+        ensure_migrated_unlocked(&root).unwrap();
+        std::fs::write(
+            crate::knowledge::paths::kb_tiers_path(&root),
+            r#"{"schema":1,"bases":{"omop":"privte"}}"#,
+        )
+        .unwrap();
+
+        assert!(is_private(&root, "omop"), "a typo'd tier word read PUBLIC");
+        // …and the ratchet treats it as already at least as restrictive as
+        // private, so a public write cannot overwrite it into a permit.
+        raise_unlocked(&root, "omop", false).unwrap();
+        assert!(
+            is_private(&root, "omop"),
+            "a public write replaced an unrecognised word"
+        );
     }
 
     #[test]
