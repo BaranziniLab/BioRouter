@@ -224,17 +224,15 @@ mod tests {
     /// Occurrences of `needle` in `code` whose preceding character is not `.`, so
     /// `session_manager.rs`'s `pos.floor()` — an `f64` method with nothing to do
     /// with this module — can never be counted as a crossing.
+    ///
+    /// Byte-wise on purpose: `.` is ASCII, and no byte of a multi-byte UTF-8
+    /// character can equal it, so testing the preceding byte is exact and cannot
+    /// split a character the way slicing the string would.
     fn count_calls_not_method(code: &str, needle: &str) -> usize {
-        let mut found = 0;
-        let mut from = 0;
-        while let Some(offset) = code[from..].find(needle) {
-            let at = from + offset;
-            if code[..at].chars().next_back() != Some('.') {
-                found += 1;
-            }
-            from = at + needle.len();
-        }
-        found
+        let bytes = code.as_bytes();
+        code.match_indices(needle)
+            .filter(|(at, _)| *at == 0 || bytes[*at - 1] != b'.')
+            .count()
     }
 
     #[test]
