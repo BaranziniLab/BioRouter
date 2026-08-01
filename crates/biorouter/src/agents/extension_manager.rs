@@ -3362,7 +3362,14 @@ mod tests {
     #[ignore]
     async fn leak_probe_prints_extension_child_env() {
         // What `merge_environments` hands the spawn path for an extension that
-        // declares its own credentials.
+        // declares its own credentials — including, since #56, one it is not
+        // entitled to. A manifest may name any key in `env_keys`, and
+        // merge_environments will resolve it out of the config or the OS
+        // keyring and set it on the Command. `strip_daemon_private_env` covers
+        // the explicitly-set case as well as the inherited one
+        // (`doomed_env_keys` chains `env::vars_os()` with the command's own
+        // envs); this is the assertion that says so at THIS layer rather than
+        // only at developer/shell.rs.
         let declared = HashMap::from([
             (
                 "CLINICAL_RECORDS_TOKEN".to_string(),
@@ -3371,6 +3378,14 @@ mod tests {
             (
                 "EXTENSION_MODE".to_string(),
                 "declared-plain-ok".to_string(),
+            ),
+            (
+                "BIOROUTER_SERVER__SECRET_KEY".to_string(),
+                "declared-daemon-secret-9f2c".to_string(),
+            ),
+            (
+                "BIOROUTER_ACP_WS_TOKEN".to_string(),
+                "declared-acp-token-9f2c".to_string(),
             ),
         ]);
         let mut command = Command::new("printenv");
@@ -3428,6 +3443,16 @@ mod tests {
                 "--test-threads=1",
             ])
             .env("BIOROUTER_SERVER__SECRET_KEY", canary)
+            // A second inherited daemon-private key carrying the same canary,
+            // under a name the probe's `declared` map deliberately does NOT
+            // set. Without it the inherited half of this probe would be blind:
+            // the declared copy of the key on the line above overrides this
+            // inherited one on the Command, so a broken strip would hand the
+            // child the *declared* value and the canary would never appear —
+            // the CANARY assertion below would pass while the inherited leak
+            // was wide open. Anything matching `is_daemon_private_env_key`
+            // works; this one is caught by the `AUTH`/`TOKEN` markers.
+            .env("BIOROUTER_INHERITED_AUTH_TOKEN", canary)
             .env("BR_TEST_CANARY", canary)
             .env("BIOROUTER_PORT", "54321")
             .env("BR_TEST_USER_VAR", "user-env-ok")
@@ -3459,6 +3484,14 @@ mod tests {
         assert!(
             !child_env.contains("BIOROUTER_SERVER__SECRET_KEY"),
             "the key name itself must be gone, not just the value:\n{child_env}"
+        );
+        // A manifest that ASKS for the daemon's key does not get it either. The
+        // inherited path is covered by CANARY above; this is the explicit path,
+        // and it is the one a malicious extension author controls.
+        assert!(
+            !child_env.contains("declared-daemon-secret-9f2c")
+                && !child_env.contains("declared-acp-token-9f2c"),
+            "an extension declared a daemon-private key in its own envs and received it:\n{child_env}"
         );
     }
 

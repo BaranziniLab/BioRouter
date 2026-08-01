@@ -775,23 +775,24 @@ and retried. One line, very easy to omit.
 These are **required work**, not follow-ups. Two of them would let a public model read private
 content on day one of shipping the gates as designed.
 
-**A1 (critical) — the daemon's auth secret is in the agent's own environment.** From any
-public-model session with `developer`:
+**A1 (critical) — the daemon's auth secret is an ambient bearer credential.** The original finding
+was that from any public-model session with `developer`:
 
 ```
 printenv BIOROUTER_SERVER__SECRET_KEY BIOROUTER_PORT
 curl -s -H "X-Secret-Key: $KEY" http://127.0.0.1:$PORT/sessions/<private-id>/export
 ```
 
-returns the private session's entire transcript as JSON. Verified: `ui/desktop/src/biorouterd.ts:134-135`
-puts `BIOROUTER_PORT` and `BIOROUTER_SERVER__SECRET_KEY` into `additionalEnv`, spread into
-`processEnv = {...process.env, ...additionalEnv}` at `:149-151`. `developer` is a `Builtin`, so
-`shell` runs in-process inside `biorouterd`, and `configure_shell_command`
-(`crates/biorouter-mcp/src/developer/shell.rs:395-442`) sets `PATH`, `GIT_EDITOR` and friends.
-Stdio extensions inherit too (`extension_manager.rs:846-848`:
-`command.args(args).envs(all_envs)`, no `env_clear`). `auth.rs:115-126` is a plain header equality;
-rate limiting is keyed on peer IP, which is `127.0.0.1`. `routes/session.rs:769/771/772` expose
-`GET /sessions/{id}`, `/export` and `POST /sessions/import`.
+returns the private session's entire transcript as JSON. **The `printenv` step no longer works** —
+see the status note below — but everything that made it worth reading still holds, so the finding
+stays. Verified: `ui/desktop/src/biorouterd.ts:134-135` puts `BIOROUTER_PORT` and
+`BIOROUTER_SERVER__SECRET_KEY` into `additionalEnv`, spread into
+`processEnv = {...process.env, ...additionalEnv}` at `:149-151`, so the *daemon* still holds the
+secret in its own environment and every in-process code path can read it with `env::var`.
+`auth.rs:115-126` is a plain header equality; rate limiting is keyed on peer IP, which is
+`127.0.0.1`. `routes/session.rs:769/771/772` expose `GET /sessions/{id}`, `/export` and
+`POST /sessions/import`. Possession of the string is still total authority over the daemon, and
+nothing distinguishes the renderer presenting it from anyone else.
 
 This defeats the design specifically: Gate D filters `chatrecall`'s SQL and this route never
 touches `chat_history_search.rs`; Gate B guards `Agent::reply` and this is a read. The
@@ -800,24 +801,37 @@ the handler that does, and `GET /sessions` yields the session name the typed con
 It also falsifies the design's premise that `GET /sessions` need not be filtered because "this is
 the user's own UI, not a model."
 
-**Fix (1) is half done.** Issue #57 landed the daemon-credential scrub on the shell path: the
-builder cited above now ends with `strip_daemon_private_env(&mut command_builder);`
-(`shell.rs:433`, with the comment at `:432` — "Last, so nothing set above can re-admit a daemon
-credential (issue #57)"), and `developer/background.rs` calls it at `:431`, `:680`, `:766`, `:802`
-and `:847`. The helper is `crates/biorouter-sandbox/src/environment.rs:54-79`, keyed on
-`is_daemon_private_env_key` (`:36-50`), and its own test asserts `BIOROUTER_SERVER__SECRET_KEY` and
-`BIOROUTER_ACP_WS_TOKEN` are stripped while `BIOROUTER_PORT` survives (`:94-103`).
-**The stdio MCP extension spawn is still open**: `extension_manager.rs:846-848` does
-`command.args(args).envs(all_envs)` with no `strip_daemon_private_env` and no `env_clear`
-(`grep -c env_clear` over that file returns 0). The remaining work is one line calling the existing
-helper — not a new `.env_remove`.
+> **Closed for the tool-process paths (2026-07).** `strip_daemon_private_env`
+> (`crates/biorouter-sandbox/src/environment.rs:54`) removes BioRouter's daemon-private variables
+> from every child spawned on an agent's behalf, both the inherited copies and any the extension's
+> own manifest explicitly declares — `doomed_env_keys` (`:81-87`) chains `env::vars_os()` with the
+> command's own `get_envs()`. It is invoked last inside `prepare_child_environment`
+> (`extension_manager.rs:445`), which every stdio and inline-python extension spawn reaches through
+> `child_process_client` (`:448`, called at `:850` and `:920`), and inside `configure_shell_command`
+> (`developer/shell.rs:433`), which is the Developer server's `shell`. Landed in `b249a203` and
+> `8e7407fe` (issue #57). Fix (1) below is therefore **done**, and pinned by
+> `daemon_secret_never_reaches_an_extension_child` (`extension_manager.rs:3476`), which re-invokes
+> the test binary with the secret exported and spawns a real child through the real
+> `prepare_child_environment` — covering both the inherited copy and a manifest that names a
+> daemon-private key in its own `env_keys`.
+>
+> Fixes (2) and (3) remain open. (2) — stop carrying the secret in the environment at all — is
+> unaddressed and is the reason this finding is not simply deleted: the strip is a filter, and a
+> filter is only as good as its key list. (3) — bind declassification to a one-shot capability token
+> rather than to `X-Secret-Key` — is [Open question 13](privacy-tiers-execution-plan.md#open-questions)
+> and is why Task 29's R9 property is "only a human *through the GUI*", not "only a human".
 
-Three fixes, all needed: (1) call `strip_daemon_private_env` in the stdio spawn as the shell path
-already does — a live credential leak today, worth doing regardless
-of this design; (2) stop carrying the secret in the environment at all — pass it on a pipe/fd at
-startup, or a `0600` file the daemon reads and unlinks (`BIOROUTER_PORT` may stay); (3) bind
-declassify to a one-shot capability token minted by the renderer, not to `X-Secret-Key`, or R9's
-"only a human" property is documentation rather than mechanism.
+Three fixes were called for. (1) **Done** — strip the daemon's credentials from every child spawned
+on an agent's behalf, on the extension spawn path as well as the shell one. (2) **Open** — stop
+carrying the secret in the environment at all: pass it on a pipe/fd at startup, or a `0600` file the
+daemon reads and unlinks (`BIOROUTER_PORT` may stay). This is what turns the guarantee from "we
+remembered to filter this name" into "there is nothing to filter"; the filter's key list
+(`is_daemon_private_env_key`, `environment.rs:36-50`) is deny-by-default only inside
+`BIOROUTER_SERVER__`/`GOOSE_SERVER__` and falls back to name-shaped markers elsewhere, so a future
+daemon-private variable named outside those prefixes and without a credential-shaped word in it
+would pass straight through. (3) **Open** — bind declassify to a one-shot capability token minted by
+the renderer, not to `X-Secret-Key`, or R9's "only a human" property is documentation rather than
+mechanism.
 
 **A2 — `sessions.db` is a plain file.** `sqlite3 <db> "select text from messages_fts"` returns
 every message of every session, no JSON parsing needed, because `messages_fts` is a **contentful**
@@ -918,9 +932,11 @@ routes read a base by a caller-supplied path id with no visible-set filtering ei
 `:543`), `history` (`:46`), `preview` (`:47`) and `export` (`:55` → `:1522`), plus the two raw-source
 handlers at `:1604`/`:1636`. Those are the GUI's own path and are user-driven rather than
 model-driven, so scoping the *tool* ratchet to the seven MCP entry points is the right call — but
-§9.3 A1 establishes that the daemon secret reaches the model today, and AR-15 that a secret-holder
-can raise its own session's capability, so a shell-capable private model can reach a KB through the
-HTTP side without touching any of the seven. The implementing task must decide deliberately whether
+§9.3 A1 establishes that the daemon secret is an ambient bearer credential — no longer reachable
+from a tool process, but held in the daemon's own environment and equal to full authority for
+anything that can read it — and AR-15 that a secret-holder can raise its own session's capability,
+so any future path that re-exposes it would reach a KB through the HTTP side without touching any
+of the seven. The implementing task must decide deliberately whether
 the HTTP routes carry the check too, and record the answer; it must not conclude from this paragraph
 that seven checks are the whole job.
 
@@ -2304,7 +2320,7 @@ effect next turn — a first-class, agent-callable path to attach a public model
 | P5 | **Gate D** — both chatrecall builders + the LOAD-mode check | today's most direct cross-session read path; LOAD has verified zero filtering |
 | P6 | `create_session` carries `privacy_tier` + `provider_name` + `model_config` for all three copy paths | a live laundering path, verified |
 | P7 | The generator's second and third outputs + `--check` | the badge cannot exist in Rust without it |
-| P8 | A1, B3 from §9.3 | the two findings that would let a public model read private content on day one |
+| P8 | A1, B3 from §9.3 | the two findings that would have let a public model read private content on day one; both scrubs have since shipped (#57, #58, #63), leaving A1's fixes (2) and (3) |
 
 ### 18.2 Additions to named BR-71 tasks
 
@@ -2391,10 +2407,11 @@ re-plan of an approved, about-to-be-built feature does not get built.**
    these is five lines; both are fully-open cross-session reads in the product today (§2.3 item 2),
    and `ingest_conversation` is the worse of the pair because it *writes what it read* into a
    machine-wide knowledge base. Ship the two together, on their own, ahead of everything.
-2. **A1's remaining half (the stdio-spawn scrub, then the secret off the environment entirely)** and
-   **B3 (refuse a global `remember_memory` from a private-capability session)**. The shell half of A1
-   and both of B3's original channels have already shipped as #57, #58 and #63; what is left of A1 is
-   still a live leak independent of this design.
+2. **A1's remaining half (the secret off the environment entirely)** and
+   **B3 (refuse a global `remember_memory` from a private-capability session)**. Both halves of A1's
+   scrub — shell and extension spawn — and both of B3's original channels have already shipped as
+   #57, #58 and #63, so nothing here is a live leak; what is left of A1 is hardening that removes
+   the need for a filter rather than widening one.
 3. **P1 + P2 + P3 (types, Gate A, Gate B)** together with **the typed 409 and the `throwOnError`
    fix**, in one commit. Gate A without them ships as "Internal server error" over a green success
    toast.
@@ -2433,8 +2450,8 @@ mapping and its `call_tool` inspector bypass; `ClientFrame::ModelSelect`'s unche
 `setConfigProvider` write; `CurrentModelContext` never being rendered; `memory/mod.rs`'s
 global-memory system-prompt injection (**since deleted by #58 — see §9.3 B3**);
 `DEFAULT_SECRET_PATTERNS`; the secret key in
-`biorouterd.ts`'s `additionalEnv` and the absence of `env_clear` in both `shell.rs` (**since scrubbed
-by #57**) and the stdio spawn (**still open**);
+`biorouterd.ts`'s `additionalEnv` and the absence of `env_clear` in both `shell.rs` and the stdio
+spawn (**both since scrubbed by #57 — see §9.3 A1**);
 `LeadWorkerProvider::get_name()` returning the lead's name; `factory.rs`'s
 `BIOROUTER_LEAD_MODEL` intercept; the `COALESCE` accumulation precedent in `session_manager.rs`;
 the `messages_fts` contentful DDL; `registry.json` (version 1, 37 extensions, 129 skills, ten keys,
