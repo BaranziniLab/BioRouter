@@ -227,6 +227,20 @@ impl KnowledgeServer {
         context.and_then(Self::session_id_from_context)
     }
 
+    /// Issue #56. The capability the daemon admitted this call on, PUBLIC unless
+    /// the request meta says otherwise. It *delegates* to
+    /// [`crate::knowledge::tier::caller_is_private`] rather than re-reading the
+    /// key, so CP1 here and CP4 in `agent_drafter` cannot drift.
+    ///
+    /// Consumed by Task 10C's hand-written `call_tool` (CP1); nothing reads it
+    /// yet, which is the same Phase-1 separation O1 uses.
+    #[allow(dead_code)]
+    fn caller_is_private(context: Option<&RequestContext<RoleServer>>) -> bool {
+        context
+            .map(|c| crate::knowledge::tier::caller_is_private(&c.meta))
+            .unwrap_or(false)
+    }
+
     fn hidden_kbs_for_session(&self, session_id: Option<&str>) -> Result<Vec<String>, ErrorData> {
         match session_id {
             Some(session_id) => self
@@ -741,9 +755,32 @@ impl KnowledgeServer {
         let p = p.0;
         let _lock = self.service.lock_kb(&p.kb_id).await.map_err(into_err)?;
         let bytes = self.service.export_brkb(&p.kb_id).map_err(into_err)?;
-        let dest = match p.dest_path {
-            Some(path) => std::path::PathBuf::from(path),
-            None => std::env::temp_dir().join(format!("{}.brkb", p.kb_id)),
+        // Issue #56, decision (2b). A MODEL's export of a PRIVATE base may not
+        // be aimed anywhere it asks: a `.brkb` is a zip, so an archive dropped
+        // outside the knowledge tree is readable by the same session's shell
+        // with `unzip -p`, no import and no marker-stripping required. Forcing
+        // it into `<knowledge-root>/exports/` puts it inside DR-14 deny root #2,
+        // where the same kernel deny that hides the base hides the artifact.
+        //
+        // Scoped to PRIVATE bases on purpose: relocating every model export
+        // would break `kb_export` as a feature. And it lives HERE rather than in
+        // `KnowledgeService::export_brkb`, because that function also serves the
+        // user's own download from the Knowledge view, which this rule must not
+        // touch.
+        //
+        // The tier is read BEFORE `dest_path` is honoured — a write-then-move
+        // would leave a complete copy of a private knowledge base at a
+        // public-readable path for the length of the copy.
+        let dest = if crate::knowledge::tier::is_private(self.service.root(), &p.kb_id) {
+            self.service
+                .root()
+                .join("exports")
+                .join(format!("{}.brkb", p.kb_id))
+        } else {
+            match p.dest_path {
+                Some(path) => std::path::PathBuf::from(path),
+                None => std::env::temp_dir().join(format!("{}.brkb", p.kb_id)),
+            }
         };
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent)
@@ -768,7 +805,15 @@ impl KnowledgeServer {
         let p = p.0;
         let bytes = std::fs::read(&p.src_path)
             .map_err(|e| into_err(anyhow::anyhow!("read .brkb '{}': {e}", p.src_path)))?;
-        let new_id = self.service.import_brkb(&bytes).map_err(into_err)?;
+        // Issue #56. `kb_import` takes no `RequestContext`, so the importer's
+        // own tier is not knowable here — the archive's marker still applies as
+        // a floor. Task 10B stamps the caller's tier after the import returns
+        // (safe because `brkb::import`'s collision loop always lands on a fresh
+        // id, so the stamp can never hit an existing base).
+        let new_id = self
+            .service
+            .import_brkb(&bytes, /* importer_is_private */ false)
+            .map_err(into_err)?;
         ok_json(&serde_json::json!({ "imported_kb_id": new_id }))
     }
 }
@@ -804,6 +849,7 @@ fn into_err(e: anyhow::Error) -> ErrorData {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::{Path, PathBuf};
 
     /// The knowledge instructions must teach the agent to consult the built-in
     /// Soul KB for personal context and that a hidden KB (which Soul may be) is
@@ -1133,5 +1179,148 @@ mod tests {
             "kb_write_page description must state the path contract, got: {desc}"
         );
         Ok(())
+    }
+
+    // ---- Issue #56, decision (2)(b): where a MODEL's export comes to rest ----
+    //
+    // ⚠ DEVIATION from the task text, recorded rather than hidden. The task
+    // drives these through `call_tool_as(&srv, tool, args, tier)` — CP1's
+    // harness, which Task 10C creates. There is no such seam in this task: the
+    // generated `<KnowledgeServer as ServerHandler>::call_tool` demands an
+    // `rmcp::RequestContext`, and building one needs a live `Peer` (see
+    // `developer/rmcp_developer.rs`'s `serve_directly` fixtures). The tools are
+    // therefore invoked directly, which is the same production function body the
+    // router would reach. Nothing is lost: the location rule keys on the
+    // **base's** tier, not the caller's — a public caller never gets this far,
+    // because Task 10C's barrier refuses it outright — so the `tier` argument
+    // would have been inert here anyway.
+
+    fn migrated_server_with_base(id: &str) -> (KnowledgeServer, tempfile::TempDir, PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().to_path_buf();
+        let server = server_with_root(root.clone());
+        server.service.create_base(id, id, None).unwrap();
+        (server, tmp, root)
+    }
+
+    fn seed_page(root: &Path, kb_id: &str, rel: &str, body: &str) {
+        let p = root.join(kb_id).join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, body).unwrap();
+    }
+
+    fn reported_export_path(out: &CallToolResult) -> PathBuf {
+        let text = out
+            .content
+            .iter()
+            .find_map(|c| c.as_text())
+            .expect("kb_export returns a text payload");
+        let v: serde_json::Value = serde_json::from_str(&text.text).expect("valid json");
+        PathBuf::from(v["path"].as_str().expect("a reported path"))
+    }
+
+    fn zip_names(bytes: &[u8]) -> Vec<String> {
+        let mut a = zip::ZipArchive::new(std::io::Cursor::new(bytes.to_vec())).unwrap();
+        (0..a.len())
+            .map(|i| a.by_index(i).unwrap().name().to_string())
+            .collect()
+    }
+
+    async fn kb_export_via_tool(
+        srv: &KnowledgeServer,
+        kb_id: &str,
+        dest_path: Option<String>,
+    ) -> Result<CallToolResult, ErrorData> {
+        srv.kb_export(Parameters(ExportArchiveParams {
+            kb_id: kb_id.to_string(),
+            dest_path,
+        }))
+        .await
+    }
+
+    #[tokio::test]
+    async fn a_models_export_of_a_private_base_lands_inside_the_knowledge_root() {
+        // Decision (2)(b) as behaviour. The exporter is PRIVATE — a public one is
+        // refused outright by Task 10C's barrier — so this is the caller the
+        // location rule exists for: permitted to export, not permitted to choose
+        // where the bytes come to rest.
+        let (srv, _tmp, root) = migrated_server_with_base("omop");
+        crate::knowledge::tier::raise_unlocked(&root, "omop", true).unwrap();
+        seed_page(&root, "omop", "knowledge/x.md", "SENTINEL-COHORT-N-412");
+        let elsewhere = tempfile::tempdir().unwrap();
+        let asked = elsewhere.path().join("omop.brkb");
+        // ⚠ READ-ONLY, and this is the assertion — not decoration. A
+        // `!asked.exists()` at the END passes "write the archive outside, then
+        // move it inside before returning", which opens a real public-read window
+        // for however long the copy takes. A final-state check cannot see a
+        // transient file and no amount of polling makes it deterministic. Making
+        // the directory unwritable turns the timing question into an ERROR: the
+        // write-then-move implementation gets EACCES and fails the export; the
+        // correct one never touches this directory and is unaffected.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(elsewhere.path(), std::fs::Permissions::from_mode(0o555))
+                .unwrap();
+            // ⚠ SELF-CHECK ON THE FIXTURE, and it is part of the gate. Under root
+            // the mode bits are ignored and the `chmod` silently becomes a no-op,
+            // which turns this whole test back into the final-state check it
+            // replaces. Assert the property directly rather than proxying it
+            // through a euid comparison.
+            assert!(
+                std::fs::write(elsewhere.path().join(".probe"), b"x").is_err(),
+                "the read-only fixture did not take (running as root?) — this test \
+                 would silently degrade to the assertion it was written to replace"
+            );
+        }
+
+        let out = kb_export_via_tool(&srv, "omop", Some(asked.display().to_string()))
+            .await
+            .unwrap();
+
+        // (a) nothing was written where the model aimed it — at any point, not
+        //     just at the end.
+        assert!(
+            !asked.exists(),
+            "a private base was exported outside the deny root"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            // so TempDir can clean up
+            std::fs::set_permissions(elsewhere.path(), std::fs::Permissions::from_mode(0o755))
+                .unwrap();
+        }
+        assert_eq!(std::fs::read_dir(elsewhere.path()).unwrap().count(), 0);
+        // (b) the tool REPORTED the real location, and it is under <root>/exports/.
+        let written = reported_export_path(&out);
+        assert!(
+            written.starts_with(root.join("exports")),
+            "reported {}, which is not inside the knowledge root",
+            written.display()
+        );
+        assert!(written.exists());
+        // (c) …and it is the archive, not an empty file that satisfies (a) and (b).
+        //     Without this, "write nothing anywhere" passes.
+        assert!(zip_names(&std::fs::read(&written).unwrap())
+            .iter()
+            .any(|n| n.ends_with("knowledge/x.md")));
+    }
+
+    #[tokio::test]
+    #[allow(non_snake_case)]
+    async fn a_models_export_of_a_PUBLIC_base_still_honours_dest_path() {
+        // The mirror, and the reason the rule is scoped to private bases: forcing
+        // the location for EVERY model export breaks `kb_export` as a feature, and
+        // whoever hits that next will "fix" it by deleting the rule.
+        let (srv, _tmp, root) = migrated_server_with_base("notes"); // registers public
+        let elsewhere = tempfile::tempdir().unwrap();
+        let asked = elsewhere.path().join("notes.brkb");
+        let out = kb_export_via_tool(&srv, "notes", Some(asked.display().to_string()))
+            .await
+            .unwrap();
+        assert!(asked.exists(), "a public base's export was relocated");
+        assert_eq!(reported_export_path(&out), asked);
+        assert!(!root.join("exports").join("notes.brkb").exists());
     }
 }

@@ -182,6 +182,37 @@ impl ResourceItem {
     }
 }
 
+/// The per-dispatch [`McpMeta`] for one tool call.
+///
+/// Extracted from `dispatch_tool_call` only because the repo's
+/// `clippy::too_many_lines` baseline caps that function; it is still called from
+/// exactly one place, and still from ABOVE `let fut = async move`, so everything
+/// here is decided at admission rather than on the far side of the dispatch
+/// semaphore.
+///
+/// Issue #56: the capability bit goes to Biorouter **built-ins only**
+/// (decision 4). The session id already ships to third-party stdio servers, and
+/// this deliberately does not follow that precedent — "this user is on an
+/// institutional model" is a fact about their configuration that a third-party
+/// server has no business learning. `cap` is the value `dispatch_tool_call` was
+/// CALLED with, never a fresh read of the provider mutex, so this bit and Gate
+/// C's decision cannot disagree.
+fn dispatch_meta(
+    session_id: &str,
+    cap: crate::privacy::CallCapability,
+    client_name: &str,
+    progress_token: Option<String>,
+) -> McpMeta {
+    let mut meta = McpMeta::new(session_id, cap);
+    if let Some(token) = progress_token {
+        meta = meta.with_progress_token(token);
+    }
+    if biorouter_mcp::BUILTIN_EXTENSIONS.contains_key(client_name) {
+        meta = meta.with_capability_private(cap.tier().is_private());
+    }
+    meta
+}
+
 /// Sanitizes a string by replacing invalid characters with underscores.
 /// Valid characters match [a-zA-Z0-9_-]
 pub fn normalize(input: &str) -> String {
@@ -1799,10 +1830,7 @@ impl ExtensionManager {
         // is what keeps the capability a value that was decided at admission
         // rather than something re-derived on the far side of the dispatch
         // semaphore, minutes later, against whatever provider is bound by then.
-        let mut meta = McpMeta::new(&session_id, cap);
-        if let Some(token) = progress_token {
-            meta = meta.with_progress_token(token);
-        }
+        let meta = dispatch_meta(&session_id, cap, &client_name, progress_token);
 
         let fut = async move {
             tracing::debug!(
@@ -3897,6 +3925,149 @@ mod tests {
         assert_eq!(
             admit_via_add_extension("developer").await,
             ProviderTier::Public
+        );
+    }
+
+    /// A client that records the `McpMeta` its `call_tool` was handed, so a test
+    /// can inspect exactly what `dispatch_tool_call` shipped to this extension.
+    #[derive(Clone, Default)]
+    struct MetaCapturingClient {
+        seen: Arc<std::sync::Mutex<Option<McpMeta>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl McpClientTrait for MetaCapturingClient {
+        fn get_info(&self) -> Option<&InitializeResult> {
+            None
+        }
+
+        async fn list_resources(
+            &self,
+            _next_cursor: Option<String>,
+            _cancellation_token: CancellationToken,
+        ) -> Result<ListResourcesResult, Error> {
+            Err(Error::TransportClosed)
+        }
+
+        async fn read_resource(
+            &self,
+            _uri: &str,
+            _cancellation_token: CancellationToken,
+        ) -> Result<ReadResourceResult, Error> {
+            Err(Error::TransportClosed)
+        }
+
+        async fn list_tools(
+            &self,
+            _next_cursor: Option<String>,
+            _cancellation_token: CancellationToken,
+        ) -> Result<ListToolsResult, Error> {
+            use serde_json::json;
+            Ok(ListToolsResult {
+                tools: vec![Tool::new(
+                    "ping".to_string(),
+                    "ping".to_string(),
+                    Arc::new(json!({}).as_object().unwrap().clone()),
+                )],
+                next_cursor: None,
+                meta: None,
+            })
+        }
+
+        async fn call_tool(
+            &self,
+            _name: &str,
+            _arguments: Option<JsonObject>,
+            meta: McpMeta,
+            _cancellation_token: CancellationToken,
+        ) -> Result<CallToolResult, Error> {
+            *self.seen.lock().unwrap() = Some(meta);
+            Ok(CallToolResult {
+                content: vec![],
+                is_error: None,
+                structured_content: None,
+                meta: None,
+            })
+        }
+
+        async fn list_prompts(
+            &self,
+            _next_cursor: Option<String>,
+            _cancellation_token: CancellationToken,
+        ) -> Result<ListPromptsResult, Error> {
+            Err(Error::TransportClosed)
+        }
+
+        async fn get_prompt(
+            &self,
+            _name: &str,
+            _arguments: Value,
+            _cancellation_token: CancellationToken,
+        ) -> Result<GetPromptResult, Error> {
+            Err(Error::TransportClosed)
+        }
+
+        async fn subscribe(&self) -> mpsc::Receiver<ServerNotification> {
+            mpsc::channel(1).1
+        }
+    }
+
+    /// Issue #56, decision (4). The session id already goes to every MCP server
+    /// including third-party stdio ones; the capability tier deliberately does
+    /// not follow that precedent, because "this user is on an institutional
+    /// model" is a fact about their configuration and a third-party server has
+    /// no business learning it.
+    ///
+    /// ⚠ The wire key is taken from the const, never spelled here — a second
+    /// hand-typed copy is how a barrier silently stops matching.
+    #[tokio::test]
+    async fn a_third_party_extension_never_learns_the_capability_tier() {
+        use biorouter_mcp::knowledge::tier::CAPABILITY_TIER_META_KEY as KEY;
+        use rmcp::model::{Extensions, Meta};
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let em = ExtensionManager::new_without_provider(temp_dir.path().to_path_buf());
+
+        let third_party = Arc::new(MetaCapturingClient::default());
+        let builtin = Arc::new(MetaCapturingClient::default());
+        em.add_mock_extension("thirdparty".to_string(), third_party.clone())
+            .await;
+        em.add_mock_extension("knowledge".to_string(), builtin.clone())
+            .await;
+
+        let private =
+            crate::privacy::CallCapability::for_test(crate::privacy::ProviderTier::Private, true);
+
+        for tool in ["thirdparty__ping", "knowledge__ping"] {
+            let result = em
+                .dispatch_tool_call(
+                    "sess-1",
+                    CallToolRequestParams {
+                        task: None,
+                        name: tool.to_string().into(),
+                        arguments: Some(object!({})),
+                        meta: None,
+                    },
+                    private,
+                    CancellationToken::default(),
+                )
+                .await
+                .expect("dispatch");
+            result.result.await.expect("the mock client answers");
+        }
+
+        let meta_of = |c: &Arc<MetaCapturingClient>| -> Meta {
+            let seen = c.seen.lock().unwrap().clone().expect("call_tool ran");
+            seen.inject_into_extensions(Extensions::default())
+                .get::<Meta>()
+                .cloned()
+                .unwrap_or_default()
+        };
+
+        assert_eq!(meta_of(&third_party).0.get(KEY), None);
+        assert_eq!(
+            meta_of(&builtin).0.get(KEY).and_then(|v| v.as_str()),
+            Some("private")
         );
     }
 }

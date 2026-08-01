@@ -1573,8 +1573,10 @@ pub async fn import_brkb(
 
     let bytes = file_bytes.ok_or((StatusCode::BAD_REQUEST, "missing 'file' part".to_string()))?;
 
+    // Issue #56: the USER importing from the Knowledge view, not a model. The
+    // archive's own provenance marker still applies as a floor.
     let new_id = svc
-        .import_brkb(&bytes)
+        .import_brkb(&bytes, /* importer_is_private */ false)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     Ok(Json(serde_json::json!({ "id": new_id })))

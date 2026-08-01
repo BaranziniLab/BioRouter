@@ -147,6 +147,18 @@ pub struct McpMeta {
     /// extension that re-reads the provider mutex from inside the driven future
     /// reads it minutes later, past the dispatch semaphore.
     pub capability: CallCapability,
+    /// Whether the model bound to this session is private (issue #56).
+    ///
+    /// `None` for every extension that is not a Biorouter built-in: the session
+    /// id already goes to third-party MCP servers, and this deliberately does
+    /// not follow that precedent — "this user is on an institutional model" is a
+    /// fact about their configuration, not something a third-party server needs.
+    /// A built-in receiving `None` reads it as PUBLIC, which is the safe
+    /// direction for every gate that consumes it.
+    ///
+    /// Distinct from `capability` above, which never leaves the process: this is
+    /// the ON-THE-WIRE disclosure, and it is opt-in per extension.
+    pub capability_private: Option<bool>,
 }
 
 impl McpMeta {
@@ -155,6 +167,7 @@ impl McpMeta {
             session_id: session_id.into(),
             progress_token: None,
             capability,
+            capability_private: None,
         }
     }
 
@@ -165,8 +178,26 @@ impl McpMeta {
         self
     }
 
-    fn inject_into_extensions(&self, extensions: Extensions) -> Extensions {
+    /// Disclose the caller's capability tier to this call's server (issue #56).
+    /// Built-ins only — see [`McpMeta::capability_private`].
+    pub fn with_capability_private(mut self, private: bool) -> Self {
+        self.capability_private = Some(private);
+        self
+    }
+
+    pub(crate) fn inject_into_extensions(&self, extensions: Extensions) -> Extensions {
         let mut extensions = inject_session_id_into_extensions(extensions, &self.session_id);
+        if let Some(private) = self.capability_private {
+            // Issue #56. The SAME `_meta` object the session id rides in, for
+            // the same wire-collision reason the progress token below gives.
+            // The key comes from the shared const, never a second spelling.
+            let mut meta = extensions.get::<Meta>().cloned().unwrap_or_default();
+            meta.0.insert(
+                biorouter_mcp::knowledge::tier::CAPABILITY_TIER_META_KEY.to_string(),
+                serde_json::Value::String(if private { "private" } else { "public" }.to_string()),
+            );
+            extensions.insert(meta);
+        }
         if let Some(token) = &self.progress_token {
             // Add the progressToken to the SAME `_meta` object the session id
             // rides in (rmcp serializes `extensions.get::<Meta>()` as params._meta),
@@ -1034,6 +1065,30 @@ mod tests {
         assert_eq!(
             m.get_progress_token(),
             Some(ProgressToken(NumberOrString::String("tok-xyz".into())))
+        );
+    }
+
+    /// Issue #56. The capability tier rides the SAME `_meta` object as the
+    /// session id. The wire key is spelled literally exactly here — this is the
+    /// one place pinning the format is the point; every other reader takes the
+    /// const from `biorouter_mcp::knowledge::tier`.
+    #[test]
+    fn the_capability_tier_rides_the_same_meta_object_as_the_session_id() {
+        let meta = McpMeta::new(
+            "sess-1",
+            crate::privacy::CallCapability::for_test_restricted(),
+        )
+        .with_capability_private(true);
+        let ext = meta.inject_into_extensions(Extensions::default());
+        let m = ext.get::<Meta>().unwrap();
+        assert_eq!(
+            m.0.get("biorouter-session-id").and_then(|v| v.as_str()),
+            Some("sess-1")
+        );
+        assert_eq!(
+            m.0.get("biorouter-capability-tier")
+                .and_then(|v| v.as_str()),
+            Some("private")
         );
     }
 

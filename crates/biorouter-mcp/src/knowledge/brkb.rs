@@ -3,9 +3,28 @@ use std::io::{Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use zip::{write::FileOptions, ZipArchive, ZipWriter};
 
+/// The archive-borne provenance marker (issue #56, decision 2a).
+///
+/// It rides INSIDE the single top-level directory, because [`import`] bails
+/// unless there is exactly one and a sibling entry would break every archive.
+/// It is written straight into the `ZipWriter` after the disk walk, so the KB's
+/// git tree never gains a file.
+///
+/// It is read as a **floor**, never as a value: a hostile archive's only power
+/// is to over-classify itself. Absent or malformed means "unknown", which is
+/// the importer's own tier and is the pre-#56 behaviour, so a foreign `.brkb`
+/// is unaffected.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Provenance {
+    schema: u32,
+    tier: String,
+}
+
 /// Pack a knowledge base directory (including .git, manifest.yaml, raw/, knowledge/, .biorouter-knowledge/)
 /// into a .brkb zip and write the bytes to `out`. Walks the directory tree.
-pub fn export<W: Write + Seek>(kb_root: &Path, out: &mut W) -> Result<()> {
+///
+/// `is_private` is stamped into the `<kb_id>/.brkb-provenance` entry.
+pub fn export<W: Write + Seek>(kb_root: &Path, out: &mut W, is_private: bool) -> Result<()> {
     let mut zip = ZipWriter::new(out);
     let opts = FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
     let kb_id = kb_root
@@ -14,9 +33,19 @@ pub fn export<W: Write + Seek>(kb_root: &Path, out: &mut W) -> Result<()> {
         .to_string_lossy()
         .to_string();
     walk(kb_root, kb_root, &kb_id, &mut zip, opts)?;
+    let provenance = serde_json::to_vec(&Provenance {
+        schema: 1,
+        tier: if is_private { "private" } else { "public" }.to_string(),
+    })?;
+    zip.start_file(format!("{kb_id}/{PROVENANCE_ENTRY}"), opts)?;
+    zip.write_all(&provenance)?;
     zip.finish().context("finish zip")?;
     Ok(())
 }
+
+/// The archive-relative name of the marker. Spelled here once; `import` matches
+/// it twice (read, then skip).
+const PROVENANCE_ENTRY: &str = ".brkb-provenance";
 
 fn walk<W: Write + Seek>(
     base: &Path,
@@ -62,10 +91,19 @@ fn safe_join(target: &Path, rel: &Path) -> Result<PathBuf> {
     Ok(target.join(rel))
 }
 
-/// Unpack a .brkb zip into a fresh directory under `knowledge_root` and return the new kb_id.
+/// Unpack a .brkb zip into a fresh directory under `knowledge_root` and return
+/// the new kb_id together with the archive's privacy claim (issue #56).
+///
 /// The .brkb is expected to contain exactly one top-level directory (the kb_id at export time).
 /// If that id collides with an existing KB at the destination, suffix with `-N` to disambiguate.
-pub fn import<R: Read + Seek>(zip_bytes: R, knowledge_root: &Path) -> Result<String> {
+///
+/// The second element is the `<kb_id>/.brkb-provenance` marker, `None` when it
+/// is absent or malformed. It is a FLOOR: `import_brkb` raises the new base to
+/// `max(marker, importer)` and never to the marker alone.
+pub fn import<R: Read + Seek>(
+    zip_bytes: R,
+    knowledge_root: &Path,
+) -> Result<(String, Option<bool>)> {
     let mut archive = ZipArchive::new(zip_bytes).context("open zip archive")?;
     // Detect the single top-level directory.
     let mut top_names: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -95,6 +133,7 @@ pub fn import<R: Read + Seek>(zip_bytes: R, knowledge_root: &Path) -> Result<Str
     // Extract.
     let target = knowledge_root.join(&id);
     std::fs::create_dir_all(&target)?;
+    let mut provenance_private: Option<bool> = None;
     for i in 0..archive.len() {
         let mut entry = archive.by_index(i)?;
         let entry_name = entry.name().to_string();
@@ -102,6 +141,18 @@ pub fn import<R: Read + Seek>(zip_bytes: R, knowledge_root: &Path) -> Result<Str
             .strip_prefix(&format!("{original_id}/"))
             .unwrap_or(entry_name.as_str())
             .into();
+        // Issue #56. Read the marker and SKIP it: it is provenance about the
+        // archive, not a file of the knowledge base, so it must not be
+        // extracted (a re-export would then carry a stale disk copy).
+        if rel == Path::new(PROVENANCE_ENTRY) {
+            let mut raw = String::new();
+            if entry.read_to_string(&mut raw).is_ok() {
+                provenance_private = serde_json::from_str::<Provenance>(&raw)
+                    .ok()
+                    .map(|p| p.tier == "private");
+            }
+            continue;
+        }
         // Reject any path component that could escape the extraction root.
         let dest = safe_join(&target, &rel)?;
         if entry.is_dir() {
@@ -126,7 +177,7 @@ pub fn import<R: Read + Seek>(zip_bytes: R, knowledge_root: &Path) -> Result<Str
             crate::knowledge::manifest::save(&target, &m)?;
         }
     }
-    Ok(id)
+    Ok((id, provenance_private))
 }
 
 #[cfg(test)]
@@ -153,7 +204,7 @@ mod tests {
         // Import into a new root, expect a non-colliding id.
         let dir2 = tempfile::tempdir().unwrap();
         let svc2 = KnowledgeService::new(dir2.path().to_path_buf());
-        let new_id = svc2.import_brkb(&bytes).unwrap();
+        let new_id = svc2.import_brkb(&bytes, false).unwrap();
         assert_eq!(new_id, "orig");
         assert!(dir2.path().join("orig").join("manifest.yaml").exists());
         assert!(dir2
@@ -179,7 +230,7 @@ mod tests {
         svc.create_base("dup", "Dup", None).unwrap();
         let bytes = svc.export_brkb("dup").unwrap();
         // Import into the SAME root — should collide.
-        let new_id = svc.import_brkb(&bytes).unwrap();
+        let new_id = svc.import_brkb(&bytes, false).unwrap();
         assert_eq!(new_id, "dup-2");
         assert!(dir.path().join("dup").exists());
         assert!(dir.path().join("dup-2").exists());

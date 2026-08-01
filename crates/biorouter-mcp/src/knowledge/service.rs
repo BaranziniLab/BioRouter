@@ -402,10 +402,18 @@ impl KnowledgeService {
     }
 
     pub fn new(root: PathBuf) -> Self {
-        Self {
+        let svc = Self {
             root,
             locks: Arc::new(DashMap::new()),
+        };
+        // Issue #56. Best-effort: `new` is infallible and a failure here must
+        // not stop the app from opening. A root that never migrates reads every
+        // base PUBLIC (the file is absent ⇒ "not migrated"), which is AR-2's
+        // accepted direction, not a new one.
+        if let Err(e) = svc.ensure_tiers_migrated() {
+            tracing::warn!("knowledge: could not migrate kb tiers: {e:#}");
         }
+        svc
     }
 
     pub fn new_default() -> Result<Self> {
@@ -426,6 +434,36 @@ impl KnowledgeService {
 
     fn lock_root(&self) -> Result<FileLockGuard> {
         FileLockGuard::acquire(&self.root_lock_path())
+    }
+
+    /// Take the root lock and raise `kb_id` to the caller's tier (issue #56).
+    ///
+    /// For callers OUTSIDE this module. Inside it — `create_base`,
+    /// `import_brkb`, `delete_base` — the lock is already held, so those call
+    /// `tier::*_unlocked` directly. Calling this from there deadlocks.
+    pub fn raise_tier(&self, kb_id: &str, caller_is_private: bool) -> Result<()> {
+        let _lock = self.lock_root()?;
+        crate::knowledge::tier::raise_unlocked(&self.root, kb_id, caller_is_private)
+    }
+
+    /// The mirror of [`Self::raise_tier`], for a base that has gone away.
+    pub fn forget_tier(&self, kb_id: &str) -> Result<()> {
+        let _lock = self.lock_root()?;
+        crate::knowledge::tier::forget_unlocked(&self.root, kb_id)
+    }
+
+    /// Idempotent, and cheap on the common path: it stats `.kb-tiers` BEFORE
+    /// taking the lock and returns immediately when it exists, so the ~90
+    /// `KnowledgeService::new` calls in the test suite do not each `flock`.
+    fn ensure_tiers_migrated(&self) -> Result<()> {
+        if crate::knowledge::paths::kb_tiers_path(&self.root).exists() {
+            return Ok(());
+        }
+        if !self.root.exists() {
+            return Ok(()); // no bases yet; the first create_base registers
+        }
+        let _lock = self.lock_root()?;
+        crate::knowledge::tier::ensure_migrated_unlocked(&self.root)
     }
 
     /// Acquire an exclusive lock for `kb_id`. Held until the returned guard is dropped.
@@ -489,6 +527,14 @@ impl KnowledgeService {
             },
         )?;
         self.rebuild_graph_cache(id)?;
+        // Issue #56, decision (5a). A base with no entry reads PRIVATE
+        // (unknown provenance), so an unregistered base would lock its own
+        // creator out. Registering here rather than adding a
+        // `caller_is_private` parameter keeps `create_base`'s ~90 call sites
+        // untouched; the tier is then raised by whichever choke point the
+        // creating call came through (Task 10B). Inside the root lock, so the
+        // `_unlocked` twin is the one that must be called.
+        crate::knowledge::tier::register_public_if_absent_unlocked(&self.root, id)?;
         Ok(m)
     }
 
@@ -499,15 +545,23 @@ impl KnowledgeService {
             anyhow::bail!("kb '{kb_id}' not found");
         }
         let mut buf = std::io::Cursor::new(Vec::new());
-        crate::knowledge::brkb::export(&kb_root, &mut buf)?;
+        // Issue #56, decision (2a): the archive carries a raise-only provenance
+        // marker. No barrier here — this is the USER's download path too
+        // (`GET /knowledge/bases/{id}/export`), and DR-14 governs what a MODEL
+        // can reach. The model-facing location rule lives in `kb_export`.
+        let is_private = crate::knowledge::tier::is_private(&self.root, kb_id);
+        crate::knowledge::brkb::export(&kb_root, &mut buf, is_private)?;
         Ok(buf.into_inner())
     }
 
-    pub fn import_brkb(&self, zip_bytes: &[u8]) -> Result<String> {
+    /// `importer_is_private` is the tier of whoever asked for the import. The
+    /// new base ends up at `max(archive marker, importer)` — the marker can only
+    /// raise, never lower (issue #56, decision 2a).
+    pub fn import_brkb(&self, zip_bytes: &[u8], importer_is_private: bool) -> Result<String> {
         let _lock = self.lock_root()?;
         std::fs::create_dir_all(&self.root)?;
         let cursor = std::io::Cursor::new(zip_bytes);
-        let new_id = crate::knowledge::brkb::import(cursor, &self.root)?;
+        let (new_id, provenance_private) = crate::knowledge::brkb::import(cursor, &self.root)?;
         // Register in the top-level manifest.
         let path = paths::kb_root(&self.root, &new_id);
         crate::knowledge::registry::register(
@@ -516,6 +570,12 @@ impl KnowledgeService {
                 id: new_id.clone(),
                 path,
             },
+        )?;
+        crate::knowledge::tier::register_public_if_absent_unlocked(&self.root, &new_id)?;
+        crate::knowledge::tier::raise_unlocked(
+            &self.root,
+            &new_id,
+            provenance_private.unwrap_or(false) || importer_is_private,
         )?;
         Ok(new_id)
     }
@@ -679,6 +739,9 @@ impl KnowledgeService {
         }
         self.rewrite_session_primary_refs_unlocked(id, None)?;
         self.rewrite_hidden_refs_unlocked(id, None)?;
+        // Issue #56: drop the tier with the base, so a later base reusing the
+        // id is classified by its own creator. Inside the root lock.
+        crate::knowledge::tier::forget_unlocked(&self.root, id)?;
 
         Ok(())
     }
@@ -3231,5 +3294,38 @@ mod tests {
         assert!(!svc.migrate_schema_if_needed("k").unwrap());
         // Third call too.
         assert!(!svc.migrate_schema_if_needed("k").unwrap());
+    }
+
+    #[tokio::test]
+    async fn registering_a_tier_from_inside_the_root_lock_does_not_deadlock() {
+        // The whole of decision (5b), as a test that TIMES OUT rather than fails
+        // if the `_unlocked` convention is broken — a deadlock does not assert,
+        // it waits. `create_base` holds `lock_root()`; a `tier::raise` that
+        // acquires it again blocks forever and the daemon stops answering on the
+        // very first knowledge call, while every tier.rs unit test still passes
+        // because they call the store on a bare root no service is holding.
+        let d = tempfile::tempdir().unwrap();
+        let svc = KnowledgeService::new(d.path().to_path_buf());
+        let done = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+                svc.create_base("k", "K", None)?; // registers, inside the lock
+                svc.raise_tier("k", true)?; // the wrapper: takes the lock itself
+                svc.delete_base("k") // forgets, inside the lock
+            }),
+        )
+        .await
+        .expect("create_base / raise_tier / delete_base deadlocked on the root lock");
+        done.unwrap().unwrap();
+    }
+
+    #[test]
+    fn a_base_created_by_any_surface_is_registered_public_rather_than_unknown() {
+        // Decision (5a). Without the registration, decision (3) reads a freshly
+        // created base as PRIVATE and Task 10C locks the user out of a base they
+        // just made from the CLI or the Knowledge view.
+        let (_dir, svc) = svc();
+        svc.create_base("k", "K", None).unwrap();
+        assert!(!crate::knowledge::tier::is_private(svc.root(), "k"));
     }
 }

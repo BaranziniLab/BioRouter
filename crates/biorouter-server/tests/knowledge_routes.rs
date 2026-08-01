@@ -2190,3 +2190,77 @@ async fn hiding_the_primary_promotes_for_an_inheriting_chat_too() {
         Some("alpha")
     );
 }
+
+/// Task 10C's scope line, asserted rather than described: the seven
+/// `/knowledge/*` read handlers and this export are the USER in the Knowledge
+/// view, not a model, and DR-14 governs what a MODEL can reach.
+///
+/// Driven through the route, because the defect would be a rule applied in the
+/// SERVICE and therefore to everyone. The handler is
+/// `export_brkb(State(svc), Path(id))` — it takes NO query parameters, calls
+/// `svc.export_brkb(&id)` and returns the archive as the response BODY with
+/// `Content-Disposition: attachment`. It never writes to disk. What the route
+/// can witness is the thing that matters: a location rule implemented one layer
+/// down, in `KnowledgeService::export_brkb`, would change this route too — the
+/// user would stop being able to download a private base from their own
+/// Knowledge view. So assert the bytes come back.
+#[tokio::test]
+async fn the_users_own_export_route_is_not_subject_to_the_models_location_rule() {
+    use axum::http::header;
+
+    let (_d, root, app) = build_test_router_with_root();
+    let create_body =
+        serde_json::to_vec(&serde_json::json!({"id": "omop", "name": "Omop"})).unwrap();
+    let created = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/bases")
+                .header("content-type", "application/json")
+                .body(Body::from(create_body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(created.status(), 200);
+
+    biorouter_mcp::knowledge::tier::raise_unlocked(&root, "omop", true).unwrap();
+    let page = root.join("omop").join("knowledge").join("x.md");
+    std::fs::create_dir_all(page.parent().unwrap()).unwrap();
+    std::fs::write(&page, "SENTINEL-COHORT-N-412").unwrap();
+
+    let r = app
+        .oneshot(
+            Request::builder()
+                .uri("/bases/omop/export")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        r.status(),
+        200,
+        "the user's own export of a private base was refused"
+    );
+    assert_eq!(
+        r.headers()[header::CONTENT_TYPE],
+        "application/octet-stream"
+    );
+    let body = axum::body::to_bytes(r.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(body.to_vec())).unwrap();
+    let names: Vec<String> = (0..archive.len())
+        .map(|i| archive.by_index(i).unwrap().name().to_string())
+        .collect();
+    assert!(
+        names.iter().any(|n| n.ends_with("knowledge/x.md")),
+        "the route returned {} bytes but not the archive",
+        body.len()
+    );
+    // …and nothing was relocated into the knowledge root as a side effect: the
+    // model's rule writes `<root>/exports/`, and the user's route writes nothing.
+    assert!(!root.join("exports").exists());
+}

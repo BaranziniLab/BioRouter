@@ -78,6 +78,17 @@ pub fn hidden_kb_sessions_dir(root: &std::path::Path) -> std::path::PathBuf {
     root.join(".hidden-kb-sessions")
 }
 
+/// Returns `<knowledge-root>/.kb-tiers` — the machine-local map of kb id →
+/// privacy tier (issue #56).
+///
+/// Deliberately a sibling of `.active-kb` and `.hidden-kbs` rather than a field
+/// in each base's `manifest.yaml`: the manifest is inside the base's git tree
+/// and travels inside the `.brkb` archive, so a tier stored there would be
+/// supplied by whoever authored the archive. This file never leaves the machine.
+pub fn kb_tiers_path(root: &std::path::Path) -> std::path::PathBuf {
+    root.join(".kb-tiers")
+}
+
 pub fn kb_knowledge_dir(root: &Path, id: &str) -> PathBuf {
     kb_root(root, id).join("knowledge")
 }
