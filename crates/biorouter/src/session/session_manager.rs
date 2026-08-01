@@ -50,6 +50,27 @@ CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
 const MESSAGES_FTS_INSERT: &str =
     "INSERT INTO messages_fts (text, session_id, message_id) VALUES (?, ?, ?)";
 
+/// The append-only declassification ledger (issue #56, §12.5). A constant
+/// because the two schema paths that create it run against different handles —
+/// `create_schema` against the pool, the reconcile against the one connection
+/// holding its write transaction.
+const CLASSIFICATION_AUDIT_DDL: &str = r#"
+CREATE TABLE IF NOT EXISTS classification_audit (
+  id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id              TEXT NOT NULL,
+  from_classification     TEXT NOT NULL,
+  to_classification       TEXT NOT NULL,
+  reason                  TEXT NOT NULL,
+  actor                   TEXT NOT NULL,
+  actor_kind              TEXT NOT NULL,
+  occurred_at             TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  app_version             TEXT NOT NULL,
+  provider_name_at_change TEXT,
+  privacy_reason_before   TEXT,
+  message_count_at_change INTEGER
+)
+"#;
+
 /// True when `err` is the `UNIQUE(messages.session_id, messages.msg_uid)`
 /// violation (SQLite error 2067) from the message insert — the one failure
 /// [`SessionStorage::add_message`] recovers from by re-minting the uid (#41).
@@ -3014,24 +3035,55 @@ impl SessionStorage {
     /// would re-privatise a session the user has just declassified —
     /// declassification deliberately leaves `provider_name` untouched.
     async fn ensure_privacy_schema(pool: &Pool<Sqlite>) -> Result<()> {
-        if !Self::table_has_column(pool, "sessions", "privacy_tier").await? {
-            sqlx::query(
-                "ALTER TABLE sessions ADD COLUMN privacy_tier TEXT NOT NULL DEFAULT 'public'",
-            )
-            .execute(pool)
+        // BEGIN IMMEDIATE serializes the check-then-ALTER sequence across
+        // concurrently running Biorouter processes, exactly as
+        // `reconcile_usage_schema` does above. Without it two processes can both
+        // observe the same missing column before either adds it, and the loser
+        // aborts startup with `duplicate column name` — which is a migration
+        // failure, not a retryable one. The desktop daemon, a terminal
+        // `biorouter` and a scheduled job share this database, and the first
+        // launch after an upgrade is when they are likeliest to start together.
+        let mut connection = pool.acquire().await?;
+        sqlx::query("BEGIN IMMEDIATE")
+            .execute(&mut *connection)
             .await?;
+        let result = Self::ensure_privacy_schema_locked(&mut connection).await;
+        match result {
+            Ok(()) => {
+                sqlx::query("COMMIT").execute(&mut *connection).await?;
+                Ok(())
+            }
+            Err(error) => {
+                let _ = sqlx::query("ROLLBACK").execute(&mut *connection).await;
+                Err(error)
+            }
         }
-        if !Self::table_has_column(pool, "sessions", "privacy_reason").await? {
-            sqlx::query("ALTER TABLE sessions ADD COLUMN privacy_reason TEXT")
-                .execute(pool)
+    }
+
+    async fn ensure_privacy_schema_locked(connection: &mut sqlx::SqliteConnection) -> Result<()> {
+        for (column, sql_type) in [
+            ("privacy_tier", "TEXT NOT NULL DEFAULT 'public'"),
+            ("privacy_reason", "TEXT"),
+            ("parent_session_id", "TEXT"),
+        ] {
+            let exists: i32 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = ?1",
+            )
+            .bind(column)
+            .fetch_one(&mut *connection)
+            .await?;
+            if exists == 0 {
+                sqlx::query(&format!(
+                    "ALTER TABLE sessions ADD COLUMN {column} {sql_type}"
+                ))
+                .execute(&mut *connection)
                 .await?;
+            }
         }
-        if !Self::table_has_column(pool, "sessions", "parent_session_id").await? {
-            sqlx::query("ALTER TABLE sessions ADD COLUMN parent_session_id TEXT")
-                .execute(pool)
-                .await?;
-        }
-        Self::create_classification_audit_table(pool).await?;
+
+        sqlx::query(CLASSIFICATION_AUDIT_DDL)
+            .execute(&mut *connection)
+            .await?;
         Ok(())
     }
 
@@ -3045,26 +3097,7 @@ impl SessionStorage {
     /// the *second* launch — and a declassification in between fails with
     /// `no such table`.
     async fn create_classification_audit_table(pool: &Pool<Sqlite>) -> Result<()> {
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS classification_audit (
-              id                      INTEGER PRIMARY KEY AUTOINCREMENT,
-              session_id              TEXT NOT NULL,
-              from_classification     TEXT NOT NULL,
-              to_classification       TEXT NOT NULL,
-              reason                  TEXT NOT NULL,
-              actor                   TEXT NOT NULL,
-              actor_kind              TEXT NOT NULL,
-              occurred_at             TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-              app_version             TEXT NOT NULL,
-              provider_name_at_change TEXT,
-              privacy_reason_before   TEXT,
-              message_count_at_change INTEGER
-            )
-        "#,
-        )
-        .execute(pool)
-        .await?;
+        sqlx::query(CLASSIFICATION_AUDIT_DDL).execute(pool).await?;
         Ok(())
     }
 
@@ -11936,6 +11969,70 @@ mod tests {
             .unwrap();
         pool.close().await;
         assert_eq!(tier, SessionClassification::Public.as_sql());
+    }
+
+    #[tokio::test]
+    async fn a_competing_migrator_cannot_slip_between_the_shape_check_and_the_alter() {
+        // The desktop daemon, a terminal `biorouter` and a scheduled job all
+        // open the same database, and the first launch after an upgrade is
+        // exactly when they are most likely to start together. A bare
+        // check-then-ALTER lets both observe the same missing column before
+        // either adds it, and the loser aborts startup with `duplicate column
+        // name` — a migration failure, not a retryable one.
+        //
+        // Deterministic rather than a race: the competing migrator takes the
+        // write lock FIRST and holds it, so the reconcile under test is parked
+        // at a known point, and only then are the columns added under it. Where
+        // it parks is the whole property. Outside a transaction it parks at its
+        // ALTER, having already decided the column is missing, and resumes into
+        // a duplicate. Under BEGIN IMMEDIATE it parks before its shape check,
+        // and re-reads a `sessions` table that now has the columns.
+        let temp = tempfile::TempDir::new().unwrap();
+        let db = build_pre_privacy_database(temp.path()).await;
+
+        let competitor = raw_pool(&db).await;
+        let mut held = competitor.acquire().await.unwrap();
+        sqlx::query("BEGIN IMMEDIATE")
+            .execute(&mut *held)
+            .await
+            .unwrap();
+
+        let pool = SessionStorage::create_pool(&db);
+        let reconciling = pool.clone();
+        let reconcile =
+            tokio::spawn(async move { SessionStorage::ensure_privacy_schema(&reconciling).await });
+
+        // Long enough for the spawned reconcile to reach whichever statement
+        // blocks on the write lock; the pool's busy timeout is 5s, so it is
+        // still waiting rather than failing. A short sleep here can only produce
+        // a false pass, never a false failure.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+        for (column, sql_type) in [
+            ("privacy_tier", "TEXT NOT NULL DEFAULT 'public'"),
+            ("privacy_reason", "TEXT"),
+            ("parent_session_id", "TEXT"),
+        ] {
+            sqlx::query(&format!(
+                "ALTER TABLE sessions ADD COLUMN {column} {sql_type}"
+            ))
+            .execute(&mut *held)
+            .await
+            .unwrap();
+        }
+        sqlx::query("COMMIT").execute(&mut *held).await.unwrap();
+        drop(held);
+        competitor.close().await;
+
+        reconcile
+            .await
+            .unwrap()
+            .expect("the reconcile must survive another process adding the columns under it");
+
+        pool.close().await;
+        assert!(column_exists(&db, "sessions", "privacy_tier").await);
+        assert!(column_exists(&db, "sessions", "privacy_reason").await);
+        assert!(table_exists(&db, "classification_audit").await);
     }
 }
 
