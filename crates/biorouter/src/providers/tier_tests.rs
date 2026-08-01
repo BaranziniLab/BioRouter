@@ -7,18 +7,12 @@
 
 use std::sync::Arc;
 
-use async_trait::async_trait;
-use chrono::Utc;
-use rmcp::model::{AnnotateAble, RawTextContent, Role, Tool};
-
-use super::base::{Provider, ProviderMetadata, ProviderUsage, Usage};
-use super::errors::ProviderError;
+use super::base::Provider;
 use super::lead_worker::LeadWorkerProvider;
 use super::llamacpp::LlamaCppProvider;
 use super::ollama::{OllamaProvider, OLLAMA_HOST};
 use super::versa_azure::VERSA_AZURE_ENDPOINT;
 use crate::config::declarative_providers::{DeclarativeProviderConfig, ProviderEngine};
-use crate::conversation::message::{Message, MessageContent};
 use crate::model::ModelConfig;
 use crate::privacy::ProviderTier;
 
@@ -47,81 +41,13 @@ async fn private_names_in_the_registry() -> Vec<String> {
     names
 }
 
-/// A provider whose name and tier are whatever the caller says, so a composite
-/// can be built with a *private lead and a public worker* — the pair whose
-/// `get_name()` and whose reach disagree.
-struct TierMock {
-    name: String,
-    tier: ProviderTier,
-}
-
-impl TierMock {
-    fn new(name: &str, tier: ProviderTier) -> Self {
-        Self {
-            name: name.to_string(),
-            tier,
-        }
-    }
-}
-
-#[async_trait]
-impl Provider for TierMock {
-    fn metadata() -> ProviderMetadata {
-        ProviderMetadata::empty()
-    }
-
-    fn get_name(&self) -> &str {
-        &self.name
-    }
-
-    fn get_model_config(&self) -> ModelConfig {
-        ModelConfig::new_or_fail("mock-model")
-    }
-
-    fn tier(&self) -> ProviderTier {
-        self.tier
-    }
-
-    async fn complete_with_model(
-        &self,
-        _model_config: &ModelConfig,
-        _system: &str,
-        _messages: &[Message],
-        _tools: &[Tool],
-    ) -> Result<(Message, ProviderUsage), ProviderError> {
-        Ok((
-            Message::new(
-                Role::Assistant,
-                Utc::now().timestamp(),
-                vec![MessageContent::Text(
-                    RawTextContent {
-                        text: "mock".to_string(),
-                        meta: None,
-                    }
-                    .no_annotation(),
-                )],
-            ),
-            ProviderUsage::new(self.name.clone(), Usage::default()),
-        ))
-    }
-}
-
-/// The real production composite, with a lead named `versa_azure`.
-fn lead_worker_with_tiers(lead: ProviderTier, worker: ProviderTier) -> LeadWorkerProvider {
-    LeadWorkerProvider::new(
-        Arc::new(TierMock::new("versa_azure", lead)),
-        Arc::new(TierMock::new("anthropic", worker)),
-        None,
-    )
-}
-
 /// A **real** self-hosted-engine provider built the way a declarative JSON file
-/// builds one, pointed wherever the caller says — and named `versa_azure`,
-/// because registering by `config.name` after the built-ins is what lets one
-/// writable file shadow the real registry entry.
-fn tier_for_self_hosted_base(base_url: &str) -> ProviderTier {
+/// builds one, named and pointed wherever the caller says. Registering by
+/// `config.name` after the built-ins is what lets one writable file shadow the
+/// real registry entry, so the name is a parameter here on purpose.
+fn self_hosted_named(name: &str, base_url: &str) -> OllamaProvider {
     let config = DeclarativeProviderConfig {
-        name: "versa_azure".to_string(),
+        name: name.to_string(),
         engine: ProviderEngine::Ollama,
         display_name: "Not Versa At All".to_string(),
         description: None,
@@ -134,7 +60,42 @@ fn tier_for_self_hosted_base(base_url: &str) -> ProviderTier {
     };
     OllamaProvider::from_custom_config(ModelConfig::new_or_fail("qwen3"), config)
         .expect("a declarative ollama provider must construct")
-        .tier()
+}
+
+fn tier_for_self_hosted_base(base_url: &str) -> ProviderTier {
+    self_hosted_named("versa_azure", base_url).tier()
+}
+
+/// One half of the composite below, at the requested tier — a **real**
+/// provider, not a mock.
+///
+/// A mock would have to override `tier()`, and this file would then hold a
+/// seventh implementation of it — which is what Step 5's enumerating gate
+/// lists. That gate names the six production implementations and would need a
+/// human to read past a test one every run, so it is deliberately not spelled
+/// out here either. A real Ollama-engine provider's tier is a
+/// function of the base URL it resolved, so loopback yields Private and a
+/// remote host yields Public — pinned independently by
+/// `a_self_hosted_provider_pointed_off_the_machine_is_not_private` below, and
+/// asserted here too so a break in that mapping is named rather than
+/// mis-attributed to the composite rule.
+fn half(name: &str, tier: ProviderTier) -> Arc<dyn Provider> {
+    let base_url = match tier {
+        ProviderTier::Private => "http://localhost:11434",
+        ProviderTier::Public => "https://api.example-saas.com",
+    };
+    let provider = self_hosted_named(name, base_url);
+    assert_eq!(
+        provider.tier(),
+        tier,
+        "the {name} half must actually resolve {tier:?}"
+    );
+    Arc::new(provider)
+}
+
+/// The real production composite, with a lead named `versa_azure`.
+fn lead_worker_with_tiers(lead: ProviderTier, worker: ProviderTier) -> LeadWorkerProvider {
+    LeadWorkerProvider::new(half("versa_azure", lead), half("anthropic", worker), None)
 }
 
 /// The production predicate both versa providers hand their resolved endpoint.
