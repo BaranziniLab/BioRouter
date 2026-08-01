@@ -84,6 +84,47 @@ pub(crate) fn feed(buffer: &mut String, chunk: &str, out: &mut Vec<serde_json::V
     }
 }
 
+/// Take as much of `pending` as is complete UTF-8, leaving any trailing partial
+/// character behind for the next read.
+///
+/// ⚠ Not `String::from_utf8_lossy(&chunk[..read])` per socket read. A read
+/// boundary lands mid-character whenever a frame carrying non-ASCII crosses one,
+/// and both halves then become U+FFFD: the `data:` line stops being valid JSON,
+/// `feed` cannot parse it, and the whole frame is dropped without a word. A
+/// message vanishes from the transcript because of where a TCP read happened to
+/// land — and `attach` renders entire conversations, so it is the most exposed.
+fn take_complete_utf8(pending: &mut Vec<u8>) -> String {
+    let split = match std::str::from_utf8(pending) {
+        Ok(_) => pending.len(),
+        // A truncated final character: hold it back for the next read.
+        Err(err) if err.error_len().is_none() => err.valid_up_to(),
+        // Genuinely invalid bytes, not an incomplete character. Lossy them and
+        // move on: holding them back would stall the stream forever waiting for
+        // a completion that is not coming.
+        Err(_) => pending.len(),
+    };
+    let tail = pending.split_off(split);
+    let head = std::mem::replace(pending, tail);
+    String::from_utf8_lossy(&head).into_owned()
+}
+
+/// One socket read's worth of bytes, decoded and drained into whole SSE frames.
+///
+/// The step both branches of `read_response` share, factored out so the decode
+/// rule can be pinned against the frames it really produces rather than against
+/// a copy of the loop.
+fn absorb(
+    pending: &mut Vec<u8>,
+    buffer: &mut String,
+    chunk: &[u8],
+) -> Vec<serde_json::Value> {
+    pending.extend_from_slice(chunk);
+    let text = take_complete_utf8(pending);
+    let mut frames = Vec::new();
+    feed(buffer, &text, &mut frames);
+    frames
+}
+
 /// One line of human output for a frame, or `None` for frames a human does not
 /// need to see (heartbeats, token bookkeeping).
 pub(crate) fn render_frame(frame: &serde_json::Value) -> Option<String> {
@@ -283,6 +324,8 @@ async fn read_response<S: tokio::io::AsyncRead + Unpin>(
 ) -> Result<u16> {
     let mut status = status;
     let mut raw = Vec::new();
+    // Body bytes not yet decodable as whole characters — see `take_complete_utf8`.
+    let mut pending: Vec<u8> = Vec::new();
     let mut buffer = String::new();
     let mut headers_done = false;
     let mut joined = false;
@@ -294,12 +337,13 @@ async fn read_response<S: tokio::io::AsyncRead + Unpin>(
         }
         if !headers_done {
             raw.extend_from_slice(&chunk[..read]);
-            let text = String::from_utf8_lossy(&raw).to_string();
-            // `split_once` rather than byte-indexing: `clippy::string_slice` is
-            // warn-level workspace-wide and clippy runs with `-D warnings`.
-            let Some((head, rest)) = text.split_once("\r\n\r\n") else {
+            // Split on BYTES, not on a lossily-decoded string: the body starts
+            // immediately after the blank line and its first character can
+            // already be cut in half by this read.
+            let Some(end) = raw.windows(4).position(|w| w == b"\r\n\r\n") else {
                 continue;
             };
+            let head = String::from_utf8_lossy(&raw[..end]).into_owned();
             let status_line = head.lines().next().unwrap_or_default();
             let code = status_code(status_line).ok_or_else(|| {
                 anyhow!("the daemon answered with a response carrying no status code: {status_line}")
@@ -315,19 +359,14 @@ async fn read_response<S: tokio::io::AsyncRead + Unpin>(
             }
             headers_done = true;
             buffer.clear();
-            let mut frames = Vec::new();
-            feed(&mut buffer, rest, &mut frames);
+            pending.clear();
+            let frames = absorb(&mut pending, &mut buffer, &raw[end + 4..]);
             if print_frames(&frames, stop_on_terminal, render, &mut joined) {
                 return Ok(code);
             }
             continue;
         }
-        let mut frames = Vec::new();
-        feed(
-            &mut buffer,
-            &String::from_utf8_lossy(&chunk[..read]),
-            &mut frames,
-        );
+        let frames = absorb(&mut pending, &mut buffer, &chunk[..read]);
         if print_frames(&frames, stop_on_terminal, render, &mut joined) {
             return Ok(200);
         }
@@ -1579,6 +1618,70 @@ mod tests {
         assert_eq!(status_rx.await.unwrap(), 409);
         // The daemon half is still open — deliberately, that is the point.
         drop(daemon);
+    }
+
+    /// A multi-byte character split across two socket reads must survive.
+    ///
+    /// `String::from_utf8_lossy(&chunk[..read])` per read cannot do that: each
+    /// half of the character becomes U+FFFD independently, so the text arrives
+    /// corrupted. `attach` renders whole conversations, and Greek letters,
+    /// arrows and × are ordinary in the biomedical prose it is rendering, so an
+    /// 8 KiB read boundary landing inside one is not exotic.
+    ///
+    /// Driven through `absorb`, the step both branches of `read_response` use,
+    /// so this is a claim about the production path and not about a copy of the
+    /// loop. Note the corruption does NOT break JSON — U+FFFD is a legal string
+    /// character — so the frame still parses and nothing downstream notices; the
+    /// decoded text is the only place it is visible.
+    #[test]
+    fn a_character_split_across_reads_survives_intact() {
+        let body = "data: {\"type\":\"Message\",\"message\":{\"role\":\"assistant\",\
+                    \"content\":[{\"type\":\"text\",\"text\":\"β-catenin ↑ 2.4×\"}]}}\n\n";
+        let bytes = body.as_bytes();
+        let beta = body.find('β').expect("the fixture contains it");
+        let arrow = body.find('↑').expect("the fixture contains it");
+        assert!(!body.is_char_boundary(beta + 1), "cut 1 is mid-character");
+        assert!(!body.is_char_boundary(arrow + 2), "cut 2 is mid-character");
+
+        let mut pending = Vec::new();
+        let mut buffer = String::new();
+        let mut frames = Vec::new();
+        for slice in [
+            &bytes[..beta + 1],
+            &bytes[beta + 1..arrow + 2],
+            &bytes[arrow + 2..],
+        ] {
+            frames.extend(absorb(&mut pending, &mut buffer, slice));
+        }
+
+        assert_eq!(frames.len(), 1, "one frame, split three ways: {frames:?}");
+        let line = render_frame(&frames[0]).unwrap();
+        assert!(line.contains("β-catenin ↑ 2.4×"), "mangled: {line}");
+        assert!(!line.contains('\u{FFFD}'), "replacement characters: {line}");
+    }
+
+    /// Bytes that are not merely an incomplete character must not be held back
+    /// forever waiting for a completion that is not coming.
+    #[test]
+    fn invalid_bytes_are_lossy_but_a_truncated_character_waits() {
+        // A complete string passes straight through.
+        let mut pending = "already whole".as_bytes().to_vec();
+        assert_eq!(take_complete_utf8(&mut pending), "already whole");
+        assert!(pending.is_empty());
+
+        // A truncated final character is retained for the next read.
+        let mut pending = Vec::from("ok ".as_bytes());
+        pending.push(0xCE); // first byte of "β"
+        assert_eq!(take_complete_utf8(&mut pending), "ok ");
+        assert_eq!(pending, vec![0xCE], "the half character is held back");
+        pending.push(0xB2); // second byte of "β"
+        assert_eq!(take_complete_utf8(&mut pending), "β");
+        assert!(pending.is_empty());
+
+        // Genuinely invalid bytes are consumed, not hoarded.
+        let mut pending = vec![b'a', 0xFF, b'b'];
+        assert!(take_complete_utf8(&mut pending).contains('a'));
+        assert!(pending.is_empty(), "a stalled buffer would freeze the stream");
     }
 
     /// Attach must be able to steer a turn it started itself.
