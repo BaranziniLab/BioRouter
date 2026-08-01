@@ -50,11 +50,13 @@ Three things you can do from that tab:
 
 - **Watch.** Read the transcript as it streams. You are not interrupting anything.
 - **Steer.** Type into the tab's ordinary composer. While the child's turn is running your message is injected as a mid-turn correction ("stop at step 3 and summarise"); between turns it starts a new turn or leaves a note. Either way it is labelled in the transcript as a **direct user message**, permanently.
-- **Stop.** The header's Stop control cancels the child's turn. The parent's tool call then resolves as incomplete, with whatever partial summary exists — the parent is not left hanging.
+- **Stop.** The header's Stop control cancels the child's turn. The parent's tool call then resolves promptly, carrying whatever the child had produced — it is not left hanging. What it resolves *as* depends on how far the child got: a child stopped mid-tool-call, with no text to show for it, comes back `incomplete`; a child that had already written a summary returns that summary and can still be labelled `completed`, because the envelope is classified from the transcript rather than from the fact of the cancellation. Do not read `completed` as proof the child finished on its own.
 
 **Closing the tab never kills the child.** That is the same rule as every other tab in BioRouter: closing is a view operation. Stop is the only kill switch, and a child whose tab you closed is still reachable from History.
 
-If you did intervene, the parent is told. Its tool result carries `human_intervened` and gains a line — *"Note: the user intervened directly in this subagent's tab during the run."* — so it weighs the child's self-report accordingly instead of assuming an untouched run. Nothing is said when you did not intervene: silence there would read as a claim that someone checked.
+If you typed into the tab, the parent is told. Its tool result carries `human_intervened` and gains a line — *"Note: the user intervened directly in this subagent's tab during the run."* — so it weighs the child's self-report accordingly instead of assuming an untouched run. Nothing is said when you did not: silence there would read as a claim that someone checked.
+
+The flag tracks **messages you sent**, so it is Steer that sets it, not Stop. Pressing Stop without typing cancels the run without marking the result as intervened.
 
 ### Visible by default
 
