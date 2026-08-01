@@ -23977,7 +23977,7 @@ a "pre + N" assertion against a figure nobody wrote down reads a shortfall as a 
 | `BIOROUTER_HARNESS_LIVE=1 node …` | **25 assertions, 0 failed, exit 0** — the whole flagship chain, incl. `/interrupt` → 202, the `user_direct` steer, `cancelled:true` with a turn id, the tab-composer stamp, `"human_intervened":true`, and both new decision-21 checks |
 | `cd ui/desktop && npm run test:run` | **202 files / 1837 tests, 0 failed, exit 0** (2 runs of 2) |
 | `cargo test -p biorouter-cli --lib -- commands::session_grouping commands::session_watch` | **25 passed, 0 failed** (4 grouping + 21 watch; non-zero on both filters, as required) |
-| `cargo test --workspace --no-fail-fast` | see the amendment under Task 44 |
+| `cargo test --workspace --no-fail-fast` | **3964 passed / 5 failed / 25 ignored, 82 binaries** — all five environmental; the breakdown and what Task 44 should expect are tabulated under Task 44 |
 
 ⚠ **Run the daemon exactly as `just debug-server` does, `BIOROUTER_DISABLE_KEYRING=true`
 included.** Launching `biorouterd agent` without it wedges the daemon **permanently** on
@@ -25123,6 +25123,24 @@ the tree — fix it there, once, rather than in two places.
   (amended 2026-07-28): `cargo test --lib a b c` is `error: unexpected argument`, exit 1,
   with nothing run — and the obvious repair is to drop the extra filters, which quietly
   turns a four-module sweep into a one-module one. See Ground rules, "Gate mechanics".
+
+  ⚠ **"The recorded pre-existing baseline" now has a number** (measured 2026-07-31 by the
+  Task 40 gate, which Task 40 was told to record and carry here). On this machine, at
+  `758162d2`, the command reports **3964 passed / 5 failed / 25 ignored across 82 test
+  binaries**. All five failures are environmental and none is BR-71's:
+
+  | Failure | Why it is not yours |
+  |---|---|
+  | `providers::test_anthropic_provider` | live Anthropic API; fails with `400 … credit balance is too low`. |
+  | `tunnel::lapstone_test::test_tunnel_end_to_end` (×2 binaries) | live service, intermittent 503. |
+  | `tunnel::lapstone_test::test_tunnel_post_request` | same family. |
+  | `agent_drafter::render::tests::generated_serve_and_launchers_are_syntactically_valid` | **transient**, and the one to expect variation on. It fails with `bin/node: line 21: basename: No such file or directory` — the hermit `node` shim, not the generated ESM. Re-run alone it passes, both with and without `bin/` prepended to `PATH`. |
+
+  So **Task 44 should expect 3964/5 or 3965/4** depending on whether that last one lands,
+  and must not read the ±1 as an anomaly or as evidence a crate failed to build. Sum the
+  per-binary lines rather than trusting a final tally — `--no-fail-fast` prints one
+  `test result:` per binary and no grand total, and "all green" cannot distinguish a
+  passing workspace from one whose target dir failed to build a crate.
 
   ```bash
   cargo test -p biorouter --lib -- agents:: session:: session_events conversation::message
