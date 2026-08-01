@@ -206,8 +206,10 @@ pub struct Session {
     pub privacy_reason: Option<String>,
 }
 
-/// `sqlx::FromRow` is hand-written rather than derived (see below) so
-/// `privacy_tier` can use the same fail-closed read as [`Session`].
+// `sqlx::FromRow` is hand-written rather than derived (see below) so
+// `privacy_tier` can use the same fail-closed read as [`Session`]. Deliberately
+// not a doc comment: utoipa publishes those as the schema's `description`, and
+// a note about a Rust row decoder is noise in the generated TypeScript client.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct SessionSummary {
     pub id: String,

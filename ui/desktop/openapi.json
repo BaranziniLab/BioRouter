@@ -9019,8 +9019,16 @@
           },
           "parent_session_id": {
             "type": "string",
-            "description": "Id of the parent session that spawned this one as a subagent (BR-71).\nSibling of `diverged_from` (branch lineage): `diverged_from` records a\nuser fork; this records a delegation. `None` for non-subagent sessions.",
+            "description": "Id of the parent session that spawned this one as a subagent (BR-71).\nSibling of `diverged_from` (branch lineage): `diverged_from` records a\nuser fork; this records a delegation. `None` for non-subagent sessions.\nIt is also what the §7 capability matrix's `L` axis reads (issue #56).",
             "nullable": true
+          },
+          "privacy_reason": {
+            "type": "string",
+            "description": "Audit and UX only — never read by a gate. One of `turn:<provider>`,\n`mcp:<extension>`, `inherited:<parent_id>`, `diverged:<parent_id>`,\n`backfill:<provider>`, `declassified_by_user`. §12.4 grades the\ndeclassification confirmation on whether it has ever been `mcp:*`.\n\nIt therefore holds the **dominant** provenance, not the first or the\nlatest one: the storage layer lets an `mcp:` raise displace a non-`mcp:`\nreason and lets nothing displace an `mcp:` reason. Freezing it on the\nfirst raise would answer \"has it ever been `mcp:*`\" with a flat no, since\nGate B's `turn:*` always lands before Gate C's `mcp:*`.",
+            "nullable": true
+          },
+          "privacy_tier": {
+            "$ref": "#/components/schemas/SessionClassification"
           },
           "provider_name": {
             "type": "string",
@@ -9065,6 +9073,14 @@
             "type": "string"
           }
         }
+      },
+      "SessionClassification": {
+        "type": "string",
+        "description": "CLASSIFICATION — the most sensitive thing a session has ever touched.\n\n`Ord` is derived and `Public < Private`, so `max` is the accumulation and is\nspellable. Monotone in time; the storage layer refuses to lower it (see\n`SessionUpdateBuilder`'s `CASE WHEN` emission).",
+        "enum": [
+          "public",
+          "private"
+        ]
       },
       "SessionDisplayInfo": {
         "type": "object",
@@ -9239,6 +9255,9 @@
             "type": "string",
             "description": "BR-71: `sub_agent` rows are grouped under this parent in History.",
             "nullable": true
+          },
+          "privacy_tier": {
+            "$ref": "#/components/schemas/SessionClassification"
           },
           "session_type": {
             "type": "string",

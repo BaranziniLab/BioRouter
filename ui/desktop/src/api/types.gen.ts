@@ -1830,8 +1830,23 @@ export type Session = {
      * Id of the parent session that spawned this one as a subagent (BR-71).
      * Sibling of `diverged_from` (branch lineage): `diverged_from` records a
      * user fork; this records a delegation. `None` for non-subagent sessions.
+     * It is also what the §7 capability matrix's `L` axis reads (issue #56).
      */
     parent_session_id?: string | null;
+    /**
+     * Audit and UX only — never read by a gate. One of `turn:<provider>`,
+     * `mcp:<extension>`, `inherited:<parent_id>`, `diverged:<parent_id>`,
+     * `backfill:<provider>`, `declassified_by_user`. §12.4 grades the
+     * declassification confirmation on whether it has ever been `mcp:*`.
+     *
+     * It therefore holds the **dominant** provenance, not the first or the
+     * latest one: the storage layer lets an `mcp:` raise displace a non-`mcp:`
+     * reason and lets nothing displace an `mcp:` reason. Freezing it on the
+     * first raise would answer "has it ever been `mcp:*`" with a flat no, since
+     * Gate B's `turn:*` always lands before Gate C's `mcp:*`.
+     */
+    privacy_reason?: string | null;
+    privacy_tier?: SessionClassification;
     provider_name?: string | null;
     schedule_id?: string | null;
     session_type?: SessionType;
@@ -1848,6 +1863,15 @@ export type Session = {
     workflow?: Workflow | null;
     working_dir: string;
 };
+
+/**
+ * CLASSIFICATION — the most sensitive thing a session has ever touched.
+ *
+ * `Ord` is derived and `Public < Private`, so `max` is the accumulation and is
+ * spellable. Monotone in time; the storage layer refuses to lower it (see
+ * `SessionUpdateBuilder`'s `CASE WHEN` emission).
+ */
+export type SessionClassification = 'public' | 'private';
 
 export type SessionDisplayInfo = {
     accumulatedInputTokens?: number | null;
@@ -1905,6 +1929,7 @@ export type SessionSummary = {
      * BR-71: `sub_agent` rows are grouped under this parent in History.
      */
     parent_session_id?: string | null;
+    privacy_tier?: SessionClassification;
     /**
      * BR-71: the session's type as stored (`user`/`scheduled`/`sub_agent`).
      */
