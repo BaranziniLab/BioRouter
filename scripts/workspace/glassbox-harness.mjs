@@ -113,40 +113,113 @@ function userMessage(text) {
   };
 }
 
-/** Read SSE frames from an observer stream until `until(frames)` or timeout. */
-async function observe(sessionId, until, timeoutMs = 15000) {
+/** The stored conversation rows of a `GET /sessions/{id}` body, in either shape. */
+function conversationRows(body) {
+  const rows = body?.conversation?.messages ?? body?.conversation ?? [];
+  return Array.isArray(rows) ? rows : [];
+}
+
+const TIMER = Symbol('observer-wait-elapsed');
+
+/**
+ * Open ONE long-lived observer stream and read frames from it.
+ *
+ * ⚠ Two defects in the plan's `observe()`, both of which make this script — the
+ * gate Task 40 blocks on — fail against blameless code.
+ *
+ * 1. It raced `reader.read()` against a 500 ms timer and ABANDONED the losing
+ *    read. Per the Streams standard an abandoned read stays queued and reads are
+ *    served FIFO, so the NEXT chunk fulfils the abandoned read and its value is
+ *    discarded — a silently dropped frame. `observe_session_events` ticks a
+ *    heartbeat every 500 ms (`tokio::time::interval(Duration::from_millis(500))`),
+ *    so the two timers were in permanent contention and the drop was not rare.
+ *    Fail-safe in direction — a lost frame can only make an assertion fail — but
+ *    a built-in flake generator in a pass/fail gate is a defect in the gate.
+ *    Here exactly ONE read is outstanding: `pending` is held across iterations
+ *    and cleared only once its value has been consumed, so the timer bounds how
+ *    long we wait for that same read rather than starting another.
+ *
+ * 2. It fused "subscribe" and "read until", so the baseline could only start the
+ *    stream and post `/reply` concurrently — nothing guaranteed the subscription
+ *    existed before the turn published its terminal event, and `Finish`/`Error`
+ *    is live-only: it is NOT replayed in the snapshot. Awaiting the response
+ *    headers IS that guarantee, because `observe_session_events` calls
+ *    `session_events::subscribe` before it builds the response. So opening is
+ *    separate and awaited, and `collect` may be called repeatedly on the same
+ *    stream — which also means a message published between two collects arrives
+ *    as the live `Message` frame the assertions look for, not folded into a new
+ *    subscription's snapshot.
+ *
+ * A read that rejects is returned as `{ error }` rather than thrown: a transport
+ * blip must not escape to `main().catch` and exit 2 ("the harness crashed"),
+ * which is a different diagnosis from "the stream died".
+ */
+async function openObserver(sessionId) {
   const res = await api(`/sessions/${sessionId}/events`);
-  if (!res.ok || !res.body) return { frames: [], error: `HTTP ${res.status}` };
+  if (!res.ok || !res.body) {
+    await res.text().catch(() => {});
+    const error = `HTTP ${res.status}`;
+    return { error, collect: async () => ({ frames: [], error }), close: async () => {} };
+  }
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   const frames = [];
   let buffer = '';
-  const deadline = Date.now() + timeoutMs;
-  try {
-    while (Date.now() < deadline) {
-      const { value, done } = await Promise.race([
-        reader.read(),
-        new Promise((r) => setTimeout(() => r({ value: undefined, done: false }), 500)),
-      ]);
-      if (done) break;
-      if (value) {
-        buffer += decoder.decode(value, { stream: true });
-        let index;
-        while ((index = buffer.indexOf('\n\n')) >= 0) {
-          const chunk = buffer.slice(0, index);
-          buffer = buffer.slice(index + 2);
-          const data = chunk.split('\n').find((l) => l.startsWith('data: '));
-          if (data) {
-            try { frames.push(JSON.parse(data.slice(6))); } catch { /* keepalive */ }
-          }
+  let pending = null; // the ONE outstanding reader.read(), never abandoned
+  let closed = false;
+
+  const nextChunk = async (waitMs) => {
+    if (!pending) pending = reader.read();
+    let timer;
+    const outcome = await Promise.race([
+      pending.then((chunk) => ({ chunk })),
+      new Promise((resolve) => {
+        timer = setTimeout(() => resolve(TIMER), Math.max(1, waitMs));
+      }),
+    ]);
+    clearTimeout(timer);
+    if (outcome === TIMER) return null; // `pending` still owns the read
+    pending = null;
+    return outcome.chunk;
+  };
+
+  const collect = async (until, timeoutMs = 15000) => {
+    const deadline = Date.now() + timeoutMs;
+    while (!closed && Date.now() < deadline) {
+      if (until(frames)) break;
+      let chunk;
+      try {
+        chunk = await nextChunk(Math.min(250, deadline - Date.now()));
+      } catch (error) {
+        closed = true;
+        return { frames, error: `stream read failed: ${error}` };
+      }
+      if (!chunk) continue;
+      if (chunk.done) {
+        closed = true;
+        break;
+      }
+      if (!chunk.value) continue;
+      buffer += decoder.decode(chunk.value, { stream: true });
+      let index;
+      while ((index = buffer.indexOf('\n\n')) >= 0) {
+        const record = buffer.slice(0, index);
+        buffer = buffer.slice(index + 2);
+        const data = record.split('\n').find((l) => l.startsWith('data: '));
+        if (data) {
+          try { frames.push(JSON.parse(data.slice(6))); } catch { /* keepalive */ }
         }
       }
-      if (until(frames)) break;
     }
-  } finally {
+    return { frames };
+  };
+
+  const close = async () => {
+    closed = true;
     await reader.cancel().catch(() => {});
-  }
-  return { frames };
+  };
+
+  return { collect, close };
 }
 
 async function main() {
@@ -210,18 +283,25 @@ async function main() {
   assert('POST /agent/start creates a session', started.status === 200 && !!started.body?.id);
   const probeId = started.body.id;
 
-  // Snapshot-then-live ordering: subscribe, then drive one /reply turn (it
-  // fails without a provider — the lifecycle bracket is what we assert).
-  const observing = observe(
-    probeId,
-    (frames) =>
-      frames.some((f) => f.type === 'UpdateConversation') &&
-      frames.some((f) => f.type === 'Finish' || f.type === 'Error'),
+  // Snapshot-then-live ordering: subscribe FIRST — awaited, so the
+  // subscription provably exists — then drive one /reply turn (it fails without
+  // a provider; the lifecycle bracket is what we assert).
+  const probeObserver = await openObserver(probeId);
+  assert(
+    'observer stream opens for the probe session',
+    !probeObserver.error,
+    probeObserver.error ?? ''
   );
   const probeReply = await api('/reply', {
     method: 'POST',
     body: JSON.stringify({ session_id: probeId, user_message: userMessage('probe') }),
   });
+  // Drain the reply's own SSE body in the background so it is not left dangling.
+  // NOT awaited, and NOT cancelled: awaiting parks until the turn ends, and
+  // cancelling drops the reply socket — which is precisely what trips the turn's
+  // cancellation token (see `cancel_turn`'s doc comment), i.e. it would destroy
+  // the closure event the next assertion is waiting for.
+  probeReply.text().catch(() => {});
   // A 422/409 here means no turn ever started, and the two assertions below
   // would then fail as a silent 15 s timeout rather than naming the cause.
   assert(
@@ -229,24 +309,47 @@ async function main() {
     probeReply.status === 200,
     `got ${probeReply.status} — the request body was rejected, so no turn ran`
   );
-  const { frames: probeFrames } = await observing;
+  const { frames: probeFrames, error: probeStreamError } = await probeObserver.collect(
+    (frames) =>
+      frames.some((f) => f.type === 'UpdateConversation') &&
+      frames.some((f) => f.type === 'Finish' || f.type === 'Error'),
+  );
+  await probeObserver.close();
   assert(
     'observer yields UpdateConversation snapshot first',
     probeFrames[0]?.type === 'UpdateConversation',
-    `first frame: ${probeFrames[0]?.type}`
+    `first frame: ${probeFrames[0]?.type}${probeStreamError ? ` (${probeStreamError})` : ''}`
   );
   assert(
     'observer sees turn closure (Finish/Error)',
-    probeFrames.some((f) => f.type === 'Finish' || f.type === 'Error')
+    probeFrames.some((f) => f.type === 'Finish' || f.type === 'Error'),
+    probeStreamError ?? `${probeFrames.length} frames, none terminal`
   );
 
-  // §8.4 resync-cost measurement: time a fresh observer's first snapshot.
+  // §8.4 resync-cost measurement: time a fresh observer's first snapshot. The
+  // clock stops at the snapshot, before `close()` — the plan's version included
+  // the awaited `reader.cancel()` in the number.
+  //
+  // ⚠ Read it for what it is: the cost of resyncing THIS session, which holds
+  // one probe turn. §8.4 asks about resync cost for a real conversation, and
+  // this figure will read as "resync is free at any size" if it is quoted
+  // without its subject.
   const t0 = Date.now();
-  const { frames: resyncFrames } = await observe(
-    probeId, (frames) => frames.length >= 1, 5000);
+  const resyncObserver = await openObserver(probeId);
+  const { frames: resyncFrames } = await resyncObserver.collect(
+    (frames) => frames.length >= 1, 5000);
   const snapshotMs = Date.now() - t0;
-  assert('fresh observer resyncs from storage', resyncFrames[0]?.type === 'UpdateConversation');
-  console.log(`  (resync snapshot latency: ${snapshotMs} ms — record in the PR for §8.4)`);
+  await resyncObserver.close();
+  assert(
+    'fresh observer resyncs from storage',
+    resyncFrames[0]?.type === 'UpdateConversation',
+    resyncObserver.error ?? `first frame: ${resyncFrames[0]?.type}`
+  );
+  console.log(
+    `  (resync snapshot latency: ${snapshotMs} ms for a ${conversationRows(
+      (await json(`/sessions/${probeId}`)).body
+    ).length}-message session — record BOTH numbers in the PR for §8.4)`
+  );
 
   // ---- LIVE tier ----------------------------------------------------------
   if (!LIVE) {
@@ -328,9 +431,17 @@ async function main() {
       );
 
       // Child observer: snapshot first, then live frames; spawn context is
-      // messages[0] with provenance spawn_context.
-      const { frames: childFrames } = await observe(
-        childId,
+      // messages[0] with provenance spawn_context. ONE stream, kept open across
+      // the steer below — a second subscription taken after the steer landed
+      // would carry it inside the snapshot, not as the live `Message` frame the
+      // stamping assertion looks for.
+      const childObserver = await openObserver(childId);
+      assert(
+        'child observer stream opens',
+        !childObserver.error,
+        childObserver.error ?? ''
+      );
+      const { frames: childFrames } = await childObserver.collect(
         (frames) => frames.some((f) => f.type === 'Message'),
         30000
       );
@@ -352,8 +463,7 @@ async function main() {
         steer.status === 202,
         `got ${steer.status} (409 = lease missing; the control plane bridge failed)`
       );
-      const { frames: steered } = await observe(
-        childId,
+      const { frames: steered } = await childObserver.collect(
         (frames) =>
           frames.some(
             (f) =>
@@ -370,6 +480,7 @@ async function main() {
             f.message?.metadata?.provenance?.kind === 'user_direct'
         )
       );
+      await childObserver.close();
 
       // Stop: addressable cancel must find the child's ActiveTurn.
       //
