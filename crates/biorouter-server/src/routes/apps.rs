@@ -1843,6 +1843,21 @@ async fn run_bounded_turn(
     drop(turn_guard);
     match failure {
         Some(e) => Err(e),
+        // A CANCELLED turn is not an answer. This task is what first let
+        // `/agent/cancel` and `workspace_close scope:"turn"` reach a consulted
+        // worker, and a cancelled stream simply ends — no `Err`, so the collected
+        // text (often empty, at best a fragment) went back to `run_consult`,
+        // which builds `{"text": …}` from an `Ok` and hands it to the MAIN agent
+        // as the worker's considered answer. The bus said `reason: "cancelled"`
+        // in the same breath; the tool boundary now agrees with it, and the main
+        // agent gets to decide what to do about a worker that was stopped.
+        //
+        // The consult DEADLINE does not come through here — it drops this future
+        // outright and reports `{"status":"timeout"}` from `run_consult` — so
+        // this changes the external-cancel path only.
+        None if cancel.is_cancelled() => {
+            Err("the worker's turn was cancelled before it answered".to_string())
+        }
         None => Ok(out),
     }
 }
@@ -4877,13 +4892,14 @@ mod tests {
     };
     use serde_json::json;
 
-    // NOTE — the two `run_bounded_turn` tests below call `AppState::new()`,
+    // NOTE — the four `run_bounded_turn` tests below call `AppState::new()`,
     // which opens the developer's REAL session database (via
     // `AgentManager::instance()` → `SessionManager::instance()`), exactly as the
-    // `workspace::turn` tests warn. They create rows named "worker" /
-    // "worker-text". Keep the names unique, never assert on row counts, and
-    // prefer running this filter under `BIOROUTER_PATH_ROOT=<a temp dir>`. The
-    // `TempDir` is the session's WORKING DIR, not a database.
+    // `workspace::turn` tests warn. They create rows named "worker",
+    // "worker-text", "worker-abandoned" and "worker-cancelled". Keep the names
+    // unique, never assert on row counts, and prefer running this filter under
+    // `BIOROUTER_PATH_ROOT=<a temp dir>`. The `TempDir` is the session's WORKING
+    // DIR, not a database.
 
     /// BR-71 decision 13: a consulted worker's turn is observable like any
     /// other. Before this task, nothing outside `run_bounded_turn` could see it.
@@ -5238,6 +5254,117 @@ mod tests {
             saw_terminal,
             "an abandoned consult must still publish ONE terminal frame — a \
              `workspace_open` observer on the worker session blocks forever otherwise"
+        );
+    }
+
+    /// A cancelled worker turn is not an answer.
+    ///
+    /// Task 41 is what made `/agent/cancel` and `workspace_close scope:"turn"`
+    /// reach a consulted worker at all (its own table lists that as the point).
+    /// The collected-text contract then handed whatever partial text the worker
+    /// had produced back to `run_consult`, which reported it to the MAIN agent
+    /// as `{"text": …}` — indistinguishable from a considered answer — while the
+    /// bus correctly said `reason: "cancelled"`. The main agent could act on half
+    /// an analysis without ever being told it was half.
+    ///
+    /// The consult deadline is unaffected and must stay so: it drops the future
+    /// before this decision is reached and keeps reporting `{"status":"timeout"}`.
+    #[tokio::test]
+    async fn a_cancelled_worker_turn_is_not_reported_as_an_answer() {
+        use async_trait::async_trait;
+        use biorouter::conversation::message::Message;
+        use biorouter::model::ModelConfig;
+        use biorouter::providers::base::{Provider, ProviderMetadata, ProviderUsage, Usage};
+        use biorouter::providers::errors::ProviderError;
+        use biorouter::session_events::{self, SessionBusEvent};
+        use rmcp::model::Tool;
+        use std::sync::Arc;
+        use tokio_util::sync::CancellationToken;
+
+        /// Answers, but trips the turn's token on the way — the real shape of an
+        /// external cancel landing on a worker that has already said something.
+        #[derive(Clone)]
+        struct CancellingProvider {
+            cancel: CancellationToken,
+        }
+
+        #[async_trait]
+        impl Provider for CancellingProvider {
+            fn metadata() -> ProviderMetadata {
+                ProviderMetadata::empty()
+            }
+            fn get_name(&self) -> &str {
+                "cancelling"
+            }
+            fn get_model_config(&self) -> ModelConfig {
+                ModelConfig::new("test-model").unwrap()
+            }
+            async fn complete_with_model(
+                &self,
+                _model_config: &ModelConfig,
+                _system: &str,
+                _messages: &[Message],
+                _tools: &[Tool],
+            ) -> anyhow::Result<(Message, ProviderUsage), ProviderError> {
+                self.cancel.cancel();
+                Ok((
+                    Message::assistant().with_text("half an answer"),
+                    ProviderUsage::new("cancelling".to_string(), Usage::default()),
+                ))
+            }
+        }
+
+        let state = crate::state::AppState::new().await.unwrap();
+        let temp = tempfile::TempDir::new().unwrap();
+        let worker = state
+            .session_manager()
+            .create_session(
+                temp.path().to_path_buf(),
+                "worker-cancelled".to_string(),
+                biorouter::session::session_manager::SessionType::User,
+            )
+            .await
+            .unwrap();
+        let agent = state.get_agent(worker.id.clone()).await.unwrap();
+        let cancel = CancellationToken::new();
+        agent
+            .update_provider(
+                Arc::new(CancellingProvider {
+                    cancel: cancel.clone(),
+                }),
+                &worker.id,
+            )
+            .await
+            .unwrap();
+
+        let mut rx = session_events::subscribe(&worker.id);
+
+        let outcome = run_bounded_turn(
+            state.clone(),
+            &agent,
+            &worker.id,
+            "what do you think?",
+            3,
+            cancel.clone(),
+        )
+        .await;
+
+        assert!(
+            outcome.is_err(),
+            "a cancelled worker turn must not be handed to the main agent as the \
+             worker's answer — `run_consult` builds `{{\"text\": …}}` from an `Ok`: {outcome:?}"
+        );
+
+        // The bus already told the truth; the tool boundary now agrees with it.
+        let mut named_cancellation = false;
+        while let Ok(event) = rx.try_recv() {
+            if let SessionBusEvent::TurnFinished { reason, .. } = &event {
+                named_cancellation |= reason == "cancelled";
+            }
+        }
+        assert!(
+            named_cancellation,
+            "the terminal frame must still name the cancellation"
         );
     }
 
