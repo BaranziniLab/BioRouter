@@ -35,12 +35,26 @@ function compareProviders(a: ProviderDetails, b: ProviderDetails): number {
 }
 
 /**
- * Grouping is the backend's answer, never a list kept here. `tier` is the
- * privacy tier each provider computes from the endpoint it actually resolved,
- * and `runs_locally` is the display-only fact that splits the private tier into
- * the two sections this grid has always had. A renderer-side copy of either one
- * is a second source of truth that drifts silently the moment a provider is
- * added, renamed, or re-pointed.
+ * Grouping is the backend's answer, never a list kept here. `runs_locally` is
+ * the display-only fact that splits the private tier into the two sections this
+ * grid has always had. A renderer-side copy of either field is a second source
+ * of truth that drifts silently the moment a provider is added, renamed, or
+ * re-pointed.
+ *
+ * ⚠ `metadata.tier` is the *type-level* claim — the tier computed from the
+ * endpoint a provider ships with — NOT the tier of the instance actually bound
+ * to a session. `GET /config/providers` serves `ProviderMetadata` verbatim, and
+ * for a built-in that struct is static, so an `ollama` re-pointed off this
+ * machine by `OLLAMA_HOST` still arrives here as `private` while its instance
+ * `Provider::tier()` resolves `public`. The two can only ever disagree in that
+ * direction, which is harmless for choosing a section heading and is why this
+ * module may read it.
+ *
+ * It is **not** harmless for a privacy badge: do not hang one on this field. A
+ * badge has to read the tier of the bound instance, which means plumbing
+ * `Provider::tier()` out to the UI first — hung here it would read Private in
+ * exactly the demotion case the tier exists to catch. See the `tier` field's
+ * doc comment in `crates/biorouter/src/providers/base.rs`.
  */
 function classifyProvider(provider: ProviderDetails): ProviderGroupKey {
   if (provider.metadata.tier !== 'private') {
