@@ -340,7 +340,6 @@ pub fn workspace_tagged_operations() -> BTreeSet<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeSet;
 
     /// A: every tool the workspace extension advertises has a row, and every
     /// tool-backed row names a tool that still exists. EXACT SET EQUALITY, both
@@ -446,9 +445,12 @@ mod tests {
             .any(|a| a.get_id().as_str() == "teleport"));
     }
 
-    /// D: at most one accepted asymmetry per capability family, and each one is
-    /// deliberate. A table that answers "Asymmetry" for everything is a table
-    /// that gates nothing.
+    /// D: the accepted asymmetries stay a short, declared list — a **global**
+    /// cap of two, which is what the assertion below enforces and what this
+    /// sentence must therefore say. A table that answers "Asymmetry" for
+    /// everything is a table that gates nothing, and a cap set below the number
+    /// of capability families is what stops a third exception being absorbed by
+    /// a table edit instead of operator sign-off in the plan.
     #[test]
     fn accepted_asymmetries_stay_a_short_and_declared_list() {
         let asymmetric: Vec<_> = ALL_CAPABILITIES
