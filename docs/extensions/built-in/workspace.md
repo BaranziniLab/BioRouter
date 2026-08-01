@@ -6,7 +6,7 @@
 
 Every BioRouter conversation is a session: its own agent, its own extensions, skills and knowledge bases, its own history, and — when the desktop app is running — its own tab. Workspace Control gives the agent tools over that layer. Instead of telling you "open Settings and enable the single-cell skill in that other chat", it can do it; instead of a subagent being an opaque spinner, the child runs in a tab you can read, talk to and stop.
 
-Nothing here reaches outside your machine. Every tool operates on sessions stored under `~/.config/biorouter/sessions/` and on the local daemon that runs them.
+Workspace Control adds no network access of its own: every tool operates on sessions stored under `~/.config/biorouter/sessions/` and on the local daemon that runs them. What it can *grant* is another matter — pointing a conversation at a different provider sends that conversation's history to the provider's endpoint, and handing one an extension that talks to the network gives it the network. Those are exactly the changes that always ask you first; see [the always-confirm rule](#the-always-confirm-rule).
 
 ## Two tiers, and why they differ
 
