@@ -4439,15 +4439,28 @@ echo "expect: NO OUTPUT. Any hit is a second sample. The method must not exist;"
 echo "        if it does exist, someone will call it, and Gate C will drift back to it."
 grep -rn "fn capability_tier" --include='*.rs' crates/ ; echo "expect: no output"
 
-# Exactly FOUR production samples, and they are the four outermost entries.
+# FOUR entries decide a capability, but only THREE of them CONSTRUCT one, so
+# three is what this census prints. The fourth — the `execute_code` JS bridge —
+# threads the capability its own `McpMeta` carried in, exactly as the ⚠ table
+# above says; it constructs nothing and can never appear in a grep for these two
+# spellings. (The first version of this gate listed it as a fourth line and
+# therefore could not pass.)
+#
+# There is deliberately NO `grep -v "mod tests"` here. It never worked — it drops
+# only lines containing that literal string, which a call to either constructor
+# does not, so a unit test beside the definition was counted as a production
+# entry. Excluding the definition file instead would blind the census in exactly
+# the file where a fifth sampler is most plausible. The two tests that must name
+# the real constructors live in `crates/biorouter/tests/privacy_capability.rs`,
+# outside this window; everything else uses `CallCapability::for_test*`.
 grep -rn "CallCapability::sample(\|CallCapability::public_enforced(" --include='*.rs' crates/*/src/ \
-  | grep -v "mod tests" | sort
-echo "expect: exactly 4 lines —"
+  | sort
+echo "expect: exactly 3 lines —"
 echo "  crates/biorouter/src/agents/agent.rs           (the agent loop, dispatch_tool_call)"
 echo "  crates/biorouter/src/agents/agent.rs           (call_prefetch_tool)"
 echo "  crates/biorouter-server/src/routes/agent.rs    (call_tool -> public_enforced)"
-echo "  crates/biorouter/src/agents/code_execution_extension.rs  (the JS bridge, from its own meta)"
-echo "A FIFTH is a new entry nobody classified; a THIRD means an entry stopped deciding."
+echo "A FOURTH is a new entry nobody classified; a SECOND means an entry stopped deciding."
+echo "Task 14C adds two more public_enforced() lines in biorouter-server; it owns updating this."
 
 # The provider mutex is not read anywhere a gate can see it. `p.tier()` outside
 # capability.rs and the provider modules themselves is a hand-rolled sample.

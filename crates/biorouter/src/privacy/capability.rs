@@ -66,9 +66,14 @@ impl CallCapability {
     ///
     /// Production code obtains a capability from exactly one of [`Self::sample`]
     /// or [`Self::public_enforced`], and the whole-tree count of those two
-    /// spellings under `crates/*/src/` is what pins the four production entries.
-    /// A test that spelled either of them would be indistinguishable from a
-    /// fifth entry, so tests build their capability here instead.
+    /// spellings under `crates/*/src/` is what pins the production entries. A
+    /// test that spelled either of them would be indistinguishable from an
+    /// entry nobody classified, so tests build their capability here instead.
+    ///
+    /// The two tests that *must* name the real constructors — because those
+    /// constructors are what they exercise — live in
+    /// `crates/biorouter/tests/privacy_capability.rs`, outside the window the
+    /// census walks. That is why this file's own `mod tests` names neither.
     #[cfg(test)]
     pub(crate) const fn for_test(tier: ProviderTier, enforced: bool) -> Self {
         Self { tier, enforced }
@@ -113,22 +118,9 @@ mod tests {
         assert!(!CallCapability::for_test(Private, false).restricts_private_data());
     }
 
-    #[test]
-    fn an_entry_with_no_caller_identity_is_the_most_restrictive_pair() {
-        let cap = CallCapability::public_enforced();
-        assert_eq!(cap.tier(), ProviderTier::Public);
-        assert!(cap.enforced());
-        assert!(cap.restricts_private_data());
-    }
-
-    #[tokio::test]
-    async fn an_unbound_provider_samples_public() {
-        // `None` is the legitimate state before the first bind, not an error —
-        // and it must resolve to the tier that grants the least reach.
-        let provider: SharedProvider = std::sync::Arc::new(tokio::sync::Mutex::new(None));
-        assert_eq!(
-            CallCapability::sample(&provider).await.tier(),
-            ProviderTier::Public
-        );
-    }
+    // `public_enforced` and `sample` are covered by
+    // `crates/biorouter/tests/privacy_capability.rs`. They are tested from
+    // there, not from here, so that Task 10's whole-tree census of those two
+    // spellings under `crates/*/src/` counts production entries and nothing
+    // else — see [`CallCapability::for_test`].
 }
