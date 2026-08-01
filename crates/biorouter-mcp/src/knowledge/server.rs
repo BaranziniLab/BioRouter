@@ -18,8 +18,21 @@ use std::{cmp::Ordering, collections::HashSet};
 const SESSION_ID_META_KEY: &str = "biorouter-session-id";
 
 /// Tools whose `kb_id` argument names a base the caller must be allowed to
-/// reach. One list, one rule — so a twentieth `kb_*` tool is gated the day it
-/// is written, and opting out means editing a list this task's test enumerates.
+/// reach. One list, one rule.
+///
+/// It is an opt-in allowlist, so on its own a twentieth `kb_*` tool would
+/// default to *ungated* and nothing here would say so. What makes the list
+/// complete is a test, not this comment:
+/// `every_tool_the_router_exposes_is_classified_by_the_probe_table` requires
+/// every tool the router exposes to appear in the classification table with an
+/// explicit ratchets= decision, and requires every name here to be a real tool.
+/// Opting a new tool out is therefore an edit a reviewer sees.
+///
+/// ⚠ `kb_set_active` is deliberately absent. It writes no content, so it needs
+/// no ratchet — but it does take a required `kb_id`, and Task 10C hangs
+/// `assert_reachable` on this same list, where "pin a base as this session's
+/// primary" IS a reach. Task 10C decides it: either add it here, or state why
+/// pinning without reading is not a disclosure.
 const KB_ID_GATED_TOOLS: &[&str] = &[
     "kb_list_pages",
     "kb_read_page",
@@ -1799,6 +1812,51 @@ mod tests {
                 "{} ratchets={} but the store says otherwise",
                 probe.name,
                 probe.ratchets
+            );
+        }
+    }
+
+    /// The claim on `KB_ID_GATED_TOOLS` — that a twentieth `kb_*` tool is
+    /// classified the day it is written — is only true if something ties the
+    /// lists to the router. Both `KB_ID_GATED_TOOLS` and `KB_RATCHETING_TOOLS`
+    /// are opt-in allowlists, so a new tool defaults to ungated and unratcheted
+    /// and every other test in this file would still pass. This is the tie: the
+    /// classification table above plus the two id-minting tools must account for
+    /// every tool the router exposes, exactly.
+    #[test]
+    fn every_tool_the_router_exposes_is_classified_by_the_probe_table() {
+        let exposed: std::collections::BTreeSet<String> = KnowledgeServer::tool_router()
+            .list_all()
+            .into_iter()
+            .map(|t| t.name.to_string())
+            .collect();
+        let classified: std::collections::BTreeSet<String> = KB_TOOL_PROBES
+            .iter()
+            .map(|p| p.name.to_string())
+            // The two whose subject id is minted BY the call, so they cannot be
+            // probed against "default"; they have their own tests below.
+            .chain(["kb_create_base".to_string(), "kb_import".to_string()])
+            .collect();
+        assert_eq!(
+            exposed, classified,
+            "a kb_* tool is missing from the ratchet classification table (or the \
+             table names one the router does not expose). Add it to KB_TOOL_PROBES \
+             with the ratchets= decision, and to KB_ID_GATED_TOOLS / \
+             KB_RATCHETING_TOOLS if it names or writes a base."
+        );
+        // …and every name the gate lists really is a tool, so a rename cannot
+        // silently empty either list.
+        for name in KB_ID_GATED_TOOLS.iter().chain(KB_RATCHETING_TOOLS.iter()) {
+            assert!(
+                exposed.contains(*name),
+                "{name} is gated but is not a tool this server exposes"
+            );
+        }
+        for name in KB_RATCHETING_TOOLS {
+            assert!(
+                KB_ID_GATED_TOOLS.contains(name),
+                "{name} ratchets but is not kb_id-gated, so `gated_kb_id` returns \
+                 None for it and the raise never runs"
             );
         }
     }
