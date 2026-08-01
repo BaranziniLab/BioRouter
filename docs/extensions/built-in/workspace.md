@@ -139,7 +139,13 @@ Subagent tabs have a second limit: at most **4** visible child tabs per parent (
 
 ## Without the desktop app
 
-Every tool works headlessly. Under `biorouter` in a terminal or a bare `biorouterd`, there is no GUI to command: `workspace_list` reports `gui_attached: false`, sessions are still created and still run, and the tool result says plainly that no tab was opened rather than pretending one was. `workspace_close { scope: "tab" }` has nothing to close and says so.
+There is nothing GUI-shaped in the contract, but the surface is not identical without one. Three configurations, and the difference between the second and third is the **daemon**, not the window:
+
+**Desktop app (daemon + window).** Everything above.
+
+**A bare `biorouterd` with no window attached.** All the machinery is there; only the display is missing. `workspace_list` reports `gui_attached: false`, sessions are still created and still run, and the tool result says plainly that no tab was opened rather than pretending one was. `workspace_close { scope: "tab" }` has nothing to close and says so. One real restriction: if your machine is in an **approval** permission mode, `workspace_send_prompt mode:"turn"` is **refused** rather than started, because a tool confirmation raised by a turn nobody is watching would sit unanswered until it timed out. The error says so and points you at `mode: "note"`.
+
+**Standalone `biorouter` in a terminal, with no daemon.** The tools that *inspect* work — `workspace_list`, `workspace_read_conversation`, `workspace_watch` (which reads the background-handle registry, so it still knows a child is running), `workspace_send_prompt mode:"note"`, and `subagent` itself. The tools that need something to *drive* a session do not, and each refuses by name rather than failing obscurely: starting a new session, `mode:"turn"`, `mode:"steer"`, setting knowledge bases, and `workspace_close` at `turn` or `agent` scope all answer *"requires the BioRouter daemon"*. Start `biorouterd` (or open the app) if you need them.
 
 The CLI covers the same ground from the other side:
 
