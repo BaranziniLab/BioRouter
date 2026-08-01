@@ -888,7 +888,7 @@ user-approved category at a time; it can no longer be drained in one call.
 
 *What remains for #56* is stated in the module's own doc comment (`:627-631`): **the line is drawn
 by _store_ — global vs local — not by the sensitivity of the session that wrote the entry.** Local
-memories are still inlined in full (`:690-702`), so a sensitive note a private session saved locally
+memories are still inlined in full (`:691-703`), so a sensitive note a private session saved locally
 reaches the system prompt of every session later opened in that directory, with no tool call for
 Gate C or Gate E to see. The v1 fix is therefore not a `retrieve_all` filter and not a second
 consent prompt: it is to refuse `memory__remember_memory { is_global: true }` from a
