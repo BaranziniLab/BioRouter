@@ -84,3 +84,6 @@ temp-env = { version = "0.3.6", features = ["async_closure"] }
 test-case = "3.3"
 tokio = { workspace = true }
 serial_test = { workspace = true }
+# The workspace's process-wide environment lock, so env-mutating tests here
+# exclude every other one rather than only the `#[serial]` ones.
+env-lock = { workspace = true }

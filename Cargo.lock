@@ -1106,6 +1106,7 @@ dependencies = [
  "console 0.16.2",
  "crossterm",
  "dotenvy",
+ "env-lock",
  "etcetera 0.11.0",
  "futures",
  "http 1.4.0",

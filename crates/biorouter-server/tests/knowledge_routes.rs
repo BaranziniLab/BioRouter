@@ -2272,34 +2272,14 @@ mod privacy_ratchet {
     use axum::{body::Body, http::Request, Router};
     use tower::ServiceExt;
 
-    /// Restore every variable this module touches, whatever the test does.
-    struct EnvGuard(Vec<(&'static str, Option<String>)>);
-
-    impl EnvGuard {
-        fn set(pairs: &[(&'static str, Option<String>)]) -> Self {
-            let mut saved = Vec::new();
-            for (k, v) in pairs {
-                saved.push((*k, std::env::var(k).ok()));
-                match v {
-                    Some(val) => std::env::set_var(k, val),
-                    None => std::env::remove_var(k),
-                }
-            }
-            EnvGuard(saved)
-        }
-    }
-
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            for (k, v) in &self.0 {
-                match v {
-                    Some(val) => std::env::set_var(k, val),
-                    None => std::env::remove_var(k),
-                }
-            }
-        }
-    }
-
+    /// Pin every variable these rows depend on, and restore them on drop.
+    ///
+    /// `env_lock` and not a hand-rolled guard plus `#[serial]`: `#[serial]`
+    /// serialises against other `#[serial]` tests only, while the ~39 others in
+    /// this binary run concurrently, and the rest of the workspace already
+    /// reaches for `env_lock`'s process-wide lock for exactly this. Two
+    /// mechanisms in one process do not compose.
+    ///
     /// ⚠ `BIOROUTER_KNOWLEDGE_TEST_MODE` must be OFF: `build_completer`'s early
     /// return hands back a `TestModeCompleter` and Public before any provider
     /// exists, which would make both rows Public and the matrix vacuous.
@@ -2308,14 +2288,14 @@ mod privacy_ratchet {
     /// — Task 5 makes a loopback Ollama Private and a non-loopback one Public —
     /// so an implementation keyed on `body.model.provider` gives the same answer
     /// twice and fails one row, and so does either hardcoded literal.
-    fn env_for(host: &str) -> Vec<(&'static str, Option<String>)> {
-        vec![
+    fn lock_env_for(host: &str) -> env_lock::EnvGuard<'static> {
+        env_lock::lock_env([
             ("BIOROUTER_KNOWLEDGE_TEST_MODE", None),
             ("BIOROUTER_LEAD_MODEL", None),
             ("BIOROUTER_LEAD_PROVIDER", None),
             ("OLLAMA_HOST", Some(host.to_string())),
             ("OLLAMA_TIMEOUT", Some("1".to_string())),
-        ]
+        ])
     }
 
     async fn post_json(app: &Router, uri: &str, body: serde_json::Value) {
@@ -2360,6 +2340,10 @@ mod privacy_ratchet {
     type BodyFor = fn(serde_json::Value) -> serde_json::Value;
 
     #[tokio::test]
+    // Kept alongside `lock_env_for`, which is what actually excludes the other
+    // tests in this binary: `#[serial]` costs nothing and still orders this
+    // against any future `#[serial]` test that touches the environment without
+    // taking the workspace lock.
     #[serial_test::serial]
     async fn each_macro_route_ratchets_from_the_provider_it_constructed_both_ways() {
         // The gate a `grep -c caller_is_private` cannot be: every route reports
@@ -2388,12 +2372,18 @@ mod privacy_ratchet {
             ),
         ];
 
+        // ⚠ The private row's port is 1, not 11434: `is_loopback_host` reads the
+        // HOST, so any port is Private, and nothing can listen on 1 without
+        // root. Pointing it at the real Ollama port would make this row drive a
+        // live local model — several real sub-agent turns — on any developer
+        // machine that happens to be running one, which is how an earlier
+        // variant of this matrix came to sit for thirteen minutes.
         for (route, body) in routes {
             for (host, caller_is_private) in [
-                ("http://127.0.0.1:11434", true),
+                ("http://127.0.0.1:1", true),
                 ("http://ollama.invalid:11434", false),
             ] {
-                let _env = EnvGuard::set(&env_for(host));
+                let _env = lock_env_for(host);
                 let (_d, root, app) = build_test_router_with_root();
                 create_kb(app.clone(), "kb", "KB").await;
                 assert!(!biorouter_mcp::knowledge::tier::is_private(&root, "kb"));

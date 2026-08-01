@@ -1121,38 +1121,25 @@ mod tests {
         use biorouter::privacy::ProviderTier;
         use serial_test::serial;
 
-        /// Restore every variable this module touches, whatever the test does.
-        struct EnvGuard(Vec<(&'static str, Option<String>)>);
-
-        impl EnvGuard {
-            fn set(pairs: &[(&'static str, Option<String>)]) -> Self {
-                let mut saved = Vec::new();
-                for (k, v) in pairs {
-                    saved.push((*k, std::env::var(k).ok()));
-                    match v {
-                        Some(val) => std::env::set_var(k, val),
-                        None => std::env::remove_var(k),
-                    }
-                }
-                EnvGuard(saved)
-            }
-        }
-
-        impl Drop for EnvGuard {
-            fn drop(&mut self) {
-                for (k, v) in &self.0 {
-                    match v {
-                        Some(val) => std::env::set_var(k, val),
-                        None => std::env::remove_var(k),
-                    }
-                }
-            }
-        }
-
-        /// The variables every row below pins. `BIOROUTER_KNOWLEDGE_TEST_MODE`
-        /// must be OFF: `build_completer`'s early return hands back a
-        /// `TestModeCompleter` and Public before any provider exists, which
-        /// would make every row Public and the whole matrix vacuous.
+        /// The variables every row below pins, under the workspace's
+        /// process-wide environment lock.
+        ///
+        /// `env_lock` and not a hand-rolled guard plus `#[serial]`: `#[serial]`
+        /// serialises against other `#[serial]` tests only, while every other
+        /// test in this binary runs concurrently, and the rest of the workspace
+        /// already takes this same lock for `BIOROUTER_PATH_ROOT`. Two
+        /// mechanisms in one process do not compose.
+        ///
+        /// `BIOROUTER_KNOWLEDGE_TEST_MODE` must be OFF: `build_completer`'s
+        /// early return hands back a `TestModeCompleter` and Public before any
+        /// provider exists, which would make every row Public and the whole
+        /// matrix vacuous.
+        ///
+        /// ⚠ The private rows' loopback port is **1**, never 11434.
+        /// `is_loopback_host` reads the HOST, so any port is Private, and
+        /// nothing can listen on port 1 without root — while 11434 would make
+        /// `the_cli_ingest_handler_…` row drive a live local model on any
+        /// developer machine running Ollama.
         fn base_env(host: &str) -> Vec<(&'static str, Option<String>)> {
             vec![
                 ("BIOROUTER_KNOWLEDGE_TEST_MODE", None),
@@ -1161,6 +1148,11 @@ mod tests {
                 ("OLLAMA_HOST", Some(host.to_string())),
                 ("OLLAMA_TIMEOUT", Some("1".to_string())),
             ]
+        }
+
+        /// Take the workspace env lock over `pairs`.
+        fn lock_env(pairs: Vec<(&'static str, Option<String>)>) -> env_lock::EnvGuard<'static> {
+            env_lock::lock_env(pairs)
         }
 
         #[tokio::test]
@@ -1177,10 +1169,10 @@ mod tests {
             // no network anywhere in it. `ModelConfig::new` accepts an unknown
             // model name, so neither row needs a real model either.
             for (host, want) in [
-                ("http://127.0.0.1:11434", ProviderTier::Private),
+                ("http://127.0.0.1:1", ProviderTier::Private),
                 ("http://ollama.invalid:11434", ProviderTier::Public),
             ] {
-                let _env = EnvGuard::set(&base_env(host));
+                let _env = lock_env(base_env(host));
                 let (_c, tier) = build_completer(Some("ollama".into()), Some("qwen3.5:4b".into()))
                     .await
                     .unwrap();
@@ -1196,13 +1188,13 @@ mod tests {
             // `--provider ollama` can construct a lead/worker composite whose
             // tier is `least(lead, worker)` — and a PUBLIC lead makes the whole
             // instance Public even though the name typed was the private one.
-            let mut env = base_env("http://127.0.0.1:11434");
+            let mut env = base_env("http://127.0.0.1:1");
             env.push(("BIOROUTER_LEAD_MODEL", Some("gpt-5".to_string())));
             env.push((
                 "BIOROUTER_LEAD_PROVIDER",
                 Some("github_copilot".to_string()),
             ));
-            let _env = EnvGuard::set(&env);
+            let _env = lock_env(env);
 
             let (_c, tier) = build_completer(Some("ollama".into()), Some("qwen3.5:4b".into()))
                 .await
@@ -1219,16 +1211,17 @@ mod tests {
         /// when the override is set. That is how this row gets a throwaway store
         /// instead of the developer's own.
         ///
-        /// ⚠ Returns the `TempDir` and it must be BOUND — a dropped one deletes
-        /// the tree before the call runs.
-        fn cli_knowledge_root_with_base(id: &str) -> (tempfile::TempDir, std::path::PathBuf) {
-            let tmp = tempfile::TempDir::new().unwrap();
-            std::env::set_var("BIOROUTER_PATH_ROOT", tmp.path());
+        /// ⚠ The caller owns the `TempDir` and must keep it BOUND — a dropped
+        /// one deletes the tree before the call runs. It also passes
+        /// `BIOROUTER_PATH_ROOT` to `lock_env` itself, so that every variable
+        /// this module touches is set under the workspace lock and none behind
+        /// its back.
+        fn cli_knowledge_root_with_base(tmp: &tempfile::TempDir, id: &str) -> std::path::PathBuf {
             let root = tmp.path().join("config").join("knowledge");
             std::fs::create_dir_all(&root).unwrap();
             let svc = biorouter::knowledge::service::KnowledgeService::new(root.clone());
             svc.create_base(id, id, None).unwrap();
-            (tmp, root)
+            root
         }
 
         #[tokio::test]
@@ -1240,13 +1233,17 @@ mod tests {
             // count in Step 5 still passes. Only a handler-level behavioural row
             // sees that, and only if the NAME is constant across the legs.
             for (host, want_private) in [
-                ("http://127.0.0.1:11434", true),
+                ("http://127.0.0.1:1", true),
                 ("http://ollama.invalid:11434", false),
             ] {
+                let tmp = tempfile::TempDir::new().unwrap();
                 let mut env = base_env(host);
-                env.push(("BIOROUTER_PATH_ROOT", None));
-                let _env = EnvGuard::set(&env);
-                let (_tmp, root) = cli_knowledge_root_with_base("k");
+                env.push((
+                    "BIOROUTER_PATH_ROOT",
+                    Some(tmp.path().to_string_lossy().into_owned()),
+                ));
+                let _env = lock_env(env);
+                let root = cli_knowledge_root_with_base(&tmp, "k");
 
                 // The sub-agent WILL fail — nothing answers on either host — and
                 // that is the point: CP2 raises before it runs, so the ratchet is
