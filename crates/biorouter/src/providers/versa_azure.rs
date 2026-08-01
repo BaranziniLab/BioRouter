@@ -326,6 +326,35 @@ mod tests {
         }
     }
 
+    /// Task 5 rule 2, **wired** — not just the predicate behind it.
+    ///
+    /// `providers::ucsf_gateway_tier` is unit-tested on its own in
+    /// `tier_tests.rs`, but a test of the predicate alone cannot see whether
+    /// this provider calls it, or hands it the right field. Replace the body of
+    /// `tier()` with an unconditional `Private`, or point it at a field that is
+    /// not the resolved endpoint, and every one of those tests still passes.
+    /// This one does not: the three `AZURE_OPENAI_*` keys are shared with the
+    /// public `azure_openai` provider, so a `tier()` that ignores the endpoint
+    /// hands a private badge to a provider posting transcripts wherever the
+    /// user's config points.
+    #[test]
+    fn tier_follows_the_endpoint_this_instance_resolved() {
+        let shipped = test_provider();
+        assert_eq!(shipped.resolved_endpoint, VERSA_AZURE_ENDPOINT);
+        assert_eq!(shipped.tier(), ProviderTier::Private);
+
+        let mut elsewhere = test_provider();
+        elsewhere.resolved_endpoint = "https://evil.example.com/general".to_string();
+        // Same name, same metadata, same everything a name-keyed rule can see.
+        assert_eq!(elsewhere.get_name(), shipped.get_name());
+        assert_eq!(
+            VersaAzureProvider::metadata().tier,
+            ProviderTier::Private,
+            "the type-level claim is still Private; only the instance demotes"
+        );
+        assert_eq!(elsewhere.tier(), ProviderTier::Public);
+    }
+
     /// The regression this file exists for: `stream()` must build a *streaming*
     /// payload. Flipping `for_streaming` to false in `build_stream_payload`
     /// sends a non-streaming body down a streaming-decoding path, which fails

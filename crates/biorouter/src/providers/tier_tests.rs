@@ -261,4 +261,24 @@ fn versa_demotes_when_its_endpoint_is_not_the_ucsf_gateway() {
         versa_tier_for_endpoint("https://evil.example.com/general"),
         Public
     );
+    // The comparison is on the HOST, so a name that merely contains the
+    // gateway's does not pass. Both of these are one typo away in a config
+    // field a user can edit.
+    assert_eq!(
+        versa_tier_for_endpoint("https://unified-api.ucsf.edu.evil.example/general"),
+        Public
+    );
+    assert_eq!(
+        versa_tier_for_endpoint("https://evil.example/unified-api.ucsf.edu"),
+        Public
+    );
+    // ...and hosts are case-insensitive, so the shipped host in a different
+    // case is still the gateway rather than a silent demotion.
+    assert_eq!(
+        versa_tier_for_endpoint("https://UNIFIED-API.UCSF.EDU/general"),
+        Private
+    );
+    // Anything `url::Url` cannot parse has no host to vouch for. Public.
+    assert_eq!(versa_tier_for_endpoint("unified-api.ucsf.edu"), Public);
+    assert_eq!(versa_tier_for_endpoint(""), Public);
 }

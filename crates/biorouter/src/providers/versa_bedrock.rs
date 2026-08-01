@@ -400,3 +400,63 @@ impl Provider for VersaBedrockProvider {
         true
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A provider wired the way `from_env` builds one, minus the credential and
+    /// global-config lookups — `from_env` needs UCSF-issued secrets, so it
+    /// cannot run here. Everything below is a pure function of
+    /// `resolved_endpoint`, and the client is built through the same
+    /// `aws_config` loader production uses so the struct literal cannot drift
+    /// from a real one.
+    async fn provider_at(endpoint: &str) -> VersaBedrockProvider {
+        let sdk_config = aws_config::defaults(aws_config::BehaviorVersion::latest())
+            .credentials_provider(Credentials::new(
+                "test-access-key",
+                "test-secret-key",
+                None,
+                None,
+                "VersaBedrockTest",
+            ))
+            .region(aws_config::Region::new(VERSA_BEDROCK_DEFAULT_REGION))
+            .endpoint_url(endpoint.to_string())
+            .load()
+            .await;
+
+        VersaBedrockProvider {
+            client: Client::new(&sdk_config),
+            model: ModelConfig::new_or_fail(VERSA_BEDROCK_DEFAULT_MODEL),
+            retry_config: RetryConfig::default(),
+            name: "versa_bedrock".to_string(),
+            resolved_endpoint: endpoint.to_string(),
+        }
+    }
+
+    /// Task 5 rule 2, **wired** — not just the predicate behind it.
+    ///
+    /// `providers::ucsf_gateway_tier` is unit-tested on its own in
+    /// `tier_tests.rs`, but a test of the predicate alone cannot see whether
+    /// this provider calls it, or hands it the right field. Replace the body of
+    /// `tier()` with an unconditional `Private` and every one of those tests
+    /// still passes. This one does not — and the demotion matters most here,
+    /// because the last fallback in `from_env`'s endpoint chain is
+    /// `AWS_ENDPOINT_URL_BEDROCK_RUNTIME`, which `bedrock.rs` sets
+    /// **process-globally** with `std::env::set_var`.
+    #[tokio::test]
+    async fn tier_follows_the_endpoint_this_instance_resolved() {
+        let shipped = provider_at(VERSA_BEDROCK_DEFAULT_ENDPOINT).await;
+        assert_eq!(shipped.tier(), ProviderTier::Private);
+
+        let elsewhere = provider_at("https://bedrock-runtime.us-west-2.amazonaws.com").await;
+        // Same name, same metadata, same everything a name-keyed rule can see.
+        assert_eq!(elsewhere.get_name(), shipped.get_name());
+        assert_eq!(
+            VersaBedrockProvider::metadata().tier,
+            ProviderTier::Private,
+            "the type-level claim is still Private; only the instance demotes"
+        );
+        assert_eq!(elsewhere.tier(), ProviderTier::Public);
+    }
+}
