@@ -482,7 +482,29 @@ impl KnowledgeService {
         })
     }
 
+    /// Create a base on behalf of the user (no model involved), so it is born
+    /// PUBLIC. Model-facing callers use [`Self::create_base_as`] instead.
     pub fn create_base(&self, id: &str, name: &str, color: Option<&str>) -> Result<Manifest> {
+        self.create_base_as(id, name, color, false)
+    }
+
+    /// Create a base and stamp it with the creating session's tier, both inside
+    /// **one** root-lock transaction (issue #56).
+    ///
+    /// `create_base` + a separate `raise_tier` would be two transactions with a
+    /// window between them in which a lock-free `is_private` reader sees a
+    /// private session's brand-new base as PUBLIC, and in which a failing raise
+    /// returns `Err` to the caller while a PUBLIC base persists on disk. That is
+    /// the same reasoning that keeps `import_brkb`'s stamp inside its own single
+    /// store write, applied to the other tool whose subject id does not exist
+    /// before the call.
+    pub fn create_base_as(
+        &self,
+        id: &str,
+        name: &str,
+        color: Option<&str>,
+        caller_is_private: bool,
+    ) -> Result<Manifest> {
         let _lock = self.lock_root()?;
         paths::validate_kb_id(id)?;
         let kb_root = paths::kb_root(&self.root, id);
@@ -529,12 +551,14 @@ impl KnowledgeService {
         self.rebuild_graph_cache(id)?;
         // Issue #56, decision (5a). A base with no entry reads PRIVATE
         // (unknown provenance), so an unregistered base would lock its own
-        // creator out. Registering here rather than adding a
-        // `caller_is_private` parameter keeps `create_base`'s ~90 call sites
-        // untouched; the tier is then raised by whichever choke point the
-        // creating call came through (Task 10B). Inside the root lock, so the
-        // `_unlocked` twin is the one that must be called.
-        crate::knowledge::tier::register_public_if_absent_unlocked(&self.root, id)?;
+        // creator out. `raise_unlocked` registers an absent id at the caller's
+        // tier and can never lower an existing entry, so it subsumes
+        // `register_public_if_absent_unlocked` for the `false` case that the
+        // ~90 user-facing `create_base` call sites take. Inside the root lock,
+        // so the `_unlocked` twin is the one that must be called — and in the
+        // SAME transaction as the directory, so there is no window in which a
+        // private session's new base reads PUBLIC.
+        crate::knowledge::tier::raise_unlocked(&self.root, id, caller_is_private)?;
         Ok(m)
     }
 

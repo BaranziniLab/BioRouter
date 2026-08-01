@@ -266,10 +266,16 @@ pub fn raise_unlocked(root: &Path, kb_id: &str, caller_is_private: bool) -> Resu
     save(root, &store)
 }
 
-/// Register `kb_id` as PUBLIC **only if it has no entry**. Called by
-/// `create_base` and `import_brkb` (decision 5a): a base with no entry reads
-/// private by decision (3), so an unregistered base would lock its own creator
-/// out. Never lowers.
+/// Register `kb_id` as PUBLIC **only if it has no entry** (decision 5a): a base
+/// with no entry reads private by decision (3), so an unregistered base would
+/// lock its own creator out. Never lowers.
+///
+/// Exactly [`raise_unlocked`] with `caller_is_private = false`, which is what
+/// `create_base` and `import_brkb` now call — they need the *private* case too,
+/// and one primitive means one place where "does a stamp lower an entry?" is
+/// decided. This one is kept as the name for the intent, and
+/// `register_public_never_lowers_an_already_private_base` is what pins the two
+/// to the same answer.
 pub fn register_public_if_absent_unlocked(root: &Path, kb_id: &str) -> Result<()> {
     let mut store = load_for_write(root)?;
     if store.bases.contains_key(kb_id) {

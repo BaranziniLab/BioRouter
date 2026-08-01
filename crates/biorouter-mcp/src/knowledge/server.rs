@@ -441,19 +441,22 @@ impl KnowledgeServer {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
-        let m = self
-            .service
-            .create_base(&p.id, &p.name, p.color.as_deref())
-            .map_err(into_err)?;
         // Issue #56. One of exactly TWO tools that take a `RequestContext` for
         // the ratchet, because their subject id is not knowable before the
-        // call. AFTER, not before: the base did not exist to be stamped, and an
-        // entry for a base that failed to create would block the id forever.
-        // The "raise before the write" rule does not apply — a *create* that
-        // fails leaves no content at all, so there is nothing to strand in an
-        // under-tiered base.
-        self.service
-            .raise_tier(&p.id, Self::caller_is_private(Some(&context)))
+        // call. Not a raise *before* the write and not one *after* it either:
+        // `create_base_as` stamps the tier inside the same root-lock
+        // transaction that creates the directory, so there is no window in
+        // which a private session's brand-new base reads PUBLIC and no way for
+        // a failing stamp to leave a PUBLIC base behind an `Err`. Same shape as
+        // `import_brkb`, whose stamp rides in its single store write.
+        let m = self
+            .service
+            .create_base_as(
+                &p.id,
+                &p.name,
+                p.color.as_deref(),
+                Self::caller_is_private(Some(&context)),
+            )
             .map_err(into_err)?;
         ok_json(&m)
     }
