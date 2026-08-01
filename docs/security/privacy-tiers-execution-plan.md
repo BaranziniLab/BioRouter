@@ -2554,6 +2554,42 @@ With them go the **sixth package** and the second integration binary: `biorouter
 `private_data` (14B) and `--test read_deny` (14A) are not created in v1, so Task 4b sweeps **five**
 packages again, not six, and the paragraph below that says otherwise is superseded here.
 
+⚠ **And eleven of the 46 resolved rows are audited on behalf of commands v1 never runs.** The gate
+below catches a *command with no row* (MISSING) but has no assertion in the other direction — a
+*row with no live command*. `resolved rows = 46` counts table rows, not usage, and the harvested
+pair count is deliberately echoed rather than asserted so the audit can grow with the plan. So a row
+whose every command sits inside a ⛔ task stays in the table, keeps being measured, and keeps
+passing, while nothing in v1 will ever execute the filter it describes. Measured by annotating the
+harvest with each command's owning task heading, these eleven are harvested **only** from
+Tasks 14A–14F:
+
+| Package | Filter | Sole owner |
+|---|---|---|
+| `biorouter` | `agents::agent::tests` | 14D ⛔ |
+| `biorouter` | `agents::tool_execution` | 14D ⛔ |
+| `biorouter` | `daemon_secret_never_reaches_an_extension_child` | 14C ⛔ |
+| `biorouter-mcp` | `agent_drafter::store` | 14E ⛔ |
+| `biorouter-mcp` | `daemon_secret_never_reaches_a_shell_child` | 14C ⛔ |
+| `biorouter-mcp` | `developer::background` | 14C ⛔ |
+| `biorouter-mcp` | `developer::rmcp_developer::tests` | 14D ⛔ |
+| `biorouter-mcp` | `memory::` | 14D, 14E ⛔ |
+| `biorouter-mcp` | `paths::` | 14B ⛔ |
+| `biorouter-mcp` | `secret_guard::` | 14B ⛔ |
+| `biorouter-server` | `auth` | 14C ⛔ |
+
+They are **kept, not struck**, and the distinction matters: unlike the five rows above, every one of
+these filters *resolves today* against a real listing, so the row is a true measurement rather than a
+standing excuse — and if the barrier is revived these are the pre-counts it needs. Two of them are
+the daemon-secret leak probes, which is the strongest reason not to drop them: those tests exist and
+pass on this tree, and the row is what keeps their count under audit even though the task that
+quotes them is deferred.
+
+**The consequence, for whoever eventually deletes Tasks 14A–14F rather than reviving them:** eleven
+resolved rows go with those tasks in the same commit. Deleting the tasks alone drops the pair count
+from 58 to 47 and leaves eleven rows nothing harvests, and `resolved rows = 46` will still pass —
+this paragraph is the only thing that will tell you. Re-run Step 1 and rebuild both heredocs; do not
+hand-edit one of them.
+
 ✅ **And one row that was missing is now measured.** Task 18A's Step 2 runs
 `cargo test -p biorouter-server --lib -- auth::` and `(biorouter-server, auth::)` was in **neither**
 table, so the audit reported it MISSING and exited non-zero — a real finding about a real filter,
