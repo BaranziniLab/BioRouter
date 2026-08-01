@@ -20,22 +20,25 @@ use std::sync::Arc;
 // ---------------------------------------------------------------------------
 
 pub struct ProviderCompleter {
-    pub provider: Arc<dyn Provider>,
+    /// Private, with [`Self::new`], so that [`Self::paired`] is the only way any
+    /// other module can obtain a `ProviderCompleter` at all — see its doc.
+    provider: Arc<dyn Provider>,
 }
 
 impl ProviderCompleter {
-    pub fn new(provider: Arc<dyn Provider>) -> Self {
+    fn new(provider: Arc<dyn Provider>) -> Self {
         Self { provider }
     }
 
     /// The completer **and** the tier of the provider behind it, from one
     /// binding (issue #56).
     ///
-    /// Every caller that builds macro `Args` uses this instead of [`Self::new`],
-    /// which is what makes "the tier came from a different provider than the
-    /// completer" unrepresentable rather than merely discouraged — the defect a
-    /// ban on hardcoded literals leaves open, and the one the CLI and the probe
-    /// are most exposed to because they resolve a provider by NAME.
+    /// The **only** constructor visible outside this module: `new` and the
+    /// `provider` field are both private, so no other module can pair a
+    /// completer with a tier it looked up separately, and no grep or convention
+    /// is load-bearing for that. It closes the defect a ban on hardcoded
+    /// literals leaves open — the one the CLI and the probe are most exposed to,
+    /// because they resolve a provider by NAME.
     ///
     /// [`Provider::tier`] is an instance method for exactly this reason:
     /// `providers::create("ollama", ..)` can return a lead/worker composite
@@ -44,11 +47,11 @@ impl ProviderCompleter {
     /// the name that was asked for.
     ///
     /// Returns `Self`, not `Box<dyn Completer>`: each caller boxes it where it
-    /// already did, and the concrete type keeps `self.provider` (a **pub**
-    /// field) readable, which is what lets
-    /// `the_completer_and_the_capability_come_from_the_same_provider` assert
-    /// the completer and the tier came from the same `Arc` rather than merely
-    /// from two calls that agreed.
+    /// already did, and the concrete type keeps `self.provider` readable *from
+    /// inside this module*, which is what lets
+    /// `the_completer_and_the_capability_come_from_the_same_provider` assert the
+    /// completer and the tier came from the same `Arc` rather than merely from
+    /// two calls that agreed.
     pub fn paired(provider: Arc<dyn Provider>) -> (Self, crate::privacy::ProviderTier) {
         let tier = provider.tier();
         (Self::new(provider), tier)
