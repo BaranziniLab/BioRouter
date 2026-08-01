@@ -22,7 +22,6 @@
 //! an HTTP client crate, matching `commands/apps.rs`'s `daemon_ok` — the CLI
 //! deliberately carries no HTTP dependency.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
@@ -679,32 +678,63 @@ pub(crate) enum Delivered {
 /// Whether a `/reply` socket is open right now, and whether ctrl-c has already
 /// warned about it. Shared between the attach loop and its delivery worker.
 ///
-/// `close()` clears the warning as well as the flag. Without that, a single
-/// ctrl-c during a *later* delivery would force-exit with no warning at all —
-/// which is precisely the silent turn-cancellation `ctrl_c_action` exists to
-/// prevent.
+/// **Counted, not a flag.** A `/reply` socket outlives the `deliver` call that
+/// opened it, so two can be streaming at once. A flag would let the first to
+/// finish declare ctrl-c harmless while the second was still streaming, and
+/// ctrl-c would then cancel that turn silently.
+///
+/// **One critical section, not two atomics.** Reading "open" and "warned"
+/// separately and then latching the warning with no re-check let a delivery
+/// finish in between, leaving the warning set on a window that had already shut.
+/// The next delivery's FIRST ctrl-c then force-exited with no warning at all —
+/// precisely what closing the window resets the warning to prevent. Deciding and
+/// recording under one lock makes that interleaving unconstructible rather than
+/// merely unlikely.
 #[derive(Default)]
 struct ReplyWindow {
-    socket_open: AtomicBool,
-    ctrl_c_warned: AtomicBool,
+    state: std::sync::Mutex<WindowState>,
+}
+
+#[derive(Default)]
+struct WindowState {
+    /// `/reply` sockets currently streaming.
+    open: usize,
+    /// A ctrl-c has already warned about the window that is open *now*.
+    warned: bool,
 }
 
 impl ReplyWindow {
+    /// Poisoning is recovered from rather than propagated: this lock guards two
+    /// small fields and nothing panics while holding it, so a poisoned window is
+    /// a bug elsewhere — and refusing to answer ctrl-c would be a worse response
+    /// to it than answering from the state we have.
+    fn lock(&self) -> std::sync::MutexGuard<'_, WindowState> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     fn open(&self) {
-        self.socket_open.store(true, Ordering::SeqCst);
+        self.lock().open += 1;
     }
+
     fn close(&self) {
-        self.socket_open.store(false, Ordering::SeqCst);
-        self.ctrl_c_warned.store(false, Ordering::SeqCst);
+        let mut state = self.lock();
+        state.open = state.open.saturating_sub(1);
+        if state.open == 0 {
+            // The warning belonged to a window that is now shut.
+            state.warned = false;
+        }
     }
-    fn is_open(&self) -> bool {
-        self.socket_open.load(Ordering::SeqCst)
-    }
-    fn warned(&self) -> bool {
-        self.ctrl_c_warned.load(Ordering::SeqCst)
-    }
-    fn warn(&self) {
-        self.ctrl_c_warned.store(true, Ordering::SeqCst);
+
+    /// Decide what this ctrl-c does *and* record it, in one critical section.
+    fn on_ctrl_c(&self) -> CtrlCAction {
+        let mut state = self.lock();
+        let action = ctrl_c_action(state.open > 0, state.warned);
+        if action == CtrlCAction::WarnWouldCancel {
+            state.warned = true;
+        }
+        action
     }
 }
 
@@ -1053,7 +1083,7 @@ pub async fn handle_session_attach(
                 }
             }
             _ = tokio::signal::ctrl_c() => {
-                match ctrl_c_action(window.is_open(), window.warned()) {
+                match window.on_ctrl_c() {
                     CtrlCAction::Detach => {
                         eprintln!(
                             "\ndetached. The session keeps running — \
@@ -1062,7 +1092,6 @@ pub async fn handle_session_attach(
                         return Ok(());
                     }
                     CtrlCAction::WarnWouldCancel => {
-                        window.warn();
                         eprintln!(
                             "\n⚠ a turn you started from here is still streaming, and leaving \
                              now CANCELS it. Press ctrl-c again to leave anyway, or wait for it \
@@ -1602,6 +1631,56 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(barren.contains("has not spawned any subagent"), "{barren}");
+    }
+
+    /// The ctrl-c decision and the warning it records are ONE critical section.
+    ///
+    /// Reading "is a socket open" and "have we warned" as two separate atomics
+    /// and then latching the warning with no re-check let a delivery finish in
+    /// between, leaving `warned` set on a window that had already shut. The next
+    /// delivery's FIRST ctrl-c then read `(open, warned)` and force-exited —
+    /// cancelling a turn with no warning at all, which is exactly what closing
+    /// the window resets the warning to prevent.
+    #[test]
+    fn closing_the_window_re_arms_the_warning_for_the_next_turn() {
+        let window = ReplyWindow::default();
+        assert_eq!(window.on_ctrl_c(), CtrlCAction::Detach, "nothing to lose");
+
+        window.open();
+        assert_eq!(window.on_ctrl_c(), CtrlCAction::WarnWouldCancel);
+        assert_eq!(window.on_ctrl_c(), CtrlCAction::ForceExit);
+        window.close();
+
+        // The turn ended; ctrl-c is free again.
+        assert_eq!(window.on_ctrl_c(), CtrlCAction::Detach);
+
+        // A LATER turn must be warned about from scratch — never force-exited on
+        // the strength of a warning the user was given about a different turn.
+        window.open();
+        assert_eq!(
+            window.on_ctrl_c(),
+            CtrlCAction::WarnWouldCancel,
+            "a warning spent on an earlier turn must not arm this one"
+        );
+    }
+
+    /// A `/reply` socket outlives the `deliver` call that opened it, so two can
+    /// be streaming at once. The window is COUNTED for that reason: a flag would
+    /// let the first holder to finish declare ctrl-c harmless while the second
+    /// was still streaming, and ctrl-c would then cancel that turn silently.
+    #[test]
+    fn the_reply_window_stays_open_until_the_last_socket_closes() {
+        let window = ReplyWindow::default();
+        window.open();
+        window.open();
+        window.close();
+        assert_eq!(
+            window.on_ctrl_c(),
+            CtrlCAction::WarnWouldCancel,
+            "one socket is still streaming"
+        );
+        window.close();
+        assert_eq!(window.on_ctrl_c(), CtrlCAction::Detach);
     }
 
     #[test]
