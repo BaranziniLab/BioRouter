@@ -79,7 +79,12 @@
 > - **A pre-count table wrong in the direction that hides a no-op.** §[Which test filters are
 >   validated](#which-test-filters-are-validated-and-which-are-not) said `routes::agent` and
 >   `routes::session` had no test module. They have **8** and **20** tests respectively, so a worker
->   told to expect zero reads `8 passed` as "my tests landed" when none did.
+>   told to expect zero reads `8 passed` as "my tests landed" when none did. (⚠ `routes::session` is
+>   **29** as of Task 4b's measured run at `fd14ef9a` — this bullet records what that review round
+>   found, and 20 was true when it found it. It is left as written because rewriting a historical
+>   record hides that the figure moved; the live number is Task 4b's, which supersedes every count in
+>   this document. That a hand-measured pre-count went stale inside the same document that recorded
+>   it, in the same weeks, is this plan's most-repeated lesson and not a footnote.)
 >
 > Two rules were applied throughout and are worth stating once. **A named `cargo test` filter is
 > never gated on "PASS"** — libtest prints `0 passed` and exits 0 when a filter matches nothing, so
