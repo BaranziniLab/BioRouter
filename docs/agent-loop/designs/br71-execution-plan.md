@@ -23833,17 +23833,41 @@ git commit -m "test(workspace): glass-box subagent harness against a live daemon
 ### Task 40: Phase 3 gate
 
 ⚠ **Two measured facts before you read a red as a regression** (added 2026-07-28 by the
-drift amendment; both taken on this worktree at `ea15a4de`, before Phase 2 started):
+drift amendment; both taken on this worktree at `ea15a4de`, before Phase 2 started).
+⚠ **Amended 2026-07-31 by the Task 40 fixup pass, which re-measured both. The first was
+wrong, and it was wrong in the direction that manufactures a false regression.**
 
-- **`cd ui/desktop && npm run test:run` is GREEN today: `186 files / 1726 tests`.**
-  That is the number this gate's frontend half must beat, plus whatever Tasks 25-30 and
-  37-38 add. A full-suite red therefore *is* a real signal — there is no pre-existing
-  frontend failure to talk past.
-- **…but narrow vitest filters are not equally trustworthy.**
-  `npx vitest run SessionListView` fails **5 runs in 6** on a pre-existing case
-  (`uses the shared notification surface after deleting a session`) that passes inside
-  the full suite. See the ⚠ in Task 38 Step 5. If a per-task gate is red and the full
-  suite is green, check that name before assuming Phase 3 broke something.
+- **The frontend half of this gate is GREEN at HEAD, and the `ea15a4de` baseline was
+  never green.** This bullet used to read "`npm run test:run` is GREEN today:
+  `186 files / 1726 tests` … there is no pre-existing frontend failure to talk past",
+  and a later engineer duly read a red as a Phase 3 regression. Measured on 2026-07-31:
+  - a **clean** `git worktree add --detach … ea15a4de` (not a mixed tree — every file at
+    the baseline commit, `node_modules` symlinked in) runs `186 files / 1726 tests` with
+    **1 failed**, 2 runs out of 2. The failure is
+    `uses the shared notification surface after deleting a session` — the very case the
+    next bullet calls pre-existing. The file and test counts match the 2026-07-28
+    measurement exactly, so it is the same tree and the same suite; only the verdict was
+    recorded wrong.
+  - HEAD (`758162d2`) runs **`202 files / 1837 tests`, 0 failed**, 2 runs out of 2, exit 0.
+    A `--reporter=verbose` run shows that same case passing in **66 ms**, and its sibling
+    `…after editing a session` in 82 ms.
+
+  So the direction of change across Phase 3 is baseline-red → HEAD-green, and there is no
+  frontend regression to attribute. A full-suite red would still be a real signal; there
+  is simply not one. **Do not re-run the confounded version of this experiment** — a
+  control that restores only `SessionListView.tsx`/`.test.tsx` while
+  `utils/sessionListCache.ts`, `toasts.tsx`, `sessionGrouping.ts` and
+  `chatStreamStore.tsx` stay at HEAD cannot distinguish the two hypotheses, because the
+  delete path under test runs through all of them. Use a clean worktree.
+- **…but narrow vitest filters are not equally trustworthy.** Confirmed, and it has
+  widened. At `ea15a4de`, `npx vitest run …/SessionListView.test.tsx` fails
+  `…after deleting a session` (1 failed / 7). At HEAD the same narrow run fails **two**
+  cases (2 failed / 12, 2 runs out of 2) — the deleting one and
+  `…after editing a session` — and so does `npx vitest run src/components/sessions/`
+  (2 failed / 38). Both are `findBy` timeouts at the 5 s test timeout, against elements
+  that resolve in tens of milliseconds inside the full suite. See the ⚠ in Task 38 Step 5.
+  **If a per-task gate is red and the full suite is green, that is this, not a
+  regression** — and the full suite is the only run whose verdict this gate accepts.
 - **`cargo test --workspace --no-fail-fast` has no measured baseline in this document.**
   Record the number you get here and carry it into Task 44, which runs the same command
   for the same reason. "All green" cannot distinguish a passing workspace from one whose
@@ -23882,6 +23906,26 @@ drift amendment; both taken on this worktree at `ea15a4de`, before Phase 2 start
 - [ ] **Decision 21 (auto-enable):** in a session where the user has NEVER enabled
   Workspace Control, verify delegation still works and that `workspace_list` is not
   offered — the two-tier surface holding in the real app.
+
+  ⚠ **Amended 2026-07-31: this is now automated and no longer needs the GUI.** It was
+  written as a GUI step, was the one gate bullet a Phase 3 pass silently skipped, and
+  neither half actually needs a browser. The harness's LIVE tier settles both on its
+  parent session, which *is* the bullet's subject — a bare `POST /agent/start` chat that
+  nothing enabled the extension for. The first half is proved by execution (that session
+  has already spawned a real child by then); the second is one `GET /agent/tools`, a thin
+  wrapper over `Agent::list_tools`, which is the function decision 21 lives in. Two
+  assertions: `workspace__subagent` present, `workspace__workspace_list` absent —
+  asserted as a **pair**, because `workspace_list` is absent from an empty list too.
+  Skipped with its reason on a daemon that enables Workspace Control in config.
+
+  ⚠ It does **not** work in the baseline tier, and the first attempt put it there. A bare
+  `/agent/start` session has no non-injected extension loaded — measured, its entire tool
+  list is `["platform__ingest_conversation", "platform__manage_schedule"]` — and
+  `subagents_enabled` ends on `has_non_injected_extensions()`, so the gate correctly
+  answers "no delegation here" and the missing spawn tool says nothing about decision 21.
+
+  A GUI pass is still worth doing for the *rendering* of the two-tier surface, but the
+  behaviour this bullet asserts is now covered by an automated gate that runs every time.
 - [ ] Elicitation check (reconciliation #8): in a manual-approval-mode session,
   spawn a subagent whose task needs a gated tool; verify the
   `ToolConfirmationRequest` renders in the child's tab and answering it resumes the
@@ -23922,6 +23966,29 @@ drift amendment; both taken on this worktree at `ea15a4de`, before Phase 2 start
 git add docs/agent-loop/designs/agent-workspace-control.md
 git commit -m "docs(br71): mark slice 3 implemented in the design status header"
 ```
+
+**What this gate actually measured, 2026-07-31** (recorded here rather than in a report,
+because Task 44 runs three of the same commands and needs the numbers to compare against;
+a "pre + N" assertion against a figure nobody wrote down reads a shortfall as a pass):
+
+| Command | Result |
+|---|---|
+| `node scripts/workspace/glassbox-harness.mjs` | **10 assertions, 0 failed, exit 0** (13 live-tier checks listed as skipped) |
+| `BIOROUTER_HARNESS_LIVE=1 node …` | **25 assertions, 0 failed, exit 0** — the whole flagship chain, incl. `/interrupt` → 202, the `user_direct` steer, `cancelled:true` with a turn id, the tab-composer stamp, `"human_intervened":true`, and both new decision-21 checks |
+| `cd ui/desktop && npm run test:run` | **202 files / 1837 tests, 0 failed, exit 0** (2 runs of 2) |
+| `cargo test -p biorouter-cli --lib -- commands::session_grouping commands::session_watch` | **25 passed, 0 failed** (4 grouping + 21 watch; non-zero on both filters, as required) |
+| `cargo test --workspace --no-fail-fast` | see the amendment under Task 44 |
+
+⚠ **Run the daemon exactly as `just debug-server` does, `BIOROUTER_DISABLE_KEYRING=true`
+included.** Launching `biorouterd agent` without it wedges the daemon **permanently** on
+this machine: the dev binary is ad-hoc signed, so the first secret read raises a macOS
+Keychain authorization prompt that no one can answer from a headless shell, and the call
+never returns. Every subsequent request — `/config/read`, even the `/ui/workspace`
+upgrade — then hangs, which reads exactly like a daemon defect and cost this pass two
+false diagnoses (a hung `POST /agent/update_provider` first blamed on the `medcp` stdio
+extension). With the flag set, the same `update_provider` against the same unmodified
+config answers in **390 ms**. This is the `dev-cli-rebuild-keychain` gotcha wearing a
+server costume.
 
 ---
 
