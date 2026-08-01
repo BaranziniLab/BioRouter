@@ -123,10 +123,16 @@ pub fn import<R: Read + Seek>(
             top_names.len()
         );
     };
-    // Resolve a non-colliding id.
+    // Resolve a non-colliding id. Issue #56: a directory is not the only thing
+    // that claims an id — the tier store can hold an entry for a base with no
+    // directory (`tier::raise_unlocked` registers ids that have not been
+    // created), and an import that landed on one would be classified by a base
+    // that never existed rather than by its own provenance.
     let mut id = original_id.clone();
     let mut suffix = 1;
-    while knowledge_root.join(&id).exists() {
+    while knowledge_root.join(&id).exists()
+        || crate::knowledge::tier::has_entry_unlocked(knowledge_root, &id)
+    {
         suffix += 1;
         id = format!("{original_id}-{suffix}");
     }

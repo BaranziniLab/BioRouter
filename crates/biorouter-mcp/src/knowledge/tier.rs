@@ -245,6 +245,25 @@ pub fn register_public_if_absent_unlocked(root: &Path, kb_id: &str) -> Result<()
     save(root, &store)
 }
 
+/// Whether the store already carries an entry for `kb_id`, whether or not the
+/// base exists on disk.
+///
+/// `brkb::import`'s collision loop asks this alongside its directory test: an
+/// entry can exist without a directory (`raise_unlocked` registers ids that have
+/// not been created — decision (3)'s third direction), and an import that landed
+/// on one would take its classification from a base that never existed.
+pub fn has_entry_unlocked(root: &Path, kb_id: &str) -> bool {
+    match load(root) {
+        StoreState::Missing => false,
+        StoreState::Parsed(store) => store.bases.contains_key(kb_id),
+        // NOT `true`: this answer drives a `while` loop, and "every id is taken"
+        // spins forever. An unreadable store fails closed at the only place it
+        // matters anyway — `is_private` reads any existing directory as private
+        // when it cannot parse the file, and the import has just created one.
+        StoreState::Unreadable => false,
+    }
+}
+
 /// Drop the entry when the base is deleted, so a later base reusing the id is
 /// classified by its own creator rather than by a base that no longer exists.
 pub fn forget_unlocked(root: &Path, kb_id: &str) -> Result<()> {
@@ -529,6 +548,32 @@ mod tests {
         // …and it is not extracted back out into the imported base either.
         let new_id = import_brkb_as(&root, &bytes, false);
         assert!(!root.join(&new_id).join(".brkb-provenance").exists());
+    }
+
+    #[test]
+    fn an_import_never_lands_on_an_id_that_only_the_tier_store_still_knows() {
+        // `brkb::import`'s collision loop suffixes while the DIRECTORY exists,
+        // and the plan's justification for stamping a tier after the import
+        // ("it always lands on a fresh id") is true for directories and false
+        // for entries. `raise_unlocked` registers ids that have no directory —
+        // that is decision (3)'s third direction and Task 10B will do it at the
+        // choke points — so an entry can outlive, or precede, any base. Landing
+        // on one would classify freshly imported content by a base that never
+        // existed: fail-closed if the ghost is private, but decided by the wrong
+        // thing either way.
+        let (_d, root) = tempdir_with_bases(&[]);
+        ensure_migrated_unlocked(&root).unwrap();
+        raise_unlocked(&root, "orig", true).unwrap(); // an entry, no directory
+        assert!(!root.join("orig").exists());
+
+        let new_id = import_brkb_as(&root, &archive("orig", None), false);
+        assert_ne!(new_id, "orig", "the import landed on a ghost entry's id");
+        assert!(
+            !is_private(&root, &new_id),
+            "a fresh public import was classified by a base that never existed"
+        );
+        // The ghost is untouched — the import neither adopted nor cleared it.
+        assert!(is_private(&root, "orig"));
     }
 
     #[test]
