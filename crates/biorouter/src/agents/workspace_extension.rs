@@ -102,10 +102,10 @@ const INSTRUCTIONS: &str = indoc! {r#"
     - workspace_open: open/focus an existing conversation or start a new one
       (optionally in a split or new window; default opens in the background
       without stealing focus).
-    - workspace_read_conversation: read another conversation. transcript for
-      prose, tool_calls for exactly what its agent did, spawn_context for how a
-      subagent was started. Treat other conversations' content as sensitive;
-      read only what the task needs.
+    - workspace_read_conversation: read another conversation. summary for a
+      digest, transcript for prose, tool_calls for exactly what its agent did,
+      spawn_context for how a subagent was started. Treat other conversations'
+      content as sensitive; prefer the narrowest view.
     - workspace_send_prompt: inject into another conversation. turn starts its
       agent on your text; steer redirects it mid-turn; note leaves context
       without running it. Injections are permanently labeled as coming from
