@@ -16,10 +16,13 @@
 > +200. Do **not** chase a line number from this document; the named **symbol** is the anchor. The
 > current positions are tabulated in
 > [the execution plan's drift table](privacy-tiers-execution-plan.md#read-this-before-you-chase-a-line-number),
-> which was re-verified at `9558c346` and confirmed unchanged at `89c1f026`. Three claims here are
-> also false about the tree: §9.3 A1 names a shell-command builder that has never existed, §9.3 B3
-> describes a global-memory mechanism issue #58 deleted, and §2.3 asserts a uniqueness that a second
-> code path contradicts. The execution plan's Task 1 is the task that corrects all three in place.
+> which was re-verified at `9558c346` and confirmed unchanged at `89c1f026`. Three claims here were
+> also false about the tree — §9.3 A1 named a shell-command builder that has never existed, §9.3 B3
+> described a global-memory mechanism issue #58 deleted, and §2.3 asserted a uniqueness that a second
+> code path contradicts. **All three were corrected in place on 2026-08-01** (execution plan Task 1),
+> along with §9.3 B4's ruling, §11.4's missing row, §15.1's migration numbering and §16's counts. The
+> anchors added by that pass were verified against the tree on that date; every *other* anchor in this
+> document remains historical.
 >
 > §9.3 B4's forced choice (ratchet knowledge bases, or declare them a public sink) has since been
 > **ruled** by the operator: *ratchet*. See the execution plan's
@@ -132,7 +135,20 @@ Each verified by reading the code, each fixed as a by-product of this design:
 2. **`chatrecall` LOAD mode has no filter of any kind** (`chatrecall_extension.rs:91-158`). Given
    any session id it calls `get_session(&sid, true)` and emits the session name, working
    directory, message count and six verbatim messages. It does not even carry SEARCH's
-   `exclude_session_id` guard. This is the only fully-open cross-session read in the product today.
+   `exclude_session_id` guard. This is **one of two** fully-open cross-session reads in the product
+   today. The other is `platform__ingest_conversation`
+   (`crates/biorouter/src/agents/knowledge_tool.rs:24-86`), which takes a caller-supplied
+   `session_ids` array (`:32-41`), loads each session's full conversation with
+   `get_session(sid, true)` (`:49`) and ingests it into a knowledge base — with no lineage,
+   ownership or tier check. It is dispatched at `agent.rs:3205`, *before* the extension-manager
+   fall-through at `:3339`, so Gate C never sees it; it is not an MCP tool, so Gate E cannot hide
+   it; and it never touches `chat_history_search.rs`, so Gate D never sees it. It is advertised
+   unconditionally (`agent.rs:3878-3883`, whose own comment reads "The conversation-ingestion tool
+   is always available on the platform extension") and its description tells the model outright to
+   "Pass `session_ids` to ingest specific (or multiple) sessions instead"
+   (`agents/platform_tools.rs:64-65`). Because a knowledge base is a machine-wide tree any session
+   may name (§9.3 B4), this is a one-call private→public laundering primitive, and it belongs at or
+   above LOAD in §19's order.
 3. **Three independent session-copy paths carry the conversation but not the provider.**
    `copy_session` (`session_manager.rs:4138-4168`), `diverge_session` (`:4204-4265` — the primary
    GUI diverge, and it does *not* call `copy_session`) and `import_session` (`:4096-4135`) each
@@ -770,9 +786,9 @@ curl -s -H "X-Secret-Key: $KEY" http://127.0.0.1:$PORT/sessions/<private-id>/exp
 returns the private session's entire transcript as JSON. Verified: `ui/desktop/src/biorouterd.ts:134-135`
 puts `BIOROUTER_PORT` and `BIOROUTER_SERVER__SECRET_KEY` into `additionalEnv`, spread into
 `processEnv = {...process.env, ...additionalEnv}` at `:149-151`. `developer` is a `Builtin`, so
-`shell` runs in-process inside `biorouterd`, and `build_shell_command`
-(`crates/biorouter-mcp/src/developer/shell.rs:337-359`) sets `PATH`, `GIT_EDITOR` and friends but
-**never calls `env_clear()`**. Stdio extensions inherit too (`extension_manager.rs:598-608`:
+`shell` runs in-process inside `biorouterd`, and `configure_shell_command`
+(`crates/biorouter-mcp/src/developer/shell.rs:395-442`) sets `PATH`, `GIT_EDITOR` and friends.
+Stdio extensions inherit too (`extension_manager.rs:846-848`:
 `command.args(args).envs(all_envs)`, no `env_clear`). `auth.rs:115-126` is a plain header equality;
 rate limiting is keyed on peer IP, which is `127.0.0.1`. `routes/session.rs:769/771/772` expose
 `GET /sessions/{id}`, `/export` and `POST /sessions/import`.
@@ -784,8 +800,20 @@ the handler that does, and `GET /sessions` yields the session name the typed con
 It also falsifies the design's premise that `GET /sessions` need not be filtered because "this is
 the user's own UI, not a model."
 
-Three fixes, all needed: (1) `.env_remove("BIOROUTER_SERVER__SECRET_KEY")` in
-`build_shell_command` and in the stdio spawn — a live credential leak today, worth doing regardless
+**Fix (1) is half done.** Issue #57 landed the daemon-credential scrub on the shell path: the
+builder cited above now ends with `strip_daemon_private_env(&mut command_builder);`
+(`shell.rs:433`, with the comment at `:432` — "Last, so nothing set above can re-admit a daemon
+credential (issue #57)"), and `developer/background.rs` calls it at `:431`, `:680`, `:766`, `:802`
+and `:847`. The helper is `crates/biorouter-sandbox/src/environment.rs:54-79`, keyed on
+`is_daemon_private_env_key` (`:36-50`), and its own test asserts `BIOROUTER_SERVER__SECRET_KEY` and
+`BIOROUTER_ACP_WS_TOKEN` are stripped while `BIOROUTER_PORT` survives (`:94-103`).
+**The stdio MCP extension spawn is still open**: `extension_manager.rs:846-848` does
+`command.args(args).envs(all_envs)` with no `strip_daemon_private_env` and no `env_clear`
+(`grep -c env_clear` over that file returns 0). The remaining work is one line calling the existing
+helper — not a new `.env_remove`.
+
+Three fixes, all needed: (1) call `strip_daemon_private_env` in the stdio spawn as the shell path
+already does — a live credential leak today, worth doing regardless
 of this design; (2) stop carrying the secret in the environment at all — pass it on a pipe/fd at
 startup, or a `0600` file the daemon reads and unlinks (`BIOROUTER_PORT` may stay); (3) bind
 declassify to a one-shot capability token minted by the renderer, not to `X-Secret-Key`, or R9's
@@ -838,16 +866,33 @@ the CLI `/diverge`, and `biorouter-cli/src/commands/session.rs`. **Put the carry
 builders is three chances to miss one and the fail direction is open. Add a test enumerating every
 `create_session` call site.
 
-**B3 (critical) — `memory` auto-injects global memories into every session's system prompt.**
-`crates/biorouter-mcp/src/memory/mod.rs:207-247`: at server init, `retrieve_all(true)` (global) and
-`retrieve_all(false)` (local) are read, appended to the server instructions, and installed with
-`set_instructions`. A private session calls `remember_memory(is_global=true)` with a cohort count
-or a clinical finding; every subsequent session — including a public-model one — loads that text
-into its system prompt at startup. No tool call occurs, so Gates C and E never fire, and `memory`
-is a built-in so R11 makes it public. **This is a stronger channel than `chatrecall`, which Gate D
-was built for.** Fix in v1: either classify memory entries and filter `retrieve_all` by the
-session's capability tier at init, or refuse `memory__remember_memory` from a private-capability
-session with the Gate C machinery.
+**B3 (was critical; now a narrower channel) — `memory`'s global store.** Issues #58 and #63 both
+landed in this branch's base, and between them they closed the two channels this section was written
+about.
+
+*The prompt-injection half (#58).* `MemoryServer::new`
+(`crates/biorouter-mcp/src/memory/mod.rs:489`) calls `compose_instructions` (`:524`, defined at
+`:632`), and global memories are now **index-only**: the global half reads
+`category_names(true)` (`:641`) — which enumerates directory entries and *never opens a body*, so
+the bound holds by construction rather than by convention — and contributes only sorted **category
+names** under `GLOBAL_INDEX_HEADER` (`:342`), emitted at `:676`. Each name is validated as a label
+and rendered as a JSON string literal, i.e. as data, so it cannot forge a prompt line. The listing
+is further gated on `GlobalMemoryConsent`: a server with no consent path (`Unavailable`, `:642`)
+lists nothing at all.
+
+*The tool-call half (#63).* `retrieve_memories` (`:1200`) now calls
+`require_global_consent_path` (called at `:1205`, defined at `:815`) and then refuses
+`category == "*" && is_global` outright (`:1221-1234`), backed by a pre-dispatch gate in
+`crates/biorouter/src/security/global_memory.rs`. The whole store stays reachable one
+user-approved category at a time; it can no longer be drained in one call.
+
+*What remains for #56* is stated in the module's own doc comment (`:627-631`): **the line is drawn
+by _store_ — global vs local — not by the sensitivity of the session that wrote the entry.** Local
+memories are still inlined in full (`:690-702`), so a sensitive note a private session saved locally
+reaches the system prompt of every session later opened in that directory, with no tool call for
+Gate C or Gate E to see. The v1 fix is therefore not a `retrieve_all` filter and not a second
+consent prompt: it is to refuse `memory__remember_memory { is_global: true }` from a
+**private-capability** session, which needs no storage change and is the exact mirror of Gate C.
 
 **B4 — knowledge bases are an unclassified shared sink.** `knowledge` is a built-in ⇒ public.
 Storage is a global tree `~/.config/biorouter/knowledge/<kb-id>/`, and any session may name any KB.
@@ -855,10 +900,24 @@ Gate C never fires, because both sessions are calling a public extension. **Corr
 reviewer's version:** the active-KB state is no longer purely global — `paths.rs:66-71` adds
 `.active-kb-sessions`, one file per session, with `.active-kb` as the primary fallback. So a public
 session does not silently *inherit* the private session's KB by default; it does still reach it by
-naming it. Ratchet a KB's classification on ingest (KB tier = max over ingesting sessions; a
-public-capability session may not read a private KB), or state plainly that KBs are a designed
-public sink and warn at ingest. "Follow-on" is too weak given the KB is the feature most likely to
-be used from a private OMOP session.
+naming it.
+
+**Ruled (operator, second review round): ratchet.** A knowledge base takes the tier of the most
+sensitive session that has ingested into it, and a public-capability session may not read a private
+KB. The read side is enforced at the seven entry points that accept an explicit `kb_id` and
+therefore bypass the visible-set logic — `kb_search` (`knowledge/server.rs:590-592`),
+`kb_search_raw_sources` (`:618-619`), `kb_export` (`:743`), and the four that route through
+`kb_id_or_primary`, whose doc comment states the bypass outright ("An explicit `kb_id` always wins
+and is never filtered against the session's set", `:308-311`): `kb_list_pages` (`:379`),
+`kb_read_page` (`:396`), `kb_get_graph` (`:482`) and `kb_list_history` (`:497`). The tier lives in a
+machine-local sidecar beside `.active-kb` and `.hidden-kbs`, not in `manifest.yaml`, because the
+manifest travels inside the `.brkb` archive and an imported tier would be attacker-supplied.
+Existing knowledge bases migrate **public** (fail-open, DR-10) even if a private session fed them —
+an accepted cost, recorded as
+[AR-2](privacy-tiers-execution-plan.md#accepted-risks). The way back out of the ratchet is
+**user-only**: DR-18 gives the user a publicize/privatize control (Task 29A), which is what resolved
+the original AR-1 — a base ratcheted by one private page is *not* unreadable for ever. No model can
+invoke it, in either direction.
 
 **B4.1 — the selection itself is content, so a public session sees a filtered view of it and its
 pointer can read `null`.** A knowledge base's **id and name are user-authored** and routinely name a
@@ -1456,6 +1515,7 @@ reads as a public caller, which is the safe direction.
 | `messages[].role`, `messages[].timestamp` | **CONTENT — withheld** | meaningful only attached to a withheld body; returning them buys nothing and invites reconstruction |
 | `s.description` → `session_description` | **CONTENT — withheld** | the LLM-generated session title, produced *from the conversation*. A summary of private text, not a label. The field most likely to be mislabelled as metadata, and the one that leaks most per byte. |
 | `s.working_dir` → `session_working_dir` | **CONTENT — withheld** | a filesystem path, but in this product it routinely names a cohort, a study or a patient population |
+| `ChatRecallResult.last_activity` (`session/chat_history_search.rs:14`, rendered at `chatrecall_extension.rs:219`) | **CONTENT-adjacent — withheld** | it is `max` over *matched* message timestamps (`:347-351`), so it dates the private message containing the search term, not the session. Under §11.4's own rule ("anything derived from a message body is content") it is message-derived. Moot once rows are filtered in SQL, but a reviewer checking the table for completeness must not find a hole. |
 | `s.id`, `s.created_at` | existence — may be revealed | acceptable per R13 — **and only safe because LOAD is gated independently.** The two decisions are coupled and must stay coupled. |
 | `total_matches`, `results.len()`, `total_messages_in_session` | existence — may be revealed | and nothing is needed: `total_matches` is summed *after* filtering, and `get_session_totals` counts only sessions already in the filtered set |
 
@@ -1952,11 +2012,19 @@ persistent nag. The badges carry the rest.
 
 ### 15.1 Schema
 
-`privacy_tier TEXT NOT NULL DEFAULT 'public'` and `privacy_reason TEXT`, added by the same
-`ALTER TABLE sessions ADD COLUMN` arm BR-71 Task 1 uses for `parent_session_id`.
-`CURRENT_SCHEMA_VERSION` is 16 and goes to 17 **once**. If this work lands first it takes 17 and
-BR-71 takes 18; co-landing is strongly preferred. `classification_audit` lands in the same
-migration.
+`privacy_tier TEXT NOT NULL DEFAULT 'public'` and `privacy_reason TEXT`, plus
+`classification_audit`, all in the same migration.
+
+**The migration number is not load-bearing, and must not become load-bearing** (execution plan
+O10). `main` is at `CURRENT_SCHEMA_VERSION = 16`. The BR-71 worktree
+(`feat/br71-workspace-control`) already has **17** with a written, working
+`17 => ALTER TABLE sessions ADD COLUMN parent_session_id TEXT`. Whoever merges second silently
+re-uses a number, and a database that already ran the other branch's 17 skips the second feature's
+arm entirely — the exact incident `run_migrations`' own comment records for v11–v14. So this work
+ships a **shape-guarded numbered arm plus an unconditional `ensure_privacy_schema`**, following the
+`ensure_session_incarnation_schema` precedent (called from `reconcile_loop_schema`, itself invoked
+*after* the version loop). With that, merge order is free in both directions and neither branch has
+to wait on the other.
 
 ### 15.2 Backfill — fails open, by decision
 
@@ -2029,9 +2097,10 @@ backfill; rolling forward re-runs nothing, since the migration is versioned.
 
 ### 15.5 Day one must be shown, not discovered
 
-1. The first-run notice states the **actual counts, computed from the user's own DB** — for example
-   *"934 of your 1,321 conversations are now marked private because they last ran on Versa or a
-   local model."*
+1. The first-run notice states the **actual counts, computed from the user's own DB**, over the same
+   population History shows — user + scheduled sessions with at least one message (§16) — for example
+   *"642 of your 2,587 conversations are now marked private because they last ran on Versa or a
+   local model."* Those are this machine's real figures on 2026-08-01; compute, never hardcode.
 2. Grouped declassification extends to **all** `backfill:*` reasons, not only `backfill:unknown`,
    with a review-by-provider list (§12.6).
 3. Run the backfill and show the counts **before** enforcement begins. One launch of "here is what
@@ -2055,13 +2124,24 @@ content):
 
 | session_type | would backfill private | public | NULL provider | total |
 |---|---:|---:|---:|---:|
-| **user** | **934** | 358 | 29 | **1,321** |
+| **user** | **963** | 588 | 2,831 | **4,382** |
 | scheduled | 121 | 76 | 0 | 197 |
-| hidden | 52 | 459 | 0 | 511 |
-| sub_agent | 11 | 33 | 0 | 44 |
+| hidden | 52 | 668 | 0 | 720 |
+| sub_agent | 42 | 33 | 0 | 75 |
 
-**934 of 1,321 user conversations — 70.7% — go private on first launch.** 848 of those are
-`versa_azure` (706) or `versa_bedrock` (142); 86 are `llamacpp` (48) or `ollama` (38).
+**963 of the 1,551 user conversations whose provider is known — 62.1% — go private on first
+launch.** 875 of those are `versa_azure` (733) or `versa_bedrock` (142); 88 are `llamacpp` (48) or
+`ollama` (40).
+
+> **Re-measured 2026-08-01, four days after the design was written, and the numbers moved a lot.**
+> The **NULL-provider** bucket for `user` sessions went from 29 to **2,831** — two orders of
+> magnitude — so the fail-open residual is far larger than first reported. Of those 2,831,
+> **1,509 have at least one message**: 1,509 real conversations of unknown provenance that backfill
+> **public**. Separately, History shows fewer rows than the raw counts imply, because
+> `list_sessions_by_types` uses `INNER JOIN messages m ON s.id = m.session_id`
+> (`session_manager.rs:4279`), so empty sessions never appear. The number the first-run notice must
+> quote is user+scheduled **with at least one message** — **2,587** on this machine today.
+> Re-measure at implementation time; this moved by a factor of three in four days.
 
 And it is not an accident of one machine. `ProviderGuard.tsx:177-186` orders the onboarding cards
 **Llama Server → Ollama → Institutional → Commercial** — three of the four first-run cards are
@@ -2291,10 +2371,14 @@ re-plan of an approved, about-to-be-built feature does not get built.**
 
 ## 19. Suggested implementation order
 
-1. **`chatrecall` LOAD-mode guard.** Five lines. The only fully-open cross-session read in the
-   product today. Ship it on its own, ahead of everything.
-2. **A1 (secret scrubbing + secret off the environment)** and **B3 (memory tier filter)**. Both are
-   live leaks independent of this design.
+1. **`chatrecall` LOAD-mode guard, and the `platform__ingest_conversation` guard beside it.** One of
+   these is five lines; both are fully-open cross-session reads in the product today (§2.3 item 2),
+   and `ingest_conversation` is the worse of the pair because it *writes what it read* into a
+   machine-wide knowledge base. Ship the two together, on their own, ahead of everything.
+2. **A1's remaining half (the stdio-spawn scrub, then the secret off the environment entirely)** and
+   **B3 (refuse a global `remember_memory` from a private-capability session)**. The shell half of A1
+   and both of B3's original channels have already shipped as #57, #58 and #63; what is left of A1 is
+   still a live leak independent of this design.
 3. **P1 + P2 + P3 (types, Gate A, Gate B)** together with **the typed 409 and the `throwOnError`
    fix**, in one commit. Gate A without them ships as "Internal server error" over a green success
    toast.
@@ -2310,26 +2394,33 @@ re-plan of an approved, about-to-be-built feature does not get built.**
 
 ## 20. Claims verified against the tree, and corrections made
 
+Every anchor below was verified at `708390d8` and has since moved; see
+[the execution plan's drift table](privacy-tiers-execution-plan.md#read-this-before-you-chase-a-line-number).
+**The bare line numbers this section used to carry have been removed rather than re-verified**, because
+a stale number here is worse than none — it reads as a citation and is not one. What survives is the
+record of *what* was checked, anchored on the symbol, which is the only part that was ever durable.
+
 Verified by reading the code at `main` (708390d8) before writing: `CURRENT_SCHEMA_VERSION = 16`; the
 eight-field `ProviderMetadata`; `providerOrdering.ts`'s two `Set`s; `update_provider`'s
 swap-before-persist and its status as the **sole** writer of both `Agent::provider` and
 `sessions.provider_name`; `restore_provider_from_session`'s `Config::global()` fallback;
 `chatrecall` LOAD's complete absence of filtering; both `chat_history_search` builders' existing
-`INNER JOIN sessions s` and SQLite-applied `LIMIT ?`; every `extension_manager.rs` line anchor
-(`filter_tools:877`, `get_all_tools_cached:904`, `get_client_for_tool:1033`,
-`read_resource_tool:1043`, `read_resource:1116`, `get_ui_resources:1153`, `list_resources:1226`,
-`dispatch_tool_call:1288`, the SecretGuard comment at `:1351`, `list_prompts_from_extension:1428`,
-`list_prompts:1458`, `get_prompt:1505`, `add_extension:532`, `add_client:737`,
-`add_inprocess_server:759`, the `Extension` struct's six fields, the `Frontend` refusal at `:691`);
+`INNER JOIN sessions s` and SQLite-applied `LIMIT ?`; every `extension_manager.rs` symbol
+(`filter_tools`, `get_all_tools_cached`, `get_client_for_tool`, `read_resource_tool`,
+`read_resource`, `get_ui_resources`, `list_resources`, `dispatch_tool_call`, the SecretGuard
+comment, `list_prompts_from_extension`, `list_prompts`, `get_prompt`, `add_extension`, `add_client`,
+`add_inprocess_server`, the `Extension` struct's six fields, the `Frontend` refusal);
 `copy_session`/`diverge_session`/`import_session` each hand-rolling a builder that omits
 `provider_name`; `provider_class`'s exact-equality inversion; `routes/agent.rs`'s 500-only error
 mapping and its `call_tool` inspector bypass; `ClientFrame::ModelSelect`'s unchecked
 `update_provider`; `ModelAndProviderContext.tsx`'s missing `throwOnError` and its global
 `setConfigProvider` write; `CurrentModelContext` never being rendered; `memory/mod.rs`'s
-global-memory system-prompt injection; `DEFAULT_SECRET_PATTERNS`; the secret key in
-`biorouterd.ts`'s `additionalEnv` and the absence of `env_clear` in both `shell.rs` and the stdio
-spawn; `LeadWorkerProvider::get_name()` returning the lead's name; `factory.rs`'s
-`BIOROUTER_LEAD_MODEL` intercept; the `COALESCE` accumulation precedent at `session_manager.rs:2852`;
+global-memory system-prompt injection (**since deleted by #58 — see §9.3 B3**);
+`DEFAULT_SECRET_PATTERNS`; the secret key in
+`biorouterd.ts`'s `additionalEnv` and the absence of `env_clear` in both `shell.rs` (**since scrubbed
+by #57**) and the stdio spawn (**still open**);
+`LeadWorkerProvider::get_name()` returning the lead's name; `factory.rs`'s
+`BIOROUTER_LEAD_MODEL` intercept; the `COALESCE` accumulation precedent in `session_manager.rs`;
 the `messages_fts` contentful DDL; `registry.json` (version 1, 37 extensions, 129 skills, ten keys,
 no classification field, `spokeagent-0.4.1` the only version-suffixed id, `medcp` and `msbaseagent`
 absent); `medcp` enabled locally with `CLINICAL_RECORDS_*`; `baam.html`'s render functions and
@@ -2338,7 +2429,7 @@ absent); `medcp` enabled locally with `CLINICAL_RECORDS_*`; `baam.html`'s render
 global-config provider; the CLI plan-mode `get_reasoner` path; `apply_settings_overrides`'s
 name-only extension narrowing; BR-71's 44-task execution plan including Task 1's migration 17, Task
 10's confirmation reason string, and Task 17's `workspace_watch`; and the session-provider aggregate
-counts.
+counts (**re-measured 2026-08-01 — see §16**).
 
 **Corrections made to the input material:**
 
@@ -2349,7 +2440,7 @@ counts.
 | The knowledge active-KB is a global file, so a public session inherits a private session's KB by default | `paths.rs:66-71` adds `.active-kb-sessions`, one file per session, with `.active-kb` as the primary fallback. The KB-as-shared-sink attack stands (any session may name any KB); the "inherits by default" framing does not. Corrected in §9.3 B4. |
 | The design's fix list covers `copy_session` | `diverge_session` (`:4204`) is the primary GUI diverge path and does **not** call `copy_session`; `import_session` (`:4096`) is a third. Corrected in §9.3 B1, and the fix moved onto `create_session`. |
 | History would gain a "System sessions" filter so Hidden sessions have a declassification path | That surfaces 511 hidden sessions on this machine into a user-facing list. Replaced with the CLI `declassify <id>` escape hatch. §15.4. |
-| Hidden sessions: 435 public / 52 private (487 total) | Re-measured: 459 public / 52 private (511 total). §16. |
+| Hidden sessions: 435 public / 52 private (487 total) | Re-measured: 459 public / 52 private (511 total). Re-measured again 2026-08-01: 668 public / 52 private (720 total) — the point is that this bucket grows continuously, not that any one figure is right. §16. |
 | `provider_class` at `routes/apps.rs:2061-2098` | The function is at `:2089`; `:2061` is the start of its doc comment. |
 | `filterExtensions` at `baam.html:3906` | `:3909`. |
 | BR-71 is approved and about to be built | Its design doc's own status line reads *"Current — proposal only; nothing below is implemented"*, and issue #30 is open. The dependency argument is unaffected; the wording is. §18. |
