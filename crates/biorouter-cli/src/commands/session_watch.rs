@@ -248,13 +248,14 @@ fn status_code(status_line: &str) -> Option<u16> {
 /// started**. That is the whole reason `Render::Silent` exists rather than
 /// simply not making the request's future.
 ///
-/// `accepted`, when given, fires as soon as the daemon's 200 is read — see the
-/// call site in `post_reply_quiet` for why the return value is far too late.
+/// `status`, when given, fires with the code as soon as the daemon's status line
+/// is read — see the call site in `post_reply_quiet` for why the return value is
+/// far too late.
 async fn stream_request(
     request: String,
     stop_on_terminal: bool,
     render: Render,
-    accepted: Option<tokio::sync::oneshot::Sender<()>>,
+    status: Option<tokio::sync::oneshot::Sender<u16>>,
 ) -> Result<u16> {
     let port = configured_port();
     if !daemon_ok(DAEMON_HOST, port).await {
@@ -265,7 +266,7 @@ async fn stream_request(
     }
     let mut stream = tokio::net::TcpStream::connect(format!("{DAEMON_HOST}:{port}")).await?;
     stream.write_all(request.as_bytes()).await?;
-    read_response(&mut stream, stop_on_terminal, render, accepted).await
+    read_response(&mut stream, stop_on_terminal, render, status).await
 }
 
 /// Read one HTTP response off `stream` and return the status it carried.
@@ -278,9 +279,9 @@ async fn read_response<S: tokio::io::AsyncRead + Unpin>(
     stream: &mut S,
     stop_on_terminal: bool,
     render: Render,
-    accepted: Option<tokio::sync::oneshot::Sender<()>>,
+    status: Option<tokio::sync::oneshot::Sender<u16>>,
 ) -> Result<u16> {
-    let mut accepted = accepted;
+    let mut status = status;
     let mut raw = Vec::new();
     let mut buffer = String::new();
     let mut headers_done = false;
@@ -299,15 +300,18 @@ async fn read_response<S: tokio::io::AsyncRead + Unpin>(
             let Some((head, rest)) = text.split_once("\r\n\r\n") else {
                 continue;
             };
-            let status = head.lines().next().unwrap_or_default();
-            let code = status_code(status).ok_or_else(|| {
-                anyhow!("the daemon answered with a response carrying no status code: {status}")
+            let status_line = head.lines().next().unwrap_or_default();
+            let code = status_code(status_line).ok_or_else(|| {
+                anyhow!("the daemon answered with a response carrying no status code: {status_line}")
             })?;
+            // Reported for EVERY code, before the branch: the ladder's middle
+            // rung needs the 409 as promptly as it needs the 200, and a caller
+            // waiting on this channel must never be left waiting on a refusal.
+            if let Some(tx) = status.take() {
+                let _ = tx.send(code);
+            }
             if code != 200 {
                 return Ok(code);
-            }
-            if let Some(tx) = accepted.take() {
-                let _ = tx.send(());
             }
             headers_done = true;
             buffer.clear();
@@ -664,6 +668,9 @@ enum TurnOutcome {
     Refused,
 }
 
+/// How many typed lines may be waiting for the delivery worker at once.
+const SEND_QUEUE: usize = 16;
+
 /// What actually happened to one line of typing, for printing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Delivered {
@@ -760,36 +767,76 @@ async fn post_interrupt(session_id: &str, text: &str, secret: &str) -> Result<St
     }
 }
 
-/// Start a turn with `text` and hold the socket to its terminal frame, printing
-/// nothing.
+/// Start a turn with `text`, and return as soon as the daemon has ruled on it.
 ///
-/// ⚠ Both halves of that are load-bearing and pull in opposite directions.
-/// Printing would double every line, because the observer stream is already
-/// rendering this turn. Abandoning the socket would CANCEL the turn: `/reply`'s
-/// `stream_event` cancels the turn's token the moment its `tx.send` fails. So
-/// the only correct thing is to consume and discard.
+/// ⚠ The socket is **held to the turn's terminal frame, on a detached task**,
+/// and prints nothing. Three constraints meet here and they pull apart:
 ///
-/// ⚠ The acknowledgement is printed from the **200**, not from this function's
-/// return value. The return value only arrives when the turn ENDS, which can be
-/// minutes; a user who types a line and sees nothing for that long types it
-/// again — exactly the double delivery the ladder exists to prevent.
-async fn post_reply_quiet(session_id: &str, text: &str, secret: &str) -> Result<TurnOutcome> {
+/// * Printing would double every line — the observer stream is already
+///   rendering this turn.
+/// * Abandoning the socket would CANCEL the turn: `/reply`'s `stream_event`
+///   trips the turn's cancellation token the moment its `tx.send` fails. So the
+///   body must be consumed and discarded, not dropped.
+/// * But *waiting* for it here would block the delivery worker for the whole
+///   turn, and a mid-turn correction the user typed would then sit in a local
+///   queue and go out minutes later as a brand new turn — adjudicated by the
+///   ladder against state long stale. Attach exists to steer running turns,
+///   including the ones it started itself, so the wait has to go.
+///
+/// Hence: the acceptance comes from the **status line** over a channel, and the
+/// holder task owns the socket (and the `ReplyWindow`, so ctrl-c still knows an
+/// exit would cancel a turn) until the terminal frame.
+async fn post_reply_quiet(
+    session_id: &str,
+    text: &str,
+    secret: &str,
+    window: Arc<ReplyWindow>,
+) -> Result<TurnOutcome> {
     let request = build_post_request("/reply", DAEMON_HOST, secret, &reply_body(session_id, text));
-    let (accepted_tx, accepted_rx) = tokio::sync::oneshot::channel();
-    tokio::spawn(async move {
-        // Errs — and so prints nothing — when the sender is dropped, i.e. when
-        // the daemon refused or never answered with a status at all.
-        if accepted_rx.await.is_ok() {
-            println!("[started a new turn]");
-        }
+    let (status_tx, status_rx) = tokio::sync::oneshot::channel();
+    // Opened from before the request rather than from the 200: erring towards
+    // warning about a turn that does not exist is harmless, erring the other way
+    // silently kills one.
+    window.open();
+    let holder = tokio::spawn(async move {
+        let outcome = stream_request(request, true, Render::Silent, Some(status_tx)).await;
+        window.close();
+        outcome
     });
-    match stream_request(request, true, Render::Silent, Some(accepted_tx)).await? {
-        200 => Ok(TurnOutcome::Started),
-        409 => Ok(TurnOutcome::Refused),
-        code => Err(anyhow!(
+
+    match status_rx.await {
+        Ok(200) => {
+            println!("[started a new turn]");
+            // The end of the turn is announced by the holder, so that waiting
+            // for it costs the user nothing.
+            tokio::spawn(async move {
+                match holder.await {
+                    Ok(Ok(_)) => println!("[the turn you started has ended]"),
+                    Ok(Err(err)) => println!(
+                        "[the turn you started stopped streaming here: {err}]\n\
+                         It may still be running — `biorouter session cancel <id>` stops it."
+                    ),
+                    // Only reachable if the runtime is shutting down, which is
+                    // the process exiting anyway.
+                    Err(_) => {}
+                }
+            });
+            Ok(TurnOutcome::Started)
+        }
+        Ok(409) => Ok(TurnOutcome::Refused),
+        Ok(code) => Err(anyhow!(
             "the daemon refused to start a turn: HTTP {code}\n\
              (401 usually means BIOROUTER_SERVER__SECRET_KEY does not match the daemon's)"
         )),
+        // The sender was dropped without a status: no status line was ever
+        // read, so the request failed outright. The holder carries the reason.
+        Err(_) => match holder.await {
+            Ok(Err(err)) => Err(err),
+            Ok(Ok(code)) => Err(anyhow!(
+                "the daemon answered POST /reply with HTTP {code} but never reported it"
+            )),
+            Err(join) => Err(anyhow!("the /reply request could not be run: {join}")),
+        },
     }
 }
 
@@ -834,19 +881,11 @@ async fn deliver(
     session_id: &str,
     text: &str,
     secret: &str,
-    window: &ReplyWindow,
+    window: &Arc<ReplyWindow>,
 ) -> Result<Delivered> {
     run_ladder(
         move || post_interrupt(session_id, text, secret),
-        move || async move {
-            // Marked open from before the request rather than from the 200:
-            // erring towards warning about a turn that does not exist is
-            // harmless, erring the other way silently kills one.
-            window.open();
-            let outcome = post_reply_quiet(session_id, text, secret).await;
-            window.close();
-            outcome
-        },
+        move || post_reply_quiet(session_id, text, secret, window.clone()),
     )
     .await
 }
@@ -1011,11 +1050,10 @@ pub async fn handle_session_attach(
     // spinning on a closed channel.
     let _line_tx = line_tx;
 
-    // Deliveries run on their own task, one at a time: a `/reply` fallback holds
-    // its socket until the turn ends, and awaiting that inside the `select!`
-    // would freeze the live rendering for the whole turn — the one thing attach
+    // Deliveries run on their own task, one at a time, so that a slow round trip
+    // to the daemon never freezes the live rendering — the one thing attach
     // exists to show.
-    let (send_tx, mut send_rx) = tokio::sync::mpsc::channel::<String>(16);
+    let (send_tx, mut send_rx) = tokio::sync::mpsc::channel::<String>(SEND_QUEUE);
     {
         let session_id = session_id.clone();
         let secret = secret.clone();
@@ -1024,17 +1062,17 @@ pub async fn handle_session_attach(
             while let Some(text) = send_rx.recv().await {
                 match deliver(&session_id, &text, &secret, &window).await {
                     Ok(Delivered::Steered { turn_id }) => println!("[steered turn {turn_id}]"),
-                    // The START was already announced, at the 200, by
-                    // `post_reply_quiet`. What arrives here is the socket
-                    // reaching the turn's terminal frame — which is also the
-                    // moment ctrl-c stops being able to cancel it, so it is
-                    // worth saying.
-                    Ok(Delivered::NewTurn) => println!("[the turn you started has ended]"),
+                    // Both halves are announced from the socket itself — the
+                    // start at the 200 in `post_reply_quiet`, the end when its
+                    // holder reaches the terminal frame. `deliver` now returns
+                    // at the 200, so anything said here would be a third copy,
+                    // and at the wrong moment.
+                    Ok(Delivered::NewTurn) => {}
                     Ok(Delivered::Nothing) => println!(
-                        "[not sent] the session's turn state changed three times while your \
-                         message was in flight; nothing was sent — press enter to retry."
+                        "[not sent] the session's turn state changed three times while this \
+                         message was in flight, so it was not sent. Send it again:\n  {text}"
                     ),
-                    Err(err) => println!("[not sent] {err}"),
+                    Err(err) => println!("[not sent] {err}\n  {text}"),
                 }
             }
         });
@@ -1078,8 +1116,18 @@ pub async fn handle_session_attach(
                 if line.trim().is_empty() {
                     continue;
                 }
-                if send_tx.send(line).await.is_err() {
-                    return Err(anyhow!("the delivery worker stopped; nothing was sent"));
+                // `try_send`, never `send().await`: awaiting a full queue here
+                // blocks the `select!`, and the live rendering stops with it.
+                // Refusing one line loudly beats freezing the display.
+                match send_tx.try_send(line) {
+                    Ok(()) => {}
+                    Err(tokio::sync::mpsc::error::TrySendError::Full(text)) => println!(
+                        "[not sent] {SEND_QUEUE} messages are already waiting to go out; \
+                         let them clear first, then send this again:\n  {text}"
+                    ),
+                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                        return Err(anyhow!("the delivery worker stopped; nothing was sent"))
+                    }
                 }
             }
             _ = tokio::signal::ctrl_c() => {
@@ -1438,16 +1486,60 @@ mod tests {
             )
             .await
             .unwrap();
+        let (status_tx, status_rx) = tokio::sync::oneshot::channel();
         let code = tokio::time::timeout(
             std::time::Duration::from_secs(2),
-            read_response(&mut client, true, Render::Silent, None),
+            read_response(&mut client, true, Render::Silent, Some(status_tx)),
         )
         .await
         .expect("a 409 must not block on the socket closing")
         .unwrap();
         assert_eq!(code, 409);
+        // The refusal reaches the status channel too. `post_reply_quiet` waits
+        // on that channel, so a 409 that only came back as a return value would
+        // strand the ladder on its middle rung.
+        assert_eq!(status_rx.await.unwrap(), 409);
         // The daemon half is still open — deliberately, that is the point.
         drop(daemon);
+    }
+
+    /// Attach must be able to steer a turn it started itself.
+    ///
+    /// `deliver` used to return only when `/reply`'s socket reached the turn's
+    /// TERMINAL frame, so the delivery worker was blocked for the whole turn: a
+    /// mid-turn correction the user typed sat in a local queue and went out
+    /// minutes later, adjudicated against state long stale, as a brand new turn.
+    /// The fix rests on this — the acceptance is readable from the status line
+    /// while the body is still streaming — and on the socket still being held
+    /// afterwards, because dropping it cancels the turn.
+    #[tokio::test]
+    async fn acceptance_is_known_from_the_status_line_not_the_end_of_the_turn() {
+        let (mut client, mut daemon) = tokio::io::duplex(4096);
+        let (status_tx, status_rx) = tokio::sync::oneshot::channel();
+        let holder = tokio::spawn(async move {
+            read_response(&mut client, true, Render::Silent, Some(status_tx)).await
+        });
+
+        daemon
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n")
+            .await
+            .unwrap();
+        // The turn is running: no terminal frame yet, socket still open.
+        let code = tokio::time::timeout(std::time::Duration::from_secs(2), status_rx)
+            .await
+            .expect("the 200 must be reported while the turn is still streaming")
+            .unwrap();
+        assert_eq!(code, 200);
+        assert!(
+            !holder.is_finished(),
+            "the socket must still be held — abandoning it cancels the turn"
+        );
+
+        daemon
+            .write_all(b"data: {\"type\":\"Finish\",\"reason\":\"stop\"}\n\n")
+            .await
+            .unwrap();
+        assert_eq!(holder.await.unwrap().unwrap(), 200);
     }
 
     #[test]
