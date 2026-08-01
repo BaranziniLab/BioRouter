@@ -173,6 +173,50 @@ function conversationRows(body) {
 }
 
 const TIMER = Symbol('observer-wait-elapsed');
+const TIMED_OUT = Symbol('deadline-elapsed');
+
+/**
+ * Bound a promise that carries no deadline of its own, resolving to
+ * [`TIMED_OUT`] instead of parking forever.
+ *
+ * ⚠ Every other wait in this file is bounded and two were not, which is a
+ * defect in a pass/fail gate rather than a cosmetic one: a hang produces **no
+ * verdict at all**. `echo $?` never runs, Task 40 reads "still going" instead of
+ * "✗", and the operator's evidence for the phase is a terminal that stopped
+ * printing. A bounded wait can only turn that into a failure, which is strictly
+ * more information. The two sites:
+ *
+ * 1. the `/ui/workspace` open. `new WebSocket(...)` fires `onopen` or `onerror`,
+ *    but a daemon that accepts the TCP connection and never answers the upgrade
+ *    (a wedged accept loop; a proxy in between) fires neither.
+ * 2. the parent `/reply` body drain. `api()` resolves as soon as the response
+ *    headers arrive, so the status is known early — but `r.text()` resolves only
+ *    when the delegating turn *ends*. A blocking delegation that never resolves
+ *    after its child is cancelled is a plausible shape of a Task 33 regression,
+ *    and it is exactly the shape that used to hang here.
+ *
+ * A rejection is deliberately NOT absorbed: it propagates as it did before, to
+ * `main().catch` and exit 2 ("the harness crashed"), which is the right
+ * diagnosis for a dead transport and a different one from "it never finished".
+ */
+function withDeadline(promise, ms) {
+  let timer;
+  return Promise.race([
+    promise.finally(() => clearTimeout(timer)),
+    new Promise((resolve) => {
+      timer = setTimeout(() => resolve(TIMED_OUT), ms);
+    }),
+  ]);
+}
+
+/** How long to wait for the workspace socket's open/error event. */
+const WS_OPEN_TIMEOUT_MS = 15000;
+/**
+ * How long to wait for the parent's delegating turn to END, measured from the
+ * moment its response headers arrive. Generous, because the whole live tier runs
+ * inside this window — but finite, because the alternative is no verdict.
+ */
+const PARENT_TURN_TIMEOUT_MS = 300000;
 
 /**
  * Open ONE long-lived observer stream and read frames from it.
@@ -293,15 +337,29 @@ async function main() {
       }
     } catch { /* ignore */ }
   };
-  const opened = await new Promise((resolve) => {
-    ws.onopen = () => resolve(true);
-    ws.onerror = () => resolve(false);
-  });
+  const opened = await withDeadline(
+    new Promise((resolve) => {
+      ws.onopen = () => resolve(true);
+      ws.onerror = () => resolve(false);
+    }),
+    WS_OPEN_TIMEOUT_MS
+  );
   // ⚠ NOT `assert(name, true)`. That was the previous form: a literal that could
   // not fail, whose only real failure mode was the harness crashing on the
   // rejected promise above — which prints a stack trace and exit 2, not a `✗`.
-  assert('workspace WS connects with query secret', opened && ws.readyState === WebSocket.OPEN);
-  if (!opened) {
+  //
+  // ⚠ Compare against `true`, not truthiness: `TIMED_OUT` is a Symbol and every
+  // Symbol is truthy, so `!opened` would read a silent hang as a successful
+  // connection and fall through into a tier that cannot work.
+  assert(
+    'workspace WS connects with query secret',
+    opened === true && ws.readyState === WebSocket.OPEN,
+    opened === TIMED_OUT
+      ? `no open or error event within ${WS_OPEN_TIMEOUT_MS} ms — the daemon accepted the ` +
+        'connection and never answered the upgrade'
+      : ''
+  );
+  if (opened !== true) {
     console.error('cannot continue without the workspace socket');
     process.exit(1);
   }
@@ -504,7 +562,17 @@ async function main() {
             'write a haiku about each of the numbers 1 through 20, one at a time.'
         ),
       }),
-    }).then(async (r) => ({ status: r.status, text: await r.text() }));
+    }).then(async (r) => {
+      // Bounded: see `withDeadline`. `r.status` is already known here, so a
+      // timeout still reports the accept/reject half truthfully and only the
+      // transcript half is lost.
+      const text = await withDeadline(r.text(), PARENT_TURN_TIMEOUT_MS);
+      return {
+        status: r.status,
+        text: text === TIMED_OUT ? '' : text,
+        timedOut: text === TIMED_OUT,
+      };
+    });
 
     // Frames must arrive for SOME child within 60 s.
     //
@@ -790,9 +858,13 @@ async function main() {
       );
       assert(
         'parent transcript reports "human_intervened":true',
-        parentReply.text.includes('"human_intervened":true'),
-        'not found in the parent /reply stream — the child ran, was steered, and the ' +
-          'parent was never told'
+        !parentReply.timedOut && parentReply.text.includes('"human_intervened":true'),
+        parentReply.timedOut
+          ? `the parent turn had still not ended ${PARENT_TURN_TIMEOUT_MS / 1000} s after its ` +
+            'headers arrived, with its child long cancelled — the blocking delegation never ' +
+            'resolved. Before this deadline the harness parked here and produced no verdict'
+          : 'not found in the parent /reply stream — the child ran, was steered, and the ' +
+            'parent was never told'
       );
     }
   }
