@@ -151,7 +151,7 @@ There is nothing GUI-shaped in the contract, but the surface is not identical wi
 
 **Standalone `biorouter` in a terminal, with no daemon.** The tools that *inspect* work — `workspace_list`, `workspace_read_conversation`, `workspace_watch` (which reads the background-handle registry, so it still knows a child is running), `workspace_send_prompt mode:"note"`, and `subagent` itself. The tools that need something to *drive* a session do not, and each refuses by name rather than failing obscurely: starting a new session, `mode:"turn"`, `mode:"steer"`, setting knowledge bases, and `workspace_close` at `turn` or `agent` scope all answer *"requires the BioRouter daemon"*. Start `biorouterd` (or open the app) if you need them.
 
-The CLI covers the same ground from the other side:
+The CLI covers the same ground from the other side. These are commands *you* run, and they talk to `biorouterd` — so they belong to the second configuration above, not the third; `session watch` says "requires a running daemon" in its own help for that reason:
 
 | Capability | CLI |
 |------------|-----|
