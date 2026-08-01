@@ -24531,17 +24531,14 @@ which tool the model picks:
    that the model does not ask for a `workspace_spawn_subagent` that no longer
    exists).
 4. "Remember that I prefer uv over pip" → Memory, never workspace.
-6. "Tell me as soon as one of those three background jobs is done" →
+5. "Tell me as soon as one of those three background jobs is done" →
    `workspace_watch`, not a `workspace_read_conversation` poll loop. A poll loop
    here is the clearest sign the `subagent_status` migration did not land in the
    instructions.
-7. "Give that other conversation the single-cell skill" → `workspace_set_tools`
+6. "Give that other conversation the single-cell skill" → `workspace_set_tools`
    with `add_skills`, NOT a suggestion that the user change Settings.
-5. A misroute in any probe → adjust the routing sentences in `INSTRUCTIONS` (keep
+7. A misroute in any probe → adjust the routing sentences in `INSTRUCTIONS` (keep
    ≤2.5k chars — the existing unit test enforces it) and re-probe.
-
-(The probe list is numbered 1, 2, 3, 4, 6, 7, 5 — seven probes, correct content, wrong
-order. Renumber it when you touch the file; it is not worth a commit of its own.)
 
 - [ ] **Step 2: Add the routing row** to `docs/agent-loop/tool-routing.md` (the file's
 existing table format): content questions → `chatrecall`; live control + structured

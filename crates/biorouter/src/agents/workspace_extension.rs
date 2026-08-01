@@ -81,7 +81,8 @@ const INSTRUCTIONS: &str = indoc! {r#"
     (sessions), each shown as a tab in the desktop app when the GUI is attached.
     Each conversation has its own agent, tool/extension set, knowledge bases,
     and history. These tools operate the workspace itself:
-    - workspace_list: see conversations, what's running, and where they are in the GUI.
+    - workspace_list: see conversations, what's running, and where they are in
+      the GUI. For "what is that chat doing now?" list, then read its tool_calls.
     - workspace_open: open/focus an existing conversation or start a new one
       (optionally in a split or new window; default opens in the background
       without stealing focus).
@@ -94,22 +95,24 @@ const INSTRUCTIONS: &str = indoc! {r#"
       without running it. Injections are permanently labeled as coming from
       you. Use wait:"final_message" to get its answer synchronously.
     - workspace_set_tools: add/remove extensions, scope skills to one
-      conversation, switch its model, or set its knowledge bases.
+      conversation (add_skills), switch its model, or set its knowledge bases.
+      Do it yourself; never tell the user to change Settings.
     - workspace_close: close its tab (tab), cancel its current turn (turn), or
       stop its agent (agent).
     - workspace_watch: wait until one of several conversations finishes. Use it
-      after starting background work instead of polling.
+      after starting background work; never poll workspace_read_conversation.
     - subagent: delegate to a fresh agent with its own context window. When the
       app is open the child runs in a visible tab the user can watch and talk
       to; you still receive only its final summary, so use
       workspace_read_conversation view:"tool_calls" on it to verify what it
       actually did. The user may have intervened; the result tells you if so.
-    Only the workspace tools present in your tool list are available to you;
-    `subagent` is always available when delegation is enabled.
+    Only the workspace tools in your tool list are available; `subagent` is the
+    one spawn tool, always available when delegation is enabled.
     Routing: to search past conversations by content use chatrecall (if
     enabled), not these tools. Durable facts belong in Memory. To fold a
-    conversation into a knowledge base use ingest_conversation. If no GUI is
-    attached these tools still manage conversations headlessly and say so.
+    conversation into a knowledge base use ingest_conversation; to re-read an
+    externalized payload use read_session_blob. If no GUI is attached these
+    tools still manage conversations headlessly and say so.
 "#};
 
 /// `Default` is derived so `handle_list` can fall back to it when the call
