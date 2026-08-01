@@ -934,6 +934,35 @@ async fn build_completer(
     Ok((Box::new(completer), tier))
 }
 
+/// Issue #56, Task 10C. Refuse a macro run whose model may not reach the target
+/// base, **before** the SSE stream opens.
+///
+/// The barrier itself is CP2, inside each macro — that is what covers the CLI
+/// and every non-HTTP caller, and it is the check a `grep` counts. This is the
+/// same question asked one layer up so the GUI gets a real status code instead
+/// of a stream that opens and immediately dies: a 200 with an `event: error`
+/// frame is indistinguishable, to the fetch that started it, from a model that
+/// failed to connect.
+///
+/// 409 CONFLICT and not 403: nothing about the *request* is unauthorised — the
+/// user may read this base all day through `/bases/{id}/page`. What conflicts is
+/// the base's tier with the model this chat is on, and the recovery is to change
+/// the model.
+///
+/// ⚠ The message is `assert_reachable`'s own, never a second spelling of it.
+fn assert_macro_target_reachable(
+    svc: &Arc<KnowledgeService>,
+    kb_id: &str,
+    caller_capability: biorouter::privacy::ProviderTier,
+) -> Result<(), (StatusCode, String)> {
+    biorouter_mcp::knowledge::tier::assert_reachable(
+        svc.root(),
+        kb_id,
+        caller_capability.is_private(),
+    )
+    .map_err(|e| (StatusCode::CONFLICT, e.to_string()))
+}
+
 /// Build a well-formed SSE error frame. Uses `serde_json` for proper escaping so
 /// that backslashes in Windows paths and newlines in multi-line `anyhow` chains do
 /// not break JSON or SSE line framing.
@@ -1149,6 +1178,7 @@ pub async fn ingest(
     let (source, model, focus) = parse_ingest_request(&headers, req).await?;
 
     let (completer, caller_capability) = build_completer(&model).await?;
+    assert_macro_target_reachable(&svc, &id, caller_capability)?;
 
     let cancel = std::sync::Arc::new(tokio::sync::Notify::new());
 
@@ -1300,6 +1330,7 @@ pub async fn query_kb(
     Json(body): Json<QueryBody>,
 ) -> Result<crate::routes::reply::SseResponse, (StatusCode, String)> {
     let (completer, caller_capability) = build_completer(&body.model).await?;
+    assert_macro_target_reachable(&svc, &id, caller_capability)?;
 
     let cancel = std::sync::Arc::new(tokio::sync::Notify::new());
 
@@ -1374,6 +1405,7 @@ pub async fn lint(
     } else {
         (None, biorouter::privacy::ProviderTier::Public)
     };
+    assert_macro_target_reachable(&svc, &id, caller_capability)?;
 
     let cancel = std::sync::Arc::new(tokio::sync::Notify::new());
 

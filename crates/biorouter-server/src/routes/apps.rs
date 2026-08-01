@@ -2796,6 +2796,20 @@ async fn handle_kb_frame(
             return;
         }
     };
+    // Issue #56 (CP3), Task 10C. Immediately after the grant resolves and BEFORE
+    // the op dispatch, so one line covers the four reads (`run_kb_read`) and
+    // `ingest` together. The grant above is an integrity control over WHICH base
+    // — authored by the drafting model, which learned the ids from
+    // `discover_kbs` — and says nothing about which CALLER; `br.kb` never touches
+    // `KnowledgeServer`, so CP1 is blind to this whole surface.
+    if let Err(e) = biorouter_mcp::knowledge::tier::assert_reachable(
+        knowledge.root(),
+        &kb_id,
+        caller_is_private,
+    ) {
+        emit_kb_error(ui_bridge, req_id, &e.to_string());
+        return;
+    }
     match op {
         "search" | "page" | "graph" | "history" => {
             match run_kb_read(knowledge, &kb_id, op, params).await {
@@ -2827,15 +2841,13 @@ async fn handle_kb_frame(
             // be here, and before the spawn: a raise that only lands on success
             // leaves content in a base whose tier never moved.
             //
-            // Task 10C adds `tier::assert_reachable(root, &kb_id,
-            // caller_is_private)?` HERE, on the line above the raise — the same
-            // position as CP1 and CP2, and it matters at this choke point for
-            // one extra reason. `raise_unlocked` registers an ABSENT entry at
-            // the caller's tier, and a base with a directory but no entry reads
-            // private (decision 3), so a public write is the one path that can
-            // turn such a base explicitly public. CP1 and CP2 will refuse that
-            // caller before reaching the raise; without the same line here, this
-            // arm would still be able to.
+            // Task 10C's barrier is ABOVE the `match op`, not here — one line
+            // covering this arm and the four reads together. It matters at this
+            // choke point for one extra reason: `raise_unlocked` registers an
+            // ABSENT entry at the caller's tier, and a base with a directory but
+            // no entry reads private (decision 3), so a public write is the one
+            // path that could turn such a base explicitly public. That caller no
+            // longer reaches this line.
             if let Err(e) = knowledge.raise_tier(&kb_id, caller_is_private) {
                 emit_kb_error(ui_bridge, req_id, &e.to_string());
                 return;
@@ -7497,6 +7509,116 @@ mod tests {
             assert!(
                 biorouter_mcp::knowledge::tier::is_private(&root, "kby"),
                 "a public app session lowered a ratcheted base"
+            );
+        }
+
+        // ── Issue #56, Task 10C: CP3 ────────────────────────────────────────
+
+        /// Drain the bridge's frames until a `kb_result` for `req` arrives.
+        async fn await_kb_result(
+            rx: &mut tokio::sync::mpsc::UnboundedReceiver<serde_json::Value>,
+            req: &str,
+        ) -> serde_json::Value {
+            for _ in 0..64 {
+                match tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv()).await {
+                    Ok(Some(f)) => {
+                        if f["type"] == "kb_result" && f["reqId"] == req {
+                            return f;
+                        }
+                    }
+                    _ => break,
+                }
+            }
+            panic!("no kb_result for {req}");
+        }
+
+        /// CP3, and the reason a manifest grant is not a privacy control: the
+        /// app's manifest was authored by the DRAFTING MODEL, which learned the
+        /// base ids from `discover_kbs`. It is an integrity control over WHICH
+        /// base, never a control over WHICH CALLER.
+        #[tokio::test]
+        async fn br_kb_reads_are_refused_on_a_private_base_even_with_a_manifest_grant() {
+            let tmp = tempfile::TempDir::new().unwrap();
+            let root = tmp.path().to_path_buf();
+            let svc = std::sync::Arc::new(KnowledgeService::new(root.clone()));
+            svc.create_base("kbx", "KBX", None).unwrap();
+            std::fs::write(
+                root.join("kbx").join("knowledge").join("x.md"),
+                "# x\n\nSENTINEL-BODY\n",
+            )
+            .unwrap();
+            biorouter_mcp::knowledge::tier::raise_unlocked(&root, "kbx", true).unwrap();
+
+            let cfg = cfg_with(vec![knowledge_src(&["kbx"], false)], Some("kbx"));
+            let bridge = biorouter_mcp::agent_drafter::control::UiBridge::new();
+            let (mut rx, _tok) = bridge.attach();
+
+            super::super::handle_kb_frame(
+                &bridge,
+                &svc,
+                Some(&cfg),
+                /* caller_is_private */ false,
+                "search",
+                &serde_json::json!({ "kb_id": "kbx", "query": "SENTINEL" }),
+                "r1",
+            )
+            .await;
+
+            let f = await_kb_result(&mut rx, "r1").await;
+            assert!(
+                f["error"].as_str().unwrap_or_default().contains("private"),
+                "a public app session read a private base: {f}"
+            );
+            assert!(!f.to_string().contains("SENTINEL-BODY"), "{f}");
+
+            // The discrimination half: a PRIVATE caller reads the same base.
+            // Without it, "refuse everything" passes.
+            super::super::handle_kb_frame(
+                &bridge,
+                &svc,
+                Some(&cfg),
+                /* caller_is_private */ true,
+                "search",
+                &serde_json::json!({ "kb_id": "kbx", "query": "SENTINEL" }),
+                "r2",
+            )
+            .await;
+            let f = await_kb_result(&mut rx, "r2").await;
+            assert!(
+                f["error"].is_null(),
+                "a private app session was refused its own base: {f}"
+            );
+        }
+
+        /// CP3 covers `ingest` and the four reads together, because it sits
+        /// above the `match op`. This is the write half — and the arm that could
+        /// otherwise stamp a directory-but-no-entry base explicitly PUBLIC.
+        #[tokio::test]
+        async fn a_public_br_kb_ingest_is_refused_on_a_private_base() {
+            let tmp = tempfile::TempDir::new().unwrap();
+            let root = tmp.path().to_path_buf();
+            let svc = std::sync::Arc::new(KnowledgeService::new(root.clone()));
+            svc.create_base("kbz", "KBZ", None).unwrap();
+            biorouter_mcp::knowledge::tier::raise_unlocked(&root, "kbz", true).unwrap();
+
+            let cfg = cfg_with(vec![knowledge_src(&["kbz"], false)], Some("kbz"));
+            let bridge = biorouter_mcp::agent_drafter::control::UiBridge::new();
+            let (mut rx, _tok) = bridge.attach();
+
+            super::super::handle_kb_frame(
+                &bridge,
+                &svc,
+                Some(&cfg),
+                /* caller_is_private */ false,
+                "ingest",
+                &serde_json::json!({ "kb_id": "kbz", "text": "n=412" }),
+                "r3",
+            )
+            .await;
+            let f = await_kb_result(&mut rx, "r3").await;
+            assert!(
+                f["error"].as_str().unwrap_or_default().contains("private"),
+                "a public app session ingested into a private base: {f}"
             );
         }
 

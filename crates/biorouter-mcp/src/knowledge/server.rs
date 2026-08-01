@@ -28,11 +28,14 @@ const SESSION_ID_META_KEY: &str = "biorouter-session-id";
 /// explicit ratchets= decision, and requires every name here to be a real tool.
 /// Opting a new tool out is therefore an edit a reviewer sees.
 ///
-/// ⚠ `kb_set_active` is deliberately absent. It writes no content, so it needs
-/// no ratchet — but it does take a required `kb_id`, and Task 10C hangs
-/// `assert_reachable` on this same list, where "pin a base as this session's
-/// primary" IS a reach. Task 10C decides it: either add it here, or state why
-/// pinning without reading is not a disclosure.
+/// ⚠ `kb_set_active` is deliberately absent, and Task 10C decided it: it stays
+/// off this list and is capability-aware **in its own body** instead. A private
+/// base is not "refused" to it — it is simply NOT A MEMBER of the caller's set,
+/// answered with the same sentence an id that does not exist gets, because a
+/// refusal that says "that one is private" confirms it exists. Being on this
+/// list would produce the privacy refusal by name and re-open exactly that
+/// oracle. See `EXEMPT` in the tests below, where each of the five non-gated
+/// tools carries the test that pins the behaviour its exemption claims.
 const KB_ID_GATED_TOOLS: &[&str] = &[
     "kb_list_pages",
     "kb_read_page",
@@ -321,6 +324,27 @@ impl KnowledgeServer {
         self.primary_kb_for_context(context)
     }
 
+    /// The KB twin of `ExtensionManager::assert_extension_reachable` (issue
+    /// #56). `Err` is the refusal; `Ok(())` permits.
+    ///
+    /// Reads the base's stored tier, never the session's set — hiding and
+    /// privacy are different questions, and [`Self::kb_id_or_primary`] answers
+    /// only the first. That is why its doc comment ("an explicit `kb_id` always
+    /// wins and is never filtered against the session's set") stays true and
+    /// this check lives above it rather than inside it.
+    fn assert_kb_reachable(&self, kb_id: &str, caller_private: bool) -> Result<(), ErrorData> {
+        crate::knowledge::tier::assert_reachable(self.service.root(), kb_id, caller_private)
+            .map_err(|e| ErrorData::invalid_request(e.to_string(), None))
+    }
+
+    /// Whether this caller must be kept away from `kb_id`. The one predicate
+    /// behind every *filter* in this file — the fan-outs, the candidate lists
+    /// and the two pointer tools — so "omit" and "refuse" cannot disagree about
+    /// what is reachable.
+    fn kb_is_out_of_reach(&self, kb_id: &str, caller_private: bool) -> bool {
+        !caller_private && crate::knowledge::tier::is_private(self.service.root(), kb_id)
+    }
+
     fn hidden_kbs_for_session(&self, session_id: Option<&str>) -> Result<Vec<String>, ErrorData> {
         match session_id {
             Some(session_id) => self
@@ -334,11 +358,19 @@ impl KnowledgeServer {
     fn visible_bases_for_session(
         &self,
         session_id: Option<&str>,
+        caller_private: bool,
     ) -> Result<Vec<Manifest>, ErrorData> {
         let hidden = self.hidden_kbs_for_session(session_id)?;
         let hidden = hidden.into_iter().collect::<HashSet<_>>();
         let mut bases = self.service.list_bases().map_err(into_err)?;
-        bases.retain(|base| !hidden.contains(&base.id));
+        // Issue #56, beside the `hidden` retain deliberately: `kb_list_bases`
+        // must OMIT a base this caller may not reach, never redact it — a KB
+        // name is user-authored and routinely names a cohort or a study, and an
+        // omitted base cannot tempt the model into passing the id explicitly,
+        // which is the bypass Task 10C closes.
+        bases.retain(|base| {
+            !hidden.contains(&base.id) && !self.kb_is_out_of_reach(&base.id, caller_private)
+        });
         Ok(bases)
     }
 
@@ -346,7 +378,7 @@ impl KnowledgeServer {
         &self,
         context: Option<&RequestContext<RoleServer>>,
     ) -> Result<Vec<Manifest>, ErrorData> {
-        self.visible_bases_for_session(Self::session_id(context))
+        self.visible_bases_for_session(Self::session_id(context), Self::caller_is_private(context))
     }
 
     fn search_visible_bases(
@@ -354,10 +386,22 @@ impl KnowledgeServer {
         query: &str,
         limit: usize,
         session_id: Option<&str>,
+        caller_private: bool,
         scope: SearchScope,
     ) -> Result<Vec<SearchHitWithKb>, ErrorData> {
         let mut hits = Vec::new();
-        for base in self.visible_bases_for_session(session_id)? {
+        for base in self.visible_bases_for_session(session_id, caller_private)? {
+            // Issue #56. INSIDE the loop, per base. A guard BEFORE it would make
+            // a KB-less search all-or-nothing, so one private base in the
+            // session's set would cost the user every other base — and skipping
+            // here rather than filtering the hits afterwards is what keeps the
+            // private base's index off the disk entirely. The listing above has
+            // already dropped it; this is the second reading, on the base we are
+            // about to open, so one that was ratcheted in between is still
+            // skipped.
+            if self.kb_is_out_of_reach(&base.id, caller_private) {
+                continue;
+            }
             let kb_root = crate::knowledge::paths::kb_root(self.service.root(), &base.id);
             let kb_hits = crate::knowledge::store::search_with_scope(&kb_root, query, limit, scope)
                 .map_err(into_err)?;
@@ -402,7 +446,18 @@ impl KnowledgeServer {
     /// Resolve `supplied` kb_id, else this session's primary.
     ///
     /// An explicit `kb_id` always wins and is never filtered against the
-    /// session's set — that is how a hidden base (Soul) stays reachable.
+    /// session's set — that is how a hidden base (Soul) stays reachable. HIDING
+    /// is a tidiness control and that sentence is correct for it.
+    ///
+    /// ⚠ Issue #56. PRIVACY is not a tidiness control, and it is answered
+    /// **above** this function, at CP1 in `call_tool`, not inside it: `kb_search`,
+    /// `kb_search_raw_sources`, `kb_export` and all nine writes take `kb_id`
+    /// directly and never call this, and it is also how a *write* resolves its
+    /// target, so a shared refusal here would report a read error on a write.
+    /// What this function does own is the ERROR it produces when there is
+    /// neither an id nor a primary — CP1 deliberately falls through in that case
+    /// so the tool answers, and that message must not enumerate a base the
+    /// caller may not reach.
     fn kb_id_or_primary(
         &self,
         supplied: Option<String>,
@@ -414,10 +469,26 @@ impl KnowledgeServer {
         if let Some(primary) = self.primary_kb_for_context(context)? {
             return Ok(primary);
         }
-        let ids = self
+        let caller_private = Self::caller_is_private(context);
+        let ids: Vec<String> = self
             .service
             .session_kb_ids(Self::session_id(context))
-            .map_err(into_err)?;
+            .map_err(into_err)?
+            .into_iter()
+            // Issue #56. `session_kb_ids_unlocked` filters on `hidden` and
+            // NOTHING else, and this string is read by the model. Same rule as
+            // `visible_bases_for_session`: OMIT. A barrier that refuses a read
+            // and then hands over the identifier of the thing it refused is not
+            // a barrier — and that identifier is the one argument that makes the
+            // explicit-`kb_id` branch reachable. When the filter empties the
+            // list, the "this session has no knowledge bases" branch below takes
+            // over; an empty `(one of: )` is both useless and a tell.
+            //
+            // ⚠ Read per id, not once: that is what lets the public bases
+            // survive the private one, the same all-or-nothing trap the fan-out
+            // filters exist to avoid, in a third place.
+            .filter(|id| !self.kb_is_out_of_reach(id, caller_private))
+            .collect();
         Err(ErrorData::invalid_params(
             if ids.is_empty() {
                 "this session has no knowledge bases, so there is nothing to read. \
@@ -708,7 +779,13 @@ impl KnowledgeServer {
                 })
                 .collect::<Vec<_>>()
         } else {
-            self.search_visible_bases(&p.query, p.limit, Self::session_id(Some(&context)), scope)?
+            self.search_visible_bases(
+                &p.query,
+                p.limit,
+                Self::session_id(Some(&context)),
+                Self::caller_is_private(Some(&context)),
+                scope,
+            )?
         };
         ok_json(&hits)
     }
@@ -745,6 +822,7 @@ impl KnowledgeServer {
                 &p.query,
                 p.limit,
                 Self::session_id(Some(&context)),
+                Self::caller_is_private(Some(&context)),
                 SearchScope::RawSources,
             )?
         };
@@ -770,15 +848,53 @@ impl KnowledgeServer {
 
     // ── The session's knowledge-base set and its primary ──────────────────────
 
+    /// The ids in `selection` this caller may reach — the **view**, never the
+    /// store.
+    ///
+    /// ⚠ The filter is HERE and not in `service::selection` or
+    /// `apply_selection_unlocked`. Those two feed `repair_decision`, which
+    /// promotes the primary to `next_ids.first()` and then **writes it to
+    /// disk**. Filtering the service would therefore make a public model's
+    /// `kb_get_active` silently re-point the user's primary at the
+    /// lexicographically first public base — a persisted, machine-wide change as
+    /// a side effect of a read, and one the Knowledge view would then show. The
+    /// store keeps one truth; the two model-facing tools render a filtered
+    /// projection of it.
+    fn visible_kb_ids(
+        &self,
+        selection: &crate::knowledge::service::KbSelection,
+        caller_private: bool,
+    ) -> Vec<String> {
+        selection
+            .kb_ids
+            .iter()
+            .filter(|id| !self.kb_is_out_of_reach(id, caller_private))
+            .cloned()
+            .collect()
+    }
+
     /// Body of `kb_set_active`, split out so it can be unit-tested without
     /// fabricating a `RequestContext`.
     fn set_primary_json(
         &self,
         session_id: Option<&str>,
         kb_id: &str,
+        caller_private: bool,
     ) -> Result<serde_json::Value, ErrorData> {
         crate::knowledge::paths::validate_kb_id(kb_id)
             .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
+        // Issue #56. Membership is decided against the set THIS CALLER can see.
+        // A private base is not "refused" — it is NOT A MEMBER, byte-identical
+        // to the answer an id that does not exist gets. Refusing it by name
+        // would confirm it exists, in a politer sentence.
+        let selection = self.service.selection(session_id).map_err(into_err)?;
+        let visible = self.visible_kb_ids(&selection, caller_private);
+        if !visible.iter().any(|id| id == kb_id) {
+            return Err(ErrorData::invalid_params(
+                not_a_member(kb_id, &visible, session_id),
+                None,
+            ));
+        }
         let selection = self
             .service
             .set_selection(
@@ -786,26 +902,52 @@ impl KnowledgeServer {
                 None,
                 crate::knowledge::service::PrimaryUpdate::Set(kb_id),
             )
-            .map_err(|e| ErrorData::invalid_params(format!("{e:#}"), None))?;
-        Ok(Self::selection_value(&selection, true))
+            // Pre-checked above, so an `Err` here is a concurrent hide (or I/O).
+            // Answer with OUR list either way: `apply_selection_unlocked`'s
+            // message is built from `next_ids` — the WHOLE set — and would put
+            // every private id into a public caller's error on a race.
+            .map_err(|e| {
+                tracing::warn!("kb_set_active: {e:#}");
+                ErrorData::invalid_params(not_a_member(kb_id, &visible, session_id), None)
+            })?;
+        Ok(self.selection_value(&selection, caller_private, true))
     }
 
     /// Body of `kb_get_active`.
-    fn selection_json(&self, session_id: Option<&str>) -> Result<serde_json::Value, ErrorData> {
+    fn selection_json(
+        &self,
+        session_id: Option<&str>,
+        caller_private: bool,
+    ) -> Result<serde_json::Value, ErrorData> {
         let selection = self.service.selection(session_id).map_err(into_err)?;
-        Ok(Self::selection_value(&selection, false))
+        Ok(self.selection_value(&selection, caller_private, false))
     }
 
     fn selection_value(
+        &self,
         selection: &crate::knowledge::service::KbSelection,
+        caller_private: bool,
         ok: bool,
     ) -> serde_json::Value {
+        let kb_ids = self.visible_kb_ids(selection, caller_private);
+        // Issue #56. The POINTER is metadata too, and it is the single id that
+        // makes the explicit-`kb_id` branch usable without guessing. A primary
+        // the caller may not reach reads `null` — truthful for this caller (it
+        // has no write target it can use) and the same OMISSION rule
+        // `kb_list_bases` takes. `active_kb` is the deprecated mirror and must
+        // move with it; filtering two of the three fields is the natural
+        // half-fix and this is the field it forgets.
+        let primary = selection
+            .primary_kb
+            .as_ref()
+            .filter(|id| kb_ids.iter().any(|visible| visible == *id))
+            .cloned();
         let mut v = serde_json::json!({
-            "primary_kb": selection.primary_kb,
-            "knowledge_bases": selection.kb_ids,
+            "primary_kb": primary.clone(),
+            "knowledge_bases": kb_ids,
             // Deprecated mirror of `primary_kb`, kept for one release so
             // anything that learned the old key keeps working.
-            "active_kb": selection.primary_kb,
+            "active_kb": primary,
         });
         if ok {
             v["ok"] = serde_json::Value::Bool(true);
@@ -822,7 +964,11 @@ impl KnowledgeServer {
         p: Parameters<SetActiveParams>,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        let v = self.set_primary_json(Self::session_id(Some(&context)), &p.0.kb_id)?;
+        let v = self.set_primary_json(
+            Self::session_id(Some(&context)),
+            &p.0.kb_id,
+            Self::caller_is_private(Some(&context)),
+        )?;
         ok_json(&v)
     }
 
@@ -834,7 +980,10 @@ impl KnowledgeServer {
         &self,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        let v = self.selection_json(Self::session_id(Some(&context)))?;
+        let v = self.selection_json(
+            Self::session_id(Some(&context)),
+            Self::caller_is_private(Some(&context)),
+        )?;
         ok_json(&v)
     }
 
@@ -983,8 +1132,14 @@ impl ServerHandler for KnowledgeServer {
         let name = request.name.to_string();
 
         if let Some(kb_id) = self.gated_kb_id(&name, request.arguments.as_ref(), Some(&context))? {
-            // Task 10C adds `self.assert_kb_reachable(&kb_id, caller_private)?;`
-            // HERE, on the line above the raise.
+            // Issue #56, Task 10C. The read half of the ruling, and the reason
+            // this is a hand-written `call_tool`: `kb_search`'s explicit-`kb_id`
+            // branch joined `kb_root(root, &kb_id)` and searched it, and six
+            // more read paths did the same. ONE line, above the router and above
+            // the raise, covers all fourteen — including the ones that resolve
+            // an ABSENT id to the session's primary, because `gated_kb_id`
+            // resolves it exactly as the tool will.
+            self.assert_kb_reachable(&kb_id, caller_private)?;
             if KB_RATCHETING_TOOLS.contains(&name.as_str()) {
                 // BEFORE the write: a raise that only lands on success leaves
                 // content in a base whose tier never moved if the write panics
@@ -1026,6 +1181,32 @@ fn ok_json<T: Serialize>(v: &T) -> Result<CallToolResult, ErrorData> {
 
 fn into_err(e: anyhow::Error) -> ErrorData {
     ErrorData::internal_error(format!("{e:#}"), None)
+}
+
+/// "That is not one of your knowledge bases", built from the ids the caller may
+/// see. ONE sentence for a base that does not exist and for one that is private:
+/// telling them apart is the leak (issue #56).
+///
+/// Deliberately a **verbatim** mirror of `apply_selection_unlocked`'s two
+/// branches (`service.rs`), including its session/no-session vocabulary split,
+/// so that moving the decision up a layer does not invent a second message the
+/// model can tell apart from the old one.
+fn not_a_member(kb_id: &str, visible: &[String], session_id: Option<&str>) -> String {
+    let available = if visible.is_empty() {
+        "none".to_string()
+    } else {
+        visible.join(", ")
+    };
+    match session_id {
+        Some(_) => format!(
+            "knowledge base '{kb_id}' is not one of this session's knowledge bases \
+             ({available}). Add it to the session first, or pass kb_id explicitly to read it once."
+        ),
+        None => format!(
+            "knowledge base '{kb_id}' is not available ({available}) — it does not exist, or it \
+             is hidden."
+        ),
+    }
 }
 
 #[cfg(test)]
@@ -1181,7 +1362,12 @@ mod tests {
             .service
             .set_hidden_for_session("session-a", &["gamma".to_string()])?;
 
-        let v = server.set_primary_json(Some("session-a"), "beta")?;
+        // Task 10C: `true` at all four sites — this test is about HIDING, not
+        // privacy, and a private caller sees the unfiltered set, so nothing here
+        // moves. Its refusal assertion below is also the check that
+        // `not_a_member` really is a verbatim mirror of the service's sentence:
+        // if the spelling drifted, `alpha, beta` stops matching.
+        let v = server.set_primary_json(Some("session-a"), "beta", true)?;
         assert_eq!(v["primary_kb"], serde_json::json!("beta"));
         assert_eq!(
             v["active_kb"],
@@ -1195,7 +1381,7 @@ mod tests {
         );
 
         let err = server
-            .set_primary_json(Some("session-a"), "gamma")
+            .set_primary_json(Some("session-a"), "gamma", true)
             .expect_err("gamma is not in this session");
         assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
         assert!(
@@ -1205,12 +1391,12 @@ mod tests {
         );
 
         let err = server
-            .set_primary_json(Some("session-a"), "no-such-kb")
+            .set_primary_json(Some("session-a"), "no-such-kb", true)
             .expect_err("a base that does not exist can never be primary");
         assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
 
         assert_eq!(
-            server.selection_json(Some("session-a"))?["primary_kb"],
+            server.selection_json(Some("session-a"), true)?["primary_kb"],
             serde_json::json!("beta")
         );
         Ok(())
@@ -1265,11 +1451,11 @@ mod tests {
             .service
             .set_hidden_for_session("session-a", &["hidden".to_string()])?;
 
-        let visible = server.visible_bases_for_session(Some("session-a"))?;
+        let visible = server.visible_bases_for_session(Some("session-a"), true)?;
         let ids = visible.into_iter().map(|base| base.id).collect::<Vec<_>>();
         assert_eq!(ids, vec!["visible".to_string()]);
 
-        let all_visible = server.visible_bases_for_session(Some("session-b"))?;
+        let all_visible = server.visible_bases_for_session(Some("session-b"), true)?;
         assert_eq!(all_visible.len(), 2);
         Ok(())
     }
@@ -1311,6 +1497,7 @@ mod tests {
             "shared topic",
             10,
             Some("session-a"),
+            true,
             SearchScope::Knowledge,
         )?;
         let kb_ids = hits.into_iter().map(|hit| hit.kb_id).collect::<Vec<_>>();
@@ -1588,6 +1775,18 @@ mod tests {
         args: serde_json::Value,
         caller: Caller,
     ) -> Result<CallToolResult, ErrorData> {
+        call_tool_as_session(srv, name, args, None, caller).await
+    }
+
+    /// The same seam, with a chat session id in the meta — the scope every
+    /// primary-pointer and visible-set question is answered against.
+    async fn call_tool_as_session(
+        srv: &KnowledgeServer,
+        name: &str,
+        args: serde_json::Value,
+        session_id: Option<&str>,
+        caller: Caller,
+    ) -> Result<CallToolResult, ErrorData> {
         use tokio::io::AsyncReadExt as _;
 
         let (mut client, server_side) = tokio::io::duplex(64 * 1024);
@@ -1603,6 +1802,12 @@ mod tests {
                 crate::knowledge::tier::capability_meta_value(caller.is_private()).to_string(),
             ),
         );
+        if let Some(sid) = session_id {
+            meta.0.insert(
+                SESSION_ID_META_KEY.to_string(),
+                serde_json::Value::String(sid.to_string()),
+            );
+        }
         let context = RequestContext {
             ct: Default::default(),
             id: rmcp::model::NumberOrString::Number(1),
@@ -1676,28 +1881,49 @@ mod tests {
     async fn a_public_session_writing_never_lowers_a_ratcheted_base() {
         let (srv, _tmp, root) = migrated_server_with_bases(&["default"]);
         crate::knowledge::tier::raise_unlocked(&root, "default", true).unwrap();
-        // Task 10C has not landed, so this write still SUCCEEDS. What must not
-        // happen is the tier moving.
-        call_tool_as(
+        // Task 10B's comment here read "Task 10C has not landed, so this write
+        // still SUCCEEDS", and the call was `.unwrap()`ed. 10C has landed, so
+        // the write is now REFUSED — the strictly stronger outcome. The
+        // assertion this test exists for is unchanged and still the last line:
+        // the ratchet is monotone, and nothing a public caller does may lower it.
+        let out = call_tool_as(
             &srv,
             "kb_append_log",
             serde_json::json!({ "kb_id": "default", "kind": "manual", "summary": "hi" }),
             Public,
         )
-        .await
-        .unwrap();
+        .await;
+        assert!(
+            is_privacy_refusal(&out),
+            "a public write reached a ratcheted base: {}",
+            rendered(&out)
+        );
         assert!(
             crate::knowledge::tier::is_private(&root, "default"),
             "a public write lowered the tier"
         );
     }
 
-    /// name, arguments against the base "default", and whether the call must
-    /// leave "default" private when made by a private caller.
+    /// name, arguments against a NAMED base, whether the call must leave that
+    /// base private when made by a private caller, and — Task 10C — whether a
+    /// PUBLIC caller naming a PRIVATE base must be refused.
+    ///
+    /// `refused_naming_a_private_base` is not a mirror of `KB_ID_GATED_TOOLS`:
+    /// `kb_set_active` is deliberately not on that list (it reads no content)
+    /// and is still refused, because a private base is not a member of a public
+    /// caller's set. Keeping the two fields apart is what stops "gated" from
+    /// quietly becoming "the only tools we thought about".
     struct ToolProbe {
         name: &'static str,
-        args: fn() -> serde_json::Value,
+        args: fn(&str) -> serde_json::Value,
         ratchets: bool,
+        refused_naming_a_private_base: bool,
+    }
+
+    impl ToolProbe {
+        fn args_for(&self, kb_id: &str) -> serde_json::Value {
+            (self.args)(kb_id)
+        }
     }
 
     /// All nineteen `kb_*` tools. The exclusion list as data, reviewable in one
@@ -1708,102 +1934,126 @@ mod tests {
     const KB_TOOL_PROBES: &[ToolProbe] = &[
         ToolProbe {
             name: "kb_list_bases",
-            args: || serde_json::json!({}),
+            args: |_kb| serde_json::json!({}),
             ratchets: false,
+            // Omits rather than refuses: a single-base refusal would hide every
+            // base the moment one of them is private.
+            refused_naming_a_private_base: false,
         },
         ToolProbe {
             name: "kb_list_pages",
-            args: || serde_json::json!({ "kb_id": "default" }),
+            args: |kb| serde_json::json!({ "kb_id": kb }),
             ratchets: false,
+            refused_naming_a_private_base: true,
         },
         ToolProbe {
             name: "kb_read_page",
-            args: || serde_json::json!({ "kb_id": "default", "path": "index.md" }),
+            args: |kb| serde_json::json!({ "kb_id": kb, "path": "index.md" }),
             ratchets: false,
+            refused_naming_a_private_base: true,
         },
         ToolProbe {
             name: "kb_write_page",
-            args: || {
+            args: |kb| {
                 serde_json::json!({
-                    "kb_id": "default", "path": "knowledge/p.md",
+                    "kb_id": kb, "path": "knowledge/p.md",
                     "content": "body", "commit_message": "m"
                 })
             },
             ratchets: true,
+            refused_naming_a_private_base: true,
         },
         ToolProbe {
             name: "kb_add_raw_source",
-            args: || {
+            args: |kb| {
                 serde_json::json!({
-                    "kb_id": "default",
+                    "kb_id": kb,
                     "source": { "kind": "text", "text": "n=412", "title": "note" }
                 })
             },
             ratchets: true,
+            refused_naming_a_private_base: true,
         },
         ToolProbe {
             name: "kb_append_log",
-            args: || serde_json::json!({ "kb_id": "default", "kind": "manual", "summary": "s" }),
+            args: |kb| serde_json::json!({ "kb_id": kb, "kind": "manual", "summary": "s" }),
             ratchets: true,
+            refused_naming_a_private_base: true,
         },
         ToolProbe {
             name: "kb_get_graph",
-            args: || serde_json::json!({ "kb_id": "default" }),
+            args: |kb| serde_json::json!({ "kb_id": kb }),
             ratchets: false,
+            refused_naming_a_private_base: true,
         },
         ToolProbe {
             name: "kb_list_history",
-            args: || serde_json::json!({ "kb_id": "default" }),
+            args: |kb| serde_json::json!({ "kb_id": kb }),
             ratchets: false,
+            refused_naming_a_private_base: true,
         },
         ToolProbe {
             name: "kb_restore_state",
-            args: || serde_json::json!({ "kb_id": "default", "commit_sha": "HEAD" }),
+            args: |kb| serde_json::json!({ "kb_id": kb, "commit_sha": "HEAD" }),
             ratchets: false,
+            refused_naming_a_private_base: true,
         },
         ToolProbe {
             name: "kb_begin_txn",
-            args: || serde_json::json!({ "kb_id": "default", "label": "t" }),
+            args: |kb| serde_json::json!({ "kb_id": kb, "label": "t" }),
             ratchets: false,
+            refused_naming_a_private_base: true,
         },
         ToolProbe {
             name: "kb_commit_txn",
-            args: || {
+            args: |kb| {
                 serde_json::json!({
-                    "kb_id": "default", "txn": "txn/t", "kind": "manual", "summary": "s"
+                    "kb_id": kb, "txn": "txn/t", "kind": "manual", "summary": "s"
                 })
             },
             ratchets: false,
+            refused_naming_a_private_base: true,
         },
         ToolProbe {
             name: "kb_abort_txn",
-            args: || serde_json::json!({ "kb_id": "default", "txn": "txn/t" }),
+            args: |kb| serde_json::json!({ "kb_id": kb, "txn": "txn/t" }),
             ratchets: false,
+            refused_naming_a_private_base: true,
         },
         ToolProbe {
             name: "kb_search",
-            args: || serde_json::json!({ "kb_id": "default", "query": "n" }),
+            args: |kb| serde_json::json!({ "kb_id": kb, "query": "n" }),
             ratchets: false,
+            refused_naming_a_private_base: true,
         },
         ToolProbe {
             name: "kb_search_raw_sources",
-            args: || serde_json::json!({ "kb_id": "default", "query": "n" }),
+            args: |kb| serde_json::json!({ "kb_id": kb, "query": "n" }),
             ratchets: false,
+            refused_naming_a_private_base: true,
         },
         ToolProbe {
             name: "kb_set_active",
-            args: || serde_json::json!({ "kb_id": "default" }),
+            args: |kb| serde_json::json!({ "kb_id": kb }),
             ratchets: false,
+            // NOT in `KB_ID_GATED_TOOLS`, and still refused — as a NON-MEMBER,
+            // byte-identical to an id that does not exist (Task 10D's rule).
+            refused_naming_a_private_base: true,
         },
         ToolProbe {
             name: "kb_get_active",
-            args: || serde_json::json!({}),
+            args: |_kb| serde_json::json!({}),
             ratchets: false,
+            // Takes no arguments at all: it reports a FILTERED view rather than
+            // refusing. Pinned by
+            // `kb_get_active_does_not_enumerate_a_private_base_or_point_at_one`.
+            refused_naming_a_private_base: false,
         },
         ToolProbe {
             name: "kb_export",
-            args: || serde_json::json!({ "kb_id": "default" }),
+            args: |kb| serde_json::json!({ "kb_id": kb }),
             ratchets: false,
+            refused_naming_a_private_base: true,
         },
     ];
 
@@ -1821,7 +2071,7 @@ mod tests {
         // they ratchet their OWN new id and have their own tests below.
         for probe in KB_TOOL_PROBES {
             let (srv, _tmp, root) = migrated_server_with_bases(&["default"]);
-            let _ = call_tool_as(&srv, probe.name, (probe.args)(), Private).await;
+            let _ = call_tool_as(&srv, probe.name, probe.args_for("default"), Private).await;
             assert_eq!(
                 crate::knowledge::tier::is_private(&root, "default"),
                 probe.ratchets,
@@ -1965,5 +2215,648 @@ mod tests {
             crate::knowledge::tier::is_private(&root, &imported_kb_id(&out)),
             "a public chat imported a private base's archive and got a public base"
         );
+    }
+
+    // ── Issue #56, Task 10C: the barrier at CP1 ──────────────────────────────
+
+    /// Everything a call said, whether it answered or refused — one string, so
+    /// a leak assertion cannot be satisfied by the payload moving from the
+    /// success branch to the error branch.
+    fn rendered(out: &Result<CallToolResult, ErrorData>) -> String {
+        match out {
+            Ok(r) => r
+                .content
+                .iter()
+                .filter_map(|c| c.as_text())
+                .map(|t| t.text.clone())
+                .collect::<Vec<_>>()
+                .join("\n"),
+            Err(e) => e.message.to_string(),
+        }
+    }
+
+    fn refusal_text(out: &Result<CallToolResult, ErrorData>) -> String {
+        match out {
+            Ok(_) => panic!("expected a refusal, got: {}", rendered(out)),
+            Err(e) => e.message.to_string(),
+        }
+    }
+
+    fn err_of(out: Result<CallToolResult, ErrorData>) -> String {
+        refusal_text(&out)
+    }
+
+    /// The one refusal string, recognised rather than re-spelled.
+    fn is_privacy_refusal(out: &Result<CallToolResult, ErrorData>) -> bool {
+        matches!(out, Err(e) if e.message.contains(crate::knowledge::tier::KB_PRIVATE_REFUSAL))
+    }
+
+    fn json_of(out: &Result<CallToolResult, ErrorData>) -> serde_json::Value {
+        serde_json::from_str(&rendered(out)).unwrap_or_else(|e| {
+            panic!("expected a JSON payload ({e}), got: {}", rendered(out));
+        })
+    }
+
+    async fn call_tool_json_as_session(
+        srv: &KnowledgeServer,
+        name: &str,
+        args: serde_json::Value,
+        session_id: &str,
+        caller: Caller,
+    ) -> serde_json::Value {
+        json_of(&call_tool_as_session(srv, name, args, Some(session_id), caller).await)
+    }
+
+    fn set_primary(root: &Path, session_id: &str, kb_id: &str) {
+        KnowledgeService::new(root.to_path_buf())
+            .set_primary_for_session(session_id, Some(kb_id))
+            .unwrap();
+    }
+
+    /// An explicit "no primary at this scope" — not an absent file, which would
+    /// fall back to the machine-wide pointer.
+    fn clear_primary(root: &Path, session_id: &str) {
+        KnowledgeService::new(root.to_path_buf())
+            .set_primary_for_session(session_id, None)
+            .unwrap();
+    }
+
+    /// What `.active-kb-sessions/<digest>` really names, read through a fresh
+    /// service so no in-process state can answer for it.
+    fn stored_primary(root: &Path, session_id: &str) -> Option<String> {
+        KnowledgeService::new(root.to_path_buf())
+            .primary_for_session(Some(session_id))
+            .unwrap()
+    }
+
+    /// Every file under one base, with its size — the cheapest thing that
+    /// changes when a tool writes and does not change when it reads.
+    fn kb_fingerprint(root: &Path, kb_id: &str) -> Vec<(String, u64)> {
+        fn walk(dir: &Path, base: &Path, out: &mut Vec<(String, u64)>) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_dir() {
+                    walk(&p, base, out);
+                } else if let Ok(meta) = std::fs::metadata(&p) {
+                    out.push((
+                        p.strip_prefix(base)
+                            .unwrap_or(&p)
+                            .to_string_lossy()
+                            .to_string(),
+                        meta.len(),
+                    ));
+                }
+            }
+        }
+        let kb = root.join(kb_id);
+        let mut out = Vec::new();
+        walk(&kb, &kb, &mut out);
+        out.sort();
+        out
+    }
+
+    async fn base_ids(srv: &KnowledgeServer, caller: Caller) -> Vec<String> {
+        let out = call_tool_as(srv, "kb_list_bases", serde_json::json!({}), caller).await;
+        json_of(&out)
+            .as_array()
+            .expect("kb_list_bases returns an array")
+            .iter()
+            .map(|b| b["id"].as_str().expect("an id").to_string())
+            .collect()
+    }
+
+    async fn search_hits(
+        srv: &KnowledgeServer,
+        args: serde_json::Value,
+        caller: Caller,
+    ) -> Vec<serde_json::Value> {
+        let out = call_tool_as(srv, "kb_search", args, caller).await;
+        json_of(&out)
+            .as_array()
+            .expect("kb_search returns an array")
+            .clone()
+    }
+
+    #[tokio::test]
+    async fn the_explicit_kb_id_branch_is_not_a_way_around_the_barrier() {
+        // The finding, exactly. Before this task the `kb_id`-carrying branch of
+        // `kb_search` searched any base on the machine, and `search_visible_bases`
+        // — the only code that consults the session's set — was in the `else`.
+        let (srv, _tmp, root) = migrated_server_with_bases(&["default"]);
+        crate::knowledge::tier::raise_unlocked(&root, "default", true).unwrap();
+        seed_page(
+            &root,
+            "default",
+            "knowledge/omop.md",
+            "SENTINEL-COHORT-N-412",
+        );
+
+        let out = call_tool_as(
+            &srv,
+            "kb_search",
+            serde_json::json!({ "kb_id": "default", "query": "SENTINEL-COHORT-N-412" }),
+            Public,
+        )
+        .await;
+        let text = refusal_text(&out);
+        assert!(text.contains("private"), "must say why: {text}");
+        assert!(
+            !text.contains("SENTINEL-COHORT-N-412"),
+            "leaked a snippet: {text}"
+        );
+        assert!(
+            !text.contains("knowledge/omop.md"),
+            "leaked a page path: {text}"
+        );
+
+        // ⚠ The discrimination half. Without it "nothing leaked" is satisfied by
+        // "the tool returns nothing to anybody".
+        let out = call_tool_as(
+            &srv,
+            "kb_search",
+            serde_json::json!({ "kb_id": "default", "query": "SENTINEL-COHORT-N-412" }),
+            Private,
+        )
+        .await;
+        assert!(
+            rendered(&out).contains("SENTINEL-COHORT-N-412"),
+            "a private caller lost its own base: {}",
+            rendered(&out)
+        );
+    }
+
+    #[tokio::test]
+    async fn no_tool_that_names_a_base_reaches_a_private_one_under_a_public_model() {
+        // Parameterised over the seventeen base-addressing tools, BY NAME through
+        // `call_tool` — the shape CP1 makes possible and a per-tool design could
+        // not express for the eight that take no `RequestContext`. `kb_export` is
+        // the one to watch: it writes the entire base to an attacker-named path
+        // on disk in one call.
+        //
+        // ⚠ DEVIATION from the task text, recorded rather than hidden. The task
+        // says "all NINETEEN"; `kb_create_base` and `kb_import` cannot be probed
+        // against an existing id at all (they MINT one, and naming "omop" makes
+        // create fail with "already exists" for a reason that has nothing to do
+        // with this barrier). They are covered by
+        // `a_public_chat_can_still_create_and_import_a_knowledge_base`, and the
+        // partition test below is what proves nothing fell between the two sets.
+        for probe in KB_TOOL_PROBES {
+            let (srv, _tmp, root) = migrated_server_with_bases(&["omop"]);
+            crate::knowledge::tier::raise_unlocked(&root, "omop", true).unwrap();
+            seed_page(&root, "omop", "knowledge/x.md", "SENTINEL-BODY");
+            let before = kb_fingerprint(&root, "omop");
+
+            let out = call_tool_as(&srv, probe.name, probe.args_for("omop"), Public).await;
+            assert_eq!(
+                out.is_err(),
+                probe.refused_naming_a_private_base,
+                "{} refused={} but the table says {}: {}",
+                probe.name,
+                out.is_err(),
+                probe.refused_naming_a_private_base,
+                rendered(&out)
+            );
+            assert!(
+                !rendered(&out).contains("SENTINEL-BODY"),
+                "{} leaked a body: {}",
+                probe.name,
+                rendered(&out)
+            );
+            if probe.refused_naming_a_private_base {
+                assert_eq!(
+                    kb_fingerprint(&root, "omop"),
+                    before,
+                    "{} wrote anyway",
+                    probe.name
+                );
+            }
+
+            // …and the SAME call from a PRIVATE caller must not be refused for
+            // privacy, or "no leak" is satisfied by "the tools return nothing".
+            // Not `.is_ok()`: several of these fail on their own terms against a
+            // fresh base (`kb_commit_txn` has no branch to squash), which has
+            // nothing to do with this barrier.
+            let public_text = rendered(&out);
+            let out = call_tool_as(&srv, probe.name, probe.args_for("omop"), Private).await;
+            assert!(
+                !is_privacy_refusal(&out),
+                "{} refused a private caller: {}",
+                probe.name,
+                rendered(&out)
+            );
+            if probe.refused_naming_a_private_base {
+                assert_ne!(
+                    rendered(&out),
+                    public_text,
+                    "{} answered a private caller with the public caller's refusal",
+                    probe.name
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn omitting_the_kb_id_is_not_the_bypass() {
+        // `kb_id_or_primary` resolves an absent id to the session's primary, so a
+        // handler that only checks an EXPLICIT kb_id is bypassed by deleting one
+        // argument. Four tools take that path.
+        let (srv, _tmp, root) = migrated_server_with_bases(&["omop"]);
+        crate::knowledge::tier::raise_unlocked(&root, "omop", true).unwrap();
+        set_primary(&root, "sess-1", "omop");
+        for tool in [
+            "kb_read_page",
+            "kb_list_pages",
+            "kb_get_graph",
+            "kb_list_history",
+        ] {
+            let out = call_tool_as_session(
+                &srv,
+                tool,
+                serde_json::json!({ "path": "knowledge/x.md" }),
+                Some("sess-1"),
+                Public,
+            )
+            .await;
+            assert!(
+                out.is_err(),
+                "{tool} answered from the primary without a check: {}",
+                rendered(&out)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_kb_less_search_still_serves_the_public_bases_it_can_see() {
+        // The fan-out shape: a single up-front refusal turns
+        // `search_visible_bases` into all-or-nothing, so one private base in the
+        // session's set costs the user every other base.
+        let (srv, _tmp, root) = migrated_server_with_bases(&["default", "omop"]);
+        crate::knowledge::tier::raise_unlocked(&root, "omop", true).unwrap();
+        seed_page(&root, "default", "knowledge/a.md", "publichit zebracohort");
+        seed_page(&root, "omop", "knowledge/b.md", "privatehit zebracohort");
+
+        let hits = search_hits(&srv, serde_json::json!({ "query": "zebracohort" }), Public).await;
+        let kb_ids: std::collections::BTreeSet<&str> =
+            hits.iter().map(|h| h["kb_id"].as_str().unwrap()).collect();
+        assert_eq!(
+            kb_ids.into_iter().collect::<Vec<_>>(),
+            vec!["default"],
+            "got {hits:?}"
+        );
+        let rendered = serde_json::to_string(&hits).unwrap();
+        assert!(!rendered.contains("privatehit"), "{rendered}");
+        assert!(rendered.contains("publichit"), "{rendered}");
+
+        // A private caller still spans both.
+        let hits = search_hits(&srv, serde_json::json!({ "query": "zebracohort" }), Private).await;
+        let kb_ids: std::collections::BTreeSet<&str> =
+            hits.iter().map(|h| h["kb_id"].as_str().unwrap()).collect();
+        assert_eq!(
+            kb_ids.into_iter().collect::<Vec<_>>(),
+            vec!["default", "omop"]
+        );
+    }
+
+    #[tokio::test]
+    async fn kb_list_bases_omits_a_private_base_rather_than_redacting_it() {
+        // A KB name is user-authored and routinely names a cohort or a study.
+        // Omission also removes the temptation to then pass the id explicitly,
+        // which is the very bypass this task closes.
+        let (srv, _tmp, root) = migrated_server_with_bases(&["default", "omop"]);
+        crate::knowledge::tier::raise_unlocked(&root, "omop", true).unwrap();
+        assert_eq!(base_ids(&srv, Public).await, vec!["default".to_string()]);
+        assert_eq!(
+            base_ids(&srv, Private).await,
+            vec!["default".to_string(), "omop".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn the_no_primary_error_names_only_the_bases_the_caller_may_reach() {
+        // The fall-through `gated_kb_id` deliberately leaves open: with no
+        // explicit kb_id and no primary, the TOOL answers — and its answer used
+        // to be the full id list. Same leak class as `kb_list_bases` redacting
+        // instead of omitting, one function over, and it hands the public caller
+        // the exact argument the explicit-`kb_id` branch needs.
+        let (srv, _tmp, root) = migrated_server_with_bases(&["default", "omop"]);
+        crate::knowledge::tier::raise_unlocked(&root, "omop", true).unwrap();
+        clear_primary(&root, "sess-1");
+
+        let public = call_tool_as_session(
+            &srv,
+            "kb_read_page",
+            serde_json::json!({ "path": "knowledge/x.md" }),
+            Some("sess-1"),
+            Public,
+        )
+        .await;
+        let t = rendered(&public);
+        assert!(
+            t.contains("default"),
+            "the public base must still be offered: {t}"
+        );
+        assert!(
+            !t.contains("omop"),
+            "the no-primary error enumerated a private base: {t}"
+        );
+
+        let private = call_tool_as_session(
+            &srv,
+            "kb_read_page",
+            serde_json::json!({ "path": "knowledge/x.md" }),
+            Some("sess-1"),
+            Private,
+        )
+        .await;
+        assert!(
+            rendered(&private).contains("omop"),
+            "a private caller lost its own base: {}",
+            rendered(&private)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_public_session_whose_only_base_is_private_is_told_it_has_none() {
+        // The degrade direction. Filtering the list must not leave
+        // "Pass kb_id explicitly (one of: )" — an empty parenthesis is both
+        // useless and a tell. It falls through to the branch that already exists
+        // for a session with no bases at all.
+        let (srv, _tmp, root) = migrated_server_with_bases(&["omop"]);
+        crate::knowledge::tier::raise_unlocked(&root, "omop", true).unwrap();
+        clear_primary(&root, "sess-1");
+        let t = rendered(
+            &call_tool_as_session(
+                &srv,
+                "kb_list_pages",
+                serde_json::json!({}),
+                Some("sess-1"),
+                Public,
+            )
+            .await,
+        );
+        assert!(t.contains("no knowledge bases"), "{t}");
+        assert!(!t.contains("one of:"), "left an empty enumeration: {t}");
+    }
+
+    #[tokio::test]
+    async fn kb_get_active_does_not_enumerate_a_private_base_or_point_at_one() {
+        // The tool that takes NO arguments and returned the whole selection.
+        // `selection_value` serialises `knowledge_bases`, `primary_kb` and the
+        // deprecated `active_kb` mirror — all three are asserted, because
+        // filtering two of the three is the natural half-fix and `active_kb` is
+        // the one a reader forgets.
+        let (srv, _tmp, root) = migrated_server_with_bases(&["default", "omop"]);
+        crate::knowledge::tier::raise_unlocked(&root, "omop", true).unwrap();
+        set_primary(&root, "sess-1", "omop");
+
+        let v = call_tool_json_as_session(
+            &srv,
+            "kb_get_active",
+            serde_json::json!({}),
+            "sess-1",
+            Public,
+        )
+        .await;
+        assert_eq!(v["knowledge_bases"], serde_json::json!(["default"]));
+        // The pointer is metadata too. It reads null rather than naming a base
+        // this caller may not reach — the truthful answer for THIS caller, which
+        // has no usable write target, and the same omission rule kb_list_bases
+        // takes.
+        assert_eq!(v["primary_kb"], serde_json::Value::Null);
+        assert_eq!(
+            v["active_kb"],
+            serde_json::Value::Null,
+            "the deprecated mirror leaked it"
+        );
+
+        let v = call_tool_json_as_session(
+            &srv,
+            "kb_get_active",
+            serde_json::json!({}),
+            "sess-1",
+            Private,
+        )
+        .await;
+        assert_eq!(v["knowledge_bases"], serde_json::json!(["default", "omop"]));
+        assert_eq!(v["primary_kb"], serde_json::json!("omop"));
+
+        // And the STORE was not touched by the public read: the session's
+        // primary file still names omop. This is the assertion that fails the
+        // "filter it in `service::selection`" implementation, which looks
+        // identical from the tool's output and silently re-points the user's
+        // primary.
+        assert_eq!(stored_primary(&root, "sess-1"), Some("omop".to_string()));
+    }
+
+    #[tokio::test]
+    async fn a_private_target_and_a_nonexistent_one_are_indistinguishable_to_kb_set_active() {
+        // Two halves. (1) A public caller may not move the pointer onto a private
+        // base. (2) The refusal must be BYTE-IDENTICAL to the answer a base that
+        // does not exist gets — a message saying "that base is private" confirms
+        // it exists, in a politer sentence.
+        let (srv, _tmp, root) = migrated_server_with_bases(&["default", "omop"]);
+        crate::knowledge::tier::raise_unlocked(&root, "omop", true).unwrap();
+
+        let private_target = err_of(
+            call_tool_as_session(
+                &srv,
+                "kb_set_active",
+                serde_json::json!({ "kb_id": "omop" }),
+                Some("sess-1"),
+                Public,
+            )
+            .await,
+        );
+        let absent_target = err_of(
+            call_tool_as_session(
+                &srv,
+                "kb_set_active",
+                serde_json::json!({ "kb_id": "no-such-kb" }),
+                Some("sess-1"),
+                Public,
+            )
+            .await,
+        );
+        assert_eq!(
+            private_target.replace("omop", "no-such-kb"),
+            absent_target,
+            "the two answers differ, so the difference is the oracle"
+        );
+        assert!(
+            !private_target.to_lowercase().contains("private"),
+            "{private_target}"
+        );
+        // The candidate list in the refusal is filtered, for the same reason
+        // `the_no_primary_error_names_only_the_bases_the_caller_may_reach` exists.
+        assert!(
+            private_target.contains("default") && !private_target.contains("omop, "),
+            "the refusal enumerated the set it refused: {private_target}"
+        );
+        assert_eq!(
+            stored_primary(&root, "sess-1"),
+            None,
+            "the refused set was written anyway"
+        );
+
+        // A private caller still moves it.
+        call_tool_as_session(
+            &srv,
+            "kb_set_active",
+            serde_json::json!({ "kb_id": "omop" }),
+            Some("sess-1"),
+            Private,
+        )
+        .await
+        .unwrap();
+        assert_eq!(stored_primary(&root, "sess-1"), Some("omop".to_string()));
+    }
+
+    /// A tool that is not in `KB_ID_GATED_TOOLS`, why, and **the test that pins
+    /// the behaviour that exemption claims**. The third field is the whole point:
+    /// a bare string is a claim with nothing behind it — which is how
+    /// `kb_get_active`, a no-argument tool that returned every visible base id,
+    /// could sit on such a list being described as "the caller already knows the
+    /// pointer".
+    struct ExemptTool {
+        name: &'static str,
+        why: &'static str,
+        pinned_by: &'static str,
+    }
+
+    const EXEMPT: &[ExemptTool] = &[
+        ExemptTool {
+            name: "kb_list_bases",
+            why: "omits rather than refuses; a single-base refusal would hide every base",
+            pinned_by: "kb_list_bases_omits_a_private_base_rather_than_redacting_it",
+        },
+        ExemptTool {
+            name: "kb_get_active",
+            why: "reports the selection; filters the VIEW — ids omitted, pointer null",
+            pinned_by: "kb_get_active_does_not_enumerate_a_private_base_or_point_at_one",
+        },
+        ExemptTool {
+            name: "kb_set_active",
+            why: "moves the pointer; a private target is NOT A MEMBER, not 'private'",
+            pinned_by:
+                "a_private_target_and_a_nonexistent_one_are_indistinguishable_to_kb_set_active",
+        },
+        ExemptTool {
+            name: "kb_create_base",
+            why: "names a base that does not exist yet — nothing to leak (Task 10A (3))",
+            pinned_by: "a_public_chat_can_still_create_and_import_a_knowledge_base",
+        },
+        ExemptTool {
+            name: "kb_import",
+            why: "same; the id is chosen by brkb::import's collision loop",
+            pinned_by: "a_public_chat_can_still_create_and_import_a_knowledge_base",
+        },
+    ];
+
+    #[test]
+    fn every_kb_tool_is_gated_or_exempt_for_a_pinned_reason() {
+        // The partition: the router's own tool list must equal the gated list
+        // plus the exemptions, nothing unaccounted for in either direction, so a
+        // TWENTIETH tool is a test failure rather than a silent hole.
+        let mut known: Vec<&str> = KB_ID_GATED_TOOLS
+            .iter()
+            .copied()
+            .chain(EXEMPT.iter().map(|e| e.name))
+            .collect();
+        known.sort();
+        let mut actual: Vec<String> = KnowledgeServer::tool_router()
+            .list_all()
+            .into_iter()
+            .map(|t| t.name.to_string())
+            .collect();
+        actual.sort();
+        assert_eq!(
+            actual, known,
+            "a kb_* tool is neither gated nor listed as exempt"
+        );
+        // …and no exemption may be a bare assertion. Step 5 greps every
+        // `pinned_by` for a real `fn` in this file; here we only pin that the
+        // field is filled, because Rust has no way to name a test function from
+        // another test.
+        for e in EXEMPT {
+            assert!(
+                !e.why.is_empty() && e.pinned_by.starts_with(|c: char| c.is_alphabetic()),
+                "{} is exempt with no reason and no pinning test",
+                e.name
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn no_exempt_tool_volunteers_a_private_bases_id_to_a_public_caller() {
+        // The rule that REPLACES a blanket exemption, and the one that would have
+        // caught `kb_get_active` before it shipped. `KB_ID_GATED_TOOLS` decides
+        // who takes the CONTENT barrier and says nothing about METADATA; listing
+        // the non-gated tools and stopping is not a completeness test, it is a
+        // permission slip. This is universal over the exempt set, so a twentieth
+        // exempt tool is covered the day it is written.
+        //
+        // ⚠ Every probe's arguments name ONLY the public base. That is the
+        // volunteering/being-asked line: echoing back an id the caller supplied
+        // is not a leak (`kb_set_active {kb_id: "omop"}` must say so by name),
+        // whereas producing that id from arguments that never mentioned it is
+        // the content crossing.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().to_path_buf();
+        let srv = server_with_root(root.clone());
+        srv.service.create_base("default", "Default", None).unwrap();
+        srv.service
+            .create_base("omop-cohort-412", "OMOP Cohort", None)
+            .unwrap();
+        crate::knowledge::tier::raise_unlocked(&root, "omop-cohort-412", true).unwrap();
+        set_primary(&root, "sess-1", "omop-cohort-412"); // the pointer names it
+
+        let (_fx, brkb_path) = brkb_fixture(Public);
+        let args_naming_only_default = |name: &str| -> serde_json::Value {
+            match name {
+                "kb_set_active" => serde_json::json!({ "kb_id": "default" }),
+                "kb_create_base" => serde_json::json!({ "id": "fresh-kb", "name": "Fresh" }),
+                "kb_import" => serde_json::json!({ "src_path": brkb_path }),
+                // `kb_list_bases` and `kb_get_active` take no arguments at all —
+                // which is exactly why they are the dangerous ones.
+                _ => serde_json::json!({}),
+            }
+        };
+
+        for e in EXEMPT {
+            let out = call_tool_as_session(
+                &srv,
+                e.name,
+                args_naming_only_default(e.name),
+                Some("sess-1"),
+                Public,
+            )
+            .await;
+            let text = rendered(&out);
+            assert!(
+                !text.contains("omop-cohort-412"),
+                "{} volunteered a private base id to a public caller: {text}",
+                e.name
+            );
+            assert!(
+                !text.contains("OMOP Cohort"), // the NAME, which is user-authored
+                "{} volunteered a private base name: {text}",
+                e.name
+            );
+        }
+
+        // The same loop as a PRIVATE caller must still see it, or "no leak" is
+        // satisfied by "the tools return nothing".
+        let out = call_tool_as_session(
+            &srv,
+            "kb_get_active",
+            serde_json::json!({}),
+            Some("sess-1"),
+            Private,
+        )
+        .await;
+        assert!(rendered(&out).contains("omop-cohort-412"));
     }
 }

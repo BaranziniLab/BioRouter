@@ -220,8 +220,9 @@ pub struct LintResult {
 pub async fn lint(svc: &KnowledgeService, args: LintArgs) -> Result<LintResult> {
     let _lock = svc.lock_kb(&args.kb_id).await?;
     // Issue #56. Before the sub-agent, not after: an autofix that fails halfway
-    // has already written pages. Task 10C adds `tier::assert_reachable(..)`
-    // on the line above.
+    // has already written pages. Task 10C (CP2) puts the barrier on the line
+    // above — a lint's `scan` reads every page, and an autofix rewrites them.
+    crate::knowledge::tier::assert_reachable(svc.root(), &args.kb_id, args.caller_is_private)?;
     svc.raise_tier(&args.kb_id, args.caller_is_private)?;
     let kb_root = paths::kb_root(svc.root(), &args.kb_id);
 

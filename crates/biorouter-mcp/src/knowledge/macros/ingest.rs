@@ -55,7 +55,13 @@ pub async fn ingest(svc: &KnowledgeService, args: IngestArgs) -> Result<IngestRe
     // (subagent/kb_tools.rs) is bound to this one `kb_id` and reaches `store::*`
     // directly — there is no lower seam, and no MCP gate can see it. Before the
     // sub-agent, not after: a run that fails halfway has already written pages.
-    // Task 10C adds `tier::assert_reachable(..)` on the line above.
+    //
+    // Task 10C (CP2): the barrier sits on the line ABOVE the ratchet, so a
+    // public model never reaches the sub-agent's read tools at all — and never
+    // reaches a raise that would stamp an entry-less directory explicitly
+    // public. `conversation_ingest` builds these same `IngestArgs`, so it is
+    // gated here too.
+    crate::knowledge::tier::assert_reachable(svc.root(), &args.kb_id, args.caller_is_private)?;
     svc.raise_tier(&args.kb_id, args.caller_is_private)?;
     let kb_root = paths::kb_root(svc.root(), &args.kb_id);
 

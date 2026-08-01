@@ -101,7 +101,10 @@ pub async fn query(svc: &KnowledgeService, args: QueryArgs) -> Result<QueryResul
     let _lock = svc.lock_kb(&args.kb_id).await?;
     // Issue #56. See `QueryArgs::caller_is_private`: this macro's sub-agent
     // holds the same three write tools the ingest one does. Before the
-    // sub-agent, not after. Task 10C adds `tier::assert_reachable(..)` above.
+    // sub-agent, not after. Task 10C (CP2) puts the barrier on the line above:
+    // a `query` reads the whole base into a model's context, which is the
+    // disclosure this issue is about even when `file_as_page` is false.
+    crate::knowledge::tier::assert_reachable(svc.root(), &args.kb_id, args.caller_is_private)?;
     svc.raise_tier(&args.kb_id, args.caller_is_private)?;
     let kb_root = paths::kb_root(svc.root(), &args.kb_id);
 

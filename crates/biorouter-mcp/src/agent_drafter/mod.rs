@@ -1392,9 +1392,7 @@ fn stage_full_payload(
     target: &std::path::Path,
     include: Option<&serde_json::Value>,
     // Issue #56 (CP4). The capability of the session that asked for the export.
-    // Task 10B only plumbs it here; **Task 10C adds the check that consumes it**,
-    // so the diff a reviewer reads there is one `if`. Unused today on purpose.
-    #[allow(unused_variables)] caller_is_private: bool,
+    caller_is_private: bool,
 ) -> StagedPayload {
     let agent = manifest.agent.clone().unwrap_or_default();
 
@@ -1424,6 +1422,21 @@ fn stage_full_payload(
             Some(svc) => {
                 let kdir = payload_dir.join("knowledge");
                 for kb in &kb_ids {
+                    // Issue #56 (CP4), Task 10C. `export_brkb` writes the WHOLE
+                    // base into the payload, and `kb_ids` comes from the
+                    // model-supplied `include.knowledge_bases` — a strictly
+                    // wider `kb_export` that never touches `KnowledgeServer`, so
+                    // CP1 cannot see it. Skip-and-note rather than fail the
+                    // export, matching `search_visible_bases`: the rest of the
+                    // payload is still useful and the user is told what was left
+                    // out.
+                    if let Err(e) =
+                        crate::knowledge::tier::assert_reachable(svc.root(), kb, caller_is_private)
+                    {
+                        out.notes
+                            .push(format!("skipped knowledge base '{kb}': {e}"));
+                        continue;
+                    }
                     match svc.export_brkb(kb) {
                         Ok(bytes) => {
                             let fname = format!("{kb}.brkb");
@@ -3983,6 +3996,86 @@ br.run("hello", "#missing");
             "missing KB is skipped, not staged"
         );
         assert!(text_of(&res).contains("skipped knowledge base 'does-not-exist'"));
+    }
+
+    /// Issue #56 (CP4). `export_brkb` writes the WHOLE base into the payload,
+    /// and `kb_ids` comes from the model-supplied `include.knowledge_bases` — a
+    /// strictly wider `kb_export` with no id gate anywhere before this task.
+    /// Skip-and-note rather than hard-fail, matching `search_visible_bases`: the
+    /// rest of the export is still useful and the user is told why.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn export_app_leaves_a_private_knowledge_base_out_of_the_payload() {
+        relax_catalog_strictness();
+        let kroot = TempDir::new().unwrap();
+        // Real bases, not hand-made directories: `create_base` registers each id
+        // PUBLIC, and a base with a directory but no tier entry would read
+        // private by inference (decision 3) and make this test pass vacuously.
+        let ksvc = crate::knowledge::service::KnowledgeService::new(kroot.path().to_path_buf());
+        ksvc.create_base("pub-kb", "Public KB", None).unwrap();
+        ksvc.create_base("priv-kb", "OMOP Cohort", None).unwrap();
+        crate::knowledge::tier::raise_unlocked(kroot.path(), "priv-kb", true).unwrap();
+
+        let _kg = EnvGuard::set("BIOROUTER_KNOWLEDGE_DIR", kroot.path());
+
+        let (_d, s) = server();
+        let mut p = create("Payload", None);
+        p.html = Some("<html><head></head><body>hi</body></html>".into());
+        p.system_prompt = Some("help".into());
+        s.create_app_inner(p, None).await.unwrap();
+
+        let include = serde_json::json!({ "knowledge_bases": ["pub-kb", "priv-kb"] });
+
+        // A PUBLIC caller gets the public base and a note naming what was left out.
+        let out = TempDir::new().unwrap();
+        let res = s
+            .export_app_inner(
+                ExportAppParams {
+                    id: "payload".into(),
+                    target_dir: out.path().to_string_lossy().to_string(),
+                    mode: Some("full".into()),
+                    include: Some(include.clone()),
+                    ..Default::default()
+                },
+                /* caller_is_private */ false,
+            )
+            .await
+            .unwrap();
+
+        let ej: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(out.path().join("export.json")).unwrap())
+                .unwrap();
+        let ids: Vec<&str> = ej["knowledge_bases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|k| k["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, vec!["pub-kb"]);
+        let text = text_of(&res);
+        assert!(
+            text.contains("priv-kb") && text.contains("private"),
+            "the export must say what it left out and why: {text}"
+        );
+        assert!(!out.path().join("payload/knowledge/priv-kb.brkb").exists());
+        assert!(out.path().join("payload/knowledge/pub-kb.brkb").exists());
+
+        // A PRIVATE caller still gets both, or "no leak" is satisfied by
+        // "the export stages nothing".
+        let out2 = TempDir::new().unwrap();
+        s.export_app_inner(
+            ExportAppParams {
+                id: "payload".into(),
+                target_dir: out2.path().to_string_lossy().to_string(),
+                mode: Some("full".into()),
+                include: Some(include),
+                ..Default::default()
+            },
+            /* caller_is_private */ true,
+        )
+        .await
+        .unwrap();
+        assert!(out2.path().join("payload/knowledge/priv-kb.brkb").exists());
     }
 
     /// An explicit empty `include.knowledge_bases` selects nothing even when the

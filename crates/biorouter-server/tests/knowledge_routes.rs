@@ -2427,4 +2427,78 @@ mod privacy_ratchet {
     // a row. That the tier and the completer come from one `Arc` is
     // `the_completer_and_the_capability_come_from_the_same_provider`, and every
     // production caller of `ProviderCompleter::new` is gone.
+
+    // ── Issue #56, Task 10C: the barrier at CP2, over HTTP ───────────────────
+
+    async fn post_json_raw(app: &Router, uri: &str, body: serde_json::Value) -> (u16, String) {
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(uri)
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = res.status().as_u16();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, String::from_utf8_lossy(&bytes).to_string())
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn a_public_model_macro_cannot_run_against_a_private_base_over_http() {
+        // ⚠ DEVIATION from the task text, recorded rather than hidden. The task
+        // writes this as `post_query(...)` against a bare root; there is no such
+        // helper, and the caller's capability is not a parameter of these routes
+        // — it is read off the provider `build_completer` constructs. So the
+        // PUBLIC caller is spelled the way the ratchet matrix above spells it: a
+        // non-loopback `OLLAMA_HOST`.
+        let _env = lock_env_for("http://ollama.invalid:11434");
+        let (_d, root, app) = build_test_router_with_root();
+        create_kb(app.clone(), "omop", "OMOP").await;
+        std::fs::write(
+            root.join("omop").join("knowledge").join("x.md"),
+            "# x\n\nSENTINEL-BODY\n",
+        )
+        .unwrap();
+        biorouter_mcp::knowledge::tier::raise_unlocked(&root, "omop", true).unwrap();
+
+        let (status, body) = post_json_raw(
+            &app,
+            "/bases/omop/query",
+            serde_json::json!({
+                "question": "what is n?",
+                "model": model("ollama", "qwen3.5:4b"),
+            }),
+        )
+        .await;
+        assert_eq!(
+            status, 409,
+            "a public model ran a macro on a private base: {body}"
+        );
+        assert!(body.contains("private"), "{body}");
+
+        // And the GUI's own read routes are untouched: the user is not a model.
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/bases/omop/page?path=knowledge/x.md")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            200,
+            "the Knowledge view was locked out of the user's own notes"
+        );
+    }
 }
