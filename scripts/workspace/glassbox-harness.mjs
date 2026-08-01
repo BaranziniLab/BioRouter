@@ -306,10 +306,16 @@ async function main() {
     process.exit(1);
   }
 
-  // The negative control, and the ONLY end-to-end check that adding
+  // The negative control, and the only end-to-end check that adding
   // `/ui/workspace` to `check_token`'s exemption list did not simply make the
   // path unauthenticated. `check_workspace_ws_auth`'s unit tests assert the
   // predicate; this asserts the predicate is what the server actually runs.
+  //
+  // ⚠ Load-bearing only as a PAIR with the positive control above: a daemon
+  // that had lost the route entirely would 404 this handshake, `onerror` would
+  // fire, and "refused" would go green on its own. It is the assertion above —
+  // the same socket, the right secret, connected — that makes this one mean
+  // "the secret was checked" rather than "nothing answered".
   const refused = await new Promise((resolve) => {
     const bad = new WebSocket(
       `${BASE.replace(/^http/, 'ws')}/ui/workspace?secret=definitely-not-the-secret&window_id=harness-bad`
@@ -433,7 +439,16 @@ async function main() {
 
   // ---- LIVE tier ----------------------------------------------------------
   if (!LIVE) {
+    // Every assertion the live tier runs, so this list is a complete account of
+    // what a baseline run did NOT check — the same standard the header holds
+    // itself to, applied to the other direction.
+    skip('LIVE tier attaches a provider to the parent session', 'set BIOROUTER_HARNESS_LIVE=1');
     skip('spawn announces open_tab + annotate_tab frames', 'set BIOROUTER_HARNESS_LIVE=1');
+    skip('annotate_tab names the parent', 'live only');
+    skip('child observer stream opens', 'live only');
+    skip('spawn-context record is messages[0] with provenance spawn_context', 'live only');
+    skip('the tab-composer /reply is accepted by the now-idle child', 'live only');
+    skip('the parent /reply is accepted', 'live only');
     skip('interrupt into the RUNNING child returns 202 and appears user_direct', 'live only');
     skip('cancel of the child returns cancelled:true with a turn id', 'live only');
     skip('/reply into a subagent session is stamped user_direct', 'live only');
