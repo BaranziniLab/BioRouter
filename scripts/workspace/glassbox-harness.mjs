@@ -209,6 +209,34 @@ function withDeadline(promise, ms) {
   ]);
 }
 
+/**
+ * Why a non-202 `/interrupt` stopped the cancel chain, in the language of the
+ * outcome table documented at the liveness probe below.
+ *
+ * ⚠ The remedy is NOT one size fits all, and the single "lengthen the delegated
+ * task" line this used to print is actively wrong for a 500: `get_agent_for_route`
+ * failing to construct the child agent is a real defect, not a race the operator
+ * can out-wait, and telling them to re-run with a longer task sends them away
+ * from it. Every branch here still only ever downgrades to INCONCLUSIVE and
+ * never to a pass — the assertion that a 500 must FAIL is the `steer.status ===
+ * 202` one above, which fires first. Whoever reorders those two must keep that
+ * true, because nothing in this classifier can fail a run.
+ */
+function interruptStall(status) {
+  if (status === 409) {
+    return `the child was no longer running when the cancel was due (/interrupt → 409); ` +
+      'lengthen the delegated task in the harness and re-run';
+  }
+  if (status === 500) {
+    return `/interrupt → 500: the daemon could not construct the child agent ` +
+      '(`get_agent_for_route` failed). That is a real defect, NOT the finished-early race ' +
+      'this classification exists for — re-running with a longer task will not clear it';
+  }
+  return `/interrupt → ${status}, which is not a documented outcome for a non-empty steer ` +
+    'into a live child (400 = empty text, 409 = no active turn, 500 = no agent, 202 = queued); ' +
+    'diagnose it before re-running';
+}
+
 /** How long to wait for the workspace socket's open/error event. */
 const WS_OPEN_TIMEOUT_MS = 15000;
 /**
@@ -743,8 +771,7 @@ async function main() {
       if (stillRunning.status !== 202) {
         inconclusiveLive(
           'cancel of the child returns cancelled:true with a turn id (Task 33 lease held)',
-          `the child was no longer running when the cancel was due (/interrupt → ${stillRunning.status}); ` +
-            'lengthen the delegated task and re-run'
+          interruptStall(stillRunning.status)
         );
       } else {
         const cancel = await json('/agent/cancel', {
@@ -775,9 +802,8 @@ async function main() {
         if (afterwards && afterwards.status !== 202) {
           inconclusiveLive(
             'cancel of the child returns cancelled:true with a turn id (Task 33 lease held)',
-            `the turn ended between the liveness probe and the cancel ` +
-              `(/agent/cancel → ${JSON.stringify(cancel.body)}, /interrupt afterwards → ` +
-              `${afterwards.status}); lengthen the delegated task and re-run`
+            `the cancel found no turn (/agent/cancel → ${JSON.stringify(cancel.body)}), and ` +
+              `${interruptStall(afterwards.status)}`
           );
         } else {
           // `pub struct CancelTurnResponse { cancelled: bool, turn_id:
