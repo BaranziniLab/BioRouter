@@ -23,7 +23,7 @@ Concretely, the extension is registered `default_enabled: false` (like Chat Reca
 
 ### Turning on the full surface
 
-In the desktop app: **Settings → Chat → Extensions**, and turn on **Workspace Control**.
+In the desktop app, **Extensions** is its own destination in the left sidebar (not a Settings tab). Open it and turn on **Workspace Control**.
 
 From the CLI:
 
