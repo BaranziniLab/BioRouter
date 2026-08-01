@@ -20,6 +20,102 @@
 //! the enum but omitted here describes a surface entry that property 2 then
 //! reports as unclaimed. A variant omitted here that describes NOTHING is
 //! already dead code.
+//!
+//! # What this gate cannot see
+//!
+//! Measured against the tree on 2026-07-31, not recalled. The task that created
+//! this file required each of these to be *stated* the moment it became true
+//! rather than discovered by whoever trusts the gate later, so they live here —
+//! next to the mechanism — and not only in a PR comment.
+//!
+//! ## 1. The `GET /ui/workspace` frame vocabulary — and the one frame that has
+//! now outgrown the argument for tolerating it
+//!
+//! utoipa does not describe WebSocket upgrades, so no frame reaches
+//! `openapi.json` and check B cannot see one. The task accepted that on a
+//! specific argument: every frame is the GUI *rendering* of a `workspace_*`
+//! tool the table already covers. Traced against the real emitters, five of the
+//! six frame kinds the daemon sends today do hold that shape:
+//!
+//! | frame | emitted by | covered by |
+//! |---|---|---|
+//! | `open_tab`, `open_window` | `workspace_extension::place_in_gui`, `subagent_tool` | `C::Open`, `C::Spawn` |
+//! | `close_tab` | `workspace_extension::handle_close` | `C::Close` |
+//! | `notify` | `workspace_extension::notify_target`, called from send-prompt/steer, set-tools, close, and the focus-etiquette downgrade of an open frame | `C::SendPrompt`, `C::SetTools`, `C::Close`, `C::Open` |
+//! | `annotate_tab` | `subagent_tool` | `C::Spawn` |
+//!
+//! The sixth does **not**. `resolve_confirmation`
+//! (`biorouter-server/src/routes/action_required.rs`) is pushed by
+//! `POST /action-required/tool-confirmation` and stands behind no `workspace_*`
+//! tool at all. The task said that if such a frame ever appeared, this gate
+//! could not see it and the fact had to be reported rather than allowed to
+//! pass quietly. It has appeared; this is that report.
+//!
+//! It is **not** a parity violation, for a reason worth writing down rather
+//! than assuming. The capability underneath the frame is "answer a
+//! tool-permission ask", and the CLI has had it since long before BR-71:
+//! `biorouter-cli/src/session/mod.rs` prompts the user and calls
+//! `Agent::handle_confirmation` directly. The frame itself is not a capability
+//! but the *dismissal of a duplicate card on a second rendering surface*, and
+//! that second surface is manufactured by `session_events::publish` in
+//! `agents/tool_execution.rs` — an ephemeral bus the GUI observes. A terminal
+//! prompt is local and blocking, so there is no second card for any CLI
+//! counterpart to dismiss.
+//!
+//! It is deliberately given **no row**, and both halves of that are choices:
+//! `tag = "workspace"` would mislabel the universal confirmation endpoint that
+//! every session already uses as workspace control, in a document we publish;
+//! and the only row shape that fits a capability with no subcommand is a third
+//! `Asymmetry`, which check D rejects. Raising that cap to make an exception
+//! fit is precisely the gate-weakening this file exists to prevent.
+//!
+//! **The residual risk, stated plainly:** a future frame that *carries* a
+//! capability instead of rendering one would ship GUI-only with this gate
+//! green. Closing that needs the frame vocabulary to be enumerable from code —
+//! a shared `const` the emitters spell from, not a grep over `json!` literals.
+//! (A source scanner is the obvious cheap fix and is a trap: `open_tab` writes
+//! `"type"` and `"cmd"` on one line while `resolve_confirmation` splits them
+//! across two, so the one-line regex anyone would reach for first misses the
+//! exact frame that motivated the work.)
+//!
+//! ## 2. The renderer's hand-rolled daemon calls
+//!
+//! Gating the daemon's surface gates the GUI's *because* the renderer can only
+//! reach what `ui/desktop/openapi.json` describes — every workspace call site
+//! goes through the generated `ui/desktop/src/api/`. The task measured the
+//! exceptions at `aad74e79`: two `getApiUrl` consumers, neither
+//! workspace-related, and it instructed that a third on a workspace route
+//! weakens the argument and must be said out loud.
+//!
+//! There is now a third, and it *is* on a workspace route:
+//! `ui/desktop/src/hooks/useWorkspaceChannel.ts` derives its socket URL from
+//! `getApiUrl('/ui/workspace')`. So the measurement no longer holds as
+//! written. The argument survives, narrowly: that call is the Task 23 WebSocket
+//! this file already carves out in §1 above — a transport, reached the only way
+//! a WebSocket can be reached when the generator cannot describe it — not a new
+//! hand-rolled HTTP call against a capability route. What would genuinely break
+//! the argument is a fourth consumer doing `fetch(getApiUrl('/some/workspace/
+//! thing'))`, and that is the thing to re-measure when this is next touched.
+//!
+//! ## 3. The route half is honour-system
+//!
+//! Only the *enum* carries the compile-time property. Nothing forces someone
+//! adding a workspace route to touch this file, so an untagged new route fails
+//! nothing here — which is exactly how `resolve_confirmation`'s endpoint sits
+//! outside the gate today. Check B is an equality between the table and the
+//! **tagged** operations, so it catches a tag that is added or removed, never a
+//! tag that was never applied.
+//!
+//! ## 4. Rows are coarser than the capabilities they certify
+//!
+//! Deliberate — the table is written "at the granularity a user cares about" —
+//! but it means a capability can be partly GUI-only with the gate green.
+//! `C::Close` certifies a tool with `tab`/`turn`/`agent` scopes against a
+//! subcommand that implements `turn`; `C::ReadConversation` certifies four
+//! views against a transcript exporter. And check C proves a subcommand
+//! *exists*, never that it is equivalent: rows with `args: &[]` assert
+//! existence alone. Task 38c's live step and Task 44's `session attach` run are
+//! what cover behaviour.
 
 #[cfg(test)]
 use std::collections::BTreeSet;
