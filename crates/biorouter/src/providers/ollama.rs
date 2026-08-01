@@ -12,6 +12,7 @@ use crate::conversation::message::Message;
 use crate::conversation::Conversation;
 
 use crate::model::ModelConfig;
+use crate::privacy::ProviderTier;
 use crate::providers::formats::openai::{create_request, get_usage, response_to_message};
 use crate::utils::safe_truncate;
 use anyhow::Result;
@@ -40,6 +41,13 @@ pub struct OllamaProvider {
     model: ModelConfig,
     supports_streaming: bool,
     name: String,
+    /// The base URL this instance resolved at construction — the same string
+    /// the API client was handed. `tier()` reads it, never the provider's name:
+    /// `from_custom_config` below builds an Ollama-engine provider from a
+    /// user-writable JSON file whose `base_url` can point anywhere, and whose
+    /// `name` can shadow a built-in.
+    #[serde(skip)]
+    resolved_base_url: String,
 }
 
 impl OllamaProvider {
@@ -72,13 +80,15 @@ impl OllamaProvider {
         }
 
         let auth = AuthMethod::Custom(Box::new(NoAuth));
-        let api_client = ApiClient::with_timeout(base_url.to_string(), auth, timeout)?;
+        let resolved_base_url = base_url.to_string();
+        let api_client = ApiClient::with_timeout(resolved_base_url.clone(), auth, timeout)?;
 
         Ok(Self {
             api_client,
             model,
             supports_streaming: true,
             name: Self::metadata().name,
+            resolved_base_url,
         })
     }
 
@@ -109,13 +119,15 @@ impl OllamaProvider {
         }
 
         let auth = AuthMethod::Custom(Box::new(NoAuth));
-        let api_client = ApiClient::with_timeout(base_url.to_string(), auth, timeout)?;
+        let resolved_base_url = base_url.to_string();
+        let api_client = ApiClient::with_timeout(resolved_base_url.clone(), auth, timeout)?;
 
         Ok(Self {
             api_client,
             model,
             supports_streaming: config.supports_streaming.unwrap_or(true),
             name: config.name.clone(),
+            resolved_base_url,
         })
     }
 
@@ -158,10 +170,18 @@ impl Provider for OllamaProvider {
             ],
         )
         .with_unlisted_models()
+        // Ollama ships pointed at this machine, so a default install is
+        // Private. An instance pointed off it says so itself, below.
+        .with_tier(ProviderTier::Private)
+        .with_local_compute()
     }
 
     fn get_name(&self) -> &str {
         &self.name
+    }
+
+    fn tier(&self) -> ProviderTier {
+        crate::providers::self_hosted_tier(&self.resolved_base_url)
     }
 
     fn get_model_config(&self) -> ModelConfig {

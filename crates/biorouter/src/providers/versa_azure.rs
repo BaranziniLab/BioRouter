@@ -17,6 +17,7 @@ use super::utils::{
 };
 use crate::conversation::message::Message;
 use crate::model::ModelConfig;
+use crate::privacy::ProviderTier;
 use crate::providers::utils::RequestLog;
 use rmcp::model::Tool;
 
@@ -58,6 +59,10 @@ pub struct VersaAzureProvider {
     api_version: String,
     model: ModelConfig,
     name: String,
+    /// The endpoint this instance resolved at construction. `tier()` reads it,
+    /// never the provider's name — the three `AZURE_OPENAI_*` keys are shared
+    /// with the public `azure_openai` provider and are user-writable.
+    resolved_endpoint: String,
 }
 
 impl Serialize for VersaAzureProvider {
@@ -122,7 +127,10 @@ impl VersaAzureProvider {
         })?;
 
         let auth_provider = VersaAzureAuthProvider { auth };
-        let api_client = ApiClient::new(endpoint, AuthMethod::Custom(Box::new(auth_provider)))?;
+        let api_client = ApiClient::new(
+            endpoint.clone(),
+            AuthMethod::Custom(Box::new(auth_provider)),
+        )?;
 
         Ok(Self {
             api_client,
@@ -130,6 +138,7 @@ impl VersaAzureProvider {
             api_version,
             model,
             name: Self::metadata().name,
+            resolved_endpoint: endpoint,
         })
     }
 
@@ -201,10 +210,17 @@ impl Provider for VersaAzureProvider {
             ],
         )
         .with_unlisted_models()
+        // The shipped endpoint is the UCSF gateway, so a default install is
+        // Private. An instance that resolved elsewhere says so itself, below.
+        .with_tier(ProviderTier::Private)
     }
 
     fn get_name(&self) -> &str {
         &self.name
+    }
+
+    fn tier(&self) -> ProviderTier {
+        crate::providers::ucsf_gateway_tier(&self.resolved_endpoint)
     }
 
     fn get_model_config(&self) -> ModelConfig {
@@ -306,6 +322,7 @@ mod tests {
             api_version: VERSA_AZURE_API_VERSION.to_string(),
             model: ModelConfig::new_or_fail(VERSA_AZURE_DEPLOYMENT),
             name: "versa_azure".to_string(),
+            resolved_endpoint: VERSA_AZURE_ENDPOINT.to_string(),
         }
     }
 

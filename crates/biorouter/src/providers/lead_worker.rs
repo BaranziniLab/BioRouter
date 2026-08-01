@@ -8,6 +8,7 @@ use super::base::{LeadWorkerProviderTrait, Provider, ProviderMetadata, ProviderU
 use super::errors::ProviderError;
 use crate::conversation::message::{Message, MessageContent};
 use crate::model::ModelConfig;
+use crate::privacy::ProviderTier;
 use rmcp::model::Tool;
 use rmcp::model::{Content, RawContent};
 
@@ -332,6 +333,13 @@ impl Provider for LeadWorkerProvider {
     fn get_name(&self) -> &str {
         // Return the lead provider's name as the default
         self.lead_provider.get_name()
+    }
+
+    /// The ONLY composite override. `get_name()` above answers for the lead
+    /// alone, so anything keyed on it would badge a private-lead/public-worker
+    /// pair Private — while the worker sees the whole transcript.
+    fn tier(&self) -> ProviderTier {
+        ProviderTier::least(self.lead_provider.tier(), self.worker_provider.tier())
     }
 
     fn get_model_config(&self) -> ModelConfig {

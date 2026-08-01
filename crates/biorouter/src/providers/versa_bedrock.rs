@@ -3,6 +3,7 @@ use super::errors::ProviderError;
 use super::retry::{ProviderRetry, RetryConfig};
 use crate::conversation::message::Message;
 use crate::model::ModelConfig;
+use crate::privacy::ProviderTier;
 use crate::providers::utils::RequestLog;
 use anyhow::Result;
 use async_trait::async_trait;
@@ -69,6 +70,12 @@ pub struct VersaBedrockProvider {
     retry_config: RetryConfig,
     #[serde(skip)]
     name: String,
+    /// The endpoint this instance resolved at construction. `tier()` reads it,
+    /// never the provider's name — the last fallback in the chain below is
+    /// `AWS_ENDPOINT_URL_BEDROCK_RUNTIME`, which `bedrock.rs` sets
+    /// process-globally with `std::env::set_var`.
+    #[serde(skip)]
+    resolved_endpoint: String,
 }
 
 impl VersaBedrockProvider {
@@ -137,7 +144,7 @@ impl VersaBedrockProvider {
         let mut loader = aws_config::defaults(aws_config::BehaviorVersion::latest())
             .credentials_provider(credentials)
             .region(aws_config::Region::new(region))
-            .endpoint_url(endpoint_url);
+            .endpoint_url(endpoint_url.clone());
         // Bound a hung/stalled endpoint so a turn can't wait forever (see
         // `bedrock_timeout_config`). Without this, a proxy that accepts the
         // connection but never answers freezes the agent with no error.
@@ -161,6 +168,7 @@ impl VersaBedrockProvider {
             model,
             retry_config,
             name: Self::metadata().name,
+            resolved_endpoint: endpoint_url,
         })
     }
 
@@ -292,10 +300,17 @@ impl Provider for VersaBedrockProvider {
             ],
         )
         .with_unlisted_models()
+        // The shipped endpoint is the UCSF gateway, so a default install is
+        // Private. An instance that resolved elsewhere says so itself, below.
+        .with_tier(ProviderTier::Private)
     }
 
     fn get_name(&self) -> &str {
         &self.name
+    }
+
+    fn tier(&self) -> ProviderTier {
+        crate::providers::ucsf_gateway_tier(&self.resolved_endpoint)
     }
 
     fn retry_config(&self) -> RetryConfig {

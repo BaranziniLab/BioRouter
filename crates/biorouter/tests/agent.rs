@@ -455,6 +455,8 @@ mod tests {
                     model_doc_link: "".to_string(),
                     config_keys: vec![],
                     allows_unlisted_models: false,
+                    tier: Default::default(),
+                    runs_locally: false,
                 }
             }
 
@@ -640,6 +642,8 @@ mod tests {
                     model_doc_link: "".to_string(),
                     config_keys: vec![],
                     allows_unlisted_models: false,
+                    tier: Default::default(),
+                    runs_locally: false,
                 }
             }
 
@@ -804,6 +808,8 @@ mod tests {
                     model_doc_link: String::new(),
                     config_keys: vec![],
                     allows_unlisted_models: false,
+                    tier: Default::default(),
+                    runs_locally: false,
                 }
             }
 
@@ -1218,6 +1224,8 @@ mod tests {
                     model_doc_link: String::new(),
                     config_keys: vec![],
                     allows_unlisted_models: false,
+                    tier: Default::default(),
+                    runs_locally: false,
                 }
             }
 

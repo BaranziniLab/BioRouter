@@ -117,6 +117,15 @@ impl ProviderRegistry {
             model_doc_link: base_metadata.model_doc_link,
             config_keys,
             allows_unlisted_models: true,
+            // NOT inherited from `base_metadata`. This is the declarative path:
+            // the engine's built-in metadata claims a tier for the endpoint the
+            // *built-in* ships with, while this entry points wherever a JSON
+            // file in `custom_providers/` says — and registers under whatever
+            // name it says, built-ins included. Defaulting keeps a writable
+            // file from minting a Private badge; the instance still computes
+            // its own tier from the base URL it resolved.
+            tier: crate::privacy::ProviderTier::default(),
+            runs_locally: false,
         };
 
         self.entries.insert(

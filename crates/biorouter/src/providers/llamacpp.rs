@@ -32,6 +32,7 @@ use crate::config::BioRouterMode;
 use crate::conversation::message::Message;
 use crate::conversation::Conversation;
 use crate::model::ModelConfig;
+use crate::privacy::ProviderTier;
 use crate::providers::formats::openai::{create_request, get_usage, response_to_message};
 use crate::utils::safe_truncate;
 
@@ -488,10 +489,26 @@ impl Provider for LlamaCppProvider {
             ],
         )
         .with_unlisted_models()
+        // The managed sidecar runs here, so a default install is Private. An
+        // instance pointed at an external host says so itself, below.
+        .with_tier(ProviderTier::Private)
+        .with_local_compute()
     }
 
     fn get_name(&self) -> &str {
         &self.name
+    }
+
+    fn tier(&self) -> ProviderTier {
+        match &self.external_base {
+            // No external host: this is the managed sidecar, which
+            // `llamacpp_sidecar` binds to loopback and reasserts loopback-last
+            // on the command line even when a host is injected.
+            None => ProviderTier::Private,
+            // LLAMACPP_EXTERNAL_HOST is user-writable and needs no auth, so the
+            // same rule as ollama applies: loopback or nothing.
+            Some(base) => crate::providers::self_hosted_tier(base),
+        }
     }
 
     fn get_model_config(&self) -> ModelConfig {

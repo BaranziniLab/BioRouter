@@ -1,8 +1,6 @@
 import type { ProviderDetails } from '../../../api';
 
 const HIDDEN_PROVIDERS = new Set(['claude-code', 'codex', 'cursor-agent']);
-const INSTITUTIONAL = new Set(['versa_azure', 'versa_bedrock']);
-const LOCAL = new Set(['llamacpp', 'ollama']);
 
 const PRIORITY_ORDER: Record<string, number> = {
   versa_azure: 0,
@@ -36,14 +34,19 @@ function compareProviders(a: ProviderDetails, b: ProviderDetails): number {
   return a.name.localeCompare(b.name);
 }
 
+/**
+ * Grouping is the backend's answer, never a list kept here. `tier` is the
+ * privacy tier each provider computes from the endpoint it actually resolved,
+ * and `runs_locally` is the display-only fact that splits the private tier into
+ * the two sections this grid has always had. A renderer-side copy of either one
+ * is a second source of truth that drifts silently the moment a provider is
+ * added, renamed, or re-pointed.
+ */
 function classifyProvider(provider: ProviderDetails): ProviderGroupKey {
-  if (INSTITUTIONAL.has(provider.name)) {
-    return 'institutional';
+  if (provider.metadata.tier !== 'private') {
+    return 'commercial';
   }
-  if (LOCAL.has(provider.name)) {
-    return 'local';
-  }
-  return 'commercial';
+  return provider.metadata.runs_locally ? 'local' : 'institutional';
 }
 
 export function getOrderedProviderGroups(providers: ProviderDetails[]): OrderedProviderGroup[] {

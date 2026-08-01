@@ -81,6 +81,8 @@ impl Provider for FailingProvider {
             model_doc_link: String::new(),
             config_keys: vec![],
             allows_unlisted_models: false,
+            tier: Default::default(),
+            runs_locally: false,
         }
     }
 
@@ -133,6 +135,8 @@ impl Provider for HappyProvider {
             model_doc_link: String::new(),
             config_keys: vec![],
             allows_unlisted_models: false,
+            tier: Default::default(),
+            runs_locally: false,
         }
     }
 

@@ -9,6 +9,7 @@ use crate::config::base::ConfigValue;
 use crate::conversation::message::Message;
 use crate::conversation::Conversation;
 use crate::model::ModelConfig;
+use crate::privacy::ProviderTier;
 use crate::utils::safe_truncate;
 use rmcp::model::Tool;
 use utoipa::ToSchema;
@@ -161,6 +162,26 @@ pub struct ProviderMetadata {
     /// Whether this provider allows entering model names not in the fetched list
     #[serde(default)]
     pub allows_unlisted_models: bool,
+    /// Whether models from this provider may be bound to a private session.
+    /// Serialize + ToSchema, so it reaches every UI surface through
+    /// `just generate-openapi` -> `npm run generate-api`.
+    ///
+    /// This is the *type-level* claim, computed from the endpoint this provider
+    /// ships with; an instance that resolved somewhere else reports its own
+    /// tier from [`Provider::tier`], which is the only value the enforcement
+    /// path reads.
+    #[serde(default)]
+    pub tier: ProviderTier,
+    /// Whether this provider's inference runs on the user's own machine — a
+    /// bundled or self-hosted server — rather than on a remote service.
+    ///
+    /// Display only: it is what splits the private tier into the settings
+    /// grid's "Local Models" and "Institutional Models" sections. It is **not**
+    /// the privacy tier, and neither field is derivable from the other: a
+    /// self-hosted server pointed off the machine is still `runs_locally` by
+    /// type and Public by instance.
+    #[serde(default)]
+    pub runs_locally: bool,
 }
 
 impl ProviderMetadata {
@@ -194,6 +215,8 @@ impl ProviderMetadata {
             model_doc_link: model_doc_link.to_string(),
             config_keys,
             allows_unlisted_models: false,
+            tier: ProviderTier::default(),
+            runs_locally: false,
         }
     }
 
@@ -215,6 +238,8 @@ impl ProviderMetadata {
             model_doc_link: model_doc_link.to_string(),
             config_keys,
             allows_unlisted_models: false,
+            tier: ProviderTier::default(),
+            runs_locally: false,
         }
     }
 
@@ -228,12 +253,28 @@ impl ProviderMetadata {
             model_doc_link: "".to_string(),
             config_keys: vec![],
             allows_unlisted_models: false,
+            tier: ProviderTier::default(),
+            runs_locally: false,
         }
     }
 
     /// Set allows_unlisted_models flag (builder pattern)
     pub fn with_unlisted_models(mut self) -> Self {
         self.allows_unlisted_models = true;
+        self
+    }
+
+    /// Declare the tier this provider ships at. Each provider states its own,
+    /// in its own module — there is no central list of private providers, so
+    /// there is nothing for a new provider to be forgotten from.
+    pub fn with_tier(mut self, tier: ProviderTier) -> Self {
+        self.tier = tier;
+        self
+    }
+
+    /// Declare that this provider's inference runs on the user's machine.
+    pub fn with_local_compute(mut self) -> Self {
+        self.runs_locally = true;
         self
     }
 }
@@ -501,6 +542,25 @@ pub trait Provider: Send + Sync {
 
     /// Get the name of this provider instance
     fn get_name(&self) -> &str;
+
+    /// The least-private component of what this **instance** actually resolved.
+    ///
+    /// An instance method, never a lookup on `get_name()`: `get_name()` on a
+    /// composite returns the lead's name (see `LeadWorkerProvider`), and
+    /// `providers::create` can hand back something other than what was asked
+    /// for (the factory intercepts `BIOROUTER_LEAD_MODEL` *before* the registry
+    /// lookup, so `create("ollama", ..)` can return a composite whose lead is
+    /// `anthropic`).
+    ///
+    /// DEFAULT = Public. Fail-safe: a provider module that forgets this gets
+    /// less reach, never more — and a custom declarative provider that shadows
+    /// a built-in name (see `crates/biorouter/src/config/declarative_providers.rs`,
+    /// which registers by `config.name` after the built-ins, so a JSON file named
+    /// `versa_azure` overwrites the real entry) loses a badge rather than forging
+    /// one.
+    fn tier(&self) -> ProviderTier {
+        ProviderTier::Public
+    }
 
     // Internal implementation of complete, used by complete_fast and complete
     // Providers should override this to implement their actual completion logic

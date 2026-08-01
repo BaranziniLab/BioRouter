@@ -8,6 +8,7 @@ use biorouter::config::ExtensionEntry;
 use biorouter::conversation::Conversation;
 use biorouter::model::ModelConfig;
 use biorouter::permission::permission_confirmation::PrincipalType;
+use biorouter::privacy::ProviderTier;
 use biorouter::providers::base::{ConfigKey, ModelInfo, ProviderMetadata, ProviderType};
 use biorouter::session::{
     ActivityWindow, DailyActivity, ModelUsageRow, Session, SessionInsights, SessionType,
@@ -581,6 +582,10 @@ impl utoipa::Modify for ApiKeySecurity {
         JsonObjectSchema,
         RoleSchema,
         ProviderMetadata,
+        // #56: `ProviderMetadata::tier`. Without the component registered the
+        // generated TS client has no `ProviderTier` union for the renderer's
+        // grouping to switch on.
+        ProviderTier,
         ProviderType,
         LoadedProvider,
         ProviderEngine,

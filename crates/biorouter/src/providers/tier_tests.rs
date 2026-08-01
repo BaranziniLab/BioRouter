@@ -1,0 +1,264 @@
+//! Task 5 (issue #56): the private set, and the two demotion rules behind
+//! [`Provider::tier`].
+//!
+//! Declared in `providers/mod.rs` as `#[cfg(test)] mod tier_tests;` — **not**
+//! `include!`, or the filter `providers::tier_tests` resolves to nothing and
+//! prints `0 passed`.
+
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use chrono::Utc;
+use rmcp::model::{AnnotateAble, RawTextContent, Role, Tool};
+
+use super::base::{Provider, ProviderMetadata, ProviderUsage, Usage};
+use super::errors::ProviderError;
+use super::lead_worker::LeadWorkerProvider;
+use super::llamacpp::LlamaCppProvider;
+use super::ollama::{OllamaProvider, OLLAMA_HOST};
+use super::versa_azure::VERSA_AZURE_ENDPOINT;
+use crate::config::declarative_providers::{DeclarativeProviderConfig, ProviderEngine};
+use crate::conversation::message::{Message, MessageContent};
+use crate::model::ModelConfig;
+use crate::privacy::ProviderTier;
+
+/// The tier a freshly-installed Biorouter publishes for `name`: the real
+/// registry entry's metadata, which is exactly what the settings grid and every
+/// other UI surface reads. A name with no entry gets the fail-safe default,
+/// which is the whole point of the default being Public.
+async fn tier_for_name_at_default_config(name: &str) -> ProviderTier {
+    super::providers()
+        .await
+        .into_iter()
+        .find(|(metadata, _)| metadata.name == name)
+        .map(|(metadata, _)| metadata.tier)
+        .unwrap_or_default()
+}
+
+/// Every registered provider whose shipped metadata claims Private.
+async fn private_names_in_the_registry() -> Vec<String> {
+    let mut names: Vec<String> = super::providers()
+        .await
+        .into_iter()
+        .filter(|(metadata, _)| metadata.tier == ProviderTier::Private)
+        .map(|(metadata, _)| metadata.name)
+        .collect();
+    names.sort();
+    names
+}
+
+/// A provider whose name and tier are whatever the caller says, so a composite
+/// can be built with a *private lead and a public worker* — the pair whose
+/// `get_name()` and whose reach disagree.
+struct TierMock {
+    name: String,
+    tier: ProviderTier,
+}
+
+impl TierMock {
+    fn new(name: &str, tier: ProviderTier) -> Self {
+        Self {
+            name: name.to_string(),
+            tier,
+        }
+    }
+}
+
+#[async_trait]
+impl Provider for TierMock {
+    fn metadata() -> ProviderMetadata {
+        ProviderMetadata::empty()
+    }
+
+    fn get_name(&self) -> &str {
+        &self.name
+    }
+
+    fn get_model_config(&self) -> ModelConfig {
+        ModelConfig::new_or_fail("mock-model")
+    }
+
+    fn tier(&self) -> ProviderTier {
+        self.tier
+    }
+
+    async fn complete_with_model(
+        &self,
+        _model_config: &ModelConfig,
+        _system: &str,
+        _messages: &[Message],
+        _tools: &[Tool],
+    ) -> Result<(Message, ProviderUsage), ProviderError> {
+        Ok((
+            Message::new(
+                Role::Assistant,
+                Utc::now().timestamp(),
+                vec![MessageContent::Text(
+                    RawTextContent {
+                        text: "mock".to_string(),
+                        meta: None,
+                    }
+                    .no_annotation(),
+                )],
+            ),
+            ProviderUsage::new(self.name.clone(), Usage::default()),
+        ))
+    }
+}
+
+/// The real production composite, with a lead named `versa_azure`.
+fn lead_worker_with_tiers(lead: ProviderTier, worker: ProviderTier) -> LeadWorkerProvider {
+    LeadWorkerProvider::new(
+        Arc::new(TierMock::new("versa_azure", lead)),
+        Arc::new(TierMock::new("anthropic", worker)),
+        None,
+    )
+}
+
+/// A **real** self-hosted-engine provider built the way a declarative JSON file
+/// builds one, pointed wherever the caller says — and named `versa_azure`,
+/// because registering by `config.name` after the built-ins is what lets one
+/// writable file shadow the real registry entry.
+fn tier_for_self_hosted_base(base_url: &str) -> ProviderTier {
+    let config = DeclarativeProviderConfig {
+        name: "versa_azure".to_string(),
+        engine: ProviderEngine::Ollama,
+        display_name: "Not Versa At All".to_string(),
+        description: None,
+        api_key_env: "NOT_USED".to_string(),
+        base_url: base_url.to_string(),
+        models: vec![],
+        headers: None,
+        timeout_seconds: None,
+        supports_streaming: None,
+    };
+    OllamaProvider::from_custom_config(ModelConfig::new_or_fail("qwen3"), config)
+        .expect("a declarative ollama provider must construct")
+        .tier()
+}
+
+/// The production predicate both versa providers hand their resolved endpoint.
+fn versa_tier_for_endpoint(endpoint: &str) -> ProviderTier {
+    super::ucsf_gateway_tier(endpoint)
+}
+
+#[tokio::test]
+async fn the_private_set_is_the_four_the_operator_named() {
+    use crate::privacy::ProviderTier::{Private, Public};
+
+    let mut expected: Vec<&str> = vec!["llamacpp", "ollama", "versa_azure"];
+    // Without the feature the provider is not compiled in, so it is not in the
+    // registry and there is nothing to assert about it.
+    #[cfg(feature = "aws-providers")]
+    expected.push("versa_bedrock");
+    expected.sort();
+
+    for name in &expected {
+        assert_eq!(
+            tier_for_name_at_default_config(name).await,
+            Private,
+            "{name}"
+        );
+    }
+    // Everything hosted by an AI company or a large cloud is public — including
+    // the ones whose names look institutional. azure.rs ships the UCSF gateway
+    // as AZURE_OPENAI_ENDPOINT's default, so a name-keyed rule would call
+    // azure_openai Private; it must not.
+    for name in [
+        "anthropic",
+        "openai",
+        "azure_openai",
+        "bedrock",
+        "aws_bedrock",
+        "databricks",
+        "vertex",
+        "google",
+        "groq",
+        "unknown_provider",
+    ] {
+        assert_eq!(
+            tier_for_name_at_default_config(name).await,
+            Public,
+            "{name}"
+        );
+    }
+    // ...and the set is closed: naming a *fifth* provider Private anywhere in
+    // the tree fails here, which the loop above cannot do on its own.
+    assert_eq!(private_names_in_the_registry().await, expected);
+
+    // The registry above is the type-level claim every UI surface reads. Cross
+    // -check it against real instances, for the two whose construction needs no
+    // credential: at the shipped default host both agree with their metadata.
+    assert_eq!(tier_for_self_hosted_base(OLLAMA_HOST), Private);
+    let llamacpp = LlamaCppProvider::from_env(
+        ModelConfig::new_or_fail("qwen3.5-4b").with_context_limit(Some(4096)),
+    )
+    .await
+    .expect("llamacpp must construct at default config");
+    assert_eq!(llamacpp.tier(), Private);
+}
+
+#[tokio::test]
+async fn a_composite_takes_the_least_privileged_of_its_two_halves() {
+    use crate::privacy::ProviderTier::{Private, Public};
+    // get_name() on a composite returns the LEAD's name, so a name-keyed tier
+    // would badge private-lead/public-worker Private — the exact inverse of R2.
+    let lw = lead_worker_with_tiers(Private, Public);
+    assert_eq!(lw.get_name(), "versa_azure"); // the lead's name
+    assert_eq!(lw.tier(), Public); // least(), not the name
+    assert_eq!(lead_worker_with_tiers(Private, Private).tier(), Private);
+    assert_eq!(lead_worker_with_tiers(Public, Public).tier(), Public);
+}
+
+#[test]
+fn a_self_hosted_provider_pointed_off_the_machine_is_not_private() {
+    use crate::privacy::ProviderTier::{Private, Public};
+    // Open question 5 rates this ergonomics. It is a live bypass: config.yaml
+    // is agent-writable (§9.3 C1 concedes SecretGuard cannot stop `shell`
+    // writing it), and a declarative provider file whose engine is Ollama
+    // yields an OllamaProvider with an arbitrary base_url. See the two
+    // `declarative_providers` rows in this task's Files table for the anchors —
+    // they are NOT repeated here, because a line number inside a code comment
+    // is a citation no gate can check and no reviewer re-verifies.
+    // Anyone who can write one JSON file would otherwise mint a Private-tier
+    // provider pointing anywhere.
+    assert_eq!(tier_for_self_hosted_base("http://localhost:11434"), Private);
+    assert_eq!(tier_for_self_hosted_base("http://127.0.0.1:11434"), Private);
+    assert_eq!(tier_for_self_hosted_base("http://[::1]:11434"), Private);
+    assert_eq!(
+        tier_for_self_hosted_base("http://gpu.lab.ucsf.edu:11434"),
+        Public
+    );
+    assert_eq!(
+        tier_for_self_hosted_base("https://api.example-saas.com"),
+        Public
+    );
+}
+
+#[test]
+fn versa_demotes_when_its_endpoint_is_not_the_ucsf_gateway() {
+    use crate::privacy::ProviderTier::{Private, Public};
+    // versa_azure reads AZURE_OPENAI_ENDPOINT, the same key the public
+    // azure_openai provider reads, and versa_bedrock falls back to
+    // AWS_ENDPOINT_URL_BEDROCK_RUNTIME, which bedrock.rs sets PROCESS-GLOBALLY
+    // with std::env::set_var. The shipped constants are asserted rather than
+    // their text, so moving a default off the gateway fails here too.
+    assert_eq!(versa_tier_for_endpoint(VERSA_AZURE_ENDPOINT), Private);
+    assert_eq!(
+        versa_tier_for_endpoint("https://unified-api.ucsf.edu/general"),
+        Private
+    );
+    #[cfg(feature = "aws-providers")]
+    assert_eq!(
+        versa_tier_for_endpoint(super::versa_bedrock::VERSA_BEDROCK_DEFAULT_ENDPOINT),
+        Private
+    );
+    assert_eq!(
+        versa_tier_for_endpoint("https://unified-api.ucsf.edu/general/awsai"),
+        Private
+    );
+    assert_eq!(
+        versa_tier_for_endpoint("https://evil.example.com/general"),
+        Public
+    );
+}

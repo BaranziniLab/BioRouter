@@ -7991,7 +7991,7 @@
           },
           "userVisible": {
             "type": "boolean",
-            "description": "Whether this row is HIDDEN from the transcript. It is not a rendering\ninstruction, and reading it as one double-draws.\n\n`false` is the model-only plumbing a turn stores but deliberately keeps\nout of the transcript (the BR-47 post-edit diagnostics, the loop-guard /\nstall / budget nudges, hook context). Publishing it *with* the flag is\nwhat separates \"you are deliberately not being shown this row\" from \"you\nwere never told it exists\" — the client can name the id without drawing\nanything for it. That direction is exact: `false` means the row must not\nappear in the transcript.\n\n`true` means only \"not hidden\" — NOT \"draw this\". The content may\nalready have been delivered inside a `Message` frame, and on a\ntool-bearing turn it has been: one streamed reply is stored as a rebuilt\nthinking row plus one `tool_use` row per request, each built from\n`Message::assistant()` / `Message::new` and so carrying the default\n`user_visible: true`, while the client was shown that same content once\nalready as the reply itself. A client that drew every `true` row would\nrender the same tool request twice.\n\nThis frame is for ACCOUNTING — naming rows so `expectedMessageIds` can\nbe complete. The transcript still comes from `Message` frames alone."
+            "description": "Whether this row is HIDDEN from the transcript. It is not a rendering\ninstruction, and reading it as one double-draws.\n\n`false` is the model-only plumbing a turn stores but deliberately\nkeeps out of the transcript (the BR-47 post-edit diagnostics, the\nloop-guard / stall / budget nudges, hook context). Publishing it\n*with* the flag is what separates \"you are deliberately not being\nshown this row\" from \"you were never told it exists\" — the client can\nname the id without drawing anything for it. That direction is exact:\n`false` means the row must not appear in the transcript.\n\n`true` means only \"not hidden\" — NOT \"draw this\". The content may\nalready have been delivered inside a `Message` frame, and on a\ntool-bearing turn it has been: one streamed reply is stored as a\nrebuilt thinking row plus one `tool_use` row per request, each built\nfrom `Message::assistant()` / `Message::new` and so carrying the\ndefault `user_visible: true`, while the client was shown that same\ncontent once already as the reply itself. A client that drew every\n`true` row would render the same tool request twice.\n\nThis frame is for ACCOUNTING — naming rows so `expectedMessageIds`\ncan be complete. The transcript still comes from `Message` frames\nalone."
           }
         }
       },
@@ -8193,8 +8193,23 @@
           "name": {
             "type": "string",
             "description": "The unique identifier for this provider"
+          },
+          "runs_locally": {
+            "type": "boolean",
+            "description": "Whether this provider's inference runs on the user's own machine — a\nbundled or self-hosted server — rather than on a remote service.\n\nDisplay only: it is what splits the private tier into the settings\ngrid's \"Local Models\" and \"Institutional Models\" sections. It is **not**\nthe privacy tier, and neither field is derivable from the other: a\nself-hosted server pointed off the machine is still `runs_locally` by\ntype and Public by instance."
+          },
+          "tier": {
+            "$ref": "#/components/schemas/ProviderTier"
           }
         }
+      },
+      "ProviderTier": {
+        "type": "string",
+        "description": "CAPABILITY — the least-privileged model currently bound to a session.\n\nDeliberately **not** `Ord`: `max` over this type is always a bug. A mixed\nlead/worker composite is `least(lead, worker)`, so a private lead with a\npublic worker has **public** reach.",
+        "enum": [
+          "public",
+          "private"
+        ]
       },
       "ProviderType": {
         "type": "string",
