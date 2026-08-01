@@ -8,6 +8,7 @@ import { ResourceRefChip } from '../ResourceRefChip';
 import { splitComposerText } from '../../utils/composerRefs';
 import ToolCallWithResponse from '../ToolCallWithResponse';
 import ImagePreview from '../ImagePreview';
+import { ProvenanceChip } from '../ProvenanceChip';
 import {
   getTextContent,
   ToolRequestMessageContent,
@@ -130,11 +131,19 @@ export const SessionMessages: React.FC<SessionMessagesProps> = ({
                           : 'bg-background-medium'
                       }`}
                     >
-                      <div className="flex justify-between items-center mb-2">
-                        <span className="font-medium text-text-default">
-                          {message.role === 'user' ? 'You' : 'Biorouter'}
-                        </span>
-                        <span className="text-xs text-text-muted">
+                      <div className="flex justify-between items-center mb-2 gap-2">
+                        {/* BR-71 §5: provenance is structural, so it has to
+                            travel with the transcript into this view too — a
+                            shared session is the one that leaves the machine,
+                            and "You" on a message another agent injected is a
+                            misattribution to the human. */}
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="font-medium text-text-default">
+                            {message.role === 'user' ? 'You' : 'Biorouter'}
+                          </span>
+                          <ProvenanceChip provenance={message.metadata?.provenance ?? undefined} />
+                        </div>
+                        <span className="text-xs text-text-muted shrink-0">
                           {formatMessageTimestamp(message.created)}
                         </span>
                       </div>

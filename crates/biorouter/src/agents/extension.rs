@@ -3,6 +3,7 @@ use crate::agents::code_execution_extension;
 use crate::agents::extension_manager_extension;
 use crate::agents::skills_extension;
 use crate::agents::todo_extension;
+use crate::agents::workspace_extension;
 use std::collections::HashMap;
 
 use crate::agents::mcp_client::McpClientTrait;
@@ -64,6 +65,20 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 default_enabled: false,
                 client_factory: |ctx| {
                     Box::new(chatrecall_extension::ChatRecallClient::new(ctx).unwrap())
+                },
+            },
+        );
+
+        map.insert(
+            "workspace",
+            PlatformExtensionDef {
+                name: workspace_extension::EXTENSION_NAME,
+                description:
+                    "Operate the BioRouter workspace: list/open/read conversations, inject prompts, \
+                     change tool sets, and run glass-box subagents in visible tabs",
+                default_enabled: false,
+                client_factory: |ctx| {
+                    Box::new(workspace_extension::WorkspaceClient::new(ctx).unwrap())
                 },
             },
         );
@@ -673,8 +688,14 @@ mod tests {
     use crate::agents::*;
 
     #[test]
+    fn workspace_platform_extension_is_registered_and_off_by_default() {
+        assert_eq!(PLATFORM_EXTENSIONS.len(), 6);
+        assert!(!PLATFORM_EXTENSIONS["workspace"].default_enabled);
+    }
+
+    #[test]
     fn platform_extension_defaults_match_capabilities() {
-        assert_eq!(PLATFORM_EXTENSIONS.len(), 5);
+        assert_eq!(PLATFORM_EXTENSIONS.len(), 6);
         assert!(PLATFORM_EXTENSIONS["todo"].default_enabled);
         assert!(PLATFORM_EXTENSIONS["extensionmanager"].default_enabled);
         assert!(PLATFORM_EXTENSIONS["skills"].default_enabled);

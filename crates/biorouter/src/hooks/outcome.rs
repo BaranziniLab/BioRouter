@@ -16,7 +16,12 @@ fn default_true() -> bool {
 pub const HOOK_CONTEXT_MAX_BYTES: usize = 16 * 1024;
 
 /// Largest UTF-8 byte index `<= idx` that lands on a char boundary of `s`.
-fn floor_char_boundary(s: &str, idx: usize) -> usize {
+///
+/// `pub(crate)` so every byte-budgeted untrusted-data cap shares one
+/// implementation — `conversation::message::cap_workspace_injection` (BR-71) is
+/// the second caller. Getting this subtly wrong panics on multibyte input, so it
+/// is deliberately not re-derived per call site.
+pub(crate) fn floor_char_boundary(s: &str, idx: usize) -> usize {
     if idx >= s.len() {
         return s.len();
     }

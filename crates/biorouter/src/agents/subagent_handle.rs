@@ -6,17 +6,19 @@
 //!
 //! A `subagent` call with `background: true` creates the child session, spawns
 //! the run on a detached task, registers a [`BackgroundSubagent`] here, and
-//! returns a *handle* to the parent immediately. The parent then polls (or
-//! blocks on) `subagent_status` to collect the same [`SubagentResult`] envelope
-//! it would have got synchronously.
+//! returns the child's *session id* to the parent immediately. The parent then
+//! waits on it with `workspace_watch` (or reads it with
+//! `workspace_read_conversation`) to collect the same [`SubagentResult`]
+//! envelope it would have got synchronously.
 //!
 //! Invariants worth knowing:
 //!
 //! * **The parent's cancellation token is not inherited.** A background child
 //!   outlives the turn that spawned it by design, so it gets a fresh token —
 //!   otherwise the parent's turn ending would kill the very thing that was made
-//!   detachable. The token is reachable through the handle (`subagent_status`
-//!   with `cancel: true`) and through the BR-42 active-work view, which
+//!   detachable. The token is reachable through the handle (`workspace_close`,
+//!   BR-71 decision 23's replacement for the old poll tool's `cancel: true`) and
+//!   through the BR-42 active-work view, which
 //!   [`crate::agents::subagent_handler::run_complete_subagent_task`] registers.
 //! * **The fork-bomb guards still apply.** The in-flight counter is incremented
 //!   before the spawn (so a storm of background spawns is refused just like a
@@ -26,8 +28,10 @@
 //!   persisted as always, but a handle does not survive a restart; a poll after
 //!   a restart reports the handle as unknown rather than inventing a result.
 //! * **Off by default.** `BIOROUTER_SUBAGENT_BACKGROUND` (config or env) gates
-//!   both the `background` parameter and the `subagent_status` tool, so the
-//!   default tool surface and the default blocking behaviour are unchanged.
+//!   the `subagent` tool's `background` parameter, so the default tool surface
+//!   and the default blocking behaviour are unchanged. Since BR-71 decision 23
+//!   it gates *only* that parameter: collecting a detached child is done with
+//!   the workspace tools, which are advertised on their own terms.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
@@ -42,8 +46,10 @@ use crate::config::Config;
 
 /// Is the async-handle path available at all?
 ///
-/// Default off: enabling it adds a tool (`subagent_status`) and a parameter to
-/// the model's surface, which is a behaviour change for every existing session.
+/// Default off: enabling it adds the `background` parameter to the `subagent`
+/// tool's surface, which is a behaviour change for every existing session.
+/// (Before BR-71 decision 23 it also added a second, dedicated poll tool; that
+/// tool is gone and its jobs are workspace tools now.)
 pub fn background_enabled() -> bool {
     Config::global()
         .get_param::<bool>("BIOROUTER_SUBAGENT_BACKGROUND")
@@ -65,7 +71,12 @@ const MAX_RETAINED_FINISHED: usize = 32;
 /// above the per-session cap, so it only ever bites the pathological case.
 const MAX_RETAINED_FINISHED_TOTAL: usize = 512;
 
-/// Default and maximum block for `subagent_status { wait: true }`.
+/// Default and maximum block a caller of [`BackgroundSubagent::wait`] should
+/// clamp to. BR-71 decision 23 removed the tool that used to apply them; the
+/// caller-facing wait is `workspace_watch`, which carries its own clamp
+/// (`workspace_extension.rs`, default 120s, same 600s ceiling). Kept as the
+/// registry's own advertised bounds — unify the two literals here if a later
+/// task needs one source of truth.
 pub const DEFAULT_WAIT_SECS: u64 = 60;
 pub const MAX_WAIT_SECS: u64 = 600;
 

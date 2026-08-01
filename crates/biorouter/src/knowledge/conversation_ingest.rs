@@ -252,6 +252,7 @@ mod tests {
             model_config: None,
             diverged_from: None,
             branch_point_msg_uid: None,
+            parent_session_id: None,
         }
     }
 

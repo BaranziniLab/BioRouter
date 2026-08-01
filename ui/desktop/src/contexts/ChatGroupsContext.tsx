@@ -5,6 +5,7 @@ import {
   useMemo,
   useEffect,
   useRef,
+  useState,
   useCallback,
 } from 'react';
 import {
@@ -13,6 +14,7 @@ import {
   activeSessionIdOf,
   activeGroupOf,
   activeTabOf,
+  findTabBySession,
 } from '../components/chatGroups/chatGroupsReducer';
 import {
   loadChatGroupsOrInitial,
@@ -41,8 +43,57 @@ import {
   ChatTab,
   leafGroupIds,
 } from '../components/chatGroups/chatGroupsTypes';
-import { useRunningChats } from '../hooks/chatStreamStore';
+import { useRunningChats, defaultChatStreamRegistry } from '../hooks/chatStreamStore';
 import { subscribeSessionNameChanges } from '../utils/sessionNameSync';
+import {
+  registerWorkspaceCommands,
+  drainPendingWorkspaceCommands,
+  type WorkspaceCommand,
+  type WorkspaceCommandResult,
+} from '../components/chatGroups/workspaceCommandRegistry';
+import {
+  planWorkspaceCommand,
+  type TabAnnotation,
+} from '../components/chatGroups/workspaceCommandPlanner';
+import { useWorkspaceChannel, buildEchoFrame } from '../hooks/useWorkspaceChannel';
+import { toastError, toastInfo, toastWarning } from '../toasts';
+
+/**
+ * BR-71 §5: a workspace `notify` carries a level, and it has to survive the trip
+ * to the screen. The daemon stamps one on every frame (`workspace_extension.rs`
+ * sends "info" for the cross-session actions autonomous mode must not perform
+ * silently), so collapsing them onto one channel is not cosmetic: a failure
+ * rendered as a green success check is a lie the user acts on, and an
+ * informational notice about ANOTHER agent's action, dressed as a confirmation,
+ * reads as "your thing worked".
+ *
+ * `toastService` has only success/error/loading, which is why this reaches for
+ * the module-level helpers instead — the same ones MCPUIResourceRenderer uses.
+ * Nothing in the app configures `toastService`'s silent/shouldThrow flags, so no
+ * policy is being bypassed.
+ */
+function notifyToast(level: string | undefined): (props: { title: string; msg: string }) => void {
+  switch (level?.toLowerCase()) {
+    case 'error':
+    case 'fatal':
+    case 'critical':
+      return toastError;
+    case 'warn':
+    case 'warning':
+      return toastWarning;
+    default:
+      // Including no level at all: a notice, never a confirmation.
+      return toastInfo;
+  }
+}
+
+/**
+ * BR-71: a daemon-opened tab is a session this renderer is not driving, so it
+ * attaches the observer stream rather than owning a /reply stream.
+ * `observeSession` lands on ChatStreamController in Task 27; the optional shape
+ * is what lets this executor compile and run against either version.
+ */
+type ObservableStream = { observeSession?: () => void };
 
 interface ChatGroupsContextValue {
   state: ChatGroupsState;
@@ -51,6 +102,8 @@ interface ChatGroupsContextValue {
   activeTab: ChatTab | undefined;
   activeSessionId: string;
   runningSessionIds: readonly string[];
+  /** sessionId → badge / parent link pushed by a workspace `annotate_tab`. */
+  tabAnnotations: Record<string, TabAnnotation>;
 }
 
 const ChatGroupsContext = createContext<ChatGroupsContextValue | null>(null);
@@ -219,8 +272,154 @@ export function ChatGroupsProvider({ children }: { children: React.ReactNode }) 
     return () => window.removeEventListener('keydown', onKeyDown, true);
   }, []);
 
+  // BR-71 §4.3: the daemon's workspace commands, executed here.
+  //
+  // Every DECISION (split refusal at MAX_GROUPS, focus etiquette, which side
+  // effect a frame becomes) lives in the pure planner, which is unit-tested
+  // against real reducer state. This is only the executor: dispatch the plan's
+  // actions and perform its declared effects.
+  const [tabAnnotations, setTabAnnotations] = useState<Record<string, TabAnnotation>>({});
+
+  // A closed tab's annotation is forgotten, and its observer stream detached.
+  // The map is keyed by session id and written straight from daemon frames, so
+  // with no prune it only ever grows, for the life of the window, on input this
+  // renderer does not control.
+  //
+  // The prune is deliberately scoped to sessions that HAD a tab and no longer
+  // do, rather than to "every session without a tab right now": nothing orders
+  // the daemon's frames, so an annotation can legitimately arrive before the tab
+  // it describes, and the broader rule would delete it on the very next commit.
+  const tabbedSessionsRef = useRef<ReadonlySet<string>>(new Set<string>());
+  useEffect(() => {
+    const tabbed = new Set(
+      leafGroupIds(state.layout).flatMap((id) => state.groups[id].tabs.map((tab) => tab.sessionId))
+    );
+    const closed = [...tabbedSessionsRef.current].filter((id) => !tabbed.has(id));
+    tabbedSessionsRef.current = tabbed;
+    if (closed.length === 0) return;
+    // The other end of the `observeSession()` below (§4.3: "until the tab
+    // detaches or the user takes the session over"). That loop reconnects until
+    // something stops it, and `getController` retains its controller for the
+    // life of the renderer, so with no detach every daemon-opened tab leaves an
+    // SSE subscription reconnecting forever for a chat nobody can see.
+    //
+    // `peekController`, so teardown never CREATES a controller; and
+    // `stopObserving` is a no-op on a controller that is driving, so closing an
+    // ordinary chat tab still does not cancel its turn.
+    for (const id of closed) defaultChatStreamRegistry.peekController(id)?.stopObserving();
+    setTabAnnotations((prev) => {
+      // Same object back when there is nothing to drop, so this never costs a
+      // render on the ordinary tab close.
+      if (!closed.some((id) => id in prev)) return prev;
+      const next = { ...prev };
+      for (const id of closed) delete next[id];
+      return next;
+    });
+  }, [state]);
+
+  useEffect(() => {
+    const runPlan = (cmd: WorkspaceCommand): WorkspaceCommandResult => {
+      const plan = planWorkspaceCommand(cmd, stateRef.current);
+      // The plan is the WHOLE answer — nothing here is deferred to a later tick.
+      // A split used to be finished off in a `queueMicrotask` that re-read
+      // `stateRef`, on the theory that a new session's tab id does not exist
+      // until `openTab` commits. It does not work: a frame arrives from
+      // `ws.onmessage` on a macrotask, React commits on the Scheduler's own
+      // macrotask, and the microtask therefore drains BEFORE the commit — so the
+      // ref was pre-open, the lookup missed, the move was dropped, and the daemon
+      // was told the window had split when it had not. The planner runs the
+      // reducer itself to learn the id, and the move rides in this same batch.
+      for (const action of plan.actions) dispatch(action);
+      if (plan.openWindowSessionId) {
+        // create-chat-window IPC: the session id goes in the resume-session
+        // position (4th parameter — see preload.ts createChatWindow).
+        window.electron?.createChatWindow?.(
+          undefined,
+          undefined,
+          undefined,
+          plan.openWindowSessionId
+        );
+      }
+      if (plan.notify) {
+        notifyToast(plan.notify.level)({ title: 'Workspace', msg: plan.notify.message });
+      }
+      if (plan.annotate) {
+        const { sessionId, annotation } = plan.annotate;
+        setTabAnnotations((prev) => ({ ...prev, [sessionId]: annotation }));
+      }
+      // Daemon-opened tabs are, by definition, sessions this renderer is not
+      // driving: attach the observer stream (§4.3; Task 27) so the tab renders
+      // live without owning a /reply stream.
+      //
+      // Only when the frame really produced a tab, though. `getController` is
+      // not a lookup — it CREATES a ChatStreamController and retains it in a map
+      // keyed by session id for the life of the renderer. Calling it for a
+      // session that has no tab (an annotate for a chat this window never
+      // opened, or an open_tab the planner refused at MAX_GROUPS) both starts a
+      // stream for a chat that is nowhere on screen and leaks the controller,
+      // once per frame, on input the daemon fully controls.
+      if (cmd.session_id && plan.result.ok) {
+        const opened = cmd.cmd === 'open_tab';
+        const annotated =
+          cmd.cmd === 'annotate_tab' && !!findTabBySession(stateRef.current, cmd.session_id);
+        if (opened || annotated) {
+          const stream = defaultChatStreamRegistry.getController(
+            cmd.session_id
+          ) as unknown as ObservableStream;
+          stream.observeSession?.();
+        }
+      }
+      return plan.result;
+    };
+    const dispose = registerWorkspaceCommands(runPlan);
+    // Drain frames that arrived before this provider mounted (Settings-page
+    // case — same rationale as consumePendingNewTab).
+    for (const queued of drainPendingWorkspaceCommands()) runPlan(queued);
+    return dispose;
+  }, [dispatch]);
+
   const activeSessionId = activeSessionIdOf(state);
   useChatGroupsUrlSync({ activeSessionId, onOpen: handleUrlOpen });
+
+  // The other half of §4.3: this window's layout, reported to the daemon so the
+  // workspace tools can see what the user is actually looking at.
+  const [workspaceSecret, setWorkspaceSecret] = useState<string | null>(null);
+  useEffect(() => {
+    // The same capability probe renderer.tsx uses to detect the headless case.
+    if (typeof window.electron === 'undefined') return;
+    if (typeof window.electron.getSecretKey !== 'function') return;
+    let cancelled = false;
+    void Promise.resolve(window.electron.getSecretKey())
+      .then((key) => {
+        if (!cancelled) setWorkspaceSecret(key || null);
+      })
+      .catch(() => {
+        // No secret, no channel. The window keeps working without it.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // FALSE until the secret resolves — `getSecretKey` is async, so `secret` is
+  // null on the first render and this flag is the only thing standing between
+  // every provider-mounting test suite and a live WebSocket in jsdom.
+  const workspaceChannelEnabled =
+    !!workspaceSecret &&
+    typeof window.electron !== 'undefined' &&
+    typeof window.electron.getSecretKey === 'function';
+
+  const { sendEcho } = useWorkspaceChannel({
+    secret: workspaceSecret,
+    windowId: windowIdRef.current,
+    enabled: workspaceChannelEnabled,
+  });
+
+  // Keyed on `state`, so it runs on every commit — the same placement as
+  // acknowledgeNewTabCommit. `activeSessionId` is '' for an empty active group.
+  useEffect(() => {
+    sendEcho(buildEchoFrame(windowIdRef.current, activeSessionId || null, state));
+  }, [state, activeSessionId, sendEcho]);
 
   const value = useMemo<ChatGroupsContextValue>(
     () => ({
@@ -230,8 +429,9 @@ export function ChatGroupsProvider({ children }: { children: React.ReactNode }) 
       activeTab: activeTabOf(state),
       activeSessionId,
       runningSessionIds,
+      tabAnnotations,
     }),
-    [state, activeSessionId, runningSessionIds]
+    [state, activeSessionId, runningSessionIds, tabAnnotations]
   );
 
   return <ChatGroupsContext.Provider value={value}>{children}</ChatGroupsContext.Provider>;

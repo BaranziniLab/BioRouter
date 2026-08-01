@@ -3,7 +3,8 @@ import type { ReactNode } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import SessionListView from './SessionListView';
-import { clearSessionListCache } from '../../utils/sessionListCache';
+import { clearSessionListCache, updateCachedSessionList } from '../../utils/sessionListCache';
+import type { Session } from '../../api';
 
 const mocks = vi.hoisted(() => ({
   listSessions: vi.fn(),
@@ -44,6 +45,17 @@ beforeEach(() => {
   clearSessionListCache();
   mocks.listSessions.mockResolvedValue({ data: { sessions: [] } });
 });
+
+function row(overrides: Partial<Session> & { id: string; name: string }): Session {
+  return {
+    working_dir: '/tmp',
+    created_at: '2026-07-14T12:00:00Z',
+    updated_at: '2026-07-14T12:00:00Z',
+    extension_data: {},
+    message_count: 2,
+    ...overrides,
+  } as Session;
+}
 
 describe('SessionListView loading and cache', () => {
   it('shows a heatmap-inspired row animation while the first history request is pending', async () => {
@@ -234,6 +246,199 @@ describe('SessionListView row actions', () => {
       path: { session_id: session.id },
       throwOnError: true,
     });
+  });
+
+  it('the Show-subagent-runs toggle refetches with include_subagents and nests children', async () => {
+    mocks.listSessions.mockResolvedValue({
+      data: {
+        sessions: [
+          {
+            id: 'p1',
+            session_type: 'user',
+            name: 'Parent',
+            working_dir: '/tmp',
+            created_at: '2026-07-14T12:00:00Z',
+            updated_at: '2026-07-14T12:00:00Z',
+            extension_data: {},
+            message_count: 3,
+          },
+          {
+            id: 'c1',
+            session_type: 'sub_agent',
+            parent_session_id: 'p1',
+            name: 'Subagent task',
+            working_dir: '/tmp',
+            created_at: '2026-07-14T12:00:00Z',
+            updated_at: '2026-07-14T12:00:00Z',
+            extension_data: {},
+            message_count: 2,
+          },
+        ],
+      },
+    });
+    // The component calls `useNavigate()`, so it MUST be inside a router, and
+    // `onSelectSession` is a required prop. This is the exact shape every other
+    // case in this file uses.
+    render(
+      <MemoryRouter>
+        <SessionListView onSelectSession={vi.fn()} />
+      </MemoryRouter>
+    );
+    const toggle = await screen.findByLabelText(/show subagent runs/i);
+    fireEvent.click(toggle);
+    await waitFor(() =>
+      expect(mocks.listSessions).toHaveBeenLastCalledWith(
+        expect.objectContaining({ query: { include_subagents: true } })
+      )
+    );
+    // Nested, not merely present: the child sits inside the indented wrapper
+    // and carries the badge, so the row reads as belonging to 'Parent'.
+    // Re-query on every attempt — `SessionItem` is declared inside
+    // `SessionListView`'s body, so each re-render is a fresh component type and
+    // React replaces the row's DOM node. A node captured once goes stale (it is
+    // detached, and `closest` then walks nothing), which is a flake, not a bug
+    // in the nesting.
+    await waitFor(() => {
+      const childRow = screen.getByText('Subagent task').closest('.ml-6');
+      expect(childRow).not.toBeNull();
+      // The badge belongs to the row, not above it: a bare inline span placed
+      // before a block-level row inside a flex column renders on its own line.
+      expect(
+        screen
+          .getByText('Subagent task')
+          .closest('.biorouter-list-row')
+          ?.querySelector('[data-testid="subagent-badge"]')
+      ).not.toBeNull();
+    });
+  });
+
+  // BR-71: `groupSessionsByDate` buckets on `updated_at`, and a parent's
+  // `updated_at` advances every time the conversation is resumed. Grouping by
+  // parent INSIDE each date bucket therefore drops any subagent that ran on an
+  // earlier day back to top level — the confusing artifact the feature exists
+  // to remove. Parent grouping has to run first.
+  it('nests a subagent run under its parent across date buckets', async () => {
+    mocks.listSessions.mockResolvedValue({
+      data: {
+        sessions: [
+          row({
+            id: 'p1',
+            name: 'Parent',
+            session_type: 'user',
+            updated_at: '2026-07-14T12:00:00Z',
+          }),
+          row({
+            id: 'c1',
+            name: 'Subagent task',
+            session_type: 'sub_agent',
+            parent_session_id: 'p1',
+            updated_at: '2026-07-10T12:00:00Z',
+          }),
+        ],
+      },
+    });
+
+    render(
+      <MemoryRouter>
+        <SessionListView onSelectSession={vi.fn()} />
+      </MemoryRouter>
+    );
+    fireEvent.click(await screen.findByLabelText(/show subagent runs/i));
+    await waitFor(() =>
+      expect(mocks.listSessions).toHaveBeenLastCalledWith(
+        expect.objectContaining({ query: { include_subagents: true } })
+      )
+    );
+
+    await waitFor(() => expect(screen.getByText('Subagent task').closest('.ml-6')).not.toBeNull());
+    // The child rides in its parent's bucket, so its own date never opens one.
+    expect(screen.queryByText(/July 10/)).not.toBeInTheDocument();
+  });
+
+  it('badges a subagent run whose parent is not in the list', async () => {
+    mocks.listSessions.mockResolvedValue({
+      data: {
+        sessions: [
+          row({
+            id: 'c9',
+            name: 'Orphan run',
+            session_type: 'sub_agent',
+            parent_session_id: 'deleted-parent',
+          }),
+        ],
+      },
+    });
+
+    render(
+      <MemoryRouter>
+        <SessionListView onSelectSession={vi.fn()} />
+      </MemoryRouter>
+    );
+    fireEvent.click(await screen.findByLabelText(/show subagent runs/i));
+
+    // An orphan stays top-level so it is still reachable — but unbadged it is
+    // an unexplained bare row, which is the same confusion in another form.
+    await waitFor(() =>
+      expect(
+        screen
+          .getByText('Orphan run')
+          .closest('.biorouter-list-row')
+          ?.querySelector('[data-testid="subagent-badge"]')
+      ).not.toBeNull()
+    );
+  });
+
+  // BR-71: `showSubagents` is per-component but the session cache it reads is
+  // module-global, so a second History pane (or Home) can publish subagent rows
+  // into a pane whose own toggle is off. The toggle governs what is FETCHED;
+  // each pane still has to say what it will SHOW.
+  it('never paints subagent runs from a warm shared cache while the toggle is off', () => {
+    mocks.listSessions.mockReturnValue(new Promise(() => {}));
+    updateCachedSessionList([
+      row({ id: 'p1', name: 'Parent', session_type: 'user' }),
+      row({ id: 'c1', name: 'Subagent task', session_type: 'sub_agent', parent_session_id: 'p1' }),
+    ]);
+
+    render(
+      <MemoryRouter>
+        <SessionListView onSelectSession={vi.fn()} />
+      </MemoryRouter>
+    );
+
+    expect(screen.getByText('Parent')).toBeInTheDocument();
+    expect(screen.queryByText('Subagent task')).not.toBeInTheDocument();
+  });
+
+  it('does not adopt subagent runs another pane pushed into the shared cache', async () => {
+    mocks.listSessions.mockResolvedValue({
+      data: { sessions: [row({ id: 'p1', name: 'Parent', session_type: 'user' })] },
+    });
+
+    render(
+      <MemoryRouter>
+        <SessionListView onSelectSession={vi.fn()} />
+      </MemoryRouter>
+    );
+    await screen.findByText('Parent');
+
+    // A sibling pane with its own toggle ON refetched and republished the list.
+    act(() => {
+      updateCachedSessionList([
+        row({ id: 'p1', name: 'Parent', session_type: 'user' }),
+        row({
+          id: 'c1',
+          name: 'Subagent task',
+          session_type: 'sub_agent',
+          parent_session_id: 'p1',
+        }),
+        row({ id: 'p2', name: 'Another chat', session_type: 'user' }),
+      ]);
+    });
+
+    // Waiting on the sibling row proves the push landed, so the negative
+    // assertion below cannot pass merely because the update had not flushed.
+    await screen.findByText('Another chat');
+    expect(screen.queryByText('Subagent task')).not.toBeInTheDocument();
   });
 
   it('uses the shared notification surface after editing a session', async () => {

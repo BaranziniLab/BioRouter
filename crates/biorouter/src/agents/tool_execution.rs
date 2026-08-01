@@ -335,17 +335,69 @@ impl Agent {
                 // sender to route it to.
                 let confirmation_rx = self.register_confirmation(&request.id);
 
-                let confirmation = Message::assistant()
-                    .with_action_required_with_context(
-                        request.id.clone(),
-                        tool_call.name.to_string().clone(),
-                        arguments,
-                        security_message,
-                        Some(risk),
-                        preview,
-                    )
-                    .user_only();
-                yield confirmation;
+                // BR-71 Task 36b: an agent-created session's approvals belong to
+                // the agent that created it. This decides within the chain's own
+                // authority where it can, and otherwise surfaces the ask to a
+                // person — in which case the card below is one of its two
+                // surfaces and carries the same request id.
+                let ask = crate::agents::approval_relay::AskId {
+                    session_id: session.id.clone(),
+                    request_id: request.id.clone(),
+                };
+                let delegation = crate::agents::approval_relay::begin_delegated_approval(
+                    self,
+                    request,
+                    session,
+                    inspection_results,
+                )
+                .await;
+
+                // A card for an ask an ancestor already answered would flash and
+                // vanish. `deliver` has already sent the decision into
+                // `confirmation_rx`, so the wait below returns immediately.
+                if !matches!(
+                    delegation,
+                    crate::agents::approval_relay::Delegation::DecidedByAncestor(_)
+                ) {
+                    let confirmation = Message::assistant()
+                        .with_action_required_with_context(
+                            request.id.clone(),
+                            tool_call.name.to_string().clone(),
+                            arguments,
+                            security_message,
+                            Some(risk),
+                            preview,
+                        )
+                        .user_only();
+                    // A-4, surface TWO. The chat where the escalation landed
+                    // sees the SAME card value, carrying the SAME request id —
+                    // which is what lets `approval_relay::lookup` route a
+                    // decision posted from there back to this parked prompt.
+                    //
+                    // PUBLISHED, never persisted: it is another conversation's
+                    // ask, and writing it into that session's history would put
+                    // a foreign tool call in someone else's transcript
+                    // permanently. `session_events::publish` is the ephemeral
+                    // path and creates no ring of its own — a session nobody is
+                    // observing simply drops it, and the card still shows in the
+                    // origin's own tab.
+                    //
+                    // This does NOT touch reconciliation #23's ordering
+                    // invariant: that is about the ORIGIN session's stream, and
+                    // this publishes to a different session's bus.
+                    if let crate::agents::approval_relay::Delegation::AwaitingHuman {
+                        surfaced_in,
+                    } = &delegation
+                    {
+                        crate::session_events::publish(
+                            surfaced_in,
+                            crate::session_events::SessionBusEvent::Agent(
+                                crate::agents::AgentEvent::Message(confirmation.clone()),
+                            ),
+                        );
+                    }
+                    yield confirmation;
+                }
 
                 // The wait is now bounded on three sides: the decision itself, a
                 // cancel of the turn (so a programmatic `/agent/cancel` unblocks
@@ -361,6 +413,7 @@ impl Agent {
                 // Answered, expired, or cancelled — either way this id is no
                 // longer accepting a decision.
                 self.forget_confirmation(&request.id);
+                crate::agents::approval_relay::forget(&ask);
 
                 let confirmation = match wait {
                     ConfirmationWait::Confirmed(confirmation) => confirmation,

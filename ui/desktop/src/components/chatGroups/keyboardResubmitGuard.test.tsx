@@ -82,7 +82,13 @@ vi.mock('../ui/sidebar', () => ({
   useSidebar: () => ({ state: 'expanded', isMobile: false }),
 }));
 
-vi.mock('../../hooks/chatStreamStore', () => ({ useRunningChats: () => [] }));
+// Closing a tab detaches that session's observer stream (§4.3), so the provider
+// reads the registry as well as the hook — on ANY close, not only a daemon
+// frame. A mock that supplies only `useRunningChats` throws on the first close.
+vi.mock('../../hooks/chatStreamStore', () => ({
+  useRunningChats: () => [],
+  defaultChatStreamRegistry: { peekController: () => undefined },
+}));
 vi.mock('../../utils/sessionNameSync', () => ({
   subscribeSessionNameChanges: () => () => undefined,
 }));

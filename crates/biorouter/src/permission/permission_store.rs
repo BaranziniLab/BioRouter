@@ -131,7 +131,7 @@ impl ToolPermissionStore {
                 return None;
             }
         };
-        let context_hash = self.hash_tool_context(tool_request);
+        let context_hash = hash_tool_context(tool_request);
         let key = format!("{}:{}", tool_call.name, context_hash);
 
         self.permissions.get(&key).and_then(|records| {
@@ -157,7 +157,7 @@ impl ToolPermissionStore {
                 anyhow::bail!("cannot record permission for a malformed tool request: {e}");
             }
         };
-        let context_hash = self.hash_tool_context(tool_request);
+        let context_hash = hash_tool_context(tool_request);
         let key = format!("{}:{}", tool_call.name, context_hash);
 
         let record = ToolPermissionRecord {
@@ -173,22 +173,6 @@ impl ToolPermissionStore {
 
         self.save()?;
         Ok(())
-    }
-
-    fn hash_tool_context(&self, tool_request: &ToolRequest) -> String {
-        // Create a hash of the tool's arguments to differentiate similar calls
-        // This helps identify when the same tool is being used in a different context
-        // A malformed request (Err tool_call) hashes as empty rather than
-        // panicking, so it degrades to a stable, argument-less key.
-        let mut hasher = Hasher::new();
-        let serialized = tool_request
-            .tool_call
-            .as_ref()
-            .ok()
-            .and_then(|tool_call| serde_json::to_string(&tool_call.arguments).ok())
-            .unwrap_or_default();
-        hasher.update(serialized.as_bytes());
-        hasher.finalize().to_hex().to_string()
     }
 
     /// BR-24: remember a **scoped** approval — "always allow this tool in this
@@ -301,6 +285,42 @@ impl ToolPermissionStore {
     }
 }
 
+/// The identity of one **specific** ask: this tool, with these exact arguments.
+///
+/// This is the key `check_permission` and `record_permission` have always built
+/// (`"{tool_name}:{blake3(args)}"`). BR-71 Task 36b lifted it out so the
+/// approval relay keys a delegated grant on exactly the same thing the
+/// remembered-permission tier does, rather than inventing a second identity for
+/// "that very specific ask".
+///
+/// `None` for a malformed request (an `Err` `tool_call`) — the same fail-closed
+/// degradation `check_permission` already performs.
+pub fn exact_call_key(tool_request: &ToolRequest) -> Option<String> {
+    let tool_call = tool_request.tool_call.as_ref().ok()?;
+    Some(format!(
+        "{}:{}",
+        tool_call.name,
+        hash_tool_context(tool_request)
+    ))
+}
+
+/// Hash of the tool's arguments, to differentiate similar calls. A malformed
+/// request (`Err` `tool_call`) hashes as empty rather than panicking, so it
+/// degrades to a stable, argument-less key.
+///
+/// A free function since Task 36b: it never read `self`.
+pub(crate) fn hash_tool_context(tool_request: &ToolRequest) -> String {
+    let mut hasher = Hasher::new();
+    let serialized = tool_request
+        .tool_call
+        .as_ref()
+        .ok()
+        .and_then(|tool_call| serde_json::to_string(&tool_call.arguments).ok())
+        .unwrap_or_default();
+    hasher.update(serialized.as_bytes());
+    hasher.finalize().to_hex().to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -341,11 +361,34 @@ mod tests {
 
     #[test]
     fn hash_tool_context_is_stable_for_malformed_request() {
-        let store = ToolPermissionStore::new();
         // Hashing a malformed request must not panic and stays deterministic.
-        let a = store.hash_tool_context(&malformed_request());
-        let b = store.hash_tool_context(&malformed_request());
+        let a = hash_tool_context(&malformed_request());
+        let b = hash_tool_context(&malformed_request());
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn exact_call_key_is_the_key_the_store_looks_up() {
+        let store = ToolPermissionStore::new();
+        let request = ToolRequest {
+            id: "call-1".to_string(),
+            tool_call: Ok(rmcp::model::CallToolRequestParams {
+                meta: None,
+                name: "developer__shell".into(),
+                arguments: Some(object!({"command": "ls"})),
+                task: None,
+            }),
+            metadata: None,
+            tool_meta: None,
+        };
+        assert_eq!(
+            exact_call_key(&request).unwrap(),
+            format!("developer__shell:{}", hash_tool_context(&request))
+        );
+        // Fail-closed on a request that carries no recoverable identity.
+        assert_eq!(exact_call_key(&malformed_request()), None);
+        // And the store still finds nothing for it (unchanged behaviour).
+        assert_eq!(store.check_permission(&malformed_request()), None);
     }
 
     // ------------------------------------------------- BR-24: scoped grants

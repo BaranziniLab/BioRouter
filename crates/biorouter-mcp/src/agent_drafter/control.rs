@@ -4026,8 +4026,10 @@ impl AppControlServer {
                        a profile that runs on a different model, system prompt, or tool set. \
                        `agent` is the profile name (the app's ready frame lists the available \
                        profiles); `prompt` is the self-contained question. Blocks until the \
-                       profile answers or times out. Only the app's MAIN agent may consult, and a \
-                       consulted profile cannot itself consult (depth is 1)."
+                       profile answers or times out. The consulted profile's work is visible to \
+                       the user while it runs, and they may intervene in it. Only the app's MAIN \
+                       agent may consult, and a consulted profile cannot itself consult (depth is \
+                       1)."
     )]
     pub async fn consult(
         &self,

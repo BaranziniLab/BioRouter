@@ -1,6 +1,9 @@
 use crate::session::message_to_markdown;
 use anyhow::{Context, Result};
 
+use crate::commands::session_grouping::{
+    group_by_parent, listed_session_types, liveness_label, render_child, Liveness, SessionRow,
+};
 use biorouter::session::{generate_diagnostics, Session, SessionManager};
 use biorouter::utils::safe_truncate;
 use cliclack::{confirm, multiselect, select};
@@ -129,14 +132,49 @@ pub async fn handle_session_remove(
     remove_sessions(&session_manager, matched_sessions).await
 }
 
+/// The rows a listing sees, for a given `--subagents`.
+///
+/// BR-71 Task 38b: `list_sessions()` filters `sub_agent` rows out in SQL, so the
+/// flag has to widen the *query* — a display-only change would show nothing new.
+/// Split out of `handle_session_list` (which is bound to the
+/// `SessionManager::instance()` singleton and so untestable) purely so that
+/// defect has a regression guard:
+/// `the_subagents_flag_widens_the_query_not_just_the_rendering`.
+///
+/// `subagents == false` is the historical behaviour byte for byte:
+/// `list_sessions()` IS `list_sessions_by_types(&[User, Scheduled])`.
+async fn fetch_sessions(session_manager: &SessionManager, subagents: bool) -> Result<Vec<Session>> {
+    session_manager
+        .list_sessions_by_types(listed_session_types(subagents))
+        .await
+}
+
+/// Resolve a session id from a name (or a literal id), including subagent runs.
+///
+/// BR-71 Task 38b fact 2: `lookup_session_id`'s name branch used
+/// `list_sessions()`, so `--name` could never reach a subagent while
+/// `--session-id` always could. Lives here, next to the listing that shows those
+/// names, and takes the manager as an argument so it is testable.
+pub async fn resolve_session_by_name(
+    session_manager: &SessionManager,
+    name: &str,
+) -> Result<Option<String>> {
+    let sessions = fetch_sessions(session_manager, true).await?;
+    Ok(sessions
+        .into_iter()
+        .find(|s| s.name == name || s.id == name)
+        .map(|s| s.id))
+}
+
 pub async fn handle_session_list(
     format: String,
     ascending: bool,
     working_dir: Option<PathBuf>,
     limit: Option<usize>,
+    subagents: bool,
 ) -> Result<()> {
     let session_manager = SessionManager::instance();
-    let mut sessions = session_manager.list_sessions().await?;
+    let mut sessions = fetch_sessions(&session_manager, subagents).await?;
 
     if let Some(ref pat) = working_dir {
         let pat_lower = pat.to_string_lossy().to_lowercase();
@@ -154,24 +192,144 @@ pub async fn handle_session_list(
         sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
     }
 
-    if let Some(n) = limit {
-        sessions.truncate(n);
+    if !subagents {
+        if let Some(n) = limit {
+            sessions.truncate(n);
+        }
+
+        match format.as_str() {
+            "json" => {
+                println!("{}", serde_json::to_string(&sessions)?);
+            }
+            _ => {
+                if sessions.is_empty() {
+                    println!("No sessions found");
+                    return Ok(());
+                }
+
+                println!("Available sessions:");
+                for session in sessions {
+                    let output =
+                        format!("{} - {} - {}", session.id, session.name, session.updated_at);
+                    println!("{}", output);
+                }
+            }
+        }
+        return Ok(());
     }
 
-    match format.as_str() {
+    print_grouped_sessions(&format, limit, &sessions).await
+}
+
+/// The `--subagents` half of [`handle_session_list`]: resolve liveness, nest
+/// children under their parent, and print.
+///
+/// Split out so `handle_session_list` stays under the
+/// `clippy::too_many_lines` baseline. The cut is the function's own
+/// `if !subagents` fork, so each half is one whole output mode rather than an
+/// arbitrary slice — and `sessions` arrives already filtered and sorted,
+/// because both modes share that work.
+async fn print_grouped_sessions(
+    format: &str,
+    limit: Option<usize>,
+    sessions: &[Session],
+) -> Result<()> {
+    // The daemon owns liveness. With none reachable, say "unknown" rather than
+    // printing "done" over a run that is still going.
+    //
+    // ⚠ The reason is reported ONCE on stderr rather than guessed at per row.
+    // "no daemon" is frequently the wrong diagnosis: an agent-spawned shell has
+    // `BIOROUTER_SERVER__SECRET_KEY` stripped by `strip_daemon_private_env`, so
+    // this fails with a daemon running perfectly well, and a row that blamed a
+    // missing daemon would send someone hunting a problem that does not exist.
+    // stderr, so a `--format json` consumer reading stdout is unaffected.
+    let live: Option<std::collections::HashSet<String>> =
+        match crate::commands::session_watch::running_session_ids().await {
+            Ok(ids) => Some(ids),
+            Err(err) => {
+                eprintln!("note: subagent liveness is unknown — {err}");
+                None
+            }
+        };
+
+    let rows: Vec<SessionRow> = sessions
+        .iter()
+        .map(|s| SessionRow {
+            id: s.id.clone(),
+            name: s.name.clone(),
+            session_type: s.session_type,
+            parent_session_id: s.parent_session_id.clone(),
+            updated_at: s.updated_at,
+            message_count: s.message_count,
+        })
+        .collect();
+    let mut groups = group_by_parent(rows);
+    // ⚠ `limit` caps the TOP-LEVEL rows, after grouping. Truncating the flat row
+    // list first would let one parent's six children consume a `--limit 5`.
+    if let Some(n) = limit {
+        groups.truncate(n);
+    }
+
+    let liveness_of = |id: &str| match &live {
+        None => Liveness::Unknown,
+        Some(ids) if ids.contains(id) => Liveness::Running,
+        Some(_) => Liveness::Finished,
+    };
+
+    // `SessionRow` is a projection for the pure helpers and deliberately carries
+    // no `working_dir`. The JSON arm still has to emit one — the flat
+    // (`--subagents`-less) arm serialises whole `Session`s and includes it, and
+    // it is the field the sibling `--working-dir` filter matches on, so a script
+    // that adds `--subagents` must not silently lose it.
+    let working_dirs: std::collections::HashMap<&str, &std::path::Path> = sessions
+        .iter()
+        .map(|s| (s.id.as_str(), s.working_dir.as_path()))
+        .collect();
+    let as_json = |row: &SessionRow| {
+        serde_json::json!({
+            "id": row.id,
+            "name": row.name,
+            "session_type": row.session_type.to_string(),
+            "parent_session_id": row.parent_session_id,
+            "working_dir": working_dirs.get(row.id.as_str()),
+            "updated_at": row.updated_at,
+            "message_count": row.message_count,
+            "live": liveness_label(liveness_of(&row.id)),
+        })
+    };
+
+    match format {
         "json" => {
-            println!("{}", serde_json::to_string(&sessions)?);
+            let payload: Vec<serde_json::Value> = groups
+                .iter()
+                .map(|group| {
+                    serde_json::json!({
+                        "session": as_json(&group.session),
+                        "children": group.children.iter().map(&as_json).collect::<Vec<_>>(),
+                        // The group-level `live` is the group session's, repeated
+                        // here so a consumer can read a group's state without
+                        // descending into it. Children carry their own inline.
+                        "live": liveness_label(liveness_of(&group.session.id)),
+                    })
+                })
+                .collect();
+            println!("{}", serde_json::to_string(&payload)?);
         }
         _ => {
-            if sessions.is_empty() {
+            if groups.is_empty() {
                 println!("No sessions found");
                 return Ok(());
             }
 
             println!("Available sessions:");
-            for session in sessions {
-                let output = format!("{} - {} - {}", session.id, session.name, session.updated_at);
-                println!("{}", output);
+            for group in groups {
+                println!(
+                    "{} - {} - {}",
+                    group.session.id, group.session.name, group.session.updated_at
+                );
+                for child in &group.children {
+                    println!("{}", render_child(child, liveness_of(&child.id)));
+                }
             }
         }
     }
@@ -426,5 +584,129 @@ pub async fn prompt_interactive_session_selection(
         Ok(session.id.clone())
     } else {
         Err(anyhow::anyhow!("Invalid selection"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use biorouter::conversation::message::Message;
+    use biorouter::session::session_manager::SessionType;
+    use tempfile::TempDir;
+
+    /// A `SessionManager` over a throwaway directory, plus one `User` row and
+    /// one `SubAgent` row that are identical in every way except their type.
+    ///
+    /// ⚠ Each row gets a message. `list_sessions_by_types` INNER JOINs
+    /// `messages`, so a session with none is invisible whatever its type — a
+    /// fixture without this passes the "subagent is hidden" half for entirely
+    /// the wrong reason and then fails the other half.
+    async fn store_with_a_user_and_a_subagent_session(
+        dir: &TempDir,
+    ) -> (SessionManager, String, String) {
+        let sm = SessionManager::new(dir.path().to_path_buf());
+        let parent = sm
+            .create_session(
+                dir.path().to_path_buf(),
+                "Migration review".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        let child = sm
+            .create_session(
+                dir.path().to_path_buf(),
+                "Subagent: audit the migration".to_string(),
+                SessionType::SubAgent,
+            )
+            .await
+            .unwrap();
+        for id in [&parent.id, &child.id] {
+            sm.add_message(id, &Message::user().with_text("hello"))
+                .await
+                .unwrap();
+        }
+        (sm, parent.id, child.id)
+    }
+
+    /// BR-71 Task 38b, fact 1 — the defect this task exists to fix. A subagent
+    /// row is filtered out **in SQL**: `list_sessions()` is exactly
+    /// `list_sessions_by_types(&[User, Scheduled])`, so no amount of formatting
+    /// makes one appear. `--subagents` therefore has to widen the QUERY.
+    ///
+    /// This is the assertion that fails if `fetch_sessions` is ever reverted to
+    /// `list_sessions()`; the pure grouping tests cannot see that regression at
+    /// all, because grouping is only ever handed rows the query already
+    /// returned.
+    #[tokio::test]
+    async fn the_subagents_flag_widens_the_query_not_just_the_rendering() {
+        let dir = TempDir::new().unwrap();
+        let (sm, parent_id, child_id) = store_with_a_user_and_a_subagent_session(&dir).await;
+
+        let narrow = fetch_sessions(&sm, false).await.unwrap();
+        assert!(
+            narrow.iter().any(|s| s.id == parent_id),
+            "the default listing still shows user sessions"
+        );
+        assert!(
+            !narrow.iter().any(|s| s.id == child_id),
+            "without the flag a subagent row is invisible — this is the defect, \
+             and it lives in the SQL type filter"
+        );
+
+        let wide = fetch_sessions(&sm, true).await.unwrap();
+        assert!(
+            wide.iter().any(|s| s.id == child_id),
+            "--subagents must widen the query; a rendering-only change shows nothing new"
+        );
+        assert!(
+            wide.iter().any(|s| s.id == parent_id),
+            "widening must ADD a type, not swap one out"
+        );
+    }
+
+    /// BR-71 Task 38b, fact 2 — the same hole in `--name`. `--session-id`
+    /// always worked, which is why this one is easy to miss: by-id resolves,
+    /// by-name silently does not. A user cannot attach to a run they cannot
+    /// name.
+    #[tokio::test]
+    async fn a_subagent_run_is_addressable_by_name() {
+        let dir = TempDir::new().unwrap();
+        let (sm, parent_id, child_id) = store_with_a_user_and_a_subagent_session(&dir).await;
+
+        assert_eq!(
+            resolve_session_by_name(&sm, "Subagent: audit the migration")
+                .await
+                .unwrap(),
+            Some(child_id),
+            "a subagent must be resolvable by name, not only by id"
+        );
+        assert_eq!(
+            resolve_session_by_name(&sm, "Migration review")
+                .await
+                .unwrap(),
+            Some(parent_id),
+            "widening the lookup must not break the existing by-name path"
+        );
+        assert_eq!(
+            resolve_session_by_name(&sm, "no such session")
+                .await
+                .unwrap(),
+            None,
+            "an unknown name is still not found"
+        );
+    }
+
+    /// The rule lives in exactly one place, so the listing and the `--name`
+    /// lookup cannot drift apart.
+    #[test]
+    fn the_widened_type_list_adds_subagents_and_removes_nothing() {
+        let narrow = listed_session_types(false);
+        let wide = listed_session_types(true);
+        assert!(!narrow.contains(&SessionType::SubAgent));
+        assert!(wide.contains(&SessionType::SubAgent));
+        for kind in narrow {
+            assert!(wide.contains(kind), "{kind:?} must survive the widening");
+        }
     }
 }

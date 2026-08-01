@@ -4,9 +4,66 @@
 > (recommended) or executing-plans skill to implement this plan task-by-task. Steps use
 > checkbox (`- [ ]`) syntax for tracking.
 >
-> **Status: APPROVED — all 28 operator decisions are settled (2026-07-27) and recorded
-> in [Decisions of record](#decisions-of-record-operator-approved-2026-07-27). Blocked
-> only on its one prerequisite: GitHub issue #45 (multi-KB) ships FIRST (decision 27).**
+> **Status: APPROVED and UNBLOCKED — all 28 operator decisions are settled (2026-07-27)
+> and recorded in
+> [Decisions of record](#decisions-of-record-operator-approved-2026-07-27). Both
+> prerequisites have shipped: issue #45 (multi-KB) merged in `84d27fd4`, and the
+> conversation-write-back-freshness work merged as `a869a650` (#51). Task 1 can start.**
+>
+> **Amended 2026-07-28 against `main` at `275d735d` — 181 commits after the tree these
+> tasks were written and thrice reviewed against** (`git log --oneline 67822ea3..275d735d
+> | wc -l` → 181; 175 non-merge, 11 merges, 146 files, +42,112/−4,173). **Eight of the 45
+> tasks were CONFLICTED**, not merely drifted — 6, 7, 8, 9, 14, 15, 24, 34 — each resting
+> on a premise the tree had made false. Four blockers were repaired: Task 7's
+> `map_bus_event` gains the `AgentEvent::MessagesPersisted` arm (#59) and 7 → 8 becomes a
+> binding ordering; Tasks 6/8 no longer move the client write-back into the detached
+> runner (#51 W5 stays in `/reply`, where it owns a status code); Task 9's knowledge-base
+> pair is rewritten against what #45 actually shipped (`KbSelection` / `PrimaryUpdate` /
+> `set_visible_kbs`) and the dead single-KB fallback is deleted; and Task 14's obsolete
+> mid-turn refusal is retired in favour of the `MessageMetadata.pinned` mechanism that
+> was landed for it by name. A second phase re-anchored the twenty-one drifted tasks and
+> the reconciliations table; a third fixed the plan defects that predate the drift
+> (chief among them `is_spawn_tool_call`, a symbol three review passes built on that has
+> never existed). Full account: [Fourth pass](#fourth-pass--the-drift-amendment-2026-07-28-181-commits).
+>
+> ⚠ **The amendment is partial by design.** Line numbers on surfaces it did not touch —
+> notably the tasks marked CLEAN in Phases 2-4 — are still those of the pre-amendment
+> tree. `agent.rs` anchors are stale by roughly **+490** and `reply.rs` by **+180**, so a
+> near miss will look like a hit. **Anchor on the SYMBOL, never the line number**, per
+> the ground rules. And **nothing in this plan has been compiled** — that was true at
+> every review pass and the amendment did not change it.
+>
+> ⚠ **Amended again 2026-07-28, twice more, on the implementing branch
+> `feat/br71-workspace-control` at `ea15a4de`.** A **gate sweep** of Tasks 22-44 found
+> twelve gates that passed a plausible wrong implementation and rewrote them (three of
+> the repairs are production-code changes — reconciliation #24). A **drift sweep** of
+> Tasks 23, 24, 27, 30, 32, 38, 40 and 41 re-anchored them against the tree *as Phase 1
+> is building it*, and found that the plan is now drifting from **three** sources at
+> once: its original 181 commits, **Phase 1's own landed commits** (`reply.rs` +1137,
+> `message.rs` +494, `session_manager.rs` +251, `agent.rs` +198, with Tasks 8-21 still to
+> come), and **`main`**, which is 6 commits past this branch's fork point and unmerged.
+> Reconciliation **#25**. Two of that sweep's findings change what gets *built*, not only
+> what is checked — Task 27's `sseMaxRetryAttempts: 1` and Task 38's second
+> `refreshSessionList` consumer — and it is the first pass to have **run** any of the
+> gates it reviewed rather than reading them.
+>
+> **Amended 2026-07-30 — CLI parity (operator requirement).** Three tasks added:
+> **38b** (`biorouter session list --subagents`, so a subagent is *discoverable* from a
+> terminal), **38c** (`biorouter session attach` / `session cancel`, so a **live** one
+> can be joined at its current position, steered and stopped) and **42b** (a standing
+> gate that fails the build when a workspace capability is reachable from the GUI or the
+> daemon and has no CLI counterpart). 38b/38c sit in **Phase 3**, beside Task 38, because
+> they stand on Tasks 32/33/34 and because a phase that shipped the GUI half alone is the
+> drift this requirement exists to prevent; 42b sits in **Phase 4** with the release
+> gates. The requirement, its verbatim text and the reading of record for "inject
+> problems" are in
+> [New scope](#new-scope-operator-requested-additions) item **e**. **Task count: 47 → 50.**
+> Four defects in prescribed code were found and repaired during the same pass, all by
+> reading the tree rather than recalling it: `Conversation` serializes as a **bare array**,
+> not `{"messages": […]}`; `clap::Id` cannot be compared to a `&str` through references
+> (`.as_str()` is required); `uuid` is not a dependency of `biorouter-server`; and
+> `ui/desktop/openapi.json` is 275 KB, so the parity gate's reader is `#[cfg(test)]`
+> rather than shipped in the CLI binary.
 >
 > **Location note:** the writing-plans skill's default path is
 > `docs/superpowers/plans/YYYY-MM-DD-<feature>.md`; this plan deliberately lives beside
@@ -38,7 +95,7 @@ runner** (`/reply`'s turn body factored out — decision 11 — so `/reply` beco
 trait bridging the crate boundary (incl. a server turn *lease* the subagent runs will
 hold), an always-confirm inspector for security-relevant tool-set mutations
 (decision 1), the headless `workspace_*` tools including `workspace_watch`, the merged
-`subagent` tool, and the `biorouter sessions watch|send` CLI. Phase 2 adds the
+`subagent` tool, and the `biorouter session watch|send` CLI. Phase 2 adds the
 `WorkspaceBridge` (modeled on Agent Drafter's `UiBridge`), the `GET /ui/workspace`
 WebSocket, the renderer-side command applier that maps frames onto the existing
 `ChatGroups` reducer, and two Settings affordances (focus etiquette, chatrecall
@@ -55,84 +112,169 @@ schemars), TypeScript/React 19 (Vite, Vitest), the repo's `just` task runner.
 
 ---
 
-## Prerequisites — two, both ship BEFORE this plan
+## Prerequisites — two, BOTH NOW SHIPPED
 
-There are now **two** prerequisites. The second was added on 2026-07-27 when the operator
-ruled on new question 9.
+There are **two** prerequisites. Both merged to `main` before Task 1 starts, and this
+section is now a record of what landed rather than a list of what is awaited.
 
 ### 2. Conversation write-back freshness — required by Task 14's `mode: "note"`
 
-`SessionManager::replace_conversation` DELETEs and re-INSERTs a session's entire message
-set, so a caller that computed its conversation from a snapshot destroys anything appended
-in between. BR-12's freshness discipline (`eager_swap_is_safe`,
-`crates/biorouter/src/context_mgmt/mod.rs:661-671`) guards the background compaction path
-but was never extended to the two in-turn sites
-(`crates/biorouter/src/agents/agent.rs:3061` and `:4388`).
+**Status: SHIPPED (both halves), merged as `a869a650` (#51).** What follows is the
+record; the *blocker* text it replaces is preserved in outline so a reader of an earlier
+revision is not misled.
 
-`workspace_send_prompt { mode: "note" }` appends to another session's history. Against a
-mid-turn target, that append is destroyed by the running turn's compaction — **after the
-tool has already returned success**. The operator rejected both in-plan workarounds and
-chose the root-cause fix, which is a `biorouter`-crate change outside this plan's blast
-radius, tracked on `fix/conversation-writeback-freshness`.
+The concern was: `SessionManager::replace_conversation` DELETEs and re-INSERTs a
+session's entire message set, so a caller that computed its conversation from a snapshot
+destroys anything appended in between. `workspace_send_prompt { mode: "note" }` appends
+to another session's history, so against a mid-turn target that append was destroyed by
+the running turn's compaction — **after the tool had already returned success**. And
+even when the write survived, compaction summarized the note away, because nothing
+preserved an individual message across the `keep_last_turns` boundary. The operator
+rejected both in-plan workarounds and chose the root-cause fix.
 
-**Task 14 must not ship a `note` implementation that can silently lose the message.**
-Until the prerequisite lands, reconciliation #16's "refuse when the target is mid-turn" is
-the interim behaviour, not the answer.
+**Half (a) — the append survives a concurrent write-back. DONE.**
+
+- `eager_swap_is_safe`, the message-count compare the plan cited four times as the
+  BR-12 guard, was **DELETED** by `505fe77c fix(context-mgmt): move the eager-compaction
+  freshness guard into the store`. It no longer exists in `crates/`. Do not go looking
+  for it; `context_mgmt/mod.rs:661-671` is now unrelated doc text on
+  `check_if_compaction_needed`.
+- The two "unguarded in-turn sites" are both guarded. The in-turn auto-compaction the
+  plan cited as `agent.rs:3061` is now `agent.rs:3606-3613` and reads
+  `replace_conversation_preserving_tail(&session_config.id, &compacted_conversation,
+  rewrite_basis.revision, rewrite_basis.known())`, with an immediate `reseed_basis`
+  at `:3621` and a non-fatal `!outcome.stored()` branch at `:3634` (landed by
+  `2aa5a288`). The overflow-recovery site the plan cited as `agent.rs:4388` is now
+  `agent.rs:5034` delegating to `swap_overflow_compaction` (write at `:2086`) and
+  `retry_overflow_compaction` (write at `:2188`), both guarded (`557cf2f7`, hardened by
+  `0bb4fa5f`, `b047c527`, `9be3e427`, `b54b74f3`).
+- The pairing that makes this sound is `RewriteBasis` (`agent.rs:332-357`): a private
+  struct with private fields and no field-wise constructor, obtainable only through
+  `SessionManager::snapshot_for_rewrite`, so a revision and a conversation cannot be
+  re-split and "re-seed the basis" cannot compile into "re-seed the revision".
+- Net effect for `note`: a message appended mid-turn lands **above** the rewrite's
+  watermark and is not named by the turn's `known` conversation, so
+  `replace_conversation_preserving_tail` classifies it as foreign and **carries it
+  over** (`session_manager.rs:1347-1374`). It is preserved, not deleted.
+
+**Half (b) — the note survives compaction. DONE, and it is an obligation, not a gift.**
+
+`MessageMetadata.pinned` exists (`message.rs:628-629`) and is honoured at all five
+compaction sites (`a40226d3`, `b3fc6166`), with a budget, oldest-first eviction and
+eviction reporting in `context_mgmt::pins`. It was landed **for BR-71 specifically** and
+is reserved for it by name — the comment at `message.rs:617-621` reads *"NOTHING SETS
+THIS YET, deliberately. BR-71's `workspace_send_prompt { mode: "note" }` (issue #30) is
+the first consumer… When it lands it attaches via `Message::pinned`"*, and
+`Message::pinned` (`message.rs:1025-1036`) repeats it.
+
+**So Task 14 must CALL `.pinned()`.** Half (a) guarantees the note is not *deleted*;
+without the pin it is still *summarized away* by the next compaction, which is the same
+broken promise arriving more slowly — exactly the outcome the operator rejected two
+workarounds to avoid. See Task 14 Step 3 and its two tests.
+
+**Consequences for the plan text, all applied 2026-07-28:** the header no longer says
+"blocked"; reconciliation #16's mid-turn refusal is **retired** (it argued from a hazard
+that no longer exists, and refusing would make the tool's own recommended safe headless
+fallback unavailable in exactly the case a parent most wants it); and the four
+`eager_swap_is_safe` citations are corrected in place.
 
 ### 1. Issue #45 (multi-KB)
 
+**Status: SHIPPED.** Merged to `main` in `84d27fd4` on 2026-07-27; verification recorded
+in `docs/knowledge-base/multi-kb-verification.md`. **Read the "NOT in the shape this plan
+originally assumed" block below before touching Tasks 9, 12, 15, 24 or 32** — the API is
+real and good, and it is not the API this plan predicted.
+
 **Binding (decision 6 + decision 27).** Multi-active knowledge bases per session are a
 **separate issue with its own plan**, [GitHub issue
-#45](https://github.com/BaranziniLab/biorouter/issues/45), and it is implemented and
-merged **before** Task 1 of this plan starts. BR-71 does not implement KB plurality; it
+#45](https://github.com/BaranziniLab/biorouter/issues/45), implemented and merged
+**before** Task 1 of this plan starts. BR-71 does not implement KB plurality; it
 *consumes* it.
 
-Why it is a real prerequisite rather than a nicety: `workspace_set_tools` is specified
+Why it was a real prerequisite rather than a nicety: `workspace_set_tools` is specified
 (§4.1) to assign knowledge bases to a session — at session start **and** hot-swap
 mid-session — and the design's schema is already an array
-(`set_knowledge_bases: ["kb-a", "kb-b"]`). Today's reality is single-active, verified in
-the tree: `KnowledgeService::set_active_for_session(session_id, Option<&str>)`
-(`crates/biorouter-mcp/src/knowledge/service.rs:1020`) persists one id per session;
-`get_active_for_session` returns `Option<String>` (`:1006`); `kb_id_or_active` (5 call
-sites) errors without one; `kb_search`/`kb_search_raw_sources` search exactly one base;
-HTTP `/knowledge/active` carries `active_kb: Option<String>`; the CLI is
-`knowledge active --set <id>`; the GUI chip is single-select. Shipping BR-71 against that
-would force the tool to accept the design's array and then reject any list longer than
-one — a tool that lies about its own schema.
+(`set_knowledge_bases: ["kb-a", "kb-b"]`). At the time this plan was written the tree
+was single-active: `KnowledgeService::set_active_for_session(session_id, Option<&str>)`
+persisted one id per session, `get_active_for_session` returned `Option<String>`,
+`kb_id_or_active` errored without one, `kb_search` searched exactly one base, HTTP
+`/knowledge/active` carried `active_kb: Option<String>`, the CLI was
+`knowledge active --set <id>`, and the GUI chip was single-select. Shipping BR-71
+against that would have forced the tool to accept the design's array and then reject any
+list longer than one — a tool that lies about its own schema.
 
-**What this plan assumes #45 leaves behind** (the exact surface Tasks 9, 12, 15, 24 and
-32 are written against):
+**SHIPPED — and NOT in the shape this plan originally assumed.** #45 merged in
+`84d27fd4` on 2026-07-27. An earlier revision of this section predicted a plural mirror
+of the old names:
 
 ```rust
-// crates/biorouter-mcp/src/knowledge/service.rs — post-#45
+// PREDICTED, and WRONG. None of these symbols exists anywhere in the repo.
 pub fn get_active_for_session(&self, session_id: &str) -> anyhow::Result<Vec<String>>;
 pub fn set_active_for_session(&self, session_id: &str, kb_ids: &[String]) -> anyhow::Result<()>;
 ```
 
-and, in `WorkspaceServices` (Task 9), the plural mirror
-`set_knowledge_bases(&self, session_id: &str, kbs: &[String]) -> Result<(), String>` /
-`active_knowledge_bases(&self, session_id: &str) -> Vec<String>`.
+`3355164a refactor(knowledge): rename the active-KB pointer to primary` renamed the
+whole surface. `get_active_for_session`, `set_active_for_session`, `kb_id_or_active`,
+`primary_kb()` and `kb_ids()` **do not exist**. What actually shipped, in
+`crates/biorouter-mcp/src/knowledge/service.rs`:
 
-> **FALLBACK — read this only if #45 slips.** If BR-71 must start before #45 lands, the
-> whole KB dependency collapses to **four** edits, all confined to Tasks 9, 15 and 24 —
-> nothing else in this plan touches knowledge bases:
-> 1. `WorkspaceServices` keeps the singular pair
->    `set_knowledge_base(&self, session_id: &str, kb: Option<&str>) -> Result<(), String>`
->    and `active_knowledge_base(&self, session_id: &str) -> Option<String>`, implemented
->    directly over today's `set_active_for_session(session_id, Option<&str>)` /
->    `get_active_for_session`.
-> 2. `workspace_set_tools` keeps `set_knowledge_bases: Option<Vec<String>>` in its schema
->    (design conformance) but returns `INVALID_PARAMS` — *"a session has exactly one
->    active knowledge base; pass one knowledge base (or an empty list to clear).
->    Multiple active KBs are tracked in issue #45."* — for any list of length > 1, and
->    forwards `kbs.first()` otherwise.
-> 3. `workspace_open.new.knowledge_bases` applies the same ≤1 rule.
-> 4. Task 12's `workspace_list` row emits `"knowledge_bases": [<0-or-1 ids>]` (always an
->    array on the wire, so the model's parsing does not change when #45 lands).
->
-> The fallback is a **strictly smaller** diff than the plural path — no task is added or
-> removed, and the later upgrade is a signature change in one trait plus one handler.
-> Mark it in the PR body so the follow-up is not lost.
+```rust
+/// :90-101 — one coherent selection for a scope. `primary_kb` is always a member
+/// of `kb_ids`, or `None`; the struct is read under the root lock so that claim
+/// cannot be falsified by a concurrent writer.
+pub struct KbSelection {
+    pub kb_ids: Vec<String>,        // the scope's bases, sorted
+    pub hidden_kbs: Vec<String>,    // the hidden ids that produced kb_ids
+    pub primary_kb: Option<String>, // write target
+}
+
+/// :103-120 — what a caller wants to happen to the primary pointer. FOUR-valued:
+/// `Inherit` (drop this scope's pointer, fall back to the machine one) is NOT
+/// the same as `Clear` (explicitly "no primary here", which stops the fallback).
+pub enum PrimaryUpdate<'a> { Unchanged, Clear, Inherit, Set(&'a str) }
+
+pub fn selection(&self, session_id: Option<&str>) -> anyhow::Result<KbSelection>;            // :1461
+pub fn set_selection(&self, session_id: Option<&str>, hidden: Option<&[String]>,
+                     primary: PrimaryUpdate<'_>) -> anyhow::Result<KbSelection>;             // :1496
+pub fn set_visible_kbs(&self, session_id: Option<&str>, visible: &[String],
+                       primary: PrimaryUpdate<'_>) -> anyhow::Result<KbSelection>;           // :1575
+pub fn session_kb_ids(&self, session_id: Option<&str>) -> anyhow::Result<Vec<String>>;       // :1262
+pub fn primary_for_session(&self, session_id: Option<&str>) -> anyhow::Result<Option<String>>; // :1290
+```
+
+**Three structural differences Tasks 9, 12, 15, 24 and 32 must honour**, because the
+plan's original signatures cannot express them:
+
+1. **The model is subtractive, not assignive.** A scope *hides* bases from the installed
+   set; `set_selection` takes `hidden: Option<&[String]>`. The "assign this list"
+   primitive BR-71 wants is `set_visible_kbs`, which exists — a different function with
+   a different third argument.
+2. **The primary pointer is mandatory and four-valued.** Every mutator takes a
+   `PrimaryUpdate<'_>`, and the service enforces membership in the *resulting* set
+   (`a9f6101d feat(knowledge): enforce that the primary KB is a member of the session's
+   set`), so an arbitrary choice is not free. `workspace_set_tools` and `workspace_open`
+   must therefore **decide** one, which means both tools need a field for it and the plan
+   needs a stated default. Both are added below.
+3. **`session_id` is `Option<&str>`**, where `None` means machine scope. A bare `&str`
+   signature silently erases the difference between "this session's set" and "the machine
+   default", so `WorkspaceServices` — which is always session-scoped — passes
+   `Some(session_id)` at every call, explicitly.
+
+**The primary-choice default, decided here so no task invents its own:** *keep the
+current primary if it is still a member of the new set; otherwise pin the first id of
+the new set; if the new set is empty, `Clear`.* That is `PrimaryUpdate::Unchanged` /
+`PrimaryUpdate::Set(first)` / `PrimaryUpdate::Clear` respectively, and it is what
+`KbPrimaryChoice::Auto` in Task 9 means. A caller that wants something else says so
+explicitly with `primary_knowledge_base`.
+
+> **The single-KB FALLBACK block that used to live here has been DELETED**
+> (2026-07-28). It described a world in which a session has exactly one active knowledge
+> base and `set_active_for_session(session_id, Option<&str>)` is the primitive. #45 did
+> not merely make that plural — it replaced it with a hidden-set model plus a validated
+> primary pointer, so **both** branches of the old either/or are now wrong. Leaving it
+> in place as an "escape hatch" would hand an implementer a fully-specified,
+> confidently-written, uncompilable design. There is nothing to fall back to; the
+> prerequisite is satisfied.
 
 ---
 
@@ -179,23 +321,165 @@ code does what its author believed.
   `just generate-openapi && cd ui/desktop && npm run generate-api` before the frontend
   tasks that consume the route (called out explicitly where required).
 - **Permission-relevant code requires human review** (`.github/copilot-instructions.md`):
-  Tasks 6, 8, 10, 14, 15, 16, 18, 19, 19b, 23, 33, 35 and 36 touch cross-session
+  Tasks 6, 8, 10, 14, 15, 16, 18, 19, 19b, 23, 33, 35, 36 and **36b** touch cross-session
   injection/mutation/control, the always-confirm hook, the merged spawn surface, the
   extension-persistence path, or the `/reply` hot path, and must be flagged for operator
-  review in their PR description.
+  review in their PR description. **36b is the sharpest of them**: it is the only task in
+  this plan that lets a non-human answer a permission prompt, and its two bounds
+  (decisions 30 and 31) are what keep that from becoming an escalation ladder.
 - **The `/reply` refactor (Task 8) is the highest-risk change in this plan.** It carries
   its own rollback note and an enlarged test matrix; do not batch it with unrelated work
   in one commit.
-- Line numbers cited below were re-verified against the tree at commit `058d9cf4`
-  and again after the adversarial-critic fix pass at `a01be9b7` (2026-07-27, the
-  v1.88.6 version bump; `git diff --stat 058d9cf4..a01be9b7` touches only `Cargo.toml`,
-  `Cargo.lock`, `ui/desktop/package*.json` and `ui/desktop/openapi.json`, so every Rust
-  and TypeScript anchor is unmoved). If a file drifts further, the named symbol is the
-  anchor, not the number.
+- ⚠ **Anchors: read this before you chase a line number.** They were originally verified
+  at `058d9cf4`, then at `a01be9b7` (the v1.88.6 bump — only version files moved), then
+  at `67822ea3`. **`main` is now `275d735d`, 181 commits later**, and the churn landed on
+  exactly the files this plan modifies most: `agent.rs` **13** commits (6,001 → 6,817
+  lines), `session_manager.rs` **11**, `context_mgmt/` **6**, `routes/reply.rs` **4**
+  (1,429 → 1,832), `extension_manager.rs` **4**.
+
+  The 2026-07-28 amendment re-anchored every surface it touched — the eight CONFLICTED
+  tasks (6, 7, 8, 9, 14, 15, 24, 34), the twenty-one drifted ones, the reconciliations
+  table and the decisions of record — and each repaired citation names the pre-drift
+  number it replaced. **It did not re-anchor the tasks marked CLEAN** (16, 17, 20, 22,
+  23, 25, 26, 28-31, 38-42), which still carry `67822ea3` numbers.
+
+  So: **the named SYMBOL is the anchor, never the line number.** Knowing the size of the
+  drift is what keeps a *near* miss from reading as a hit — `agent.rs` anchors are off by
+  roughly **+490** and `reply.rs` by **+180**, and the expensive failures in this
+  document's history have all been near misses, not wild ones (`extension_manager.rs:999`
+  is `get_extension_configs`, one method past the `is_extension_enabled` at `:987` that
+  Task 18 meant; `CHAT_MODE_TOOL_SKIPPED_RESPONSE` moved *files*, to
+  `agents/tool_execution.rs:43`). If a symbol is not where the plan says, **grep for the
+  symbol and fix the plan's number in your PR** — do not assume the code changed shape.
+- ⚠ **And the drift did not stop when implementation started — Phase 1's OWN commits are
+  what move Phase 2-4's anchors now** (added 2026-07-28 by the Phase-2/3/4 drift
+  amendment; this is survey item 9, the one the earlier two passes left unwritten).
+
+  Every number in Tasks 22-44 was written against a tree in which none of Phase 1 had
+  landed. Measured on this branch at **`ea15a4de`**
+  (`git diff --stat 275d735d..HEAD`, i.e. against the **branch point**, not against
+  `main` — see the second half of this bullet for why that distinction bites), with
+  Tasks 1-7 landed and Tasks 8-21 still to come:
+
+  | File | Δ since `main` | What it means for Phases 2-4 |
+  |---|---|---|
+  | `routes/reply.rs` | **+1137 / −396** | Task 35's `interrupt` anchors moved three times in one day: `:910` → `:1123` → `:1004`. `reply.rs` now contains **no** session read and **no** `.reply(` call — Task 8's deletion has effectively happened. |
+  | `conversation/message.rs` | **+494** | Tasks 28, 32, 35 read `MessageProvenance`/`ProvenanceKind`/`MessageMetadata` here. |
+  | `session/session_manager.rs` | **+251** | Task 24's five working-dir anchors all moved (survey recorded +78; it is now +251, and Task 24's numbers are stale against *both*). |
+  | `agents/agent.rs` | **+198** | Tasks 32, 36 anchor here. |
+  | `state.rs` | **+45** | Task 41's four `AppState` anchors all moved, and `impl TurnGuard` now **exists** (it did not when the survey ran). |
+
+  The three files Phase 2-4 anchors most (`agent.rs`, `reply.rs`, `session_manager.rs`)
+  **will keep moving until Task 21 lands**. So, concretely: **re-anchor by symbol at the
+  start of each task, from the tree, not from this document.** Each amended task in
+  Tasks 22-44 now says so in its own Files block, and every gate command in those tasks
+  greps a *pattern* rather than asserting a line number, for the same reason.
+
+  Two live examples of the near-miss failure this prevents, both found on 2026-07-28:
+  `agent.rs:2138` (Task 36's recursion guard, pre-drift) now lands inside
+  `swap_overflow_compaction`; `reply.rs:910` (Task 35's Files list) landed inside the
+  `/reply` event loop that Task 8 deletes. Both read as plausible code.
+
+  **And `main` moved too, independently of this branch.** At the time of writing,
+  `git log --oneline 275d735d..main` is **6 commits** (`main` = `9558c346`), which this
+  branch has **not** merged. They are small, but one lands squarely in Phase 2's path:
+
+  - **#67** (`b80ae07e`) edits `ui/desktop/src/hooks/chatStreamStore.tsx` (+17) and
+    `chatStreamStore.test.ts` (+61, **54 → 55 tests**) — *Task 27's file*. It adds a
+    `this.viewNamesEveryStoredRow = false;` at the top of `submitPreparedMessage`,
+    which is precisely where Task 27 Step 3 tells you to add `this.observing = false;`.
+    On this branch that line is **absent**; after a merge it is **present**. Both states
+    are correct for their tree — do not "restore" or "delete" it.
+  - **#64** (`852dc3da`…`3d827776`) rewrites `biorouter-mcp/src/developer/rmcp_developer.rs`
+    (+283) and adds `tests/developer_working_dir_vanishes.rs`. Outside Phase 2-4's path,
+    but it is a new integration target that Task 44's full-workspace gate will run.
+
+  So a third number moves under Phase 2-4: not only the plan's anchors and Phase 1's
+  commits, but `main` itself. **Every measured test count in Tasks 22-44 was taken on
+  the un-merged branch.** After a merge or rebase, re-measure the baseline before
+  treating a count as a regression — starting with Task 27's, which the merge changes by
+  construction.
+
+  **A fourth and a fifth source, and the sharpest illustration there is: the WORKING
+  TREE, and then the REBASE.** While the drift amendment was being written, a Phase-1
+  implementer had uncommitted edits to `crates/biorouter-server/src/routes/reply.rs`
+  open in the same worktree. Committed at `ea15a4de`, `pub async fn reply(` was `:684`;
+  in the working tree beside it, the same function was `:847` — **+163 lines, in one
+  session, uncommitted**. That work has since been committed: at `03ad602c` (Task 8's
+  `/reply` cutover) it is `:847`, so the number is now reproducible with
+  `git show 03ad602c:crates/biorouter-server/src/routes/reply.rs | grep -n 'pub async fn reply('`.
+
+  Then the rebase closed the other half of the trap. **`ea15a4de` is no longer on this
+  branch** — it was rebased into `aaae5889`, so `git merge-base --is-ancestor ea15a4de
+  HEAD` answers *no* and `git show ea15a4de:…` works only while the loose object
+  survives locally. This document carries **dozens** of "verified at `ea15a4de`" stamps
+  (`grep -c ea15a4de` this file) that a fresh clone cannot check. So: stamp anchors with
+  the commit you read them at (that part worked — it is why the `:684`/`:847`
+  disagreement was legible at all), but treat
+  a stamp as a *timestamp*, never as a reproducible citation, and **re-measure at HEAD
+  before acting on any number in this plan**. `git status`, `git stash list` and
+  `git merge-base --is-ancestor <stamp> HEAD` are all part of re-anchoring: a number
+  that disagrees with the tree may be disagreeing with unpushed work, or with a commit
+  that no longer exists — not with reality.
+- ⚠ **Gate mechanics — two facts, both measured on this worktree at `bab6fba2`, that
+  decide whether a gate command runs at all** (added 2026-07-28 by the Phase-2/3/4 gate
+  amendment; every gate in Tasks 22-44 was rewritten against them, and the same two
+  mistakes exist in Phase-1 tasks that have not yet been swept — see the list at the end
+  of this bullet).
+
+  1. **`cargo test --lib A B` is a hard error, not two filters.** `cargo test` takes
+     **one** positional `TESTNAME`; a second one is rejected before any test runs:
+
+     ```
+     $ cargo test --lib alpha beta
+     error: unexpected argument 'beta' found
+     Usage: cargo test [OPTIONS] [TESTNAME] [-- [ARGS]...]
+     $ echo $?        # 1
+     ```
+
+     Two or more filters must go **after `--`**, where libtest ORs them:
+     `cargo test -p X --lib -- alpha beta` → runs both. The failure is loud, but the
+     *repair* is where the damage happens: an engineer who sees `unexpected argument`
+     usually deletes the extra filter rather than adding `--`, and the coverage the
+     second filter was there for is silently gone. Every multi-filter `cargo test` in
+     this plan now writes the `--`.
+  2. **A `vitest` filter that matches nothing fails alone and passes in company.**
+     `npx vitest run NoSuchFile` prints `No test files found, exiting with code 1`. But
+     `npx vitest run SessionListView ZzzNoSuchFilter` runs the one file that matched and
+     **exits 0** — positional args are OR'd filename patterns, so one live term hides any
+     number of dead ones. This is exactly the Task 30 Step 3b defect, and a composite
+     filter is the normal shape of a "did the mount get wired?" gate. The only defence is
+     a **measured file *and* test count** in the `Expected:` line: every vitest gate in
+     Tasks 22-44 now carries one, and a count that comes back low is the signal that a
+     filter term died.
+
+  Corollary for `cargo`, in the other direction: a **single** filter that matches nothing
+  prints `0 passed` and **exits 0**. `cargo test --lib some::module::that::moved` is a
+  green no-op. Rust gates therefore carry counts too, and a filter that names a nested
+  module must be spelled with every `::` segment (`routes::reply::tests::writeback_tests`,
+  not `routes::reply::writeback_tests` — Task 21 records that exact miss).
+
+  **Not yet swept (Phase 1, out of the gate amendment's scope):** the multi-filter form
+  appears **nine** times. Do not chase the line numbers — this document is being amended
+  by several passes and they move; find them with:
+
+  ```bash
+  grep -n "cargo test .* --lib [a-zA-Z_:][^-]*  *[a-zA-Z_][a-zA-Z_:]*" \
+    docs/agent-loop/designs/br71-execution-plan.md | grep -v " -- "
+  ```
+
+  At the time of writing that is `:1448` (Task 2), `:3663` (Task 6), `:5193` (Task 8),
+  `:6625` (Task 10), `:7224` (Task 11), `:7509` (Task 12), `:7974` (Task 13), `:11054`
+  (Task 18) and `:11280` (Task 19) — the gate amendment's own list (`:1243`, `:3458`,
+  `:4988`, `:6420`, `:7019`, `:7304`, `:7769`, `:10849`, `:11075`) was correct when it
+  was written and went stale within the day, which is exactly why the command above is
+  the authority and this sentence is not. Each needs the `--`. Task 7's has already been
+  run by its implementer, so it was hit and worked around; the rest have not.
 - **Task 19 is two commits, `19` and `19b`.** The advertisement move and the
   `subagent_status` deletion are independently revertible (the deletion is the breaking
   half). Downstream task numbers are unchanged — the split is `19` → `19` + `19b`, not a
-  renumbering.
+  renumbering. **Task 36b is inserted the same way** (added 2026-07-30, between Tasks 36
+  and 37): a letter suffix, no renumbering, same convention as `13c` and `19b`.
 - **On step granularity, deliberately.** The writing-plans skill's unit is "one action,
   2-5 minutes", and several tasks here exceed it — Tasks 6, 8, 12, 15, 20 and 36 each
   land 300-550 lines, usually as one "Step 3: Implement" over one or two files. That is a
@@ -219,7 +503,7 @@ summarized again in [Decisions of record](#decisions-of-record-operator-approved
 | Design § | Content | Realized by |
 |---|---|---|
 | §2 Design principles | Headless-first, reuse `UiBridge` pattern, no rebuilds, provenance everywhere | Cross-cutting; enforced per task |
-| §3.1 Backend control plane reuse | `start_agent`, `/reply` turn lock, `/interrupt`, `/agent/cancel`, `/agent/stop`, `get_session`, add/remove extension, `set_active_for_session`, `active_work`, `AgentManager` | Tasks 12–17 wrap these exact paths; no second storage/turn path is built |
+| §3.1 Backend control plane reuse | `start_agent`, `/reply` turn lock, `/interrupt`, `/agent/cancel`, `/agent/stop`, `get_session`, add/remove extension, `set_visible_kbs`/`selection` (post-#45; `set_active_for_session` no longer exists), `active_work`, `AgentManager` | Tasks 12–17 wrap these exact paths; no second storage/turn path is built |
 | §3.2 chatrecall ruling | Workspace implements no search; instructions route content questions to `chatrecall`; enabling workspace *suggests* chatrecall | Task 12 (instructions block), Task 42 (tuning), **Task 30 (the real Settings suggestion — decision 14, no longer descoped)** |
 | §3.3 Pattern donor | `UiBridge` anatomy (`control.rs:557-663`, `apps.rs:483-496`) copied at workspace scope | Tasks 22–23 |
 | §3.4 Frontend seams | `openTab` dedupe, registry singletons, `create-chat-window` IPC | Tasks 25–26 |
@@ -238,15 +522,17 @@ summarized again in [Decisions of record](#decisions-of-record-operator-approved
 1. ⚠ **Crate boundary: the event bus carries `AgentEvent`, not `MessageEvent`, and lives
    in the `biorouter` crate.** The design says the broadcast is "registered alongside the
    agent in `AgentManager`" and reuses the `MessageEvent` wire enum. `MessageEvent` is
-   defined in `biorouter-server` (`routes/reply.rs:142`), but subagent turns publish from
+   defined in `biorouter-server` (`routes/reply.rs:278`; the plan's old `:142` now lands
+   on `writeback_conflict_response`, #51 W5's 409 helper), but subagent turns publish from
    inside `biorouter` (`subagent_handler.rs`), which cannot depend on the server crate.
    Resolution: a global `SessionEventBus` module in `biorouter`
    (`crates/biorouter/src/session_events.rs`) carrying `SessionBusEvent`
    (`TurnStarted` / `Agent(AgentEvent)` / `TurnError` / `TurnFinished`); the server's
    observer route AND `/reply` map bus events → `MessageEvent` through **one** shared
    function, so the **wire format** is exactly the design's and the generated TS client
-   parses it unchanged. `AgentEvent` is `Clone` (`agent.rs:364`), so broadcast works
-   without new derives.
+   parses it unchanged. `AgentEvent` is `Clone` (`agent.rs:605`), so broadcast works
+   without new derives, and it now carries **eight** variants (`MessagesPersisted` at
+   `:672`) — see reconciliation #22.
 2. ⚠ **Glass-box children run under the server turn lock and inside the `AgentManager`
    registry — the control-plane half of design §4.2/§4.5-step-2.** The design says
    "run the child through the detached turn runner." Literally routing
@@ -257,8 +543,12 @@ summarized again in [Decisions of record](#decisions-of-record-operator-approved
    `subagent_handler.rs`/`subagent_tool.rs` inside the `biorouter` crate. What the
    design *needs* from "through the detached runner" is three properties, and Task 33
    wires each one explicitly rather than substituting a bus tee for all of them:
-   - **The live child agent is addressable.** `POST /interrupt` resolves agents via
-     `AgentManager::get_or_create_agent` (`reply.rs:920` → `state.rs:290`); today the
+   - **The live child agent is addressable.** `POST /interrupt` (`reply.rs:1090`)
+     resolves agents via `state.get_agent_for_route(req.session_id)` (**`reply.rs:1100`**,
+     re-anchored 2026-07-28 — the plan's old `:920` now lands inside the SSE event
+     loop's error branch) → `AppState::get_agent_for_route` (**`state.rs:290`**) →
+     `AppState::get_agent` → `AgentManager::get_or_create_agent` (**`state.rs:287`**);
+     today the
      child is a standalone `Arc::new(Agent::with_config(..))` (`subagent_handler.rs:149`)
      that the manager never sees, so a steer mints a *different* agent and the queued
      text is drained by nobody. Fix: a new `AgentManager::register_agent` puts the
@@ -288,8 +578,8 @@ summarized again in [Decisions of record](#decisions-of-record-operator-approved
    implementation, and the Task 39 harness asserts the chain end-to-end.
 3. ⚠ **The workspace extension reaches server state through a `WorkspaceServices`
    trait.** Platform extensions are constructed from `PlatformExtensionContext`
-   (`extension.rs:109-113`: only `extension_manager` + `session_manager`), inside
-   `ExtensionManager::new` (`extension_manager.rs:484`) — the server never touches that
+   (`extension.rs:109-113`, **exact**: only `extension_manager` + `session_manager`),
+   inside `ExtensionManager::new` — the server never touches that
    construction. But the tools need the server's turn lock (`AppState.active_turns`,
    `state.rs:93`), the turn runner, and the bridge. Resolution: a
    `WorkspaceServices` trait defined in `biorouter`
@@ -302,26 +592,45 @@ summarized again in [Decisions of record](#decisions-of-record-operator-approved
    the session level via `SessionManager`/`AgentManager`, which the extension reaches
    directly.
 4. **`MessageMetadata` loses `Copy`** (decision 8, accepted). It is
-   `#[derive(... Clone, Copy ...)]` (`message.rs:535`); adding
+   `#[derive(... Clone, Copy ...)]` (`message.rs:587`); adding
    `provenance: Option<MessageProvenance>` (String-bearing) removes `Copy`. Fallout is
    mechanical (`.clone()` at former copy sites); Task 2 owns it.
-5. **`PLATFORM_EXTENSIONS` count test.** `extension.rs:677` asserts `len() == 5`; adding
+5. **`PLATFORM_EXTENSIONS` count test.** `extension.rs:677` asserts `len() == 5`
+   (**exact**; the test is `platform_extension_defaults_match_capabilities`, :675-683); adding
    `workspace` makes it 6. Task 12 updates the test and asserts
    `!PLATFORM_EXTENSIONS["workspace"].default_enabled` — off by default in the config
    registry, and *injected per session* only where subagents are enabled (Task 18).
-6. **KB plurality is a prerequisite, not a compromise** (decisions 6 + 27). See
-   [Prerequisites](#prerequisites--two-both-ship-before-this-plan). The plural
-   `Vec<String>` surface is what Tasks 9/12/15/24/32 are written against; the single-KB
-   fallback is spelled out there if #45 slips.
+6. ⚠ **KB plurality shipped — as a hidden-set model with a mandatory primary pointer,
+   not as a plural rename** (decisions 6 + 27; amended 2026-07-28). See
+   [Prerequisites](#prerequisites--two-both-now-shipped). `#45` merged in
+   `84d27fd4`, and `3355164a` then renamed the whole surface:
+   `get_active_for_session`, `set_active_for_session` and `kb_id_or_active` **do not
+   exist**. Tasks 9/12/15/24/32 are written against `KbSelection` /
+   `PrimaryUpdate<'a>` / `set_visible_kbs` / `selection` / `session_kb_ids`
+   (`biorouter-mcp/src/knowledge/service.rs`). Two consequences the original plan had no
+   field for: every mutator must **decide** a write target (the service validates
+   membership in the resulting set, `a9f6101d`), so `workspace_set_tools` and
+   `workspace_open` each gain a `primary_knowledge_base`; and `workspace_list` reports
+   `primary_kb` beside `knowledge_bases`, because a model that can set a target and not
+   read it back will thrash. `WorkspaceServices` exposes the narrowed pair
+   `knowledge_selection` / `set_knowledge_bases(…, KbPrimaryChoice)` — see Task 9 for why
+   it is a narrowing rather than a re-export. **The single-KB fallback block is deleted**:
+   #45 did not choose one of the plan's two branches, it invalidated both.
 7. **The #44 working-dir lock is MERGED (HEAD `058d9cf4`) — resolved, no seam left.**
    What landed: `SessionUpdateBuilder` has **no** `working_dir` setter (commit
-   `3805b808`; the comment at `session_manager.rs:891-894` names the two sanctioned
+   `3805b808`; the comment at `session_manager.rs:890-894` names the two sanctioned
    writers), changes go through `SessionManager::try_update_working_dir_if_empty`
-   (`session_manager.rs:1156`, one atomic conditional UPDATE) or the terminal-only
+   (`session_manager.rs:1246-1255`, one atomic conditional UPDATE) or the terminal-only
    `force_update_working_dir_unguarded`; the HTTP route additionally claims the
-   per-session turn guard (`routes/agent.rs:1009`). Consequences for this plan:
+   per-session turn guard (`update_working_dir` at **`routes/agent.rs:1027`**, its
+   `try_begin_turn_idempotent` at **`:1042`**; the plan's old `:1009` predates the
+   drift and now lands in a neighbouring handler's error branch).
+   Consequences for this plan:
    - `create_session(working_dir, …)` still sets the dir **at creation** —
-     `start_agent` (`routes/agent.rs:283`) does exactly this at HEAD, so
+     `start_agent` (**`routes/agent.rs:256`**, its
+     `create_session(PathBuf::from(&working_dir), name, SessionType::User)` at
+     **`:307`**; the plan's old `:283` is now a bare `}` inside the same body) does
+     exactly this at HEAD, so
      `ServerWorkspaceServices::start_session` (Task 9) mirroring the current
      `start_agent` body is #44-correct with no lock acquisition: a fresh session has
      no messages, and the lock only guards *changes* to an existing session.
@@ -385,7 +694,10 @@ summarized again in [Decisions of record](#decisions-of-record-operator-approved
      plain strings (no `biorouter` → `biorouter-server` dependency). Carrying the
      *variant* is not enough: the `match &code { TurnAbortCode::ProviderFailure { kind }
      => (Provider, kind.is_transient(), Some(kind.wire_code())), … }` block that lives at
-     `reply.rs:696-721` today **moves into `run_turn`** and feeds that event, so
+     **`reply.rs:883-901`** today (re-anchored 2026-07-28; `let (scope, retryable,
+     provider_kind) = match &code {` at `:883`, the `};` that closes it at `:901`, inside
+     the `Ok(Some(Ok(AgentEvent::TurnAborted { code, message })))` arm that begins at
+     `:876`) **moves into `run_turn`** and feeds that event, so
      `scope:"provider"`, `retryable:true` and `provider_kind` are still emitted by the
      only code path that produces them. Without the move no production path could ever
      emit them again and the desktop's rate-limit/retry/compaction recovery would
@@ -426,14 +738,19 @@ summarized again in [Decisions of record](#decisions-of-record-operator-approved
     exists at which delegation is unavailable), keeping its name and its existing
     `SubagentParams` surface — `instructions`, `subworkflow`, `parameters`,
     `extensions`, `settings`, `summary`, `background` — plus the new `visible` and
-    `placement`; then (**Task 19**) the push at `agent.rs:2658` is deleted,
+    `placement`; then (**Task 19**) the push at **`agent.rs:3152`** is deleted,
     `Agent::dispatch_tool_call` intercepts the prefixed `workspace__subagent` **and** the
-    bare `subagent` (mirroring `extension_manager.rs:1294-1304`'s prefix-stripping
-    tolerance) and re-checks both `subagents_enabled` (the mode/model gate) **and** the
-    session's `available_tools` grant — the latter because intercepting before
-    `ExtensionManager::dispatch_tool_call` skips the check at `:1333` that would
-    otherwise apply it; and `reply_parts.rs:133-140`'s code-execution retain filter is
+    bare `subagent` (mirroring **`extension_manager.rs:1444-1457`**'s prefix-stripping
+    tolerance — the `if !tool_name_str.contains("__")` block that re-prefixes the three
+    known `code_execution` tools) and re-checks both `subagents_enabled` (the mode/model
+    gate) **and** the session's `available_tools` grant — the latter because intercepting
+    before `ExtensionManager::dispatch_tool_call` skips the check at **`:1483-1484`**
+    (`if !extension.config.is_tool_available(&tool_name)`) that would otherwise apply it;
+    and **`reply_parts.rs:127-141`**'s code-execution retain filter (the
+    `SUBAGENT_TOOL_NAME` clause is `:135`) is
     widened to keep the prefixed spawn tool **and the whole `workspace__` surface**.
+    *(All four anchors in this paragraph re-verified at `275d735d`, 2026-07-28; the old
+    `:2658` / `:1294-1304` / `:1333` / `:133-140` were pre-drift numbers.)*
     **`subagent_status` is deleted outright (decision 23) in Task 19b** — see
     reconciliation #12.
 12. ⚠ **`subagent_status` is removed; its three jobs move to workspace tools**
@@ -476,12 +793,17 @@ summarized again in [Decisions of record](#decisions-of-record-operator-approved
     reports "already idle" from an unknown. See Task 17 Step 3.
 
     **Task 19b** deletes `create_subagent_status_tool`, `handle_subagent_status_tool`,
-    `SubagentStatusParams`, the `agent.rs:2258` dispatch arm, the `agent.rs:2664`
-    offering, the `reply_parts.rs:136` retain entry, the `agents/mod.rs:56` doc comment,
+    `SubagentStatusParams`, the **`agent.rs:2744-2752`** dispatch arm (`} else if
+    tool_call.name == SUBAGENT_STATUS_TOOL_NAME {`), the **`agent.rs:3155-3159`**
+    offering (push at `:3158`), the **`reply_parts.rs:136-139`** retain entry and its
+    BR-40 comment, the `agents/mod.rs:56` doc comment,
     and their tests; Task 43 carries the migration note into
     `docs/agent-loop/subagents.md`, `docs/agent-loop/tool-routing.md:33`, and the design
-    doc's §4.5 step 5. The repo-wide sweep command, with its verified expected output, is
-    in Task 19b Step 1.
+    doc's §4.5 step 5. ⚠ There is a **fourth** live doc site,
+    `docs/security/privacy-tiers.md:1677`, added by `9eb6de4b` after this entry was
+    written; Task 19b owns it. The repo-wide sweep command, with its verified expected
+    output (**31 code hits in 5 files** at `275d735d`), is in Task 19b Step 1.
+    *(Anchors re-verified 2026-07-28; the old `:2258` / `:2664` / `:136` were pre-drift.)*
 13. ⚠ **The workspace extension is auto-injected wherever subagents are enabled**
     (decision 21), which is a deliberate softening of §5's "off by default". Rationale:
     with the merge, `default_enabled: false` would silently delete delegation for every
@@ -495,14 +817,16 @@ summarized again in [Decisions of record](#decisions-of-record-operator-approved
 
     ⚠ **"Do not persist the injection" needs an explicit exclusion — skipping
     `persist_extension_state` at the injection site is not enough.**
-    `Agent::persist_extension_state` (`agent.rs:2441-2461`) snapshots **every currently
+    `Agent::persist_extension_state` (**`agent.rs:2936-2955`**) snapshots **every currently
     loaded** extension, not the one being changed:
-    `let extension_configs = self.extension_manager.get_extension_configs().await;` →
+    `let extension_configs = self.extension_manager.get_extension_configs().await;`
+    (**`:2937`**) →
     `EnabledExtensionsState::new(extension_configs)` → `session.extension_data`. So once
     `ensure_spawn_extension` has loaded `workspace {available_tools:["subagent"]}`, the
     **next** persist by any other caller writes the auto-injection into the session row:
     `workspace_set_tools` calls it (Task 15), and so does every GUI extension toggle
-    (`routes/agent.rs:735`, `:757`). Settings and `GET /sessions/{id}/extensions` would
+    (**`routes/agent.rs:759`** in `agent_add_extension`, **`:788`** in
+    `agent_remove_extension`). Settings and `GET /sessions/{id}/extensions` would
     then show Workspace Control enabled on that session, the injection would survive a
     later mode change to Chat as a dead entry, and the property Task 18 claims would be
     false in the most ordinary GUI flow. Resolution: the agent tracks which extensions it
@@ -515,24 +839,32 @@ summarized again in [Decisions of record](#decisions-of-record-operator-approved
 
     ⚠ **There are TWO persist methods, and filtering only one leaves a mode-gate
     bypass.** Beside `persist_extension_state` sits `save_extension_state`
-    (`agent.rs:2419-2439`) with a structurally identical body, called from the agent's
-    own reply loop at `agent.rs:4233-4237` whenever the model successfully enables an
+    (**`agent.rs:2913-2933`**, snapshot read at **`:2914`**) with a structurally identical
+    body, called from the agent's
+    own reply loop at **`agent.rs:4880-4886`** (the call itself is **`:4883`**) whenever
+    the model successfully enables an
     extension mid-turn via `manage_extensions`. That is the hottest of the three paths
     and applies to exactly the population that gets the auto-injection (Auto-mode
     sessions with ≥1 extension). The consequence is worse than a cosmetic Settings row:
     a persisted `workspace {available_tools:["subagent"]}` entry reloads in a session
     whose mode no longer enables subagents, and dispatch gates the spawn tool **only**
-    on `session.session_type == SessionType::SubAgent` (`agent.rs:2138`), never on
+    on `session.session_type == SessionType::SubAgent` (**`agent.rs:2632`**), never on
     `subagents_enabled` — so the dead grant is a live, dispatchable spawn tool in a mode
     whose gate says delegation is off. Hence the single shared filter, and the Phase-1
     gate check `grep -c "persistable_extension_configs()"` → 3.
+
+    *(All five `agent.rs` anchors in this entry re-verified at `275d735d`, 2026-07-28.
+    The pre-drift numbers were `:2441-2461`, `:2419-2439`, `:4233-4237` and `:2138`; the
+    file grew from 6,001 to 6,817 lines, so each is short by roughly +490.)*
 14. **Session-scoped skills are a new mechanism, not a reuse** (decision c). The skills
     extension reads a **machine-wide** `~/.config/biorouter/skills-config.json`
-    (`skills_extension.rs:262-271`), shared with `biorouter skill enable/disable`
-    (`biorouter-cli/src/commands/skill.rs:295`) and the GUI. `workspace_set_tools` must
+    (`skills_extension.rs:262-285`, **exact** — `get_disabled_skills` opens at `:262` with
+    `Paths::config_dir().join("skills-config.json")` at `:263`), shared with `biorouter skill enable/disable`
+    (`biorouter-cli/src/commands/skill.rs:295`, **exact**) and the GUI. `workspace_set_tools` must
     never write that file. Task 11 adds a session-scoped override layer — persisted in
     `session.extension_data` under `("workspace_skills", "v1")`, the exact
     `set_extension_state` precedent `goal.rs:312` and `guardrails/run_state.rs:146` use
+    (both **exact**; the method itself is `session/extension_data.rs:34`)
     — plus a process-wide session-keyed cache the `SkillsClient` consults. Stated
     residual, tested: `list_tools`/`get_info` are not session-aware in
     `McpClientTrait`, so a session override affects the *catalog/search/load* handlers
@@ -540,8 +872,8 @@ summarized again in [Decisions of record](#decisions-of-record-operator-approved
 
     ⚠ **The override composes with the machine filter; it does NOT replace it.** The
     machine-wide `disabled` array holds skill names **and bundle names** — that is why
-    `is_skill_enabled` tests both (`skills_extension.rs:445-456`) and why the repo's
-    `test_bundle_disabled_by_bundle_name` (`:1651`) puts a bundle id in it. Composing by
+    `is_skill_enabled` tests both (`skills_extension.rs:445-455`) and why the repo's
+    `test_bundle_disabled_by_bundle_name` (`:1661`) puts a bundle id in it. Composing by
     rebuilding a name set from `self.skills.keys()` silently drops every bundle entry,
     so any session override at all (even an unrelated `add_skills`) re-enables every
     skill in a machine-disabled bundle for that session — with `skills-config.json`
@@ -556,33 +888,81 @@ summarized again in [Decisions of record](#decisions-of-record-operator-approved
     indistinguishable **user** instruction, carrying the human's authority in an
     Auto-mode target. The repo has settled precedent applied three times —
     `hooks::outcome::frame_hook_context`, `hints::load_hints::frame_project_hints`, and
-    `routes/apps.rs:1879`'s app-data envelope — and BR-71 is the first cross-*session*
+    `routes/apps.rs`'s `app_data_envelope` (**`:1919`**, doc **`:1914-1918`**) — and
+    BR-71 is the first cross-*session*
     text flow. Applied at `workspace_send_prompt`'s `note` and `turn` sites and, in the
     shared soft-interrupt drain, **only** to entries carrying
     `ProvenanceKind::AgentInjection`: the human's own typed steer queues with
     `provenance: None` and must stay unframed.
-16. ⚠ **`workspace_send_prompt mode:"note"` refuses a target with a turn in flight.**
-    An in-turn compaction calls `session_manager.replace_conversation` with no freshness
-    check (`agent.rs:3061`, `:4388`), and that call "DELETEs and re-INSERTs every
-    message" (`session_manager.rs:2609-2611`) from the turn's own in-memory copy. The
-    codebase already documents this hazard for the *background* compaction path and
-    guards it there (`context_mgmt/mod.rs:661-671`, `eager_swap_is_safe`); the in-turn
-    sites have no guard because before BR-71 nothing could append to a session's store
-    from outside its own turn. `note` is the first such writer, and it is the mode the
-    tool recommends as the safe headless fallback — so it must not report success into a
-    window where the note is silently deleted. Task 14 refuses and names `steer` /
-    `workspace_watch` as the alternatives.
+16. ⚠ **RETIRED 2026-07-28 — `workspace_send_prompt mode:"note"` does NOT refuse a
+    target with a turn in flight; it PINS the note instead.**
+
+    *What this entry used to say:* an in-turn compaction called
+    `session_manager.replace_conversation` with no freshness check (`agent.rs:3061`,
+    `:4388`), that call DELETEs and re-INSERTs every message from the turn's own
+    in-memory copy, and the in-turn sites had no guard "because before BR-71 nothing
+    could append to a session's store from outside its own turn". `note` was the first
+    such writer, so it refused mid-turn targets.
+
+    *Why it is obsolete:* every premise is now false. `eager_swap_is_safe` was deleted
+    (`505fe77c`), and **both** in-turn sites went through the store's guard —
+    `agent.rs:3606-3613` (`2aa5a288`) and `agent.rs:5034` → `:2086`/`:2188`
+    (`557cf2f7`). A note appended mid-turn now lands above the rewrite's watermark and
+    is not named by the turn's `known` conversation, so
+    `replace_conversation_preserving_tail` classifies it as **foreign and carries it
+    over** (`session_manager.rs:1347-1374`). There is no window in which it is silently
+    deleted.
+
+    *Why retiring it is not merely permissible but required:* refusing would make the
+    tool's own recommended safe headless fallback unavailable in exactly the case a
+    parent most wants it — leaving context for a child that is busy. The refusal would
+    be a gratuitous restriction defended by a hazard that no longer exists, and the
+    error message would name a cause the reader cannot find in the code.
+
+    *What replaces it:* Task 14's `note` calls `Message::pinned` (`message.rs:1033`).
+    That closes the second half of the same hazard, which the store cannot close for
+    it: a surviving note is still *summarized away* by the next compaction unless it
+    carries the #51 preservation marker. See Prerequisite 2, half (b).
 17. ⚠ **`workspace_watch` and `workspace_send_prompt` are exempt from the global
     tool-dispatch semaphore**, joining the spawn tool. `TOOL_SEMAPHORE`
     (`tool_dispatch_limits.rs:87-88`) is one process-wide 8-permit semaphore whose guard
-    is held for a tool's whole execution, and `agent.rs:2312-2317` already states the
-    hazard for wrappers that park on work performed elsewhere. Both new tools park for
+    is held for a tool's whole execution, and **`agent.rs:2805-2810`** already states the
+    hazard for wrappers that park on work performed elsewhere ("*The subagent tool is
+    deliberately excluded: it recursively runs its own agent loop whose leaf tools contend
+    for this same global semaphore, so a subagent wrapper holding a permit while its inner
+    tools wait for one would deadlock*"). The plan's old `:2312-2317` is pre-drift and is
+    the number the corrected paragraph below already uses. Both new tools park for
     up to 600 s: eight concurrent `workspace_watch` calls would stall every other tool
     call in the daemon — including the user's foreground conversation — and
     `workspace_send_prompt mode:"turn" wait:"final_message"` is a true deadlock, holding
     a permit while waiting for the *target* session's turn, whose own tool calls contend
-    for the same permits. Task 19 Step 5 adds `is_parking_workspace_tool` beside
-    `is_spawn_tool_call`.
+    for the same permits.
+
+    ⚠ **Corrected 2026-07-28: `is_spawn_tool_call` does not exist.** This entry used to
+    read "Task 19 Step 5 adds `is_parking_workspace_tool` beside `is_spawn_tool_call`",
+    which implies there is something to put it beside. There is not — `grep -rn
+    "is_spawn_tool_call" crates/` returns nothing, and never did. (Run against the repo
+    root the same grep returns 29 hits, but every one of them is this plan file citing
+    the name; `crates/` is the check that means anything.) The
+    exemption is expressed today as an inline predicate,
+    `let bound_dispatch = tool_call.name != SUBAGENT_TOOL_NAME;` (`agent.rs:2812`,
+    reasoning at `:2805-2810`, acquire at `:2827-2837`). So **Task 19 Step 5 extracts
+    that inline predicate into `is_spawn_tool_call` and *then* adds
+    `is_parking_workspace_tool` beside it** — two edits, in that order.
+    `TOOL_SEMAPHORE` is `tool_dispatch_limits.rs:87` (8 permits) with `acquire` at
+    `:120`; both **exact**.
+
+    ⚠ **Extended 2026-07-28 (Phase-2/3 reconciliation): `is_spawn_tool_call` has a
+    consumer OUTSIDE Task 19 — Task 36 (Phase 3) calls it twice in production code**
+    (`is_workspace_tool_refused_for`, and the `dispatch_tool_call` refusal that chooses
+    the error message). Task 19 Step 5's extraction is what makes that compile, which
+    turns **19 → 36 into a hard ordering dependency spanning two phases**. Both tasks now
+    state it in their own text; this entry is the third record because it is the one a
+    reader hits while chasing the semaphore exemption rather than the guard. Also
+    re-anchored on the same pass, against a worktree at `bab6fba2`: the inline predicate
+    is now `agent.rs:2843`, not `:2812` — Phase 1's own landed commits moved `agent.rs`
+    +198 lines while Phases 2-4 were being reconciled, so **grep the line, do not trust
+    it.**
 18. ⚠ **The session bus reclaims idle rings.** `broadcast::channel` allocates its entire
     ring at creation, before any receiver exists, so a `BUS_CAPACITY = 1024` entry is
     ~10^5 bytes the moment a session first publishes — and after Task 8 every turn of
@@ -598,24 +978,177 @@ summarized again in [Decisions of record](#decisions-of-record-operator-approved
     `workspace_open { new: { extensions: ["developer"], prompt: "…" } }` mints a live
     process-spawning agent with no prompt in Auto mode. The hook now also: classifies
     add-risk **structurally over all seven `ExtensionConfig` variants**
-    (`InlinePython` execs `uvx`, `extension_manager.rs:660-689`; `Sse`/`StreamableHttp`
+    (`InlinePython` execs `uvx`, `extension_manager.rs:802-833`; `Sse`/`StreamableHttp`
     carry credentials to a remote endpoint) instead of matching one variant;
     **normalizes both sides** of every name comparison, because
     `ExtensionManager::remove_extension` normalizes before removing
-    (`extension_manager.rs:834-839`) so `remove_extensions: ["Workspace"]` really does
+    (`extension_manager.rs:976-981`) so `remove_extensions: ["Workspace"]` really does
     strip the audit trail while a raw-string check sees nothing; and confirms a
     **provider switch** (the target's whole history goes to the new endpoint) and a
     **skill grant** (instructions injected into the target's prompt), both added to this
     tool by decisions b and c after §5 was written.
 20. ⚠ **`workspace_set_tools { add_extensions }` honours issue #42's operator-disabled
     gate.** `get_extension_by_name` deliberately discards the `enabled` flag
-    (`config/extensions.rs:101-103`); the gate lives one layer up in
+    (`config/extensions.rs:138-140`); the gate lives one layer up in
     `manage_extensions`' enable path (`check_enable_allowed`,
-    `extension_manager_extension.rs:97-124`) and `Agent::add_extension` does not
+    `extension_manager_extension.rs:97-125`) and `Agent::add_extension` does not
     re-check it. Resolving with the flag-less helper would make BR-71 a second, ungated
     way to enable an extension an operator wrote `enabled: false` for — the pinned
     tool-environment case (benchmarking, safety) that comment names. Task 15 resolves
-    through `get_extension_entry_by_name` and refuses with the same guidance text.
+    through `get_extension_entry_by_name` (`config/extensions.rs:179-181`) and refuses
+    with the same guidance text.
+21. ⚠ **The `/reply` client write-back STAYS in `/reply`; the turn runner performs no
+    whole-history rewrite** (added 2026-07-28). Tasks 6 and 8 were written against a
+    `reply.rs` in which `conversation_so_far` was wrapped in
+    `Conversation::new_unvalidated` and handed to `SessionManager::replace_conversation`
+    — an unconditional, authoritative overwrite driven by an HTTP client's copy of
+    arbitrary staleness. `306552fd` (#51 W5) replaced that with `apply_client_writeback`
+    (`reply.rs:177-231`): a **pre-spawn precondition** that reads a paired snapshot,
+    refuses with 409 `conversation_out_of_date` if the client's copy would delete a
+    stored row, and otherwise writes through `replace_conversation_preserving_tail`.
+
+    Moving it into a detached runner is not a relocation, it is a regression:
+    - `replace_conversation` is now documented as **the NAMED EXCEPTION**
+      (`session_manager.rs:1312-1324`), correct only for a caller that owns the whole
+      history; its five production callers are `/clear` and the import/copy/diverge
+      paths. A live session written from a detached task is precisely the case its doc
+      forbids.
+    - A `tokio::spawn`'d runner has no status code, so the refusal has nowhere to go —
+      the tool would have to either write anyway or fail the turn.
+    - The old grep gate (`grep -c replace_conversation turn.rs # Expected: 1`) would
+      have **certified** the regression as correct.
+
+    Resolution: `TurnExtras.conversation_so_far` becomes `Option<Conversation>` meaning
+    *the already-stored seed*; `run_turn` carries a stated non-goal that it performs no
+    whole-history rewrite (the only rewrite in a turn is the agent's own guarded
+    compaction, paired through the private `RewriteBasis`); Task 8's replacement range
+    starts at `reply.rs:681`, below the write-back; and both grep gates are re-anchored
+    and demoted to necessary-not-sufficient beside two real property tests. Every other
+    `start_turn` caller passes `None` — none of them has a client prefix.
+22. ⚠ **`map_bus_event` must carry `AgentEvent::MessagesPersisted`, and the match must
+    stay exhaustive** (added 2026-07-28). `AgentEvent` gained an eighth variant
+    (`agent.rs:672`) when #59 landed, so Task 7's seven-arm match is an `E0004`. The
+    repair an implementer reaches for under compile pressure — `_ => None` — compiles,
+    passes every other test in this plan, and after Task 8 means **no `/reply` client
+    ever receives a `MessagesPersisted` frame again**: `expectedMessageIds` becomes
+    unsatisfiable and `POST /sessions/{id}/edit_message` answers 409 on sessions nobody
+    touched, undoing `0312dff4` + `936f5a33`.
+
+    Nothing in the original test matrix could see it. The desktop store deliberately
+    does not consume the frame yet (`chatStreamStore.tsx:313`, `:1335`; pinned by
+    `chatStreamStore.test.ts:807`, `:888`), and `reply.rs`'s own
+    `persisted_message_ids_reach_the_wire_with_their_visibility` (`:1212`) tests the
+    enum, not the handler. So: an explicit arm, a stated no-wildcard rule (the precedent
+    is `MessageContent::is_pin_eligible`, `message.rs:422-454`), a mapper test that the
+    frame is not `None`, a `/reply` test that it reaches the wire, and **7 → 8 promoted
+    to a binding ordering**. Two ordering obligations ride along: `run_turn` must publish
+    in stream order (reconciliation #21's second non-goal), and `/reply`'s
+    `!matches!(… TokenUsage)` flush guard is load-bearing, not an optimisation.
+23. ⚠ **The subagent bus tee is TOTAL; the parent's `conversation` accumulation is not —
+    and `subagent_handler.rs` has its own `AgentEvent` match that #22 does not reach**
+    (added 2026-07-28, the second half of Task 34's conflict).
+
+    Reconciliation #22 repairs `routes::session_events::map_bus_event`. Task 34 rewrites a
+    **different** exhaustive, wildcard-free match on the same enum, in a **different**
+    crate: `run_complete_subagent_task`'s stream loop, `subagent_handler.rs:244-274`.
+    Fixing one does not fix the other, and Task 34's Step 3 as originally written would
+    have *deleted* an arm that already exists — the current code ignores **five** variants,
+    not four, because `936f5a33`/#59 added `| Ok(AgentEvent::MessagesPersisted(_))` at
+    `subagent_handler.rs:250-253` with a comment explaining why the parent ignores it.
+
+    Both halves of the resolution are load-bearing and they pull in opposite directions:
+
+    - **The tee publishes every variant, before the per-variant match, and never
+      reorders.** An observer tab watching a glass-box child is exactly the "client that
+      watched a whole turn go by" #59 exists for, so it needs `MessagesPersisted`; and the
+      ordering invariant (`agent.rs:280-283`) is a property of the *producer's* stream that
+      survives only if every relay preserves order. Publishing once, at the top of the
+      loop, makes both free.
+    - **The accumulation keeps its ignore-arms verbatim, `MessagesPersisted` included.**
+      The parent is building a `Vec<Message>` for a `SubagentResult`, not a client view,
+      and has no `expectedMessageIds` to satisfy. Carrying that arm and its #59 comment
+      across the re-indent is an explicit instruction in Task 34 Step 3, and dropping it is
+      an `E0004`, not a silent behaviour change — which is why the no-wildcard rule of #22
+      applies here too.
+
+    Task 33's lease is what makes the tee's `TurnStarted`/`TurnFinished` brackets carry a
+    real `turn_id`; headless they carry a synthetic one. See Task 34.
+24. ⚠ **Twelve gates in Phases 2-4 passed a plausible wrong implementation; the fix is
+    recorded here because it changes how three tasks are *built*, not only how they are
+    checked** (added 2026-07-28, the Phase-2/3/4 gate sweep).
+
+    The pattern the plan discovered at Task 30 Step 3b — a green filter that never
+    exercised the wiring — recurred in eight more tasks, and four gates were assertions
+    true for all inputs. The worst was **Task 39's**
+    `cancel.body?.cancelled === true || cancel.body?.cancelled === false`: true for every
+    boolean, named as the flagship gate by Task 40, and the **only** automated check
+    anywhere that Task 33's turn lease is held. Next worst was **Task 34's**
+    `if let Some(first) = msgs.first()`, which skipped its assertion in exactly the case it
+    existed to catch — an empty child conversation, which is what a missing
+    `persist_spawn_context` call produces — so Task 32's untested call site and Task 34's
+    follow-through guard were one defect covered by two green gates.
+
+    Three of the repairs are **production-code changes**, not test changes, and belong in
+    the tasks' Files lists:
+
+    - **Task 22** splits `focused_or_recent()` into a registry walk plus a pure
+      `pick_target(Vec<WorkspaceBridge>)`, because `BRIDGES` is a process-wide static and
+      an assertion about *which* window wins is not containment-safe against the rest of
+      the binary. The old gate was `assert!(focused_or_recent().is_some())`.
+    - **Task 23** lifts `check_token`'s exemption literals into a pure
+      `is_unauthenticated_path(&str)` beside `is_public_app_get` (`auth.rs:52`), because
+      the middleware is an `async fn(State, Request, Next)` that no unit test can call —
+      which is why the required `/ui/workspace` exemption had been requested in prose and
+      had no test any gate filter could reach. Its Step-4 filter now names `auth::tests`.
+    - **Task 29** lifts `handle_open`'s result string into a pure `open_result_text`,
+      because the announce-only branch's whole job is *what the model is told*
+      ("Do not tell the user you opened a tab") and `apply_focus_etiquette`'s frame
+      assertions are identical in both worlds.
+
+    Two mechanical facts drove the rest, and they are in Ground rules: `cargo test --lib
+    A B` is an error rather than two filters (nine Phase-1 gates still carry that form),
+    and a vitest composite filter with one dead term exits 0 (which is Task 30 Step 3b,
+    generalised). Every gate in Tasks 22-44 now carries a **measured** file/test count for
+    that reason.
+25. ⚠ **Phase 2-4's anchors are moving under it from three directions at once, and two of
+    the plan's own tasks had to change SHAPE, not just numbers** (added 2026-07-28, the
+    Phase-2/3/4 drift sweep of Tasks 23, 24, 27, 30, 32, 38, 40, 41).
+
+    The three directions, all measured at `ea15a4de`: the plan's original 181-commit
+    drift; **Phase 1's own landed commits** (`routes/reply.rs` +1137, `message.rs` +494,
+    `session_manager.rs` +251, `agent.rs` +198, `state.rs` +45, with Tasks 8-21 still to
+    come); and **`main` itself**, now 6 commits past this branch's fork point and
+    unmerged. All three are in Ground rules. The rule they produce is unchanged and is
+    now stated in every amended task: **anchor on the symbol; the numbers are a
+    timestamp.**
+
+    Three findings changed what gets *built*, not only what gets checked:
+
+    - **Task 27 must pass `sseMaxRetryAttempts: 1`.** The generated SSE client
+      (`ui/desktop/src/api/core/serverSentEvents.gen.ts`) wraps every `.sse.*` call in
+      its own retry loop with **no default attempt limit**, which is why `/reply` sets
+      the option at `chatStreamStore.tsx:1043`. Without it, `observeSession`'s documented
+      reconnect-with-backoff is unreachable on a transport error — the client retries
+      forever underneath it — and no test in this plan would notice, because every one of
+      them mocks `observeSessionEvents`. Two reconnect policies, only one of which runs.
+    - **Task 38's cache-identity change collides with a second consumer.**
+      `refreshSessionList` is called by History **and** by Home's `SessionsInsights`
+      (`:91`), which does not filter by `session_type`. The planned
+      `refreshSessionList(includeSubagents = false)` makes Home's keyless call fight
+      History's toggle — cache thrash plus a live list swap in split panes — and the
+      obvious "make the default sticky" repair puts subagent runs in Home's recents. The
+      parameter becomes three-valued (`undefined` = "whatever is cached") and Home filters
+      its own recents.
+    - **Task 23's Step-4 count was `9` where the components sum to `10`.** The gate sweep
+      wrote 2 + 5 + 3 and totalled it wrong. A count one *below* the truth invites
+      deleting a test, and the newest test under that filter is the `/ui/workspace`
+      exemption case — the single check between this task and a 401 on the real renderer.
+
+    And one measured fact about the tree rather than the plan:
+    **`SessionListView.test.tsx` fails 5 runs in 6 under a narrow filter** on a
+    pre-existing case, while the full 186-file / 1726-test desktop suite is **green**.
+    Task 38's gate now names the failure and forbids "fixing" it inside a BR-71 commit,
+    and Task 40 records the full-suite baseline so a real frontend red is legible.
 
 ---
 
@@ -626,23 +1159,29 @@ New files (create):
 ```
 crates/biorouter/src/session_events.rs                     # SessionEventBus: per-session broadcast of SessionBusEvent
 crates/biorouter/src/workspace_services.rs                 # WorkspaceServices trait + OnceLock install/get
-crates/biorouter/src/agents/workspace_extension.rs         # The `workspace` platform extension (6 workspace_* tools in Phase 1, + workspace_open in Phase 2, + the merged `subagent`)
+crates/biorouter/src/agents/workspace_extension.rs         # The `workspace` platform extension (6 workspace_* tools in Phase 1, + workspace_open in Phase 2, + the merged `subagent`); `get_tools()` becomes pub so Task 42b's parity gate can enumerate the real surface
 crates/biorouter/src/agents/workspace_inspector.rs         # WorkspaceMutationInspector: always-confirm hook (Task 10)
 crates/biorouter/src/agents/session_skills.rs              # Session-scoped skill overrides (Task 11)
+crates/biorouter/src/agents/approval_relay.rs              # Approval delegation relay + DelegationPolicy, the one policy point for decisions 30/31 (Task 36b)
 crates/biorouter-server/src/workspace/mod.rs               # Module root
 crates/biorouter-server/src/workspace/turn.rs              # THE turn runner: /reply + detached turns both consume it (Tasks 6, 8)
 crates/biorouter-server/src/workspace/bridge.rs            # WorkspaceBridge + per-window registry (UiBridge sibling)
 crates/biorouter-server/src/workspace/services.rs          # ServerWorkspaceServices: WorkspaceServices impl over AppState
-crates/biorouter-server/src/routes/session_events.rs       # GET /sessions/{session_id}/events (SSE observer) + map_bus_event
+crates/biorouter-server/src/routes/session_events.rs       # GET /sessions/{session_id}/events (SSE observer) + map_bus_event; carries tag = "workspace" (Task 42b)
 crates/biorouter-server/src/routes/workspace.rs            # GET /ui/workspace (WS) + auth
-crates/biorouter-cli/src/commands/session_watch.rs         # `biorouter sessions watch|send` (Task 20)
+crates/biorouter-cli/src/commands/session_watch.rs         # `biorouter session watch|send` (Task 20); `attach`/`cancel` join it in Task 38c
+crates/biorouter-cli/src/commands/session_grouping.rs      # Parent/child grouping + liveness rendering for `session list --subagents` (Task 38b)
+crates/biorouter-cli/src/commands/workspace_parity.rs      # The capability table + the four checks that make CLI parity mechanical (Task 42b)
 ui/desktop/src/components/chatGroups/workspaceCommandRegistry.ts       # Frame→dispatch seam (newTabRegistry sibling)
 ui/desktop/src/components/chatGroups/workspaceCommandRegistry.test.ts
 ui/desktop/src/components/chatGroups/workspaceCommandPlanner.ts        # Pure frame→(actions, effects) planner (Task 26)
 ui/desktop/src/components/chatGroups/workspaceCommandPlanner.test.ts
 ui/desktop/src/hooks/useWorkspaceChannel.ts                # Renderer WS client + debounced layout echo
 ui/desktop/src/hooks/useWorkspaceChannel.test.tsx
+ui/desktop/src/contexts/ChatGroupsContext.workspaceCommands.test.tsx  # The provider WIRING test (Task 26 Step 8d) — NOT matched by a `chatGroups` filter
 ui/desktop/src/hooks/chatStreamStore.observe.test.tsx      # Observer-mode store test (Task 27)
+ui/desktop/src/components/ProvenanceChip.tsx               # Provenance chip in the transcript (Task 28)
+ui/desktop/src/components/ProvenanceChip.test.tsx
 ui/desktop/src/components/settings/app/WorkspaceSettingsSection.tsx    # Focus etiquette (Task 29)
 ui/desktop/src/components/settings/app/WorkspaceSettingsSection.test.tsx
 ui/desktop/src/components/settings/extensions/chatrecallSuggestion.ts  # Suggest-once policy (Task 30)
@@ -666,31 +1205,41 @@ crates/biorouter/src/session/session_manager.rs            # migration 17, Sessi
 crates/biorouter/src/conversation/message.rs               # MessageProvenance; MessageMetadata loses Copy
 crates/biorouter/src/agents/agent.rs                       # soft-interrupt provenance; merged `subagent` dispatch; subagent_status removal; workspace guard; inspector registration
 crates/biorouter/src/agents/extension.rs                   # PLATFORM_EXTENSIONS entry (count test 5→6)
-crates/biorouter/src/agents/mod.rs                         # pub mod workspace_extension, workspace_inspector, session_skills
+crates/biorouter/src/agents/mod.rs                         # pub mod workspace_extension, workspace_inspector, session_skills, approval_relay
+crates/biorouter/src/agents/tool_execution.rs              # the one delegation call site, beside register_confirmation (Task 36b)
+crates/biorouter/src/permission/permission_store.rs        # exact_call_key: the ask identity, lifted out of check_permission/record_permission (Task 36b)
 crates/biorouter/src/agents/skills_extension.rs            # consult the session-scoped skill override (Task 11)
 crates/biorouter/src/agents/reply_parts.rs                 # code-execution retain filter: prefixed `workspace__subagent`, no subagent_status
-crates/biorouter/src/agents/subagent_tool.rs               # SubagentParams gains visible/placement; create_subagent_status_tool deleted; spawn-context + announce
+crates/biorouter/src/agents/subagent_tool.rs               # SubagentParams gains visible/placement; create_subagent_status_tool deleted; spawn-context + announce; subagent_session_label so siblings are distinguishable (Task 38b)
 crates/biorouter/src/agents/subagent_handler.rs            # child registration + turn lease, bus tee, announce, human_intervened
 crates/biorouter/src/agents/subagent_result.rs             # human_intervened field
 crates/biorouter/src/execution/manager.rs                  # AgentManager::register_agent / deregister_agent_if_same + LRU pin sidecar (Task 33)
 crates/biorouter-mcp/src/active_work.rs                    # ActiveWorkKind::DetachedTurn variant (Task 6)
 crates/biorouter-mcp/src/agent_drafter/control.rs          # consult re-expressed over workspace primitives (Task 41)
-crates/biorouter-server/src/state.rs                       # TurnGuard::turn_id() accessor
+crates/biorouter-server/src/state.rs                       # TurnGuard::turn_id() accessor; AppState::active_turn_session_ids (Task 38b)
 crates/biorouter-server/src/lib.rs                         # pub mod workspace
+crates/biorouter-server/src/auth.rs                        # is_unauthenticated_path: /ui/workspace joins the exemption list, as a TESTABLE predicate (Task 23)
 crates/biorouter-server/src/commands/agent.rs              # install ServerWorkspaceServices
 crates/biorouter-server/src/routes/mod.rs                  # merge new routes
-crates/biorouter-server/src/routes/reply.rs                # THE REFACTOR (Task 8): handler becomes lock + spawn runner + bus subscription; user_direct stamping
+crates/biorouter-server/src/routes/reply.rs                # THE REFACTOR (Task 8): handler becomes lock + spawn runner + bus subscription; user_direct stamping; tag = "workspace" on reply/interrupt/cancel_turn (Task 42b)
 crates/biorouter-server/src/routes/apps.rs                 # consult over workspace primitives (Task 41)
-crates/biorouter-server/src/routes/session.rs              # include_subagents query params; SessionSummary additions
+crates/biorouter-server/src/routes/session.rs              # include_subagents query params; SessionSummary additions; GET /sessions/running (Task 38b)
+crates/biorouter-server/src/routes/action_required.rs      # confirm_tool_action consults the approval relay, so either surface resolves the one ask (Task 36b)
 crates/biorouter-server/src/openapi.rs                     # new paths/schemas
-crates/biorouter-cli/src/cli.rs                            # SessionCommand::Watch / Send (Task 20)
+crates/biorouter-cli/src/cli.rs                            # SessionCommand::Watch / Send (Task 20); List --subagents + a subagent-aware lookup_session_id (Task 38b); Attach / Cancel (Task 38c); pub fn command_tree() (Task 42b)
+crates/biorouter-cli/src/commands/session.rs               # handle_session_list gains the grouped, subagent-aware path (Task 38b)
+crates/biorouter-cli/src/commands/mod.rs                   # pub mod session_watch / session_grouping / workspace_parity
 ui/desktop/src/contexts/ChatGroupsContext.tsx              # register workspace command handler; annotations; layout echo
 ui/desktop/src/components/chatGroups/chatGroupsReducer.ts  # export findTabBySession (Task 26)
-ui/desktop/src/components/chatGroups/ChatTabStrip.tsx      # subagent badge from annotation state (Task 37)
+ui/desktop/src/components/chatGroups/ChatTabStrip.tsx      # subagent badge, as an OPTIONAL PROP (Task 37 — the strip is pure-props)
+ui/desktop/src/components/chatGroups/ChatGroupsShell.tsx   # passes tabAnnotations to ChatTabStrip, beside runningSessionIds (Task 37)
 ui/desktop/src/components/settings/extensions/ExtensionsSection.tsx    # chatrecall suggestion on workspace enable (Task 30)
 ui/desktop/src/hooks/chatStreamStore.tsx                   # observeSession() observer mode
 ui/desktop/src/components/BaseChat.tsx                     # SubagentTabHeader mount (via useSubagentSession); provenance chips
 ui/desktop/src/components/sessions/SessionListView.tsx     # "Show subagent runs" toggle + grouped rendering (Task 38)
+ui/desktop/src/components/sessions/SessionsInsights.tsx    # the OTHER refreshSessionList caller: filters sub_agent out of Home's recents (Task 38)
+ui/desktop/src/utils/sessionListCache.ts                   # include_subagents becomes part of the cache identity, three-valued (Task 38)
+ui/desktop/src/utils/sessionListCache.test.ts              # its 4 existing tests cover the dedupe the new flag branch fronts (Task 38)
 docs/agent-loop/designs/agent-workspace-control.md         # status header updates per slice; §4.1/§4.5/§6 renamed to the merged `subagent`
 docs/agent-loop/tool-routing.md                            # chatrecall/workspace routing row; subagent_status removal
 docs/agent-loop/subagents.md                               # glass-box updates + subagent_status migration
@@ -706,7 +1255,7 @@ runner that `/reply` and injected turns both consume, **six** `workspace_*` tool
 operate headlessly (`gui_attached: false` — `workspace_open` is the seventh and lands in
 Phase 2 with the GUI bridge it needs), the merged `subagent` tool with `subagent_status`
 retired, an always-confirm hook for security-relevant tool-set changes, and
-`biorouter sessions watch|send` to drive all of it from a terminal — with route + unit
+`biorouter session watch|send` to drive all of it from a terminal — with route + unit
 tests green and the OpenAPI client regenerated.
 
 **Task order inside this phase is load-bearing in four places:** Task 6 (the runner)
@@ -719,16 +1268,53 @@ Task 19 before Task 19b.
 
 **Files:**
 - Modify: `crates/biorouter/src/session/session_manager.rs`
-  (anchors at `30d49d9a`: `CURRENT_SCHEMA_VERSION` at :29, `Session` struct at
-  :118-163, `SessionUpdateBuilder` fields at :208-233 (`diverged_from` at :231),
-  builder methods `diverged_from`/`branch_point_msg_uid` at :982-993, fresh-DB
-  `CREATE TABLE sessions` at :1865 (`diverged_from TEXT,` at :1886), row mapping
-  `diverged_from` read at :1766, INSERT at :2061-2084, `apply_migration` at :2257,
-  `apply_update` SET pattern at :2879/:2955)
+  (anchors **re-verified at `275d735d`, 2026-07-28**: `CURRENT_SCHEMA_VERSION` at
+  :29 (**still `16`**, so migration 17 is still the next free number), `Session`
+  struct at :118-162 (`diverged_from` :154, `branch_point_msg_uid` :161),
+  `SessionUpdateBuilder` fields at :208-233 (`diverged_from` at :231), builder
+  methods `diverged_from`/`branch_point_msg_uid` at :982-993, fresh-DB
+  `CREATE TABLE sessions` at **:2072** (`diverged_from TEXT,` at **:2093**), row
+  mapping `diverged_from` read at **:1973**, INSERT at **:2264-2292**,
+  `run_migrations` at **:2325-2350**, `apply_migration` at **:2487** (highest arm
+  `16 =>` at **:2727**), `apply_update` SET pattern at **:3131**/**:3207**,
+  storage `get_session` at **:2983** (its SELECT column list at **:2991**),
+  storage `list_sessions_by_types` at **:4053** (its SELECT column list at
+  **:4065**))
+- Modify: `crates/biorouter/src/agents/knowledge_tool.rs` (test fixture
+  `test_session` at :292-317, `diverged_from: None` at **:315**)
+- Modify: `crates/biorouter/src/knowledge/conversation_ingest.rs` (test fixture
+  `base_session` at :230-255, `diverged_from: None` at **:253**)
+
+⚠ **Those last two files are not optional, and the survey that re-anchored this task
+missed them.** `Session` is constructed *literally* — every field named — in two
+`#[cfg(test)]` fixtures outside `session_manager.rs`. Adding a field makes both an
+`E0063: missing field parent_session_id in initializer of Session`, so `cargo test -p
+biorouter` will not build at all until they are updated. `#[serde(default)]` does not
+help: it governs deserialization, not struct-literal construction. The authoritative
+list is `grep -rn --include='*.rs' "diverged_from: None" crates/`, which returns
+exactly five sites — three in `session_manager.rs` (:859, :1804, :9109) and these two.
 - **#44 note (reconciliation #7):** the builder deliberately has NO `working_dir`
-  setter (comment at :891-894). `parent_session_id` mirrors
+  setter (comment at :891-894 — **exact**, re-verified). `parent_session_id` mirrors
   `diverged_from`/`branch_point_msg_uid` — plain lineage columns — NOT the guarded
   working-dir path; nothing here touches `try_update_working_dir_if_empty`.
+
+⚠ **A third session column landed after this task was written, and it does NOT use a
+migration number.** `302c1c9d` added `sessions.incarnation` (the #51 W3 basis token)
+through the idempotent reconcile helper `ensure_session_incarnation_schema`
+(`:2782-2789`, called at **:2357** from `reconcile_loop_schema` (**:2354**), which
+`run_migrations` in turn calls at **:2349**, *after* the numbered arms).
+Two consequences for this task, both textual rather than semantic:
+
+- Every one of the three edit sites below now has `incarnation` sitting next to
+  `diverged_from`: the fresh-DB `CREATE TABLE` (`incarnation INTEGER NOT NULL DEFAULT 0`
+  at :2096, and note it is the **last** column, with no trailing comma), the row-mapping
+  SELECT list (:2269), and the `INSERT INTO sessions (…)` (:2264-2270). Read each block
+  before editing it; the shapes below already account for them.
+- **Still use migration 17.** The precedent `incarnation` sets is for a column that is
+  only ever *reconciled* — written by the store itself, never projected into a
+  user-facing query. `parent_session_id` is queried (Task 4's `include_subagents`
+  filter, Task 38's grouping), so it gets a numbered, ordered migration like every
+  other lineage column.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -793,10 +1379,13 @@ pub const CURRENT_SCHEMA_VERSION: i32 = 17;
     pub parent_session_id: Option<String>,
 ```
 
-(c) Fresh-DB `CREATE TABLE sessions` (the creation block at :1865): add
-`parent_session_id TEXT,` on the line after `diverged_from TEXT,` (:1886).
+(c) Fresh-DB `CREATE TABLE sessions` (the creation block at **:2072**): add
+`parent_session_id TEXT,` on the line after `diverged_from TEXT,` (**:2093**).
+Do **not** append it at the end — `incarnation INTEGER NOT NULL DEFAULT 0` (:2096)
+is the last column and carries no trailing comma.
 
-(d) New migration arm in `apply_migration` (:2257; after the `16 =>` arm):
+(d) New migration arm in `apply_migration` (**:2487**; after the `16 =>` arm, which
+ends at **:2731** — the `_ =>` catch-all follows at :2732):
 
 ```rust
             17 => {
@@ -810,22 +1399,32 @@ pub const CURRENT_SCHEMA_VERSION: i32 = 17;
             }
 ```
 
-(e) Row mapping (:1766 vicinity — every place a `Session` is built from a row and
-`diverged_from` is read):
+(e) Row mapping (**:1973** — the `FromRow` impl's `diverged_from` read):
 
 ```rust
             parent_session_id: row.try_get("parent_session_id").ok().flatten(),
 ```
 
-and at every literal `diverged_from: None,` construction site (:859, :1597), add
-`parent_session_id: None,`.
+and at every literal `diverged_from: None,` construction site — **:859** and
+**:1804** in production, plus the test fixture at **:9109** — add
+`parent_session_id: None,`. (`grep -n "diverged_from: None," …` is the authoritative
+list; it returns exactly those three.)
 
-(f) INSERT statement (:2061): append `, parent_session_id` to the column list, a `, ?`
-to the VALUES list, and after `.bind(&session.diverged_from)` (:2084):
+(f) INSERT statement (**:2264-2292**): insert `parent_session_id` into the column
+list **immediately after `diverged_from`** (i.e. *before* `incarnation`, :2269),
+insert one `?` into the VALUES list **immediately before `random()`** (:2270), and
+add the bind immediately after `.bind(&session.diverged_from)` (**:2292**):
 
 ```rust
         .bind(&session.parent_session_id)
 ```
+
+⚠ `incarnation` is filled by `random()`, **not** by a placeholder, so the VALUES list
+has 20 `?` for 21 columns. Inserting the new column and its `?` at the same relative
+position — right after `diverged_from` / right before `random()` — is what keeps
+column order, placeholder order and bind order in lockstep. Appending at the end of
+both lists also happens to align, but only by coincidence, and a reader checking the
+statement by eye will not be able to tell.
 
 (g) `SessionUpdateBuilder`: field (at :231, beside `diverged_from: Option<Option<String>>`):
 
@@ -846,17 +1445,19 @@ constructor, add the builder method (after `branch_point_msg_uid` at :990-993):
 ```
 
 and mirror `diverged_from` in the storage `apply_update`'s dynamic SET construction
-(the `add_update!(builder.diverged_from, "diverged_from")` push at :2879 and the
-matching bind at :2955 — duplicate both for `parent_session_id`).
+(the `add_update!(builder.diverged_from, "diverged_from")` push at **:3131** and the
+matching bind at **:3207** — duplicate both for `parent_session_id`).
 
 (h) **The two explicit SELECT column lists that build a `Session`.** This is the
 step that is easiest to skip and impossible to catch by compiling: the row mapper
 in (e) is deliberately tolerant (`row.try_get(...).ok().flatten()`, with the comment
-at `session_manager.rs:1767-1769` "SELECTs that omit the column … yield None rather
-than erroring"), so a missed SELECT **compiles and silently reads `None`**. Step 4's
-round-trip assertion is the only thing that catches it.
+at `session_manager.rs:1974-1976` "Tolerant read: SELECTs that omit the column (e.g.
+the session list) yield None rather than erroring"), so a missed SELECT **compiles
+and silently reads `None`**. Step 4's round-trip assertion is the only thing that
+catches it.
 
-- `get_session` (`:2739`) — change the last projected line from
+- storage `get_session` (**:2983**, SELECT list ending at **:2991**) — change the
+  last projected line from
 
   ```sql
                  provider_name, model_config_json, diverged_from, branch_point_msg_uid
@@ -868,7 +1469,7 @@ round-trip assertion is the only thing that catches it.
                  provider_name, model_config_json, diverged_from, branch_point_msg_uid, parent_session_id
   ```
 
-- `list_sessions_by_types` (`:3500`) — change
+- storage `list_sessions_by_types` (**:4053**, SELECT list at **:4065**) — change
 
   ```sql
                      s.provider_name, s.model_config_json, s.diverged_from,
@@ -887,14 +1488,32 @@ with no error anywhere.
 
 - [ ] **Step 4: Run the test and the full session suite**
 
-Run: `cargo test -p biorouter --lib session::session_manager`
-Expected: PASS, including the pre-existing migration tests (`…schema_version…` tests
-assert `CURRENT_SCHEMA_VERSION`, which they read symbolically — they pass unmodified).
+```bash
+cargo test -p biorouter --lib session::session_manager
+cargo test -p biorouter --lib agents::knowledge_tool knowledge::conversation_ingest
+```
+
+Expected: **PASS**, including the pre-existing migration tests. Two of them name a
+version in their title and neither needs editing:
+
+- `fresh_database_contains_full_v16_schema` (**:5844**) reads
+  `CURRENT_SCHEMA_VERSION` **symbolically** (`assert_eq!` at :5849-5852), so bumping to
+  17 leaves it green. Its *name* becomes stale — leave it; renaming a test in this
+  commit would hide the migration diff in review noise. Task 21's gate re-runs it.
+- `migrates_v15_db_to_v16_message_blobs` (**:5615**) builds a hand-rolled v15 fixture
+  (`CREATE TABLE sessions` at :5642, which has no `parent_session_id`) and runs the
+  migration ladder. It stays green precisely *because* migration 17 is a plain
+  `ALTER TABLE … ADD COLUMN`: the ladder now runs 16 then 17 over the fixture.
+
+If `cargo test -p biorouter` fails to **build**, the cause is almost certainly one of
+the two out-of-file `Session` literals in the Files list, not this file.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/biorouter/src/session/session_manager.rs
+git add crates/biorouter/src/session/session_manager.rs \
+        crates/biorouter/src/agents/knowledge_tool.rs \
+        crates/biorouter/src/knowledge/conversation_ingest.rs
 git commit -m "feat(session): add sessions.parent_session_id (migration 17, BR-71)"
 ```
 
@@ -904,9 +1523,50 @@ git commit -m "feat(session): add sessions.parent_session_id (migration 17, BR-7
 
 **Files:**
 - Modify: `crates/biorouter/src/conversation/message.rs`
-  (anchors: `MessageMetadata` at :535-552, constructors at :554-577, `Message` at
-  :623-630, `with_metadata` near :888)
-- Modify: any file the compiler flags after `Copy` is removed (mechanical `.clone()`)
+  (anchors **re-verified at `275d735d`, 2026-07-28**: `MessageMetadata` at
+  **:587-630** (derive line **:587**, `pub pinned: bool` **:629**), `impl Default for
+  MessageMetadata` at **:632-640**, `impl MessageMetadata` at **:642-717**
+  (`agent_only` :644, `user_only` :653, `invisible` :662, six `with_*` at
+  :671-716), `Message` at **:727-737** (`pub metadata: MessageMetadata` at :736),
+  `impl Message` at **:739**, `with_metadata` at **:996**, `Message::pinned` at
+  **:1033**)
+- Modify: `crates/biorouter/src/conversation/normalize.rs` — `message_fingerprint`
+  (**:278**, doc **:261-277**). See Step 3(d); this is not optional.
+- Modify: `crates/biorouter-server/src/openapi.rs` — **added while implementing,
+  and it is not optional either.** `MessageMetadata` is a registered utoipa
+  component, and this repo pins **utoipa 4.x, which does NOT auto-collect nested
+  schemas**. A new `ToSchema` type reachable only through another type's field
+  must therefore be listed explicitly in `components(schemas(...))` (and imported
+  alongside `MessageMetadata`). Omit it and the generated spec carries a dangling
+  `$ref: "#/components/schemas/MessageProvenance"`, and `just generate-openapi`
+  **aborts** in `@hey-api/openapi-ts` with `MissingPointerError` — the generator
+  crashes rather than producing a stale client, so this is *not* drift that a
+  later task's regen absorbs. Task 7's gate cannot pass without it.
+- Modify: the `Copy` sites, enumerated in Step 4 — **three** in production (all in
+  `context_mgmt/mod.rs`) plus **four** in tests, seven in all. Corrected while
+  implementing: this used to say "the five production `Copy` sites", and Step 4's
+  grep recipe misses one of the seven outright. See the correction note there.
+
+⚠ **`MessageMetadata` gained a third field, `pinned`, after this task was written —
+and it was landed FOR BR-71.** `pinned` is `#[serde(default)] pub pinned: bool`
+(**:629**), added by #51 (`dc2caa9e` + `a4d6b871`) and honoured at all five compaction
+sites (`a40226d3`, `b3fc6166`). Three consequences, all of them favourable:
+
+- **The derive string Step 3 edits is byte-identical to what is in the tree.**
+  `message.rs:587` reads exactly
+  `#[derive(ToSchema, Clone, Copy, PartialEq, Serialize, Deserialize, Debug)]`, so the
+  `Copy`-drop edit below still applies verbatim.
+- **`provenance` and `pinned` are orthogonal and must both be set.** `pinned` answers
+  *"survive compaction?"*; `provenance` answers *"who wrote this?"*. Nothing about
+  either constrains the other. `Default`/`agent_only`/`user_only`/`invisible` (:632-640,
+  :644, :653, :662) already write `pinned: false` explicitly, so each of those four
+  bodies gains **one** line (`provenance: None`), beside a line that is already there.
+- **The six `with_*` builders use `..self` struct-update** (`message.rs:671-716`), so
+  none of them needs an edit when a field is added. That is why the list of bodies to
+  touch is exactly four.
+
+Task 14 is where `pinned` is actually *called* (`Message::pinned`, :1033) — see
+Prerequisite 2 half (b) and reconciliation #16. This task only has to not fight it.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -933,24 +1593,87 @@ fn provenance_round_trips_and_legacy_metadata_still_parses() {
     // Default serialization must NOT emit the key (wire compat with old clients).
     let plain = serde_json::to_value(MessageMetadata::default()).unwrap();
     assert!(plain.get("provenance").is_none());
+
+    // The #51 pin marker is orthogonal and untouched by any of the above:
+    // `pinned` is `false` on a stamped message and stays independently settable.
+    assert!(!stamped.pinned);
+    assert!(stamped.with_pinned().pinned);
 }
 ```
 
+**And, in `normalize.rs`'s test module** (beside
+`fingerprint_changes_when_only_the_pin_marker_flips`, **:722**, which is the model for
+this one), the cache-validator test that Step 3(d) exists to satisfy:
+
+```rust
+    /// The incremental normalizer reuses a frozen prefix whenever every
+    /// fingerprint in it matches, and the normalized transcript is what the
+    /// overflow path writes back to storage. So a metadata field the fingerprint
+    /// cannot see is a field an in-place edit can silently revert — which is
+    /// exactly the bug `32f2e1bc` fixed for `pinned`, one field over.
+    #[test]
+    fn fingerprint_changes_when_only_the_provenance_stamp_changes() {
+        use crate::conversation::message::{MessageProvenance, ProvenanceKind};
+
+        let stamp = |kind| MessageProvenance {
+            kind,
+            from_session_id: Some("s-parent".into()),
+            from_session_name: None,
+        };
+
+        // `user(..)` is this module's existing helper (`:389`).
+        let plain = user("same body");
+        let injected = plain
+            .clone()
+            .with_provenance(stamp(ProvenanceKind::AgentInjection));
+        let direct = plain
+            .clone()
+            .with_provenance(stamp(ProvenanceKind::UserDirect));
+
+        // Stamped vs unstamped.
+        assert_ne!(
+            message_fingerprint(&plain),
+            message_fingerprint(&injected),
+            "stamping provenance must invalidate the cached prefix"
+        );
+        // And the KIND must be visible on its own — two stamps that differ only
+        // in kind are exactly what a `provenance.is_some()` shortcut would miss.
+        assert_ne!(
+            message_fingerprint(&injected),
+            message_fingerprint(&direct),
+            "a provenance kind change must invalidate the cached prefix"
+        );
+    }
+```
+
+(`normalize.rs:47` imports only `{Message, MessageContent}` from `super::message`, so
+the two new types need the explicit `use` inside the test — `use super::*` will not
+bring them in.)
+
 - [ ] **Step 2: Run to verify failure**
 
-Run: `cargo test -p biorouter --lib conversation::message`
-Expected: COMPILE ERROR — `MessageProvenance` not found.
+```bash
+cargo test -p biorouter --lib conversation::message
+cargo test -p biorouter --lib conversation::normalize
+```
+
+Expected: **COMPILE ERROR** (not FAIL) in both — `MessageProvenance` /
+`ProvenanceKind` / `with_provenance` do not exist yet, so neither test module builds.
 
 - [ ] **Step 3: Implement**
 
-Above `MessageMetadata` add:
+**(a)** Above `MessageMetadata` (i.e. before **:587**) add:
 
 ```rust
 /// Where a message came from, when it did not originate with this session's own
 /// user↔agent pair. Cross-session control without provenance is
 /// indistinguishable from prompt injection (BR-71 §2.4) — stamped in storage,
 /// not just in the UI, and never suppressible.
-#[derive(ToSchema, Clone, PartialEq, Serialize, Deserialize, Debug)]
+///
+/// `Hash` is derived deliberately: this value is part of
+/// [`crate::conversation::normalize`]'s per-message cache validator. See
+/// `message_fingerprint` (`normalize.rs:278`) and Step 3(d).
+#[derive(ToSchema, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct MessageProvenance {
     pub kind: ProvenanceKind,
@@ -960,7 +1683,7 @@ pub struct MessageProvenance {
     pub from_session_name: Option<String>,
 }
 
-#[derive(ToSchema, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Debug)]
+#[derive(ToSchema, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum ProvenanceKind {
     /// Injected by another session's agent (`workspace_send_prompt`).
@@ -972,21 +1695,32 @@ pub enum ProvenanceKind {
 }
 ```
 
-Change `MessageMetadata`'s derive from
+Both `PartialEq` and `Hash` are **derived** (never hand-written), so clippy's
+`derived_hash_with_manual_eq` cannot fire. `Eq` is added on `MessageProvenance` because
+all three of its fields are `Eq` and a `Hash` type that is only `PartialEq` reads as an
+oversight.
+
+**(b)** Change `MessageMetadata`'s derive (**:587**) from
 `#[derive(ToSchema, Clone, Copy, PartialEq, Serialize, Deserialize, Debug)]` to
 `#[derive(ToSchema, Clone, PartialEq, Serialize, Deserialize, Debug)]` (drop `Copy`)
-and add the field:
+and add the field **after `pinned`** (:629):
 
 ```rust
     /// BR-71: origin stamp for cross-session injections. `None` for ordinary
     /// same-session messages, and omitted from JSON so legacy rows/clients are
     /// untouched.
+    ///
+    /// Orthogonal to `pinned` above: that answers "survive compaction?", this
+    /// answers "who wrote this?". A `workspace_send_prompt { mode: "note" }`
+    /// message carries both.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provenance: Option<MessageProvenance>,
 ```
 
-Set `provenance: None` in `Default` and in `agent_only`/`user_only`/`invisible`, and
-add:
+**(c)** Set `provenance: None` in exactly four bodies — `Default` (**:632-640**),
+`agent_only` (**:644**), `user_only` (**:653**) and `invisible` (**:662**) — on the
+line after each one's existing `pinned: false,`. The six `with_*` builders
+(**:671-716**) use `..self` and need no edit. Then add:
 
 ```rust
 impl MessageMetadata {
@@ -1005,7 +1739,47 @@ impl Message {
 }
 ```
 
-(Place the two methods inside the existing `impl` blocks rather than new ones.)
+(Place the two methods inside the existing `impl` blocks — `impl MessageMetadata` at
+**:642-717** and `impl Message` at **:739** — rather than new ones.)
+
+**(d) Add `provenance` to `message_fingerprint` (`normalize.rs:278`).** One line, after
+the `pinned` line at **:285**:
+
+```rust
+    message.metadata.provenance.hash(&mut hasher);
+```
+
+and extend that function's doc paragraph about `pinned` (**:270-277**) to name
+`provenance` as the second durable metadata field it validates.
+
+**Why — the plan was silent on this and should not have been.** The fingerprint's own
+doc states the contract: *"it must change whenever anything the normalization pipeline
+reads about the message changes"*, and gives two reasons `pinned` qualifies. Only one
+of them applies to `provenance`, and it is the sharp one:
+
+- *Not applicable:* `pinned` steers a merge (`is_pin_boundary`), so a cached prefix
+  would be wrong on its own terms. Nothing in the pipeline branches on `provenance`,
+  and nothing in this plan makes it.
+- **Applicable, and decisive:** `pinned` is *durable state the output carries* — the
+  normalized transcript is what the overflow path compacts and **writes back to
+  storage**, so serving a stale marker from the frozen prefix silently reverses it.
+  `provenance` is durable state of exactly the same kind, on exactly the same struct,
+  travelling exactly the same path. A frozen prefix blind to it can write a stale stamp
+  back over a fresh one.
+
+The honest caveat, stated so a reviewer does not have to guess: **no task in this plan
+flips `provenance` on an already-stored message** — every site (Tasks 3, 14, 32, 35)
+stamps at construction — so the specific bug `32f2e1bc` fixed is not reachable through
+provenance *today*. It is included anyway because the asymmetry is stark. Including it
+costs one line, two derives, and a cache miss on a path that does not exist. Omitting
+it costs a silent metadata-reversion bug the first time anything edits a stamp in place
+(a redaction, a re-stamp on divergence, Task 28's transcript work) — with no test
+failing, because the only test that could see it is the one being written here.
+`pinned` itself was fingerprinted *before* it had a consumer, for this reason.
+
+Do **not** implement this as `provenance.is_some().hash(..)`. That is blind to a kind
+change, which is the one edit an in-place re-stamp would actually make; the Step 1 test
+asserts against it directly.
 
 **And the untrusted-data framer, in the same file.** The provenance stamp above lives
 in `MessageMetadata`, which never reaches the provider — the per-provider format
@@ -1014,10 +1788,22 @@ text one agent injects into another session arrives as an indistinguishable user
 instruction, carrying the human's authority in an Auto-mode target. The codebase has
 settled precedent for exactly this hazard, applied three times already —
 `hooks::outcome::frame_hook_context` (`hooks/outcome.rs:53-65`, `<hook-context
-untrusted="true">`), `hints::load_hints::frame_project_hints` (`:140-165`,
-`<project-context untrusted="true">`), and `routes/apps.rs:1879`'s app-data envelope.
+untrusted="true">`), `hints::load_hints::frame_project_hints`
+(`hints/load_hints.rs:140-165`, `<project-context untrusted="true">`), and
+`routes/apps.rs`'s `app_data_envelope` (**`:1919`**, doc **`:1914-1918`**,
+`[{label}]\n<app-data>\n{json}\n</app-data>`).
 BR-71 introduces the first cross-*session* text flow and is the only one that would
 omit it:
+
+⚠ **Citation corrected 2026-07-28.** Both places this plan names the third precedent
+used to say `routes/apps.rs:1879`. That was right at the anchor commit — at `67822ea3`
+the doc comment opened at `:1879` and the fn was `:1884` — and is wrong now: `apps.rs`
+grew and `:1879` today lands inside `consult_deadline`'s doc, a function about worker
+timeouts with nothing to do with framing. The anchor is the **symbol**,
+`app_data_envelope`; the numbers above were re-read at `275d735d`. This one slipped
+both the drift survey and the drift-reconciliation pass because it sits in prose about
+a *design precedent* rather than in a task's Files list, which is the same blind spot
+that left fourteen stale anchors in the reconciliations table.
 
 ```rust
 /// Wrap text one session's agent injected into ANOTHER session in an explicit
@@ -1066,19 +1852,97 @@ with its test:
     }
 ```
 
-- [ ] **Step 4: Fix the `Copy` fallout, workspace-wide**
+- [ ] **Step 4: Fix the `Copy` fallout — seven known sites**
 
-Run: `cargo check --workspace 2>&1 | head -50`
-Every error is a former implicit copy of `MessageMetadata`; fix each with `.clone()`
-(or a borrow where the value is only read). Do not restructure any call site.
+The fallout is **mostly enumerable up front**, not "whatever the compiler flags".
+Most implicit copies of a `MessageMetadata` out of a borrow have the same shape,
+`<borrowed>.metadata.with_*()`, and `grep -rn --include='*.rs' "\.metadata\.with_"
+crates/` returns exactly six (verified at `275d735d`). **It misses a seventh** —
+see the row below the rule.
+
+| Site | Context |
+|---|---|
+| `crates/biorouter/src/context_mgmt/mod.rs:286` | **production** — `.with_metadata(msg.metadata.with_agent_invisible())` |
+| `crates/biorouter/src/context_mgmt/mod.rs:353` | **production** — inside the **windowed-compaction hot loop** (`for (idx, msg) in prefix.iter().enumerate()`, :351) |
+| `crates/biorouter/src/context_mgmt/mod.rs:491` | **production** — `msg.metadata.with_agent_invisible()` |
+| `crates/biorouter/src/conversation/normalize.rs:625` | test (`mod tests` begins at **:394**) |
+| `crates/biorouter/src/conversation/normalize.rs:713` | test |
+| `crates/biorouter/src/conversation/normalize.rs:780` | test |
+| — | |
+| `crates/biorouter/src/conversation/message.rs`, `test_pin_marker_is_orthogonal_to_visibility` | test — **the grep cannot see this one** |
+
+⚠ **Corrections, made while implementing Task 2 (2026-07-28).** Three claims in
+the original table were wrong, and each would have misled the next reader:
+
+- **Seven sites, not six.** `test_pin_marker_is_orthogonal_to_visibility` in
+  `message.rs` chains the builders off a **local `MessageMetadata` binding**
+  (`let pinned = MessageMetadata::default().with_pinned(); pinned.with_agent_invisible()`),
+  not off `<something>.metadata`, so the `\.metadata\.with_` grep structurally
+  cannot match it. The compiler finds it; the recipe does not. Treat the grep as
+  a head start, not a completeness proof — run `cargo check --workspace
+  --all-targets` and believe it over the table.
+- **Three production sites, not five.** `mod tests` in `normalize.rs` begins at
+  **:394** (the Files list said :384), so *all three* normalize.rs rows are
+  inside the test module. The Files list's "the five production `Copy` sites" is
+  really three, all in `context_mgmt/mod.rs`.
+- The performance note below therefore applies to the only hot production site.
+
+Fix each with `.clone()` — `msg.metadata.clone().with_agent_invisible()`. Do not
+restructure any call site.
+
+Note on `:353`: that one is per-message inside a compaction loop, so the `.clone()`
+becomes one `Option<String>` pair clone per message. Acceptable — the loop already
+does `msg.clone()` on the next line — but know that it is there rather than discover
+it in a profile.
+
+Then confirm nothing else moved:
+
+```bash
+cargo check --workspace 2>&1 | grep -c "E0507\|cannot move out"
+# Expected: 0
+```
+
+If it is not 0, the extra sites are genuine and mechanical; fix them the same way and
+**add them to the table above** so the next reader is not told a false count.
 
 - [ ] **Step 5: Run the tests**
 
-Run: `cargo test -p biorouter --lib conversation::message`
-Expected: PASS.
-Run: `cargo test --workspace --no-fail-fast 2>&1 | tail -5`
+```bash
+cargo test -p biorouter --lib conversation::message
+cargo test -p biorouter --lib conversation::normalize
+cargo test -p biorouter --lib context_mgmt
+```
+
+Expected: **PASS**, including the tests this task must not break:
+
+- the three pre-existing fingerprint tests
+  (`fingerprint_changes_when_a_tool_result_is_rewritten` :698,
+  `fingerprint_changes_with_visibility` :709,
+  `fingerprint_changes_when_only_the_pin_marker_flips` :722) — Step 3(d) adds to the
+  hash, it never removes; and
+- the **26-test #51 pin suite** — `context_mgmt/mod.rs`'s `mod pin_tests` (**:2397**,
+  **14** tests, running to EOF at :2908) plus `context_mgmt/pins.rs`'s `mod tests`
+  (**:318**, **12** tests) — which reads `metadata.pinned` on values this task just made
+  non-`Copy`. A `.clone()` applied to the wrong side of one of those reads is the most
+  likely way to break them; and
+- the **two eager-compaction freshness tests** `run_eager_compaction_preserves_a_concurrent_append`
+  (**:2244**) and `run_eager_compaction_aborts_when_the_prefix_moved` (**:2298**) —
+  note they live in `mod tests` (**:1305**), *not* in `pin_tests`. They are #51's
+  replacement for the deleted `eager_swap_is_safe` and Task 14's Prerequisite 2 rests
+  on them.
+
+(Counted at `275d735d`:
+`awk 'NR>=2397' crates/biorouter/src/context_mgmt/mod.rs | grep -cE '^\s+#\[(tokio::)?test\]'`
+→ 14, and the same over `awk 'NR>=318' …/pins.rs` → 12. Earlier drafts of this plan
+and its drift survey said "15"; that number was never right.)
+
+```bash
+cargo test --workspace --no-fail-fast 2>&1 | tail -5
+```
+
 Expected: no new failures versus a pre-task baseline (record the baseline first if this
-machine has pre-existing failures — see memory note in `llamacpp-sidecar-feature`).
+machine has pre-existing failures — see memory note in `llamacpp-sidecar-feature`;
+`SessionListView.test.tsx` is a known clean-tree failure).
 
 - [ ] **Step 6: Commit**
 
@@ -1093,9 +1957,20 @@ git commit -m "feat(conversation): structural message provenance (BR-71); Messag
 
 **Files:**
 - Modify: `crates/biorouter/src/agents/agent.rs`
-  (anchors: `soft_interrupts` field :322, init :604, `queue_soft_interrupt` :641-645,
-  `drain_soft_interrupts` :648, `has_soft_interrupts` :659, drain loop :3368-3378,
-  `exit_chat` check :4640)
+  (anchors **re-verified at `275d735d`, 2026-07-28** — `agent.rs` grew from 6,001 to
+  6,817 lines since this task was written, so every number below moved by roughly
+  +240 to +710; the **symbols** are all intact and unchanged in shape):
+  `soft_interrupts` field **:563**, init **:870**, `queue_soft_interrupt`
+  **:907-912**, `drain_soft_interrupts` **:914** (still `pub(super)`, still returns
+  `Vec<String>`), `has_soft_interrupts` **:925**, **drain loop :3995-4005** (its
+  explanatory comment at :3991-3994), `exit_chat` check **:5347**
+- Do **not** modify, but know they exist — the three callers outside `agent.rs` that
+  pin `queue_soft_interrupt`'s source compatibility:
+  `crates/biorouter-server/src/routes/reply.rs:1101` (the `POST /interrupt` handler —
+  the **only production caller**), `crates/biorouter/tests/soft_interrupt_agent_loop.rs:93`,
+  `crates/biorouter/tests/subagent_delegation.rs:275`. Keeping the one-argument
+  `queue_soft_interrupt` as a thin wrapper (Step 3) is what stops this task from
+  spilling into the server crate.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1132,7 +2007,7 @@ async fn soft_interrupt_queue_round_trips_provenance_through_the_real_agent() {
     );
     assert!(agent.has_soft_interrupts());
 
-    // drain_soft_interrupts is exactly what the turn loop at :3368 consumes.
+    // drain_soft_interrupts is exactly what the turn loop at :3995 consumes.
     let drained = agent.drain_soft_interrupts();
     assert_eq!(drained.len(), 2);
     assert_eq!(drained[0].text, "plain");
@@ -1151,12 +2026,14 @@ async fn soft_interrupt_queue_round_trips_provenance_through_the_real_agent() {
 ```
 
 (`AgentConfig::new(session_manager, permission_manager, scheduler, mode)` — the exact
-4-arg constructor `execution/manager.rs:124-129` uses; `PermissionManager::instance()`
-and `BioRouterMode::Auto` verified there. If `drain_soft_interrupts` is `pub(super)`,
-the test lives inside `agent.rs`'s own module and reaches it — that is why it goes in
+4-arg constructor `execution/manager.rs:124-129` uses; that citation is **still exact**
+at `275d735d` (`let config = AgentConfig::new(` :124, args :125-128, `);` :129).
+`PermissionManager::instance()` (:123) and `BioRouterMode::Auto` (:122) verified there;
+`None` for the scheduler is valid. If `drain_soft_interrupts` is `pub(super)`, the test
+lives inside `agent.rs`'s own module and reaches it — that is why it goes in
 `agent.rs`'s test module, not a sibling file.)
 
-The drain **loop** rewrite (Step 3's :3368 hunk — persist with adopted uid + stamped
+The drain **loop** rewrite (Step 3's :3995 hunk — persist with adopted uid + stamped
 provenance + yield) cannot be unit-tested without a full provider-driven turn; its
 behavioral coverage is the live steer assertion in the Phase-3 harness (Task 39,
 assertion 3: an injected `/interrupt` text appears in the child's observer stream as
@@ -1171,7 +2048,7 @@ Expected: COMPILE ERROR — no method `queue_soft_interrupt_with_provenance`, an
 
 - [ ] **Step 3: Implement**
 
-In `agent.rs` (near the field at :322):
+In `agent.rs` (near the field at **:563**):
 
 ```rust
 /// One queued mid-turn injection: the text plus who injected it (BR-71).
@@ -1203,8 +2080,8 @@ keep `queue_soft_interrupt` source-compatible, and add the stamped variant:
     }
 ```
 
-`drain_soft_interrupts` now returns `Vec<QueuedInterrupt>`; the drain loop at :3368
-becomes:
+`drain_soft_interrupts` now returns `Vec<QueuedInterrupt>`; the drain loop at
+**:3995-4005** becomes:
 
 ```rust
                 for queued in self.drain_soft_interrupts() {
@@ -1236,12 +2113,70 @@ becomes:
                 }
 ```
 
-`has_soft_interrupts` and the :4640 site are unchanged in behavior.
+`has_soft_interrupts` and the **:5347** (`exit_chat`) site are unchanged in behavior.
+
+⚠ **Do NOT add a `persisted_event(...)` publication to this loop** (added 2026-07-28).
+Since this task was written, `#59` landed and both of this loop's nearest neighbours in
+the same reply loop — the stall nudge (**:4034**) and the give-up wrapup (**:4076**) —
+now publish one:
+
+```rust
+                        if let Some(published) = persisted_event(std::slice::from_ref(&nudge)) {
+                            yield published;
+                        }
+```
+
+The symmetry is deliberate and this loop is deliberately *not* symmetric with it. Those
+two rows are `.with_visibility(false, true)` — persisted but never streamed as a
+`Message`, so `MessagesPersisted` is the only way a client can account for them. The
+soft-interrupt row **is** streamed, one line later, and
+`add_message_adopting_uid` mutates `m` in place so the yielded `AgentEvent::Message(m)`
+already carries the stored id. Adding a batch here would be harmless only if it were
+ordered *after* the `Message` — the invariant at `agent.rs:280-283` says **no
+`MessagesPersisted` may precede a `Message` frame carrying one of the ids it
+publishes** — and it would be redundant either way. The rewrite above keeps
+`conversation.push` → `yield AgentEvent::Message` last, which is the order that is
+already correct.
+
+Three integration tests enforce this at the turn level and Step 4 runs them.
 
 - [ ] **Step 4: Run tests**
 
-Run: `cargo test -p biorouter --lib agents::agent`
-Expected: PASS (new test plus all existing agent tests).
+```bash
+cargo test -p biorouter --lib agents::agent
+cargo test -p biorouter --test soft_interrupt_agent_loop
+cargo test -p biorouter --test conversation_writeback_freshness
+```
+
+Expected: **PASS**.
+
+`--test soft_interrupt_agent_loop` is the behavioural net this task has been missing.
+It is a **real provider-driven turn** — `SteeringProvider` (**`:32`**, its
+`impl Provider` at **`:65`**) calls
+`agent.queue_soft_interrupt(...)` from inside a completion (`:93`), so the drain loop
+this step rewrites actually runs — and it has two tests:
+`steer_landing_at_turn_exit_is_injected_in_the_same_turn` (**:206**) and
+`no_steer_means_no_extra_provider_call` (**:243**). The first asserts the injected text
+reaches the transcript in the *same* turn; that is the closest thing to a unit test the
+loop rewrite can have, and it is far cheaper than waiting for the Phase-3 harness.
+`user_texts` (**:193**) reads message bodies, so **it is also the test that catches an
+over-eager framer**: if Step 3's `match` framed the unstamped human steer, this test's
+expected text would no longer match. That is exactly the regression reconciliation #15
+exists to prevent, and nothing else in Phase 1 can see it.
+
+In the third target, the three ordering tests that sweep the very loop this task
+rewrites:
+
+- `a_slash_command_hands_over_its_messages_before_it_names_them`
+  (`crates/biorouter/tests/conversation_writeback_freshness.rs:2349`)
+- `an_undeliverable_elicitation_answer_is_ordered_the_same_way` (**:2388**)
+- `no_turn_shape_names_a_row_before_it_hands_it_over` (**:2420**) — this one sweeps
+  plain / tools / recovered-error turn shapes, i.e. the shapes containing this loop.
+
+Plus `a_client_that_watched_the_turn_knows_every_stored_message_id` (**:1986**), #59's
+completeness contract: a soft-interrupt row that is persisted but neither streamed nor
+named would fail it. If any of those four goes red, the drain loop's publication order
+is wrong — do not "fix" it by adding a `persisted_event` before the `Message`.
 
 - [ ] **Step 5: Commit**
 
@@ -1256,14 +2191,26 @@ git commit -m "feat(agent): soft-interrupt queue carries provenance (BR-71)"
 
 **Files:**
 - Modify: `crates/biorouter/src/session/session_manager.rs`
-  (anchors at `30d49d9a`: `list_session_summaries` public method :1242-1248 and
-  storage impl :3525-3548, `SessionSummary` :165, `list_sessions_by_types` storage
-  impl near :3500)
+  (anchors **re-verified at `275d735d`, 2026-07-28**: `list_session_summaries` public
+  wrapper **:1403-1409** and storage impl **:4090-4113**, `SessionSummary`
+  **:164-172**, `list_sessions_by_types` storage impl **:4053** (its SELECT list at
+  **:4065**), `list_sessions()` wrapper **:1399-1401** and storage impl **:4085-4088**)
 - Modify: `crates/biorouter-server/src/routes/session.rs`. Two routes at HEAD, and
-  BOTH gain the flag: `GET /sessions` (handler `list_sessions` at :166 — returns full
-  `Session` rows via `list_sessions()`; History's `SessionListView` calls this) and
-  `GET /sessions/sidebar` (handler `list_sidebar_sessions` at :195 — calls
-  `list_session_summaries(limit+1, offset)` at :202).
+  BOTH gain the flag: `GET /sessions` (handler `list_sessions` at **:240** — returns
+  full `Session` rows via `list_sessions()`; History's `SessionListView` calls this)
+  and `GET /sessions/sidebar` (handler `list_sidebar_sessions` at **:269** — calls
+  `list_session_summaries(limit+1, offset)` at **:276**).
+
+⚠ **Two pre-existing citation defects in this task, corrected here** (both were already
+wrong at `67822ea3` — they are plan defects, not drift):
+
+- The signature is **`(&self, limit: u32, offset: u32)`** and always has been. The
+  earlier "at `30d49d9a`" framing read as a verified observation of a four-argument
+  form; there has never been one. The `(…, false, false)` calls below describe the
+  **post-edit** target, which is correct — only the framing was misleading.
+- The sidebar handler was once cited as `crates/biorouter/src/routes/session.rs`.
+  That crate has no `routes/` module at all; it is **`crates/biorouter-server/`**, as
+  the Files list above now says.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1289,7 +2236,7 @@ async fn list_session_summaries_hides_subagents_unless_asked() {
         .await
         .unwrap();
 
-    // `list_session_summaries` INNER JOINs `messages` (session_manager.rs:3534)
+    // `list_session_summaries` INNER JOINs `messages` (session_manager.rs:4101)
     // and `create_session` writes NO message, so a freshly created session is
     // invisible to this query until it has one. The pre-existing paging test
     // uses `seed_session_with_messages` for exactly this reason. Without these
@@ -1351,8 +2298,9 @@ pub struct SessionSummary {
 ```
 
 `list_session_summaries(&self, limit: u32, offset: u32, include_subagents: bool,
-include_empty: bool)` passes both flags through to the storage impl at :3525, which
-selects the two new columns and switches the filter and the join:
+include_empty: bool)` (wrapper **:1403-1409**) passes both flags through to the storage
+impl at **:4090-4113**, which selects the two new columns and switches the filter and
+the join:
 
 ```rust
         let type_filter = if include_subagents {
@@ -1361,7 +2309,7 @@ selects the two new columns and switches the filter and the join:
             "('user', 'scheduled')"
         };
         // The sidebar deliberately hides message-less sessions (an INNER JOIN on
-        // `messages`, :3534) so "Untitled chat" placeholders never appear in
+        // `messages`, :4100) so "Untitled chat" placeholders never appear in
         // History. `workspace_list` (Task 12) needs the opposite: a session
         // `workspace_open` just created has no message yet and must still be
         // listable. `COUNT(m.id)` ignores NULLs, so the LEFT JOIN still yields 0.
@@ -1373,10 +2321,11 @@ selects the two new columns and switches the filter and the join:
 ```
 
 (splice `type_filter` into the existing `WHERE s.session_type IN ('user', 'scheduled')`
-at :3537 and `join` in place of the literal `INNER JOIN messages m ON s.id = m.session_id`
-at :3534 with one `format!`, exactly as the parametrized `list_sessions_by_types` variant
-at :3504 already does). Add `s.parent_session_id, s.session_type` to the SELECT list
-at :3529-3534.
+at **:4101** and `join` in place of the literal
+`INNER JOIN messages m ON s.id = m.session_id` at **:4100** with one `format!`, exactly
+as the parametrized `list_sessions_by_types` variant at **:4059-4061** already does —
+it builds `placeholders` and `format!`s them into the query. Add
+`s.parent_session_id, s.session_type` to the SELECT list at **:4094-4099**.)
 
 **`include_empty` is deliberately NOT a behaviour change for History.** The sidebar
 handler passes `false` and keeps today's exact query; only `workspace_list` passes
@@ -1394,8 +2343,8 @@ pub struct ListSessionsQuery {
 }
 ```
 
-- `GET /sessions` (`list_sessions` at :166): add `Query(query): Query<ListSessionsQuery>`
-  and switch the body from `list_sessions()` to
+- `GET /sessions` (`list_sessions` at **:240**): add
+  `Query(query): Query<ListSessionsQuery>` and switch the body from `list_sessions()` to
 
   ```rust
       let types: &[SessionType] = if query.include_subagents {
@@ -1410,36 +2359,54 @@ pub struct ListSessionsQuery {
           .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
   ```
 
-  (`list_sessions()` is exactly `list_sessions_by_types(&[User, Scheduled])` —
-  session_manager.rs:3520-3523 — so the default path is behavior-identical. `Session`
-  already serializes `session_type`, and Task 1 added `parent_session_id`, so History
-  needs no new response **type**. It does need Task 1 step (h): `list_sessions_by_types`'
-  SELECT (`:3500`) must project `s.parent_session_id`, or every row this route returns
-  carries `parent_session_id: null` and Task 38's grouping is dead on arrival. The
-  row mapper's tolerant `.ok().flatten()` means that failure is silent — verify it
+  (`list_sessions()` is exactly `list_sessions_by_types(&[User, Scheduled])` — the
+  storage impl at **session_manager.rs:4085-4088** is literally that one call — so the
+  default path is behavior-identical. `Session` already serializes `session_type`, and
+  Task 1 added `parent_session_id`, so History needs no new response **type**. It does
+  need Task 1 step (h): `list_sessions_by_types`' SELECT (**:4065**) must project
+  `s.parent_session_id`, or every row this route returns carries
+  `parent_session_id: null` and Task 38's grouping is dead on arrival. The row mapper's
+  tolerant `.ok().flatten()` (**:1973-1976**) means that failure is silent — verify it
   here with `grep -n "s.parent_session_id" crates/biorouter/src/session/session_manager.rs`
   before moving on. Add the `include_subagents` param to the utoipa `params(...)` block.)
-- `GET /sessions/sidebar` (`list_sidebar_sessions` at :195): add the same
-  `include_subagents` field to the existing `SidebarSessionsQuery` (:35) and forward
-  it to `list_session_summaries(limit+1, offset, query.include_subagents, false)` at
-  :202 — `include_empty: false` keeps today's exact sidebar query.
+- `GET /sessions/sidebar` (`list_sidebar_sessions` at **:269**): add the same
+  `include_subagents` field to the existing `SidebarSessionsQuery` (**:39-45**) and
+  forward it to `list_session_summaries(limit+1, offset, query.include_subagents,
+  false)` at **:276** — `include_empty: false` keeps today's exact sidebar query.
+  Note that struct's fields are **private** (`limit`, `offset`, no `pub`) and it derives
+  `ToSchema`, not `IntoParams`; match the existing style rather than the
+  `ListSessionsQuery` sketch above, which is a new type and can be `pub`.
 
 Update every other `list_session_summaries` caller to pass the two new arguments:
 
 ```bash
-grep -rn "list_session_summaries(" crates/
-# At 30d49d9a: the wrapper (:1242-1247) and storage impl (:3525) in
-# session_manager.rs, the sidebar handler (routes/session.rs:202) -> (…, false, false),
-# and ONE test caller, `session_summaries_are_lightweight_and_paginated`
-# (session_manager.rs:5596-5597) -> `(2, 0, false, false)` / `(2, 2, false, false)`.
-# Do NOT `grep -v test` here: that test caller is a compile error if it is missed.
-# Task 12's `workspace_list` becomes the only `include_empty: true` caller.
+grep -rn --include='*.rs' "list_session_summaries(" crates/
 ```
+
+Expected — **six** hits at `275d735d`, and every one of them must be reached:
+
+| Hit | What to do |
+|---|---|
+| `session_manager.rs:1403` | the wrapper — new signature |
+| `session_manager.rs:1408` | its body's forward to storage |
+| `session_manager.rs:4090` | the storage impl — new signature + query |
+| `routes/session.rs:276` | the sidebar handler → `(…, query.include_subagents, false)` |
+| `session_manager.rs:6461` | test `session_summaries_are_lightweight_and_paginated` → `(2, 0, false, false)` |
+| `session_manager.rs:6462` | same test → `(2, 2, false, false)` |
+
+**Do NOT `grep -v test` here** — the last two are compile errors if missed, and they
+are the only callers that would not otherwise announce themselves. Task 12's
+`workspace_list` becomes the only `include_empty: true` caller in the whole tree.
 
 - [ ] **Step 4: Run tests**
 
-Run: `cargo test -p biorouter --lib session::session_manager && cargo check -p biorouter-server`
-Expected: PASS / clean check.
+```bash
+cargo test -p biorouter --lib session::session_manager
+cargo check -p biorouter-server
+```
+
+Expected: PASS / clean check. `session_summaries_are_lightweight_and_paginated` is the
+one that proves the sidebar's default behaviour did not move.
 
 - [ ] **Step 5: Commit**
 
@@ -1456,6 +2423,28 @@ git commit -m "feat(session): opt-in include_subagents on session listing (BR-71
 - Create: `crates/biorouter/src/session_events.rs`
 - Modify: `crates/biorouter/src/lib.rs` (add `pub mod session_events;` beside the other
   top-level modules)
+
+**Anchors re-verified at `275d735d`, 2026-07-28.** This is a new file, so it has few,
+and all three claims it rests on still hold:
+
+- `AgentEvent` is `#[derive(Clone, Debug)]` — now at **`agent.rs:605`** (the plan
+  elsewhere cites `:364`), so the broadcast needs **no new derives**.
+- `TurnErrorScope` has exactly **four** variants — now at
+  **`reply.rs:346-353`** (plan cites `:186-194` / `:187-194`), `#[serde(rename_all =
+  "snake_case")]`, `Provider`/`Session`/`Inference`/`Internal`. The count the
+  `TurnError` doc below asserts is unchanged.
+- `TokenState` is at `crates/biorouter/src/conversation/message.rs:1046`, so the
+  `use crate::conversation::message::TokenState;` below is right and there is still no
+  `providers::base::TokenState` to confuse it with.
+
+⚠ **`SessionBusEvent::Agent(AgentEvent)` now transports EIGHT variants, not seven**
+(added 2026-07-28). `#59` added `MessagesPersisted(Vec<PersistedMessage>)` at
+**`agent.rs:672`**. Nothing in *this* task changes — `Agent(AgentEvent)` is opaque — but
+Task 7's `map_bus_event` matches on it **exhaustively and with no wildcard**, so the
+variant list is a contract this module hands downstream. The module doc in Step 3
+therefore enumerates all eight by name (see reconciliation #22); that list is the thing
+a reader consults when the mapper stops compiling, and it is why the mapper is allowed
+to have no `_` arm.
 
 **Why the shape below and not the design's literal one** (reconciliation #1 and #9): the
 bus is the ONE publisher every turn writes to, and `/reply` is now a consumer (Task 8),
@@ -1562,6 +2551,16 @@ Expected: COMPILE ERROR — items not defined.
 //! (`routes::session_events::map_bus_event`), so every consumer sees
 //! byte-identical frames.
 //!
+//! **The `Agent` variant's payload is a closed set of EIGHT, and downstream
+//! depends on that.** `AgentEvent` (`crate::agents::AgentEvent`,
+//! `agents/agent.rs:605-673`) is `Message`, `McpNotification`, `ModelChange`,
+//! `HistoryReplaced`, `ToolCallPending`, `TokenUsage`, `TurnAborted` and —
+//! since #59 — `MessagesPersisted(Vec<PersistedMessage>)` (`:672`). The
+//! server's `map_bus_event` matches all eight with **no wildcard arm**, so
+//! adding a ninth is a deliberate, compiler-enforced conversation about how it
+//! reaches the wire, rather than a variant that silently vanishes at the
+//! adapter. Do not "simplify" that match, and do not add a `_` here either.
+//!
 //! **Senders are reclaimed, not retained for the life of the process.** A
 //! `tokio::sync::broadcast::Sender` is NOT cheap to hold: `broadcast::channel`
 //! allocates the entire ring up front, before any receiver exists —
@@ -1617,7 +2616,7 @@ pub enum SessionBusEvent {
         code: String,
         /// `"provider" | "session" | "inference" | "internal"` — the wire values
         /// of `biorouter_server::routes::reply::TurnErrorScope`, which has
-        /// exactly those FOUR variants (`reply.rs:187-194`). `provider` is the
+        /// exactly those FOUR variants (`reply.rs:346-353`). `provider` is the
         /// one that matters most: it is what the desktop keys its rate-limit /
         /// retry / compaction recovery off, together with `retryable` and
         /// `provider_kind`.
@@ -1732,8 +2731,9 @@ Add the leak regression to Step 1's tests:
 ```
 
 (`TokenState`'s path is `crate::conversation::message::TokenState` — verified: that is
-its only definition (`message.rs:921`), there is no `providers::base` re-export, and it
-is the path `routes/reply.rs:10` imports as
+its only definition (**`message.rs:1046`** at `275d735d`; the plan's old `:921` predates
+`MessageMetadata`'s growth), there is no `providers::base` re-export, and it
+is the path **`routes/reply.rs:12`** imports as
 `biorouter::conversation::message::{Message, MessageContent, TokenState}`.)
 
 - [ ] **Step 4: Run tests**
@@ -1772,12 +2772,23 @@ untouched, so the hot-path cutover in Task 8 is a single revertible commit.
   registers there too", and a detached turn is exactly such work; `/reply` turns keep
   their existing non-registration behaviour, see Step 3's `register_active_work` flag)
 - Modify: `crates/biorouter-server/src/routes/reply.rs` — **visibility + two new
-  accessors only**: make `get_token_state` (:224), `track_tool_telemetry` (:56),
+  accessors only**: make `get_token_state` (:384), `track_tool_telemetry` (:32),
   `SseResponse`, `MessageEvent`, `TurnErrorScope` `pub(crate)`, and add
-  `TurnErrorScope::wire_value()` / `from_wire_value()` beside the enum (:187-194).
+  `TurnErrorScope::wire_value()` / `from_wire_value()` beside the enum (:346-353).
   **Delete nothing** in this task — in particular the handler's own completion-metrics
-  block (:783-838) and its `AgentEvent` loop stay exactly as they are until Task 8, so
-  reverting Task 8 alone restores a working handler (reconciliation #9's rollback note).
+  block (:972-1019, the two `session_completions` counters at :975 and :1002) and its
+  `AgentEvent` loop stay exactly as they are until Task 8, so reverting Task 8 alone
+  restores a working handler (reconciliation #9's rollback note).
+  **Do not touch `apply_client_writeback` (:177-231) or its call site (:665) in this
+  task or in Task 8** — see `TurnExtras.conversation_so_far` and reconciliation #21.
+
+⚠ **Anchor warning for this task and Tasks 7, 8, 14, 18, 19, 21, 34-36.** Every
+`crates/biorouter/src/agents/agent.rs:NNNN` in this plan was taken when the file was
+6,001 lines; it is now 6,817, and the anchors are stale by roughly **+475 to +500**.
+`reply.rs` grew by ~190 lines at the top (the #51 W5 write-back and the #59 doc blocks),
+so its anchors are stale by roughly **+160 to +190**. Treat every number as a hint and
+re-locate by the named symbol, which is what the ground rules already say — this note
+exists so a *near* miss is not mistaken for a hit.
 
 - [ ] **Step 1: Write the failing tests** (in `turn.rs`'s test module)
 
@@ -1794,12 +2805,12 @@ mod tests {
     ///
     /// 1. `AppState::new()` opens the **REAL user session database** (it goes
     ///    through `AgentManager::instance()` → `SessionManager::instance()`;
-    ///    `routes/session.rs:876` carries the same warning). These tests create
-    ///    rows in the developer's own history. Keep session names unique and
-    ///    never assert on total row counts.
+    ///    `routes/session.rs:1122` and `:1414` carry the same warning). These
+    ///    tests create rows in the developer's own history. Keep session names
+    ///    unique and never assert on total row counts.
     /// 2. The `TempDir` is the session's **working dir**, not a database.
     ///    `create_session`'s first parameter is `working_dir`
-    ///    (`session_manager.rs:1101-1106`). An earlier draft did
+    ///    (`session_manager.rs:1191-1196`). An earlier draft did
     ///    `std::mem::forget(temp)` with the comment "keep the DB alive" — a false
     ///    invariant that would send the next reader looking for a database that
     ///    is not there. The guard is still returned, because deleting the
@@ -1926,6 +2937,65 @@ mod tests {
         }
     }
 
+    /// ⚠ Reconciliation #21: `run_turn` performs NO whole-history rewrite.
+    ///
+    /// The property, not a grep: seed a session with a stored message, then run
+    /// a turn whose `conversation_so_far` **omits** it. The stored row must
+    /// still be there afterwards. Under the pre-amendment plan — which had
+    /// `run_turn` call `SessionManager::replace_conversation` on the client's
+    /// copy — that row is DELETEd and re-INSERTed away, silently, from a
+    /// detached task with no status code to refuse with. That is the #51 W5 bug
+    /// `306552fd` shipped a fix for, and `grep -c replace_conversation turn.rs`
+    /// cannot tell the two implementations apart.
+    ///
+    /// This test does not need a provider: the turn fails fast without one, and
+    /// the destruction (if any) happens before `agent.reply` is ever reached.
+    #[tokio::test]
+    async fn a_seed_conversation_is_never_written_back_over_the_store() {
+        use biorouter::conversation::Conversation;
+
+        let state = crate::state::AppState::new().await.unwrap();
+        let (_workdir, sid) = session(&state, "seed-is-not-a-write").await;
+
+        // One durable row the client's copy will not name.
+        let mut stored = Message::user().with_text("br71-seed-probe");
+        state
+            .session_manager()
+            .add_message_adopting_uid(&sid, &mut stored)
+            .await
+            .unwrap();
+        let probe_id = stored.id.clone().expect("the store stamps an id");
+
+        // A seed that pretends the session is empty.
+        let request = TurnRequest {
+            session_id: sid.clone(),
+            user_message: Message::user().with_text("go"),
+            extras: TurnExtras {
+                conversation_so_far: Some(Conversation::new_unvalidated(Vec::new())),
+                ..TurnExtras::default()
+            },
+        };
+        let cancel = CancellationToken::new();
+        let guard = state
+            .try_begin_turn_idempotent(&sid, cancel.clone(), None)
+            .expect("session is idle");
+        run_turn(state.clone(), request, guard, cancel).await;
+
+        let reread = state.session_manager().get_session(&sid, true).await.unwrap();
+        let ids: Vec<String> = reread
+            .conversation
+            .unwrap_or_default()
+            .messages()
+            .iter()
+            .filter_map(|m| m.id.clone())
+            .collect();
+        assert!(
+            ids.contains(&probe_id),
+            "run_turn destroyed a stored message it was merely seeded around; \
+             the seed is not a write-back (ids: {ids:?})"
+        );
+    }
+
     /// Reconciliation #9: the terminal-error CLASSIFIER moved out of `/reply`
     /// with its fidelity intact. This is the test that stops the refactor from
     /// silently collapsing every abort to `(Inference, false, None)` — which
@@ -1974,12 +3044,13 @@ mod tests {
 ```
 
 (`TurnAbortCode` is re-exported at `biorouter::agents::TurnAbortCode`
-(`agents/mod.rs:86`) — the same import `reply.rs:9` already uses; `ProviderErrorKind`
-lives at `biorouter::providers::errors::ProviderErrorKind` (`errors.rs:44`) and carries
-both `is_transient()` and `wire_code()`. `TurnErrorScope` needs
+(**`agents/mod.rs:88`**) — the same import `reply.rs:9-11` already uses, now a
+brace-list also carrying `PersistedMessage`; `ProviderErrorKind` lives at
+`biorouter::providers::errors::ProviderErrorKind` (`errors.rs:44`, **exact**) and
+carries both `is_transient()` and `wire_code()`. `TurnErrorScope` needs
 `#[derive(PartialEq, Eq)]` added for these `assert_eq!`s — it derives only
-`Debug, Serialize` today (`reply.rs:186-194`); add the two, they are free on a
-fieldless enum.)
+`Debug, Serialize, utoipa::ToSchema` today (**`reply.rs:346-353`**, declaration at
+`:347`); add the two, they are free on a fieldless enum.)
 
 - [ ] **Step 2: Run to verify failure**
 
@@ -2050,18 +3121,39 @@ pub struct TurnExtras {
     /// BR-62 turn idempotency key (the client's `turn_id`). `None` for injected
     /// turns: two keyless turns are two turns, which is correct there.
     pub idempotency_key: Option<String>,
-    /// Client-supplied conversation prefix (`/reply`'s `conversation_so_far`).
+    /// The conversation this turn should START from — **already stored**.
     ///
-    /// `Option<Vec<Message>>`, because that is the type of the field it carries
-    /// (`ChatRequest.conversation_so_far`, `reply.rs:78-80`) — not
-    /// `Option<Conversation>`. And it is not just an accumulator seed: HEAD
-    /// wraps it in `Conversation::new_unvalidated` and calls
-    /// `SessionManager::replace_conversation` (`reply.rs:571-589`), a real
-    /// storage write. That write MOVES into `run_turn` below rather than
-    /// disappearing. It is dormant today — no desktop caller sends the field —
-    /// which is exactly why it needs to be named here instead of quietly
-    /// dropped.
-    pub conversation_so_far: Option<Vec<Message>>,
+    /// `Option<Conversation>`, NOT `Option<Vec<Message>>`. It is a *seed*, not a
+    /// write to perform, and the type says so: it is the `Ok` value of
+    /// `apply_client_writeback` (`reply.rs:177-231`), i.e. what the store holds
+    /// after `/reply` has already validated and applied the client's copy.
+    /// `None` means "read the session" — every caller except `/reply` passes
+    /// `None`, because none of them has a client prefix.
+    ///
+    /// ⚠ **The whole-history rewrite does NOT move into `run_turn`.** An earlier
+    /// revision of this plan said it did, quoting a `replace_conversation` call
+    /// at `reply.rs:571-591`. That call no longer exists: `306552fd fix(server):
+    /// refuse a stale conversation_so_far instead of storing it` (#51 W5)
+    /// replaced it with `apply_client_writeback`, a **pre-spawn precondition
+    /// with an HTTP status code** — it reads a paired snapshot
+    /// (`snapshot_for_rewrite`, `reply.rs:186`), computes
+    /// `unacknowledged_stored_ids` (`:126-135`), returns 409
+    /// `conversation_out_of_date` if the client's copy would delete a stored row
+    /// (`:198-204`), and otherwise writes through
+    /// `replace_conversation_preserving_tail` (`:213-215`), never through
+    /// `replace_conversation`.
+    ///
+    /// A detached runner structurally cannot express that: it has no status code
+    /// to refuse with, and `SessionManager::replace_conversation` is now
+    /// documented as **the NAMED EXCEPTION** (`session_manager.rs:1312-1324`),
+    /// correct only for a caller that owns the whole history — `/clear` and the
+    /// import/copy/diverge paths, its five production callers
+    /// (`execute_commands.rs:221`, `biorouter-cli/src/session/mod.rs:895`,
+    /// `session_manager.rs:4703`, `:4736`, `:4838`). Calling it here, on a LIVE
+    /// session, from a detached task, reintroduces exactly the tail-destroying
+    /// bug #51 shipped a fix for. So the write stays in `/reply` (Task 8), above
+    /// the range Task 8 replaces, and hands its result here as a seed.
+    pub conversation_so_far: Option<Conversation>,
     /// `Option<ReasoningEffort>`, NOT `Option<String>`. It is copied verbatim
     /// from `ChatRequest.reasoning_effort` (`reply.rs:88`) into
     /// `SessionConfig.reasoning_effort` (`agents/types.rs:147`), and both are
@@ -2137,6 +3229,33 @@ pub async fn start_turn(
 /// The turn body. Split out of `start_turn` so Task 8 can also call it with a
 /// guard it acquired itself (`/reply` needs the guard's conflict detail before
 /// it decides whether to open an SSE response at all).
+///
+/// # Stated non-goals — both are load-bearing, and both are one-line mistakes
+///
+/// 1. **This function performs NO whole-history rewrite.** It never calls
+///    `SessionManager::replace_conversation` (the NAMED EXCEPTION,
+///    `session_manager.rs:1312-1324`) and never calls
+///    `replace_conversation_preserving_tail` either. The only rewrite that
+///    happens during a turn is the agent's own guarded compaction, inside
+///    `Agent::reply` (`agent.rs:3606-3613`, `:2086`, `:2188`), which pairs its
+///    revision and its view through `RewriteBasis` (`agent.rs:332-357`) — a
+///    private struct with private fields and no field-wise constructor,
+///    precisely so a conversation cannot be carried across an async boundary,
+///    detached from its revision, and then used as an authoritative rewrite.
+///    `extras.conversation_so_far` is a *seed* and must stay one; making it a
+///    write here is that forbidden split, one layer up.
+/// 2. **Events are published to the bus in stream order, never reordered,
+///    filtered or coalesced.** #59's ordering invariant — *no
+///    `MessagesPersisted` may precede a `Message` frame carrying one of the ids
+///    it publishes* (`agent.rs:280-283`; `docs/agent-loop/conversation-writeback-freshness.md:394-396`)
+///    — is a producer-side property that the agent already satisfies
+///    (`messages_then_persisted`, `agent.rs:288-296`). Re-ordering here would
+///    make it false **at the bus**, where no consumer-side flush can repair it,
+///    and the failure is silent: a client that reads an id and then loses the
+///    stream claims every stored row while holding none of the bodies, and the
+///    `expectedMessageIds` guard truncates rows the user can still see.
+///    Coalescing is a per-client concern and lives in `/reply`'s subscription
+///    (Task 8), not here.
 pub async fn run_turn(
     state: Arc<AppState>,
     request: TurnRequest,
@@ -2261,26 +3380,18 @@ pub async fn run_turn(
         reasoning_effort: extras.reasoning_effort,
     };
 
-    // Verbatim from `reply.rs:571-591`, including the storage write and the
-    // trailing push. Dropping either is a silent behaviour change:
-    // `replace_conversation` is the only honouring of a client-supplied prefix,
-    // and without the push `emit_completion_metrics`' fallback `message_count`
-    // is off by one and `track_tool_telemetry`'s lookup base differs by a
-    // message.
-    let mut all_messages = match extras.conversation_so_far {
-        Some(history) => {
-            let conv = Conversation::new_unvalidated(history);
-            if let Err(e) = state
-                .session_manager()
-                .replace_conversation(&session_id, &conv)
-                .await
-            {
-                tracing::warn!("Failed to replace session conversation for {session_id}: {e}");
-            }
-            conv
-        }
-        None => session.conversation.clone().unwrap_or_default(),
-    };
+    // Seed the accumulator. NO STORAGE WRITE HAPPENS HERE — see the stated
+    // non-goal below, and `TurnExtras.conversation_so_far`'s doc.
+    //
+    // `Some(_)` is the conversation `/reply` already validated and stored via
+    // `apply_client_writeback` before spawning this task; `None` is every other
+    // caller, which starts from the session's own history. The trailing push is
+    // load-bearing and must not be dropped: without it
+    // `emit_completion_metrics`' fallback `message_count` is off by one and
+    // `track_tool_telemetry`'s lookup base differs by a message.
+    let mut all_messages = extras
+        .conversation_so_far
+        .unwrap_or_else(|| session.conversation.clone().unwrap_or_default());
     all_messages.push(user_message.clone());
 
     let mut stream = match agent
@@ -2410,7 +3521,7 @@ pub async fn run_turn(
 }
 
 /// The terminal-error classifier, moved out of `/reply`'s event loop
-/// (`reply.rs:703-721`) so the ONE runner still produces the full envelope.
+/// (`reply.rs:883-901` at `275d735d`) so the ONE runner still produces the full envelope.
 /// Pure, so it is unit-testable without a provider (see this module's tests).
 pub(crate) fn classify_abort(
     code: &biorouter::agents::TurnAbortCode,
@@ -2431,7 +3542,7 @@ pub(crate) fn classify_abort(
 }
 
 /// The session-completion telemetry, byte-for-byte the block at
-/// `reply.rs:783-838` with one substitution: the three literal
+/// `reply.rs:972-1019` at `275d735d` with one substitution: the three literal
 /// `session_type = "app"` fields become `session_type = session_type_label`, so
 /// an injected turn is not counted as an app session.
 async fn emit_completion_metrics(
@@ -2493,7 +3604,7 @@ async fn emit_completion_metrics(
 ```
 
 [DERIVED COPY, NOT A MOVE — deliberate] `emit_completion_metrics` above is written
-into `turn.rs` in **this** task while `reply.rs:783-838` keeps its own copy. The two
+into `turn.rs` in **this** task while `reply.rs:972-1019` keeps its own copy. The two
 coexist for exactly two commits: Task 8 is the commit that deletes `reply.rs`'s block,
 and that is what makes Task 8's `git revert` restore a handler with every function it
 calls (reconciliation #9's rollback note). Verify in Task 8 with
@@ -2501,7 +3612,7 @@ calls (reconciliation #9's rollback note). Verify in Task 8 with
 
 Add `TurnErrorScope::wire_value()` and its inverse beside the enum in `reply.rs`. Both
 are needed here (the runner serializes) and in Task 7 (the observer deserializes), and
-both must cover **all four** variants — `reply.rs:187-194` is
+both must cover **all four** variants — `reply.rs:346-353` is
 `Provider | Session | Inference | Internal`, and a three-arm match neither compiles nor
 carries provider errors:
 
@@ -2532,8 +3643,10 @@ impl TurnErrorScope {
 }
 ```
 
-and add `PartialEq, Eq` to the enum's derives (`reply.rs:186`) — free on a fieldless
-enum, and required by Task 6's classifier test and Task 7's round-trip test.
+and add `PartialEq, Eq` to the enum's derives (`reply.rs:347`, the
+`#[derive(Debug, Serialize, utoipa::ToSchema)]` above `pub enum TurnErrorScope`) — free
+on a fieldless enum, and required by Task 6's classifier test and Task 7's round-trip
+test.
 
 `ActiveWorkKind::DetachedTurn` is a **4**-line addition in
 `crates/biorouter-mcp/src/active_work.rs`, not three — the enum has TWO exhaustive
@@ -2593,8 +3706,26 @@ does need adding is `async-trait`, in Task 9; see there.)
 - [ ] **Step 5: Run tests**
 
 Run: `cargo test -p biorouter-server --lib workspace::turn state::tests::turn_guard_exposes_its_turn_id`
-Expected: `test result: ok. 5 passed` (three lifecycle tests, the abort classifier, and
-the `TurnGuard::turn_id` accessor).
+Expected: `test result: ok. 6 passed` (three lifecycle tests, the seed-is-not-a-write
+test, the abort classifier, and the `TurnGuard::turn_id` accessor).
+
+Then the two **integration** targets that hold the #51 and #59 invariants this task can
+break. Neither is a `--lib` test, so neither is reached by the command above, and until
+this amendment neither was run by any Phase-1 step:
+
+```bash
+cargo test -p biorouter --test conversation_writeback_freshness
+cargo test -p biorouter --test conversation_writeback_stress
+```
+
+Expected: all green, and specifically
+`a_slash_command_hands_over_its_messages_before_it_names_them` (`:2349`),
+`no_turn_shape_names_a_row_before_it_hands_it_over` (`:2420`),
+`an_undeliverable_elicitation_answer_is_ordered_the_same_way` (`:2388`) and
+`a_client_that_watched_the_turn_knows_every_stored_message_id` (`:1986`). They are the
+only nets for the #59 ordering invariant and its completeness contract; a runner that
+reorders, filters or coalesces bus publications breaks them and nothing in
+`--lib routes::reply` notices.
 
 - [ ] **Step 6: Commit**
 
@@ -2657,6 +3788,44 @@ mod tests {
         assert!(serde_json::to_string(&fin).unwrap().contains("\"type\":\"Finish\""));
     }
 
+    /// Reconciliation #22 / #59: `MessagesPersisted` reaches the wire through
+    /// the mapper, and it maps to a frame — NOT to `None`.
+    ///
+    /// This is the one arm whose *plausible wrong answer compiles*. Dropping it
+    /// (or reaching for a `_ => None` wildcard to silence `E0004`) is invisible
+    /// to every other test in this plan: the desktop store deliberately does not
+    /// consume the frame yet (`chatStreamStore.tsx:313`, `:1335`, pinned by
+    /// `chatStreamStore.test.ts:807`/`:888`), and `reply.rs`'s own
+    /// `persisted_message_ids_reach_the_wire_with_their_visibility` (`:1212`)
+    /// tests the *enum's serialization*, not the handler — so it stays green
+    /// while no handler emits the frame at all. After Task 8 that silence means
+    /// no `/reply` client ever learns a stored id again, `expectedMessageIds`
+    /// becomes unsatisfiable, and `POST /sessions/{id}/edit_message` answers 409
+    /// on sessions nobody touched: exactly the regression `0312dff4` +
+    /// `936f5a33` were written to close.
+    #[test]
+    fn a_persisted_batch_maps_to_a_wire_frame_and_never_to_none() {
+        use biorouter::agents::PersistedMessage;
+        let mut token_state = Default::default();
+
+        let mapped = map_bus_event(
+            SessionBusEvent::Agent(AgentEvent::MessagesPersisted(vec![
+                PersistedMessage { id: "m-1".into(), user_visible: true },
+                PersistedMessage { id: "m-2".into(), user_visible: false },
+            ])),
+            &mut token_state,
+        )
+        .expect("MessagesPersisted maps to a frame, not to None");
+
+        let json = serde_json::to_value(&mapped).unwrap();
+        assert_eq!(json["type"], "MessagesPersisted");
+        assert_eq!(json["messages"][0]["id"], "m-1");
+        // `userVisible` is camelCase on the wire and BOTH values survive: a
+        // client must be able to NAME a hidden row without drawing it.
+        assert_eq!(json["messages"][0]["userVisible"], true);
+        assert_eq!(json["messages"][1]["userVisible"], false);
+    }
+
     /// Reconciliation #9: every `TurnErrorScope` variant survives the string
     /// round trip through the bus, and an unknown one degrades instead of
     /// panicking. All FOUR variants — `Provider` is the one the desktop's
@@ -2703,6 +3872,14 @@ Expected: COMPILE ERROR — module/function not found.
 //! callers: this route and `/reply` itself. That is what makes "an observer
 //! sees exactly what the client sees" structural rather than a property two
 //! hand-written loops have to keep agreeing on.
+//!
+//! **The inner `match ev` is EXHAUSTIVE and must stay that way — never add a
+//! `_ => None` arm.** `AgentEvent` has eight variants today
+//! (`agent.rs:605-673`); an exhaustive match is what makes the NINTH fail the
+//! build instead of silently vanishing from every wire. The repo makes the same
+//! choice, for the same reason, at `MessageContent::is_pin_eligible`
+//! (`message.rs:422-454`). If a future variant genuinely has no wire form, give
+//! it a named arm returning `None` with the reason written next to it.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -2778,6 +3955,28 @@ pub(crate) fn map_bus_event(
                 name: p.name,
                 partial_args: p.partial_args,
             }),
+            // Reconciliation #22 / #59: the accounting frame naming the ids the
+            // turn's rows were actually stored under.
+            //
+            // A pass-through — `MessageEvent` already has
+            // the identically-shaped variant (`reply.rs:341-343`) carrying the
+            // same `Vec<PersistedMessage>` — but it is NOT optional, and it is
+            // NOT `None`. Without it a client that watches a whole turn ends it
+            // knowing none of the ids the store holds, so `expectedMessageIds`
+            // on `POST /sessions/{id}/edit_message` is unsatisfiable and the
+            // in-place edit it guards answers 409 on an untouched session.
+            //
+            // ORDERING (agent.rs:280-283, and `messages_then_persisted` at
+            // `agent.rs:288`): no `MessagesPersisted` may precede a `Message`
+            // frame carrying one of the ids it publishes. This mapper preserves
+            // whatever order it is fed — it is the CONSUMERS that must flush
+            // before forwarding this frame (Task 7's route sends immediately, so
+            // it has nothing buffered; Task 8's `/reply` loop holds a
+            // `DeltaCoalescer` and flushes first — see its `!matches!(…
+            // TokenUsage)` guard, which is load-bearing for exactly this).
+            AgentEvent::MessagesPersisted(messages) => {
+                Some(MessageEvent::MessagesPersisted { messages })
+            }
             // FALLBACK ONLY. The turn runner never publishes a raw
             // `TurnAborted` — it classifies it and publishes `TurnError`
             // instead, precisely so no consumer renders two terminal Error
@@ -2906,21 +4105,32 @@ pub fn routes(state: Arc<AppState>) -> Router {
 }
 ```
 
-Notes for the implementer, all verified against the tree:
+Notes for the implementer, all verified against the tree at `275d735d`:
 
+- **`AgentEvent` has EIGHT variants, not seven** (`agent.rs:605-673`):
+  `Message`, `McpNotification`, `ModelChange`, `HistoryReplaced`, `ToolCallPending`,
+  `TokenUsage`, `TurnAborted`, and `MessagesPersisted(Vec<PersistedMessage>)` at
+  **`agent.rs:672`** (added by #59 after this plan was first written). All eight have
+  arms above. A seven-arm match is `E0004`, and the repair reflex — `_ => None` —
+  compiles and is silently wrong; see the arm's comment and
+  `a_persisted_batch_maps_to_a_wire_frame_and_never_to_none` above.
+- `MessageEvent::MessagesPersisted { messages: Vec<PersistedMessage> }` already exists
+  at `reply.rs:341-343`, so the mapping is a total move with no conversion.
+  `PersistedMessage` is re-exported as `biorouter::agents::PersistedMessage`
+  (`agents/mod.rs:76`) and both its fields are public (`agent.rs:208-236`), so the test
+  can build one directly.
 - `SseResponse::from_rx(mpsc::Receiver<String>)` is the public raw-receiver constructor
-  (`reply.rs:106-113`). `SseResponse::new` takes a `ReceiverStream` and is private,
+  (`reply.rs:245`). `SseResponse::new` takes a `ReceiverStream` and is private,
   which is fine — Task 8 is in-module and keeps using it.
 - `TokenState`'s path is `biorouter::conversation::message::TokenState`
-  (`message.rs:921`; imported that way at `reply.rs:10`). There is no
-  `providers::base::TokenState`.
+  (imported that way at `reply.rs:10`). There is no `providers::base::TokenState`.
 - Axum path syntax: match the existing routes (`/sessions/{session_id}` style is used
   in utoipa annotations; the axum `.route()` string must match the other routes in
   `session.rs` — copy their brace/colon convention exactly).
 - `AgentEvent::TurnAborted`'s `code.wire_code()` — same accessor the pre-refactor reply
-  loop calls at `reply.rs:702`.
+  loop calls at `reply.rs:882`.
 - `TurnErrorScope::wire_value()` / `from_wire_value()` were both added in Task 6, over
-  **all four** variants (`Provider | Session | Inference | Internal`, `reply.rs:187-194`).
+  **all four** variants (`Provider | Session | Inference | Internal`, `reply.rs:346-353`).
   The round-trip test above covers every one plus the unknown-string degradation; a
   three-variant version does not compile and silently mismaps provider errors.
 
@@ -2931,7 +4141,8 @@ In `routes/mod.rs` add `.merge(session_events::routes(state.clone()))` and
 
 In the same file's test module. **Same caveat as Task 6's helper, and it applies to
 every `AppState::new()` test in this plan (Tasks 7, 8, 9, 10):** `AppState::new()`
-opens the REAL user session database (`routes/session.rs:876` says so in the tree), so
+opens the REAL user session database (`routes/session.rs:1122` and `:1414` say so in the
+tree), so
 these tests write rows into the developer's own history — keep names unique, never
 assert on row counts. The `TempDir` here is the session's working dir, nothing more.
 
@@ -2980,7 +4191,7 @@ assert on row counts. The `TempDir` here is the session's working dir, nothing m
     /// Read chunks until both expected markers have arrived, then stop.
     ///
     /// `axum::body::to_bytes` — which every other body-reading test in this
-    /// crate uses (`routes/session.rs:795`, `routes/reply.rs:1314`) — CANNOT be
+    /// crate uses (`routes/session.rs:1062`, `routes/reply.rs:1415`) — CANNOT be
     /// used here: this body is an observer stream that never ends, so
     /// `to_bytes` would hang until the test's 5 s timeout every time.
     ///
@@ -3028,8 +4239,9 @@ assert on row counts. The `TempDir` here is the session's working dir, nothing m
 - [ ] **Step 5: Run tests**
 
 Run: `cargo test -p biorouter-server --lib routes::session_events`
-Expected: `test result: ok. 4 passed` (the mapping test, the scope round-trip, the
-snapshot-then-live route test, and the 404 test).
+Expected: `test result: ok. 5 passed` (the mapping test, the `MessagesPersisted`
+never-`None` test, the scope round-trip, the snapshot-then-live route test, and the
+404 test).
 
 - [ ] **Step 6: Regenerate OpenAPI**
 
@@ -3057,20 +4269,45 @@ belongs to *this HTTP request* and becomes a bus subscriber like any observer, w
 what makes "the request that starts a turn is the only party that can see it" — the
 asymmetry design §4.2 names — structurally impossible to reintroduce.
 
+**Depends on Task 7 — binding, not conventional.** The SSE loop below calls
+`crate::routes::session_events::map_bus_event` and `bus_lag_resync_frame`, both created
+in Task 7. See the fifth non-negotiable ordering in
+[Execution options](#execution-options).
+
 **What moves out of `reply.rs`** (into Task 6's runner — every item is *deleted here* in
 this commit, having been *written there* in Task 6): `get_agent`, the session read,
-`SessionConfig` construction, the `conversation_so_far` → `replace_conversation`
-storage write, the `all_messages.push(user_message)` seed, `agent.reply(...)`, the
-`AgentEvent` consumption, tool telemetry, `all_messages` accumulation, the
-`TurnAbortCode` → `(scope, retryable, provider_kind)` classification, the session
-rename, the session-completion metrics block (`:783-838`), and the authoritative
-end-of-turn token read.
+`SessionConfig` construction, the `all_messages.push(user_message)` seed,
+`agent.reply(...)`, the `AgentEvent` consumption, tool telemetry, `all_messages`
+accumulation, the `TurnAbortCode` → `(scope, retryable, provider_kind)` classification,
+the session rename, the session-completion metrics block (`:972-1019`), and the
+authoritative end-of-turn token read.
 
 **What stays in `reply.rs`**: the turn lock acquisition *with the client's
-idempotency key* and its 409 conflict body; the `mpsc` SSE channel and `SseResponse`;
-the `DeltaCoalescer` (`BIOROUTER_SSE_COALESCE_MS`, BR-53a — a per-client batching
-concern, not a turn concern); the 500 ms `Ping` heartbeat; the `workflow_name` /
-`session_starts` telemetry at request entry; and the JoinError supervisor envelope.
+idempotency key* and its 409 conflict body; **`apply_client_writeback` and its own
+409** (see below); the `mpsc` SSE channel and `SseResponse`; the `DeltaCoalescer`
+(`BIOROUTER_SSE_COALESCE_MS`, BR-53a — a per-client batching concern, not a turn
+concern); the 500 ms `Ping` heartbeat; the `workflow_name` / `session_starts` telemetry
+at request entry; and the JoinError supervisor envelope.
+
+⚠ **The client write-back does NOT move (reconciliation #21).** An earlier revision of
+this task listed *"the `conversation_so_far` → `replace_conversation` storage write"*
+among the things that move into the runner. That write no longer exists. `306552fd`
+(#51 W5) replaced it with `apply_client_writeback` (`reply.rs:177-231`, called at
+`:665`), a **pre-spawn precondition with an HTTP status code** — the comment at
+`:659-662` says the placement is deliberate: *"it can now be REFUSED — once the SSE
+response has been returned there is no status code left to say so with."* Moving it into
+a detached `tokio::spawn` would (a) destroy concurrent appends, because
+`replace_conversation` is the NAMED EXCEPTION and the detached form cannot use
+`replace_conversation_preserving_tail`'s basis, (b) leave the refusal with nowhere to
+go, and (c) orphan `WritebackConflict` (`:110-117`), `unacknowledged_stored_ids`
+(`:126-135`), `writeback_conflict_response` (`:141-155`), the 409 in the utoipa block
+(`:571-574`), and **`mod writeback_tests` (`:1243`ff — six tests)**.
+
+The write-back sits at `reply.rs:659-680`, which is **above** the range this task
+replaces (`:681` onward). So the amendment is small and entirely mechanical: leave it
+alone, and pass its `Ok(Conversation)` into `TurnExtras.conversation_so_far` as an
+already-stored seed. Those six `writeback_tests` failing is the loudest possible signal
+that this paragraph was skipped.
 
 **Rollback note (put this in the PR body).** `git revert <this commit>` restores the
 pre-refactor handler byte-for-byte and leaves Tasks 5-7 intact: the bus, the runner and
@@ -3082,6 +4319,11 @@ its own abort classifier right up until this commit deletes them, so the reverte
 handler has every function it calls and needs no shim. Nothing downstream of this task
 depends on `/reply` being a subscriber except the "one loop" invariant itself.
 
+The rollback is *stronger* under the 2026-07-28 amendment than it was before it: the
+#51 W5 write-back never leaves the file, so the revert has nothing to restore there —
+it is not relying on "the deletion and the restoration are in the same commit" for the
+handler's most safety-critical block. Say which in the PR body.
+
 **The revert window closes at Task 35.** That task adds the `user_direct` stamp to
 `workspace::turn::run_turn` — the code this commit moved there — so from Task 35 onward
 a bare `git revert <this commit>` conflicts, and reverting it *cleanly* would silently
@@ -3089,19 +4331,118 @@ drop the stamp and leave `human_intervened` permanently false. Within Phase 1 th
 rollback is exactly as described; after Phase 3 begins, revert Task 35 first.
 
 **Files:**
-- Modify: `crates/biorouter-server/src/routes/reply.rs` (handler at :415; task at :507;
-  event loop :625-745; `Finish` emission :848; supervisor :863)
+- Modify: `crates/biorouter-server/src/routes/reply.rs` (handler `pub async fn reply` at
+  :579; the client write-back at :659-680, **untouched**; `let (tx, rx) =
+  mpsc::channel(100);` at :681; the spawned turn task at :692-1041; its event loop
+  :796-947; the `Finish` emission :1026-1040; the supervisor :1043-1059; the handler's
+  last line `SseResponse::new(stream).into_response()` at :1060)
 - Modify: `crates/biorouter-server/src/workspace/turn.rs` (no new code — `run_turn` is
   called with the guard `/reply` acquired)
+
+Other `reply.rs` anchors this task touches, re-verified at `275d735d`:
+`DeltaCoalescer::new` :468 · `drain()` :536 · `flush_coalesced` :543 ·
+`code.wire_code()` :882 · the abort classifier being moved :883-901 ·
+the completion-metrics block :972-1019 · the existing coalescer tests
+(`mod coalesce_tests`) :1429ff. `state.rs:65-79` (`TurnGuard::drop` does **not** trip
+the cancellation token — load-bearing for the supervisor below) is still exact:
+`state.rs` has zero commits since the plan's anchor.
 
 - [ ] **Step 1: Write the failing tests** (in `reply.rs`'s test module — it exists,
 `error_events_preserve_machine_readable_metadata` is at the bottom)
 
-Eight tests, each pinning one property the refactor must not lose. The four marked
+Nine tests, each pinning one property the refactor must not lose. The four marked
 **[F]** were added after the adversarial review found the original four could all pass
-while the hot path was broken.
+while the hot path was broken; the ninth (**[#59]**) was added by the 2026-07-28 drift
+reconciliation, because nothing in the original matrix could see a `/reply` that had
+stopped emitting `MessagesPersisted`.
 
 ```rust
+    /// **[#59]** The accounting frame still reaches the WIRE, through the real
+    /// handler, after the refactor.
+    ///
+    /// This is the only test in this plan that can catch the failure mode the
+    /// 7 → 8 ordering exists to prevent: `map_bus_event` repaired with
+    /// `_ => None`, or a bus loop that filters the frame out. Everything else
+    /// stays green — `reply.rs`'s own
+    /// `persisted_message_ids_reach_the_wire_with_their_visibility` (`:1212`)
+    /// tests the enum, not the handler, and the desktop store deliberately does
+    /// not consume the frame yet. The consequence of missing it is a 409 on
+    /// `POST /sessions/{id}/edit_message` for every session, in the shipped app.
+    ///
+    /// It publishes onto the bus directly rather than driving a real turn: a
+    /// provider-less turn persists nothing, so the frame has to be injected to
+    /// be observed. That is exactly the right scope here — the property under
+    /// test is `bus → wire`, which is `/reply`'s half; the agent's half
+    /// (`persist → bus`) is held by
+    /// `conversation_writeback_freshness::a_client_that_watched_the_turn_knows_every_stored_message_id`.
+    #[tokio::test]
+    async fn a_persisted_batch_on_the_bus_reaches_the_reply_client() {
+        use biorouter::agents::{AgentEvent, PersistedMessage};
+        use biorouter::session_events::{self, SessionBusEvent};
+        use tower::ServiceExt;
+
+        let state = AppState::new().await.unwrap();
+        let temp = tempfile::TempDir::new().unwrap();
+        let session = state
+            .session_manager()
+            .create_session(
+                temp.path().to_path_buf(),
+                "reply-persisted-frame".to_string(),
+                biorouter::session::session_manager::SessionType::User,
+            )
+            .await
+            .unwrap();
+
+        // A PUMP, not a single publish, and that is not belt-and-braces.
+        // `broadcast::Receiver` only sees sends made after it was created, and
+        // the handler subscribes inside itself — so a one-shot publish before
+        // the request is guaranteed to be missed, and one after it races the
+        // provider-less turn's fast Error (which breaks the SSE loop and closes
+        // the body). Publishing continuously for the request's whole life makes
+        // the test deterministic in the only direction that matters: at least
+        // one publish lands strictly between "subscribed" and "terminal".
+        let sid = session.id.clone();
+        let pump = tokio::spawn(async move {
+            for _ in 0..400 {
+                session_events::publish(
+                    &sid,
+                    SessionBusEvent::Agent(AgentEvent::MessagesPersisted(vec![
+                        PersistedMessage { id: "probe-1".into(), user_visible: true },
+                    ])),
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        });
+
+        let body = serde_json::json!({
+            "user_message": serde_json::to_value(
+                biorouter::conversation::message::Message::user().with_text("hi")
+            ).unwrap(),
+            "session_id": session.id,
+        });
+        let response = routes(state.clone())
+            .oneshot(
+                axum::http::Request::post("/reply")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        pump.abort();
+
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(
+            text.contains("\"type\":\"MessagesPersisted\""),
+            "the #59 accounting frame never reached the wire. If `map_bus_event` \
+             was repaired with `_ => None`, this is that. Body: {text}"
+        );
+        assert!(text.contains("probe-1"), "…and it carries the ids: {text}");
+    }
+
     /// The wire contract: a turn's frames reach the /reply client exactly as
     /// before, and a concurrent observer sees the same ones.
     #[tokio::test]
@@ -3346,10 +4687,12 @@ while the hot path was broken.
     /// **Driving this through a real turn cannot test it, which is why this test
     /// does not.** A provider-less turn produces exactly ONE frame: `Agent::reply`
     /// reaches `check_if_compaction_needed(self.provider().await?…)`
-    /// (`agent.rs:3007`) and `provider()` is `Err("Provider not set")`
-    /// (`:2017-2022`), so the runner publishes one `TurnError` and returns. And
-    /// `BIOROUTER_SSE_COALESCE_MS` is unset in tests, so
-    /// `DeltaCoalescer::enabled()` is false (`reply.rs:271-277`, `:316-318`) and
+    /// (`agent.rs:3545-3546`) and `provider()` is `Err(anyhow!("Provider not set"))`
+    /// (`agent.rs:2511-2516`, the `None =>` arm at `:2514`), so the runner publishes
+    /// one `TurnError` and returns. And
+    /// `BIOROUTER_SSE_COALESCE_MS` is unset in tests, so `sse_coalesce_window()`
+    /// returns `Duration::ZERO` (`reply.rs:431-437`) and
+    /// `DeltaCoalescer::enabled()` is false (`reply.rs:476-478`) and
     /// the flush placement is never executed. An end-to-end version of this test
     /// compares two one-element vectors derived from the same bus event and
     /// certifies nothing.
@@ -3501,12 +4844,13 @@ while the hot path was broken.
     }
 ```
 
-(Verified APIs: `DeltaCoalescer::new(Duration)` — a plain `Duration`, zero meaning
-disabled (`reply.rs:307-315`); the buffer is taken with `drain() -> Option<Message>`
-(`:376`), which `flush_coalesced` (`:383`) wraps; coalescing keys on `Message.id`, so
-the deltas need `.with_id("a")` exactly as the file's existing coalescer tests do
-(`:1030-1075`). `TokenState` is `biorouter::conversation::message::TokenState`, already
-imported at `reply.rs:10`.)
+(Verified APIs at `275d735d`: `DeltaCoalescer::new(Duration)` — a plain `Duration`, zero
+meaning disabled (`reply.rs:461-468`); the buffer is taken with
+`drain() -> Option<Message>` (`:536`), which `flush_coalesced` (`:543`) wraps;
+coalescing keys on `Message.id`, so the deltas need `.with_id("a")` exactly as the
+file's existing `mod coalesce_tests` do (`:1429`ff). `TokenState` is
+`biorouter::conversation::message::TokenState`, already imported at `reply.rs:12` — note
+`:10` in an earlier revision; the `biorouter::agents::{…}` import now spans `:9-11`.)
 
 - [ ] **Step 2: Run to verify failure**
 
@@ -3514,14 +4858,32 @@ Run: `cargo test -p biorouter-server --lib routes::reply`
 Expected: COMPILE ERROR — `on_bus_lag_action` / `BusLagAction` / `supervise_turn` not
 found; the observer test fails because `/reply` does not publish `TurnStarted` yet.
 
+`a_persisted_batch_on_the_bus_reaches_the_reply_client` fails here for a different and
+more informative reason than the others: it *compiles*, and it fails on the assertion.
+The pre-refactor handler consumes the agent's stream directly (its own
+`AgentEvent::MessagesPersisted` arm is at `reply.rs:842-850`) and is not a bus consumer
+at all, so a frame published onto the bus reaches nothing. After Step 3 it must pass —
+and if it fails *then*, the cause is `map_bus_event` having lost its
+`MessagesPersisted` arm (or gained a `_ => None`), which is the one refactor mistake
+this plan's other eight tests all stay green through.
+
 - [ ] **Step 3: Rewrite the handler**
 
-Replace the body of `reply` from the `let (tx, rx) = mpsc::channel(100);` line (:495)
-through the end of the function with the block below. **Note what the replaced range
-contains:** `:502-505` declare `task_cancel`, `task_tx`, `supervisor_tx` and
-`supervisor_cancel`. The first two die with the turn task; the last two are still used
-by the supervisor and are therefore **re-declared here**. Omitting them is a compile
-error the moment the supervisor is reached.
+Replace the body of `reply` from the `let (tx, rx) = mpsc::channel(100);` line
+(**:681**, not the `:495` an earlier revision cited) through the end of the function with
+the block below.
+
+⚠ **The range starts at :681 precisely so it begins BELOW the client write-back.**
+`reply.rs:659-680` — the `#51 W5` comment, `request.conversation_so_far.take()`, the
+`apply_client_writeback` call, and the `return writeback_conflict_response(&conflict);`
+— stays exactly where it is and is **not** part of the replaced text. Its result is the
+`client_conversation: Option<Conversation>` binding the new `TurnExtras` reads. Starting
+the replacement any higher deletes the #51 W5 refusal.
+
+**Note what the replaced range does contain:** `:684-690` declare `task_cancel`,
+`task_tx`, `supervisor_tx` and `supervisor_cancel`. The first two die with the turn
+task; the last two are still used by the supervisor and are therefore **re-declared
+here**. Omitting them is a compile error the moment the supervisor is reached.
 
 ```rust
     let (tx, rx) = mpsc::channel(100);
@@ -3531,7 +4893,7 @@ error the moment the supervisor is reached.
     // into the gap between "turn started" and "we are listening".
     let mut bus = biorouter::session_events::subscribe(&session_id);
 
-    // Re-declared from the deleted :502-505 block: the supervisor outlives both
+    // Re-declared from the deleted :684-690 block: the supervisor outlives both
     // the turn task and the SSE task, so it needs its own sender and token
     // clones. (`task_cancel` / `task_tx` are gone with the turn task.)
     let supervisor_tx = tx.clone();
@@ -3544,9 +4906,13 @@ error the moment the supervisor is reached.
             // The lock is already held under this key; the runner receives the
             // guard rather than re-acquiring, so the key is informational here.
             idempotency_key: request.turn_id.clone(),
-            // `Option<Vec<Message>>` on both sides — the runner performs the
-            // `replace_conversation` write this handler used to do.
-            conversation_so_far: request.conversation_so_far,
+            // #51 W5: the ALREADY-STORED conversation, produced by
+            // `apply_client_writeback` at :665 — above this replaced range, and
+            // deliberately so: it is a precondition that can answer 409, which a
+            // detached task cannot. `None` when the client sent no copy. The
+            // runner treats this as a seed and performs no storage write of its
+            // own (see `TurnExtras.conversation_so_far`).
+            conversation_so_far: client_conversation,
             reasoning_effort: request.reasoning_effort,
             // An interactive turn is already visible as a turn; only injected
             // turns register in active_work.
@@ -3623,6 +4989,24 @@ error the moment the supervisor is reached.
                             // Anything that is not pure token bookkeeping ends a
                             // coalescing run, so cards appear after the prose
                             // that precedes them.
+                            //
+                            // ⚠ DO NOT narrow this to "flush only on terminal
+                            // frames". It is what carries #59's ordering
+                            // invariant across the coalescer: *no
+                            // `MessagesPersisted` may precede a `Message` frame
+                            // carrying one of the ids it publishes*
+                            // (`agent.rs:280-283`). The coalescer can be holding
+                            // the very delta whose stored row the next
+                            // `MessagesPersisted` names, and the pre-refactor
+                            // handler said exactly this at `reply.rs:843-847`.
+                            // Emitted backwards, a client that reads the id and
+                            // then loses the stream claims every stored row while
+                            // holding none of the bodies, passes the
+                            // `expectedMessageIds` guard on a short transcript,
+                            // and has the server truncate rows still on its
+                            // screen. This guard is the reason it cannot happen,
+                            // and every test in this task stays green if it is
+                            // removed.
                             flush_coalesced(&mut coalescer, &sse_tx, &sse_cancel, &token_state).await;
                         }
                         if let Some(frame) = crate::routes::session_events::map_bus_event(
@@ -3640,6 +5024,25 @@ error the moment the supervisor is reached.
                         // blocks on this consumer, so a stalled renderer can fall
                         // behind. Resync from storage rather than silently
                         // dropping frames.
+                        //
+                        // #59 INTERACTION, stated because it is a real behaviour
+                        // difference a user can hit. On `Lagged` this consumer can
+                        // skip a `Message` frame and still receive the later
+                        // `MessagesPersisted` naming its id — the exact
+                        // "claims every stored row while holding none of the
+                        // bodies" failure `agent.rs:266-279` describes. The resync
+                        // below is what makes that safe, and it is safe for a
+                        // specific reason: `bus_lag_resync_frame` reads
+                        // `get_session(id, true)`, which INCLUDES hidden rows, so
+                        // the client's view is restored complete rather than
+                        // partial. The secondary effect is that the desktop's
+                        // `viewNamesEveryStoredRow` gate clears on any wholesale
+                        // `UpdateConversation` (`936f5a33`), so a client that lags
+                        // once omits `expectedMessageIds` on its next in-place
+                        // edit until it re-reads the session. Omission is the safe
+                        // direction (the guard checks `stored ∖ client`), but it
+                        // is a capability difference between the lag and non-lag
+                        // paths and must not be discovered by a user.
                         tracing::warn!(
                             counter.biorouter.reply_bus_lagged = 1,
                             skipped,
@@ -3749,16 +5152,21 @@ async fn supervise_turn(
 ```
 
 Delete from `reply.rs`, in the same commit: the old spawned turn task's body
-(`get_agent` → the session read → the `conversation_so_far` / `replace_conversation`
-write → `all_messages.push(user_message)` → `agent.reply` → the per-variant `AgentEvent`
-match → the `TurnAbortCode` classification → the rename spawn → the completion-metrics
-block `:783-838` → the final `MessageEvent::Finish`), the now-unused
-`track_tool_telemetry` call sites (the fn itself became `pub(crate)` in Task 6 and is
-called by the runner), and the `session_start` timer (the runner owns turn duration).
+(`get_agent` → the session read → `all_messages.push(user_message)` → `agent.reply` →
+the per-variant `AgentEvent` match → the `TurnAbortCode` classification → the rename
+spawn → the completion-metrics block `:972-1019` → the final `MessageEvent::Finish`),
+the now-unused `track_tool_telemetry` call sites (the fn itself became `pub(crate)` in
+Task 6 and is called by the runner), and the `session_start` timer (the runner owns turn
+duration).
 
-**Verification of the move (run before committing).** Each grep names one thing that
-must have MOVED rather than vanished; the first four are the ones a hurried refactor
-actually loses:
+**Do NOT delete:** `apply_client_writeback` and its call site, `WritebackConflict`,
+`unacknowledged_stored_ids`, `writeback_conflict_response`, the 409 line in the utoipa
+block, or `mod writeback_tests`. They are all above the replaced range.
+
+**Verification of the move (run before committing).** Each check names one thing that
+must have MOVED rather than vanished, or one thing that must NOT have moved. The greps
+that could be satisfied by a *wrong* implementation have been replaced by tests that
+cannot be:
 
 ```bash
 git diff --stat crates/biorouter-server/src/routes/reply.rs
@@ -3767,9 +5175,27 @@ git diff --stat crates/biorouter-server/src/routes/reply.rs
 grep -c "agent.reply(" crates/biorouter-server/src/routes/reply.rs
 # Expected: 0 — the handler no longer drives a turn.
 
-grep -c "replace_conversation" crates/biorouter-server/src/routes/reply.rs
-grep -c "replace_conversation" crates/biorouter-server/src/workspace/turn.rs
-# Expected: 0 and 1 — the client-prefix storage write MOVED, it did not vanish.
+# #51 W5 STAYED. The refusal is a pre-spawn precondition with a status code and
+# cannot be expressed from a detached task.
+grep -c "apply_client_writeback" crates/biorouter-server/src/routes/reply.rs
+# Expected: 8, unchanged from before this task — the `ChatRequest` doc link
+# (:88), the definition (:177), the handler's call (:665), and five calls in
+# `mod writeback_tests` (:1296, :1327, :1365, :1382, :1394). Any drop means the
+# write-back was deleted.
+grep -c "writeback_conflict_response" crates/biorouter-server/src/routes/reply.rs
+# Expected: 3, unchanged — the definition (:141), the handler's 409 return
+# (:674), and the test at :1412.
+
+# …and NOTHING rewrites a whole history from the runner. Note the anchored
+# pattern: an unanchored `replace_conversation` also matches
+# `replace_conversation_preserving_tail`, which is why the previous revision's
+# `# Expected: 0 and 1` was unachievable in reply.rs and wrong in turn.rs.
+grep -cE "\breplace_conversation\(" crates/biorouter-server/src/routes/reply.rs
+grep -cE "\breplace_conversation(_preserving_tail)?\(" crates/biorouter-server/src/workspace/turn.rs
+# Expected: 0 and 0. `turn.rs` performs no whole-history rewrite at all — the
+# only rewrite in a turn is the agent's own guarded compaction, inside
+# `Agent::reply`. A `1` in the second line is the #51 regression this plan was
+# amended to prevent; see reconciliation #21.
 
 grep -c "all_messages.push" crates/biorouter-server/src/workspace/turn.rs
 # Expected: 2 — the user-message seed and the per-Message accumulation. A `1`
@@ -3785,10 +5211,24 @@ grep -c "session_completions" crates/biorouter-server/src/routes/reply.rs
 # Expected: 0 — Task 6's copy is now the only one (reconciliation #9).
 
 grep -rn "AgentEvent::" crates/biorouter-server/src/routes/reply.rs
-# Expected: only the two `AgentEvent::Message` / `AgentEvent::TokenUsage`
-# matches inside the SSE subscription above. Any other variant still being
-# matched here means turn logic was left behind.
+# Expected: exactly THREE hits, down from NINE before this task —
+#   :380  a doc link in `get_token_state`'s comment ([`AgentEvent::TokenUsage`]);
+#         that function stays, so the link stays. NOT a match arm.
+#   two   the `AgentEvent::Message` and `AgentEvent::TokenUsage` arms inside the
+#         SSE subscription above.
+# The other six (HistoryReplaced, MessagesPersisted, ModelChange,
+# McpNotification, ToolCallPending, TurnAborted) move to `map_bus_event` in
+# Task 7. Any of them still matched HERE means turn logic was left behind.
+# (Note: the `use biorouter::agents::{AgentEvent, …}` import at :9-11 does NOT
+# match this pattern — it has no `::` after the type name.)
 ```
+
+**The two greps above are necessary and not sufficient.** Both `replace_conversation`
+checks pass on an implementation that never writes at all *and* on one that writes the
+wrong thing somewhere the pattern misses. The properties themselves are pinned by
+Task 6's `a_seed_conversation_is_never_written_back_over_the_store` and by
+`mod writeback_tests` — run both, and treat a failure there as authoritative over a
+green grep.
 
 - [ ] **Step 4: Run the enlarged test matrix** (this task's gate — all four suites, not
 just the new file)
@@ -3798,9 +5238,21 @@ cargo test -p biorouter-server --lib routes::reply
 cargo test -p biorouter-server --lib routes::session_events workspace::
 cargo test -p biorouter-server --lib          # every server unit test
 cargo test -p biorouter --lib agents::agent   # the agent side of the turn contract
+
+# The two INTEGRATION targets. Neither is a `--lib` test, so none of the four
+# commands above reaches them, and they are the only nets for the two invariants
+# this task is most likely to break: #51's write-back freshness and #59's
+# ordering + completeness.
+cargo test -p biorouter --test conversation_writeback_freshness
+cargo test -p biorouter --test conversation_writeback_stress
 ```
 
-Expected: all green. Frame ORDER is no longer a "pay attention to" — it is asserted by
+Expected: all green — and specifically, inside `routes::reply`, all six tests of
+`mod writeback_tests` (`reply.rs:1243`ff). Those six going red means the amendment in
+"What stays in `reply.rs`" above was ignored and #51 W5 was deleted; treat that as a
+BLOCKED, not as a test to update.
+
+Frame ORDER is no longer a "pay attention to" — it is asserted by
 `coalesced_deltas_flush_before_the_terminal_frame` above, which drives real deltas
 through the real `DeltaCoalescer` with a non-zero window. The bus preserves order per
 session (a single `broadcast::Sender`), so if that test fails the cause is the
@@ -3888,9 +5340,17 @@ must never call `install` — see `set_for_tests` in Step 3 for why.
             _working_dir: std::path::PathBuf,
             _extensions: Option<Vec<String>>,
             _knowledge_bases: Vec<String>,
+            _primary: KbPrimaryChoice,
         ) -> Result<String, String> { Ok("s-new".into()) }
-        fn set_knowledge_bases(&self, _session_id: &str, _kbs: &[String]) -> Result<(), String> { Ok(()) }
-        fn active_knowledge_bases(&self, _session_id: &str) -> Vec<String> { Vec::new() }
+        fn set_knowledge_bases(
+            &self,
+            _session_id: &str,
+            _kbs: &[String],
+            _primary: KbPrimaryChoice,
+        ) -> Result<KbSelectionView, String> { Ok(KbSelectionView::default()) }
+        fn knowledge_selection(&self, _session_id: &str) -> KbSelectionView {
+            KbSelectionView::default()
+        }
         async fn gui_command(
             &self,
             _frame: serde_json::Value,
@@ -3916,6 +5376,14 @@ must never call `install` — see `set_for_tests` in Step 3 for why.
             .begin_turn("s-any", tokio_util::sync::CancellationToken::new())
             .expect("fake lease");
         assert_eq!(lease.turn_id(), "turn-fake");
+
+        // The post-#45 KB pair: a SELECTION, not a bare list, and a mutator that
+        // must be told what to do with the write target. A stand-in that answers
+        // both is what Tasks 16 and 17 reuse.
+        assert_eq!(got.knowledge_selection("s-any"), KbSelectionView::default());
+        assert!(got
+            .set_knowledge_bases("s-any", &["kb-a".to_string()], KbPrimaryChoice::Auto)
+            .is_ok());
 
         // `Some(None)` is "there is no daemon" — the state a two-valued
         // override could not express once the real slot had been written.
@@ -3958,6 +5426,54 @@ pub trait WorkspaceTurnLease: Send {
     fn turn_id(&self) -> &str;
 }
 
+/// A session's knowledge-base set and its write target, as BR-71 needs them.
+///
+/// ⚠ **A deliberately narrower view of `KbSelection`** (`biorouter-mcp`'s
+/// `knowledge::service::KbSelection`, `service.rs:90-101`), not a re-export of
+/// it, and the reason is recorded here so the next reader does not "simplify"
+/// it back:
+///
+/// * `KbSelection` also carries `hidden_kbs`, the subtractive representation
+///   that *produced* `kb_ids`. BR-71 never needs it, and a `workspace_list` row
+///   that serialized it would publish an implementation detail into a model-
+///   facing payload where a model would then try to reason about it.
+/// * `PrimaryUpdate<'a>` is borrowed. A trait whose implementors are behind an
+///   `Arc<dyn …>` and whose callers are MCP tools holding owned `String`s is the
+///   wrong place for a lifetime parameter.
+/// * `biorouter` CAN see those types (`biorouter::knowledge::*` re-exports
+///   `biorouter_mcp::knowledge`, `crates/biorouter/src/knowledge/mod.rs:3`), so
+///   this is a choice, not a constraint. The conversion happens exactly once, in
+///   `ServerWorkspaceServices` (Task 9 Step 4), which is also the only place the
+///   subtractive model is visible.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct KbSelectionView {
+    /// The session's knowledge bases, sorted. Empty headless.
+    pub kb_ids: Vec<String>,
+    /// The write target for KB-less mutating calls. Always a member of `kb_ids`,
+    /// or `None`.
+    pub primary_kb: Option<String>,
+}
+
+/// What a `set_knowledge_bases` call wants to happen to the write target.
+///
+/// The service enforces that a primary is a member of the RESULTING set
+/// (`a9f6101d`), so "assign this list" is not a complete instruction — every
+/// mutator must answer this question. Mirrors `PrimaryUpdate`
+/// (`service.rs:103-120`) minus the borrow, plus `Auto`, which is BR-71's
+/// stated default so no tool has to invent one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KbPrimaryChoice {
+    /// Keep the current primary if it is still a member of the new set;
+    /// otherwise pin the new set's first id; on an empty new set, clear it.
+    /// The default for `workspace_set_tools` and `workspace_open`.
+    Auto,
+    /// Pin this id. Refused by the service if it is not a member of the result.
+    Set(String),
+    /// Explicitly "no primary for this session". KB-less writes then fail here
+    /// even when the machine default names one — this is NOT `Inherit`.
+    Clear,
+}
+
 #[async_trait::async_trait]
 pub trait WorkspaceServices: Send + Sync {
     /// True when at least one GUI window has a live workspace channel.
@@ -3984,19 +5500,40 @@ pub trait WorkspaceServices: Send + Sync {
         -> Result<String, String>;
     /// Create a session the way `POST /agent/start` does (extension names are
     /// resolved against the config registry). Returns the new session id.
+    ///
+    /// `primary` is not optional for the same reason it is not optional on
+    /// `set_knowledge_bases`: a non-empty `knowledge_bases` with no write target
+    /// is a session whose KB-less writes fail, which is not a state any caller
+    /// means to create. `KbPrimaryChoice::Auto` is the answer for every caller
+    /// that has not been told otherwise.
     async fn start_session(
         &self,
         working_dir: std::path::PathBuf,
         extensions: Option<Vec<String>>,
         knowledge_bases: Vec<String>,
+        primary: KbPrimaryChoice,
     ) -> Result<String, String>;
-    /// Replace the set of knowledge bases active for a session. An empty slice
-    /// clears them. Plural per issue #45 — see the plan's Prerequisites section
-    /// (and its fallback, if #45 slipped).
-    fn set_knowledge_bases(&self, session_id: &str, kbs: &[String]) -> Result<(), String>;
-    /// The session's active knowledge base ids (`workspace_list` §4.1,
-    /// spawn-context grants §4.4). Empty headless or when none are set.
-    fn active_knowledge_bases(&self, session_id: &str) -> Vec<String>;
+    /// Replace the session's **visible** knowledge-base set, and say what should
+    /// happen to its write target. An empty slice clears the set (and, with
+    /// `KbPrimaryChoice::Auto`, clears the primary — an empty set has no legal
+    /// member to point at).
+    ///
+    /// Returns the resulting selection, because the service may have moved the
+    /// primary as part of the same operation and a caller that has to re-read to
+    /// find out will race.
+    fn set_knowledge_bases(
+        &self,
+        session_id: &str,
+        kbs: &[String],
+        primary: KbPrimaryChoice,
+    ) -> Result<KbSelectionView, String>;
+    /// The session's knowledge bases AND its write target (`workspace_list` §4.1,
+    /// spawn-context grants §4.4). Both, in one call, because they are one
+    /// claim: `primary_kb` is always a member of `kb_ids` or `None`, and
+    /// composing them from two unlocked reads is how that claim gets falsified
+    /// (the reason `KnowledgeService::selection` takes the root lock —
+    /// `service.rs:1453-1464`). Empty/`None` headless or when none are set.
+    fn knowledge_selection(&self, session_id: &str) -> KbSelectionView;
     /// Push a workspace frame to the GUI (§4.3). `wait_result` parks for the
     /// renderer's `workspace_result`. Errors when no GUI is attached.
     async fn gui_command(
@@ -4099,7 +5636,17 @@ use biorouter::session::EnabledExtensionsState;
 // `WorkspaceTurnLease` is in this list because `begin_turn` names it in its
 // return type AND constructs `ServerTurnLease` below — importing only
 // `WorkspaceServices` is an E0412 the moment `begin_turn` is written.
-use biorouter::workspace_services::{WorkspaceServices, WorkspaceTurnLease};
+//
+// `KbPrimaryChoice` and `KbSelectionView` are here for exactly the same reason,
+// and omitting them was an E0412 this plan previously shipped while flagging the
+// class two lines above. Both are defined in `workspace_services.rs` by Step 2
+// (see the trait's `set_knowledge_bases` / `knowledge_selection` signatures), and
+// both are named by this impl: `KbPrimaryChoice` in `start_session` and
+// `set_knowledge_bases`, `KbSelectionView` in `set_knowledge_bases`'s return type,
+// its constructed value, and `knowledge_selection`.
+use biorouter::workspace_services::{
+    KbPrimaryChoice, KbSelectionView, WorkspaceServices, WorkspaceTurnLease,
+};
 
 use crate::state::AppState;
 
@@ -4170,7 +5717,7 @@ impl WorkspaceServices for ServerWorkspaceServices {
         // production setter, so `Agent::provider()` returns
         // `Err("Provider not set")` and the injected turn dies on its first
         // step. This mirrors what `/agent/resume` and `restart_agent_internal`
-        // (`routes/agent.rs:836-841`) do, and it is what makes
+        // (`routes/agent.rs:844`) do, and it is what makes
         // `workspace_send_prompt mode:"turn"` work on exactly the sessions the
         // tool exists to reach. Without it the turn would also run with none of
         // the tools `workspace_list` reports the target as having.
@@ -4206,8 +5753,9 @@ impl WorkspaceServices for ServerWorkspaceServices {
         working_dir: PathBuf,
         extensions: Option<Vec<String>>,
         knowledge_bases: Vec<String>,
+        primary: KbPrimaryChoice,
     ) -> Result<String, String> {
-        // The minimal core of POST /agent/start (routes/agent.rs:232-380):
+        // The minimal core of POST /agent/start (`start_agent`, routes/agent.rs:256):
         // create → apply extension set → persist → eager-load in background.
         let configs = match extensions {
             None => get_enabled_extensions(),
@@ -4242,7 +5790,11 @@ impl WorkspaceServices for ServerWorkspaceServices {
             .map_err(|e| format!("failed to save extension state: {e}"))?;
 
         if !knowledge_bases.is_empty() {
-            self.set_knowledge_bases(&session.id, &knowledge_bases)?;
+            // A fresh session has no primary of its own, so `Auto` here always
+            // resolves to "pin the first id" — which is what makes the new
+            // session's KB-less writes work at all. Passing an explicit
+            // `Set(id)` from `workspace_open` is honoured unchanged.
+            self.set_knowledge_bases(&session.id, &knowledge_bases, primary)?;
         }
 
         // Eager extension load, exactly as start_agent does.
@@ -4266,21 +5818,79 @@ impl WorkspaceServices for ServerWorkspaceServices {
         Ok(session.id)
     }
 
-    fn set_knowledge_bases(&self, session_id: &str, kbs: &[String]) -> Result<(), String> {
-        // Post-#45 plural signature (knowledge/service.rs:1020). See the plan's
-        // Prerequisites section for the single-KB fallback if #45 slipped.
-        self.state
+    fn set_knowledge_bases(
+        &self,
+        session_id: &str,
+        kbs: &[String],
+        primary: KbPrimaryChoice,
+    ) -> Result<KbSelectionView, String> {
+        // Same path `state.rs:5` already uses for `KnowledgeService` —
+        // `biorouter-server` depends on `biorouter-mcp` directly. (The
+        // `biorouter::knowledge::service::PrimaryUpdate` re-export resolves too;
+        // pick one and be consistent with the file's existing import.)
+        use biorouter_mcp::knowledge::service::PrimaryUpdate;
+
+        // THE ONE SEAM where the subtractive model and the borrowed
+        // `PrimaryUpdate` are visible. `set_visible_kbs` (service.rs:1575) takes
+        // the ids that should be VISIBLE and inverts them into the stored hidden
+        // list itself, under the root lock — which is exactly why we call it
+        // rather than reading the hidden list, editing it and writing it back:
+        // that read-modify-write across two unlocked calls is the race
+        // `service.rs:1506-1513` documents, where two surfaces each write a list
+        // computed before the other's edit and one silently disappears.
+        //
+        // Resolve `Auto` HERE, not in the tools, so every surface gets the same
+        // answer. `Unchanged` is safe for the keep-it case because the service
+        // re-validates membership against the resulting set and repairs the
+        // pointer itself (`repair_primary_unlocked`) when the old target has just
+        // been hidden.
+        let current = self
+            .state
             .knowledge_service
-            .set_active_for_session(session_id, kbs)
-            .map_err(|e| e.to_string())
+            .primary_for_session(Some(session_id))
+            .unwrap_or_default();
+        let auto_pick: Option<String> = match &current {
+            Some(id) if kbs.iter().any(|k| k == id) => None, // keep it
+            _ => kbs.first().cloned(),
+        };
+        let update = match &primary {
+            KbPrimaryChoice::Set(id) => PrimaryUpdate::Set(id.as_str()),
+            KbPrimaryChoice::Clear => PrimaryUpdate::Clear,
+            KbPrimaryChoice::Auto => match auto_pick.as_deref() {
+                Some(id) => PrimaryUpdate::Set(id),
+                // Either the current primary is still a member (keep it), or the
+                // new set is empty and there is nothing legal to point at.
+                None if current.is_some() && !kbs.is_empty() => PrimaryUpdate::Unchanged,
+                None => PrimaryUpdate::Clear,
+            },
+        };
+
+        let selection = self
+            .state
+            .knowledge_service
+            .set_visible_kbs(Some(session_id), kbs, update)
+            .map_err(|e| e.to_string())?;
+        Ok(KbSelectionView {
+            kb_ids: selection.kb_ids,
+            primary_kb: selection.primary_kb,
+        })
     }
 
-    fn active_knowledge_bases(&self, session_id: &str) -> Vec<String> {
-        // KnowledgeService::get_active_for_session (knowledge/service.rs:1006);
-        // best-effort — a read error reports "no active KBs", never fails a list.
+    fn knowledge_selection(&self, session_id: &str) -> KbSelectionView {
+        // `KnowledgeService::selection` (service.rs:1461) takes the root lock and
+        // returns set + pointer TOGETHER. Do not rebuild this from
+        // `session_kb_ids` + `primary_for_session`: composing two unlocked reads
+        // is what made the "primary is a member of the set" claim false whenever
+        // a writer landed between them (service.rs:1453-1460).
+        //
+        // Best-effort — a read error reports "no KBs", never fails a list.
         self.state
             .knowledge_service
-            .get_active_for_session(session_id)
+            .selection(Some(session_id))
+            .map(|s| KbSelectionView {
+                kb_ids: s.kb_ids,
+                primary_kb: s.primary_kb,
+            })
             .unwrap_or_default()
     }
 
@@ -4340,7 +5950,8 @@ via `crate::state::TurnGuard`). `begin_turn` depends on Task 6's
 
 **#44 conformance (reconciliation #7):** `start_session` above sets the working dir
 **at creation** via `create_session(working_dir, …)` — exactly what `start_agent`
-does at HEAD (`routes/agent.rs:283`); the working-dir *lock* guards only later
+does at HEAD (**`routes/agent.rs:256`**, the `create_session` call at **`:307`**; the
+plan's old `:283` was pre-drift); the working-dir *lock* guards only later
 changes to a non-empty chat and is not involved here. No lock acquisition, no
 seam.
 
@@ -4477,27 +6088,32 @@ security-relevant extensions or adding process-spawning ones on **any** target s
 a confirmation **regardless of mode**."* Annotation-based grading cannot express
 "regardless of mode" — in Auto mode the permission inspector returns `Allow` for
 everything. The precedent the operator named is `SensitiveOpsInspector`
-(`crates/biorouter/src/security/sensitive_ops.rs:479`), and this task is its sibling
-with one deliberate difference: `SensitiveOpsInspector` is **inert outside Auto**
-(`:500-503`) because every other mode already gates file writes; this one is inert
-**nowhere**, because no mode gates a *cross-session capability change* today.
+(`crates/biorouter/src/security/sensitive_ops.rs:479` — **exact**), and this task is its
+sibling with one deliberate difference: `SensitiveOpsInspector` is **inert outside Auto**
+(**`:500-502`**, `if biorouter_mode != BioRouterMode::Auto { return Ok(vec![]); }`)
+because every other mode already gates file writes; this one is inert **nowhere**,
+because no mode gates a *cross-session capability change* today.
 
 **Why an inspector and not a check inside the tool handler:** the precedence is already
 built and proven. `apply_inspection_results_to_permissions`
-(`tool_inspection.rs:262-273`) removes a request from `approved` and pushes it to
-`needs_approval` on **any** inspector's `RequireApproval`, and `InspectionAction::Allow`
-explicitly "doesn't override other inspectors' decisions" (`:275-278`). So a
-`RequireApproval` here beats Auto mode's blanket allow *and* a per-tool always-allow
-grant, with no new machinery. A check inside `handle_set_tools` could only refuse, not
-ask.
+(**`crates/biorouter/src/tool_inspection.rs:205`** — note the path: the module is
+`crates/biorouter/src/tool_inspection.rs`, a **top-level** module, not
+`agents/tool_inspection.rs`) removes a request from `approved` and pushes it to
+`needs_approval` on **any** inspector's `RequireApproval` (**:273**), and
+`InspectionAction::Allow` explicitly *"allows it, but don't override other inspectors'
+decisions"* (**:277-280**). So a `RequireApproval` here beats Auto mode's blanket allow
+*and* a per-tool always-allow grant, with no new machinery. A check inside
+`handle_set_tools` could only refuse, not ask.
 
 **Files:**
 - Create: `crates/biorouter/src/agents/workspace_inspector.rs`
 - Modify: `crates/biorouter/src/agents/mod.rs` (`pub mod workspace_inspector;`)
 - Modify: `crates/biorouter/src/agents/agent.rs`
-  (`create_tool_inspection_manager` at :713-777 — register it right after
-  `SensitiveOpsInspector` at :740-742, i.e. before the permission inspector, matching
-  the "security first" ordering the comments there describe)
+  (**anchors re-verified at `275d735d`**: `create_tool_inspection_manager` at
+  **:980-1044** — register it right after the `SensitiveOpsInspector` push at
+  **:1006-1008**, i.e. before the `PermissionInspector` push at **:1014**, matching
+  the "security first" ordering the comments there describe. All four pushes and their
+  explanatory comments are intact and in the same order as when this task was written.)
 
 - [ ] **Step 1: Write the failing tests** (in the new file's test module)
 
@@ -4641,8 +6257,8 @@ Expected: COMPILE ERROR — module not found.
 //!
 //! Precedence is free: `apply_inspection_results_to_permissions` promotes any
 //! `RequireApproval` over another inspector's `Allow`
-//! (`tool_inspection.rs:262-278`), so this beats Auto mode's blanket allow and
-//! a per-tool always-allow grant alike.
+//! (`crate::tool_inspection`, `:205` / `:273` / `:277-280`), so this beats Auto
+//! mode's blanket allow and a per-tool always-allow grant alike.
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -4664,13 +6280,15 @@ const PROCESS_SPAWNING_EXTENSIONS: &[&str] = &["developer", "computercontroller"
 /// How dangerous an extension is *by its config shape*, independent of its name.
 ///
 /// Exhaustive on purpose: `ExtensionConfig` has SEVEN variants
-/// (`agents/extension.rs:236-352`) and a `matches!(…, Stdio { .. })` covers one
-/// of them. `InlinePython` is documented as "Inline Python code that will be
-/// executed using uvx" (`:341`) and `extension_manager.rs:660-689` proves it —
-/// it writes the code to a tempdir and builds `Command::new("uvx")` — so it is
+/// (`agents/extension.rs:236-358` — `sse` :238, `stdio` :251, `builtin` :272,
+/// `platform` :288, `streamable_http` :301, `frontend` :324, `inline_python`
+/// :341) and a `matches!(…, Stdio { .. })` covers one of them. `InlinePython`
+/// is documented as "Inline Python code that will be executed using uvx"
+/// (`:340`) and `extension_manager.rs:802-833` proves it — it writes the code
+/// to a tempdir and builds `Command::new("uvx")` (`:814`) — so it is
 /// process-spawning by exactly the same reasoning that makes `Stdio` structural.
 /// `Sse` and `StreamableHttp` carry `uri` + `envs` + `env_keys` + `headers`
-/// (`:302-323`): adding one points another conversation's traffic at an
+/// (`:301-323`): adding one points another conversation's traffic at an
 /// arbitrary remote MCP endpoint, with credentials.
 ///
 /// A `match` rather than a `matches!` so that an eighth variant is a compile
@@ -4699,21 +6317,40 @@ fn add_shape_risk(name: &str) -> AddShapeRisk {
 ///
 /// `Agent::remove_extension` forwards to `ExtensionManager::remove_extension`,
 /// whose first line is `let sanitized_name = normalize(name);`
-/// (`extension_manager.rs:834-839`) — lower-cased, whitespace-stripped,
-/// non-`[A-Za-z0-9_-]` mapped to `_`. So `"Workspace"`, `"WORKSPACE"` and
-/// `"work space"` all really do remove the `workspace` extension, while a
-/// raw-string `contains("workspace")` check here would see none of them and
-/// return `None` — no confirmation, in any mode, for the removal of the audit
-/// trail. (The ADD path fails closed instead: `find_entry_by_name` is an exact
-/// match on `config.name()` (`config/extensions.rs:146-153`), so a mis-cased
-/// add is rejected as an unknown extension.)
+/// (`extension_manager.rs:976-981`, `normalize` itself at `:159`) — lower-cased,
+/// whitespace-stripped, non-`[A-Za-z0-9_-]` mapped to `_`. So `"Workspace"`,
+/// `"WORKSPACE"` and `"work space"` all really do remove the `workspace`
+/// extension, while a raw-string `contains("workspace")` check here would see
+/// none of them and return `None` — no confirmation, in any mode, for the
+/// removal of the audit trail. (The ADD path fails closed instead:
+/// `find_entry_by_name` is an exact match on `config.name()`
+/// (`config/extensions.rs:183-190`), so a mis-cased add is rejected as an
+/// unknown extension.)
 fn norm(name: &str) -> String {
     crate::agents::extension_manager::normalize(name)
 }
 
+/// ⚠ **Keep this as plain `normalize`. Do NOT "modernize" it to PR #48's
+/// `BundledExtensionTarget::key()`** (ruled 2026-07-28). #48 landed a richer
+/// name resolver — `resolve_bundled_extension` (`extension_manager.rs:257`) →
+/// `BundledExtensionTarget` (`:183`) with `key()` (`:199`) — and deleted
+/// `canonical_builtin_extension_name`. It is the right tool for *resolving a
+/// `/ext:` marker to a registry entry*, and `key()` is
+/// `normalize(name_to_key(name))`, i.e. a strictly different function. This
+/// helper's entire job is to compare names **the way the executor does**, and
+/// the executor is `ExtensionManager::remove_extension`, whose first line is
+/// still literally `let sanitized_name = normalize(name);` (`:977`). Swapping in
+/// `key()` would re-open reconciliation #19's hole from the other side: a name
+/// this check normalizes differently from the code that acts on it is a name
+/// that can be removed without confirming. If `remove_extension` ever changes
+/// resolver, change this in the same commit — and only then.
+
 /// Extensions whose REMOVAL narrows what a human or a later check can *see*,
 /// rather than what the agent can do. That is the asymmetry §5 is about: an
 /// agent quietly removing the machinery that would reveal its next action.
+/// Both keys below are real `PLATFORM_EXTENSIONS` registry keys
+/// (`agents/extension.rs:43-106`: `todo`, `chatrecall`, `extensionmanager`,
+/// `skills`, `code_execution`), plus `workspace` once Task 12 adds it.
 const SECURITY_RELEVANT_EXTENSIONS: &[&str] = &[
     // Every cross-session action the workspace surface performs is recorded as
     // a tool call in the acting session and toasted on the target tab. Removing
@@ -4726,8 +6363,10 @@ const SECURITY_RELEVANT_EXTENSIONS: &[&str] = &[
 ];
 
 /// Both name forms reach dispatch: extension-advertised tools are prefixed
-/// `{extension}__{tool}` (`extension_manager.rs:971`), and the code already
-/// tolerates models that strip the prefix (`:1294-1304`).
+/// `{extension}__{tool}` (`extension_manager.rs:1121`, inside the
+/// `is_tool_available` advertisement filter at `:1119`), and the code already
+/// tolerates models that strip the prefix (`dispatch_tool_call` `:1438`, the
+/// prefix-repair block `:1444-1457`).
 pub(crate) fn is_set_tools_call(tool_name: &str) -> bool {
     tool_name == "workspace_set_tools" || tool_name == "workspace__workspace_set_tools"
 }
@@ -4957,9 +6596,10 @@ impl ToolInspector for WorkspaceMutationInspector {
 }
 ```
 
-Register it in `agent.rs`'s `create_tool_inspection_manager`, immediately after the
-`SensitiveOpsInspector` registration at :740-742 (same rationale — security inspectors
-before the permission inspector):
+Register it in `agent.rs`'s `create_tool_inspection_manager` (**:980**), immediately
+after the `SensitiveOpsInspector` registration at **:1006-1008** and before the
+`PermissionInspector` at **:1014** (same rationale — security inspectors before the
+permission inspector):
 
 ```rust
         // BR-71 §5: cross-session capability changes always confirm, in every
@@ -4976,7 +6616,7 @@ Add the four cases the widened policy is for, to the same test module:
     #[test]
     fn a_mis_cased_removal_still_confirms() {
         // `Agent::remove_extension` normalizes before removing
-        // (extension_manager.rs:834-839), so "Workspace" really does strip the
+        // (extension_manager.rs:976-981), so "Workspace" really does strip the
         // audit-trail extension. A raw-string check would see no match and
         // return None — no confirmation, in any mode.
         for spelling in ["Workspace", "WORKSPACE", "work space"] {
@@ -5027,12 +6667,29 @@ Add the four cases the widened policy is for, to the same test module:
 
 - [ ] **Step 4: Run tests**
 
-Run: `cargo test -p biorouter --lib agents::workspace_inspector tool_inspection`
-Expected: PASS (9 new tests; the existing `tool_inspection` tests unchanged).
+Run: `cargo test -p biorouter --lib -- agents::workspace_inspector tool_inspection \
+      agents::agent::tests::test_workspace_mutation`
+Expected: PASS (the new `workspace_inspector` tests; the existing `tool_inspection`
+tests unchanged).
+
+The third filter is not redundant: the ordering test lives at
+`agents::agent::tests::test_workspace_mutation_inspector_precedes_the_permission_inspector`,
+which contains neither of the first two substrings, so a two-filter gate silently
+skips the one assertion that can see the registration order.
+
+**Note the `--`.** `cargo test` takes at most ONE positional `TESTNAME`
+(`cargo test [OPTIONS] [TESTNAME] [-- [ARGS]...]`), so the two-filter form without it
+dies before compiling anything with `error: unexpected argument 'tool_inspection'
+found` — which reads exactly like a green run to a skimming eye, because cargo prints
+no test output at all. Multiple filters are a **libtest** feature, so they belong after
+the `--`. Verified 2026-07-28.
 
 Run: `cargo test -p biorouter --lib security::sensitive_ops`
-Expected: PASS — the precedent inspector is untouched; this asserts the registration did
-not disturb inspector ordering.
+Expected: PASS — the precedent inspector is untouched. Note what this does **not**
+check: it cannot see inspector ordering at all (it never builds a
+`ToolInspectionManager`). The ordering guarantee is pinned by
+`test_workspace_mutation_inspector_precedes_the_permission_inspector` in `agent.rs`
+instead — see Step 3.
 
 - [ ] **Step 5: Commit**
 
@@ -5061,21 +6718,77 @@ other per-session extension state already lives.
 - Create: `crates/biorouter/src/agents/session_skills.rs`
 - Modify: `crates/biorouter/src/agents/mod.rs` (`pub mod session_skills;`)
 - Modify: `crates/biorouter/src/agents/skills_extension.rs`
-  (`get_disabled_skills` :262, `is_skill_enabled` :445, `enabled_skill_entries` :457,
-  `list_tools` :745, `call_tool` :770 — bind the session id from `McpMeta`)
+  (**anchors re-verified at `275d735d`, 2026-07-28** — this file barely moved:
+  `get_disabled_skills` **:262** (exact; body runs to :285), `is_skill_enabled`
+  **:445-455** (exact head; the body is one line shorter than the plan's `:445-456`
+  and is unchanged in shape), `enabled_skill_entries` **:457** (exact),
+  `list_tools` **:745** (exact), `call_tool` **:770** (exact) — bind the session id
+  from `McpMeta`. `pub struct Skill` **:115**, `SkillsClient::new(_context)` **:143**.)
 
-**Storage precedent, verified:** `ExtensionData::set_extension_state(name, version,
-value)` / `get_extension_state` (`session/extension_data.rs:28-40`) is the sanctioned
-per-session key-value store; `agents/goal.rs:312` and `guardrails/run_state.rs:146` are
-the two existing users. This task adds a third under `("workspace_skills", "v1")`.
+**Storage precedent, verified at `275d735d`:** `ExtensionData::set_extension_state(name,
+version, value)` (**`session/extension_data.rs:34-37`**) / `get_extension_state`
+(**`:28-31`**) is the sanctioned per-session key-value store. ⚠ Note the receiver: both
+are inherent methods on **`ExtensionData`**, not on `SessionManager` or `Session` — so a
+writer goes `session.extension_data.set_extension_state(…)` and then persists the
+session. The two existing users show both spellings: `agents/goal.rs:312`
+(`session.extension_data.set_extension_state(`) and `guardrails/run_state.rs:146`
+(`data.set_extension_state(RUN_STATE_KEY, RUN_STATE_VER, v)`, on an already-borrowed
+`data`). This task adds a third under `("workspace_skills", "v1")`.
 
-**Stated residual (reconciliation #14).** `McpClientTrait::list_tools` and `get_info`
-take no session id, so the *instruction line's* skill count and the "are any skills
-enabled at all" gate in `list_tools` use the machine-wide view. Every handler that
-answers a question about skills — `listSkills`, `searchSkills`, `loadSkill` — is
+> ⚠ **Superseded, post-review.** That two-statement writer shape — `get_session` →
+> mutate the whole `ExtensionData` → `update(id).extension_data(..)` — is exactly what
+> made both existing users lossy: `extension_data` is ONE JSON column, so two
+> overlapping writers each serialize a stale snapshot of the *whole* object and the
+> later commit erases the earlier one **even when they touched different keys**
+> (measured: 8 concurrent appends → 1 survivor). Tool calls do overlap; the agent loop
+> drives them through `select_all`. Task 11 as shipped therefore adds
+> `SessionManager::update_extension_state(session_id, ext, ver, mutate)` /
+> `get_extension_state(..)` — a read-modify-write of a SINGLE key inside one
+> transaction that opens with a write, the same load-bearing trick as
+> `replace_conversation_inner` — and writes through that. Pinned by
+> `session::session_manager::tests::extension_state_atomicity`. New writers of
+> per-session extension state should use it; `goal.rs` and `run_state.rs` are
+> pre-existing and unconverted.
+
+**Stated residual (reconciliation #14), corrected post-review.** `McpClientTrait::list_tools`
+and `get_info` take no session id, so the *instruction line's* skill count and the "are
+any skills enabled at all" gate in `list_tools` use the machine-wide view. Every handler
+that answers a question about skills — `listSkills`, `searchSkills`, `loadSkill` — is
 session-aware from the first call, because `call_tool` receives `McpMeta`. Practically:
-a skill added by `workspace_set_tools` is loadable immediately; the header sentence
-reflects it from the next turn. Test 3 below pins exactly this.
+a skill added by `workspace_set_tools` is listable, searchable and loadable
+**immediately**, and a revoked one is refused immediately.
+
+⚠ The earlier claim that "the header sentence reflects it from the next turn" was
+**false and is withdrawn**. The instruction string is generated once in
+`SkillsClient::new` — before any session exists — `get_info` returns that snapshot, and
+`ExtensionManager` clones it at registration. There is no per-turn refresh anywhere on
+that path, so the count is machine-wide **permanently**, for the life of the process.
+This is a *permanent* residual, not a one-turn lag, and it is confined to the count in
+one sentence. Closing it means giving `get_info` a session id across every extension;
+the cheap alternative — mutating this client per session — is ruled out by the
+shared-client hazard below.
+
+⚠ **The client holds no per-session state at all** (also post-review). An earlier draft
+stored the "currently bound session" on `SkillsClient` and had handlers read it back.
+That is unsound: the ACP server shares one `Agent` — hence one `ExtensionManager`, hence
+one `SkillsClient` — across every session (`biorouter-acp/src/server.rs`, `with_config`)
+and spawns prompts concurrently, so session A could resume after an await and resolve
+`loadSkill` against session B's grant. The override is instead read **once per
+`call_tool` dispatch** from `meta.session_id` and passed down to the handlers. Pinned by
+`concurrent_dispatches_for_two_sessions_never_see_each_others_overrides`.
+
+⚠ **No process-wide cache, and both reads fail CLOSED** (also post-review). Session ids
+are display ids allocated `YYYYMMDD_<max+1>` and are handed back after a delete or a
+`/reset` History, so a cache keyed by the id follows that id into an unrelated new
+conversation — carrying the previous occupant's grants. A cache also cannot tell "no
+override" from "could not read it", so a transient failure or a corrupt value would be
+cached permanently as a grant of everything the session had revoked. `for_session` now
+takes the `SessionManager`, reads the row (one indexed single-column `SELECT`) and
+returns `Result`; `call_tool` refuses the call on error rather than answering from the
+machine-wide view. Pinned by
+`a_reused_session_id_does_not_inherit_the_previous_occupants_override`,
+`a_corrupt_override_is_refused_by_both_the_reader_and_the_writer` and
+`an_unreadable_override_refuses_the_call_instead_of_granting_everything`.
 
 - [ ] **Step 1: Write the failing tests** (in the new file)
 
@@ -5174,6 +6887,18 @@ Run: `cargo test -p biorouter --lib agents::session_skills`
 Expected: COMPILE ERROR — module not found.
 
 - [ ] **Step 3: Implement**
+
+> ⚠ **The listing below is the pre-review draft; read the four ⚠ notes above first.**
+> It is kept because it is the record the fail-first run was taken against, but three
+> things in it did **not** ship and must not be reintroduced: the process-wide
+> `OVERRIDES` cache (with `hydrate`/`forget_for_tests`), the infallible
+> `for_session(session_id)` signature, and the two-statement
+> `get_session`/`update().extension_data(..)` write. What shipped: `for_session` takes
+> `&SessionManager` and returns `Result<SessionSkillOverride>` reading the row directly,
+> and `apply` routes its read-merge-write through
+> `SessionManager::update_extension_state`. The composition rule
+> (`SessionSkillOverride::is_disabled`, add > remove > machine-wide) is unchanged and is
+> still the shipped code.
 
 ```rust
 //! BR-71 decision (c): per-SESSION skill enablement.
@@ -5320,6 +7045,28 @@ pub(crate) fn forget_for_tests(session_id: &str) {
 
 - [ ] **Step 4: Teach `SkillsClient` to consult it**
 
+> ⚠ **Pre-review draft; see the ⚠ notes above.** Edit (a) — the `bound_session` field,
+> `bind_session`, and `session_override()` — did **not** ship: one `SkillsClient` serves
+> many sessions concurrently under ACP, so it holds no per-session state. What shipped
+> instead: `call_tool` reads `session_skills::for_session(&self.context.session_manager,
+> &meta.session_id).await` once per dispatch, refuses the call if that read fails, and
+> passes the resulting `&SessionSkillOverride` into `handle_list_skills` /
+> `handle_search_skills` / `handle_load_skill`; `enabled_skill_entries` takes the
+> override as a parameter, and `generate_instructions` passes
+> `&SessionSkillOverride::default()` (the machine-wide view — the permanent residual).
+> `SkillsClient` does keep its `context` (edit (a)'s other half). Edits (b) and (c) —
+> `is_skill_enabled_for_session` composed on TOP of the two-part machine test, never a
+> flattened name set — shipped exactly as written and are the load-bearing part.
+>
+> The two tests listed at the end of this step shipped with
+> `a_session_override_filters_the_catalog_without_touching_the_config_file` rewritten to
+> the parameterised `enabled_skill_entries`, plus three new ones that pin the runtime
+> seam a hand-bound unit test leaves free to regress:
+> `a_persisted_override_reaches_call_tool_with_no_in_process_binding` (persist → cold
+> client → `listSkills`/`loadSkill` through `call_tool` with a real `McpMeta`),
+> `concurrent_dispatches_for_two_sessions_never_see_each_others_overrides`, and
+> `an_unreadable_override_refuses_the_call_instead_of_granting_everything`.
+
 Three edits in `skills_extension.rs`, all narrow:
 
 (a) Bind the session id. Add the field and set it from `call_tool`'s `McpMeta` (which is
@@ -5373,14 +7120,14 @@ exactly what `ChatRecallClient` retains a context for.
 silently re-enables every machine-disabled skill **bundle** for the session. The
 machine-wide disabled array is not a set of skill names: it holds skill names *and*
 bundle names, which is why `is_skill_enabled` tests both
-(`skills_extension.rs:445-456`):
+(`skills_extension.rs:445-455`):
 
 ```rust
     !disabled.contains(name)
         && !skill.bundle_name.as_deref().is_some_and(|bundle| disabled.contains(bundle))
 ```
 
-and why the repo's own `test_bundle_disabled_by_bundle_name` (`:1649-1683`) puts a
+and why the repo's own `test_bundle_disabled_by_bundle_name` (`:1661-1695`) puts a
 bundle id in that array. A set rebuilt from `self.skills.keys()` contains only skill
 names, so `disabled.contains(bundle)` can never match again. Concretely: a user
 disables the `biorouter-office` bundle machine-wide, an agent calls
@@ -5540,8 +7287,8 @@ Add one test in `skills_extension.rs`'s test module:
     /// override must not change what the machine-wide preference MEANS.
     ///
     /// The machine-wide disabled array holds skill names AND bundle names
-    /// (`is_skill_enabled` tests both, `skills_extension.rs:445-456`; the
-    /// existing `test_bundle_disabled_by_bundle_name` at :1651 puts a bundle id
+    /// (`is_skill_enabled` tests both, `skills_extension.rs:445-455`; the
+    /// existing `test_bundle_disabled_by_bundle_name` at :1661 puts a bundle id
     /// in it). Any implementation that composes the override by rebuilding a
     /// name set from `self.skills.keys()` drops every bundle entry, so an
     /// unrelated `add_skills` silently re-enables a whole disabled bundle for
@@ -5606,16 +7353,34 @@ Add one test in `skills_extension.rs`'s test module:
 ```
 
 (`Skill`'s six public fields are `metadata`/`body`/`directory`/`supporting_files`/
-`bundle_name`/`source_root` (`skills_extension.rs:114-125`) and `SkillMetadata` is
-`{name, description}` (`:106-109`); `enabled_skill_entries` returns
-`Vec<(&String, &Skill)>` (`:457`); `fs`, `TempDir` and `HashMap` are already imported by
-the file's test module / prelude. `Paths` is the same import `get_disabled_skills` uses
-at `:263`.)
+`bundle_name`/`source_root` (**`skills_extension.rs:115-125`**, declaration at :115,
+`}` at :125) and `SkillMetadata` is `{name, description}` (**:105-109**);
+`enabled_skill_entries` returns `Vec<(&String, &Skill)>` (**:457**); `fs`, `TempDir` and
+`HashMap` are already imported by the file's test module / prelude. `Paths` is the same
+import `get_disabled_skills` uses at **:263**
+(`Paths::config_dir().join("skills-config.json")`). All six anchors **exact** at
+`275d735d`.)
 
 - [ ] **Step 5: Run tests**
 
-Run: `cargo test -p biorouter --lib agents::session_skills agents::skills_extension`
-Expected: PASS.
+```bash
+cargo test -p biorouter --lib -- agents::session_skills agents::skills_extension
+```
+
+(The `--` is required: without it Cargo reads the second name as its own positional
+argument and exits with `unexpected argument 'agents::skills_extension'`.)
+
+Expected: **PASS**. The one test in that second target this task must not break is
+`test_bundle_disabled_by_bundle_name` (**:1661-1695**) — reconciliation #14's whole
+argument is that a naive composition leaves it green while breaking the property it
+stands for, which is why `a_session_grant_does_not_resurrect_a_machine_disabled_bundle`
+is written above rather than relying on it.
+
+Note the machine-wide file is **never written** by this task; if it were, the CLI
+writers would be the ones to break (`biorouter-cli/src/commands/skill.rs`:
+`skills_config_path` **:295**, `write_skills_config` **:353**, `lock_skills_config`
+**:372**, `mutate_skills_config` **:394** — all still present and all still holding the
+advisory lock this task deliberately does not contend for).
 
 - [ ] **Step 6: Commit**
 
@@ -5633,12 +7398,26 @@ git commit -m "feat(skills): session-scoped skill overrides, separate from the m
 - Create: `crates/biorouter/src/agents/workspace_extension.rs`
 - Modify: `crates/biorouter/src/agents/mod.rs` (add `pub mod workspace_extension;`
   beside `pub mod chatrecall_extension;` — grep for it)
-- Modify: `crates/biorouter/src/agents/extension.rs` (PLATFORM_EXTENSIONS entry at
-  :43-107; count test at :672-679)
+- Modify: `crates/biorouter/src/agents/extension.rs` (PLATFORM_EXTENSIONS at
+  **:43-106**, the map built :44-105; count test
+  `platform_extension_defaults_match_capabilities` at **:675-683**, its
+  `assert_eq!(PLATFORM_EXTENSIONS.len(), 5)` at **:677**)
+
+✓ **`crates/biorouter/src/agents/extension.rs` is byte-identical to the commit this
+plan was written against** (checked 2026-07-28). Every anchor in it — `PLATFORM_EXTENSIONS`
+:43, `PlatformExtensionContext` :109-113, `ExtensionConfig`'s seven variants :236-358,
+`is_tool_available` :563-580, the `len() == 5` assertion :677 — is exact, here and in
+Tasks 10, 18 and 19. It is the one file in this plan's blast radius that needs no
+re-verification.
+
+The five existing registry keys are `todo`, `chatrecall`, `extensionmanager`, `skills`,
+`code_execution`; `workspace` is the sixth. `PLATFORM_EXTENSIONS.len() == 5` is
+**the one test BR-71 is entitled to change** — see reconciliation #5. Every other test
+this plan touches must be preserved.
 
 - [ ] **Step 1: Write the failing tests**
 
-In `extension.rs`'s existing test module (:672):
+In `extension.rs`'s existing test module (`#[cfg(test)] mod tests` at **:670-671**):
 
 ```rust
     #[test]
@@ -5648,7 +7427,10 @@ In `extension.rs`'s existing test module (:672):
     }
 ```
 
-and update the existing assertion `assert_eq!(PLATFORM_EXTENSIONS.len(), 5);` → `6`.
+and update the existing assertion `assert_eq!(PLATFORM_EXTENSIONS.len(), 5);` (**:677**,
+inside `platform_extension_defaults_match_capabilities`) → `6`. Leave that test's five
+per-key `default_enabled` assertions (:678-682) alone — the new one above adds the sixth
+rather than editing them, so a reviewer sees an addition, not a rewrite.
 
 In the new `workspace_extension.rs` test module:
 
@@ -5737,9 +7519,12 @@ mod tests {
         let text = result.content[0].as_text().unwrap().text.clone();
         assert!(text.contains(&parent.id));
         assert!(text.contains("\"gui_attached\": false"));
-        // §4.1: per-session enabled extensions + active KBs are part of the row.
+        // §4.1: per-session enabled extensions + KBs are part of the row.
         assert!(text.contains("\"extensions\""));
         assert!(text.contains("\"knowledge_bases\""));
+        // Post-#45: the write target is reported alongside the set. Without it a
+        // model can set a primary and never read it back.
+        assert!(text.contains("\"primary_kb\""));
         // Decision 17: paging metadata is always present.
         assert!(text.contains("\"has_more\""));
         assert!(text.contains("\"total_matching\""));
@@ -5867,8 +7652,18 @@ existing test uses, e.g. `agents/tool_errors.rs:763`.)
 
 - [ ] **Step 2: Run to verify failure**
 
-Run: `cargo test -p biorouter --lib agents::workspace_extension agents::extension`
+Run: `cargo test -p biorouter --lib -- agents::workspace_extension:: agents::extension::tests:: resolves_every_bundled_extension_to_its_owning_registry`
 Expected: COMPILE ERROR.
+
+(The `--` is required: `cargo test` takes ONE positional `TESTNAME`, so two
+filters make it exit with `unexpected argument 'agents::extension'` **before it
+compiles anything** — a broken gate that can never observe the compile error it
+asks for. The filters are also narrowed from the bare prefix `agents::extension`,
+which additionally matches `agents::extension_malware_check` and
+`agents::extension_manager` and pulls ~48 unrelated malware/network tests into a
+gate about a registry entry. What Task 12 actually needs to see is: the new
+module's tests, `extension.rs`'s test module (the `len() == 6` count), and the
+`/ext:` registry-resolution test the new `EXTENSION_NAME` must not break.)
 
 - [ ] **Step 3: Implement the skeleton**
 
@@ -6164,8 +7959,12 @@ impl WorkspaceClient {
                 // §4.1 required row fields: enabled extension names + active
                 // KBs. Read per INCLUDED row only (the summary row has no
                 // extension_data), exactly the GET /sessions/{id}/extensions
-                // fallback logic (routes/session.rs:757-760). Best-effort: a
-                // read failure yields an empty list, never fails the listing.
+                // fallback logic — `get_session_extensions`,
+                // routes/session.rs:989-1008, whose two lines are
+                // `EnabledExtensionsState::from_extension_data(&session.extension_data)`
+                // (:1003) `.unwrap_or_else(biorouter::config::get_enabled_extensions)`
+                // (:1005). Best-effort: a read failure yields an empty list,
+                // never fails the listing.
                 let extensions: Vec<String> = match self
                     .context
                     .session_manager
@@ -6185,9 +7984,13 @@ impl WorkspaceClient {
                         }),
                     Err(_) => Vec::new(),
                 };
-                let knowledge_bases = services
+                // Post-#45: ONE call returning set + write target together
+                // (Task 9). `primary_kb` is on the row because a model that can
+                // SET a write target and cannot READ it back will thrash — it
+                // has no way to tell "already correct" from "not applied".
+                let kbs = services
                     .as_ref()
-                    .map(|svc| svc.active_knowledge_bases(&s.id))
+                    .map(|svc| svc.knowledge_selection(&s.id))
                     .unwrap_or_default();
                 rows.push(json!({
                     "session_id": s.id,
@@ -6197,7 +8000,13 @@ impl WorkspaceClient {
                     "running": running,
                     "parent_session_id": s.parent_session_id,
                     "extensions": extensions,
-                    "knowledge_bases": knowledge_bases,
+                    "knowledge_bases": kbs.kb_ids,
+                    // `null` means "no write target chosen", which is a real and
+                    // distinct state from "no knowledge bases" — a session can
+                    // have several bases and no primary, and a KB-less write then
+                    // fails. Do not collapse it to the first id here; the service
+                    // owns promotion (`repair_primary_unlocked`).
+                    "primary_kb": kbs.primary_kb,
                     "gui": gui_placement,
                 }));
             }
@@ -6298,7 +8107,7 @@ impl McpClientTrait for WorkspaceClient {
 }
 ```
 
-Then in `extension.rs`, add the registry entry (after the `chatrecall` insert at :57):
+Then in `extension.rs`, add the registry entry (after the `chatrecall` insert, which spans :58-69):
 
 ```rust
         map.insert(
@@ -6316,17 +8125,46 @@ Then in `extension.rs`, add the registry entry (after the `chatrecall` insert at
 
 with `use super::workspace_extension;` mirroring the existing imports.
 
+**As built, three things differ from the skeleton above** (each forced by the real
+tree, and each carried by a test):
+
+1. `EXTENSION_NAME` is `"Workspace"`, not `"Workspace Control"`. The platform
+   spawn path resolves the def by `normalize(config.name)`, and `"Workspace
+   Control"` normalizes to `workspacecontrol`, which is not the registry key —
+   `/ext:workspace` would fail exactly as issue #48 did. The design's display
+   name is preserved in a second constant, `EXTENSION_TITLE`, which is what MCP's
+   `Implementation.title` carries; `server_info.name` keeps the identifier. Do not
+   collapse them back into one string in either direction.
+2. The placeholder `call_tool` arms are the `PENDING_TOOLS` table plus one
+   fallthrough, not one literal arm per tool — see Step 4.
+3. `pub mod workspace_extension;` sits in sorted position (before
+   `workspace_inspector`), not beside `chatrecall_extension`. rustfmt's
+   `reorder_modules` sorts each contiguous `mod` group, so the requested placement
+   does not survive `cargo fmt`, and the move strands whatever comment preceded
+   the vacated line on the wrong module.
+
 - [ ] **Step 4: Run tests**
 
-Run: `BIOROUTER_PATH_ROOT=$(mktemp -d) cargo test -p biorouter --lib agents::workspace_extension agents::extension`
-Expected: PASS — four workspace_extension tests (advertisement, headless listing,
-paging, parent/subagent filters) plus the updated
-`PLATFORM_EXTENSIONS.len() == 6` count test. (The fifth — the default-scope
-registered child — is deliberately in **Task 33**; see the note at the end of Step 1.)
+Run: `BIOROUTER_PATH_ROOT=$(mktemp -d) cargo test -p biorouter --lib -- agents::workspace_extension:: agents::extension::tests:: resolves_every_bundled_extension_to_its_owning_registry`
+(see Step 2 for why the `--` and the narrowed filters are not optional)
+Expected: PASS — six workspace_extension tests (advertisement, the
+advertised-vs-placeholder surface invariant, the name/title split, headless
+listing, paging, parent/subagent filters) plus the updated
+`PLATFORM_EXTENSIONS.len() == 6` count test and the `/ext:` registry-resolution
+test. (The seventh workspace_extension test — the default-scope registered
+child — is deliberately in **Task 33**; see the note at the end of Step 1.)
 This is genuinely reachable because the
 advertisement test asserts *membership* of the one tool this task registers; the single
 exact-surface assertion in the plan lives in **Task 24**, the last task that changes
 `get_tools()`.
+
+Membership alone, though, does not stop a *premature* tool being advertised, so
+this task also carries a `PENDING_TOOLS` table (the placeholder `call_tool` arms,
+as data) and asserts that the advertised set and the pending set are disjoint and
+together cover every `workspace_*` name `INSTRUCTIONS` mentions. **Tasks 13-17
+and 24 must delete a tool's `PENDING_TOOLS` row in the same commit that adds it to
+`get_tools()`** — that is what keeps the invariant true across the phase without
+any task needing an exact-surface assertion.
 
 `BIOROUTER_PATH_ROOT` is not optional: `handle_list` calls
 `AgentManager::instance()`, whose first initialization reads `Paths::data_dir()` and
@@ -6370,8 +8208,15 @@ git commit -m "feat(workspace): workspace platform extension skeleton + workspac
         // Seed: a user message, a tool request, and a spawn-context record.
         let mut m1 = Message::user().with_text("please compute");
         sm.add_message_adopting_uid(&open.id, &mut m1).await.unwrap();
-        // CallToolRequestParams derives NO Default (rmcp 0.14 model.rs:1887-1902)
-        // — spell all four fields.
+        // CallToolRequestParams derives NO Default — spell all four fields.
+        // The citation is the DEPENDENCY's file, not this repo's:
+        // ~/.cargo/registry/.../rmcp-0.14.0/src/model.rs:1887-1902 (derive
+        // :1887, `pub struct CallToolRequestParams` :1890, fields
+        // meta/name/arguments/task :1892-1901, `}` :1902). Re-verified
+        // 2026-07-28 against the pinned `rmcp = "0.14.0"` (Cargo.toml:18):
+        // the derive list is `Debug, Serialize, Deserialize, Clone, PartialEq`
+        // — still no `Default`. Do NOT resolve this against
+        // `crates/biorouter/src/model.rs`, which is 908 lines and unrelated.
         let mut m2 = Message::assistant().with_tool_request(
             "call-1",
             Ok(rmcp::model::CallToolRequestParams {
@@ -6442,8 +8287,10 @@ here:
 ```
 
 (If `Message::assistant().with_tool_request(...)` has a different constructor shape,
-use the real one — `message.rs:716` `with_tool_request_with_metadata` exists; grep
-`pub fn with_tool_request` for the exact signature and adjust the seed only.)
+use the real one — `with_tool_request` is at **`message.rs:815`** and
+`with_tool_request_with_metadata` at **`:823`**; grep `pub fn with_tool_request` for the
+exact signature and adjust the seed only. The plan's old `:716` anchor now lands inside
+`with_unpinned`.)
 
 - [ ] **Step 2: Run to verify failure**
 
@@ -6538,8 +8385,9 @@ impl WorkspaceClient {
 
         // Oversized-result handling (§4.1 "session-blob mechanism, never silent
         // truncation"): this tool RESULT is persisted into the CALLER's session,
-        // where BR-7's externalization (message_blobs::externalize, threshold 64
-        // KB, session_manager.rs:3223) already stores payloads above the blob
+        // where BR-7's externalization (message_blobs::externalize, called at
+        // session_manager.rs:3475 and :3687; the 64 KB threshold is
+        // `DEFAULT_BLOB_THRESHOLD_BYTES`, message_blobs.rs:52) stores payloads above the blob
         // threshold as session blobs readable via platform__read_session_blob —
         // so a raised max_chars round-trips intact instead of bloating context.
         // The tool-level cap is model-facing pagination; when it clips, the
@@ -6691,6 +8539,293 @@ git commit -m "feat(workspace): workspace_read_conversation projections (BR-71)"
 
 ---
 
+### Task 13c: Interrupt acceptance becomes atomic (GitHub issue #69)
+
+**Why this task exists, and why it is here.** Task 14 builds
+`workspace_send_prompt`, whose `mode: "steer"` routes through the same acceptance
+path as `POST /interrupt`. That path has a race: it can return **202 Accepted**
+for a message that lands in an unrelated later turn. `workspace_send_prompt`
+reports its result to a *model*, which will then act on the belief that a steer
+was delivered. Shipping Task 14 on top of this race means a tool whose success
+value is not trustworthy, so the race is closed first.
+
+Found by a Codex (gpt-5.6-sol, ultra) review of the BR-71 spine. Four other
+defects from that review were fixed in `ea15a4de`; this one was deliberately left
+because it needs a protocol decision rather than a local patch.
+
+**Files**
+
+| File | Change |
+|---|---|
+| `crates/biorouter/src/agents/agent.rs` | `soft_interrupts` gains turn identity and an accepting flag; `try_queue_soft_interrupt`; `close_and_drain`; `open_for_turn` |
+| `crates/biorouter-server/src/routes/reply.rs` | `interrupt` returns 409 on refusal and the turn id on acceptance |
+| `crates/biorouter-server/src/openapi.rs` | register `InterruptAccepted` |
+| `ui/desktop/openapi.json`, `ui/desktop/src/api/types.gen.ts` | regenerated |
+
+Anchor by symbol, not by line — Phase 1's own commits keep moving `agent.rs`.
+
+---
+
+#### Step 1 — the failing test
+
+The race is between the route's check and the loop's exit. A sleep cannot express
+it; the test must hand off deterministically. Add to `agent.rs`'s test module:
+
+```rust
+/// #69: an interrupt that arrives after the loop has committed to exiting must be
+/// REFUSED, not queued into whatever turn runs next.
+///
+/// The old shape returned 202 unconditionally: the route observed an active turn,
+/// awaited the agent lookup, and pushed — while the loop performed its final
+/// empty-queue check and exited. The message then surfaced in an unrelated turn.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_interrupt_after_the_close_is_refused_not_deferred() {
+    let agent = test_agent().await;
+
+    agent.open_for_turn(TurnId::new("turn-a"));
+
+    // The loop reaches its exit with nothing queued: close and drain in one step.
+    assert!(matches!(agent.close_and_drain(), Drained::Empty));
+
+    // A steer arrives one instant too late.
+    let refused = agent.try_queue_soft_interrupt("too late".into(), None);
+    assert!(
+        matches!(refused, Err(InterruptRefused::TurnEnded)),
+        "an interrupt after the close must be refused; got {refused:?}"
+    );
+
+    // And it must not be sitting in the queue waiting to ambush the next turn.
+    agent.open_for_turn(TurnId::new("turn-b"));
+    assert!(
+        matches!(agent.close_and_drain(), Drained::Empty),
+        "the refused interrupt must not have been queued for a later turn"
+    );
+}
+
+/// The mirror: an interrupt that arrives while the turn is still accepting is
+/// taken, and is consumed by THAT turn rather than a later one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_interrupt_before_the_close_is_consumed_by_its_own_turn() {
+    let agent = test_agent().await;
+    agent.open_for_turn(TurnId::new("turn-a"));
+
+    let landed = agent
+        .try_queue_soft_interrupt("in time".into(), None)
+        .expect("an open turn must accept");
+    assert_eq!(landed.as_str(), "turn-a", "the caller is told which turn took it");
+
+    match agent.close_and_drain() {
+        Drained::Some(items) => {
+            assert_eq!(items.len(), 1);
+            assert_eq!(items[0].text, "in time");
+        }
+        Drained::Empty => panic!("the queued steer must be drained by its own turn"),
+    }
+}
+```
+
+**Run it:**
+
+```
+cargo test -p biorouter --lib agents::agent::tests::an_interrupt
+```
+
+**Expected: COMPILE ERROR** — `open_for_turn`, `close_and_drain`, `try_queue_soft_interrupt`,
+`Drained` and `InterruptRefused` do not exist yet.
+
+---
+
+#### Step 2 — implement
+
+Replace the bare `Vec` with state that owns acceptance. All three operations take
+the *same* lock, so check-and-act is never two steps.
+
+```rust
+/// #69: the queue owns whether it is accepting, so acceptance and enqueue happen
+/// in one critical section. A prior `is_turn_active` check cannot substitute:
+/// check-then-queue is two steps against state that changes underneath them, and
+/// adding more checks only narrows the window.
+pub(super) struct SoftInterrupts {
+    /// The turn currently accepting, if any.
+    turn: Option<TurnId>,
+    /// Cleared by `close_and_drain` once the loop has committed to exiting.
+    accepting: bool,
+    queued: Vec<QueuedInterrupt>,
+}
+
+#[derive(Debug)]
+pub enum InterruptRefused {
+    /// No turn is accepting: either none is running, or the running one has closed.
+    TurnEnded,
+}
+
+#[derive(Debug)]
+pub(super) enum Drained {
+    /// Items were taken; the turn stays open and must loop again to consume them.
+    Some(Vec<QueuedInterrupt>),
+    /// Nothing queued; the queue is now closed and the loop may exit.
+    Empty,
+}
+```
+
+```rust
+/// Open the queue for a new turn. Any straggler from a previous turn is dropped
+/// and logged rather than silently injected — that is the #69 bug's own shape.
+pub(super) fn open_for_turn(&self, turn: TurnId) {
+    let mut q = self.lock_interrupts();
+    if !q.queued.is_empty() {
+        warn!(
+            count = q.queued.len(),
+            "dropping interrupts left by a previous turn; they were never accepted"
+        );
+        q.queued.clear();
+    }
+    q.turn = Some(turn);
+    q.accepting = true;
+}
+
+/// Accept a steer if and only if a turn is still accepting. Returns the turn it
+/// landed in, so the caller can be told what its 202 actually promised.
+pub fn try_queue_soft_interrupt(
+    &self,
+    text: String,
+    provenance: Option<crate::conversation::message::MessageProvenance>,
+) -> Result<TurnId, InterruptRefused> {
+    let mut q = self.lock_interrupts();
+    if !q.accepting {
+        return Err(InterruptRefused::TurnEnded);
+    }
+    let turn = q.turn.clone().ok_or(InterruptRefused::TurnEnded)?;
+    q.queued.push(QueuedInterrupt { text, provenance });
+    Ok(turn)
+}
+
+/// Take everything and, only if there was nothing, close in the same critical
+/// section. That is what makes the exit atomic: after `Drained::Empty` no further
+/// interrupt can be accepted, so nothing can arrive between the check and the exit.
+pub(super) fn close_and_drain(&self) -> Drained {
+    let mut q = self.lock_interrupts();
+    let taken = std::mem::take(&mut q.queued);
+    if taken.is_empty() {
+        q.accepting = false;
+        Drained::Empty
+    } else {
+        Drained::Some(taken)
+    }
+}
+```
+
+Then rewrite the exit check. The BR-61 mitigation becomes unnecessary — it existed
+to catch an interrupt that landed just before the exit, which `close_and_drain`
+now handles by construction:
+
+```rust
+// BR-61 + #69: take-and-close atomically. A non-empty drain keeps the loop alive
+// for one more step so the steer is answered in context; an empty drain closes
+// the queue, so anything arriving afterwards is refused rather than stranded.
+if exit_chat {
+    match self.close_and_drain() {
+        Drained::Some(pending) => {
+            info!(
+                count = pending.len(),
+                "soft interrupt pending at turn exit; continuing the loop to consume it"
+            );
+            self.requeue_for_this_turn(pending);
+            exit_chat = false;
+        }
+        Drained::Empty => {}
+    }
+}
+```
+
+Route:
+
+```rust
+match agent.try_queue_soft_interrupt(req.text, None) {
+    Ok(turn_id) => Ok((StatusCode::ACCEPTED, Json(InterruptAccepted { turn_id: turn_id.into() }))),
+    // #69: the turn the caller addressed has ended. Refusing is the honest answer —
+    // queueing for whatever runs next is the bug this replaces.
+    Err(InterruptRefused::TurnEnded) => Err(StatusCode::CONFLICT),
+}
+```
+
+`is_turn_active` stays as a cheap early-out but is no longer the guard.
+
+---
+
+#### Step 3 — run
+
+```
+cargo test -p biorouter --lib agents::agent::tests::an_interrupt
+```
+
+**Expected: PASS — 2 tests.**
+
+---
+
+#### Step 4 — gate
+
+The gate must fail a wrong implementation, not merely observe one. A grep for
+`try_queue_soft_interrupt` would pass an implementation that added the function
+and left the route calling the old one, so assert behaviour instead:
+
+```
+cargo test -p biorouter --lib agents::agent::tests::an_interrupt
+# Expected: test result: ok. 2 passed
+
+cargo test -p biorouter-server --lib routes::reply::tests::interrupt
+# Expected: the refusal test asserts 409, not 202
+
+# The old unconditional push must be gone. A correct implementation greps 0.
+grep -cE "fn queue_soft_interrupt\b" crates/biorouter/src/agents/agent.rs
+# Expected: 0
+```
+
+**Mutation check — run this and confirm it FAILS:** revert `close_and_drain` to
+set `accepting = false` unconditionally (rather than only on an empty drain).
+`an_interrupt_before_the_close_is_consumed_by_its_own_turn` must go red. A gate
+that stays green under that mutation is not testing the invariant.
+
+---
+
+#### Step 5 — regenerate the wire
+
+```
+just generate-openapi && (cd ui/desktop && npm run generate-api)
+```
+
+Commit the generated files separately.
+
+---
+
+#### Step 6 — commit
+
+```
+git add crates/biorouter/src/agents/agent.rs \
+        crates/biorouter-server/src/routes/reply.rs \
+        crates/biorouter-server/src/openapi.rs
+git commit -m "fix(agent-loop): make interrupt acceptance atomic (#69)"
+
+git add ui/desktop/openapi.json ui/desktop/src/api/
+git commit -m "chore(api): regenerate for the interrupt turn id (#69)"
+```
+
+No `Co-Authored-By` trailer.
+
+---
+
+**What Task 14 may now assume:** a `202` from the acceptance path means the steer
+landed in the turn whose id it names. `workspace_send_prompt { mode: "steer" }`
+can therefore report success truthfully, and must map a refusal to a clear
+"that turn has ended" rather than swallowing it.
+
+**Deliberately not done here:** `mode: "queue"` semantics — "deliver to whatever
+turn is running, or the next one" is a legitimate intent, but it is a *different*
+one and needs its own parameter rather than being the silent default. Task 14
+decides whether to offer it.
+
+---
+
 ### Task 14: `workspace_send_prompt`
 
 **Files:**
@@ -6698,6 +8833,16 @@ git commit -m "feat(workspace): workspace_read_conversation projections (BR-71)"
 - Modify: `crates/biorouter/src/execution/manager.rs` — add `peek_agent`, the
   non-constructive agent lookup decision 4's mode check needs (Step 3). Task 33 extends
   it to consult the pinned sidecar it introduces.
+- Modify: `crates/biorouter/src/context_mgmt/mod.rs` — **test module only** (`mod
+  pin_tests`, `:2396`ff). One end-to-end test that the framed note survives a real
+  compaction and its unpinned twin does not. It belongs beside the other fifteen pin
+  tests, which already own the helpers (`provider`, `find`, `text_of`) and are the only
+  place `compact_messages_with_window` is reachable — it is private to the module.
+
+**Read Prerequisite 2 before writing Step 3.** Both halves shipped. The mid-turn refusal
+reconciliation #16 used to require is **retired**, and in its place `note` carries an
+obligation: it must persist the message **pinned**, because the store now guarantees the
+note is not deleted but nothing stops the next compaction summarizing it away.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -6747,6 +8892,35 @@ git commit -m "feat(workspace): workspace_read_conversation projections (BR-71)"
         assert!(body.contains("untrusted=\"true\""), "got: {body}");
         assert!(body.contains("caller-name"), "the frame names the source");
         assert!(body.contains("context for later"), "the payload survives");
+
+        // …and it is PINNED, and the pin is actually honourable.
+        //
+        // Two assertions, not one, because `is_pinned()` alone is a marker that
+        // every compaction site is free to ignore. `pin_is_eligible` is the
+        // predicate they all consult (`context_mgmt::pins:250-254`): the message
+        // must carry the marker, be agent-visible, AND have every content block
+        // pin-eligible. `frame_workspace_injection` wraps the text, and a note
+        // built agent-invisible or carrying a tool block would keep `is_pinned()`
+        // true while being silently unpreservable.
+        assert!(injected.is_pinned(), "a note must survive compaction (#51 pin)");
+        assert!(
+            crate::context_mgmt::pins::pin_is_eligible(injected),
+            "the pin must be HONOURABLE, not merely present"
+        );
+
+        // The control that makes the two assertions above mean "the pin worked"
+        // rather than "this is true of any message": the same message without
+        // `.pinned()` is not eligible for preservation at all.
+        let unpinned = {
+            let mut m = injected.clone();
+            m.metadata.pinned = false;
+            m
+        };
+        assert!(
+            !crate::context_mgmt::pins::pin_is_eligible(&unpinned),
+            "without the marker there is nothing to honour — so the assertion \
+             above is testing the pin"
+        );
     }
 
     /// Decision c / the shared drain loop: the HUMAN's own soft interrupt must
@@ -6788,10 +8962,72 @@ git commit -m "feat(workspace): workspace_read_conversation projections (BR-71)"
     }
 ```
 
+And, in `crates/biorouter/src/context_mgmt/mod.rs`'s `mod pin_tests` (`:2396`ff) — the
+end-to-end half. The tool-side test above proves the note is *marked* and that the mark
+is *honourable*; this one proves the mark is *honoured*, on the real compaction path,
+with the unpinned twin as the control that makes the result mean something:
+
+```rust
+    /// BR-71: a `workspace_send_prompt { mode: "note" }` body, eight turns back,
+    /// still reaches the model — and its unpinned twin does not.
+    ///
+    /// The framed shape matters and is not incidental. `frame_workspace_injection`
+    /// (Task 2) wraps the payload in an untrusted-data envelope, so this also
+    /// pins that the envelope does not make the message pin-ineligible.
+    #[tokio::test]
+    async fn a_workspace_note_survives_compaction_and_its_unpinned_twin_does_not() {
+        use crate::conversation::message::frame_workspace_injection;
+
+        let note_body = frame_workspace_injection(Some("planner"), "use the log scale");
+        let twin_body = frame_workspace_injection(Some("planner"), "and cite the source");
+
+        // Both sit in the same old prefix, far outside the verbatim window.
+        // Identical in every way except the marker.
+        let mut messages = vec![
+            Message::user().with_text("q1"),
+            Message::assistant().with_text("a1"),
+            Message::user().with_text(note_body.clone()).pinned(),
+            Message::user().with_text(twin_body.clone()),
+        ];
+        for i in 2..=8 {
+            messages.push(Message::user().with_text(format!("q{i}")));
+            messages.push(Message::assistant().with_text(format!("a{i}")));
+        }
+        let conversation = Conversation::new_unvalidated(messages);
+
+        let (compacted, _usage) =
+            compact_messages_with_window(&provider(100_000), &conversation, false, 2)
+                .await
+                .unwrap();
+
+        assert!(
+            find(&compacted, &note_body).is_agent_visible(),
+            "the pinned note must still reach the model; agent-visible was: {:#?}",
+            agent_texts(&compacted)
+        );
+        assert!(
+            find(&compacted, &note_body).is_pinned(),
+            "and it must stay marked, so the NEXT compaction honours it too"
+        );
+        // THE CONTROL. Without this the test above passes on a conversation
+        // nothing compacted, and Task 14 could drop `.pinned()` with a green
+        // suite — which is the exact defect this pair exists to catch.
+        assert!(
+            !find(&compacted, &twin_body).is_agent_visible(),
+            "an UNPINNED note is summarized away — that is why `note` pins"
+        );
+    }
+```
+
 - [ ] **Step 2: Run to verify failure**
 
 Run: `cargo test -p biorouter --lib agents::workspace_extension::tests::send_prompt_note_appends_with_provenance_without_running_a_turn`
 Expected: FAIL — "not implemented until Task 14".
+
+Run: `cargo test -p biorouter --lib context_mgmt::pin_tests::a_workspace_note_survives_compaction_and_its_unpinned_twin_does_not`
+Expected: **COMPILE ERROR**, not FAIL — `frame_workspace_injection` does not exist until
+Task 2. (Task 2 precedes this task, so in a linear run it compiles and passes; the
+distinction matters only if the tasks are attempted out of order.)
 
 - [ ] **Step 3: Implement**
 
@@ -6893,31 +9129,26 @@ impl WorkspaceClient {
 
         match args.mode.as_str() {
             "note" => {
-                // A note appended to a session that is MID-TURN is destroyed the
-                // moment that turn compacts. `Agent::reply` holds its own
-                // in-memory `Conversation` and, on crossing the compaction
-                // threshold, calls
-                // `session_manager.replace_conversation(&session_config.id, …)`
-                // (`agent.rs:3061`, again at `:4388`) with no freshness check —
-                // and `replace_conversation_inner` "DELETEs and re-INSERTs every
-                // message" (`session_manager.rs:2609-2611`). The codebase already
-                // documents this hazard for the BACKGROUND compaction path and
-                // guards it there (`context_mgmt/mod.rs:661-671`,
-                // `eager_swap_is_safe`); the in-turn call sites have no guard
-                // because before BR-71 nothing could append to a session's store
-                // from outside its own turn. This tool is the first such writer,
-                // so it must not report success into that window.
-                if let Some(services) = &services {
-                    if services.is_turn_active(&args.session_id) {
-                        return Err(format!(
-                            "session {} has a turn in flight; a note appended now can be \
-                             discarded when that turn compacts. Use mode:\"steer\" to reach \
-                             it during this turn, or retry when it is idle \
-                             (workspace_watch).",
-                            args.session_id
-                        ));
-                    }
-                }
+                // NO mid-turn refusal. Reconciliation #16 used to put one here,
+                // on the premise that the in-turn compaction sites rewrote the
+                // whole history with no freshness check. #51 closed that: both
+                // sites now go through
+                // `SessionManager::replace_conversation_preserving_tail`
+                // (`agent.rs:3606-3613`, and `:2086`/`:2188` on the overflow
+                // ladder), which classifies a message appended above the
+                // rewrite's watermark and absent from the turn's `known`
+                // conversation as FOREIGN and carries it over rather than
+                // deleting it (`session_manager.rs:1347-1374`). Refusing now
+                // would deny the tool's own recommended headless fallback in the
+                // exact case a parent most wants it.
+                //
+                // What the store CANNOT do for us is the second half. A note that
+                // survives the write-back is still summarized away by the next
+                // compaction once it falls out of the `keep_last_turns` window —
+                // so it is PINNED below. `MessageMetadata.pinned` (#51) exists
+                // for this call and says so by name (`message.rs:617-621`,
+                // `Message::pinned` at `:1033`); this is its first consumer.
+                //
                 // Append without a turn: user_visible + agent_visible (picked up
                 // as context on the target's next turn, §4.1), provenance-stamped
                 // AND wrapped in an untrusted-data envelope — see
@@ -6928,14 +9159,25 @@ impl WorkspaceClient {
                 );
                 let mut message = crate::conversation::message::Message::user()
                     .with_text(body)
-                    .with_provenance(provenance);
+                    .with_provenance(provenance)
+                    // ⚠ Do not drop this. Without it the tool reports success and
+                    // the note evaporates a few turns later — the same broken
+                    // promise, arriving more slowly, which is the outcome the
+                    // operator rejected two workarounds to avoid (question 9).
+                    // The pin is honoured only on a message with no tool
+                    // request/response content and only while it is agent-visible
+                    // (`context_mgmt::pins::pin_is_eligible`); a framed text note
+                    // satisfies both, and the test below proves it rather than
+                    // assuming it.
+                    .pinned();
                 self.context
                     .session_manager
                     .add_message_adopting_uid(&args.session_id, &mut message)
                     .await
                     .map_err(|e| format!("failed to append note: {e}"))?;
                 Ok(vec![Content::text(format!(
-                    "Note appended to session {} (no turn started).",
+                    "Note appended to session {} (no turn started; preserved across \
+                     compaction).",
                     args.session_id
                 ))])
             }
@@ -7154,9 +9396,11 @@ fn mode_requires_approval(mode: crate::config::BioRouterMode) -> bool {
         // `Ok(vec![])` before inspecting anything in Chat mode
         // (`permission/permission_inspector.rs:449-452`), the agent loop skips
         // every remaining tool call and splices
-        // `CHAT_MODE_TOOL_SKIPPED_RESPONSE` (`agents/agent.rs:3706-3716`), and
+        // `CHAT_MODE_TOOL_SKIPPED_RESPONSE` (`agents/agent.rs:4355-4371`, the
+        // `if biorouter_mode == BioRouterMode::Chat {` block; the constant itself
+        // is `agents/tool_execution.rs:43`), and
         // the tool list is stripped from the prompt entirely
-        // (`prompt_manager.rs:280`). There is no confirmation that could park
+        // (`agents/prompt_manager.rs:280`). There is no confirmation that could park
         // unseen, so decision 4's refusal — whose message claims one would —
         // must not fire here. Decision 4's trigger is "manual mode"; Chat is
         // not one. Classifying it as an approval mode would refuse every
@@ -7173,7 +9417,7 @@ impl WorkspaceClient {
     ///
     /// The mode that decides whether the *target's* turn raises confirmations is
     /// the target agent's own `AgentConfig.biorouter_mode`, fixed when that
-    /// agent was created (`execution/manager.rs:119-121` reads the global config
+    /// agent was created (`execution/manager.rs:120-122` reads the global config
     /// **once**, at creation). Reading `Config::global().get_biorouter_mode()`
     /// here instead judges the target by whatever the machine's mode happens to
     /// be *now*, and is wrong in both directions.
@@ -7189,8 +9433,11 @@ impl WorkspaceClient {
     /// has no production setter, so `Agent::provider()` returns
     /// `Err("Provider not set")`). The turn runner would then pick that agent up.
     ///
-    /// `Agent.config` is `pub` (`agent.rs:275`) and `AgentConfig.biorouter_mode`
-    /// is `pub` (`:241`), so this is a field read, not a new accessor.
+    /// `Agent.config` is `pub` (`agent.rs:516`, inside `pub struct Agent` at `:514`)
+    /// and `AgentConfig.biorouter_mode` is `pub` (`agent.rs:482`, inside
+    /// `pub struct AgentConfig` at `:478`), so this is a field read, not a new
+    /// accessor. (Both re-anchored at `275d735d`; the old `:275` / `:241` predate
+    /// agent.rs's +816-line growth.)
     async fn target_mode_requires_approval(&self, target_session_id: &str) -> bool {
         let Ok(manager) = crate::execution::manager::AgentManager::instance().await else {
             return true;
@@ -7204,6 +9451,30 @@ impl WorkspaceClient {
     }
 }
 ```
+
+⚠ **The `None => true` branch is SUPERSEDED by Task 36b (operator ruling, 2026-07-30).
+Implement it exactly as written here — but do not read it as final.**
+
+That branch is why headless `mode:"turn"` refuses most of the time in practice: a
+conversation the user has not opened this run has no live agent, so the check takes the
+conservative arm and `send_prompt_turn` returns its refusal, leaving `mode:"note"` as the
+only real headless story. The branch was correct *given its premise* — that an approval
+prompt raised in a conversation nobody is watching parks until it times out. The ruling
+removes the premise: **an agent-created session's approvals belong to the agent that
+created it**, so those prompts now route up the `parent_session_id` chain and reach a
+human only at its root. See
+[Task 36b](#task-36b-approval-delegation-and-single-grant-propagation) and decisions
+29-31.
+
+Two consequences for a reader of *this* task:
+
+- **The code below is still what Task 14 ships**, and Task 36b does not edit it. Task 14 is
+  implemented and committed; the narrowing — refusing only when the target has **no
+  parent** — is a change to a shipped refusal and belongs in its own commit with its own
+  test, not retrofitted here.
+- **Do not "fix" this branch to `false`.** A target with no live agent *and* no parent is
+  exactly the case the refusal is right about: nobody is watching, and there is no
+  delegating agent to ask. The conservative arm stays; it just stops being the only answer.
 
 `peek_agent` is a small addition beside `get_or_create_agent` in
 `crates/biorouter/src/execution/manager.rs` — **add it in THIS task** (Task 33 is 19
@@ -7278,14 +9549,45 @@ and route `"workspace_send_prompt" => self.handle_send_prompt(caller, arguments)
 
 - [ ] **Step 4: Run tests**
 
-Run: `BIOROUTER_PATH_ROOT=$(mktemp -d) cargo test -p biorouter --lib agents::workspace_extension`
-Expected: PASS.
+```bash
+BIOROUTER_PATH_ROOT=$(mktemp -d) cargo test -p biorouter --lib agents::workspace_extension
+cargo test -p biorouter --lib context_mgmt
+```
+
+⚠ The second command is deliberately the **whole** `context_mgmt` module, not
+`context_mgmt::pin_tests`. A `pin_tests` filter is a substring match on the test path,
+so it reaches the 14 tests of `context_mgmt::pin_tests` and *nothing else* — not
+`context_mgmt::pins::tests` (12) and, more importantly, not
+`run_eager_compaction_preserves_a_concurrent_append` / `run_eager_compaction_aborts_when_the_prefix_moved`
+in `context_mgmt::tests` (`mod.rs:2244` / `:2298`), which this task's `.pinned()` change
+is capable of breaking. `--lib context_mgmt` runs all 47 today, 48 after this task.
+
+Expected: PASS. That command runs the whole `pin_tests` module, not just the new
+test — **fifteen** tests after this task, **fourteen** before it. (Counted at
+`275d735d`:
+`awk 'NR>=2397' crates/biorouter/src/context_mgmt/mod.rs | grep -cE '^\s+#\[(tokio::)?test\]'`
+→ 14. An earlier revision of this task said fifteen-before/sixteen-after; that was
+carried over from a survey figure that conflated `pin_tests` with the 12 further tests
+in `context_mgmt/pins.rs`.) All of them must stay green: `note` is the first consumer of
+a mechanism the rest of that suite defines, and a change that makes the note survive by
+weakening `pin_is_eligible` or the eviction budget would show up there and nowhere else.
+
+Add the pins-module half too — it is where `pin_is_eligible` itself is pinned, and
+Task 14's `frame_workspace_injection` wrapper is precisely the kind of content change
+that can make a message ineligible:
+
+```bash
+cargo test -p biorouter --lib context_mgmt::pins
+```
+
+Expected: PASS, **12** tests, unchanged by this task.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add crates/biorouter/src/agents/workspace_extension.rs \
-        crates/biorouter/src/execution/manager.rs
+        crates/biorouter/src/execution/manager.rs \
+        crates/biorouter/src/context_mgmt/mod.rs
 git commit -m "feat(workspace): workspace_send_prompt turn/steer/note with provenance and wait (BR-71)"
 ```
 
@@ -7302,13 +9604,41 @@ four dimensions:
 
 | Field | Mechanism | Takes effect |
 |---|---|---|
-| `add_extensions` / `remove_extensions` | `agent.add_extension` / `remove_extension` + `persist_extension_state` — the exact `/agent/add_extension` handler path (`routes/agent.rs:720-743`) | Immediately (live agent) |
-| `add_skills` / `remove_skills` | `session_skills::apply` (Task 11) — session-scoped, never the machine-wide file | Immediately for load/search; instruction line next turn |
-| `model` / `provider` | `providers::create(name, ModelConfig)` + `agent.update_provider` — the `/agent/update_provider` handler path (`routes/agent.rs:662-707`) | **Next turn** (the running turn keeps its provider) |
-| `set_knowledge_bases` | `WorkspaceServices::set_knowledge_bases` → `KnowledgeService::set_active_for_session` (plural, post-#45) | Immediately |
+| `add_extensions` / `remove_extensions` | `agent.add_extension` / `remove_extension` + `persist_extension_state` — the exact `/agent/add_extension` handler path (`routes/agent.rs:744-767`) | Immediately (live agent) |
+| `add_skills` / `remove_skills` | `session_skills::apply` (Task 11) — session-scoped, never the machine-wide file | Immediately for list/search/load; the instruction line's skill count stays machine-wide **permanently** (see Task 11's residual) |
+| `model` / `provider` | `providers::create(name, ModelConfig)` + `agent.update_provider` — the `/agent/update_provider` handler path (`routes/agent.rs:686-730`) | **Next turn** (the running turn keeps its provider) |
+| `set_knowledge_bases` (+ `primary_knowledge_base`) | `WorkspaceServices::set_knowledge_bases(sid, &kbs, choice)` → `KnowledgeService::set_visible_kbs(Some(sid), &kbs, PrimaryUpdate)` (post-#45; `set_active_for_session` no longer exists — see [Prerequisites](#prerequisites--two-both-now-shipped)) | Immediately |
 
 **Files:**
 - Modify: `crates/biorouter/src/agents/workspace_extension.rs`
+
+**Anchors re-verified at `275d735d`, 2026-07-28.** Only the KB dimension conflicted
+(above, and reconciliation #6); the other three are pure line drift and every symbol is
+intact:
+
+| Symbol | Was | Now |
+|---|---|---|
+| `agent_add_extension` handler | `routes/agent.rs:720-743` | **`:744-767`** (`add_extension` :750, `persist_extension_state` :759) |
+| `update_agent_provider` handler | `routes/agent.rs:662-707` | **`:686-730`** (`ModelConfig::new` :703, `create(&payload.provider, …)` :713, `agent.update_provider` :720) |
+| `Agent::update_provider` | `agent.rs:4936-4956` | **`:5655-5675`** (`.provider_name()` :5670, `.model_config()` :5671) |
+| `get_extension_by_name` discards `enabled` | `config/extensions.rs:101-103` | **`:138-140`** |
+| `get_extension_entry_by_name` | — | **`:179-181`** (the resolver reconciliation #20 requires) |
+| `check_enable_allowed` | `extension_manager_extension.rs:97-124` | **`:97-125`** |
+| `ProviderMetadata.known_models` / `.allows_unlisted_models` | `providers/base.rs:156` / `:163` | **exact, both** |
+| `providers()` factory | `providers/factory.rs:109` | **exact**, re-exported at **`providers/mod.rs:47-49`** |
+
+⚠ **Reconciliation #20 is still exactly right and still needed.** `get_extension_by_name`
+(**`config/extensions.rs:138-140`**) is verbatim
+`get_extension_entry_by_name(name).map(|entry| entry.config)` — it still discards
+`entry.enabled`, and `check_enable_allowed` (**`extension_manager_extension.rs:97-125`**)
+is still the only thing that reads it. Resolve through the **entry**, as Step 3 does.
+
+⚠ **`with_unlisted_models` is on `ProviderMetadata`, not on a registry.** Earlier
+revisions cited `provider_registry.rs:119`; the real builder is
+`ProviderMetadata::with_unlisted_models()` at **`providers/base.rs:234-238`**, called by
+ten providers (azure, bedrock, versa_bedrock, gcpvertexai, google, openrouter, codex,
+githubcopilot, xiaomi_mimo, zai). The claim the comment makes — that a custom provider
+waves the model check through — is unchanged; only the address was wrong.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -7413,7 +9743,8 @@ four dimensions:
         // Decision b, honestly implemented: a provider that DECLARES it accepts
         // unlisted models must accept them here too. ollama, llamacpp,
         // gcpvertexai and every custom/declarative provider set this flag
-        // (`with_unlisted_models()`, provider_registry.rs:119), and the GUI's own
+        // (`ProviderMetadata::with_unlisted_models()`, providers/base.rs:235-238,
+        // called by 10 providers incl. azure/bedrock/openrouter), and the GUI's own
         // model picker honours it. Refusing `ollama` + `qwen3.6:latest` — a
         // locally pulled model that is by definition not in any published
         // catalog — would make the tool stricter than the UI it mirrors.
@@ -7471,10 +9802,19 @@ struct WorkspaceSetToolsParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     model: Option<String>,
     /// The knowledge bases active for the session, replacing the current set.
-    /// An empty list clears them. (Plural per issue #45 — see the plan's
-    /// Prerequisites section for the single-KB fallback.)
+    /// An empty list clears them. (Plural per issue #45.)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     set_knowledge_bases: Option<Vec<String>>,
+    /// Which of `set_knowledge_bases` becomes the session's **write target** —
+    /// where a `kb_write`/`kb_ingest` with no explicit `kb_id` lands.
+    ///
+    /// Omit it and the sensible thing happens: the current target is kept if it
+    /// is still in the new set, otherwise the first base in the new list is
+    /// pinned, and an empty list clears the target. Pass `""` to clear it
+    /// explicitly. Only meaningful together with `set_knowledge_bases`, and it
+    /// must name one of them — the service refuses a target outside the set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    primary_knowledge_base: Option<String>,
 }
 
 /// Is this model acceptable for this provider?
@@ -7509,10 +9849,10 @@ impl WorkspaceClient {
         //
         // Resolve through `get_extension_entry_by_name`, NOT
         // `get_extension_by_name`. The latter is `…entry_by_name(name).map(|e|
-        // e.config)` (`config/extensions.rs:101-103`) — it DISCARDS the
+        // e.config)` (`config/extensions.rs:138-140`) — it DISCARDS the
         // operator's `enabled` flag. Issue #42's gate lives one layer up, in
         // `manage_extensions`' enable path (`check_enable_allowed`,
-        // `extension_manager_extension.rs:97-124`), and `Agent::add_extension`
+        // `extension_manager_extension.rs:97-125`), and `Agent::add_extension`
         // does not re-check it. So resolving with the flag-less helper would
         // make `workspace_set_tools` a SECOND, ungated way to enable an
         // extension an operator deliberately wrote `enabled: false` for —
@@ -7565,7 +9905,7 @@ impl WorkspaceClient {
             }
             (Some(provider_name), model) => {
                 // The provider registry is the same one /agent/update_provider
-                // resolves through (routes/agent.rs:688). NOTE the real
+                // resolves through (routes/agent.rs:713). NOTE the real
                 // signature: `pub async fn providers() -> Vec<(ProviderMetadata,
                 // ProviderType)>` (`providers/factory.rs:109`, re-exported at
                 // `providers/mod.rs:47`). It must be AWAITED, and its items are
@@ -7616,7 +9956,7 @@ impl WorkspaceClient {
         };
 
         // ---- Apply. --------------------------------------------------------
-        // The exact /agent/add_extension handler path (routes/agent.rs:720-743):
+        // The exact /agent/add_extension handler path (routes/agent.rs:744-767):
         // add on the live agent, persist only after a successful load.
         let agent_manager = crate::execution::manager::AgentManager::instance()
             .await
@@ -7668,7 +10008,7 @@ impl WorkspaceClient {
         }
 
         // Model/provider — mirrors /agent/update_provider, which also persists
-        // provider_name + model_config onto the session row (agent.rs:4936-4956).
+        // provider_name + model_config onto the session row (agent.rs:5655-5675).
         if let Some((provider_name, model_name, provider)) = new_provider {
             agent
                 .update_provider(provider, &args.session_id)
@@ -7677,15 +10017,33 @@ impl WorkspaceClient {
             applied.push(format!("model={provider_name}/{model_name}"));
         }
 
-        // Knowledge bases (plural — issue #45).
+        // Knowledge bases (plural — issue #45), with their write target.
         if let Some(kbs) = args.set_knowledge_bases {
+            use crate::workspace_services::KbPrimaryChoice;
             let services = workspace_services::get()
                 .ok_or("knowledge-base scoping requires the BioRouter daemon")?;
-            services.set_knowledge_bases(&args.session_id, &kbs)?;
-            applied.push(if kbs.is_empty() {
+            // Three-valued, because the underlying model is: absent → Auto
+            // (keep-if-member, else first, else clear); `""` → an explicit
+            // "no write target here"; a name → pin it. Membership is validated
+            // by the service against the RESULTING set, so a name outside `kbs`
+            // comes back as a clear error rather than a half-applied write.
+            let primary = match args.primary_knowledge_base.as_deref() {
+                None => KbPrimaryChoice::Auto,
+                Some("") => KbPrimaryChoice::Clear,
+                Some(id) => KbPrimaryChoice::Set(id.to_string()),
+            };
+            let selection = services.set_knowledge_bases(&args.session_id, &kbs, primary)?;
+            applied.push(if selection.kb_ids.is_empty() {
                 "kb=<cleared>".to_string()
             } else {
-                format!("kb={}", kbs.join("+"))
+                // Report the RESULT, not the request: the service may have moved
+                // the write target itself, and a tool result that echoes the
+                // request teaches the model a state the store does not hold.
+                format!(
+                    "kb={} (primary={})",
+                    selection.kb_ids.join("+"),
+                    selection.primary_kb.as_deref().unwrap_or("<none>")
+                )
             });
         }
 
@@ -7741,9 +10099,9 @@ guessed):
 - `ProviderMetadata.known_models` is `Vec<ModelInfo>` with a `name` field
   (`providers/base.rs:156`), and `ProviderMetadata.allows_unlisted_models` is a
   `pub bool` on the same struct (`:163`).
-- `ModelConfig::new(&str)` is what `routes/agent.rs:679` calls, and
+- `ModelConfig::new(&str)` is what `routes/agent.rs:703` calls, and
   `crate::providers::create(&str, ModelConfig)` is the same factory at
-  `routes/agent.rs:688`.
+  `routes/agent.rs:713`.
 - `agent.persist_extension_state(&session_id)` below snapshots **every loaded**
   extension. That is why Task 18 must land its auto-injection exclusion first
   (reconciliation #13): without it, this call is one of the two places that would
@@ -7983,7 +10341,8 @@ is one park behaviour in the extension, not two:
 | Aspect | Rule | Why |
 |---|---|---|
 | Bound | `timeout_s` default 120, clamped to 600 | Same clamp as `send_prompt` (`:timeout_s.unwrap_or(120).min(600)`); a tool call must not outlive a turn |
-| Timeout is not an error | Returns a normal result saying which sessions are still running | Same as `subagent_status`'s documented "a timeout is not an error — the subagent keeps running" (`subagent_tool.rs:196`) |
+| Timeout is not an error | Returns a normal result saying which sessions are still running | Same as `subagent_status`'s documented "a timeout is not an error — the subagent keeps running" (`subagent_tool.rs:191`, the `timeout_s` schema description — the plan's old `:196` is
+five lines further down, on `cancel`) |
 | Subscribe-before-check | Subscribes to every id, THEN checks whether each is already idle | Closes the race where a session finishes between the caller's `workspace_list` and its `workspace_watch` |
 | Already-finished sessions | Return immediately, listed as `completed` with reason `"already idle"` | A watch that blocks on a finished session for 120 s is a deadlock the model cannot diagnose |
 | **Unknown liveness** | **Park.** Never report `"already idle"` from an *unknown* | See below — this is the headless correctness rule |
@@ -8625,11 +10984,11 @@ sets. Only the spawn tool rides along on the auto-inject. The filter that expres
 already exists and is enforced in **both** places it must be:
 
 - advertisement — `get_prefixed_tools` only emits a tool when
-  `config.is_tool_available(&tool.name)` (`extension_manager.rs:971`), and an empty
+  `config.is_tool_available(&tool.name)` (`extension_manager.rs:1119`), and an empty
   `available_tools` means "all" (`extension.rs:563-580`, and the test at
-  `extension_manager.rs:2346` says so in as many words);
+  `extension_manager.rs:2496` says so in as many words);
 - dispatch — `dispatch_tool_call` re-checks the same predicate and returns
-  `RESOURCE_NOT_FOUND` otherwise (`extension_manager.rs:1332-1344`), so a model that
+  `RESOURCE_NOT_FOUND` otherwise (`extension_manager.rs:1483-1495`), so a model that
   remembers a tool name from another session cannot reach a handler this session was
   never granted.
 
@@ -8643,13 +11002,34 @@ because both are the same extension key with the same client.
 
 **Files:**
 
-- Modify: `crates/biorouter/src/agents/agent.rs` — `list_tools` (:2618; `get_prefixed_tools`
-  at :2619-2623, `subagents_enabled` at :2625, the spawn-tool push block at :2653-2666):
-  hoist the injection **above** `get_prefixed_tools`; `persist_extension_state` (:2441)
-  gains the auto-injection filter; `add_extension` clears the mark; the `Agent` struct
-  (:273) gains one field
+- Modify: `crates/biorouter/src/agents/agent.rs` — `list_tools` (**:3113-3164**;
+  `get_prefixed_tools` call at **:3116**, `subagents_enabled` call at **:3120**-ish
+  inside the same fn, the spawn-tool push block at **:3149-3160** with
+  `create_subagent_tool` pushed at **:3152** and `create_subagent_status_tool` at
+  **:3158**): hoist the injection **above** `get_prefixed_tools`;
+  `persist_extension_state` (**:2936-2955**) gains the auto-injection filter;
+  `add_extension` (**:3030**) clears the mark; the `Agent` struct (**:514-603**) gains
+  one field, initialized in the single `Agent { … }` literal whose `soft_interrupts`
+  line is at **:870**
 - Modify: `crates/biorouter/src/agents/workspace_extension.rs` — advertise
   `create_subagent_tool(&[])` from `get_tools()`, plus one sentence in `INSTRUCTIONS`
+
+⚠ **This task has the largest block of line drift in the plan — 22 anchors, all in
+`agent.rs`, which grew from 6,001 lines to 6,817.** Every number above and below has been
+re-verified at `275d735d` (2026-07-28) and every **symbol** is intact and unchanged in
+shape. If a number still misses, the symbol is the anchor; expect a residual offset of
+roughly **+240 to +710** on any `agent.rs:NNNN` this plan cites that has *not* been
+re-verified, and never trust a near miss.
+
+Two structural facts that also survived and that this task depends on:
+
+- The spawn-tool push at **:3149-3160** is still the **only** place
+  `create_subagent_tool` is pushed anywhere in the tree, so the delegation hole
+  reconciliation #13 and the 18 → 19 ordering are about is real and unchanged.
+- The spawn *gate* at **:2632** still keys only on
+  `session.session_type == SessionType::SubAgent`, never on `subagents_enabled` — which
+  is exactly what makes the two-persist-path filter below load-bearing rather than
+  cosmetic.
 
 **Why the advertisement lands HERE and not in Task 19.** Task 18 exists to close the
 delegation hole *before* Task 19 opens it, and the ordering is called non-negotiable for
@@ -8664,10 +11044,12 @@ is deliberate, lives for exactly one commit, and is strictly safer than a commit
 neither.
 
 **Where the injection goes, and why not `get_extensions_map`.** The obvious mirror is
-`config/extensions.rs::get_extensions_map` (:59-73), which injects absent platform
-extensions with their defaults. That is the wrong seam here for one verified reason:
+`config/extensions.rs::get_extensions_map` (**:30**, whose
+`inject_platform_extensions(&mut extensions_map)` call is at **:57** and whose helper
+is **:61-106**), which injects absent platform extensions with their defaults. That is
+the wrong seam here for one verified reason:
 `subagents_enabled` is a **per-agent, per-session, async** predicate
-(`agent.rs:2582-2617` — it reads the agent's mode, its provider's model name, the
+(`agent.rs:3076-3111` — it reads the agent's mode, its provider's model name, the
 session's type, and whether any extension is loaded at all), while `get_extensions_map`
 is a synchronous read of the global config with no session in scope. Injecting there
 would enable the workspace extension for every session in the config file, which is
@@ -8705,7 +11087,7 @@ In `agent.rs`'s test module, beside the existing subagent-guard tests:
     }
 
     /// The dispatch half of the same guarantee: `available_tools` is enforced
-    /// on the call path too (extension_manager.rs:1332), so a remembered tool
+    /// on the call path too (extension_manager.rs:1483), so a remembered tool
     /// name cannot reach the handler.
     #[tokio::test]
     async fn an_auto_injected_session_cannot_dispatch_a_cross_session_tool() {
@@ -8773,7 +11155,7 @@ In `agent.rs`'s test module, beside the existing subagent-guard tests:
 
         // BOTH persist paths must filter, so assert on the SHARED helper first —
         // that is the one thing covering `save_extension_state` too. That method
-        // is the reply loop's own path (`agent.rs:4234`, fired whenever the model
+        // is the reply loop's own path (`agent.rs:4883`, fired whenever the model
         // enables an extension mid-turn through `manage_extensions`); it snapshots
         // the same set and, without the shared helper, is unfiltered.
         let persistable: Vec<String> = agent
@@ -8852,7 +11234,9 @@ In `agent.rs`'s test module, beside the existing subagent-guard tests:
 
 Both helpers build an `Agent` over a `TempDir`-backed `SessionManager` with exactly one
 loaded extension (`subagents_enabled` returns false when the extension list is empty —
-`agent.rs:2613-2617`) and the requested mode:
+its final expression is the `!self.extension_manager.list_extensions().await
+.map(|ext| ext.is_empty()).unwrap_or(true)` at `agent.rs:3105-3110`) and the requested
+mode:
 
 ```rust
     async fn agent_for_tests(mode: crate::config::BioRouterMode) -> (Agent, String) {
@@ -8899,8 +11283,8 @@ loaded extension (`subagents_enabled` returns false when the extension list is e
 
 (`BioRouterMode`'s exact variant names: `grep -n "pub enum BioRouterMode" -A 10
 crates/biorouter/src/config/mod.rs` — the non-Auto variant is what
-`subagents_enabled`'s `!= BioRouterMode::Auto` gate at :2596 rejects. `subagents_enabled`
-also refuses when the provider's model starts with `gemini` (:2600-2607); a
+`subagents_enabled`'s `!= BioRouterMode::Auto` gate at :3082-3084 rejects. `subagents_enabled`
+also refuses when the provider's model starts with `gemini` (:3085-3092); a
 provider-less test agent's `provider()` returns `Err`, and the `.unwrap_or(false)`
 there keeps the gate open — the `assert!(agent.subagents_enabled(...))` precondition is
 what proves it.)
@@ -8914,10 +11298,10 @@ unprefixed `subagent`).
 - [ ] **Step 3: Implement the per-session injection**
 
 **The injection must run BEFORE `get_prefixed_tools`.** `Agent::list_tools` reads the
-extension manager exactly once, at its first statement (`agent.rs:2619-2623`), and every
+extension manager exactly once, at its first statement (`agent.rs:3116`), and every
 later `prefixed_tools.push(...)` appends *hand-built* tools. `ensure_spawn_extension`
 only **loads** an extension — it does not re-run `get_prefixed_tools` — so calling it at
-`:2653`, where the old push was, produces a tool list with no spawn tool at all on that
+`:3152`, where the old push was, produces a tool list with no spawn tool at all on that
 turn. Because the extension is then already loaded, the *next* turn would have it, which
 makes the bug present itself as "the first turn of every session cannot delegate" — and
 for a one-shot `biorouter run`, every turn is the first turn.
@@ -8949,7 +11333,7 @@ So `list_tools` opens with the gate and the injection, and the tool list is buil
 
 (the `let subagents_enabled = …` binding at :2625 moves up with it — it is used by
 nothing between the two positions — and the `if subagents_enabled { … }` push block at
-:2653-2666 stays as it is until Task 19 deletes it. Sub-workflow descriptions are
+:3149-3160 stays as it is until Task 19 deletes it. Sub-workflow descriptions are
 handled in Task 19 Step 4.)
 
 and add the method beside it:
@@ -8969,7 +11353,7 @@ and add the method beside it:
             description: "Delegate work to subagents".to_string(),
             bundled: Some(true),
             // The spawn-only surface. Enforced on BOTH the advertisement path
-            // (extension_manager.rs:971) and the dispatch path (:1332).
+            // (extension_manager.rs:1119) and the dispatch path (:1483).
             available_tools: vec![
                 crate::agents::subagent_tool::SUBAGENT_TOOL_NAME.to_string(),
             ],
@@ -8996,8 +11380,10 @@ and add the method beside it:
 ```
 
 `Agent::add_extension` is the same method `/agent/add_extension` calls
-(`routes/agent.rs:720`); `is_extension_enabled` is `extension_manager.rs:845`. Because
-`list_tools` runs on every turn (`reply_parts.rs:120` region), the check is re-evaluated
+(`routes/agent.rs:744`); `is_extension_enabled` is **`extension_manager.rs:987`** (the
+plan's old `:999` is `get_extension_configs`, one method further down — a near miss, and
+the two do very different things). Because
+`list_tools` runs on every turn (`reply_parts.rs:119` region), the check is re-evaluated
 each turn — correct: a session whose mode changes mid-run to one where
 `subagents_enabled` is false simply stops advertising the tool, and one that gains its
 first extension gains it.
@@ -9008,7 +11394,7 @@ enough to achieve that.** The auto-injection is a *derived* consequence of
 `extension_data` would make it survive a mode change to Chat as a dead entry, and would
 show up in Settings as if the user had enabled Workspace Control.
 
-But `persist_extension_state` (`agent.rs:2442-2461`) does not snapshot *the extension
+But `persist_extension_state` (`agent.rs:2936-2955`) does not snapshot *the extension
 being changed* — it snapshots **every extension currently loaded**:
 
 ```rust
@@ -9020,9 +11406,9 @@ so once `ensure_spawn_extension` has run, the very next persist by **any** calle
 the injection into the session row.
 
 **And there are TWO such methods, not one.** `save_extension_state`
-(`agent.rs:2419-2439`) has a structurally identical body — same
+(`agent.rs:2913-2933`) has a structurally identical body — same
 `get_extension_configs()` snapshot, same `extension_data` write — and its caller is
-inside the agent's own reply loop (`agent.rs:4233-4237`):
+inside the agent's own reply loop (`agent.rs:4880-4886`):
 
 ```rust
 if all_install_successful && !enable_extension_request_ids.is_empty() {
@@ -9038,7 +11424,7 @@ closes two doors of three.
 The consequence is not cosmetic. A persisted `workspace {available_tools:["subagent"]}`
 entry reloads in a session whose mode no longer enables subagents, and dispatch gates
 the spawn tool **only** on `session.session_type == SessionType::SubAgent`
-(`agent.rs:2138`), never on `subagents_enabled` — so the dead grant is a *live*,
+(`agent.rs:2632`), never on `subagents_enabled` — so the dead grant is a *live*,
 dispatchable spawn tool in a mode whose gate says delegation is off.
 
 So extract ONE filter and call it from both:
@@ -9056,7 +11442,7 @@ pub struct Agent {
 ```
 
 (initialized `auto_injected_extensions: Mutex::new(HashSet::new())` beside the other
-`Mutex` fields in the single `Agent { … }` literal, `agent.rs:579` inside
+`Mutex` fields in the single `Agent { … }` literal, `agent.rs:870` inside
 `with_config`), plus the shared helper and four call-site changes:
 
 ```rust
@@ -9079,24 +11465,25 @@ pub struct Agent {
             .collect()
     }
 
-    // 1. agent.rs:2419 — the reply loop's path:
+    // 1. agent.rs:2913 — the reply loop's path:
     pub async fn save_extension_state(&self, session: &SessionConfig) -> Result<()> {
         let extensions_state =
             EnabledExtensionsState::new(self.persistable_extension_configs().await);
-        // … the rest is unchanged (:2424-2439).
+        // … the rest is unchanged (:2918-2933).
 
-    // 2. agent.rs:2442 — the route/tool path:
+    // 2. agent.rs:2936 — the route/tool path:
     pub async fn persist_extension_state(&self, session_id: &str) -> Result<()> {
         let extensions_state =
             EnabledExtensionsState::new(self.persistable_extension_configs().await);
-        // … the rest is unchanged (:2445-2461).
+        // … the rest is unchanged (:2940-2955).
 ```
 
-3. In `add_extension` (`agent.rs:2536`), right after a successful load. Note the
+3. In `add_extension` (`agent.rs:3030`), right after a successful load. Note the
    binding: this function's parameter is `extension: ExtensionConfig` — there is **no**
    `name` in scope (that is `remove_extension`, the adjacent function), so
    `name.as_str()` is E0425. `extension` is still live after the `match` because the
-   non-Frontend arm passes `extension.clone()` to the extension manager (`:2565`):
+   non-Frontend arm passes `extension.clone()` to the extension manager (that arm is
+   `:3057-3061`, with `extension.clone()` on `:3059`):
 
 ```rust
         // An EXPLICIT add is a user decision, even for a name we auto-injected
@@ -9138,7 +11525,7 @@ In `workspace_extension.rs`'s `get_tools()`, append:
 
 `get_tools()` is an associated fn with no session in scope, so it always advertises the
 tool; the *per-session* gate is `available_tools`, enforced on both the advertisement
-path (`extension_manager.rs:971`) and the dispatch path (`:1332`) — which is exactly the
+path (`extension_manager.rs:1119`) and the dispatch path (`:1483`) — which is exactly the
 two-tier table above. A session that never auto-injected and never enabled `workspace`
 simply does not have this client loaded.
 
@@ -9162,7 +11549,7 @@ for Task 24's `workspace_open` line.
 
 Run: `cargo test -p biorouter --lib agents::agent agents::workspace_extension agents::extension_manager`
 Expected: PASS (5 new agent tests, including the persistence exclusion; the
-`available_tools` tests at `extension_manager.rs:2313-2380` still green — this task
+`available_tools` tests at `extension_manager.rs:2456-2545` still green — this task
 relies on them, it does not change them).
 
 - [ ] **Step 7: Commit**
@@ -9200,7 +11587,7 @@ auto-injection every existing config loses delegation the moment this lands.
 **What the tool surface becomes (decision 22 — the name does not change):**
 
 ```
-model calls:   workspace__subagent        (prefixed by extension_manager.rs:971)
+model calls:   workspace__subagent        (prefixed by extension_manager.rs:1121)
                subagent                   (tolerated bare form, prefix-stripping models)
 params:        instructions, subworkflow, parameters, extensions, settings,
                summary, background        ← EVERY existing field, unchanged
@@ -9212,17 +11599,20 @@ operator merged instead of adding `workspace_spawn_subagent` beside it.
 
 **Files:**
 
-- Modify: `crates/biorouter/src/agents/subagent_tool.rs` (:27 `SUBAGENT_TOOL_NAME` +
-  the new prefixed constant, :113-174 `create_subagent_tool` schema, `SubagentParams`
-  :86-100 gains two fields, the background-result text at :633 extracted and rewritten)
-- Modify: `crates/biorouter/src/agents/agent.rs` (:2216 dispatch arm, :2318
-  `bound_dispatch`, :2138 recursion guard, :2653-2663 the `create_subagent_tool` push
-  **delete** — Task 18 advertised it from the extension; sub-workflow description
-  rewrite)
+- Modify: `crates/biorouter/src/agents/subagent_tool.rs` (**anchors re-verified at
+  `275d735d`**: **:27** `SUBAGENT_TOOL_NAME` + the new prefixed constant,
+  **:113-172** `create_subagent_tool` schema, `SubagentParams` **:85-100** gains two
+  fields (today: `instructions`, `subworkflow`, `parameters`, `extensions`, `settings`,
+  `summary`, `background`), the background-result text at **:633** extracted and
+  rewritten)
+- Modify: `crates/biorouter/src/agents/agent.rs` (**:2710** dispatch arm
+  (`if tool_call.name == SUBAGENT_TOOL_NAME`), **:2812** `bound_dispatch`, **:2632**
+  recursion guard, **:3149-3160** the `create_subagent_tool` push **delete** — Task 18
+  advertised it from the extension; sub-workflow description rewrite)
 - Modify: `crates/biorouter/src/agents/extension_manager.rs` (one small public helper
   for the per-session availability re-check — see Step 5)
-- Modify: `crates/biorouter/src/agents/reply_parts.rs` (:133-140 the code-execution
-  retain filter)
+- Modify: `crates/biorouter/src/agents/reply_parts.rs` (**:127-141** the code-execution
+  retain filter; the `SUBAGENT_TOOL_NAME` clause is **:135**)
 - Modify: `crates/biorouter/tests/subagent_tool_tests.rs` (5 `create_subagent_tool` /
   `SUBAGENT_TOOL_NAME` sites)
 
@@ -9230,16 +11620,23 @@ operator merged instead of adding `workspace_spawn_subagent` beside it.
 
 ```bash
 grep -rn "create_subagent_tool\|SUBAGENT_TOOL_NAME" crates/ | grep -v "^crates/biorouter/src/agents/subagent_tool.rs"
-# Verified at a01be9b7 — 13 sites in 3 files:
-#   crates/biorouter/src/agents/agent.rs            6
-#   crates/biorouter/src/agents/reply_parts.rs      2
-#   crates/biorouter/tests/subagent_tool_tests.rs   5
+# RE-VERIFIED at 275d735d (2026-07-28) — still exactly 13 sites in 3 files:
+#   crates/biorouter/src/agents/agent.rs            6   (:36, :37, :2632, :2710, :2812, :3152)
+#   crates/biorouter/src/agents/reply_parts.rs      2   (:20, :135)
+#   crates/biorouter/tests/subagent_tool_tests.rs   5   (:1, :48, :57, :86, :88)
 ```
 
 (The earlier draft of this plan claimed `agent.rs (4)` and `subagent_tool_tests.rs (4)`.
 Both were undercounts; the numbers above were produced by running the command. A sweep
 whose expected output is wrong is worse than no sweep — the engineer stops when the
 counts match.)
+
+⚠ **Run the command as written, both halves.** The 2026-07-28 drift survey reported
+this count as wrong (claiming 10 sites, with `reply_parts.rs` at 0 and `subagent_tool.rs`
+included) — it had dropped the `SUBAGENT_TOOL_NAME` alternation and the `grep -v`
+exclusion. Re-running the *exact* pipeline above reproduces 13/6/2/5 line-for-line. If
+your run disagrees, check your command before you check the tree: `reply_parts.rs`
+matches on the **constant**, not on `create_subagent_tool`, which it has never used.
 
 - [ ] **Step 2: Write the failing tests**
 
@@ -9369,7 +11766,8 @@ In `agent.rs`'s test module:
 `test_create_tool_with_subworkflows`, which asserts the same two substrings against
 `create_subagent_tool` directly — this is that assertion, moved onto the real advertised
 tool. `Agent::add_sub_workflows(Vec<SubWorkflow>)` is the registration method
-(`agent.rs:2103`); the map itself is `Mutex<HashMap<String, SubWorkflow>>` at `:278`.
+(`agent.rs:2597`, `add_sub_workflows`); the map itself is
+`Mutex<HashMap<String, SubWorkflow>>` at `:519`.
 `SubWorkflow` is `crate::workflow::SubWorkflow` (`workflow/mod.rs:120`), with exactly the
 five fields used above.)
 
@@ -9394,7 +11792,7 @@ In `subagent_tool.rs`:
 pub const SUBAGENT_TOOL_NAME: &str = "subagent";
 /// The name dispatch actually sees once the workspace extension advertises the
 /// tool: extension-advertised tools are prefixed `{extension}__{tool}`
-/// (`extension_manager.rs:971`).
+/// (`extension_manager.rs:1119`).
 pub const SUBAGENT_TOOL_PREFIXED: &str = "workspace__subagent";
 ```
 
@@ -9427,16 +11825,16 @@ properties beside `summary`:
 ```
 
 (d) **Delete** the standalone advertisement in `agent.rs` — the
-`prefixed_tools.push(create_subagent_tool(&sub_workflows_vec));` at `:2658` and the
-`sub_workflows` read that feeds it (`:2656-2657`). Task 18 hoisted the injection above
+`prefixed_tools.push(create_subagent_tool(&sub_workflows_vec));` at `:3152` and the
+`sub_workflows` read that feeds it (`:3150-3151`). Task 18 hoisted the injection above
 `get_prefixed_tools` and added the extension-side advertisement, so this push is now the
 duplicate. Leave the surrounding `if subagents_enabled { … }` block in place if the
-`create_subagent_status_tool` push at `:2660-2664` is still inside it; Task 19b removes
+`create_subagent_status_tool` push at `:3155-3159` is still inside it; Task 19b removes
 the block entirely.
 
 **And drop `create_subagent_tool` from the import at `agent.rs:36`.** After this
 deletion `grep -n create_subagent_tool crates/biorouter/src/agents/agent.rs` must
-return nothing: `:2658` was its only use in the file, Step 4(f)'s replacement calls
+return nothing: `:3152` was its only use in the file, Step 4(f)'s replacement calls
 `crate::agents::subagent_tool::build_tool_description` fully qualified, and
 `./scripts/clippy-lint.sh` runs `-D warnings`, where an unused import is fatal. The
 Task 21 gate asserts `expect: 0` for exactly this grep. `SUBAGENT_TOOL_NAME` STAYS on
@@ -9521,12 +11919,28 @@ runs before it). `build_tool_description` is currently private — make it
 
 - [ ] **Step 5: Rewire dispatch**
 
+⚠ **`is_spawn_tool_call` does not exist yet — this step CREATES it** (clarified
+2026-07-28; verified: `grep -rn "is_spawn_tool_call" crates/` returns nothing. The
+repo-root form of that grep returns 29 hits, all of them this plan file citing the
+name, so `crates/` is the scope that answers the question). Reconciliation #17 says this step "adds `is_parking_workspace_tool` beside
+`is_spawn_tool_call`", which reads as though the latter were already there. It is not.
+What exists today is the inline predicate the helper below replaces:
+
+```rust
+// agent.rs:2812, inside dispatch_tool_call's returned future setup:
+let bound_dispatch = tool_call.name != SUBAGENT_TOOL_NAME;
+```
+
+with its reasoning at **:2805-2810** and the acquire at **:2827-2837**. So this step is
+*extract the inline predicate into a named helper, then add the parking-tool sibling* —
+in that order, and both in `agent.rs`.
+
 In `agent.rs`, add beside the guards:
 
 ```rust
 /// BR-71 decision 22: the merged spawn tool reaches dispatch under the
 /// workspace prefix, and bare for models that strip prefixes (the same
-/// tolerance `extension_manager.rs:1294-1304` already applies to
+/// tolerance `extension_manager.rs:1444-1457` already applies to
 /// code_execution tools).
 pub(crate) fn is_spawn_tool_call(tool_name: &str) -> bool {
     tool_name == crate::agents::subagent_tool::SUBAGENT_TOOL_PREFIXED
@@ -9534,13 +11948,24 @@ pub(crate) fn is_spawn_tool_call(tool_name: &str) -> bool {
 }
 ```
 
-Change the dispatch arm at :2216 from `if tool_call.name == SUBAGENT_TOOL_NAME` to
+⚠ **This helper has a downstream consumer in a different PHASE: Task 36 (Phase 3) uses it
+twice in production code** — inside `is_workspace_tool_refused_for`, and inside the
+`dispatch_tool_call` refusal that picks between "Subagents cannot create other subagents"
+and "Subagents cannot use workspace tools". Both call sites are in `agent.rs`, so they
+need no import, but they DO need this exact name and this exact signature
+(`&str -> bool`). Skipping, renaming, or re-scoping it (e.g. to a private `fn`) breaks
+Task 36's compile **17 tasks later**, in another phase, with nothing in the failure
+pointing back here. **19 → 36 is therefore a real ordering dependency, not a numbering.**
+It is recorded in three places on purpose: here, in Task 36's Depends block, and on
+decision 25. Do not remove one and assume the others carry it.
+
+Change the dispatch arm at **:2710** from `if tool_call.name == SUBAGENT_TOOL_NAME` to
 `if is_spawn_tool_call(tool_call.name.as_ref())`, and insert the gating re-check as its
 first statement — the workspace surface must not bypass the mode/model gating the
 advertisement applies:
 
 ```rust
-            // Same gate `subagents_enabled` applies when advertising (:2588).
+            // Same gate `subagents_enabled` applies when advertising (:3076).
             // The extension advertises the tool; this is what stops a model
             // that remembers the name from spawning in a session where
             // delegation is off.
@@ -9556,7 +11981,7 @@ advertisement applies:
             }
             // …and the PER-SESSION grant, which the mode gate above does not
             // cover. Intercepting before `ExtensionManager::dispatch_tool_call`
-            // means the `available_tools` check at `extension_manager.rs:1333`
+            // means the `available_tools` check at `extension_manager.rs:1484`
             // never runs for this name, so a session whose `workspace` entry was
             // deliberately restricted — say `available_tools:
             // ["workspace_list"]` — could still spawn through the BARE
@@ -9579,7 +12004,7 @@ advertisement applies:
             }
 ```
 
-with the helper in `extension_manager.rs`, beside the existing check at `:1333`:
+with the helper in `extension_manager.rs`, beside the existing check at `:1484`:
 
 ```rust
     /// Is `tool` granted for `extension` in this session's configuration?
@@ -9628,7 +12053,7 @@ and the matching test in `agent.rs`:
 The rest of the arm (`let provider = …` through `handle_subagent_tool(…)`, :2217-2249)
 is **byte-identical** to today's body.
 
-Update `bound_dispatch` at :2318 from `tool_call.name != SUBAGENT_TOOL_NAME` to
+Update `bound_dispatch` at **:2812** from `tool_call.name != SUBAGENT_TOOL_NAME` to
 
 ```rust
         // The exclusions from the process-global 8-permit tool semaphore
@@ -9638,7 +12063,7 @@ Update `bound_dispatch` at :2318 from `tool_call.name != SUBAGENT_TOOL_NAME` to
         // The spawn tool, under BOTH name forms: it recursively runs its own
         // agent loop whose leaf tools contend for this same semaphore, so a
         // wrapper holding a permit while its inner tools wait for one would
-        // deadlock — the reason stated in the comment at :2312-2317.
+        // deadlock — the reason stated in the comment at :2805-2810.
         //
         // BR-71 adds two more wrappers with exactly that shape. Both PARK on
         // work performed elsewhere, for up to 600 s:
@@ -9706,7 +12131,7 @@ deadlock:
     }
 ```
 
-Update the recursion guard at :2138 the same way:
+Update the recursion guard at **:2632** the same way:
 
 ```rust
         if session.session_type == SessionType::SubAgent && is_spawn_tool_call(tool_call.name.as_ref()) {
@@ -9719,7 +12144,7 @@ subagents", and the broader guard is the backstop.)
 
 - [ ] **Step 6: Fix the code-execution retain filter — for the WHOLE workspace surface**
 
-`reply_parts.rs:127-142` keeps only `code_execution__*` tools plus the bare `subagent` /
+`reply_parts.rs:127-141` keeps only `code_execution__*` tools plus the bare `subagent` /
 `subagent_status` when the code-execution extension is on. Two things are wrong with it
 after the merge, and the second is worse than the first:
 
@@ -9750,7 +12175,7 @@ pub(crate) fn survives_code_execution_filter(tool_name: &str, code_exec_prefix: 
         || tool_name == SUBAGENT_TOOL_NAME
         || tool_name == SUBAGENT_TOOL_PREFIXED
         // KEEP until Task 19b deletes the tool itself. `subagent_status` is
-        // still advertised at this commit (`agent.rs:2664`, gated on
+        // still advertised at this commit (`agent.rs:3158`, gated on
         // `BIOROUTER_SUBAGENT_BACKGROUND`), and BR-40's reason for the clause
         // still holds: a model that can spawn a background child but cannot poll
         // it strands every handle. Dropping it here also orphans the import at
@@ -9830,25 +12255,35 @@ human; the mapping table is reconciliation #12.
 
 **Files:**
 
-- Modify: `crates/biorouter/src/agents/subagent_tool.rs` (:28 `SUBAGENT_STATUS_TOOL_NAME`,
-  :176-206 `create_subagent_status_tool`, :208-216 `SubagentStatusParams`, :228-244
-  `handle_subagent_status_tool`, :246+ the private `subagent_status`, the prose at :162
-  and :346 and :582, and the two tests at :907 and :949 — **all deleted**)
-- Modify: `crates/biorouter/src/agents/agent.rs` (:36 import, :2250-2258 dispatch arm,
-  :2660-2664 the offering — all deleted)
-- Modify: `crates/biorouter/src/agents/reply_parts.rs` (:20 import, :136 the retain
-  clause)
-- Modify: `crates/biorouter/src/agents/subagent_handle.rs` (5 doc-comment mentions)
-- Modify: `crates/biorouter/src/agents/mod.rs` (:56 — the doc comment above
+**Anchors re-verified at `275d735d`, 2026-07-28.**
+
+- Modify: `crates/biorouter/src/agents/subagent_tool.rs` (**:28**
+  `SUBAGENT_STATUS_TOOL_NAME`, **:176-208** `create_subagent_status_tool`, **:211-216**
+  `SubagentStatusParams`, **:228-244** `handle_subagent_status_tool`, **:246+** the
+  private `subagent_status`, the prose at **:162**, **:346** and **:582**, and the two
+  tests at **:907** and **:949** — **all deleted**)
+- Modify: `crates/biorouter/src/agents/agent.rs` (**:36** import, **:2744-2752**
+  dispatch arm (`} else if tool_call.name == SUBAGENT_STATUS_TOOL_NAME {`), **:3155-3159**
+  the offering (`if subagent_handle::background_enabled() { … create_subagent_status_tool() }`)
+  — all deleted)
+- Modify: `crates/biorouter/src/agents/reply_parts.rs` (**:20** import, **:136-139** the
+  retain clause and its BR-40 comment)
+- Modify: `crates/biorouter/src/agents/subagent_handle.rs` (5 doc-comment mentions:
+  **:10**, **:18**, **:29**, **:45**, **:68**)
+- Modify: `crates/biorouter/src/agents/mod.rs` (**:56** — the doc comment above
   `pub mod subagent_handle`)
-- Modify: `docs/agent-loop/tool-routing.md` (:33)
+- Modify: `docs/agent-loop/tool-routing.md` (**:33**)
+- Modify: **`docs/security/privacy-tiers.md` (:1677)** — ⚠ a **fourth** live doc site,
+  added after this task was written by `9eb6de4b docs(security): propose the
+  privacy-tier capability system`. It is the one sweep expectation in this task that
+  drifted. See Step 1.
 
 - [ ] **Step 1: Sweep, with the real expected output**
 
 ```bash
 grep -rn "subagent_status\|SUBAGENT_STATUS\|create_subagent_status_tool\|handle_subagent_status_tool\|SubagentStatusParams" \
   crates/ ui/desktop/src scripts/ .claude/ 2>/dev/null
-# Verified at a01be9b7 — 31 sites in 5 files:
+# RE-VERIFIED at 275d735d (2026-07-28) — still exactly 31 sites in 5 files:
 #   crates/biorouter/src/agents/subagent_tool.rs     17
 #   crates/biorouter/src/agents/agent.rs              5
 #   crates/biorouter/src/agents/subagent_handle.rs    5
@@ -9857,15 +12292,32 @@ grep -rn "subagent_status\|SUBAGENT_STATUS\|create_subagent_status_tool\|handle_
 # Nothing under ui/desktop/src, scripts/ or .claude/.
 
 grep -rn "subagent_status" docs/ | grep -v "^docs/history/" | grep -v br71-execution-plan
-# Verified: 3 live docs — agent-workspace-control.md:421 and :545, tool-routing.md:33.
+# AMENDED 2026-07-28 — FOUR live docs, not three:
+#   docs/agent-loop/designs/agent-workspace-control.md:421   (Task 43 closes the design doc)
+#   docs/agent-loop/designs/agent-workspace-control.md:545   (Task 43)
+#   docs/agent-loop/tool-routing.md:33                       (this task)
+#   docs/security/privacy-tiers.md:1677                      (this task)  <-- NEW
 # The `grep -v br71-execution-plan` is not optional: THIS PLAN lives under docs/ and
-# contributes ~60 hits, which drown the three lines the sweep exists to find.
-# docs/history/** is an immutable record; do NOT edit it.
+# contributes ~60 hits, which drown the four lines the sweep exists to find.
+# docs/history/** is an immutable record; do NOT edit it (it holds 3 further hits).
 ```
 
-(The earlier draft claimed "14 code sites: subagent_tool.rs (8), agent.rs (4),
+(The earliest draft claimed "14 code sites: subagent_tool.rs (8), agent.rs (4),
 reply_parts.rs (2)" and omitted `subagent_handle.rs` and `agents/mod.rs` entirely. The
 counts above came from running the commands.)
+
+⚠ **On the two counts, and on trusting a re-count more than the command.** A
+2026-07-28 drift survey reported both this task's and Task 19's sweep counts as wrong.
+Re-running the exact pipelines above at `275d735d` reproduces **31/17/5/5/3/1** and
+Task 19's **13/6/2/5**, line for line. The survey had recounted with narrower patterns.
+Only the **docs** half really drifted, and it drifted in the direction the plan warns
+about: a *new* site appeared. So run the commands verbatim, and treat a disagreement as
+a difference in command before a difference in tree.
+
+`docs/security/privacy-tiers.md:1677` mentions `subagent_status` in passing, inside a
+parenthetical about session scoping. It needs a one-clause rewrite naming the
+replacement (`workspace_read_conversation` / `workspace_watch`), not a deletion — the
+surrounding argument about session-scoped capability still stands.
 
 - [ ] **Step 2: Write the failing tests**
 
@@ -9874,9 +12326,10 @@ counts above came from running the commands.)
 "`list_tools` does not mention it" — is two tautologies: the workspace extension never
 advertised `subagent_status` at all (`get_tools()` returns only `workspace_*` plus the
 spawn tool), and the `Agent` offers it **only** when
-`subagent_handle::background_enabled()` is true (`agent.rs:2663-2664`), which reads
+`subagent_handle::background_enabled()` is true (`agent.rs:3156-3159`), which reads
 `BIOROUTER_SUBAGENT_BACKGROUND` and **defaults to false**
-(`subagent_handle.rs:47-51`). Both would pass on an unmodified tree, so Step 3's
+(`subagent_handle.rs:47-51`, `.unwrap_or(false)` at :50). Both would pass on an
+unmodified tree, so Step 3's
 "Expected: FAIL" could never happen and a botched deletion would still show green.
 
 ```rust
@@ -9923,16 +12376,16 @@ passes, the gate did not open** — check that `lock_env` is in the test and tha
 - [ ] **Step 4: Delete the tool**
 
 In `subagent_tool.rs`: delete `SUBAGENT_STATUS_TOOL_NAME` (:28),
-`create_subagent_status_tool` (:176-206), `SubagentStatusParams` (:208-216),
+`create_subagent_status_tool` (:176-208), `SubagentStatusParams` (:211-216),
 `handle_subagent_status_tool` (:228-244), the private `subagent_status` (:246+), and
 `wait_duration` / `list_handles` **if** nothing else calls them (`cargo check` names
 them). Delete the two tests at :907 and :949. Rewrite the three prose mentions at :162,
 :346 and :582 to name the workspace replacement from reconciliation #12's table.
 
 In `agent.rs`: delete the `else if tool_call.name == SUBAGENT_STATUS_TOOL_NAME` arm
-(:2250-2258), the `create_subagent_status_tool` import (:36), and the offering block at
-:2660-2664 — which, with Task 19's deletion of the spawn push, empties the
-`if subagents_enabled { … }` block at `:2653`; delete the block too (`subagents_enabled`
+(:2744-2752), the `create_subagent_status_tool` import (:36), and the offering block at
+:3155-3159 — which, with Task 19's deletion of the spawn push, empties the
+`if subagents_enabled { … }` block at `:3149-3160`; delete the block too (`subagents_enabled`
 is still used by Task 18's injection at the top of `list_tools` and by the
 sub-workflow-description rewrite, so the binding stays).
 
@@ -9958,6 +12411,12 @@ import is E0425, the import without the clause is an unused import, and
   "`subagent`/`subagent_status` (which paradoxically require at least one extension to
   …)". Rewrite it for the merged surface; Task 42 owns the full routing table, this is
   just the removal.
+- **`docs/security/privacy-tiers.md:1677`** (added 2026-07-28) — the parenthetical
+  *"(… `subagent_status` is session-scoped)"* inside a `Status: Proposed` design's
+  discussion of scoping. Replace the tool name with its replacement
+  (`workspace_read_conversation` / `workspace_watch`, both session-scoped in the same
+  way) and leave the surrounding argument alone. Do **not** delete the sentence: the
+  point it makes about session scoping is still true and is not BR-71's to retract.
 
 - [ ] **Step 6: Run the full agent + integration suites**
 
@@ -9986,13 +12445,33 @@ that made the old, excluded form print output forever.)
 - [ ] **Step 8: Commit**
 
 ```bash
-git add crates/biorouter/src/agents docs/agent-loop/tool-routing.md
+git add crates/biorouter/src/agents \
+        docs/agent-loop/tool-routing.md \
+        docs/security/privacy-tiers.md
 git commit -m "feat(subagent)!: remove subagent_status; its jobs move to workspace_list/read/watch/close (BR-71)"
 ```
 
 ---
 
-### Task 20: `biorouter sessions watch` / `biorouter sessions send`
+### Task 20: `biorouter session watch` / `biorouter session send`
+
+⚠ **Spelling amendment (Task 31 fixup, 2026-07-31): the command is `session`, singular.**
+This plan wrote `biorouter sessions …` in roughly forty places, including Tasks 38b, 38c
+and 44 — every one of them wrong. There is no `sessions` command and no `sessions` alias:
+`Command::Session` (`cli.rs`, `visible_alias = "s"`) already existed for "Start or resume
+interactive chat sessions", and `watch`/`send` are variants of its `SessionCommand`, which
+is exactly what this task's own **Files** list says one paragraph below. The prose and the
+file-level instruction disagreed, and the prose was the wrong one. Left uncorrected it was
+load-bearing: Task 44's CLI-parity gate resolves `Counterpart::Cli { path }` against the
+real clap tree, so every `&["sessions", …]` row would have failed to resolve, and two rows
+in its mutation table would have failed on the parent rather than on the leaf they exist
+to probe. All corrected in place.
+
+Two things this amendment does **not** touch. The shipped Task 20 commit `aad74e79` says
+"biorouter sessions watch/send" in its subject; that is history and stays wrong — the code
+it landed is right. And adding `sessions` as an alias is deliberately *not* done here: it
+may be worth it (users will type the plural), but that is a product decision for the CLI,
+not a repair a gate task makes to its own docs.
 
 **Decision 9.** Design §8.5 called these "free verification tooling" that falls out of the
 spine; the operator made them a Phase-1 task. They are also the only way to exercise the
@@ -10108,7 +12587,7 @@ Expected: COMPILE ERROR — module not found.
 - [ ] **Step 3: Implement**
 
 ```rust
-//! BR-71 §8.5 / decision 9: `biorouter sessions watch` and `biorouter sessions
+//! BR-71 §8.5 / decision 9: `biorouter session watch` and `biorouter session
 //! send`.
 //!
 //! `watch` streams a session's live events from the observer route added in
@@ -10135,7 +12614,7 @@ fn secret_key() -> Result<String> {
             "BIOROUTER_SERVER__SECRET_KEY is not set, so this command cannot authenticate \
              with the daemon.\nStart the daemon with a known key and reuse it here:\n  \
              BIOROUTER_SERVER__SECRET_KEY=<key> biorouterd agent\n  \
-             BIOROUTER_SERVER__SECRET_KEY=<key> biorouter sessions watch <id>"
+             BIOROUTER_SERVER__SECRET_KEY=<key> biorouter session watch <id>"
         )
     })
 }
@@ -10323,7 +12802,7 @@ fn print_frames(frames: &[serde_json::Value], stop_on_terminal: bool) -> bool {
     done
 }
 
-/// `biorouter sessions watch <id>` — read-only observation of a live session.
+/// `biorouter session watch <id>` — read-only observation of a live session.
 pub async fn handle_session_watch(session_id: &str, follow: bool) -> Result<()> {
     let secret = secret_key()?;
     eprintln!("watching session {session_id} (ctrl-c to stop)");
@@ -10334,7 +12813,7 @@ pub async fn handle_session_watch(session_id: &str, follow: bool) -> Result<()> 
     .await
 }
 
-/// `biorouter sessions send <id> <text>` — inject a turn and, unless
+/// `biorouter session send <id> <text>` — inject a turn and, unless
 /// `--no-wait`, watch it to completion.
 pub async fn handle_session_send(session_id: &str, text: &str, wait: bool) -> Result<()> {
     let secret = secret_key()?;
@@ -10406,8 +12885,8 @@ SID=$(curl -s -X POST http://127.0.0.1:3000/agent/start -H 'X-Secret-Key: test' 
   -H 'Content-Type: application/json' -d '{"working_dir": "/tmp"}' \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
 
-biorouter sessions watch "$SID" --follow &     # observer
-biorouter sessions send "$SID" "say hello in five words"
+biorouter session watch "$SID" --follow &     # observer
+biorouter session send "$SID" "say hello in five words"
 ```
 
 Expected: the `send` prints `[assistant] …` then `[finished] stop`; the backgrounded
@@ -10421,17 +12900,76 @@ Phase-1 spine working end to end. Without a provider configured both print
 git add crates/biorouter-cli/src/commands/session_watch.rs \
         crates/biorouter-cli/src/commands/mod.rs crates/biorouter-cli/src/commands/apps.rs \
         crates/biorouter-cli/src/cli.rs
-git commit -m "feat(cli): biorouter sessions watch/send over the session event spine (BR-71)"
+git commit -m "feat(cli): biorouter session watch/send over the session event spine (BR-71)"
 ```
 
 ---
 
 ### Task 21: Phase 1 gate
 
+**This gate inherits every anchor and every count corrected in Tasks 1-20.** All of them
+were re-verified at `275d735d` on 2026-07-28; the expectations below are the corrected
+ones.
+
 - [ ] **Step 1: Full backend test pass**
 
-Run: `cargo test --workspace --no-fail-fast 2>&1 | tail -10`
-Expected: no failures beyond this machine's recorded pre-existing baseline.
+```bash
+cargo test --workspace --no-fail-fast 2>&1 | tail -10
+```
+
+Expected: no failures beyond this machine's recorded pre-existing baseline
+(`SessionListView.test.tsx` is a known clean-tree frontend failure).
+
+⚠ **Then run, by name, the two integration targets no other step in Phase 1 touches.**
+This was the single largest hole in the phase's coverage: Tasks 8 and 21 ran
+`cargo test -p biorouter-server --lib routes::reply` and
+`cargo test -p biorouter --lib agents::agent` (Task 6 ran neither — its gates are
+`--lib workspace::turn` plus the two writeback integration targets, and its own Step 5
+says in as many words that nothing in `--lib routes::reply` notices a runner that
+reorders bus publications), while the nets for the two invariants
+Phase 1 is most likely to break live in **integration** targets, which `--lib` never
+reaches:
+
+```bash
+cargo test -p biorouter --test conversation_writeback_freshness
+cargo test -p biorouter --test conversation_writeback_stress
+cargo test -p biorouter --test soft_interrupt_agent_loop
+cargo test -p biorouter --test subagent_delegation
+cargo test -p biorouter-server --lib routes::reply::tests::writeback_tests
+```
+
+⚠ **The `::tests::` segment in that last filter is load-bearing — do not "simplify" it
+away.** `mod writeback_tests` is nested *inside* `#[cfg(test)] mod tests` (`reply.rs:1183`
+declares the outer module, `:1243` the inner one), so the full test path is
+`routes::reply::tests::writeback_tests::…`. libtest filters are plain substring matches
+against that path, so the shorter `routes::reply::writeback_tests` matches **nothing**,
+prints `running 0 tests … 181 filtered out`, and **exits 0** — a green gate that ran
+nothing, guarding the exact regression blocker B2 exists to prevent. Verified by running
+both forms at `275d735d`. Whenever a gate names a test module, confirm the count is
+non-zero rather than trusting the exit code.
+
+Expected: **all green.** What each protects, and which task would have broken it:
+
+| Target | Pins | Broken by |
+|---|---|---|
+| `conversation_writeback_freshness` — the **five** #59 completeness tests: `a_client_that_watched_the_turn_knows_every_stored_message_id` (:1986), `a_reply_split_into_several_stored_rows_publishes_every_one_of_their_ids` (:2037), `a_row_the_user_is_never_shown_is_published_as_not_user_visible` (:2082), `nothing_is_published_that_the_store_does_not_hold` (:2159), `a_published_user_visible_row_is_not_an_instruction_to_draw` (:2213) | #59's completeness contract — every stored row is named, only stored rows are named, and a named row is not a draw instruction | Task 8 is the path that delivers all five; a lost `MessagesPersisted` arm in Task 7 makes the first unsatisfiable and the rest vacuous |
+| …and the **three** #59 ordering tests: `a_slash_command_hands_over_its_messages_before_it_names_them` (:2349), `an_undeliverable_elicitation_answer_is_ordered_the_same_way` (:2388), `no_turn_shape_names_a_row_before_it_hands_it_over` (:2420) | the #59 ordering invariant across every turn shape | Task 3 rewrites a publication site inside the shapes these sweep; Task 34 adds a *relay* to the same producer stream, and these are what prove it did not reorder |
+| `conversation_writeback_stress` | #51's concurrent-append guarantees under load | Tasks 6/8 — the detached runner is a new concurrent writer |
+| `routes::reply::tests::writeback_tests` (reply.rs:1243-1426, **6** tests) | #51 W5's 409 refusal on `conversation_so_far` | Task 8 **as originally written** deleted the code they cover; reconciliation #21 is why they now survive. These six going red is the loudest possible signal that #21 was ignored. |
+| `soft_interrupt_agent_loop` (2 tests) | that a mid-turn steer is injected in the same turn, unframed for a human | Task 3's drain-loop rewrite |
+| `subagent_delegation` | end-to-end delegation, incl. a `queue_soft_interrupt` steer (:275) | Tasks 3, 18, 19, 19b |
+
+Plus the pin and eager-compaction suites, which Task 2 (`Copy` removal) and Task 14
+(`.pinned()`) both touch:
+
+```bash
+cargo test -p biorouter --lib context_mgmt
+```
+
+Expected: green, including `mod pin_tests` (**15** after Task 14, 14 before),
+`pins.rs`'s `mod tests` (**12**, unchanged), and the two eager-compaction freshness
+tests `run_eager_compaction_preserves_a_concurrent_append` (:2244) and
+`run_eager_compaction_aborts_when_the_prefix_moved` (:2298).
 
 - [ ] **Step 2: Lints and formatting**
 
@@ -10449,12 +12987,19 @@ Each of these fails loudly if one of the phase's binding decisions regressed:
 
 ```bash
 # Decision 20/22/23: exactly one spawn advertisement, and no subagent_status.
+# Pre-task baseline at 275d735d: 31 hits in 5 files (Task 19b Step 1).
 grep -rn "create_subagent_status_tool\|SUBAGENT_STATUS_TOOL_NAME" crates/ ; echo "expect: no output"
 # 0 requires Task 19 Step 4(d) to have dropped `create_subagent_tool` from the
 # `use crate::agents::subagent_tool::{…}` list at agent.rs:36 as well as the
-# push at :2658. `-D warnings` would have failed on the orphaned import at
+# push at :3152. `-D warnings` would have failed on the orphaned import at
 # Step 2 above, so a `1` here means Step 2 was skipped.
+# Pre-task baseline: 2 (:36 import, :3152 push).
 grep -c "create_subagent_tool" crates/biorouter/src/agents/agent.rs ; echo "expect: 0"
+
+# The docs half of decision 23 — FOUR live sites, not three (a fourth,
+# docs/security/privacy-tiers.md:1677, landed in 9eb6de4b after this plan was
+# written). docs/history/** is an immutable record and keeps its 3 hits.
+grep -rn "subagent_status" docs/ | grep -v "^docs/history/" | grep -v br71-execution-plan ; echo "expect: no output"
 
 # Decision 11: one turn loop. /reply must not drive a turn any more.
 grep -c "agent.reply(" crates/biorouter-server/src/routes/reply.rs ; echo "expect: 0"
@@ -10476,10 +13021,22 @@ grep -rn "skills-config.json" crates/biorouter/src/agents/workspace_extension.rs
 grep -n "auto_injected_extensions" crates/biorouter/src/agents/agent.rs ; echo "expect: 6 hits"
 
 # …and BOTH persist paths go through the shared filter — `save_extension_state`
-# (the reply loop's own path, agent.rs:4234) as well as
-# `persist_extension_state`. A `1` here means one of them still calls
+# (`agent.rs:2913`, called from the reply loop at `:4883`) as well as
+# `persist_extension_state` (`agent.rs:2936`, called from
+# `routes/agent.rs:759` and `:788`). A `1` here means one of them still calls
 # `get_extension_configs()` directly and writes the injection to the row.
 grep -c "persistable_extension_configs()" crates/biorouter/src/agents/agent.rs ; echo "expect: 3 (1 definition + 2 callers)"
+
+# The negative half of the same property: after Task 18 neither PERSIST path may
+# reach the unfiltered snapshot directly. Baseline at 275d735d is 3 —
+#   :2914  save_extension_state      <- must become persistable_extension_configs()
+#   :2937  persist_extension_state   <- must become persistable_extension_configs()
+#   :3179  Agent::get_extension_configs' own one-line pass-through  <- KEEPS IT
+# so the post-task expectation is 1, not 0. Do NOT "fix" a 1 by deleting :3179:
+# it is the public accessor GET /sessions/{id}/extensions and the Settings UI
+# read through, and it is *correct* for it to see everything the agent loaded.
+# The property is about what gets WRITTEN to the session row, not what can be read.
+grep -c "self.extension_manager.get_extension_configs()" crates/biorouter/src/agents/agent.rs ; echo "expect: 1 (only the :3179 accessor)"
 
 # Task 19 Step 6: the code-execution filter keeps the whole workspace surface.
 # Without this line, enabling Workspace Control does nothing in a default
@@ -10524,13 +13081,17 @@ curl -s -X POST http://127.0.0.1:3000/agent/call_tool \
 # Expected: is_error: false; content[0].text is a JSON payload with
 # "gui_attached": false, paging metadata ("offset"/"limit"/"has_more"), and a
 # "sessions" array containing $SID with its "extensions" list (including
-# "workspace") and "knowledge_bases": [].
+# "workspace"), "knowledge_bases": [] AND "primary_kb": null.
+# `primary_kb` must be PRESENT-and-null, not absent: post-#45 "no write target"
+# is a real state distinct from "no knowledge bases", and a row that omits the
+# key leaves a model unable to tell the two apart (reconciliation #6).
 
 # 4. The merged spawn tool is advertised under its prefixed name (decision 22),
 #    and subagent_status is not advertised at all (decision 23).
 #    NOTE the verb: /agent/tools is a GET with query params
-#    (`routes/agent.rs:1242`: `.route("/agent/tools", get(get_tools))`, handler
-#    at :549 taking `Query<GetToolsQuery>`). A POST returns 405.
+#    (`routes/agent.rs:1266`: `.route("/agent/tools", get(get_tools))` inside
+#    `pub fn routes` at :1260; handler `get_tools` at :573 taking
+#    `Query<GetToolsQuery>`, utoipa path at :560). A POST returns 405.
 curl -s -H 'X-Secret-Key: test' "http://127.0.0.1:3000/agent/tools?session_id=$SID" | python3 -c '
 import json,sys
 names = [t["name"] for t in json.load(sys.stdin)]
@@ -10563,8 +13124,8 @@ curl -s -H 'X-Secret-Key: test' "http://127.0.0.1:3000/sessions/$SID/extensions"
 # still advertised (auto-injection) and this endpoint must NOT list `workspace`.
 
 # 7. The CLI half of the spine (Task 20).
-BIOROUTER_SERVER__SECRET_KEY=test biorouter sessions watch "$SID" &
-BIOROUTER_SERVER__SECRET_KEY=test biorouter sessions send "$SID" "hello"
+BIOROUTER_SERVER__SECRET_KEY=test biorouter session watch "$SID" &
+BIOROUTER_SERVER__SECRET_KEY=test biorouter session send "$SID" "hello"
 # Expected: both print the same frames; `send` ends on [finished] or [error:…].
 ```
 
@@ -10705,11 +13266,82 @@ mod tests {
             .collect();
         assert!(ids.contains(&win_a), "merged layout carries window {win_a}");
         assert!(ids.contains(&win_b), "merged layout carries window {win_b}");
-        // A window with a focused_session in its echo is a valid target.
-        assert!(focused_or_recent().is_some());
+
+        // A CLOSED window must drop out of the merged layout: `workspace_list`'s
+        // `gui` block is a claim about what the user can see right now, and a
+        // stale echo from a window that is gone is a lie the model will act on.
+        // (`last_echo` is retained deliberately — the registry never forgets a
+        // window — so only the `is_attached()` filter separates the two cases,
+        // and nothing else in this suite exercises it.)
+        b.detach(tb);
+        let merged_after = merged_layout().unwrap();
+        let ids_after: Vec<String> = merged_after
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|e| e.get("window_id").and_then(|w| w.as_str()).map(String::from))
+            .collect();
+        assert!(ids_after.contains(&win_a), "the live window is still there");
+        assert!(
+            !ids_after.contains(&win_b),
+            "a detached window's stale echo must not be reported as GUI state: {ids_after:?}"
+        );
+
         // Clean up so this test leaves no attached bridges for others to see.
         a.detach(ta);
-        b.detach(tb);
+    }
+
+    /// §4.3's routing rule, tested as a RULE: *commands target the focused
+    /// window (per its echo), else the most recently attached.*
+    ///
+    /// ⚠ This replaces `assert!(focused_or_recent().is_some())`, which was true
+    /// for **every** implementation that returned any attached bridge — including
+    /// one that ignores `focused_session` entirely, which in a two-window session
+    /// sends every `workspace_open` to the wrong window. Do not simplify it back:
+    /// `is_some()` on a function whose whole job is *which one* asserts nothing
+    /// about the choice.
+    ///
+    /// It runs against `pick_target`, a locally-supplied candidate list, rather
+    /// than `focused_or_recent()`'s global `BRIDGES` walk, for the reason the
+    /// test above documents: another test in this binary may hold an attached,
+    /// focused bridge, and a global assertion about *which* bridge wins is not
+    /// containment-safe. `focused_or_recent()` is `pick_target(attached())` and
+    /// nothing else, so the rule is fully covered here.
+    #[test]
+    fn the_command_target_prefers_a_focused_window_over_a_more_recent_one() {
+        let focused = WorkspaceBridge::new();
+        let (_r1, _t1) = focused.attach();
+        focused.store_echo(json!({"window_id": "w-focused", "focused_session": "s1"}));
+        // `last_attach` is an Instant; sleep so the ordering is a fact, not a
+        // tie broken by clock resolution.
+        std::thread::sleep(Duration::from_millis(5));
+        let recent = WorkspaceBridge::new();
+        let (_r2, _t2) = recent.attach(); // attaches LATER than the focused one
+        recent.store_echo(json!({"window_id": "w-recent", "focused_session": null}));
+
+        // Rule 1 — focus beats recency. The candidate order is deliberately
+        // "recent first": a `pick_target` that returns `candidates[0]` fails here.
+        let picked = pick_target(vec![recent.clone(), focused.clone()]).expect("a target");
+        assert_eq!(
+            picked.last_echo().unwrap()["window_id"],
+            "w-focused",
+            "the window whose echo names a focused session wins"
+        );
+
+        // Rule 2 — with nobody focused, the most recently attached wins. SAME
+        // candidate order, so a `pick_target` that returns `candidates.last()`
+        // (which would have passed Rule 1) fails here.
+        focused.store_echo(json!({"window_id": "w-focused", "focused_session": null}));
+        let picked = pick_target(vec![recent.clone(), focused.clone()]).expect("a target");
+        assert_eq!(
+            picked.last_echo().unwrap()["window_id"],
+            "w-recent",
+            "with no focus anywhere, the newest connection is the target"
+        );
+
+        // Rule 3 — no candidates is None, not a panic: that is the headless
+        // degradation path every workspace tool branches on.
+        assert!(pick_target(vec![]).is_none());
     }
 }
 ```
@@ -10873,6 +13505,18 @@ pub fn focused_or_recent() -> Option<WorkspaceBridge> {
     let map = lock(&BRIDGES);
     let attached: Vec<_> = map.values().filter(|b| b.is_attached()).cloned().collect();
     drop(map);
+    pick_target(attached)
+}
+
+/// The routing RULE of `focused_or_recent`, separated from its registry walk so
+/// it can be tested against a supplied candidate list.
+///
+/// This split exists for one reason and it is not tidiness: `BRIDGES` is a
+/// process-wide static, so a test that asserts *which* bridge `focused_or_recent`
+/// returns is not containment-safe against the other tests in this binary — and a
+/// test that only asserts `.is_some()` does not test the rule at all. Keep the
+/// two halves apart; `focused_or_recent` must stay a one-liner over this.
+pub(crate) fn pick_target(attached: Vec<WorkspaceBridge>) -> Option<WorkspaceBridge> {
     attached
         .iter()
         .find(|b| {
@@ -10902,7 +13546,10 @@ pub fn merged_layout() -> Option<serde_json::Value> {
 - [ ] **Step 4: Run tests**
 
 Run: `cargo test -p biorouter-server --lib workspace::bridge`
-Expected: `test result: ok. 4 passed`.
+Expected: `test result: ok. 5 passed` — the four originals plus
+`the_command_target_prefers_a_focused_window_over_a_more_recent_one`. **The count is part
+of the gate**: this filter is a module prefix, and a module that got renamed or never
+created reports `0 passed` and exits `0` (see Ground rules, "Gate mechanics").
 
 - [ ] **Step 5: Commit**
 
@@ -10915,11 +13562,42 @@ git commit -m "feat(server): WorkspaceBridge per-window registry, UiBridge sibli
 
 ### Task 23: `GET /ui/workspace` WebSocket route
 
+⚠ **Anchors re-verified at `ea15a4de` (2026-07-28, Phase-2/3/4 drift amendment).** The
+numbers below are a **timestamp, not a fact**: `routes/mod.rs` gained a line since the
+plan was written (Task 7's `session_events::routes`, and it will gain another for this
+task), and Phase 1 has Tasks 8-21 still to land. **Re-anchor by symbol at task start.**
+Corrections applied here:
+
+| Plan cited | Now at | Symbol |
+|---|---|---|
+| `routes/mod.rs:80` | **`:82`** | `pub fn configure(state, secret_key: String)` |
+| `routes/mod.rs:99` | **`:102`** | ⚠ corrected again 2026-07-28: `:101` is `.merge(mcp_app_proxy::routes(secret_key))`, but it is **no longer the last `.merge`** — Task 7's `.merge(session_events::routes(state.clone()))` sits at `:102`, immediately before the `/knowledge` nest at `:103`. **Insert after `:102`.** (This row said `:101` was "still the last `.merge`" while its own header sentence acknowledged Task 7's added line; both `ea15a4de` and `03ad602c` disagree with it.) |
+| `mcp_ui_proxy.rs:44` (quoted **twice**) | **`routes/templates/mcp_ui_proxy.html:43`** | the served document sets `sandbox`; `routes/mcp_ui_proxy.rs:45` is the *test* that pins it. Decision 3's own text was corrected on this point and the task body was not — both sites are fixed below |
+| `auth.rs:129-156` | **`:130-156`** | `#[cfg(test)] mod tests` (`:130`); `use super::{is_public_app_get, secret_matches};` at **`:131`** is exact, and it holds exactly **2** tests, so Step 4's "2 existing + 1 new = 3" is right |
+| `commands/agent.rs:53-57` | **exact**, and the crate is **`biorouter-server`** (`crates/biorouter-server/src/commands/agent.rs`), not `biorouter-cli` | `crate::routes::configure(...)` `:53`, `check_token` `:56` |
+
+Exact and re-confirmed: `routes/mod.rs:9-24` `is_local_origin` (fn `:9`, `origin_tests`
+`:27`, `assert!(!is_local_origin("null"))` `:41`); `apps.rs:538-546` `check_ws_auth`
+(fn `:538`, `is_local_origin` `:544`); `auth.rs:52` `is_public_app_get`; `auth.rs:86` the
+three-way exemption `if`; `auth.rs:115` the header-only secret read (*"there is no global
+secret accessor"* still true); `apps.rs:470` the `WsMessage::Text(… .into())` precedent.
+Dependencies confirmed present in `crates/biorouter-server/Cargo.toml`: `axum = "0.8.1"`
+with the `ws` feature (`:17`), `futures` (`:23`), `serial_test` as a dev-dep (`:77`).
+
 **Files:**
 - Create: `crates/biorouter-server/src/routes/workspace.rs`
 - Modify: `crates/biorouter-server/src/routes/mod.rs` (`pub mod workspace;` + merge)
 - Modify: `crates/biorouter-server/src/workspace/services.rs` (wire the three GUI
   methods to the bridge registry)
+- Modify: **`crates/biorouter-server/src/auth.rs`** — the `check_token` exemption, lifted
+  into a pure `is_unauthenticated_path` beside `is_public_app_get` (`:52`), plus its test
+  in `mod tests` (`:129`). ⚠ Added 2026-07-28 by the gate sweep: this file was missing
+  from the list while Step 3 described the change in prose, and no gate filter could reach
+  the test it asked for. Without it `/ui/workspace` returns 401 to the real renderer with
+  every test green.
+- Modify: `crates/biorouter-server/src/workspace/bridge.rs` — a three-line
+  `#[cfg(test)] pub(crate) fn insert_pending_for_test`, so this module's socket-dispatch
+  test can resolve a parked request without driving `emit_and_wait`.
 
 - [ ] **Step 1: Write the failing auth tests**
 
@@ -10942,9 +13620,11 @@ mod tests {
         assert!(check_workspace_ws_auth(Some("file://"), Some(secret), secret).is_ok());
         // "null" is REFUSED. It is the opaque origin of every sandboxed frame,
         // including the agent-authored figures this app serves itself through
-        // the unauthenticated /mcp-ui-proxy (sandbox without allow-same-origin,
-        // mcp_ui_proxy.rs:44) — and routes/mod.rs's own `origin_tests` rejects
-        // it by name. Admitting it would make this gate strictly weaker than
+        // the unauthenticated /mcp-ui-proxy (sandbox without allow-same-origin
+        // — the attribute is set in the served document,
+        // routes/templates/mcp_ui_proxy.html:43, and pinned by the assertion at
+        // routes/mcp_ui_proxy.rs:45) — and routes/mod.rs's own `origin_tests`
+        // rejects it by name. Admitting it would make this gate strictly weaker than
         // `apps::check_ws_auth` (apps.rs:538-546), the route the design claims
         // parity with, leaving the socket secret-only.
         assert!(check_workspace_ws_auth(Some("null"), Some(secret), secret).is_err());
@@ -10953,8 +13633,60 @@ mod tests {
         assert!(check_workspace_ws_auth(None, Some("wrong"), secret).is_err());
         assert!(check_workspace_ws_auth(None, None, secret).is_err());
     }
+
+    /// The socket loop's INBOUND vocabulary. Without this, `handle_workspace_socket`
+    /// — the half that turns renderer frames into bridge state — has no coverage at
+    /// all: a loop that parsed `workspace_echo` into nothing would leave
+    /// `workspace_list`'s `gui` block permanently empty, and a loop that never
+    /// called `resolve` would leave every `emit_and_wait` to time out after 10 s,
+    /// with `check_workspace_ws_auth`'s tests still green.
+    ///
+    /// The dispatch is extracted (`apply_inbound_frame`) so it is testable without
+    /// a live WebSocket; the loop below is a two-line `match` over it.
+    #[test]
+    fn inbound_frames_reach_the_bridge_by_type() {
+        use crate::workspace::bridge::WorkspaceBridge;
+        let bridge = WorkspaceBridge::new();
+        let (_rx, _token) = bridge.attach();
+
+        apply_inbound_frame(
+            &bridge,
+            serde_json::json!({
+                "type": "workspace_echo", "window_id": "w1",
+                "focused_session": "s1", "layout": []
+            }),
+        );
+        assert_eq!(
+            bridge.last_echo().unwrap()["focused_session"],
+            "s1",
+            "workspace_echo must land in the bridge's last_echo — it IS workspace_list's `gui`"
+        );
+
+        // A result frame resolves the parked request it names, and only that one.
+        let (tx, mut rx_result) = tokio::sync::oneshot::channel::<serde_json::Value>();
+        bridge.insert_pending_for_test("wsreq-1", tx);
+        apply_inbound_frame(
+            &bridge,
+            serde_json::json!({"type": "workspace_result", "request_id": "wsreq-9", "ok": false}),
+        );
+        assert!(rx_result.try_recv().is_err(), "a mismatched request_id resolves nothing");
+        apply_inbound_frame(
+            &bridge,
+            serde_json::json!({"type": "workspace_result", "request_id": "wsreq-1", "ok": true}),
+        );
+        assert_eq!(rx_result.try_recv().unwrap()["ok"], true);
+
+        // Anything else is ignored, not treated as an echo.
+        apply_inbound_frame(&bridge, serde_json::json!({"type": "hello", "focused_session": "s9"}));
+        assert_eq!(bridge.last_echo().unwrap()["focused_session"], "s1");
+    }
 }
 ```
+
+(`insert_pending_for_test` is a `#[cfg(test)] pub(crate)` shim on `WorkspaceBridge`
+that inserts straight into the `pending` map — three lines beside `resolve` in Task 22's
+`bridge.rs`. The alternative, driving a real `emit_and_wait` from this test, needs a
+`#[tokio::test]` plus a task to hold the parked future, and tests the wrong module.)
 
 **Measure the origin before shipping, and fix the CLIENT if it is `null`.** Whether
 packaged Chromium sends `Origin: file://` or `Origin: null` on a WebSocket handshake
@@ -10994,9 +13726,9 @@ use crate::workspace::bridge;
 /// State for this module's routes: the app state PLUS the server secret.
 ///
 /// The secret is not global — the daemon threads it into
-/// `routes::configure(state, secret_key)` (`routes/mod.rs:80`), which already
+/// `routes::configure(state, secret_key)` (`routes/mod.rs:82`), which already
 /// hands it by value to exactly one route that needs it,
-/// `mcp_app_proxy::routes(secret_key)` (`:99`). This route is the second, so
+/// `mcp_app_proxy::routes(secret_key)` (`:101`). This route is the second, so
 /// `configure` clones it for both.
 #[derive(Clone)]
 struct WorkspaceRouteState {
@@ -11018,7 +13750,8 @@ fn check_workspace_ws_auth(
         // frame — including the agent-authored figures this very app renders
         // through `/mcp-ui-proxy`, which is served unauthenticated
         // (`auth.rs:86`) with `sandbox='allow-scripts allow-downloads'` and no
-        // `allow-same-origin` (`mcp_ui_proxy.rs:44`). `routes/mod.rs`'s own
+        // `allow-same-origin` (`routes/templates/mcp_ui_proxy.html:43`, pinned
+        // by `routes/mcp_ui_proxy.rs:45`). `routes/mod.rs`'s own
         // `origin_tests` rejects it by name (`assert!(!is_local_origin("null"))`).
         // This gate must stay at least as strict as `apps::check_ws_auth`
         // (`apps.rs:538-546`), which is the route the design claims parity with.
@@ -11076,15 +13809,7 @@ async fn handle_workspace_socket(socket: WebSocket, _state: Arc<AppState>, windo
             inbound = socket_rx.next() => match inbound {
                 Some(Ok(WsMessage::Text(text))) => {
                     let Ok(value) = serde_json::from_str::<Value>(&text) else { continue };
-                    match value.get("type").and_then(Value::as_str) {
-                        Some("workspace_echo") => bridge.store_echo(value),
-                        Some("workspace_result") => {
-                            if let Some(id) = value.get("request_id").and_then(Value::as_str) {
-                                bridge.resolve(id, value.clone());
-                            }
-                        }
-                        _ => {}
-                    }
+                    apply_inbound_frame(&bridge, value);
                 }
                 Some(Ok(WsMessage::Close(_))) | None => break,
                 Some(Ok(_)) => {}
@@ -11095,6 +13820,21 @@ async fn handle_workspace_socket(socket: WebSocket, _state: Arc<AppState>, windo
     bridge.detach(token);
 }
 
+/// The renderer→daemon frame vocabulary, lifted out of the socket loop so it has
+/// a test (`inbound_frames_reach_the_bridge_by_type`). Everything above it is
+/// transport; this is the behaviour.
+fn apply_inbound_frame(bridge: &bridge::WorkspaceBridge, value: Value) {
+    match value.get("type").and_then(Value::as_str) {
+        Some("workspace_echo") => bridge.store_echo(value),
+        Some("workspace_result") => {
+            if let Some(id) = value.get("request_id").and_then(Value::as_str) {
+                bridge.resolve(id, value.clone());
+            }
+        }
+        _ => {}
+    }
+}
+
 pub fn routes(state: Arc<AppState>, secret_key: String) -> Router {
     Router::new()
         .route("/ui/workspace", get(workspace_ws))
@@ -11102,14 +13842,19 @@ pub fn routes(state: Arc<AppState>, secret_key: String) -> Router {
 }
 ```
 
-And in `routes/mod.rs::configure` (`:80-104`), which already owns `secret_key` by
-value and moves it into `mcp_app_proxy::routes(secret_key)` at `:99` — clone at both
-use sites rather than changing `configure`'s signature:
+And in `routes/mod.rs::configure` (**`:82-107`** at `ea15a4de`), which already owns
+`secret_key` by value and moves it into `mcp_app_proxy::routes(secret_key)` at **`:101`**
+— clone at both use sites rather than changing `configure`'s signature:
 
 ```rust
         .merge(mcp_app_proxy::routes(secret_key.clone()))
         .merge(workspace::routes(state.clone(), secret_key.clone()))
 ```
+
+(⚠ The `.merge` list grew since the plan was written: Task 7 landed
+`.merge(session_events::routes(state.clone()))` at **`:102`**, between `mcp_app_proxy`
+and the `/knowledge` `.nest` (`:103-106`). Insert beside `mcp_app_proxy`, not "at the
+end" — the `.nest` must stay last, and `configure` now closes at `:107`.)
 
 Implementer notes (verified constraints, not placeholders):
 - **There is no global secret accessor and none is being added.** `auth.rs` reads the
@@ -11124,22 +13869,74 @@ Implementer notes (verified constraints, not placeholders):
   public app GET (`auth.rs:85-100`). A browser `WebSocket` cannot set headers, so
   `/ui/workspace` must join that list:
 
+  ⚠ **Do not add it as a fourth `||` on the existing `if`** (amended 2026-07-28 by the
+  gate sweep). `check_token` is an `async fn(State, Request, Next)` and cannot be called
+  from a unit test, which is why `auth.rs`'s existing tests all exercise **pure helpers**
+  (`is_public_app_get` at `:52`, `secret_matches`) rather than the middleware. Follow that
+  precedent — lift the literal list into a pure predicate beside `is_public_app_get`, so
+  the exemption has a test at all:
+
   ```rust
-      if path == "/status" || path == "/mcp-ui-proxy" || path == "/mcp-app-proxy" {
-          return Ok(next.run(request).await);
-      }
-      // BR-71: the desktop renderer opens this WebSocket, and a browser
-      // WebSocket cannot send headers. The route carries its own two gates —
-      // the same secret as a query token, plus the Origin check (CSWSH) — in
-      // `routes::workspace::check_workspace_ws_auth`, exactly as the app agent
-      // socket does (`apps::agent_ws`).
-      if path == "/ui/workspace" {
+  /// Paths served without the `X-Secret-Key` header. Each one carries its own
+  /// gate; the list is a predicate rather than a chain of `||` inside
+  /// `check_token` so it is unit-testable — a security allowlist that no test
+  /// can reach is one refactor away from admitting `/ui/workspaceX`.
+  fn is_unauthenticated_path(path: &str) -> bool {
+      matches!(
+          path,
+          "/status"
+              | "/mcp-ui-proxy"
+              | "/mcp-app-proxy"
+              // BR-71: the desktop renderer opens this WebSocket, and a browser
+              // WebSocket cannot send headers. The route carries its own two
+              // gates — the same secret as a query token, plus the Origin check
+              // (CSWSH) — in `routes::workspace::check_workspace_ws_auth`,
+              // exactly as the app agent socket does (`apps::agent_ws`).
+              | "/ui/workspace"
+      )
+  }
+  ```
+
+  and in `check_token` (replacing the three-way `if` at `auth.rs:86`):
+
+  ```rust
+      if is_unauthenticated_path(path) {
           return Ok(next.run(request).await);
       }
   ```
 
-  Add the matching test in `auth.rs`'s test module asserting `/ui/workspace` is exempt
-  and, say, `/ui/workspaceX` is not — a prefix match here would exempt real routes.
+  With the matching case in `auth.rs`'s `mod tests` (**`:130-156`**; the `use super::{…}`
+  line is **`:131`**):
+
+  ```rust
+      #[test]
+      fn the_workspace_socket_is_exempt_and_nothing_that_merely_starts_with_it_is() {
+          assert!(is_unauthenticated_path("/ui/workspace"));
+          // Exact match only. A `starts_with` would exempt every future route
+          // under this prefix, and the daemon has no other authentication.
+          assert!(!is_unauthenticated_path("/ui/workspaceX"));
+          assert!(!is_unauthenticated_path("/ui/workspace/admin"));
+          assert!(!is_unauthenticated_path("/ui/workspace?secret=x"));
+          // The three that were already exempt still are.
+          assert!(is_unauthenticated_path("/status"));
+          assert!(is_unauthenticated_path("/mcp-ui-proxy"));
+          assert!(is_unauthenticated_path("/mcp-app-proxy"));
+          // …and nothing else is.
+          assert!(!is_unauthenticated_path("/reply"));
+          assert!(!is_unauthenticated_path("/sessions"));
+      }
+  ```
+
+  (Add `is_unauthenticated_path` to the test module's `use super::{…}` list at `:131`,
+  which today reads exactly `use super::{is_public_app_get, secret_matches};`.)
+
+  **This is the whole reason Step 4's filter names `auth::tests`.** Before this
+  amendment the exemption was requested in prose, the test was requested in prose, and
+  Step 4's filter (`routes::workspace workspace::`) could not match `auth::tests::*` even
+  if someone wrote it — so an implementer who skipped the paragraph shipped a build where
+  every gate was green and `/ui/workspace` returned 401 to the real renderer, with the
+  first symptom appearing in Task 31's live GUI pass, nine tasks later. The harness's
+  wrong-secret probe (Task 39 Step 1) is the end-to-end half of the same check.
 - `axum::extract::ws::Message::Text` takes `Utf8Bytes` in the workspace's axum
   version — the `.into()` above covers both; mirror `apps.rs`'s send calls.
 
@@ -11173,8 +13970,50 @@ Wire `services.rs` (replacing the three Slice-1 stubs):
 
 - [ ] **Step 4: Run tests, regenerate OpenAPI**
 
-Run: `cargo test -p biorouter-server --lib routes::workspace workspace::`
-Expected: PASS.
+```bash
+cargo test -p biorouter-server --lib -- routes::workspace workspace::bridge auth::tests
+```
+
+Expected: **10 passed** — this module's 2
+(`ws_auth_requires_secret_and_local_or_app_origin`,
+`inbound_frames_reach_the_bridge_by_type`), `workspace::bridge`'s 5 from Task 22, and
+`auth::tests`'s 3 (its 2 existing — verified, `auth.rs` holds exactly two `#[test]`
+functions — plus the new exemption case). **2 + 5 + 3 = 10**, and the three filters
+are disjoint, so the arithmetic is the whole of it.
+
+⚠ **The middle filter is `workspace::bridge`, not `workspace::`, and that is
+deliberate** (corrected 2026-07-28 by the verification pass; this step has now been
+wrong twice — first `9`, then `10` against a filter that selects far more than 10).
+A bare `workspace::` also matches **`workspace::turn::tests::*`**, Task 6's turn-runner
+suite, which is **14** tests at `03ad602c` (measured; unchanged by Task 8) and has
+nothing to do with this task. Against `workspace::` the honest expectation is
+2 + 5 + 14 + 3 = **24**, and it moves every time Phase 1 touches the runner. Narrowing
+to `workspace::bridge` buys a number that is stable, disjoint, and derivable from the
+three components below it. If you run the broad filter anyway, expect ~24 and do not
+"fix" the difference.
+
+**Never let this expectation sit below the truth.** The cheapest way to make a run of
+N match an expectation of N−1 is to delete a test, and the newest one here is the
+`/ui/workspace` exemption case — the single check standing between this task and a
+build that 401s the real renderer. Take the number from the three components, not from
+any sentence: **2 + 5 + 3**. If Task 22 shipped a different number of bridge tests, use
+*its* measured count and say so here.
+
+The remaining overlap is harmless: `workspace::bridge` is a substring of
+`workspace::bridge::tests::…` only, `routes::workspace` of `routes::workspace::tests::…`
+only, and libtest runs a matching test once, not once per matching filter.
+
+Two mechanical points, both of which have already bitten this plan (Ground rules, "Gate
+mechanics"):
+
+- **The `--` is required.** `cargo test --lib routes::workspace workspace::bridge` —
+  which is what this step used to say — is not two filters; it is
+  `error: unexpected argument 'workspace::bridge' found`, exit 1, before a single test
+  runs.
+- **`auth::tests` is in the filter deliberately.** The middleware exemption is the one
+  change in this task that, if skipped, produces a 401 on the real socket with every
+  other test green, and no `routes::workspace` filter can reach `auth::tests::*`.
+
 Run: `just generate-openapi && cd ui/desktop && npm run generate-api && cd ../..`
 (A WS route may not appear in the OpenAPI paths — that is fine; the regen guards the
 rest.)
@@ -11189,6 +14028,76 @@ git commit -m "feat(server): GET /ui/workspace window channel + bridge-backed se
 ---
 
 ### Task 24: `workspace_open` (session-level + GUI frames)
+
+**Depends on Task 14 (Phase 1) for `caller_provenance`.** Step 3 calls
+`self.caller_provenance(caller_session_id).await` and this task does not define it —
+Task 14 does, as a `WorkspaceClient` method beside `injected_turn_cap` and
+`notify_target`. Ordering makes this safe (14 precedes 24), but it was unstated, and an
+unstated cross-phase symbol dependency is exactly the shape that produced
+`is_spawn_tool_call` (Task 19 → Task 36). If Task 14 is ever descoped or renames the
+helper, this call site breaks in another phase with nothing pointing back.
+
+⚠ **Anchors re-verified at `ea15a4de` (2026-07-28, Phase-2/3/4 drift amendment), and
+they had ALREADY moved twice.** Phase 1's landed commits put `session_manager.rs`
+**+251** lines ahead of `main` on this branch — the 2026-07-28 survey recorded +78 and
+its numbers are stale too — and Tasks 8-21 have not landed yet. **Re-anchor by symbol at
+task start; the table below is a timestamp.**
+
+| Plan cited | Survey said | Now at (`ea15a4de`) | Symbol |
+|---|---|---|---|
+| `routes/agent.rs:261` | `:307` | **`:307`** | `.create_session(PathBuf::from(&working_dir), name, SessionType::User)` inside `start_agent` |
+| `session_manager.rs:890-894` | `:898-901` | **`:904-907`** | the "deliberately no `working_dir` setter" comment |
+| `session_manager.rs:1246-1255` | `:1260-1269` | **`:1266-1274`** | `pub async fn try_update_working_dir_if_empty` (the storage impl it delegates to is a *second* symbol, `:3082`) |
+| `session_manager.rs:1264-1272` | `:1278-1286` | **`:1284-1291`** | `pub async fn force_update_working_dir_unguarded` |
+| `session_manager.rs:5774` | "re-locate" | **`:5846`** | its test |
+| `session_manager.rs:1205-1210` | `:1205-1210` | **`:1211-1216`** | `create_session(working_dir, name, session_type)` — the signature Step 3's test calls |
+| `routes/agent.rs:1280` | `:1279` | **`:1279`** | `mod working_dir_lock_tests` |
+| — | `:1380` | **`:1380`** | `mod knowledge_selection_tests` — a **second**, newer route-test module in the same file; it did not exist when this task was written |
+
+Exact and re-confirmed: `routes/agent.rs:256` (`async fn start_agent`), `:1027`
+(`async fn update_working_dir`), `:1042` (`try_begin_turn_idempotent`);
+`biorouter-cli/src/commands/term.rs:311` — still the **only** production caller of
+`force_update_working_dir_unguarded`; `crates/biorouter/Cargo.toml:139`
+(`serial_test = { workspace = true }`);
+`crates/biorouter/src/agents/mcp_client.rs:147` (`McpMeta::new(session_id: impl
+Into<String>)`, struct at `:137`), which is what the recording test's caller-id plumbing
+depends on.
+
+**The renderer half of #44 exists and this task must not disturb it.**
+`ui/desktop/src/components/bottom_menu/DirSwitcher.tsx` is the UX mirror of the 409
+(`:16` *"backend enforces the same rule with a 409, so this is UX, not the guard"*,
+`:45`, and the `updateWorkingDir({ body: { session_id, working_dir } })` call at
+`:111-115`). It is safe *because* `workspace_open` sets the directory at **creation**
+(`create_session(working_dir, …)`), never post-creation — so it takes neither the
+guarded nor the unguarded writer and can never race the DirSwitcher's turn guard. That
+is a property of the design above, not an accident; if a future revision makes
+`workspace_open` retarget an *existing* session's directory it acquires the whole #44
+problem and must go through `try_update_working_dir_if_empty` plus the route's turn
+guard.
+
+**Multi-KB: Task 9's `KbPrimaryChoice` maps onto a real, four-valued API** (re-verified
+at `ea15a4de`, because this task is one of the four the 2026-07-28 amendment re-premised
+onto post-#45 knowledge APIs). In `crates/biorouter-mcp/src/knowledge/service.rs`:
+`pub struct KbSelection { kb_ids, hidden_kbs, primary_kb }` at **`:92-101`**;
+`pub enum PrimaryUpdate<'a> { Unchanged, Clear, Inherit, Set(&'a str) }` at **`:105-120`**;
+`set_visible_kbs(session_id: Option<&str>, visible: &[String], primary: PrimaryUpdate<'_>)
+-> anyhow::Result<KbSelection>` at **`:1575-1580`**. Two consequences worth stating
+because neither is visible from this task's own code: `PrimaryUpdate` is **borrowed**
+(`Set(&'a str)`), which is why Task 9's `KbPrimaryChoice::Set(String)` exists at all and
+why its impl converts with `PrimaryUpdate::Set(id.as_str())`; and `Unchanged` — "a
+set-only edit must never move the pointer" — is a *fourth* state that `KbPrimaryChoice`
+deliberately does not expose, because every `workspace_open` call creates a session that
+has no pointer to leave alone. `Auto` on a fresh session is therefore always "pin the
+first id", exactly as Step 3's comment says.
+
+**No new process-spawn boundary.** `start_session` (Task 9) ends in
+`agent.load_extensions_from_session(...)`, so a granted stdio/InlinePython extension is
+spawned by `ExtensionManager`, whose command builder already ends with
+`biorouter_mcp::developer::shell::strip_daemon_private_env(command)`
+(`extension_manager.rs:399`, the canonical boundary also wrapped as
+`crate::subprocess::prepare_agent_child_command`). `workspace_open` therefore inherits
+the daemon-credential strip (issue #57) for free and must **not** build its own
+`Command`; if a future revision does, it goes through `prepare_agent_child_command`.
 
 **Files:**
 - Modify: `crates/biorouter/src/agents/workspace_extension.rs`
@@ -11235,6 +14144,17 @@ struct WorkspaceOpenNew {
     /// Knowledge bases to activate for the new conversation (issue #45).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     knowledge_bases: Vec<String>,
+    /// Which of `knowledge_bases` is the new conversation's **write target** —
+    /// where a `kb_write`/`kb_ingest` with no explicit `kb_id` lands. Omit it and
+    /// the first base in the list is used, which is what you want unless you
+    /// have a reason. Must name one of `knowledge_bases`.
+    ///
+    /// Post-#45 the primary is a real, validated pointer, not a derived
+    /// convenience: a session with bases and no target has KB-less writes that
+    /// fail. `workspace_open` therefore always chooses one rather than leaving
+    /// the new session in that state by omission.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    primary_knowledge_base: Option<String>,
     /// Optional first user message, run as a detached turn.
     #[serde(skip_serializing_if = "Option::is_none")]
     prompt: Option<String>,
@@ -11309,8 +14229,20 @@ impl WorkspaceClient {
                 let differs = caller_dir
                     .as_ref()
                     .is_some_and(|caller| caller != &working_dir);
+                // Post-#45: the write target is chosen explicitly. `Auto` on a
+                // brand-new session resolves to "pin the first id", because a
+                // fresh session has no primary of its own to keep (Task 9).
+                let kb_primary = match new.primary_knowledge_base.as_deref() {
+                    None => crate::workspace_services::KbPrimaryChoice::Auto,
+                    Some(id) => crate::workspace_services::KbPrimaryChoice::Set(id.to_string()),
+                };
                 let session_id = services
-                    .start_session(working_dir.clone(), new.extensions, new.knowledge_bases)
+                    .start_session(
+                        working_dir.clone(),
+                        new.extensions,
+                        new.knowledge_bases,
+                        kb_primary,
+                    )
                     .await?;
                 if differs {
                     let _ = services
@@ -11467,47 +14399,225 @@ still inside the ≤2,500 budget the unit test enforces.
 ```
 
 **#44 — resolved (reconciliation #7):** the working-dir lock is merged. `start_session`
-sets the dir at creation exactly as today's `start_agent` does (`routes/agent.rs:283`);
-the lock guards only post-creation changes to non-empty chats, which no path in this
-task performs. The product question it left behind is **settled by decision 5** and
-implemented above: default to the caller's dir, allow a different one, surface the
-difference.
+sets the dir at creation exactly as today's `start_agent` does (**`routes/agent.rs:256`**,
+`create_session(working_dir, …)` at **:307**); the lock guards only post-creation changes
+to non-empty chats, which no path in this task performs. The product question it left
+behind is **settled by decision 5** and implemented above: default to the caller's dir,
+allow a different one, surface the difference.
 
-Add the test for it:
+Re-verified at **`ea15a4de`** (2026-07-28, drift amendment) — reconciliation #7's whole
+analysis still holds literally, nothing about #44 changed *shape*; only the line numbers
+moved, and they moved twice (the pre-drift numbers this block used to carry, then the
+2026-07-28 survey's, then these):
+
+- `SessionUpdateBuilder` still has **no** `working_dir` setter, and the comment naming
+  the two sanctioned writers is at **`session_manager.rs:904-907`** (was `:890-894`).
+- `try_update_working_dir_if_empty` is **`session_manager.rs:1266-1274`** (was
+  `:1246-1255`); the HTTP route additionally claims the per-session turn guard
+  (`update_working_dir` handler **`routes/agent.rs:1027`**, `try_begin_turn_idempotent`
+  at **:1042** — both still exact — and the route-level contract test module
+  `mod working_dir_lock_tests` at **:1279**, beside a newer `mod
+  knowledge_selection_tests` at **:1380**).
+- `force_update_working_dir_unguarded` is **`session_manager.rs:1284-1291`** (was
+  `:1264-1272`), still with exactly **one** production caller,
+  `biorouter-cli/src/commands/term.rs:311` (plus one test at
+  **`session_manager.rs:5846`**, was `:5774`).
+
+Add the test for it.
+
+⚠ **AMENDED 2026-07-28 (gate sweep).** The previous version of this test ended with
+`assert!(!text.contains("no working_dir given"), "got: {text}")` and nothing else. That
+assertion is satisfied by **any** other output — a `handle_open` that ignores the caller
+entirely and hardcodes `std::env::temp_dir()`, or `"/"`, or the process cwd, passes it,
+and so does one that errors out for an unrelated reason. Decision 5's deliverable is
+*which directory the new session gets*, so the test has to name it. The version below
+also closes the second half of the same hole: **nothing in Phase 2 tested the GUI frame
+vocabulary on the daemon side** — `open_tab` vs `open_window`, `placement`, `focus` are
+constructed here and consumed by Task 26's planner, and until now no test on either side
+of the wire looked at the frame.
+
+Both need a `WorkspaceServices` stand-in that *records*. `NullServices` (Task 9) answers
+"headless" and returns `Err` from `gui_command`, which is the wrong shape for this; define
+a recording sibling in this test module. It stays available to the later tasks that
+re-run this same `agents::workspace_extension` filter (Tasks 29 and 33), though as
+written **neither needs it** — Task 29's additions are pure-function tests over
+`apply_focus_etiquette` / `open_result_text`, by design. Treat "reusable" as a property,
+not a plan (clarified 2026-07-28: the earlier text named Tasks 29 and 36 as reusers and
+neither mentions this type):
 
 ```rust
+    /// A `WorkspaceServices` that records what the tool asked the daemon to do.
+    /// Everything not under test answers like `NullServices`.
+    #[derive(Default)]
+    struct RecordingServices {
+        started: std::sync::Mutex<Vec<std::path::PathBuf>>,
+        frames: std::sync::Mutex<Vec<(serde_json::Value, bool)>>,
+    }
+
+    impl RecordingServices {
+        fn frames(&self) -> Vec<serde_json::Value> {
+            self.frames.lock().unwrap().iter().map(|(f, _)| f.clone()).collect()
+        }
+        fn frame_with_cmd(&self, cmd: &str) -> Option<serde_json::Value> {
+            self.frames().into_iter().find(|f| f["cmd"] == cmd)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::workspace_services::WorkspaceServices for RecordingServices {
+        fn gui_attached(&self) -> bool { true }
+        fn layout_snapshot(&self) -> Option<serde_json::Value> { None }
+        fn is_turn_active(&self, _session_id: &str) -> bool { false }
+        fn cancel_turn(&self, _session_id: &str) -> Option<String> { None }
+        fn begin_turn(
+            &self,
+            _session_id: &str,
+            _cancel: tokio_util::sync::CancellationToken,
+        ) -> Result<Box<dyn crate::workspace_services::WorkspaceTurnLease>, String> {
+            Err("not used by this test".into())
+        }
+        async fn stop_agent(&self, _session_id: &str) -> Result<(), String> { Ok(()) }
+        async fn start_detached_turn(
+            &self,
+            _session_id: &str,
+            _message: crate::conversation::message::Message,
+        ) -> Result<String, String> { Ok("turn-1".into()) }
+        async fn start_session(
+            &self,
+            working_dir: std::path::PathBuf,
+            _extensions: Option<Vec<String>>,
+            _knowledge_bases: Vec<String>,
+            _primary: crate::workspace_services::KbPrimaryChoice,
+        ) -> Result<String, String> {
+            self.started.lock().unwrap().push(working_dir);
+            Ok("s-new".into())
+        }
+        fn set_knowledge_bases(
+            &self,
+            _session_id: &str,
+            _kbs: &[String],
+            _primary: crate::workspace_services::KbPrimaryChoice,
+        ) -> Result<crate::workspace_services::KbSelectionView, String> {
+            Ok(crate::workspace_services::KbSelectionView::default())
+        }
+        fn knowledge_selection(&self, _session_id: &str)
+            -> crate::workspace_services::KbSelectionView {
+            crate::workspace_services::KbSelectionView::default()
+        }
+        async fn gui_command(
+            &self,
+            frame: serde_json::Value,
+            wait_result: bool,
+        ) -> Result<serde_json::Value, String> {
+            self.frames.lock().unwrap().push((frame, wait_result));
+            Ok(serde_json::json!({ "ok": true, "detail": "recorded" }))
+        }
+    }
+
+    /// Decision 5: a new conversation inherits the CALLER's directory. Two
+    /// callers with different directories, because one caller cannot tell
+    /// "inherits from the caller" apart from "hardcodes this particular path".
     #[tokio::test]
-    async fn open_new_defaults_to_the_callers_working_dir() {
+    #[serial_test::serial(workspace_services)]
+    async fn open_new_inherits_the_callers_working_dir_and_emits_the_gui_frame() {
+        let recorder = std::sync::Arc::new(RecordingServices::default());
+        crate::workspace_services::set_for_tests(Some(recorder.clone()));
+
         let c = client();
         let sm = c.context.session_manager.clone();
-        let caller_dir = std::env::temp_dir().join("br71-caller-dir");
-        std::fs::create_dir_all(&caller_dir).unwrap();
-        let caller = sm
-            .create_session(caller_dir.clone(), "caller".into(),
+        let dir_a = std::env::temp_dir().join("br71-caller-a");
+        let dir_b = std::env::temp_dir().join("br71-caller-b");
+        std::fs::create_dir_all(&dir_a).unwrap();
+        std::fs::create_dir_all(&dir_b).unwrap();
+        let caller_a = sm
+            .create_session(dir_a.clone(), "caller-a".into(),
+                crate::session::session_manager::SessionType::User)
+            .await
+            .unwrap();
+        let caller_b = sm
+            .create_session(dir_b.clone(), "caller-b".into(),
                 crate::session::session_manager::SessionType::User)
             .await
             .unwrap();
 
-        // No daemon in this test binary, so the call fails at start_session —
-        // but only AFTER the default has been resolved, which is what the
-        // error message proves.
-        let args: rmcp::model::JsonObject = serde_json::from_value(serde_json::json!({
-            "new": {}
-        })).unwrap();
-        let result = c
-            .call_tool(
-                "workspace_open",
-                Some(args),
-                crate::agents::mcp_client::McpMeta::new(caller.id.clone()),
-                CancellationToken::new(),
-            )
-            .await
-            .unwrap();
-        // It must NOT complain about a missing working_dir.
-        let text = result.content[0].as_text().unwrap().text.clone();
-        assert!(!text.contains("no working_dir given"), "got: {text}");
+        let open_from = |caller_id: String, args: serde_json::Value| {
+            let c = &c;
+            async move {
+                let args: rmcp::model::JsonObject = serde_json::from_value(args).unwrap();
+                c.call_tool(
+                    "workspace_open",
+                    Some(args),
+                    crate::agents::mcp_client::McpMeta::new(caller_id),
+                    CancellationToken::new(),
+                )
+                .await
+                .unwrap()
+            }
+        };
+
+        open_from(caller_a.id.clone(), serde_json::json!({ "new": {} })).await;
+        open_from(caller_b.id.clone(), serde_json::json!({ "new": {} })).await;
+
+        let started = recorder.started.lock().unwrap().clone();
+        assert_eq!(
+            started,
+            vec![dir_a.clone(), dir_b.clone()],
+            "each new session takes ITS caller's directory — a hardcoded default, the \
+             process cwd, or temp_dir() all produce two identical entries here"
+        );
+
+        // …and the directory is not the only thing the daemon half decides. The
+        // frame vocabulary is a contract with Task 26's planner: `cmd`,
+        // `placement`, `focus`, and `open_window` as its own command.
+        let open = recorder.frame_with_cmd("open_tab").expect("an open_tab frame was sent");
+        assert_eq!(open["type"], "workspace");
+        assert_eq!(open["session_id"], "s-new");
+        assert_eq!(open["placement"], "tab", "the default placement");
+        assert_eq!(open["focus"], false, "§4.1: background open, never steal the composer");
+
+        // `placement: "window"` is a DIFFERENT command, not a field on open_tab —
+        // the renderer routes it to createChatWindow, and a planner that saw
+        // `open_tab {placement: "window"}` would silently open a tab instead.
+        recorder.frames.lock().unwrap().clear();
+        open_from(
+            caller_a.id.clone(),
+            serde_json::json!({ "new": {}, "placement": "window" }),
+        )
+        .await;
+        assert!(
+            recorder.frame_with_cmd("open_window").is_some(),
+            "placement:\"window\" must emit open_window: {:?}",
+            recorder.frames()
+        );
+        assert!(recorder.frame_with_cmd("open_tab").is_none());
+
+        // An explicit, DIFFERENT working_dir is allowed but never silent
+        // (decision 5) — the notify frame is how the user finds out.
+        recorder.frames.lock().unwrap().clear();
+        let elsewhere = std::env::temp_dir().join("br71-elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        open_from(
+            caller_a.id.clone(),
+            serde_json::json!({ "new": { "working_dir": elsewhere.to_str().unwrap() } }),
+        )
+        .await;
+        assert_eq!(recorder.started.lock().unwrap().last().unwrap(), &elsewhere);
+        let notify = recorder
+            .frame_with_cmd("notify")
+            .expect("a caller-dir mismatch must be surfaced, not swallowed");
+        assert!(
+            notify["message"].as_str().unwrap().contains(&elsewhere.display().to_string()),
+            "the notice names the directory: {notify}"
+        );
+
+        crate::workspace_services::clear_test_override();
     }
 ```
+
+(`set_for_tests` / `clear_test_override` and the `#[serial_test::serial(workspace_services)]`
+requirement are Task 9's, and the reason is spelled out there: the real slot is a
+`OnceLock` shared by every `--lib` test in the process. `serial_test` is already a
+dev-dependency of `biorouter` — `crates/biorouter/Cargo.toml:139`.)
 
 Also apply the focus-etiquette transform (Task 29) to this task's frame — the two lines
 are written out in Task 29 Step 3 and the truthful result text is part of them.
@@ -11515,7 +14625,13 @@ are written out in Task 29 Step 3 and the truthful result text is part of them.
 - [ ] **Step 4: Run tests**
 
 Run: `BIOROUTER_PATH_ROOT=$(mktemp -d) cargo test -p biorouter --lib agents::workspace_extension`
-Expected: PASS.
+
+Expected: **6 passed** — Task 12's 3 `workspace_list` cases plus this task's 3
+(`workspace_open_requires_exactly_one_of_session_id_or_new`, the headless-degradation
+case, and `open_new_inherits_the_callers_working_dir_and_emits_the_gui_frame`). Record the
+number you actually see and carry it forward: Tasks 29 and 33 both add to this module and
+both re-run this filter, so a count is the only way to notice that a filter kept passing
+while a file stopped being compiled into it.
 
 - [ ] **Step 5: Commit**
 
@@ -11661,7 +14777,11 @@ export function resetWorkspaceCommandRegistry(): void {
 - [ ] **Step 4: Run tests**
 
 Run: `cd ui/desktop && npm run test:run -- workspaceCommandRegistry`
-Expected: 3 passed.
+Expected: **1 file, 3 tests**. Give both numbers, here and in every vitest gate below: a
+single filter that matches nothing does fail loudly (`No test files found, exiting with
+code 1`), but the moment a gate has two filter terms — which the mount-coverage gates in
+Tasks 26, 28, 30, 37 and 38 all do — a dead term is invisible and the run exits 0. The
+file count is what catches it.
 
 - [ ] **Step 5: Commit**
 
@@ -11687,6 +14807,73 @@ git commit -m "feat(ui): workspaceCommandRegistry seam for daemon workspace fram
 - Modify: `ui/desktop/src/contexts/ChatGroupsContext.tsx` (register the command
   handler — a thin adapter over the planner; annotation state; report layout; the
   provider already owns the reducer state, `stateRef` at :195-196)
+- Create: **`ui/desktop/src/contexts/ChatGroupsContext.workspaceCommands.test.tsx`** —
+  the wiring test (Step 8d). Added 2026-07-28 by the gate sweep: without it, Step 8's
+  ~55-line executor has no test at all, and a provider that never calls
+  `registerWorkspaceCommands` ships green.
+
+⚠ **AMENDED 2026-07-28 (Phase-2 reconciliation) — this task was written against a
+`ChatGroupsState` that has never existed.** Every step below used
+`state.order: string[]`. There is no `order` field, at HEAD or at the `67822ea3`
+anchor. The real shape is at `chatGroupsTypes.ts:52-60`:
+
+```ts
+export interface ChatGroupsState {
+  version: 1;
+  layout: GroupLayout;          // a TREE: leaf | branch{dir, children[], sizes[]}
+  groups: Record<ChatGroupId, ChatGroup>;
+  activeGroupId: ChatGroupId;   // ALWAYS names a live leaf. Reducer invariant.
+  seq: number;                  // shared id counter: `tab-${seq+1}` AND `grp-${seq+1}`
+}
+```
+
+`grep -n "state\.order" ui/desktop/src/components/chatGroups/chatGroupsReducer.ts`
+returns nothing, and `git show 67822ea3:ui/desktop/src/components/chatGroups/chatGroupsTypes.ts`
+is byte-identical on this struct — so this was **wrong when written**, not drift, and it
+survived three adversarial review passes plus the 2026-07-28 amendment. It is failure
+shape #5 (`is_spawn_tool_call`: a symbol the plan builds on that does not exist), at
+**eight lines / nine references** inside one task — the eighth being the echo test's own
+`order: ['group-1']` fixture literal, which is easy to miss because it is data rather
+than a `state.order` expression. The repairs are inlined in the steps below; this block
+records what they replaced so a reader of the old plan is not left guessing:
+
+| Was (pre-amendment) | Now |
+|---|---|
+| Step 1's echo fixture: `{ groups: {…}, order: ['group-1'] }` | real reducer state, built by the reducer, with a **left** split so leaf order ≠ `Object.keys(groups)` order |
+| Step 3's `buildEchoFrame(…, state: { groups: …; order: string[] })` | `state: ChatGroupsState` |
+| Step 3's `layout: state.order.map(…)` | `layout: leafGroupIds(state.layout).map(…)` |
+| Step 4's fixture: `state.order[state.order.length - 1]`, `state.groups[state.order[0]]` | `leafGroupIds(state.layout)` |
+| Step 4's `if (state.order.length >= MAX_GROUPS) { …3 assertions… }` | `expect(groupCountOf(state.layout)).toBe(MAX_GROUPS)` **unconditionally**, then the three assertions un-wrapped |
+| Step 6's `state.order.length >= MAX_GROUPS` | `groupCountOf(state.layout) >= MAX_GROUPS` |
+| Step 8's `stateRef.current.order.length < MAX_GROUPS` | `groupCountOf(stateRef.current.layout) < MAX_GROUPS` |
+
+Two further compile errors in the same task, unrelated to `order` and found by the same
+pass:
+
+1. **`ChatGroupsState` is not exported from `chatGroupsReducer`.** Steps 4 and 6 both
+   wrote `import { …, type ChatGroupsState } from './chatGroupsReducer'`. The reducer
+   *imports* the type from `./chatGroupsTypes` (its line 3) and re-exports nothing — the
+   repo convention is visible in every existing consumer (`chatGroupsStorage.ts:1-2`,
+   `chatGroupsReducer.test.ts:9`, `chatGroupsMerge.test.ts:10`): **state/tab/group types
+   from `chatGroupsTypes`, functions from `chatGroupsReducer`.** Both imports are split
+   below.
+2. **`ChatTab.userSetName` is required.** Step 1's old fixture wrote tabs as
+   `{ tabId, sessionId, title }`, which does not satisfy `ChatTab`
+   (`chatGroupsTypes.ts:6-33`) once the parameter is typed `ChatGroupsState`. Building
+   the fixture through the reducer removes the problem instead of patching it.
+
+**Two replacement helpers, both one line away from the code that needed them:**
+`groupCountOf(layout)` at `chatGroupsLayout.ts:138` and `leafGroupIds(layout)` (the
+in-order leaf walk) at `chatGroupsTypes.ts:88`. `MAX_GROUPS = 6` at
+`chatGroupsLayout.ts:18` — **six, not the four this task's prose elsewhere implies**; the
+4 in Task 36 is the subagent fan-out cap and the two do not track.
+
+**Anchors:** the desktop files this task touches are byte-identical to `67822ea3` on
+every struct cited, so their line numbers are still good — but `re-anchor by symbol`
+applies here too, because Phase 1 is landing commits on this branch *while Phase 2 runs*
+(`message.rs` +494, `session_manager.rs` +231, `agent.rs` +198, `reply.rs` +40 versus
+`main` as of `bab6fba2`, and still moving). Every number below was re-verified against
+the worktree at `bab6fba2`.
 
 - [ ] **Step 1: Write the failing tests** (jsdom, mock WebSocket)
 
@@ -11698,6 +14885,11 @@ import {
   registerWorkspaceCommands,
   resetWorkspaceCommandRegistry,
 } from '../components/chatGroups/workspaceCommandRegistry';
+import {
+  chatGroupsReducer,
+  createInitialChatGroupsState,
+} from '../components/chatGroups/chatGroupsReducer';
+import { leafGroupIds } from '../components/chatGroups/chatGroupsTypes';
 
 class FakeWebSocket {
   static instances: FakeWebSocket[] = [];
@@ -11751,24 +14943,53 @@ describe('useWorkspaceChannel', () => {
     expect(reply).toMatchObject({ request_id: 'wsreq-1', ok: true, detail: 'done' });
   });
 
-  it('buildEchoFrame flattens the ChatGroups layout with session bindings', () => {
-    const echo = buildEchoFrame('w1', 's-focused', {
-      groups: {
-        'group-1': {
-          groupId: 'group-1',
-          activeTabId: 'tab-1',
-          tabs: [
-            { tabId: 'tab-1', sessionId: 's-focused', title: 'A' },
-            { tabId: 'tab-2', sessionId: '', title: 'blank' },
-          ],
-        },
-      },
-      order: ['group-1'],
+  it('buildEchoFrame reports the layout tree in LEAF order, with session bindings', () => {
+    // Real state, built by the real reducer — not a hand-written literal. Two
+    // reasons, both learned the hard way: `ChatTab.userSetName` is required, so
+    // a `{ tabId, sessionId, title }` literal does not typecheck against
+    // `ChatGroupsState`; and a fixture that agrees with `Object.keys(groups)`
+    // cannot catch the one bug this function has.
+    //
+    // The split is deliberately LEFT. `splitLeaf` puts the new group BEFORE the
+    // one it split (`chatGroupsLayout.ts` BEFORE.left === true) while the
+    // `groups` record is keyed by insertion order — so after this the leaf walk
+    // says [grp-new, grp-1] and `Object.keys(state.groups)` says
+    // [grp-1, grp-new]. An implementation that walks `Object.values(state.groups)`
+    // passes a single-group or right-split fixture and reports the two panes to
+    // the daemon in the WRONG ORDER, silently. This fixture is the only thing
+    // standing between that and `workspace_list`'s `gui` block.
+    let state = createInitialChatGroupsState();
+    state = chatGroupsReducer(state, {
+      type: 'openTab',
+      payload: { sessionId: 's-focused', title: 'A' },
     });
+    // sessionId '' is a real, reachable state: a tab opened and not yet bound.
+    state = chatGroupsReducer(state, { type: 'openTab', payload: { sessionId: '', title: 'blank' } });
+    const moved = state.groups[state.activeGroupId].tabs[0];
+    state = chatGroupsReducer(state, {
+      type: 'moveTabToGroup',
+      tabId: moved.tabId,
+      targetGroupId: state.activeGroupId,
+      zone: 'left',
+    });
+
+    const leaves = leafGroupIds(state.layout);
+    // The fixture is only meaningful if the two orders disagree. Assert that,
+    // so a reducer change that quietly makes them agree fails HERE rather than
+    // turning the assertions below into a tautology.
+    expect(leaves).not.toEqual(Object.keys(state.groups));
+
+    const echo = buildEchoFrame('w1', 's-focused', state);
     expect(echo.type).toBe('workspace_echo');
     expect(echo.window_id).toBe('w1');
-    expect(echo.layout[0].tabs).toHaveLength(2);
-    expect(echo.layout[0].active_tab).toBe('tab-1');
+    expect(echo.focused_session).toBe('s-focused');
+    expect(echo.layout.map((g) => g.group_id)).toEqual(leaves);
+    const first = echo.layout[0];
+    expect(first.tabs[0].session_id).toBe('s-focused');
+    expect(first.active_tab).toBe(state.groups[leaves[0]].activeTabId);
+    // The UNBOUND tab is reported, not filtered: merged_layout() has to know a
+    // blank tab exists before it can decide to reuse it.
+    expect(echo.layout.flatMap((g) => g.tabs)).toHaveLength(2);
   });
 });
 ```
@@ -11797,6 +15018,9 @@ import {
   applyWorkspaceCommand,
   type WorkspaceCommand,
 } from '../components/chatGroups/workspaceCommandRegistry';
+// State + layout types live in chatGroupsTypes, never in chatGroupsReducer —
+// the reducer imports them and re-exports nothing.
+import { leafGroupIds, type ChatGroupsState } from '../components/chatGroups/chatGroupsTypes';
 
 type EchoLayoutGroup = {
   group_id: string;
@@ -11811,23 +15035,32 @@ export type EchoFrame = {
   layout: EchoLayoutGroup[];
 };
 
-/** Pure: ChatGroups state → echo frame (unit-tested without a socket). */
+/**
+ * Pure: ChatGroups state → echo frame (unit-tested without a socket).
+ *
+ * The layout is a TREE (`GroupLayout`), never an ordered list — `ChatGroupsState`
+ * has no `order` field and never had one. Strip order therefore comes from the
+ * in-order leaf walk `leafGroupIds` (`chatGroupsTypes.ts:88`), which is exactly
+ * what `ChatGroupsShell` renders.
+ *
+ * Do NOT reach for `Object.values(state.groups)`. It is the obvious substitute
+ * and it is wrong: the record is keyed by INSERTION, and `splitLeaf` inserts a
+ * left/top split's new group into the tree BEFORE the group it split while the
+ * record still appends it last. This frame is the only thing the daemon's
+ * `merged_layout()` / `focused_or_recent()` (Task 22) ever see, so getting the
+ * order wrong mis-describes the user's window to every workspace tool, with no
+ * error and no failing test anywhere else.
+ */
 export function buildEchoFrame(
   windowId: string,
   focusedSession: string | null,
-  state: {
-    groups: Record<
-      string,
-      { groupId: string; activeTabId: string | null; tabs: { tabId: string; sessionId: string; title: string }[] }
-    >;
-    order: string[];
-  }
+  state: ChatGroupsState
 ): EchoFrame {
   return {
     type: 'workspace_echo',
     window_id: windowId,
     focused_session: focusedSession,
-    layout: state.order
+    layout: leafGroupIds(state.layout)
       .map((groupId) => state.groups[groupId])
       .filter(Boolean)
       .map((group) => ({
@@ -11933,13 +15166,13 @@ annotations — tested against REAL reducer state built by the real reducer)
 ```typescript
 import { describe, expect, it } from 'vitest';
 import { planWorkspaceCommand } from './workspaceCommandPlanner';
-import {
-  chatGroupsReducer,
-  createInitialChatGroupsState,
-  activeTabOf,
-  type ChatGroupsState,
-} from './chatGroupsReducer';
-import { MAX_GROUPS } from './chatGroupsLayout';
+import { chatGroupsReducer, createInitialChatGroupsState, activeTabOf } from './chatGroupsReducer';
+// Types come from chatGroupsTypes; the reducer exports functions only. This is
+// the convention every existing consumer follows (chatGroupsStorage.ts:1-2,
+// chatGroupsReducer.test.ts:9) — importing `ChatGroupsState` from
+// './chatGroupsReducer' is a compile error, not a style preference.
+import { leafGroupIds, type ChatGroupsState } from './chatGroupsTypes';
+import { MAX_GROUPS, groupCountOf } from './chatGroupsLayout';
 
 /** Real state with N session-bound tabs, built through the real reducer. */
 function stateWithSessions(ids: string[]): ChatGroupsState {
@@ -11976,27 +15209,40 @@ describe('planWorkspaceCommand', () => {
   });
 
   it('refuses a split at MAX_GROUPS with a clear detail', () => {
-    // Build MAX_GROUPS groups by moving tabs to edge zones.
-    let state = stateWithSessions(
-      Array.from({ length: MAX_GROUPS }, (_, i) => `s-${i}`)
-    );
+    // MAX_GROUPS tabs in one group, then MAX_GROUPS-1 right-edge splits: each
+    // split moves one tab out of the first leaf into a NEW group, so the count
+    // goes 1 → MAX_GROUPS and the first leaf keeps exactly one tab (which is
+    // what stops `collapseEmptyGroup` from undoing the last move). Verified
+    // against the real reducer at `bab6fba2`: leaves end as
+    // [grp-1, grp-8, grp-9, grp-10, grp-11, grp-12] — the ids are seq-derived
+    // and shared with tab ids, which is why nothing here hardcodes one.
+    let state = stateWithSessions(Array.from({ length: MAX_GROUPS }, (_, i) => `s-${i}`));
     for (let i = 1; i < MAX_GROUPS; i++) {
-      const groupId = state.order[state.order.length - 1];
-      const tab = state.groups[state.order[0]].tabs[0];
-      if (!tab) break;
+      const leaves = leafGroupIds(state.layout);
+      // No `if (!tab) break` — a missing tab means the fixture broke, and the
+      // TypeError that follows is a louder, better failure than a silent skip.
+      const tab = state.groups[leaves[0]].tabs[0];
       state = chatGroupsReducer(state, {
-        type: 'moveTabToGroup', tabId: tab.tabId, targetGroupId: groupId, zone: 'right',
+        type: 'moveTabToGroup',
+        tabId: tab.tabId,
+        targetGroupId: leaves[leaves.length - 1],
+        zone: 'right',
       });
     }
+
+    // UNCONDITIONAL, and before the act. The pre-amendment revision wrapped all
+    // three assertions below in `if (state.order.length >= MAX_GROUPS)`, so a
+    // fixture that fell short made the test pass having asserted nothing — the
+    // exact failure this plan's own gate-quality rule exists to prevent.
+    expect(groupCountOf(state.layout)).toBe(MAX_GROUPS);
+
     const plan = planWorkspaceCommand(
       { type: 'workspace', cmd: 'open_tab', session_id: 's-x', placement: 'split', focus: false },
       state
     );
-    if (state.order.length >= MAX_GROUPS) {
-      expect(plan.result.ok).toBe(false);
-      expect(plan.result.detail).toContain('split refused');
-      expect(plan.actions).toHaveLength(0);
-    }
+    expect(plan.result.ok).toBe(false);
+    expect(plan.result.detail).toContain('split refused');
+    expect(plan.actions).toHaveLength(0);
   });
 
   it('activate/close resolve tabs by session id; misses are reported', () => {
@@ -12068,13 +15314,10 @@ to its actual `{ group, tab }` naming.)
  * behavior (split refusal, focus etiquette, annotation) is unit-testable
  * against real reducer state.
  */
-import {
-  activeTabOf,
-  findTabBySession,
-  type ChatGroupsAction,
-  type ChatGroupsState,
-} from './chatGroupsReducer';
-import { MAX_GROUPS } from './chatGroupsLayout';
+import { activeTabOf, findTabBySession, type ChatGroupsAction } from './chatGroupsReducer';
+// `ChatGroupsState` lives in chatGroupsTypes — the reducer does not re-export it.
+import type { ChatGroupsState } from './chatGroupsTypes';
+import { MAX_GROUPS, groupCountOf } from './chatGroupsLayout';
 import type { WorkspaceCommand, WorkspaceCommandResult } from './workspaceCommandRegistry';
 
 export type TabAnnotation = { badge?: string; parentSessionId?: string };
@@ -12098,7 +15341,11 @@ export function planWorkspaceCommand(
   switch (cmd.cmd) {
     case 'open_tab': {
       if (!cmd.session_id) return refuse('missing session_id');
-      if (cmd.placement === 'split' && state.order.length >= MAX_GROUPS) {
+      // The pane count is a leaf count over the layout TREE. `groupCountOf` is
+      // the same predicate `moveTabToGroup` itself uses to refuse a split
+      // (`chatGroupsReducer.ts:449`), so the planner's refusal and the reducer's
+      // cannot disagree.
+      if (cmd.placement === 'split' && groupCountOf(state.layout) >= MAX_GROUPS) {
         return refuse(`split refused: already at ${MAX_GROUPS} groups`);
       }
       const previouslyActive = activeTabOf(state)?.tabId ?? null;
@@ -12178,21 +15425,37 @@ function refuse(detail: string): WorkspaceCommandPlan {
 - [ ] **Step 7: Run the planner tests**
 
 Run: `cd ui/desktop && npm run test:run -- workspaceCommandPlanner`
-Expected: 5 passed.
+Expected: **1 file / 5 tests**. The planner is pure, so all five pass whether or not the
+provider ever calls it — Step 8d is what closes that, and Step 9's filter is what runs it.
 
 - [ ] **Step 8: Wire the provider — a thin executor over the planner**
 
 In `ChatGroupsContext.tsx` (grep `registerNewTab(` at :161 for the registration
 pattern; `stateRef` exists at :195-196). Three additions, complete:
 
-(a) Annotation state, exposed through the context value (consumed by
-`ChatTabStrip` in Task 37):
+(a) Annotation state, exposed through the context value (read by
+`ChatGroupsShell` in Task 37, which passes it to `ChatTabStrip` as a **prop** —
+the strip is pure-props by contract and must stay that way; see Task 37):
 
 ```typescript
   const [tabAnnotations, setTabAnnotations] = useState<Record<string, TabAnnotation>>({});
 ```
 
-Add `tabAnnotations` to the context value object (beside `dispatch` at :228).
+Three edits, not one, and the third is the one that silently breaks:
+
+1. add `tabAnnotations: Record<string, TabAnnotation>;` to the
+   **`ChatGroupsContextValue` interface** (`ChatGroupsContext.tsx:47-55`) — it is a
+   declared interface, so adding a field only to the object literal does not compile;
+2. add `tabAnnotations,` to the value object (beside `dispatch` at `:228`);
+3. add `tabAnnotations` to that `useMemo`'s **dependency array**
+   (`ChatGroupsContext.tsx:234`, today `[state, activeSessionId, runningSessionIds]`).
+   Without it the memo never re-computes on an annotation change, the context value
+   keeps the stale `{}`, and the subagent badge never appears — with every test in this
+   task still green, because the planner and the registry are both correct.
+
+Nothing constructs a `ChatGroupsContextValue` outside the provider
+(`grep -rn "ChatGroupsContextValue" ui/desktop/src` → the definition only), so widening
+the interface breaks no test.
 
 (b) The command handler effect — executes plans; every behavior decision already
 lives (tested) in the planner:
@@ -12210,7 +15473,7 @@ lives (tested) in the planner:
           const hit = cmd.session_id
             ? findTabBySession(stateRef.current, cmd.session_id)
             : null;
-          if (hit && stateRef.current.order.length < MAX_GROUPS) {
+          if (hit && groupCountOf(stateRef.current.layout) < MAX_GROUPS) {
             dispatch({
               type: 'moveTabToGroup',
               tabId: hit.tabId,
@@ -12255,13 +15518,53 @@ lives (tested) in the planner:
 
 (c) Call `useWorkspaceChannel` once at the provider root (window id from
 `sessionStorage` — mint `crypto.randomUUID()` on first use; secret via the same
-`window.electron.getSecretKey()` the app already uses, `renderer.tsx:454`), and
-`sendEcho(buildEchoFrame(...))` from an effect keyed on the reducer state (the same
-effect placement as `acknowledgeNewTabCommit`, which already runs on every commit).
+`window.electron.getSecretKey()` the app already uses, `renderer.tsx:454`), and echo from
+an effect keyed on the reducer state — the same effect placement as
+`acknowledgeNewTabCommit` (`ChatGroupsContext.tsx:179`), which already runs on every
+commit:
+
+```typescript
+  const { sendEcho } = useWorkspaceChannel({ secret, windowId, enabled });
+  useEffect(() => {
+    sendEcho(buildEchoFrame(windowId, activeSessionId || null, state));
+  }, [state, activeSessionId, windowId, sendEcho]);
+```
+
+`state` is the provider's reducer state — pass it whole; `buildEchoFrame` now takes
+`ChatGroupsState` and does the leaf walk itself. `activeSessionId` is already computed at
+`ChatGroupsContext.tsx:222` (`activeSessionIdOf(state)`), and it is `''` for an empty
+active group, hence the `|| null`.
+
+**`enabled` must be false until the secret resolves, and it is what keeps this task from
+breaking six existing suites.** `getSecretKey()` is async, so `secret` is `null` on the
+first render; the hook's `if (!enabled || !secret) return;` is the only thing standing
+between `ChatGroupsProvider` and a `new WebSocket(...)` inside jsdom. Define `enabled` as
+"we have a secret and we are in the desktop shell":
+`const enabled = !!secret && typeof window.electron?.getSecretKey === 'function';` — the
+same capability probe `renderer.tsx:84-88` already uses to detect the headless/browser
+case.
+
+Exactly **six** suites render the real `ChatGroupsProvider` and therefore execute this
+line (`grep -rln "ChatGroupsProvider" ui/desktop/src` — the five in
+`components/chatGroups/`: `activationResubmitGuard` (3 tests), `keyboardResubmitGuard`
+(6), `homeSubmitWiring` (4), `useEmptyPairRedirect` (12), `launcherMessageWiring` (4);
+**plus `contexts/ChatGroupsContext.tabs.test.tsx` (6)**, which lives in a different
+directory and is easy to miss). Step 9's `chatGroups` filter does reach all six —
+measured at `bab6fba2`: `npm run test:run -- chatGroups` → **22 files, 212 tests, green**,
+and `ChatGroupsContext.tabs.test.tsx` is in that run. That is why the filter says
+`chatGroups` and not a file list.
+
+The other shell-level suites — `ChatGroupsShell.sessionName`, `ChatGroupsShell.terminal`,
+`duplicateSubmissionWiring` — do **not**: each `vi.mock`s the whole
+`../../contexts/ChatGroupsContext` module and supplies its own `useChatGroups: () => ({…})`
+stub, so the provider (and this hook) never runs in them. Worth knowing before assuming
+they cover the provider: they cover the *shell*, against a hand-written context value that
+will not have `tabAnnotations` — see Task 37, where that is exactly why the strip's new
+prop must be optional.
 
 Imports to add: `planWorkspaceCommand`, `TabAnnotation` from
 `../components/chatGroups/workspaceCommandPlanner`; `findTabBySession` from
-`../components/chatGroups/chatGroupsReducer`; `MAX_GROUPS` from
+`../components/chatGroups/chatGroupsReducer`; `MAX_GROUPS` **and `groupCountOf`** from
 `../components/chatGroups/chatGroupsLayout`; `registerWorkspaceCommands`,
 `drainPendingWorkspaceCommands`, types from
 `../components/chatGroups/workspaceCommandRegistry`; `toastService` from
@@ -12270,10 +15573,200 @@ Imports to add: `planWorkspaceCommand`, `TabAnnotation` from
 `typeof controller.observeSession === 'function'` or land Tasks 26-27 together on
 the branch before running the full suite).
 
+- [ ] **Step 8d: Test the WIRING — the provider must register a handler**
+
+⚠ **This step closes the gap the 2026-07-28 blocker amendment recorded and left open.**
+Step 8 is ~55 lines of real behaviour, and Step 9's filter matches `chatGroups*` files,
+**none of which exercise `registerWorkspaceCommands`**. A provider that registers nothing
+ships green under it: every planner test passes (the planner is pure), every registry test
+passes (it tests the singleton), and no test anywhere proves the two are connected. That is
+Task 30 Step 3b's defect, in the task that Step 3b's lesson should have reached first. It
+is a JSX subtree, so a grep is not an acceptable substitute — it needs a mount.
+
+Create `ui/desktop/src/contexts/ChatGroupsContext.workspaceCommands.test.tsx`, modelled on
+`ChatGroupsContext.tabs.test.tsx` (the sixth provider-mounting suite, `:1-30` for the mock
+list and the `MemoryRouter` + `ChatGroupsProvider` + `Probe` shape):
+
+```tsx
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { render, screen, act, waitFor } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
+import { ChatGroupsProvider, useChatGroups } from './ChatGroupsContext';
+import {
+  applyWorkspaceCommand,
+  resetWorkspaceCommandRegistry,
+  type WorkspaceCommand,
+} from '../components/chatGroups/workspaceCommandRegistry';
+import { leafGroupIds } from '../components/chatGroups/chatGroupsTypes';
+
+const mocks = vi.hoisted(() => ({
+  observeSession: vi.fn(),
+  success: vi.fn(),
+  createChatWindow: vi.fn(),
+}));
+
+// The provider imports `useRunningChats` from this module and Step 8b calls
+// `defaultChatStreamRegistry.getController(...).observeSession()`. Mocking the
+// module replaces BOTH, so the mock must supply both — `tabs.test.tsx` supplies
+// only `useRunningChats`, which is safe there only because it never dispatches a
+// workspace command.
+vi.mock('../hooks/chatStreamStore', () => ({
+  useRunningChats: () => [],
+  defaultChatStreamRegistry: {
+    getController: () => ({ observeSession: mocks.observeSession }),
+  },
+}));
+vi.mock('../utils/sessionNameSync', () => ({ subscribeSessionNameChanges: () => () => undefined }));
+vi.mock('../toasts', () => ({ toastService: { success: mocks.success, error: vi.fn() } }));
+
+function Probe() {
+  const ctx = useChatGroups();
+  return (
+    <div>
+      <span data-testid="sessions">
+        {ctx
+          ? leafGroupIds(ctx.state.layout)
+              .flatMap((id) => ctx.state.groups[id].tabs)
+              .map((t) => t.sessionId)
+              .join(',')
+          : ''}
+      </span>
+      <span data-testid="badges">
+        {JSON.stringify(
+          Object.fromEntries(
+            Object.entries(ctx?.tabAnnotations ?? {}).map(([k, v]) => [k, v.badge])
+          )
+        )}
+      </span>
+    </div>
+  );
+}
+
+const mount = () =>
+  render(
+    <MemoryRouter initialEntries={['/pair']}>
+      <ChatGroupsProvider>
+        <Probe />
+      </ChatGroupsProvider>
+    </MemoryRouter>
+  );
+
+const openTab = (session_id: string): WorkspaceCommand => ({
+  type: 'workspace',
+  cmd: 'open_tab',
+  session_id,
+  placement: 'tab',
+  focus: false,
+});
+
+describe('ChatGroupsProvider — the workspace command executor', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    vi.clearAllMocks();
+    resetWorkspaceCommandRegistry();
+    Object.assign(window, { electron: { createChatWindow: mocks.createChatWindow } });
+  });
+
+  it('registers a handler on mount, so a daemon open_tab really opens a tab', async () => {
+    mount();
+    // Nothing is queued: a live provider claimed the registry.
+    let result;
+    act(() => {
+      result = applyWorkspaceCommand(openTab('s-daemon'));
+    });
+    expect(result).toEqual(expect.objectContaining({ ok: true }));
+    await waitFor(() =>
+      expect(screen.getByTestId('sessions').textContent).toContain('s-daemon')
+    );
+    // …and the tab is attached to the observer stream, because this window is
+    // not the one driving that session (§4.3).
+    expect(mocks.observeSession).toHaveBeenCalled();
+  });
+
+  it('drains commands that arrived before any provider was mounted', async () => {
+    // The Settings-page case: a frame lands with no chat surface up.
+    const queued = applyWorkspaceCommand(openTab('s-early'));
+    expect(queued.ok).toBe(false);
+    mount();
+    await waitFor(() =>
+      expect(screen.getByTestId('sessions').textContent).toContain('s-early')
+    );
+  });
+
+  it('applies annotate_tab to the context value the strip reads', async () => {
+    mount();
+    act(() => {
+      applyWorkspaceCommand({
+        type: 'workspace',
+        cmd: 'annotate_tab',
+        session_id: 's-child',
+        badge: 'subagent',
+        parent_session_id: 's-parent',
+      });
+    });
+    // This is the assertion that catches the `useMemo` dependency-array omission
+    // in Step 8a(3): with `tabAnnotations` missing from the deps, the state
+    // updates and the context value does not, so the badge never reaches a
+    // consumer and every other test in Tasks 26 and 37 stays green.
+    await waitFor(() =>
+      expect(screen.getByTestId('badges').textContent).toContain('subagent')
+    );
+  });
+
+  it('relays open_window to the main process instead of opening a tab', async () => {
+    mount();
+    act(() => {
+      applyWorkspaceCommand({ type: 'workspace', cmd: 'open_window', session_id: 's-win' });
+    });
+    await waitFor(() => expect(mocks.createChatWindow).toHaveBeenCalled());
+    // The session id goes in the resume-session position (4th arg).
+    expect(mocks.createChatWindow.mock.calls[0][3]).toBe('s-win');
+    expect(screen.getByTestId('sessions').textContent).not.toContain('s-win');
+  });
+
+  it('surfaces notify frames as a toast and touches no tabs', async () => {
+    mount();
+    const before = screen.getByTestId('sessions').textContent;
+    act(() => {
+      applyWorkspaceCommand({
+        type: 'workspace',
+        cmd: 'notify',
+        session_id: 's-x',
+        level: 'info',
+        message: 'An agent wants to show you something',
+      });
+    });
+    await waitFor(() => expect(mocks.success).toHaveBeenCalled());
+    expect(screen.getByTestId('sessions').textContent).toBe(before);
+  });
+});
+```
+
+The `notify` case is not decoration: it is the **only** automated proof that Task 29's
+announce-only downgrade reaches the user. The daemon turns `open_tab` into `notify`
+(Task 29 Step 3) and hands it to this executor; if the executor drops unknown commands,
+the setting silently means "nothing happens at all".
+
 - [ ] **Step 9: Run the frontend suite**
 
-Run: `cd ui/desktop && npm run test:run -- workspaceCommandRegistry workspaceCommandPlanner useWorkspaceChannel chatGroups`
-Expected: new tests pass; no chatGroups regressions.
+Run:
+
+```bash
+cd ui/desktop && npm run test:run -- \
+  workspaceCommandRegistry workspaceCommandPlanner useWorkspaceChannel chatGroups ChatGroupsContext.workspaceCommands
+```
+
+Expected: **23 files / 222 tests**, all green — the `chatGroups` half is **22 files /
+212 tests, unchanged from the pre-task baseline measured at `bab6fba2`**, plus Step 8d's
+new file with 5 tests. (Step 8d's file lives in `contexts/` and its name contains
+`ChatGroupsContext`, so the `chatGroups` term does **not** match it — vitest's positional
+filters are case-sensitive substring matches on the path. It is named explicitly for that
+reason; drop the term and the wiring gate silently stops running while the command still
+exits 0. See Ground rules, "Gate mechanics".)
+
+Give the numbers, not "no regressions": the whole point of including `chatGroups` here is
+the six suites that mount `ChatGroupsProvider` (see Step 8c), and a filter that silently
+matched fewer files than expected is exactly how Task 30's Step 3b defect got in.
 
 - [ ] **Step 10: Commit**
 
@@ -12288,27 +15781,138 @@ git commit -m "feat(ui): workspace channel client + command planner + ChatGroups
 
 **Files:**
 - Modify: `ui/desktop/src/hooks/chatStreamStore.tsx`
-  (anchors: `ChatStreamController` :282, `streamFromResponse(stream, initialMessages, streamId)`
-  :870, the generated-client `reply({...})` call whose `{ stream }` feeds it at
-  :992-1007, `getController` :1334)
+  (**anchors re-verified at `275d735d`, 2026-07-28** — this file changed twice since
+  the plan was written, `0312dff4` then `936f5a33` (+76 lines):
+  `ChatStreamController` **:282**, `streamFromResponse(stream, initialMessages,
+  streamId)` **:909**, the generated-client `reply({…})` call whose `{ stream }` feeds
+  it at **:1031-1046**, `getController` **:1410**)
+  — **and re-verified again at `ea15a4de`** (2026-07-28, drift amendment): all five
+  still exact, plus `messagesRef` **:293**, `abortController` **:319**,
+  `activeStreamId` **:320**, `getSnapshot` **:378**,
+  `interface ChatStreamSnapshot { … messages: Message[] … }` **:173-175**, and the
+  `from '../api'` brace list **:3-17**. Phase 1 has **not** touched this file on this
+  branch — `git diff 275d735d..HEAD -- ui/desktop/src/hooks/` is empty, so every anchor
+  here is still the plan's own anchor tree. **`main` has**, though: issue #67
+  (`b80ae07e`) is +17 lines in this file and +61 in its test, unmerged. Re-anchor by
+  symbol at task start, and re-measure the baseline if you have merged `main`.
 - Create: `ui/desktop/src/hooks/chatStreamStore.observe.test.tsx`
 
-**Transport decision (verified, not assumed):** the store's `/reply` path does NOT
-hand-roll SSE — it calls the generated client (`reply` from `../api`, emitted as
-`client.sse.post` in `sdk.gen.ts:514`) and receives `{ stream }`, an
-`AsyncIterable<MessageEvent>`, which `streamFromResponse` consumes. hey-api emits the
-`.sse.*` form for any route whose OpenAPI 200 response carries
-`content: { "text/event-stream": … }` — which Task 7's utoipa annotation
-(`content_type = "text/event-stream"`, `body = MessageEvent`) produces, exactly like
-`/reply`'s (`reply.rs:410` → `openapi.json` `/reply` 200 content). So after Task 7's
-regen, `observeSessionEvents` is a generated `client.sse.get` function returning
-`{ stream }` — **no raw fetch, no `window.electron`, no second SSE parser**.
-Verify after regenerating: `grep -n "observeSessionEvents" ui/desktop/src/api/sdk.gen.ts`
-→ expect a `.sse.get<...>` call; if it generated as plain `.get`, the utoipa
-annotation is missing its `content_type` — fix Task 7, do not work around it here.
+⚠ **State the permanent observer-tab consequence for `expectedMessageIds`, in the code
+and in the tab's docs** (added 2026-07-28). `936f5a33` added a completeness flag,
+`viewNamesEveryStoredRow` (**:318**), that is set to `true` in exactly two places — both
+immediately after reading a conversation back from the server (**:757**, **:1388**) —
+and cleared by any streamed event, the transcript LRU, and a wholesale
+`UpdateConversation` (**:483**, **:518**, **:700**). `edit_message` only sends
+`expectedMessageIds` when the flag is true *and* every held message has an id
+(**:1339-1341**).
+
+An observer-fed tab is **always** in the cleared state: it is a pure event consumer that
+never performs the read that sets the flag. So an observer tab **permanently omits** the
+`expectedMessageIds` guard on in-place edits, while an ordinary tab sends it after each
+read.
+
+That is **safe** — the guard is omitted, never falsified, and the server-side cut still
+runs under the turn lock and is still bounded to the rows the handler itself read
+(the comment at `:1333-1336` says so) — but it is a real, permanent capability
+difference a user can hit, and it must be *stated* rather than discovered. Two things
+follow, and neither is optional:
+
+1. Put the sentence in `chatStreamStore.tsx` beside the observer mode, naming
+   `viewNamesEveryStoredRow` so the next reader lands on the flag.
+2. Do **not** "fix" it by having the observer mode set the flag. It would be a lie: an
+   observer tab genuinely does not know it holds every stored row (#59's
+   `MessagesPersisted` frame is the thing that would let it, and this store deliberately
+   does not consume it yet — `:313`, `:1335`, pinned by
+   `chatStreamStore.test.ts:807` and `:888`, the comments introducing
+   `omits its view when a message it holds has no id to name it by` (`:810`) and its
+   split-row sibling). Consuming that frame is the documented FOLLOW-UP at **`:313-317`**
+   and is out of scope here.
+
+⚠ **And the observer must not REORDER the frames it forwards** (added 2026-07-28 by the
+drift amendment; reconciliation #23's rule, restated at its first *consumer*). The
+observer stream carries `MessagesPersisted` like any other `MessageEvent`, and the
+producer-side invariant — *"no `MessagesPersisted` may precede a `Message` frame carrying
+one of the ids it publishes"* (`agent.rs:263-287`, stated at `:280-282`) — is a property
+of the **stream order**, which survives only if every relay preserves it.
+
+`observeSession` preserves it for free, because it hands the whole `AsyncIterable`
+straight to `streamFromResponse` and adds no buffering, no filtering and no
+`Promise.all`. That is a constraint on any future revision, not a happy accident: a
+"skip the accounting frames, this store ignores them anyway" optimisation here would be
+invisible today (the store drops them) and would silently break the day the FOLLOW-UP
+above lands. Forward every variant, in order, unconditionally.
+
+**Transport decision — no longer a prediction. Task 7 has LANDED and the regen produced
+exactly the predicted shape** (amended 2026-07-28 by the drift amendment; verified at
+`ea15a4de`):
+
+```
+ui/desktop/src/api/sdk.gen.ts:630
+export const observeSessionEvents = <ThrowOnError extends boolean = false>(
+  options: Options<ObserveSessionEventsData, ThrowOnError>
+) => (options.client ?? client).sse.get<…>({ url: '/sessions/{session_id}/events', ...options });
+```
+
+with `ObserveSessionEventsData = { body?: never; path: { session_id: string }; query?:
+never; url: '/sessions/{session_id}/events' }` (`types.gen.ts:5060-5070`) and
+`ObserveSessionEventsResponses = { 200: MessageEvent }` (`:5083-5088`). So Step 1's
+`expect.objectContaining({ path: { session_id: 'obs-1' } })` matches the real call shape,
+and the `.sse.get` half of the transport argument is **checked, not reasoned**.
+
+The reasoning that produced it, kept because it is what makes a regression legible:
+the store's `/reply` path does NOT hand-roll SSE — it calls the generated client (`reply`
+from `../api`, emitted as `client.sse.post` in `sdk.gen.ts:514`) and receives
+`{ stream }`, an `AsyncIterable<MessageEvent>`, which `streamFromResponse` consumes.
+hey-api emits the `.sse.*` form for any route whose OpenAPI 200 response carries
+`content: { "text/event-stream": … }`. `/reply`'s utoipa `content_type =
+"text/event-stream"` is at **`reply.rs:838`**, its handler `pub async fn reply(` at
+**`:847`**, and the runtime header at **`reply.rs:265`** — all three measured at
+**`03ad602c`**. (The `:675`/`:684` this paragraph used to give were correct at
+`ea15a4de`, a commit that is **no longer on this branch** — it was rebased into
+`aaae5889`, and Task 8's `/reply` cutover then landed as `03ad602c`, moving the handler
++163 lines. `:675` lands on a doc-comment line today. Grep the symbol.) Task 7's landed
+annotation is the
+same shape: `crates/biorouter-server/src/routes/session_events.rs`, `#[utoipa::path(`
+**`:163`**, `body = MessageEvent, content_type = "text/event-stream"` **`:169`**,
+`pub async fn observe_session_events(` **`:174`**.
+
+Keep the check as a **regression** gate rather than a discovery step:
+`grep -n "observeSessionEvents" ui/desktop/src/api/sdk.gen.ts` must show a `.sse.get<…>`
+call. A plain `.get` means someone dropped `content_type` from `session_events.rs:169` —
+fix it there, do not work around it here.
+
+⚠ **Pass `sseMaxRetryAttempts: 1`, exactly as `/reply` does** (found 2026-07-28; nothing
+in this plan or its surveys had read the generated SSE client). `ui/desktop/src/api/core/
+serverSentEvents.gen.ts` wraps every `.sse.*` call in its **own** retry loop
+(`while (true) { if (signal.aborted) break; … } catch { onSseError?.(error); if
+(sseMaxRetryAttempts !== undefined && attempt >= sseMaxRetryAttempts) break; await
+sleep(backoff) }`, `:113-260`), and `sseMaxRetryAttempts` has **no default** — omit it
+and the client reconnects **forever** with its own 3 s→30 s backoff. `/reply` passes
+`sseMaxRetryAttempts: 1` at **`chatStreamStore.tsx:1043`** for precisely this reason
+(`attempt` is incremented before the check, so `1` means "no retries").
+
+Three things follow for `observeSession`, and all three are invisible in a test that
+mocks `observeSessionEvents`:
+
+1. Its own backoff loop would be **unreachable on a transport error** — the inner loop
+   swallows the error and retries, so the stream never ends and control never returns.
+   Two reconnect policies, only one of which runs, and it is not the one this task
+   documents.
+2. The `catch (error)` around `await observeSessionEvents({…})` would catch almost
+   nothing: `serverSentEvents` returns `{ stream }` from a *lazy* async generator, so the
+   `await` resolves before a single byte is fetched. Transport errors surface inside
+   `streamFromResponse`'s `for await`, not here. Keep the `catch` (a malformed URL or a
+   client-side throw still lands there), but do not rely on it.
+3. `throwOnError: true` is inert on this path for the same reason. Harmless; not a guard.
+
+With `sseMaxRetryAttempts: 1`, a transport failure ends the generator normally,
+`streamFromResponse` returns, and the loop below owns the reconnect — which is the
+behaviour the third Step-1 test describes.
 
 - [ ] **Step 1: Write the failing test** — mocks the generated client module (the
-same `vi.mock('../api', …)` pattern `SessionListView.test.tsx:9-17` already uses),
+same `vi.hoisted` + `vi.mock('../../api', …)` pattern `SessionListView.test.tsx:8-22`
+already uses — hoisted block `:8-14`, mock `:16-22`; the `:9-17` this line used to give
+straddles the two, and the module path is `'../../api'` from that directory),
 so it needs neither `fetch` nor `window.electron` and passes against the real
 implementation:
 
@@ -12367,16 +15971,47 @@ describe('ChatStreamController.observeSession', () => {
     const done = controller.observeSession();
     controller.stopObserving();
     await done;
-    // ≤ 2 calls: the initial connect plus at most one in-flight retry that the
-    // abort check cancels before issuing a request loop.
-    expect(mocks.observeSessionEvents.mock.calls.length).toBeLessThanOrEqual(2);
+    // EXACTLY one: the initial subscribe, and no reconnect after the abort.
+    //
+    // ⚠ This assertion used to be `toBeLessThanOrEqual(2)`, which is satisfied by
+    // ZERO — an `observeSession()` that returned immediately without ever calling
+    // the API passed it, and so did one that never existed as anything but a stub.
+    // A ceiling is only half a bound; assert the floor too. Do not relax it back:
+    // the count IS deterministic, because `observeSession`'s synchronous prefix
+    // issues the first request before its first `await`, and the loop's staleness
+    // check (`if (!this.observing || …) return;`) runs before the backoff sleep.
+    expect(mocks.observeSessionEvents).toHaveBeenCalledTimes(1);
+  });
+
+  it('re-subscribes when the observed stream ends and it was NOT stopped', async () => {
+    // The other half of the same behaviour, and the one the ≤2 ceiling was
+    // gesturing at: "the observer stream never completes from the client's point
+    // of view", so a stream that ends must be re-opened. Without this, a
+    // subagent tab goes silent the first time the daemon's broadcast receiver is
+    // replaced, and looks like a dead child.
+    vi.useFakeTimers();
+    try {
+      mocks.observeSessionEvents.mockResolvedValue({ stream: frames() });
+      const controller = defaultChatStreamRegistry.getController('obs-3');
+      void controller.observeSession();
+      await vi.advanceTimersByTimeAsync(0); // first connect + drain
+      expect(mocks.observeSessionEvents).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1100); // past the 1 s first backoff
+      expect(mocks.observeSessionEvents.mock.calls.length).toBeGreaterThanOrEqual(2);
+      controller.stopObserving();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 ```
 
-(Adjust `getSnapshot()` to the controller's real snapshot accessor — grep
-`getSnapshot\|snapshot` in the class; the assertion is on observed messages landing
-in the same store the chat renders from.)
+(`getSnapshot()` **is** the controller's real accessor — verified at `ea15a4de`,
+`chatStreamStore.tsx:378` (`getSnapshot = (): ChatStreamSnapshot => this.snapshot;`),
+and `ChatStreamSnapshot.messages: Message[]` is `:175`. The earlier "adjust it to
+whatever the class calls it" hedge is retired: the assertion is on observed messages
+landing in the same store the chat renders from, and `getSnapshot().messages` is that
+store.)
 
 - [ ] **Step 2: Run to verify failure**
 
@@ -12385,10 +16020,16 @@ Expected: FAIL — `observeSession` is not a function.
 
 - [ ] **Step 3: Implement**
 
-Add `observeSessionEvents` to the store's existing `../api` import list (:3-17), then
-add to `ChatStreamController` (the whole point is reuse — `streamFromResponse` at
-:870 already understands every `MessageEvent` variant, including the observer's
-snapshot `UpdateConversation` and `Finish`):
+Add `observeSessionEvents` to the store's existing `../api` import list (**`:3-17`**,
+exact — the list runs `cancelTurn, getSession, interrupt, listApps, listSessions,
+Message, MessageEvent, reply, resumeAgent, Session, TokenState, updateFromSession,
+updateSessionUserWorkflowValues`), then add to `ChatStreamController` (the whole point is
+reuse — `streamFromResponse` at **`:909`** already understands every `MessageEvent`
+variant, including the observer's snapshot `UpdateConversation` and `Finish`):
+
+⚠ **`:870` was wrong here and `:909` is right** — this task's own header block said
+`:909` 130 lines above, and the two disagreed (2026-07-28 drift amendment; survey §3
+"Task 27"). Same for the two anchors in the paragraph below Step 3's code block.
 
 ```typescript
   /** True while this controller is an observer of a session another agent
@@ -12424,6 +16065,11 @@ snapshot `UpdateConversation` and `Finish`):
           path: { session_id: this.sessionId },
           throwOnError: true,
           signal: this.abortController.signal,
+          // NOT optional. Without it the generated SSE client retries forever
+          // on its own (`api/core/serverSentEvents.gen.ts` — `sseMaxRetryAttempts`
+          // has no default) and the loop below never regains control on a
+          // transport error. `/reply` passes the same value at :1043.
+          sseMaxRetryAttempts: 1,
         });
         retryMs = 1000;
         await this.streamFromResponse(stream, this.messagesRef, streamId);
@@ -12444,18 +16090,43 @@ snapshot `UpdateConversation` and `Finish`):
   }
 ```
 
-Two integration points, both inside this file: (a) `submitPreparedMessage` (:946)
-already bumps `activeStreamId` and swaps `abortController`, which exits the observer
-loop's staleness check — additionally set `this.observing = false` there so a user
-taking over a subagent tab cleanly converts the controller from observer to driver;
-(b) `messagesRef` names the controller's current message list — grep how
-`streamFromResponse`'s second argument is built at the :1007 call site
-(`currentMessages`) and pass the same source.
+Two integration points, both inside this file: (a) `submitPreparedMessage`
+(**`:985`**, not the pre-drift `:946`) already bumps `activeStreamId` and swaps
+`abortController`, which exits the observer loop's staleness check — additionally set
+`this.observing = false` there so a user taking over a subagent tab cleanly converts the
+controller from observer to driver; (b) `messagesRef` (**`:293`**) names the controller's
+current message list — the `streamFromResponse` call site at **`:1046`** (not the
+pre-drift `:1007`) passes `currentMessages`; pass the same source.
+
+⚠ **On (a): whether there is already a line at that spot depends on whether you have
+merged `main`.** Issue **#67** (`b80ae07e`, on `main` but **not** on this branch —
+`main` is 6 commits ahead of the branch point `275d735d`) opens `submitPreparedMessage`
+with `this.viewNamesEveryStoredRow = false;` and a fourteen-line comment, for the same
+reason this task is about: a submit invalidates the completeness claim, and `retryTurn`
+reaches no `messagesRef` assignment at all. On this branch the method begins directly
+with `if (updateMessageList) { this.updateMessages(currentMessages); }`.
+
+Either way, put `this.observing = false;` at the **top of the arrow function body**. Do
+not anchor on the `#67` comment (it may not be there), and do not delete it if it is —
+`observing` and `viewNamesEveryStoredRow` are two independent flags cleared for two
+independent reasons, and #67's clear is a data-loss fix.
 
 - [ ] **Step 4: Run tests**
 
 Run: `cd ui/desktop && npm run test:run -- chatStreamStore`
-Expected: both new tests pass; existing store tests unchanged.
+
+Expected: **2 files / 57 tests**. The baseline was re-measured on this worktree at
+`ea15a4de` (`npx vitest run chatStreamStore` → `Test Files 1 passed (1) / Tests 54
+passed (54)`, green in 753 ms): `chatStreamStore.test.ts` is **1 file / 54 tests**, and
+this task adds `chatStreamStore.observe.test.tsx` with **3**. "Existing store tests
+unchanged" is not a gate — 54 is.
+
+⚠ **54 is the un-merged number.** `main` (`9558c346`) is 6 commits ahead of this
+branch's fork point and one of them, issue **#67** (`b80ae07e`), adds a test to this
+exact file: `git show main:…/chatStreamStore.test.ts | grep -c "\bit("` → **55**. So the
+moment this branch merges or rebases onto `main`, the expectation becomes **2 files /
+58 tests**. A `58` is not a regression and a `57` after a merge means #67's test was
+dropped. Re-measure the left-hand number before reading the total.
 
 - [ ] **Step 5: Commit**
 
@@ -12469,9 +16140,12 @@ git commit -m "feat(ui): observer-backed ChatStreamController mode over /session
 ### Task 28: Provenance chips + set-tools toasts in the transcript
 
 **Files:**
-- Modify: the message-rendering component (locate with
-  `grep -rln "userVisible\|user_visible" ui/desktop/src/components | grep -i message`
-  — the component that renders a user message bubble; call it `UserMessage` here)
+- Modify: `ui/desktop/src/components/UserMessage.tsx` — the user-message bubble.
+  (Confirmed at `bab6fba2`, so the previous "locate it and call it `UserMessage` here"
+  hedge is retired: the file exists, `export default function UserMessage`, and it takes
+  `{ message, onMessageUpdate }`.)
+- Modify: `ui/desktop/src/components/UserMessage.test.tsx` — **the mount test**. This
+  file exists and today holds **1** test.
 - Create: `ui/desktop/src/components/ProvenanceChip.tsx` + test
 
 - [ ] **Step 1: Write the failing test**
@@ -12542,11 +16216,64 @@ export function ProvenanceChip({ provenance }: { provenance?: MessageProvenanceV
 }
 ```
 
-Mount it in the message bubble component wherever `message.metadata` is already in
-scope: `<ProvenanceChip provenance={message.metadata?.provenance} />` above the bubble
-body (the generated API type gains `provenance` from Task 7's regen; if the generated
-name is snake_case, adapt the prop mapping at the mount site, keeping the component's
-camelCase view type). Every cross-session toast already arrives as a `notify` frame and
+Mount it in `UserMessage.tsx` wherever `message.metadata` is already in scope, above the
+bubble body:
+
+```tsx
+<ProvenanceChip provenance={message.metadata?.provenance ?? undefined} />
+```
+
+The generated type is **camelCase and already regenerated** on this branch (Task 2 has
+landed): `MessageMetadata.provenance?: MessageProvenance | null` at
+`ui/desktop/src/api/types.gen.ts:1056`, `MessageProvenance { fromSessionId?, fromSessionName?, kind }`
+at `:1096`, and `ProvenanceKind = 'agent_injection' | 'user_direct' | 'spawn_context'` at
+`:1297` — field-for-field identical to this component's `MessageProvenanceView`, so no
+mapping layer is needed. The `?? undefined` is load-bearing: the generated field is
+`| null` and the prop is `?:`, which TypeScript does not unify.
+
+- [ ] **Step 3b: Test the MOUNT, not just the chip**
+
+⚠ The gate below used to be `npm run test:run -- ProvenanceChip`, which matches exactly one
+file: the chip's own. A `ProvenanceChip.tsx` that compiles, renders correctly in isolation,
+and **is never rendered by anything** passes it — and provenance is a §5 *structural*
+guarantee ("any message injected across sessions is permanently labeled"), so the thing
+that must be true is that the transcript shows it. Add two cases to the existing
+`UserMessage.test.tsx` (which already renders the component bare with a `Message` literal
+at `:5-12`, so this needs no new scaffolding):
+
+```tsx
+  it('labels a message another agent injected (BR-71 §5)', () => {
+    render(
+      <UserMessage
+        message={{
+          ...message,
+          id: 'message-2',
+          metadata: {
+            userVisible: true,
+            agentVisible: true,
+            provenance: {
+              kind: 'agent_injection',
+              fromSessionId: 's-parent',
+              fromSessionName: 'Planning chat',
+            },
+          },
+        }}
+        onMessageUpdate={vi.fn()}
+      />
+    );
+    expect(screen.getByText(/injected by Planning chat/i)).toBeTruthy();
+  });
+
+  it('shows no chip on an ordinary same-session message', () => {
+    render(<UserMessage message={message} onMessageUpdate={vi.fn()} />);
+    expect(document.querySelector('[data-provenance-kind]')).toBeNull();
+  });
+```
+
+The negative case is the one that keeps this honest: without it, a mount that renders the
+chip unconditionally — labelling every message the user ever typed as injected — passes.
+
+Every cross-session toast already arrives as a `notify` frame and
 Task 26 routes them to the toast service — `workspace_set_tools` (Task 15),
 `workspace_close` (Task 16), and `workspace_send_prompt`'s `turn`/`steer` (Task 14,
 via the shared `notify_target`). Nothing more to build here; verify with the Phase-2
@@ -12554,8 +16281,11 @@ gate that a steer into an open tab raises a toast naming the caller.
 
 - [ ] **Step 4: Run tests**
 
-Run: `cd ui/desktop && npm run test:run -- ProvenanceChip`
-Expected: 3 passed.
+Run: `cd ui/desktop && npm run test:run -- ProvenanceChip UserMessage`
+
+Expected: **2 files / 6 tests** — the chip's 3 plus `UserMessage.test.tsx`'s 3 (its 1
+pre-existing case, measured at `bab6fba2`, plus Step 3b's 2). Both terms must match; if
+the file count comes back as 1, one of them died and vitest still exited 0.
 
 - [ ] **Step 5: Commit**
 
@@ -12581,9 +16311,11 @@ So the setting lives in the same config store every other daemon-visible prefere
 
 **Files:**
 - Modify: `crates/biorouter/src/agents/workspace_extension.rs` (the `announce_only`
-  helper + `workspace_open`'s frame choice)
+  helper, `workspace_open`'s frame choice, and **`open_result_text`** — the pure
+  result-text function, added 2026-07-28 by the gate sweep so the truthful-result arm,
+  which is the half that decides what the model believes, has a test at all)
 - Create: `ui/desktop/src/components/settings/app/WorkspaceSettingsSection.tsx` + test
-- Modify: `ui/desktop/src/components/settings/SettingsView.tsx` (mount the section)
+- Modify: `ui/desktop/src/components/settings/SettingsView.tsx` (mount the section, `:128`)
 
 **NOT in this task's Files list, deliberately:**
 `crates/biorouter/src/agents/subagent_tool.rs`. `announce_subagent_tab` does not exist
@@ -12625,6 +16357,9 @@ Rust, in `workspace_extension.rs`:
         let window = json!({ "type": "workspace", "cmd": "open_window", "session_id": "s-w" });
         assert_eq!(apply_focus_etiquette(window, true)["cmd"], "notify");
 
+        // The frame is only half the feature. The OTHER half is what the model
+        // is told — see `open_result_text` below.
+
         // …and so does activate_tab. It does not OPEN anything, but it is the
         // frame that yanks the user's view to a different conversation, which is
         // the same intrusion the setting exists to prevent. No daemon emitter
@@ -12642,6 +16377,45 @@ Rust, in `workspace_extension.rs`:
             let frame = json!({ "type": "workspace", "cmd": cmd, "session_id": "s" });
             assert_eq!(apply_focus_etiquette(frame, true)["cmd"], cmd);
         }
+    }
+
+    /// ⚠ The transform is the visible half; THIS is the half that decides what
+    /// the model believes. A model told "opened" when nothing opened will answer
+    /// the user from a false premise ("I've put it in a tab for you"), and no
+    /// frame assertion above can catch that — `apply_focus_etiquette` is correct
+    /// in both worlds. Before this test the whole truthful-result arm shipped
+    /// untested, and its only net was a human reading the agent's reply during
+    /// Task 31's live pass.
+    #[test]
+    fn the_result_text_never_claims_a_tab_that_was_not_opened() {
+        let ok = json!({ "ok": true, "detail": "opened" });
+
+        let announced = open_result_text("s-child", "tab", false, true, &ok);
+        assert!(announced.contains("s-child"));
+        assert!(
+            !announced.contains("opened"),
+            "announce-only must not use the word the model will repeat: {announced}"
+        );
+        assert!(
+            announced.contains("no tab was opened") && announced.contains("Do not tell the user"),
+            "the model must be told, in words, not to claim a tab: {announced}"
+        );
+
+        let normal = open_result_text("s-child", "tab", false, false, &ok);
+        assert!(normal.contains("opened") && !normal.contains("NOT opened"));
+        assert!(normal.contains("background"), "focus:false is background: {normal}");
+        assert!(normal.contains("tab"));
+
+        let focused = open_result_text("s-child", "split", true, false, &ok);
+        assert!(focused.contains("focused") && focused.contains("split"));
+
+        // A GUI that refused the command is reported as a refusal, not as
+        // success — the round trip returns `ok:false`, and the previous inline
+        // code path had no test that this branch was ever reachable.
+        let refused = json!({ "ok": false, "detail": "no room for another split" });
+        let text = open_result_text("s-child", "split", false, false, &refused);
+        assert!(text.contains("NOT opened"), "{text}");
+        assert!(text.contains("no room for another split"), "the GUI's reason survives: {text}");
     }
 ```
 
@@ -12689,9 +16463,14 @@ describe('WorkspaceSettingsSection', () => {
 
 - [ ] **Step 2: Run to verify failure**
 
-Run: `cargo test -p biorouter --lib agents::workspace_extension::tests::announce_only`
-and `cd ui/desktop && npm run test:run -- WorkspaceSettingsSection`
-Expected: both fail — symbols/module not found.
+Run: `cargo test -p biorouter --lib agents::workspace_extension` and
+`cd ui/desktop && npm run test:run -- WorkspaceSettingsSection`
+
+Expected: **COMPILE ERROR** on the Rust side — `announce_only_enabled_for`,
+`apply_focus_etiquette` and `open_result_text` do not exist — and `No test files found,
+exiting with code 1` on the vitest side. (The filter is the whole module, not
+`::tests::announce_only`: both of this task's new tests must fail first, and the second
+one's name does not contain `announce_only`.)
 
 - [ ] **Step 3: Implement the daemon half**
 
@@ -12775,27 +16554,53 @@ written there, in full:
                 let announce_only = announce_only_enabled();
                 let frame = apply_focus_etiquette(open_frame, announce_only);
                 let result = s.gui_command(frame, true).await?;
-
-                // The result text must be TRUTHFUL — this is the half that
-                // matters for the model. A model told "opened" when nothing
-                // opened will go on to reason, and answer the user, from a false
-                // premise ("I've put it in a tab for you").
-                if announce_only {
-                    Ok(vec![Content::text(format!(
-                        "Session {session_id} is ready, but the user has turned OFF automatic \
-                         tab opening, so no tab was opened — they were notified and can open it \
-                         themselves. Do not tell the user you opened a tab."
-                    ))])
-                } else {
-                    let ok = result.get("ok").and_then(serde_json::Value::as_bool).unwrap_or(false);
-                    let detail = result.get("detail").and_then(serde_json::Value::as_str).unwrap_or("");
-                    Ok(vec![Content::text(format!(
-                        "Session {session_id} {} in the GUI ({placement}{}). {detail}",
-                        if ok { "opened" } else { "NOT opened" },
-                        if focus { ", focused" } else { ", background" },
-                    ))])
-                }
+                Ok(vec![Content::text(open_result_text(
+                    &session_id,
+                    &placement,
+                    focus,
+                    announce_only,
+                    &result,
+                ))])
             }
+```
+
+with the text itself lifted into a pure function beside `apply_focus_etiquette`, so it
+has a test (`the_result_text_never_claims_a_tab_that_was_not_opened`, Step 1):
+
+```rust
+/// What the MODEL is told. Pure, and separate from the frame, because the two
+/// can disagree in exactly one direction that matters: the frame was downgraded
+/// to a notification and the text still says "opened". A model that believes it
+/// opened a tab will tell the user so, and the user is looking at a screen where
+/// nothing happened.
+pub(crate) fn open_result_text(
+    session_id: &str,
+    placement: &str,
+    focus: bool,
+    announce_only: bool,
+    gui_result: &serde_json::Value,
+) -> String {
+    if announce_only {
+        return format!(
+            "Session {session_id} is ready, but the user has turned OFF automatic tab \
+             opening, so no tab was opened — they were notified and can open it \
+             themselves. Do not tell the user you opened a tab."
+        );
+    }
+    let ok = gui_result
+        .get("ok")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let detail = gui_result
+        .get("detail")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    format!(
+        "Session {session_id} {} in the GUI ({placement}{}). {detail}",
+        if ok { "opened" } else { "NOT opened" },
+        if focus { ", focused" } else { ", background" },
+    )
+}
 ```
 
 **Task 36 consumes this, and does more than apply the transform.**
@@ -12871,16 +16676,40 @@ export function WorkspaceSettingsSection() {
 }
 ```
 
-Mount it in `SettingsView.tsx` beside `AppSettingsSection` (grep `AppSettingsSection` there
-for the section-list shape; the row styling above matches
-`AppSettingsSection.tsx:163-175` exactly, so it needs no new CSS). `min-w-0` on the label
-column is deliberate — the memory note on text overflow.
+Mount it in `SettingsView.tsx` beside `AppSettingsSection` (`:128`, inside the App tab's
+`TabsContent`; the file is 139 lines and imports its four sections at `:4-11`). The row
+styling above matches `AppSettingsSection.tsx:163-175` exactly, so it needs no new CSS.
+`min-w-0` on the label column is deliberate — the memory note on text overflow.
 
 - [ ] **Step 5: Run tests**
 
-Run: `BIOROUTER_PATH_ROOT=$(mktemp -d) cargo test -p biorouter --lib agents::workspace_extension` and
-`cd ui/desktop && npm run test:run -- WorkspaceSettingsSection`
-Expected: PASS.
+```bash
+BIOROUTER_PATH_ROOT=$(mktemp -d) cargo test -p biorouter --lib agents::workspace_extension
+cd ui/desktop && npm run test:run -- WorkspaceSettingsSection
+# The mount. See below for why this one is a grep and not a render.
+grep -c "from './app/WorkspaceSettingsSection'" src/components/settings/SettingsView.tsx
+grep -c "<WorkspaceSettingsSection" src/components/settings/SettingsView.tsx
+```
+
+Expected: **8 passed** for the Rust filter (Task 24's 6 plus this task's 2 —
+`announce_only_defaults_off_and_maps_open_tab_to_notify` and
+`the_result_text_never_claims_a_tab_that_was_not_opened`); **1 file / 2 tests** for
+vitest; **`1`** and **`1`** for the two greps.
+
+⚠ **Why the mount is a grep here and a render everywhere else.** `npm run test:run --
+WorkspaceSettingsSection` matches exactly one file — the section's own — so a section
+that is never mounted ships green and *the user can never reach the toggle*, with the
+first symptom in Task 31 Step 2.5. The usual closure is a render test of the host, and
+that is what Tasks 26, 28, 30, 37 and 38 all do. It does not work here: `SettingsView`
+has **no test file at all** (`npm run test:run -- SettingsView` → `No test files found`),
+it mounts four heavy section trees, and it puts them behind a Radix `Tabs` that renders
+only the active `TabsContent` — so a render test would either need the whole tree mocked
+(at which point it stops testing the mount) or would pass while the section sat in an
+inactive panel. The two anchored greps prove the import exists *and* is used as an
+element; together with `npm run lint:check` (an unused import is an error) and Task 31
+Step 2.5's live click on the switch, that is the honest coverage. **If `SettingsView`
+ever gains a render test, replace these two greps with a real assertion — do not just
+delete them.**
 
 - [ ] **Step 6: Commit**
 
@@ -12905,6 +16734,40 @@ a tool that is not there.
 
 **Suggest, never force** — the design's word. A dismissible prompt, one action, and it
 never reappears once acted on or dismissed.
+
+⚠ **Anchors re-verified at `ea15a4de` (2026-07-28, drift amendment).** Neither this
+branch nor `main` has touched `ui/desktop/src/components/settings/` since the plan's
+anchor tree, so these are stable — but re-anchor by symbol anyway, and note that the
+2026-07-28 survey got two of them wrong in the *other* direction:
+
+| Plan cited | Now at | Note |
+|---|---|---|
+| `handleExtensionToggle` **`:93-109`** | **exact** | the survey said "body ends `:107`"; `:107` is `await fetchExtensions();`, `:108` is `return true;`, `:109` is `};` |
+| the `extensions` memo **`:60-87`** | **exact** | the survey said `:61-87`; `:60` is `const extensions = useMemo(() => {` |
+| `toastService` import `:17` | **`:16`** | `import { toastService } from '../../../toasts';` |
+| `ExtensionSectionProps` `:22-30` | **`:21-30`** | |
+| `extensionsList` from `useConfig()` `:40` | **`:42`** | `const { getExtensions, addExtension, removeExtension, extensionsList } = useConfig();` — exactly the four the Step-3b mock supplies |
+| `.filter((ext) => !isCapabilityExtension(ext))` `:65` | **`:66`** | |
+
+Exact and re-confirmed: `export default function ExtensionsSection` `:32`;
+`toggleDirection` `:99`; `await fetchExtensions();` `:107`;
+`capabilities.ts:83` (`key: 'chatrecall'`); `ConfigContext.tsx:90` (the module-private
+`createContext`), `:437-443` (`useConfig`), `:440` (the throw);
+`subcomponents/ExtensionItem.tsx:82`
+(``aria-label={`Toggle ${getFriendlyTitle(extension)} extension`}``).
+
+⚠ **The insertion point is BETWEEN `:107` and `:108`, not after the function.** Step 3
+says "at the end of `handleExtensionToggle` (after `await fetchExtensions();`, :107)" —
+but the function does not end there; `return true;` is `:108`. Placed after the `return`
+the block is unreachable and every Step-3b test fails with `success` never called, which
+reads as a broken mock rather than a misplaced paste.
+
+**`customToggle` short-circuits the whole method** (`:94-97`, `if (customToggle) { await
+customToggle(extensionConfig); return true; }`), so the suggestion never fires for a
+caller that supplies it. Verified harmless today: `grep -rn customToggle ui/desktop/src`
+returns **only** `ExtensionsSection.tsx` itself — nothing in the app passes the prop. If
+something ever does (an onboarding surface is the obvious candidate), decision 14's
+affordance disappears there silently, so re-check this line rather than assuming.
 
 **Files:**
 - Modify: `ui/desktop/src/components/settings/extensions/ExtensionsSection.tsx`
@@ -12997,8 +16860,9 @@ export function resetChatrecallSuggestionForTests(): void {
 }
 ```
 
-In `ExtensionsSection.tsx`, at the end of `handleExtensionToggle` (after
-`await fetchExtensions();`, :107):
+In `ExtensionsSection.tsx`, inside `handleExtensionToggle`, **between
+`await fetchExtensions();` (`:107`) and the `return true;` (`:108`)** — see the
+insertion-point warning in the anchor block above:
 
 ```tsx
     if (
@@ -13020,18 +16884,18 @@ In `ExtensionsSection.tsx`, at the end of `handleExtensionToggle` (after
 
 **`extensionsList`, NOT the component's `extensions` memo — this is load-bearing.**
 `extensions` (:60-87) filters out every capability
-(`.filter((ext) => !isCapabilityExtension(ext))`, :65), and **`chatrecall` is a
+(`.filter((ext) => !isCapabilityExtension(ext))`, **:66**), and **`chatrecall` is a
 capability** (`settings/capabilities/capabilities.ts:83`) — it is rendered under
 Settings → Chat → Capabilities, not in this list. Reading the memo makes
 `.find(…)` return `undefined` for chatrecall *always*, `?? false` turns that into
 "chatrecall is off", and the suggestion fires at users who already have it enabled —
 the one case decision 14 says must stay silent. `extensionsList` is the unfiltered
-context list ExtensionsSection already destructures from `useConfig()` at :40. This
+context list ExtensionsSection already destructures from `useConfig()` at **:42**. This
 was caught by Step 3b's second test, which fails against the memo and passes against
 the context list; the same fact is why the toast points at Capabilities rather than
 saying "enable it in this list", where it does not appear.
 
-(`toastService` is already imported by `ExtensionsSection.tsx` at :17 — `import
+(`toastService` is already imported by `ExtensionsSection.tsx` at **:16** — `import
 { toastService } from '../../../toasts';` — so no new import is needed for it, only
 for the two `chatrecallSuggestion` helpers. `extensionConfig.enabled` is the value
 *before* the toggle, which is why `nowEnabled` is its negation — the same expression
@@ -13040,9 +16904,11 @@ for the two `chatrecallSuggestion` helpers. `extensionConfig.enabled` is the val
 - [ ] **Step 3b: Test the WIRING, not just the policy**
 
 `ui/desktop/src/components/settings/extensions/` has **no** `ExtensionsSection.test.tsx`
-(`ls` it: the only test files there are `bundled-extensions.test.ts` and
-`utils.test.ts`). So a `npm run test:run -- … ExtensionsSection` filter matches nothing
-and reports success, and the four policy tests above pass whether or not
+(`ls` it: the only test files at that level are `bundled-extensions.test.ts` and
+`utils.test.ts`; `subcomponents/` additionally holds `ExtensionItem.test.tsx` and
+`ExtensionList.test.ts`, neither of which the string `ExtensionsSection` matches —
+re-verified at `ea15a4de`). So a `npm run test:run -- … ExtensionsSection` filter matches
+nothing and reports success, and the four policy tests above pass whether or not
 `handleExtensionToggle` ever calls `shouldSuggestChatrecall` — a completely unwired
 implementation ships green. Decision 14's deliverable *is* the wiring, so it needs its
 own component test. Create `ExtensionsSection.test.tsx`:
@@ -13064,10 +16930,13 @@ const mocks = vi.hoisted(() => ({
   error: vi.fn(),
 }));
 
-// `useConfig` THROWS outside a ConfigProvider (`ConfigContext.tsx:341-347`) and the
-// context object itself is module-private (`:66`), so it cannot be wrapped — the
-// component must be given a mocked hook. Same shape as the sibling
-// `capabilities/CapabilitiesSection.test.tsx`.
+// `useConfig` THROWS outside a ConfigProvider (`ConfigContext.tsx:437-443`, the
+// `throw new Error('useConfig must be used within a ConfigProvider')` at `:440`) and
+// the context object itself is module-private (`const ConfigContext =
+// createContext<ConfigContextType | undefined>(undefined);` at `:90`, no `export`),
+// so it cannot be wrapped — the component must be given a mocked hook. Same shape as
+// the sibling `capabilities/CapabilitiesSection.test.tsx`.
+// (Anchors re-read at `275d735d`; the plan's old `:341-347` / `:66` were pre-drift.)
 vi.mock('../../ConfigContext', () => ({
   useConfig: () => ({
     extensionsList: mocks.extensionsList,
@@ -13178,9 +17047,21 @@ fails (`success` never called) and the other two still pass, which is what makes
 - [ ] **Step 4: Run tests**
 
 Run: `cd ui/desktop && npm run test:run -- chatrecallSuggestion ExtensionsSection`
-Expected: 4 policy tests + 3 wiring tests pass. (Before Step 3b this command silently
-ran only `chatrecallSuggestion` — vitest positional args are filename filters, and
-`ExtensionsSection` matched no file.)
+
+Expected: **2 files / 7 tests** — 4 policy + 3 wiring. **The file count is the gate, not
+the test count.** Once Step 1's file exists but Step 3b's does not, this command silently
+runs only `chatrecallSuggestion`: vitest positional args are OR'd filename filters,
+`ExtensionsSection` matches no file, and the run still exits 0 reporting success. A
+`1 file` result here means Step 3b's file is missing or renamed and the wiring is
+unverified again — which is the exact defect this task discovered and which the rest of
+Phase 2-4 now copies its fix from.
+
+*(Measured at `ea15a4de`, for the record and because the precise claim matters: **today**,
+before Step 1, `npx vitest run chatrecallSuggestion ExtensionsSection` matches nothing at
+all and exits **1** with `No test files found` — a composite filter only hides a dead term
+when at least one term is live. Re-measured alongside it: `npx vitest run SessionListView
+ZzzNoSuchFilter` runs 1 file / 7 tests and exits 0. Both halves of the Ground-rules "gate
+mechanics" bullet reproduce on this worktree.)*
 
 - [ ] **Step 5: Commit**
 
@@ -13197,7 +17078,24 @@ git commit -m "feat(ui): suggest chatrecall when Workspace Control is enabled (B
 
 Run: `cargo test --workspace --no-fail-fast 2>&1 | tail -5` and
 `cd ui/desktop && npm run test:run && npm run lint:check`
-Expected: green (modulo the recorded pre-existing baseline).
+
+Expected: green, and **there is no pre-existing frontend baseline to discount** —
+`npm run test:run` was measured green on this worktree at `ea15a4de`:
+**186 files / 1726 tests**, 16 s (added 2026-07-28 by the drift amendment; "modulo the
+recorded pre-existing baseline" was a licence to wave a red through, and there is nothing
+to wave). The number to beat here is **186 + 9 = 195**: Phase 2 creates nine desktop test
+files — `workspaceCommandRegistry`, `workspaceCommandPlanner`, `useWorkspaceChannel`,
+`ChatGroupsContext.workspaceCommands`, `chatStreamStore.observe`, **`ProvenanceChip`**,
+`WorkspaceSettingsSection`, `chatrecallSuggestion`, `ExtensionsSection` — all listed
+under **New files** in [File structure](#file-structure). Count them from there rather
+than trusting this sentence. (This said "eight" and omitted `ProvenanceChip` until
+2026-07-28: Task 28 creates it with a `+ test` and gates on 3 tests in it, but neither
+the component nor its test was in the File-structure block. Both are there now.)
+
+⚠ One narrow-filter caveat that does **not** apply here but will confuse anyone who
+checks a single file: `npx vitest run SessionListView` fails ~5 runs in 6 on a
+pre-existing case while the full suite passes. See Task 38 Step 5. The full-suite run
+above is the trustworthy one.
 
 - [ ] **Step 2: Live check, per the dev-GUI rules** (read
 `docs/desktop-ui/launching-the-dev-gui.md` first; `BIOROUTER_NO_HMR=1`; verify with CDP
@@ -13217,8 +17115,74 @@ screenshots, never `screencapture`; `env -u ELECTRON_RUN_AS_NODE`)
    workspace ON in Settings → Extensions and verify the chatrecall suggestion appears
    exactly once (toggle off and on again — it must not reappear).
 7. Close the GUI; re-run the same tool from `biorouter` CLI against the daemon —
-   verify `gui_attached: false` degradation, and that `biorouter sessions watch` still
+   verify `gui_attached: false` degradation, and that `biorouter session watch` still
    streams.
+
+⚠ **Two known gaps in `/ui/workspace`, recorded here deliberately by Task 23's review
+rather than fixed there** (both are behaviour additions to a socket loop whose
+concurrency Task 22 spent three fix commits getting right; neither is a defect in what
+Task 23 shipped, and neither has a unit test that could be written in bounded time).
+Watch for both during this live pass, and decide then whether Phase 2 closes them or a
+follow-up does:
+
+- **No keepalive, so a half-open TCP connection is invisible.** `handle_workspace_socket`
+  only ever leaves its loop on a close frame, a read error, or a failed write. A
+  connection black-holed by a sleeping laptop, a lid close or a dropped Wi-Fi association
+  produces none of those until the OS retransmission timeout (order of minutes), so
+  `bridge.is_attached()` — and therefore `any_attached()`/`gui_attached()` — stays `true`
+  for a window nobody can see. That is not cosmetic: `workspace_send_prompt`'s Decision 4
+  guard (`crates/biorouter/src/agents/workspace_extension.rs`, the
+  `!services.gui_attached() && target_mode_requires_approval(...)` refusal) exists
+  precisely to stop a detached turn parking tool confirmations where no one can answer
+  them, and a stale `true` defeats it; `focused_or_recent()` will also keep routing
+  commands into the dead socket. The fix is a `tokio::time::interval` arm in the same
+  `select!` sending `WsMessage::Ping` and breaking on send failure — writes to a
+  black-holed connection *do* eventually fail, whereas a silent socket never will.
+  **Live check:** open a window, put the machine to sleep or pull its network, then ask
+  the agent for `workspace_list` from the CLI and see how long `gui_attached` stays true.
+- **The writer blocks the reader (head-of-line).** `socket_tx.send(...).await` sits inside
+  a `select!` branch body, so while the outbound sink is backpressured no inbound frame is
+  read — including the `workspace_result` that would unpark a round trip. It cannot
+  deadlock (every `emit_and_wait` is bounded, currently 10 s), but it converts one slow
+  writer into a stalled turn, which is the shape that produces "the GUI hung" reports. The
+  fix is to split the loop into a writer task and a reader task; that moves `detach`
+  ownership and needs an abort path on the surviving half, which is why it is not a
+  drive-by change.
+
+**Decision (Task 31, 2026-07-31): both are DEFERRED. Phase 2 does not close either.**
+Recorded here because the task above says to decide, and because
+`crates/biorouter-server/src/routes/workspace.rs` points its own `handle_workspace_socket`
+doc comment at this block for the outcome — a decision living only in a hand-off note
+would leave that pointer aimed at nothing. Neither gap is closed in the shipped code:
+the `select!` still has exactly two arms, and `socket_tx.send(...).await` still runs
+inside one of them.
+
+The reasoning, and its limits, plainly:
+
+- **Neither was falsified by the live pass, but neither was tested by it either.** Steps
+  1–7 drive one window with short frames over a loopback socket that is never
+  backpressured, and never sleep the machine or drop its network. That is not the
+  condition either gap needs. So "the live pass saw no keepalive problem and no stall" is
+  true and carries almost no information — it must not be read as evidence they are
+  benign. What the pass *did* establish is the precondition that makes them matter at
+  all: the socket now really connects (it did not, before this task's CSP fix), so
+  `gui_attached` is now load-bearing rather than uniformly false.
+- **Deferring is a judgement about blast radius, not about severity.** The keepalive gap
+  is the more serious of the two — a stale `gui_attached: true` defeats
+  `workspace_send_prompt`'s Decision 4 refusal, which exists to stop a detached turn
+  parking a tool confirmation where nobody can answer it — but its fix adds a third
+  `select!` arm and a new exit path to a loop whose concurrency Task 22 needed three fix
+  commits to get right, and it is not honestly testable without a fake transport. Landing
+  that under a gate task, after the gate's own suites have been run, is how a green gate
+  stops meaning anything.
+- **What would close each, unchanged from above:** a `tokio::time::interval` arm sending
+  `WsMessage::Ping` and breaking on send failure (keepalive); a reader/writer task split
+  with `detach` ownership moved and an abort path on the surviving half (head-of-line).
+  Both want the fake-transport harness neither has, which is the follow-up's real first
+  step.
+- **Until then the code comment is the mitigation**, and it must stay: it is the only
+  thing standing between the next engineer and reading `gui_attached: true` as a fact
+  about the world rather than about a socket that has not yet failed to write.
 
 - [ ] **Step 3: Update the design-doc status header** (Slice 2 shipped) and commit:
 
@@ -13238,13 +17202,72 @@ sees it running — reconciliation #2), streams onto the bus, opens (background)
 annotated tab the human can watch, steer, and stop; the parent's result reports human
 intervention.
 
+**And the same three verbs from a terminal** (Tasks 38b/38c, the operator's 2026-07-30
+CLI-parity requirement): `biorouter session list --subagents` makes a child
+*discoverable* — grouped under its parent, with live/finished state and a label derived
+from its own task rather than the shared `"Subagent task"` literal — and
+`biorouter session attach` joins it **while it is running**, rendering the conversation
+so far and then following and steering it. Both are placed here, not in Phase 4, because
+they stand on Task 32's stamping, Task 33's registration (without which `/interrupt`
+mints a different agent for the child and a steer lands nowhere) and Task 34's bus
+publication — and because a phase that shipped the GUI half alone would be the exact
+drift this requirement exists to prevent.
+
 ### Task 32: Spawn stamps `parent_session_id` + persists the spawn context
+
+⚠ **Anchors re-verified at `ea15a4de` (2026-07-28, drift amendment).** `agent.rs` is
+**+198** lines on this branch and `session_manager.rs` **+251**, with Tasks 8-21 still to
+land, so the two cross-file anchors below have already moved and will move again.
+**Re-anchor by symbol at task start.**
+
+| Plan cited | Now at | Symbol |
+|---|---|---|
+| `agent.rs:5707` | **`:5775`** | `pub async fn override_system_prompt(&self, template: String)` — still by value, so prep binding 3 is still required |
+| `session_manager.rs:1004` (survey) | **`:1010`** | `SessionUpdateBuilder::parent_session_id(Option<String>)` (Task 1 landed) |
+| `agent.rs:3606-3613` | **`:3638`** | the in-turn compaction `replace_conversation_preserving_tail` |
+| `agent.rs:2086` / `:2188` | **`:2117`** / **`:2219`** | the overflow-ladder rewrites |
+| `subagent_handler.rs:134-305` | **`:134-309`** | `#[allow(clippy::too_many_lines)]` is `:134`, the `fn` is `:135`, and the file is 309 lines — the function runs to the end |
+| `parent_session_id` borrowed `:159` | **`:158`** | `&task_config.parent_session_id` (there is a second borrow at `:286`) |
+| `session_manager.rs` `add_message_adopting_uid` | **`:1324`** | "~20 call sites in `agent.rs`" is **18**, measured |
+
+Exact and re-confirmed: `subagent_tool.rs:545-562` (`create_subagent_session`, with its
+**two** callers at `:507` background and `:526` foreground); `subagent_handler.rs:48`
+(`config.session_manager.clone()` in `run_complete_subagent_task`, `:40`), `:149`
+(`Arc::new(Agent::with_config(config))`), `:176` (`for extension in
+task_config.extensions`), `:198-208` (`&SubagentPromptContext { … }`) with
+`task_instructions: system_instructions` at `:203`, `:213`
+(`agent.override_system_prompt(subagent_prompt).await;`);
+`workflow/mod.rs:60` (`pub skills: Option<Vec<String>>`);
+`context_mgmt/pins.rs:250-254` (`pin_is_eligible`, and it does require
+`message.is_agent_visible()` — the pin note below is correct);
+`subagent_handler.rs` still has **no** `mod tests`.
+
+⚠ **`get_agent_messages` is not an `async fn`.** It is
+`fn get_agent_messages(config, workflow, task_config, session_id, cancellation_token)
+-> AgentMessagesFuture` whose whole body is one `Box::pin(async move { … })` (`:135-142`).
+Everything Step 3 inserts goes **inside** that `async move` block, where `.await` is
+legal — but a reader who greps `async fn get_agent_messages` finds nothing and concludes
+the function was renamed. It was not.
+
+⚠ **The `:212` / `:213` disagreement is resolved: `:213` is right.** Step 3's prose
+("immediately after `agent.override_system_prompt(subagent_prompt).await;` (:212)") and
+prep binding 3 (":213") cited the same line two different ways inside one task. The
+call is at **`:213`**. Corrected below. Task 33 cites `get_agent_messages` at `:135`,
+which now agrees with this task.
+
+**This task publishes nothing to the session event bus** and therefore cannot violate
+reconciliation #23's ordering invariant. `persist_spawn_context` writes one row through
+`add_message_adopting_uid` *before* the child's `reply` stream exists, so there is no
+`MessagesPersisted` frame to order against and no relay to preserve. The proof that the
+row is nonetheless *observable* is Task 34's tee, which publishes the stream verbatim.
+Do not "helpfully" publish a frame from here to make the tab render sooner — the tab's
+first read is the observer's `UpdateConversation` snapshot, which already contains it.
 
 **Files:**
 - Modify: `crates/biorouter/src/agents/subagent_tool.rs` (`create_subagent_session`
   at :545-562 — gains the parent id)
 - Modify: `crates/biorouter/src/agents/subagent_handler.rs` (`get_agent_messages`
-  :134-305 — persists the rendered spawn context after `override_system_prompt` :213)
+  :134-309 — persists the rendered spawn context after `override_system_prompt` :213)
 
 - [ ] **Step 1: Write the failing test**
 
@@ -13353,6 +17376,23 @@ pub(crate) async fn persist_spawn_context(
     let mut record = Message::user().with_text(body);
     record.metadata.user_visible = true;
     record.metadata.agent_visible = false;
+    // DELIBERATELY NOT `.pinned()`, and this is the product decision the
+    // 2026-07-28 amendment owes the reader (Task 14 pins its `note`; this record
+    // does not, and the difference is not an oversight):
+    //
+    // `pin_is_eligible` (`context_mgmt::pins:250-254`) requires the message to
+    // be AGENT-VISIBLE, and this one is `agent_visible: false` by design — it is
+    // a transcript header for the human and the tab, not context for the child's
+    // model, which already received all of it as its rendered system prompt. A
+    // pin here would be inert: silently unhonoured, and misleading to the next
+    // reader who assumes it does something.
+    //
+    // The child's own copy of this content therefore cannot be lost to
+    // compaction, because it is not in the child's context to begin with; and the
+    // stored ROW cannot be lost to a rewrite, because #51 made every whole-history
+    // rewrite carry foreign appends over. If this record is ever made
+    // agent-visible, revisit — at that point it becomes exactly the "one message
+    // a child must never lose" case and should be pinned.
     record.metadata.provenance = Some(MessageProvenance {
         kind: ProvenanceKind::SpawnContext,
         from_session_id: Some(parent_session_id.to_string()),
@@ -13366,8 +17406,9 @@ pub(crate) async fn persist_spawn_context(
 ```
 
 Call it from `get_agent_messages` immediately after
-`agent.override_system_prompt(subagent_prompt).await;` (:212), before the reply stream
-starts.
+`agent.override_system_prompt(subagent_prompt).await;` (**:213** — this line used to say
+`:212` and prep binding 3 below said `:213`; `:213` is the verified one), before the
+reply stream starts.
 
 **Four of the values this call needs are already MOVED by that point**, so the hunk
 below is preceded by four preparatory bindings. Getting this wrong is E0382 ×2 and
@@ -13386,12 +17427,14 @@ E0382 ×2 more, all in one insertion; each is named at the line that causes it:
             .collect();
 
         // 2. Before the `SubagentPromptContext { … task_instructions:
-        //    system_instructions … }` literal (:203), which moves the String:
+        //    system_instructions … }` literal (:198-208, `task_instructions:
+        //    system_instructions` at :203), which moves the String:
         let task_instructions_for_record = system_instructions.clone();
 
         // 3. Immediately before `agent.override_system_prompt(subagent_prompt)`
-        //    (:212). That method takes `template: String` BY VALUE
-        //    (`agent.rs:4988`), so the binding is gone after the call:
+        //    (:213). That method takes `template: String` BY VALUE
+        //    (`agent.rs:5775` — the plan's pre-drift `:5707` is stale, agent.rs
+        //    is +198 on this branch), so the binding is gone after the call:
         let rendered_prompt = subagent_prompt.clone();
 
         // 4. Before `config` is moved into `Agent::with_config(config)` (:149):
@@ -13402,17 +17445,27 @@ E0382 ×2 more, all in one insertion; each is named at the line that causes it:
         // --- The call itself, immediately after override_system_prompt. ---
 
         // Grants for the record: extensions from the task config; skills from
-        // the workflow (`workflow.skills`, workflow/mod.rs:60-61); the child's
+        // the workflow (`workflow.skills`, `Option<Vec<String>>`, workflow/mod.rs:60);
+        // the child's
         // active KBs via the daemon services when installed (usually empty — a
         // subagent inherits no KB today; recorded truthfully either way).
         let skill_names: Vec<String> = workflow.skills.clone().unwrap_or_default();
+        // Post-#45: `knowledge_selection` returns set + write target together
+        // (Task 9's `KbSelectionView { kb_ids, primary_kb }`, which mirrors the
+        // real `KnowledgeService` type `KbSelection { kb_ids, hidden_kbs,
+        // primary_kb }` at knowledge/service.rs:92-101 — re-verified ea15a4de).
+        // The record names only the set — the primary is per-session mutable
+        // state, not a grant, and recording a value that can change five
+        // minutes later as part of an immutable spawn record is how a "source of
+        // truth" starts lying.
         let knowledge_bases = crate::workspace_services::get()
-            .map(|s| s.active_knowledge_bases(&session_id))
+            .map(|s| s.knowledge_selection(&session_id).kb_ids)
             .unwrap_or_default();
         if let Err(e) = persist_spawn_context(
             &session_manager,
             &session_id,
-            // Still live: `parent_session_id` is only ever borrowed (:159).
+            // Still live: `parent_session_id` is only ever borrowed (:158, and
+            // again at :286).
             &task_config.parent_session_id,
             &rendered_prompt,
             &task_instructions_for_record,
@@ -13433,18 +17486,83 @@ render that produces `subagent_prompt`, so no single position has both. The four
 above are the fix; three of them are `String`/`Vec<String>` clones of values that are
 at most a few KB, once per subagent run.
 
+- [ ] **Step 3b: Gate the WIRING — `persist_spawn_context` must be CALLED**
+
+⚠ Step 1's test calls `persist_spawn_context(...)` directly. Nothing in this task proves
+`get_agent_messages` ever calls it, so an implementation that adds a perfect helper and
+forgets the insertion above ships with `cargo test … agents::subagent_handler` green — and
+the first symptom is a subagent tab with no spawn-context header, six tasks later. There
+is no cheap in-process mount for this one (`get_agent_messages` builds a real agent with
+real extensions), so the wiring gets an **anchored grep pair plus an ordering check**, on
+the model Task 35 uses for `stamp_user_direct_if_subagent`:
+
+```bash
+H=crates/biorouter/src/agents/subagent_handler.rs
+# 1. The helper exists.
+grep -c "async fn persist_spawn_context" "$H"
+# Expected: 1
+# 2. It is CALLED from the run path. This pattern matches only the production
+#    call — Step 1's test call is `persist_spawn_context(` with a `&sm` first
+#    argument and no `if let Err`.
+grep -c "if let Err(e) = persist_spawn_context(" "$H"
+# Expected: 1. A `0` is the regression: helper written, never wired.
+# 3. …and it is called AFTER the system-prompt override, which is where the
+#    rendered prompt it records comes from.
+override=$(grep -n "override_system_prompt(subagent_prompt)" "$H" | cut -d: -f1)
+persist=$(grep -n "if let Err(e) = persist_spawn_context(" "$H" | cut -d: -f1)
+[ -n "$override" ] && [ -n "$persist" ] && [ "$override" -lt "$persist" ] \
+  && echo "OK: the record is written after the prompt it records" \
+  || echo "FAIL: persist missing, or placed before override_system_prompt"
+```
+
+**Do not make a number match by editing the production call.** A bare
+`grep -c "persist_spawn_context" "$H"` returns **3** on a correct implementation
+(definition, the call, Step 1's test call) and will change again the next time someone
+adds a test — which is why each pattern above is anchored and expects `1`.
+
+The end-to-end proof that the record survives a real run is **Task 34 Step 1's
+follow-through assertion**, which the gate sweep made non-vacuous (it was
+`if let Some(first) = msgs.first()`, which skipped itself in exactly the case where
+nothing was written). Those two tasks are the pair; neither is sufficient alone.
+
 **Verification guard (the overwrite risk):** the test's final assertion — the record is
 still the FIRST message after the run — is added in Task 34's integration test, because
 the child agent persists its own conversation as it runs; if the child's persistence
-path REPLACES rather than appends (check `replace_conversation` usage in the agent's
-persist path), the spawn record would be lost, and the fix is to seed the child's
-in-memory `Conversation` with the record (agent_visible false keeps it out of the model
-context). Do not skip this check.
+path REPLACES rather than appends, the spawn record would be lost, and the fix is to
+seed the child's in-memory `Conversation` with the record (agent_visible false keeps it
+out of the model context). Do not skip this check.
+
+*Re-verified 2026-07-28 and the risk is now much smaller, but not zero.* The agent's
+ordinary persist path appends (`add_message_adopting_uid`, defined at
+`session_manager.rs:1324`, **18** call sites in `agent.rs` — measured; the "~20" was an
+estimate), and its two rewrite paths both go through
+`replace_conversation_preserving_tail` (**`agent.rs:3638`** in-turn compaction;
+**`:2117`**/**`:2219`** on the overflow ladder — all three re-anchored at `ea15a4de`),
+which carries a foreign row over rather than deleting it (#51). So a compaction during the
+child's run no longer destroys the record — but it can still **summarize it out of the
+agent's view**, which is irrelevant here only because the record is deliberately
+`agent_visible: false` (see the pin note in `persist_spawn_context` above). Assert the
+row, not its visibility.
 
 - [ ] **Step 4: Run tests**
 
 Run: `cargo test -p biorouter --lib agents::subagent_handler`
-Expected: PASS.
+
+Expected: **1 passed** — `spawn_context_is_persisted_visible_to_user_not_agent`, the only
+test in the module this task creates. (`subagent_handler.rs` has **no** `mod tests` at
+`ea15a4de` either — re-verified by the drift amendment, `grep -c "mod tests"` → 0. Which
+also means this filter matches **zero** tests and exits **0** today — so "green" before
+Step 1 is meaningless, and the count is what distinguishes the two states.) Then run Step
+3b's three anchored wiring checks and confirm `1` / `1` /
+`OK: the record is written after the prompt it records`.
+
+⚠ **The Step-1 test opens a real `SessionManager` on `temp.path()`**, so unlike the
+`--lib` tests Phase 1 flagged it does not touch `~/.config/biorouter` — but Step 3's
+`persist_spawn_context` reaches `crate::workspace_services::get()` only in
+`get_agent_messages`, not in the helper, so no `serial_test` guard is needed here. If a
+later revision moves the `knowledge_selection` read into the helper, this test starts
+sharing the process-wide `OnceLock` and needs
+`#[serial_test::serial(workspace_services)]` like Task 24's.
 
 - [ ] **Step 5: Commit**
 
@@ -13483,7 +17601,9 @@ In `execution/manager.rs`'s existing test module (the `create_test_manager` help
 ```rust
     /// BR-71: a subagent run registers its ALREADY-CONFIGURED agent so the
     /// server's get_or_create_agent (the /interrupt and /reply resolution
-    /// path — state.rs:290) returns the LIVE instance, not a fresh default one.
+    /// path — `AppState::get_agent_for_route`, state.rs:310 at `03ad602c`;
+    /// `get_agent` is :303. The plan's old :290 is pre-drift and lands on a
+    /// map assignment) returns the LIVE instance, not a fresh default one.
     #[tokio::test]
     async fn register_agent_makes_get_or_create_return_the_live_instance() {
         let temp_dir = TempDir::new().unwrap();
@@ -13574,9 +17694,32 @@ In `subagent_handler.rs`'s test module (from Task 32):
 
 ```rust
     /// Headless (no WorkspaceServices installed): the run must not require the
-    /// daemon — no lease, no panic, result envelope still produced (§2.1).
-    /// The lease-held path is asserted end-to-end by the Task 39 harness
-    /// (interrupt 202 + cancel true), which runs against a real daemon.
+    /// daemon — no lease, no panic, result envelope still produced (§2.1) — AND
+    /// it must still register its child agent with the `AgentManager`, which is
+    /// the whole point of this task.
+    ///
+    /// ⚠ The registration half is new (2026-07-28 gate sweep). This test used to
+    /// end at `assert!(!rendered.is_empty())`, and `serde_json::to_string` of any
+    /// `Serialize` value is non-empty — so it passed with `register_agent`,
+    /// `begin_turn` and the `Deregister` guard **all absent**. The four
+    /// `AgentManager` tests above it are genuinely good, but they call
+    /// `register_agent` by hand; nothing proved `run_complete_subagent_task` does.
+    /// The only other net was Task 39's opt-in live tier, whose own cancel
+    /// assertion was itself a tautology. Two gates, one defect, both green.
+    ///
+    /// The sentinel below is what makes the registration observable without
+    /// racing the `Deregister` drop: we register OUR agent under the child's id
+    /// first. A run that registers replaces it and then deregisters its own
+    /// entry (`deregister_agent_if_same`), leaving nothing. A run that does not
+    /// register leaves the sentinel sitting there forever.
+    ///
+    /// ⚠ The sentinel proves ABSENCE, and one wrong implementation also produces
+    /// absence: a run that never registers but tears down with a blunt
+    /// `manager.remove_session(&child.id)` removes the sentinel and passes. The
+    /// Step-5 grep pair below closes that (`remove_session(` must be **0** in
+    /// `subagent_handler.rs`); do not weaken it into "either deregistration is
+    /// fine", because identity-scoped removal is the whole point — a plain
+    /// remove would also evict a *live* agent registered by someone else.
     #[tokio::test]
     async fn subagent_run_without_daemon_services_still_completes() {
         let temp = tempfile::TempDir::new().unwrap();
@@ -13593,7 +17736,8 @@ In `subagent_handler.rs`'s test module (from Task 32):
             crate::config::BioRouterMode::Auto,
         );
         // TestProvider replaying an empty cassette: fails on first use — the
-        // run errors fast, which is all this needs (manager.rs:349-360 pattern).
+        // run errors fast, which is all this needs — the pattern
+        // `test_set_default_provider` uses at manager.rs:348-360.
         let cassette = temp.path().join("empty.json");
         std::fs::write(&cassette, "{}").unwrap();
         let provider = std::sync::Arc::new(
@@ -13615,15 +17759,58 @@ In `subagent_handler.rs`'s test module (from Task 32):
             max_turns: Some(3),
         };
 
+        // The sentinel: an agent nobody else owns, parked under the child's id.
+        let manager = crate::execution::manager::AgentManager::instance()
+            .await
+            .expect("AgentManager::instance (BIOROUTER_PATH_ROOT is set by the gate)");
+        let sentinel = std::sync::Arc::new(crate::agents::Agent::with_config(
+            crate::agents::AgentConfig::new(
+                sm.clone(),
+                crate::config::permission::PermissionManager::instance(),
+                None,
+                crate::config::BioRouterMode::Auto,
+            ),
+        ));
+        manager.register_agent(child.id.clone(), sentinel.clone()).await;
+
         let result =
             run_complete_subagent_task(config, workflow, task_config, true, child.id.clone(), None)
                 .await;
-        // The provider fails, so the envelope reports an error/incomplete run —
-        // the assertion is that it IS a structured envelope and nothing panicked
-        // without the daemon: from_error/from_aborted_turn always set a
-        // non-empty summary-or-error body.
-        let rendered = serde_json::to_string(&result).unwrap();
-        assert!(!rendered.is_empty());
+
+        // The provider fails, so the envelope reports an error/incomplete run.
+        // Assert its SHAPE — `SubagentResult` always carries a status and a
+        // non-empty summary (`subagent_result.rs:51-54`) — rather than merely
+        // that serializing it produced bytes.
+        let rendered = serde_json::to_value(&result).unwrap();
+        assert!(rendered.is_object(), "a structured envelope, got: {rendered}");
+        assert!(rendered.get("status").is_some(), "…with a status: {rendered}");
+        assert!(
+            rendered
+                .get("summary")
+                .and_then(|v| v.as_str())
+                .is_some_and(|s| !s.is_empty()),
+            "…and a non-empty summary, even for a run that failed: {rendered}"
+        );
+
+        // The wiring: the run replaced the sentinel with its own live child and
+        // deregistered that child on the way out. `Deregister::drop` finishes the
+        // work on a spawned task, so poll rather than assume it has landed.
+        for _ in 0..100 {
+            if !manager.has_session(&child.id).await {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(
+            !manager.has_session(&child.id).await,
+            "run_complete_subagent_task must register the live child (which replaces the \
+             sentinel) and deregister it on exit; the sentinel is still there, so nothing \
+             registered and /interrupt would mint a different agent"
+        );
+        // Belt and braces: if the run somehow left the SENTINEL registered, the
+        // assertion above would already have fired — but make the failure mode
+        // unambiguous for whoever reads the output.
+        manager.deregister_agent_if_same(&child.id, &sentinel).await;
     }
 ```
 
@@ -13682,14 +17869,15 @@ In `execution/manager.rs`, beside `get_or_create_agent`:
 
     /// Release ONE registration of `session_id` → `agent`, and unpin only when
     /// the last one goes. The `Arc::ptr_eq` test is the TurnGuard discipline
-    /// (`state.rs:65-79`): a finished run may only clear its own registration,
-    /// never a successor's.
+    /// (`impl TurnGuard`, `state.rs:65-83` — Task 41's table gives the same
+    /// span; the `:65-79` this comment used to give stopped mid-block): a
+    /// finished run may only clear its own registration, never a successor's.
     ///
     /// Note what this deliberately does NOT do: it does not touch the `sessions`
     /// LRU. `register_agent` does not put anything there either, so there is
     /// nothing of ours to remove — and an entry that IS there was put there by
     /// an ordinary `get_or_create_agent`, which is how a consulted Agent Drafter
-    /// worker gets its agent (`apps.rs:1628`). Popping it would evict a cached
+    /// worker gets its agent (`routes/apps.rs:1663`). Popping it would evict a cached
     /// worker this run never created, on every consult.
     pub async fn deregister_agent_if_same(&self, session_id: &str, agent: &Arc<Agent>) {
         let mut pinned = self.pinned.write().await;
@@ -13856,7 +18044,7 @@ Add the eviction test that would have caught the un-pinned bug:
     }
 
     /// `deregister` must not evict an LRU entry it never created — the entry a
-    /// consulted worker got from an ordinary `get_agent` (`apps.rs:1628`).
+    /// consulted worker got from an ordinary `get_agent` (`routes/apps.rs:1663`).
     #[tokio::test]
     async fn deregistering_does_not_evict_a_cache_entry_it_did_not_create() {
         let temp_dir = TempDir::new().unwrap();
@@ -13910,7 +18098,8 @@ In `run_complete_subagent_task` (:40), replace the token plumbing at the top:
 
 then change the active-work guard's cancel closure to ALWAYS route to `run_token`
 (today it is `None` when no parent token was supplied — the run becomes
-addressable either way). The existing block is `subagent_handler.rs:54-68`; it is
+addressable either way). The existing block is `subagent_handler.rs:50-69`
+(`let _active_work = {` at :54, `ActiveWorkGuard::register` at :62-68); it is
 reproduced here in full **with the four unchanged arguments spelled out**, because
 they are easy to get wrong from memory:
 
@@ -14016,16 +18205,39 @@ In `get_agent_messages`, right after `let agent = Arc::new(Agent::with_config(co
 - [ ] **Step 5: Run tests**
 
 ```bash
-BIOROUTER_PATH_ROOT=$(mktemp -d) cargo test -p biorouter --lib \
+BIOROUTER_PATH_ROOT=$(mktemp -d) cargo test -p biorouter --lib -- \
   execution::manager agents::subagent_handler agents::workspace_extension
+# The server-side suites whose semantics this task changes. No `--lib` filter in
+# the `biorouter` crate can reach them, and `remove_session` / `register_agent` /
+# `deregister_agent_if_same` are what `routes::apps`'s consult path and
+# `routes::agent`'s /agent/stop both stand on.
+cargo test -p biorouter-server --lib -- routes::apps routes::agent
+
+# The sentinel test asserts ABSENCE, and a run that never registers can also
+# produce absence by tearing down with the blunt remover. Anchor the identity
+# discipline so that repair is not available (added 2026-07-28):
+H=crates/biorouter/src/agents/subagent_handler.rs
+grep -c "deregister_agent_if_same" "$H"   # Expected: 1 — the `Deregister::drop` body
+grep -c "remove_session(" "$H"            # Expected: 0 — it is 0 today; this task must not add one
 ```
 
-Expected: PASS — the four new manager tests (live-instance resolution, LRU-pressure
-survival, overlapping registrations, no-stray-eviction), the headless handler test,
-the default-scope workspace test, and all the existing manager/handler/workspace tests.
-`BIOROUTER_PATH_ROOT` is required for the same reason Task 12 needed it: the
-workspace test calls `AgentManager::instance()`, whose first initialization runs
-`run_first_run_init` against `Paths::data_dir()`.
+⚠ **The `--` is not optional and this step used to be missing it.**
+`cargo test --lib a b c` is `error: unexpected argument 'agents::subagent_handler' found`,
+exit 1, with no test run — and the natural repair (drop the extra filters) silently
+reduces this gate to `execution::manager`, which is the one third of it that cannot fail
+if the wiring is wrong. See Ground rules, "Gate mechanics".
+
+Expected: the four new manager tests (live-instance resolution, LRU-pressure survival,
+overlapping registrations, no-stray-eviction), the headless handler test **including its
+sentinel-registration assertion**, the default-scope workspace test, and every existing
+manager/handler/workspace test — and the server suites green and **unchanged in count**
+from before this task (record `routes::apps`'s number; it is the same suite Task 41 gates
+on 8 tasks later, and a drop here is a regression this task caused).
+
+`BIOROUTER_PATH_ROOT` is required for the same reason Task 12 needed it — the workspace
+test calls `AgentManager::instance()`, whose first initialization runs `run_first_run_init`
+against `Paths::data_dir()` — and it is now *also* required by the handler test, whose
+sentinel needs a live `AgentManager`.
 
 - [ ] **Step 6: Commit**
 
@@ -14041,7 +18253,44 @@ git commit -m "feat(subagent): register child agents + hold the server turn leas
 ### Task 34: Subagent turns publish to the bus
 
 **Files:**
-- Modify: `crates/biorouter/src/agents/subagent_handler.rs` (stream loop :244-270)
+- Modify: `crates/biorouter/src/agents/subagent_handler.rs` (**anchors re-verified at
+  `275d735d`, 2026-07-28**: `run_complete_subagent_task`'s stream loop **:244-274**,
+  the `agent.reply(...)` construction it follows at **:237-245**, the standalone
+  `Arc::new(Agent::with_config(config))` at **:149**; the file is 309 lines)
+
+⚠ **This task's Step-3 match is an `E0004` of its own, and Task 7's fix does NOT cover
+it** (added 2026-07-28). `AgentEvent` gained an eighth variant when #59 landed
+(`MessagesPersisted(Vec<PersistedMessage>)`, **`agent.rs:679`** at `03ad602c`; the
+`:672` this plan gives in six other places is pre-drift). Reconciliation #22 and the
+7 → 8 ordering repair `routes::session_events::map_bus_event` — a **different** match, in
+a **different** crate. `subagent_handler.rs` has its own exhaustive, wildcard-free match
+on `AgentEvent`, and Step 3 below rewrites it. Both need the arm; fixing one does not fix
+the other.
+
+Worse, the current code **already has** the arm — Step 3's block as originally written
+would have *deleted* it. `subagent_handler.rs:247-254` reads:
+
+```rust
+                Ok(AgentEvent::McpNotification(_))
+                | Ok(AgentEvent::ModelChange { .. })
+                | Ok(AgentEvent::ToolCallPending(_))
+                // #59: the subagent's own rows are already carried by the
+                // `Message` events above (which now name themselves); the
+                // parent has no `expectedMessageIds` to satisfy.
+                | Ok(AgentEvent::MessagesPersisted(_))
+                | Ok(AgentEvent::TokenUsage(_)) => {}
+```
+
+**Five** ignored variants, not four, and a #59 comment explaining the fifth. Step 3's
+claim that "the per-variant bodies are today's bodies" is only true once the arm and its
+comment are carried across. They are, below.
+
+The distinction Step 3 must preserve is exactly the one that comment names: **the bus tee
+is total, the parent's `conversation` accumulation is not.** The tee publishes every
+event including `MessagesPersisted` — an observer tab watching a glass-box child is
+precisely the "client that watched a whole turn go by" #59 exists for, and it needs those
+ids. The accumulation still ignores it, because the parent is building a `Vec<Message>`
+for a `SubagentResult`, not a client view, and has no `expectedMessageIds` to satisfy.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -14066,15 +18315,17 @@ git commit -m "feat(subagent): register child agents + hold the server turn leas
             None,
             crate::config::BioRouterMode::Auto,
         );
-        // Workflow has NO Default (workflow/mod.rs:31: title + description are
-        // required) — build it via serde, version defaults.
+        // Workflow has NO Default (workflow/mod.rs:31-40: `title` :37 and
+        // `description` :39 are required, `version` has a serde default) — build it
+        // via serde.
         let workflow: Workflow = serde_json::from_value(serde_json::json!({
             "title": "t", "description": "d",
             "instructions": "do the thing", "prompt": "go"
         }))
         .unwrap();
         // The verified cheap provider: TestProvider replaying an empty cassette
-        // fails on first use (the exact pattern of execution/manager.rs:349-360).
+        // fails on first use — the exact pattern `test_set_default_provider`
+        // uses at execution/manager.rs:348-360 (write "{}" :358, construct :359).
         let cassette = temp.path().join("empty.json");
         std::fs::write(&cassette, "{}").unwrap();
         let provider = std::sync::Arc::new(
@@ -14108,33 +18359,60 @@ git commit -m "feat(subagent): register child agents + hold the server turn leas
 
         // Task 32 follow-through (the overwrite guard): the spawn-context
         // record survives the child's own persistence as message[0].
+        //
+        // ⚠ `expect`, NOT `if let Some(first) = msgs.first()`. The `if let` form
+        // — which is what this test used to say — goes vacuous in **exactly** the
+        // case it exists to catch: if `persist_spawn_context` was never wired into
+        // `get_agent_messages` (Task 32's untested call site), the child's
+        // conversation after a fast-failing provider is EMPTY, `first()` is
+        // `None`, and the assertion is skipped. Task 32's own test calls the
+        // helper directly, so that defect had two gates and both were green. Do
+        // not reintroduce the guard "for the empty case" — the empty case is the
+        // bug.
         let reread = sm.get_session(&child.id, true).await.unwrap();
         let msgs = reread.conversation.unwrap().messages().to_vec();
-        if let Some(first) = msgs.first() {
-            assert!(
-                first.metadata.provenance.as_ref().is_some_and(|p| {
-                    p.kind == crate::conversation::message::ProvenanceKind::SpawnContext
-                }),
-                "spawn-context record must remain the first message"
-            );
-        }
+        let first = msgs.first().expect(
+            "the spawn-context record must exist: an empty child conversation means \
+             Task 32's persist_spawn_context is defined but never called from \
+             get_agent_messages",
+        );
+        assert!(
+            first.metadata.provenance.as_ref().is_some_and(|p| {
+                p.kind == crate::conversation::message::ProvenanceKind::SpawnContext
+            }),
+            "spawn-context record must remain the FIRST message; got {:?}",
+            first.metadata.provenance
+        );
+        assert!(
+            !first.metadata.agent_visible,
+            "…and stay out of the child's model context (Task 32) — a run that \
+             re-persisted it as an ordinary row would double-inject the system prompt"
+        );
     }
 ```
 
-(Every symbol verified: `TestProvider::new_replaying` at
-`providers/testprovider.rs:52`; `TaskConfig`'s five fields at
-`subagent_task_config.rs:16-22`; `AgentConfig::new`'s 4 args at `agent.rs:245-249`;
-the run's *failure* is fine — only the bus bracket and the surviving spawn record
-are asserted.)
+(Every symbol **re-verified at `275d735d`**: `TestProvider::new_replaying` at
+`providers/testprovider.rs:52` (**exact**); `TaskConfig`'s five fields —
+`provider`/`parent_session_id`/`parent_working_dir`/`extensions`/`max_turns` — at
+`subagent_task_config.rs:16-22` (**exact**); `AgentConfig::new`'s 4 args at
+**`agent.rs:485-486`** (`impl AgentConfig` :485, `pub fn new(` :486) — the plan's old
+`:245-249` was already stale and now lands in `OverflowCompactionSwap`; the 4-arg call
+shape is the one `execution/manager.rs:124-129` uses. The run's *failure* is fine —
+only the bus bracket and the surviving spawn record are asserted.)
 
 - [ ] **Step 2: Run to verify failure**
 
-Run: `cargo test -p biorouter --lib agents::subagent_handler::tests::subagent_run_publishes_lifecycle_to_the_bus`
-Expected: FAIL — no events on the bus.
+```bash
+cargo test -p biorouter --lib agents::subagent_handler::tests::subagent_run_publishes_lifecycle_to_the_bus
+```
+
+Expected: **FAIL** (not a compile error) — `run_complete_subagent_task` compiles today
+and simply publishes nothing, so the test builds and both `assert!`s are false. If it
+does not build, the cause is Task 5's `session_events` module, not this task.
 
 - [ ] **Step 3: Implement**
 
-In `get_agent_messages`, around the stream loop (:244):
+In `run_complete_subagent_task`, around the stream loop (**:244-274**):
 
 ```rust
         // Turn id: the server lease's id when Task 33 acquired one (so observers
@@ -14149,20 +18427,47 @@ In `get_agent_messages`, around the stream loop (:244):
         );
         let mut aborted: Option<TurnAbort> = None;
         // [MECHANICAL MOVE — the `agent.reply(...)` stream construction at
-        //  :237-243 stays byte-identical here; only the loop below changes.]
+        //  :237-245 stays byte-identical here; only the loop below changes.]
         while let Some(message_result) = stream.next().await {
             match message_result {
                 Ok(event) => {
                     // BR-71: glass-box — every child event is observable.
+                    //
+                    // TOTAL AND IN STREAM ORDER. This tee publishes EVERY
+                    // variant, before the `match` below decides what the parent
+                    // does with it, and it never reorders, filters or coalesces.
+                    // Both halves are load-bearing:
+                    //   * total, because an observer tab is a full client and
+                    //     must receive `MessagesPersisted` (#59) even though the
+                    //     parent's accumulation ignores it;
+                    //   * in order, because the #59 invariant (`agent.rs:280-283`)
+                    //     — no `MessagesPersisted` may precede a `Message` frame
+                    //     carrying one of the ids it publishes — is a property of
+                    //     the PRODUCER's stream, and it survives only if every
+                    //     relay preserves order. Publishing here, once, before
+                    //     any per-variant handling, is what makes that free.
                     crate::session_events::publish(
                         &session_id,
                         crate::session_events::SessionBusEvent::Agent(event.clone()),
                     );
+                    // EIGHT arms, no wildcard. `AgentEvent` has eight variants
+                    // (`pub enum AgentEvent` at agent.rs:613, closing at :680,
+                    // measured at 03ad602c; the plan's `:605-673` is pre-drift
+                    // and starts inside the `Agent` struct's doc comment); a
+                    // `_ => {}` here would silently swallow the ninth instead
+                    // of failing the build.
                     match event {
                         AgentEvent::Message(msg) => conversation.push(msg),
                         AgentEvent::McpNotification(_)
                         | AgentEvent::ModelChange { .. }
                         | AgentEvent::ToolCallPending(_)
+                        // #59: the subagent's own rows are already carried by
+                        // the `Message` events above (which now name
+                        // themselves); the parent has no `expectedMessageIds`
+                        // to satisfy. The TEE above still publishes this — an
+                        // observer tab DOES need it. Carried verbatim from
+                        // `subagent_handler.rs:250-253`; do not drop it.
+                        | AgentEvent::MessagesPersisted(_)
                         | AgentEvent::TokenUsage(_) => {}
                         AgentEvent::HistoryReplaced(updated_conversation) => {
                             conversation = updated_conversation;
@@ -14205,18 +18510,43 @@ the two `publish` insertions, the `TurnStarted`/`TurnFinished` brackets, the
 reason should be reported when the run token was tripped:
 `if run_token_cancelled { "cancelled" } else if aborted.is_some() { "error" } else { "stop" }`
 where `let run_token_probe = cancellation_token.clone();` is taken BEFORE the token
-moves into `agent.reply(...)` at :239 and `run_token_cancelled =
+moves into `agent.reply(...)` at :241 and `run_token_cancelled =
 run_token_probe.is_some_and(|t| t.is_cancelled())` — the run token already IS this
 function's `cancellation_token` parameter, since Task 33 passes `Some(run_token)`.
-The old comment at :277-278 "a
+The old comment near :280 "a
 subagent's stream is not user-visible" is now half-true: update it to say the stream
 is observable via the session bus but still not part of the parent's `/reply`
 stream.)
 
 - [ ] **Step 4: Run tests**
 
-Run: `cargo test -p biorouter --lib agents::subagent_handler`
-Expected: PASS.
+```bash
+cargo test -p biorouter --lib agents::subagent_handler   # 2 tests
+cargo test -p biorouter --test subagent_delegation       # 7 tests
+cargo test -p biorouter --test subagent_cancellation     # 1 test
+cargo test -p biorouter --test conversation_writeback_freshness  # 32 tests
+cargo test -p biorouter --test turn_abort_tests          # 4 tests
+```
+
+Expected: **2 / 7 / 1 / 32 / 4 passed**, all green. Counts measured on this worktree at
+`bab6fba2` (`grep -cF '#[tokio::test'` per file); a single `cargo test` filter that
+matches nothing reports `0 passed` and **exits 0**, so "PASS" without a number is not a
+result. `agents::subagent_handler` is 2 because Task 32 created the module with one test
+and this task adds the second.
+
+The two `--test subagent_*` targets are the behavioural nets for the "nothing but the
+tee changed" claim: they drive real delegation and real cancellation through this exact
+loop, so a per-variant body that shifted while being re-indented shows up there and
+nowhere in `--lib`. `conversation_writeback_freshness` is the ordering net — this task
+adds a **relay** to the #59 producer stream, and `no_turn_shape_names_a_row_before_it_hands_it_over`
+(**:2420**) is what proves the relay did not reorder. `turn_abort_tests` is added by the
+2026-07-28 gate sweep: this task **rewrites the abort arm** of the subagent stream loop
+(`let mut aborted: Option<TurnAbort>` and the terminal-reason ladder), and that target is
+the only automated exercise of `TurnAbort` end to end — no `--lib` filter reaches it.
+
+If the build fails with **`E0004: non-exhaustive patterns: AgentEvent::MessagesPersisted(_) not covered`**,
+the arm and its #59 comment were dropped during the re-indent. Restore them from the
+block above — do **not** add a `_ => {}`.
 
 - [ ] **Step 5: Commit**
 
@@ -14231,13 +18561,71 @@ git commit -m "feat(subagent): publish child turns to the session bus (BR-71 gla
 
 **Files:**
 - Modify: **`crates/biorouter-server/src/workspace/turn.rs`** — the helper and the
-  turn-path stamp. Post-Task-8 this is where the session read and `agent.reply` live;
-  `reply.rs` no longer has either
-- Modify: `crates/biorouter-server/src/routes/reply.rs` (`interrupt` only, :910 — Task 8
-  does not touch that handler)
-- Modify: `crates/biorouter/src/agents/subagent_result.rs` (new field)
+  turn-path stamp. Task 6 has **landed** on this branch, so this file is real and can be
+  read rather than imagined: `run_turn` at **`:295`**, the session read at **`:417`**,
+  the accumulator seed at **`:453`**, `all_messages.push(user_message.clone())` at
+  **`:456`**, `agent.reply(user_message, …)` at **`:459`**, and `#[cfg(test)]` /
+  `mod tests` at **`:756-757`** with `use super::*;` at `:758`. That test module already
+  imports `Message`, `SessionType`, `session_events`/`SessionBusEvent` and
+  `CancellationToken` (`:759-762`), so Step 1's case needs no new `use` lines.
+- Modify: `crates/biorouter-server/src/routes/reply.rs` — the **`interrupt` handler
+  only**: `pub async fn interrupt(` at **`:1042`**, queueing at **`:1053`**
+  (`agent.queue_soft_interrupt(req.text);`). ⚠ Insert the new `get_session` **above the
+  `let agent = state.get_agent_for_route(req.session_id).await?;` line** (`:1052`) —
+  that call takes `req.session_id` **by value**, so a `&req.session_id` after it is
+  E0382.
+
+⚠ **RE-ANCHORED AGAIN 2026-07-28 at `03ad602c`, the FOURTH set of numbers for these two
+functions in one day.** The numbers above replace a set measured at `ea15a4de`
+(`reply.rs` `:1004`/`:1015`), which replaced one measured at `bab6fba2` (`turn.rs`
+`:300`/`:422`/`:461`/`:464`/`:762`; `reply.rs` `:1123`/`:1134`), which replaced one
+measured before Phase 1 started (`reply.rs` `:1090`/`:1101`). Three consequences worth
+stating rather than rediscovering:
+
+- **`reply.rs` no longer contains a session read or an `agent.reply(` call at all** —
+  `grep -n "\.reply(" crates/biorouter-server/src/routes/reply.rs` returns nothing, at
+  `ea15a4de` and at `03ad602c` alike (re-confirmed 2026-07-28 at both). The long ⚠
+  paragraph below about "call site 1 used to be anchored on `reply.rs:753`/`:798`, which
+  Task 8 deletes" is a *historical* note: that deletion has happened.
+  `workspace/turn.rs` is the only place either lives.
+- **`ea15a4de` is no longer on this branch.** It was rebased into `aaae5889`, so
+  `git merge-base --is-ancestor ea15a4de HEAD` says **no** — every "verified at
+  `ea15a4de`" stamp in this document points at a commit that survives only
+  in the local object database. Re-measure at HEAD; do not try to reproduce the stamp.
+- **Every gate in this task greps a *pattern*, never a number, for exactly that
+  reason** — `grep -n "all_messages.push(user_message.clone());"` was re-run at
+  `03ad602c` and still matches (one hit, `:456`). Anchor on the symbol.
+- Modify: `crates/biorouter/src/agents/subagent_result.rs` (new field; `pub struct
+  SubagentResult` `:50`, constructors `from_error` `:69` / `from_aborted_turn` `:94` /
+  `from_conversation` `:123`, `into_call_tool_result` `:211`, `mod tests` `:360`)
 - Modify: `crates/biorouter/src/agents/subagent_handler.rs` (set it from the final
-  conversation)
+  conversation; `let mut result = match aborted {` at **`:88-91`**, `result.tokens = …`
+  at `:92`)
+
+⚠ **AMENDED 2026-07-28 (Phase-2/3 reconciliation) — the Files list pointed at
+`reply.rs:910`, which is inside the range Task 8 deletes.** *(Historical: every number
+in this paragraph was measured at `bab6fba2` and none of them is current — it is kept
+for the failure shape, not the anchors.)* `:910` was deep inside
+`pub async fn reply(` (`:612-1094` at `bab6fba2`), i.e. the SSE event loop Task 8
+replaces — not the `interrupt` handler this task edits. The task **body** already said
+`interrupt` correctly;
+the Files list is what an implementer reads first, and the two disagreed. Failure shape
+#4: a citation that lands on plausible, unrelated, *already-being-rewritten* code. All
+anchors above re-verified against a worktree at `bab6fba2` and re-anchored **by symbol**:
+`reply.rs` has moved **+33 lines since the Phase-2 survey alone** (`interrupt` `:1090`
+→ `:1123`, the queue call `:1101` → `:1134`, the session read `:720` → `:753`,
+`.reply(` `:765` → `:798`) because Phase 1 is landing commits on this branch while
+Phases 2-4 are being planned. **Grep the symbol; every number in this task is a
+timestamp, not a fact.**
+
+**Verified as NOT a missing symbol** (checked because this plan's history is phantom
+helpers): `Agent::queue_soft_interrupt_with_provenance(text: String, provenance:
+Option<MessageProvenance>)` already exists at **`agent.rs:928`**, and its own doc comment
+names "the subagent-tab steer path". Call site 2 below compiles as written. Likewise
+`Message::with_provenance` (`message.rs:1288`), `MessageProvenance` (`:620`),
+`ProvenanceKind::UserDirect` (`:634`), `MessageMetadata::provenance` (`:863`),
+`Conversation::new_unvalidated` (`conversation/mod.rs:69`) and `Conversation::messages`
+(`:80`) are all present — Task 2 has landed.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -14261,8 +18649,66 @@ In `subagent_result.rs`'s test module (it has one — grep `mod tests`):
             ),
         ]);
         assert!(conversation_has_user_direct(&steered));
+
+        // Another AGENT's injection is not a human intervention. Without this
+        // case, `provenance.is_some()` passes the test above and turns every
+        // `workspace_send_prompt` into a reported human steer.
+        let agent_injected = Conversation::new_unvalidated(vec![Message::user()
+            .with_text("from the parent")
+            .with_provenance(MessageProvenance {
+                kind: ProvenanceKind::AgentInjection,
+                from_session_id: Some("s-parent".into()),
+                from_session_name: Some("Planning chat".into()),
+            })]);
+        assert!(!conversation_has_user_direct(&agent_injected));
+    }
+
+    /// The flag has to reach the PARENT, which means it has to survive
+    /// `into_call_tool_result` — the only thing the parent model ever reads.
+    /// Nothing else in this task looks at that boundary: `conversation_has_user_direct`
+    /// is pure and its assignment in `run_complete_subagent_task` is a one-liner
+    /// with no test, so a field that is set correctly and then dropped on
+    /// serialization is invisible until Task 40's live pass.
+    #[test]
+    fn human_intervened_reaches_the_parent_through_the_tool_result() {
+        let mut result = SubagentResult::from_error("boom");
+        result.human_intervened = true;
+        let rendered = result.into_call_tool_result();
+
+        let structured = rendered.structured_content.expect("structured envelope");
+        assert_eq!(structured["human_intervened"], true);
+
+        let text: String = rendered
+            .content
+            .iter()
+            .filter_map(|c| c.as_text().map(|t| t.text.clone()))
+            .collect();
+        assert!(
+            text.to_lowercase().contains("intervened"),
+            "the model reads TEXT, not structured_content, so the note must be there: {text}"
+        );
+
+        // …and a clean run says nothing, rather than "human_intervened: false",
+        // which a model would read as an assertion that it checked.
+        let clean = SubagentResult::from_error("boom").into_call_tool_result();
+        let clean_structured = clean.structured_content.expect("structured envelope");
+        assert!(
+            clean_structured.get("human_intervened").is_none(),
+            "skip_serializing_if keeps a false flag out of the envelope entirely"
+        );
+        let clean_text: String = clean
+            .content
+            .iter()
+            .filter_map(|c| c.as_text().map(|t| t.text.clone()))
+            .collect();
+        assert!(!clean_text.to_lowercase().contains("intervened"), "{clean_text}");
     }
 ```
+
+(`ProvenanceKind` is `AgentInjection` / `UserDirect` / `SpawnContext` at
+`conversation/message.rs:630-638`, with `#[serde(rename_all = "snake_case")]` at `:629` —
+so the Rust variant is `AgentInjection` and only the wire form is `agent_injection`.
+Verified at `bab6fba2`; Task 2 has landed.)
 
 In **`crates/biorouter-server/src/workspace/turn.rs`**'s test module (created by
 Task 6) — **not** `reply.rs`'s. That is where Step 3 puts the helper (`pub(crate)`,
@@ -14359,19 +18805,29 @@ pub(crate) fn stamp_user_direct_if_subagent(
 }
 ```
 
-**Call site 1 — `workspace::turn::run_turn`, NOT `reply`'s task.** At HEAD the `/reply`
-handler does read the session at `reply.rs:535` and call `agent.reply` at `:593`, and
-an earlier revision of this task anchored on exactly that. **Task 8 deleted both** —
-its "what moves out of `reply.rs`" list names "the session read" and "`agent.reply(...)`",
-and its own verification gate asserts
-`grep -c "agent.reply(" crates/biorouter-server/src/routes/reply.rs` → `0`. Task 35 is
-27 tasks later, so that instruction is unfollowable, and following it loosely means the
-stamping silently never happens on the real path — `human_intervened` would then always
-be `false` and Task 40's flagship gate ("verify the parent's result reports
-`human_intervened: true`") would fail with no unit test pointing at the cause.
+**Call site 1 — `workspace::turn::run_turn`, NOT `reply`'s task.** ⚠ **`reply.rs` no
+longer holds either half of the turn.** An earlier revision of this task anchored the
+stamp on `/reply`'s own session read and `.reply(` call (`reply.rs:720`/`:765`
+pre-Phase-1, `:753`/`:798` at `bab6fba2`) — **Task 8 has since deleted both.** Its "what
+moves out of `reply.rs`" list names "the session read" and "`agent.reply(...)`", its own
+verification gate asserts
+`grep -c "agent.reply(" crates/biorouter-server/src/routes/reply.rs` → `0`, and that
+gate now passes for real: `grep -n "\.reply(" crates/biorouter-server/src/routes/reply.rs`
+returns **nothing**, re-confirmed at `ea15a4de` and at `03ad602c`. (A previous revision
+of this paragraph asserted the opposite — *"At HEAD the `/reply` handler does read the
+session at `reply.rs:753` and call `.reply(` at `:798`"* — while the ⚠ block above
+correctly said it did not. Corrected 2026-07-28: the ⚠ block was right.) Anchoring here
+is unfollowable, and following it loosely means the stamping silently never happens on
+the real path — `human_intervened` would then always be `false` and Task 40's flagship
+gate ("verify the parent's result reports `human_intervened: true`") would fail with no
+unit test pointing at the cause.
 
-`run_turn` already holds the session (Task 6 reads it into `session` before building
-`SessionConfig`). Insert immediately before the `agent.reply(...)` call:
+`run_turn` already holds the session — Task 6 (**landed**) reads it into `session` in the
+`let session = match state.session_manager().get_session(&session_id, true).await {`
+block, which sits between `run_turn_body`'s guard checks and the `let session_config =
+SessionConfig {` literal. **Insert the stamp after that `session` binding and before the
+`let mut all_messages = extras` accumulator seed**, i.e. anywhere in the `SessionConfig`
+region:
 
 ```rust
     // BR-71 §4.5: a human typing into a subagent's tab (its composer posts to
@@ -14379,21 +18835,68 @@ be `false` and Task 40's flagship gate ("verify the parent's result reports
     let user_message = stamp_user_direct_if_subagent(user_message, session.session_type);
 ```
 
-Add a grep gate to Step 4 so this cannot silently regress:
+⚠ **"Immediately before the `agent.reply(...)` call" — which this instruction used to say
+— is one line too late.** `run_turn` consumes `user_message` **twice**, and the accumulator
+comes first. Name the three statements, do not count to them (line numbers at `03ad602c`,
+for orientation only):
+
+```rust
+    let mut all_messages = extras                                          // :453  ← SEED
+        .conversation_so_far
+        .unwrap_or_else(|| session.conversation.clone().unwrap_or_default());
+    all_messages.push(user_message.clone());                               // :456  ← FIRST use
+    let mut stream = match agent
+        .reply(user_message, session_config, Some(cancel_token.clone()))   // :459  ← SECOND use
+```
+
+Stamping between `all_messages.push(user_message.clone())` and the `.reply(` call gives
+the agent a stamped message and the telemetry accumulator an unstamped clone of the same
+message — two objects for one row, differing only in the field this task exists to set.
+Put the `let user_message = …` shadow anywhere between the `session` binding and the
+`let mut all_messages = extras` seed and both uses see the stamp. **The Step-4 ordering
+gate (`stamp < push`) is what enforces this**; it is a `grep -n` comparison, not a line
+number, so it survives the next drift.
+
+Add gates to Step 4 so this cannot silently regress. **Anchor the patterns; do not count
+occurrences** — a bare `grep -c "stamp_user_direct_if_subagent"` over this file returns
+**4** after a correct implementation (definition + the `run_turn` call + Step 1's two
+test calls), and the pre-amendment gate said `Expected: 2`. That gate **rejects a correct
+implementation**, and its failure direction is the dangerous one: the cheapest way to
+make a `4` read as `2` is to delete the production call — the one line the gate exists
+to protect — after which `human_intervened` is permanently `false`, every unit test is
+still green, and only Task 40's opt-in live tier notices.
 
 ```bash
-grep -c "stamp_user_direct_if_subagent" crates/biorouter-server/src/workspace/turn.rs
-# Expected: 2 — the definition and the call. A `1` means the helper exists and
-# nothing calls it, which is exactly how `human_intervened` ends up permanently
-# false with every unit test still green.
+TURN=crates/biorouter-server/src/workspace/turn.rs
+# 1. The helper exists.
+grep -c "fn stamp_user_direct_if_subagent" "$TURN"
+# Expected: 1
+# 2. It is WIRED into the turn path — not merely defined. This pattern matches
+#    ONLY the production call: the two calls in `mod tests` pass a constructed
+#    `Message::user()`, not the `user_message` binding.
+grep -c "= stamp_user_direct_if_subagent(user_message, session.session_type)" "$TURN"
+# Expected: 1. A `0` is the regression: helper defined, nothing calls it.
+# 3. …and it is wired EARLY ENOUGH that the accumulator sees the same message.
+stamp=$(grep -n "= stamp_user_direct_if_subagent(user_message" "$TURN" | cut -d: -f1)
+push=$(grep -n "all_messages.push(user_message.clone());" "$TURN" | cut -d: -f1)
+[ -n "$stamp" ] && [ -n "$push" ] && [ "$stamp" -lt "$push" ] \
+  && echo "OK: stamp precedes the accumulator seed" \
+  || echo "FAIL: stamp missing, or applied after all_messages was seeded"
+# Expected: OK: stamp precedes the accumulator seed
 ```
 
 **This closes Task 8's byte-for-byte revert window**, and Task 8's rollback note says
 so: `git revert <Task 8's commit>` restores the pre-refactor handler only until a later
 task edits the same region. Task 35 is that task.
 
-Call site 2 — `interrupt` (`reply.rs:910`, untouched by Task 8) reads no session today;
-add a `get_session(&req.session_id, false)` and queue with provenance:
+Call site 2 — `interrupt` (`pub async fn interrupt(` at **`reply.rs:1042`**, untouched by
+Task 8; it queues at **`:1053`** with `agent.queue_soft_interrupt(req.text)` — measured
+at `03ad602c`; the `:1123`/`:1134` this paragraph used to give were measured at
+`bab6fba2` and land on `pub fn routes(` and a test literal today, and the `:1090`/`:1101`
+before them are older still. **Grep `pub async fn interrupt(`.**) reads no session today;
+add a
+`get_session(&req.session_id, false)` and queue with provenance
+(`queue_soft_interrupt_with_provenance` already exists, `agent.rs:928`):
 
 ```rust
     let session = state
@@ -14419,14 +18922,52 @@ add a `get_session(&req.session_id, false)` and queue with provenance:
 
 ```bash
 cargo test -p biorouter --lib agents::subagent
-cargo test -p biorouter-server --lib routes::reply workspace::turn
-# The stamp is WIRED, not merely defined. Task 35's unit test asserts the pure
-# helper; only this proves the turn path calls it.
-grep -c "stamp_user_direct_if_subagent" crates/biorouter-server/src/workspace/turn.rs
-# Expected: 2 (definition + call).
+# NOTE the `--`. `cargo test --lib routes::reply workspace::turn` — which this
+# step used to say — is `error: unexpected argument 'workspace::turn' found`,
+# exit 1, nothing run. See Ground rules, "Gate mechanics".
+cargo test -p biorouter-server --lib -- routes::reply workspace::turn
+# The INTEGRATION target neither --lib filter reaches. This task rewrites the
+# /interrupt queue path, and `soft_interrupt_agent_loop.rs` is the only test that
+# drives a queued injection through a real agent loop — including, at :110, the
+# `queue_soft_interrupt_with_provenance` arm this task now routes subagent
+# sessions down.
+cargo test -p biorouter --test soft_interrupt_agent_loop   # 4 tests
 ```
 
-Expected: PASS / PASS / 2.
+Expected: green, with `soft_interrupt_agent_loop` reporting **4 passed** (measured at
+`bab6fba2`) and `agents::subagent` including this task's two new
+`subagent_result` cases. Record the `routes::reply workspace::turn` count on the first run
+and treat a later drop as a regression: this is the filter that covers Task 8's rewritten
+handler as well as Task 6's runner.
+
+Then the four anchored wiring gates (the helper exists; it is called from the turn path;
+it is called before the accumulator is seeded; and the *other* half of this task — the
+flag on the parent's envelope — is actually assigned):
+
+```bash
+TURN=crates/biorouter-server/src/workspace/turn.rs
+grep -c "fn stamp_user_direct_if_subagent" "$TURN"                                  # 1
+grep -c "= stamp_user_direct_if_subagent(user_message, session.session_type)" "$TURN" # 1
+stamp=$(grep -n "= stamp_user_direct_if_subagent(user_message" "$TURN" | cut -d: -f1)
+push=$(grep -n "all_messages.push(user_message.clone());" "$TURN" | cut -d: -f1)
+[ -n "$stamp" ] && [ -n "$push" ] && [ "$stamp" -lt "$push" ] \
+  && echo "OK: stamp precedes the accumulator seed" \
+  || echo "FAIL: stamp missing, or applied after all_messages was seeded"
+
+# The parent-facing half. `conversation_has_user_direct` is tested pure and
+# `into_call_tool_result` is tested by the new case above, but the ASSIGNMENT in
+# run_complete_subagent_task has no test that can reach it — a helper that is
+# never called leaves `human_intervened` permanently false with everything green.
+grep -c "result.human_intervened = " crates/biorouter/src/agents/subagent_handler.rs   # 1
+```
+
+Expected: `1` / `1` / `OK: stamp precedes the accumulator seed` / `1`.
+
+**Do not "fix" a mismatch by editing the production call to match a number.** An
+unanchored `grep -c "stamp_user_direct_if_subagent" "$TURN"` returns **4** on a correct
+implementation — definition, the `run_turn` call, and Step 1's two test calls — which is
+why this gate matches specific lines and expects `1` from each, rather than counting a
+total that changes every time someone adds a test.
 
 - [ ] **Step 5: Commit**
 
@@ -14454,12 +18995,65 @@ glass-box behaviour:
   cannot use any workspace tool.
 
 **Files:**
-- Modify: `crates/biorouter/src/agents/agent.rs` (the §5 workspace guard beside the
-  recursion guard at :2138)
+- Modify: `crates/biorouter/src/agents/agent.rs` (the §5 workspace guard beside — and
+  *replacing* — the recursion guard, `if session.session_type == SessionType::SubAgent
+  && tool_call.name == SUBAGENT_TOOL_NAME`, at **`:2663`** in a worktree at `bab6fba2`;
+  the plan's old `:2138` is pre-drift by **+525** and now lands inside
+  `swap_overflow_compaction` (`:2101`), a near miss with nothing to do with dispatch)
 - Modify: `crates/biorouter/src/agents/subagent_tool.rs` (visibility resolution, the
   visible-tab cap, `announce_subagent_tab`)
 - Modify: `crates/biorouter/src/agents/subagent_handler.rs` (strip the workspace
-  extension from child grants, :176-184)
+  extension from child grants, `for extension in task_config.extensions` at **`:176`** —
+  exact)
+
+**Depends on Task 19 Step 5 — a HARD ordering constraint, not a numbering.**
+`is_spawn_tool_call` is used twice in this task's production code (Step 4: inside
+`is_workspace_tool_refused_for`, and inside the `dispatch_tool_call` refusal that chooses
+the error message). **The symbol does not exist in the tree** —
+`grep -rn "is_spawn_tool_call" crates/` returns nothing, and never has. **Task 19 Step 5
+creates it**, by extracting the inline `let bound_dispatch = tool_call.name !=
+SUBAGENT_TOOL_NAME;` predicate (`agent.rs:2843` at `bab6fba2`; the plan's old `:2812` is
+pre-drift) into:
+
+```rust
+pub(crate) fn is_spawn_tool_call(tool_name: &str) -> bool
+```
+
+Verified compatible with both of this task's call sites: `is_spawn_tool_call(tool_name)`
+where `tool_name: &str`, and `is_spawn_tool_call(tool_call.name.as_ref())`. Both live in
+`agent.rs`, the same module as the definition, so neither needs an import. If Task 19
+Step 5 is skipped, renamed, or given a different signature, **this task does not
+compile** — 17 tasks after the change that caused it, with nothing in either task
+pointing at the other. That is why the dependency is stated in both places (see Task 19
+Step 5's matching note and reconciliation #17).
+
+Note also that `SUBAGENT_TOOL_PREFIXED`, which Task 19 Step 5's body references, does not
+exist yet either (`grep -rn "SUBAGENT_TOOL_PREFIXED" crates/` → nothing); Task 18/19
+introduce it. `SUBAGENT_TOOL_NAME` **does** exist, `subagent_tool.rs:27`.
+
+⚠ **Anchors re-verified 2026-07-28 against a worktree at `bab6fba2`, and they will move
+again.** Phase 1 is landing commits on this branch *while Phases 2-4 are being planned*:
+`agent.rs` is +198 lines versus `main` and this task's guard anchor has already moved
+twice since the Phase-2 survey recorded it (`:2138` → `:2632` → `:2663`). **Anchor by
+symbol; grep before you trust any number in this task.** The symbols, all verified
+present:
+
+| Symbol | Now at | Was in the plan |
+|---|---|---|
+| the recursion guard (`SessionType::SubAgent && … == SUBAGENT_TOOL_NAME`) | `agent.rs:2663` | `:2138` / `:2137-2147` |
+| `let bound_dispatch = …` (semaphore exemption) | `agent.rs:2843` | `:2812` |
+| `subagents_enabled`'s `Some(SessionType::SubAgent)` early return | `agent.rs:3132` (fn at `:3107`) | `:3094-3104` (`:3101`) |
+| `format!("{}__{}", name, tool.name)` | `extension_manager.rs:1121` | exact |
+| `config.is_tool_available(&tool.name)` | `extension_manager.rs:1119` | exact |
+| `if !tool_name_str.contains("__")` (prefix re-add) | `extension_manager.rs:1446` | `:1444-1457` — region still right |
+| `create_subagent_session(&config, working_dir)` | `subagent_tool.rs:526` (blocking) and **`:507`** (background) | exact |
+| `InflightGuard` (the RAII counter to store the new guard beside) | `subagent_tool.rs:55-68` | `:54-70` |
+| `for extension in task_config.extensions` | `subagent_handler.rs:176` | exact |
+| `ExtensionConfig::Platform { name, description, bundled, available_tools }` | `agents/extension.rs:289-299` — all four fields exist | exact |
+
+`SubagentParams` (`subagent_tool.rs:86-99`) has **no** `visible` and **no** `placement`
+today; Task 19 adds both, so `params.visible` / `params.placement` are legitimate by the
+time this task runs. Checked because it reads like a second missing symbol; it is not.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -14520,7 +19114,8 @@ In `subagent_tool.rs`:
     /// The cap must hold under FAN-OUT, which is the only situation it exists
     /// for. `resolve_visibility(…, visible_children_of(parent))` followed by a
     /// separate `claim` is check-then-act: subagent dispatch is deliberately
-    /// excluded from the tool-dispatch semaphore (`agent.rs:2318`) and
+    /// excluded from the tool-dispatch semaphore (the `let bound_dispatch = …`
+    /// line, `agent.rs:2843`; the plan's old `:2812` is pre-drift) and
     /// concurrent tool calls in one assistant message are driven by
     /// `select_all`, so N simultaneous spawns all observe 0 and all claim. A
     /// sequential test cannot catch that; this one can.
@@ -14643,8 +19238,16 @@ In `subagent_handler.rs`:
 
 - [ ] **Step 2: Run to verify failure**
 
-Run: `cargo test -p biorouter --lib agents::subagent_tool agents::agent agents::subagent_handler`
-Expected: COMPILE ERRORS.
+Run: `cargo test -p biorouter --lib -- agents::subagent_tool agents::agent agents::subagent_handler`
+
+Expected: **COMPILE ERRORS** — `max_visible_child_tabs`, `VisibleChildGuard`,
+`visible_children_of`, `parse_visible_child_tabs`, `ChildVisibility`,
+`is_workspace_tool_refused_for` and `strip_workspace_extension` are all undefined.
+
+⚠ Note the `--`. Without it this is `error: unexpected argument 'agents::agent' found`,
+exit 1 — which *looks* like the compile failure the step is asking for, so the implementer
+moves on believing the fail-first step ran. It did not compile anything. See Ground rules,
+"Gate mechanics".
 
 - [ ] **Step 3: Implement visibility resolution and the cap**
 
@@ -14729,7 +19332,10 @@ impl ChildVisibility {
 /// `resolve_visibility(…, visible_children_of(parent))` then
 /// `VisibleChildGuard::claim(parent)` — a check-then-act with no atomicity, in
 /// the one code path that is *specifically* concurrent. Subagent dispatch is
-/// excluded from the tool-dispatch semaphore on purpose (`agent.rs:2318`) and
+/// excluded from the tool-dispatch semaphore on purpose (the `let bound_dispatch
+/// = tool_call.name != SUBAGENT_TOOL_NAME;` line, `agent.rs:2843` at `03ad602c`;
+/// the `:2812` this comment used to give is pre-drift and lands on an
+/// `ErrorData::new` call, and the rest of this task already says `:2843`) and
 /// concurrent tool calls in one assistant message are driven by `select_all`, so
 /// a fan-out of ten spawns can have all ten read `0` and all ten claim. The cap
 /// now lives inside `VisibleChildGuard::try_claim`, under one lock: you either
@@ -14925,7 +19531,10 @@ Task 35's `human_intervened` sentence is added).
 
 - [ ] **Step 4: Implement the §5 guard**
 
-In `agent.rs`, beside the recursion guard at :2137-2147:
+In `agent.rs`, beside the recursion guard — `if session.session_type ==
+SessionType::SubAgent && tool_call.name == SUBAGENT_TOOL_NAME`, **`:2663-2673`** at
+`bab6fba2` (the plan's old `:2137-2147` is pre-drift; grep the condition, do not trust
+the number):
 
 ```rust
 /// BR-71 §5 + decision 25: subagents never get workspace control — no
@@ -14933,9 +19542,16 @@ In `agent.rs`, beside the recursion guard at :2137-2147:
 /// parent, and (since the spawn tool is now a workspace tool) no nesting.
 ///
 /// Name forms: extension-advertised tools reach dispatch PREFIXED
-/// (`workspace__workspace_list`, `extension_manager.rs:971`), and the bare forms
-/// cover prefix-stripping models (`:1294-1304` precedent). The spawn tool is
-/// covered separately because it is named `subagent`, not `workspace_*`.
+/// (`workspace__workspace_list`; the `format!("{}__{}", name, tool.name)` that
+/// makes the name is `extension_manager.rs:1121`, behind the
+/// `config.is_tool_available` filter at `:1119`), and the bare forms cover
+/// prefix-stripping models (`extension_manager.rs:1444-1457` precedent — the
+/// `if !tool_name_str.contains("__")` block that re-prefixes the three known
+/// `code_execution` tools). The spawn tool is covered separately because it is
+/// named `subagent`, not `workspace_*`.
+/// (Re-anchored 2026-07-28: the old `:1294-1304` is pre-drift and now lands on
+/// `read_resource`/`get_ui_resources` — reconciliation #11 already carries the
+/// corrected number, and this comment disagreed with it.)
 ///
 /// The names are ENUMERATED rather than prefix-matched. A bare
 /// `tool_name.starts_with("workspace_")` also matches any third-party extension
@@ -15003,9 +19619,13 @@ with the over-match pinned by the test, beside the existing one:
 ```
 
 wired into `dispatch_tool_call` in the same refusal shape as the existing guard, and
-replacing it (the old guard's `tool_call.name == SUBAGENT_TOOL_NAME` test is now a subset
-of `is_spawn_tool_call`, which Task 19 already generalised — keep the *message* specific
-so the model learns the actual rule):
+replacing it in place at `agent.rs:2663-2672` (the block opens at `:2663` with
+`if session.session_type == SessionType::SubAgent && tool_call.name ==
+SUBAGENT_TOOL_NAME {` and closes at `:2672`; the plan's `:2673` was one line past the
+brace — the old guard's `tool_call.name ==
+SUBAGENT_TOOL_NAME` test is now a subset of `is_spawn_tool_call`, **created by Task 19
+Step 5** — see this task's Depends block; keep the *message* specific so the model learns
+the actual rule):
 
 ```rust
         // BR-71 §5: no workspace control, and no nesting, inside a delegation tree.
@@ -15031,7 +19651,9 @@ guard:
 /// BR-71 §5 belt-and-braces beside the dispatch guard: the workspace extension
 /// is never loaded into a child. NOTE the interaction with Task 18: a child has
 /// `SessionType::SubAgent`, so `subagents_enabled` is already false for it
-/// (`agent.rs:2608-2612`) and the auto-injection never fires either — this strip
+/// (the `Some(SessionType::SubAgent)` early return inside `subagents_enabled`,
+/// `agent.rs:3132`, fn at `:3107`; the plan's old `:3094-3104` is pre-drift) and
+/// the auto-injection never fires either — this strip
 /// covers the case where the PARENT's inherited extension list carries an
 /// explicitly user-enabled `workspace` entry.
 fn strip_workspace_extension(
@@ -15044,13 +19666,102 @@ fn strip_workspace_extension(
 }
 ```
 
-applied where extensions are added (:176): `for extension in
+applied where extensions are added (`subagent_handler.rs:176`, exact): `for extension in
 strip_workspace_extension(task_config.extensions) { … }`.
 
 - [ ] **Step 5: Run tests**
 
-Run: `cargo test -p biorouter --lib agents::`
-Expected: PASS.
+```bash
+cargo test -p biorouter --lib agents::
+# The integration target the --lib filter CANNOT reach. This task changes
+# SubagentParams and the dispatch refusal, and `tests/subagent_tool_tests.rs`
+# holds 5 of the 13 spawn-tool sites (:1, :48, :57, :86, :88) — none of them
+# under `--lib`.
+cargo test -p biorouter --test subagent_tool_tests   # 3 tests
+cargo test -p biorouter --test subagent_delegation   # 7 tests — real spawns
+```
+
+Expected: green, with **3** and **7** (measured at `bab6fba2`).
+
+- [ ] **Step 5b: Gate the four CALL SITES this task adds**
+
+⚠ Every one of Step 1's tests is a test of a **pure function** — `try_claim`,
+`parse_visible_child_tabs`, `parent_note`, `is_workspace_tool_refused_for`,
+`strip_workspace_extension`. All five pass with perfect implementations that **nothing
+calls**: a child that never announces, a cap that is never claimed, a refusal predicate
+`dispatch_tool_call` never consults, and a workspace extension that is still handed to
+every child. Decisions 24, 25 and 26 are *entirely* about those call sites. `--lib
+agents::` cannot see the difference, so anchor them:
+
+```bash
+T=crates/biorouter/src/agents/subagent_tool.rs
+H=crates/biorouter/src/agents/subagent_handler.rs
+A=crates/biorouter/src/agents/agent.rs
+
+# Decision 24 — the announce happens on BOTH spawn paths (foreground tool call
+# and background spawn). A `1` means one of the two paths opens no tab.
+grep -c "announce_subagent_tab(" "$T"                      # Expected: 3 (definition + 2 call sites)
+grep -c "fn announce_subagent_tab" "$T"                    # Expected: 1
+
+# Decision 25 — the refusal predicate is consulted by the real dispatcher, not
+# just by its own unit test. ⚠ This pattern is NOT anchored to production: it
+# matches the tests too. Expected: 9 = 1 definition + 1 production call (the
+# `dispatch_tool_call` guard, Step 4) + 7 test calls (3 in Step 1's agent.rs
+# block, 4 in Step 4's `the_workspace_guard_does_not_swallow_a_third_party_
+# extension`). Corrected 2026-07-28 from "2 call sites + 1 definition = 3",
+# which no correct implementation can produce — see `strip_workspace_extension`
+# below for what an anchored count looks like.
+grep -c "is_workspace_tool_refused_for(" "$A"              # Expected: 9 (1 def + 1 prod + 7 test)
+grep -c "fn is_workspace_tool_refused_for" "$A"            # Expected: 1
+# The wiring itself, anchored so only the dispatcher matches. A `0` here with a
+# `9` above is the regression: predicate written, tested, and never consulted.
+grep -c "if is_workspace_tool_refused_for(session.session_type, tool_call.name.as_ref())" "$A"   # Expected: 1
+
+# §5 — the workspace extension is stripped where child grants are built. The
+# anchored form matches the production loop only; the unit test calls
+# `strip_workspace_extension(configs)`.
+grep -c "for extension in strip_workspace_extension(task_config.extensions)" "$H"   # Expected: 1
+
+# Decision 26 — a visible child CLAIMS a slot. `announce_subagent_tab` is the
+# only place allowed to, because claim-then-transform is what makes the cap hold
+# under a parallel fan-out.
+# ⚠ This pattern does NOT match the definition: Step 3 writes `pub fn try_claim(`
+# inside `impl VisibleChildGuard`, which carries no `VisibleChildGuard::` prefix.
+# Expected: 7 = 1 production call (in `announce_subagent_tab`) + 6 test calls in
+# Step 1 (2 in the cap test, 1 in the parallel fan-out test, 3 in the
+# per-parent test). Corrected 2026-07-28 from "2 (the impl fn + the one call)",
+# which was wrong twice over.
+grep -c "VisibleChildGuard::try_claim(" "$T"               # Expected: 7 (1 prod + 6 test; NOT the def)
+# The definition, and the one production claim, each anchored on their own.
+grep -c "fn try_claim(" "$T"                               # Expected: 1
+grep -c "match VisibleChildGuard::try_claim(parent_session_id)" "$T"   # Expected: 1
+```
+
+Each number is a **file-local** count, and each is stated so an implementer can tell a
+regression (a `0` or a missing call site) from a legitimate later addition. Two kinds of
+pattern appear above and they are not interchangeable — **read which kind you are
+running before you believe its number**:
+
+- **Anchored** — `for extension in strip_workspace_extension(task_config.extensions)`,
+  `if is_workspace_tool_refused_for(session.session_type, tool_call.name.as_ref())`,
+  `match VisibleChildGuard::try_claim(parent_session_id)`, and both `fn …` forms. These
+  match the production site *only*, so their expectation is `1` and stays `1` however
+  many tests are added later. These are the gates that actually protect the call sites.
+- **Bare symbol** — `is_workspace_tool_refused_for(`, `VisibleChildGuard::try_claim(`,
+  `announce_subagent_tab(`. These sweep the whole file, tests included, so their
+  expectation is a **sum that a later test moves**. They are here as a coarse "is this
+  symbol used at all" net, not as a contract.
+
+⚠ **Two of the bare-symbol expectations shipped in this plan were impossible** (found
+2026-07-28 by the verification pass): `is_workspace_tool_refused_for(` was stated as `3`
+when a correct implementation produces `9`, and `VisibleChildGuard::try_claim(` as `2`
+when it produces `7` — and its "the impl fn" component could never match, because the
+definition is `fn try_claim(` with no type prefix. An expectation *below* the truth is
+the dangerous direction: the cheapest way to make a `9` read as `3` is to delete call
+sites, and the anchored production call is the one the gate exists to protect. Re-derive
+every count against your own diff before trusting it; if one is legitimately different,
+fix the number here and say why — do not delete a call site to make it match. That is
+the failure mode Task 35 records at length.
 
 - [ ] **Step 6: Commit**
 
@@ -15058,6 +19769,1498 @@ Expected: PASS.
 git add crates/biorouter/src/agents
 git commit -m "feat(subagent): visible-by-default children with a 4-tab fan-out cap + workspace guard (BR-71)"
 ```
+
+---
+
+### Task 36b: Approval delegation and single-grant propagation
+
+**Operator ruling, 2026-07-30.** Verbatim:
+
+> If it is the agent that spun up a certain conversation, then all of the requirements
+> and all of the approval should be done by the agent itself. The agent should be able to
+> handle most of the approval status, given its context of the task. If things are out of
+> their level, then they should relay this approval to its own layer and then ask the user
+> for approval. Alternatively, the users can also see it in the actual conversation tab of
+> the sub-agent and approve it from there. Either way, the users only need to approve once
+> in either place, and then the approval for that very specific ask will be propagated
+> throughout.
+
+**What it replaces.** Task 14 shipped `target_mode_requires_approval`
+(`agents/workspace_extension.rs`, `:891` at `95176cd0`), whose `None => true` branch —
+*"No live agent: its mode is not yet fixed, so there is nothing to read. Take the
+conservative branch rather than minting one"* — makes `send_prompt_turn` **refuse**
+whenever the target has no live agent. That is the normal case for a conversation the user
+has not opened this run, so in practice headless `mode:"turn"` refuses most of the time
+and `mode:"note"` is the only real headless story. It was the right call while an
+agent-created session's approvals had nowhere to go. This task gives them somewhere: the
+agent that created the session. See the note added to Task 14, which says the same thing
+from the other end.
+
+**Why it sits between Tasks 36 and 37.** Task 36 establishes the parent/child relationship
+this routes along (`is_workspace_tool_refused_for`, the visible-tab cap, and — through
+Task 32 — the `parent_session_id` stamp). Task 37 builds the subagent tab, which is one of
+the two approval surfaces. The routing must exist before the tab that renders it, and
+after the relationship it follows. **Letter suffix, no renumbering** — same convention as
+Tasks 13c and 19b.
+
+**Depends on:**
+- **Task 32** for `Session.parent_session_id` being stamped at spawn
+  (`persist_spawn_context` → `SessionUpdateBuilder::parent_session_id`). Without the stamp
+  every session looks like a root and this task is inert.
+- **Task 33** for `AgentManager::peek_agent` consulting the pinned sidecar. A glass-box
+  child is never in the `sessions` LRU, so the pre-Task-33 `peek_agent`
+  (`execution/manager.rs:153` at `95176cd0` — `self.sessions.write().await.get(…)`)
+  cannot find a live *ancestor* either when the ancestor is itself a registered child.
+  Depth-2 delegation is a no-op until Task 33 lands; depth-1 works either way.
+- **Task 10** for `WorkspaceMutationInspector` and its `"workspace_mutation"` inspector
+  name (`agents/workspace_inspector.rs:317-319` — exact). Already shipped on this branch.
+
+**Files:**
+- Create: `crates/biorouter/src/agents/approval_relay.rs` (the relay, the policy point,
+  the escalation walk)
+- Modify: `crates/biorouter/src/agents/mod.rs` — one `pub mod approval_relay;`. It goes
+  **between `pub(crate) mod agent;` and the `budget` doc comment**: `rustfmt`'s
+  `reorder_modules` sorts each contiguous `mod` group (the file says so itself, in the
+  comment above `pub mod workspace_extension`), so sorted position is the only stable one,
+  and putting it there leaves the `budget` comment attached to `budget`.
+- Modify: `crates/biorouter/src/permission/permission_store.rs` — lift the exact-args key
+  the store has always built into one named function, `exact_call_key`
+- Modify: `crates/biorouter/src/agents/tool_execution.rs` — the one call site, in
+  `handle_approval_tool_requests` (`:176`), immediately after
+  `let confirmation_rx = self.register_confirmation(&request.id);` (`:317`)
+- Modify: `crates/biorouter-server/src/routes/action_required.rs` — `confirm_tool_action`
+  consults the relay, so a decision from **either** surface resolves the **one** ask
+
+⚠ **Anchors, as everywhere in this plan: the SYMBOL is the anchor.** Every line number
+above was read at `95176cd0` (2026-07-30, Phase-1 head). `agent.rs`, `tool_execution.rs`
+and `session_manager.rs` are all still moving under Phase 1's own commits — grep the
+symbol before you trust a number.
+
+#### The requirements, and where each one lives
+
+| # | Requirement (from the ruling) | Realized by |
+|---|---|---|
+| A-1 | An agent-created session's approval authority is its creating agent | `begin_delegated_approval` walking `Session.parent_session_id` |
+| A-2 | The parent decides within its own authority, using its task context | `DelegationPolicy::ask_ancestor` — the ancestor's *own* inspection pipeline, in the ancestor's *own* mode |
+| A-3 | Escalation is one level at a time | the `for ancestor_id in &chain` loop: one hop, one verdict, `Escalate` ⇒ next hop |
+| A-4 | Two surfaces, one pending request | `Relay::surfaces` — the origin's tab plus the session where a human was asked; both carry the **same** tool request id |
+| A-5 | Approving once resolves it everywhere | `resolve` is first-writer-wins under one lock and returns the *other* surfaces to dismiss; a second decision is `AlreadyResolved`, not a second grant |
+| A-6 | The grant is scoped to "that very specific ask" | `AskKey` = the permission store's existing exact-args key |
+
+**A-6, the identity choice, stated once because it is the question the ruling turns on.**
+There are already two identities in this codebase and this task adds **neither**:
+
+- The **routing** identity — *which parked prompt does this decision resolve* — is the tool
+  **request id**. `Agent::pending_confirmations` is keyed on it (`agent.rs:642`), BR-62
+  made `handle_confirmation` route by it (`:3432`), and `ConfirmationOutcome::Unknown`
+  already exists precisely so a decision for an id nobody is waiting on is dropped rather
+  than applied to some other call. Task 36b uses it unchanged, paired with the session so
+  ids from different agents cannot collide: `AskId { session_id, request_id }`.
+- The **grant** identity — *what was approved* — is the permission store's exact-args key,
+  `format!("{}:{}", tool_call.name, blake3(arguments))`, built today in **two** places
+  (`permission_store.rs:135` in `check_permission` and `:161` in `record_permission`) and
+  lifted here into one `exact_call_key`. That is literally "that very specific ask": this
+  tool, with these exact arguments. It is the narrowest identity the permission layer has —
+  narrower than BR-24's directory/command-prefix scopes (`permission_scope.rs`) and far
+  narrower than a tool-name-wide `PermissionLevel::AlwaysAllow`, whose whole failure mode
+  the BR-24 module docs open with ("always allow `shell` blessed every future shell
+  command the model could think of, `rm -rf` included").
+
+Inventing a third identity is what the ruling most invites and what would break it: a grant
+that is broader than the ask silently becomes a blanket permission, and a grant that is
+narrower than the ask never fires twice, so "propagated throughout" would be a lie.
+
+**Where the memo lives, and why not in the store.** A resolved ask is remembered in the
+relay, in memory, keyed `(root_session_id, AskKey)` — the delegation *tree*, for the life
+of the process. It is deliberately **not** written to `ToolPermissionStore`, whose
+`permissions` map is machine-wide and permanent. "Propagated throughout" is about the chain
+and the two surfaces, not about every future conversation on this machine. If the human
+wants the permanent form they already have it: `Permission::AlwaysAllow` on the card, which
+`handle_approval_tool_requests` turns into a stored `PermissionLevel::AlwaysAllow`
+(`tool_execution.rs:409-413`) exactly as it does today.
+
+---
+
+#### The two bounds — decisions 30 and 31
+
+Neither is in the operator's words; both were added on the implementer's judgement, and
+**both were approved on 2026-07-30 with the qualifier that they may be adjusted once real
+users exercise this feature**. They are recorded as decisions 30 and 31 in
+[Round 3](#round-3--approval-delegation-for-agent-created-sessions-operator-ruling-2026-07-30),
+with what would justify loosening each. **They are not one dial** — see that section.
+
+The reason they exist at all: if a parent agent can approve its child's requests, then a
+long enough chain of agents can approve anything, and the human leaves the loop by
+construction.
+
+- **Bound 30 — no amplification.** An agent may grant only what it already holds. A parent
+  cannot confer authority it does not itself have, so delegation *narrows* down the chain
+  and never widens. **Structural, not a tuning knob.**
+- **Bound 31 — always-confirm inspectors still reach a human at any depth.** Task 10's
+  `WorkspaceMutationInspector` is specified to confirm *"regardless of mode"*; a parent
+  agent must not be able to satisfy it on the user's behalf. Same for anything
+  `SensitiveOpsInspector` or `SecurityInspector` flags. **Plausibly tunable.**
+
+**Both live at ONE policy point: `DelegationPolicy`.** Whoever loosens either must have a
+single place to change and a single place to test. Concretely, and gated in Step 5b:
+
+- `DelegationPolicy::class_of` is the only reader of `HUMAN_ONLY_INSPECTORS` (bound 31).
+- `DelegationPolicy::ask_ancestor` is the only place that reads an ancestor's authority —
+  `grep -c "\.tool_inspection_manager" approval_relay.rs` is **1** (bound 30).
+- `DelegationPolicy::agent_decision` is the only place that turns an agent's verdict into a
+  `Permission` (bound 30's ceiling: `AllowOnce`/`DenyOnce`, never `AlwaysAllow`).
+
+**How bound 30 is enforced, and why the mechanism matters more than the rule.** It would be
+easy to write a parallel policy — "the parent may grant tools of risk ≤ X" — and easy for
+that policy to drift from what the parent is actually allowed to do. Instead
+`ask_ancestor` runs the child's request through **the ancestor's own
+`ToolInspectionManager`, in the ancestor's own `BioRouterMode`**, and reads the answer out
+of `process_inspection_results_with_permission_inspector` — the same combining function
+(`tool_inspection.rs:175`, over `apply_inspection_results_to_permissions` at `:205`) that
+decides whether the *ancestor itself* may run a tool. `approved` ⇒ Grant, `denied` ⇒
+Refuse, `needs_approval` (and every failure mode) ⇒ Escalate. Non-amplification is then a
+property of construction rather than a rule someone has to keep true.
+
+Two consequences worth stating rather than rediscovering:
+
+- **An Auto-mode parent grants freely, and that is correct.** It could have run the tool
+  itself without being asked; conferring that on a child it spawned adds nothing. Bound 30
+  is about authority the parent *lacks*, not about the parent being cautious.
+- **Facts come from the call, authority comes from the ancestor.** `ask_ancestor` passes
+  the **child's** `Session`, not the ancestor's. BR-24 directory grants are matched against
+  the paths the call actually names (`CallFacts::for_tool_call`, resolved against
+  `session.working_dir` — `permission_inspector.rs:457`), so passing the ancestor's session
+  would let a parent's `/work/a` grant authorize a child writing somewhere else entirely.
+  That is amplification along the directory axis, and it is exactly the hole a careless
+  reading produces.
+
+**How bound 31 is enforced, and why it does not weaken what exists.** A security
+inspector's `RequireApproval` already beats a user `always_allow` today — the permission
+inspector emits `InspectionAction::Allow`, and
+`apply_inspection_results_to_permissions`'s `RequireApproval` arm removes the request from
+`approved` and pushes it to `needs_approval` (`tool_inspection.rs:261-276`), while its
+`Allow` arm explicitly *"allows it, but don't override other inspectors' decisions"*
+(`:277-280`). Task 36b must not become a way around that. So:
+
+1. `ask_ancestor` checks `may_decide(class)` **first**, before it looks at the ancestor at
+   all. A `HumanOnly` ask returns `Escalate` even for an Auto-mode ancestor — the one case
+   where every other path grants.
+2. `agent_decision` returns `None` for `Escalate`, so there is no `Permission` for an
+   agent-side path to deliver.
+3. A `HumanOnly` ask is **never memoized** (`resolve` records only `Delegable` asks). Each
+   one reaches a person. That costs a repeat prompt on a byte-identical repeat call, and
+   that is the trade: memoizing it would quietly convert "confirms regardless of mode" into
+   "confirms once per tree per process".
+
+The three inspectors in `HUMAN_ONLY_INSPECTORS` are named from their own `name()` impls —
+`"workspace_mutation"` (`agents/workspace_inspector.rs:318`), `"sensitive_ops"`
+(`security/sensitive_ops.rs:484`), `"security"` (`security/security_inspector.rs:64`). Not
+`"managed"` (`permission/managed_inspector.rs:44`): a managed **Ask** is an org policy that
+an ancestor inside the same org policy is entitled to answer, and `ManagedVerdict::Deny`
+already produces a `Deny`, which `ask_ancestor` maps to `Refuse` without asking anybody.
+
+---
+
+- [ ] **Step 1: Write the failing tests**
+
+In the new `approval_relay.rs`:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::BioRouterMode;
+    use crate::conversation::message::ToolRequest;
+    use crate::session::session_manager::SessionType;
+    use std::sync::Arc;
+
+    fn request(id: &str, tool: &str, args: serde_json::Value) -> ToolRequest {
+        ToolRequest {
+            id: id.to_string(),
+            tool_call: Ok(rmcp::model::CallToolRequestParams {
+                meta: None,
+                name: tool.to_string().into(),
+                arguments: Some(args.as_object().unwrap().clone()),
+                task: None,
+            }),
+            // `ToolRequest` has FOUR fields (`conversation/message.rs:65-76`);
+            // omitting the last two is E0063. Same shape as Task 10's tests.
+            metadata: None,
+            tool_meta: None,
+        }
+    }
+
+    /// A real `Agent` with a real inspection manager, in a chosen mode, plus a
+    /// child session for it to be asked about. The `TempDir` is returned
+    /// because the `SessionManager` outlives the call, and ONE `SessionManager`
+    /// is shared rather than two opened over the same directory.
+    async fn ancestor_and_child(
+        mode: BioRouterMode,
+    ) -> (
+        tempfile::TempDir,
+        Arc<crate::agents::Agent>,
+        crate::session::Session,
+    ) {
+        let temp = tempfile::TempDir::new().unwrap();
+        let sm = Arc::new(crate::session::SessionManager::new(temp.path().to_path_buf()));
+        let child = sm
+            .create_session(
+                temp.path().to_path_buf(),
+                "child".into(),
+                SessionType::SubAgent,
+            )
+            .await
+            .unwrap();
+        let agent = Arc::new(crate::agents::Agent::with_config(
+            crate::agents::AgentConfig::new(
+                Arc::clone(&sm),
+                crate::config::permission::PermissionManager::instance(),
+                None,
+                mode,
+            ),
+        ));
+        (temp, agent, child)
+    }
+
+    fn required_by(inspector: &str, request_id: &str) -> InspectionResult {
+        InspectionResult {
+            tool_request_id: request_id.to_string(),
+            action: InspectionAction::RequireApproval(Some("because".into())),
+            reason: "because".into(),
+            confidence: 1.0,
+            inspector_name: inspector.to_string(),
+            finding_id: None,
+        }
+    }
+
+    // ------------------------------------------------- A-6: the ask's identity
+
+    #[test]
+    fn an_ask_is_identified_by_the_permission_stores_own_exact_args_key() {
+        let a = request("call-1", "acme__widget", serde_json::json!({"n": 1}));
+        // Same tool, same arguments, DIFFERENT tool-request id: one ask.
+        let same = request("call-2", "acme__widget", serde_json::json!({"n": 1}));
+        // Same tool, different arguments: a different ask.
+        let other = request("call-3", "acme__widget", serde_json::json!({"n": 2}));
+        // Same arguments, different tool: a different ask.
+        let elsewhere = request("call-4", "other__widget", serde_json::json!({"n": 1}));
+
+        let key = AskKey::for_request(&a).unwrap();
+        assert_eq!(key, AskKey::for_request(&same).unwrap());
+        assert_ne!(key, AskKey::for_request(&other).unwrap());
+        assert_ne!(key, AskKey::for_request(&elsewhere).unwrap());
+        // …and it IS the store's key, not a lookalike.
+        assert_eq!(
+            key.as_str(),
+            crate::permission::permission_store::exact_call_key(&a).unwrap()
+        );
+    }
+
+    // ------------------------------------- bound 30 (decision 30): structural
+
+    /// **Bound 30.** An ancestor whose own authority would stop the call must
+    /// not grant it to a descendant.
+    ///
+    /// ⚠ `AskClass::Delegable` is passed EXPLICITLY, and that is the point:
+    /// narrowing `HUMAN_ONLY_INSPECTORS` (bound 31, the tunable half) can never
+    /// make this test pass for the wrong reason, because this test never
+    /// consults that set. Do not "simplify" it into deriving the class from an
+    /// inspection result — the two bounds must fail independently.
+    #[tokio::test]
+    async fn an_ancestor_cannot_grant_what_its_own_authority_would_stop() {
+        let (_temp, parent, child) = ancestor_and_child(BioRouterMode::Approve).await;
+        let req = request("call-1", "acme__widget", serde_json::json!({"n": 1}));
+
+        let verdict =
+            DelegationPolicy::ask_ancestor(&parent, &req, &child, AskClass::Delegable).await;
+        assert!(
+            matches!(verdict, DelegatedVerdict::Escalate(_)),
+            "an Approve-mode ancestor holds no silent grant to confer; got {verdict:?}"
+        );
+        assert_eq!(DelegationPolicy::agent_decision(&verdict), None);
+    }
+
+    /// The mirror, plus bound 30's ceiling: the strongest thing an AGENT may
+    /// ever produce is `AllowOnce`. `AlwaysAllow` is a machine-wide, permanent
+    /// grant (`tool_execution.rs:409-413` writes it into the permission
+    /// manager); only a human may make one.
+    #[tokio::test]
+    async fn an_ancestor_grants_only_once_never_always() {
+        let (_temp, parent, child) = ancestor_and_child(BioRouterMode::Auto).await;
+        let req = request("call-1", "acme__widget", serde_json::json!({"n": 1}));
+
+        let verdict =
+            DelegationPolicy::ask_ancestor(&parent, &req, &child, AskClass::Delegable).await;
+        assert!(
+            matches!(verdict, DelegatedVerdict::Grant(_)),
+            "an Auto-mode ancestor could have run this itself; got {verdict:?}"
+        );
+        assert_eq!(
+            DelegationPolicy::agent_decision(&verdict),
+            Some(crate::permission::Permission::AllowOnce)
+        );
+    }
+
+    // --------------------------------------- bound 31 (decision 31): tunable
+
+    /// **Bound 31.** Auto mode is where every other path grants, so it is the
+    /// only mode this test is worth running in.
+    #[tokio::test]
+    async fn an_always_confirm_ask_is_not_delegable_even_to_an_auto_mode_ancestor() {
+        let (_temp, parent, child) = ancestor_and_child(BioRouterMode::Auto).await;
+        let req = request(
+            "call-1",
+            "workspace__workspace_set_tools",
+            serde_json::json!({"session_id": "s-target", "add_extensions": ["developer"]}),
+        );
+
+        let verdict =
+            DelegationPolicy::ask_ancestor(&parent, &req, &child, AskClass::HumanOnly).await;
+        assert!(
+            matches!(verdict, DelegatedVerdict::Escalate(_)),
+            "no agent may satisfy an always-confirm inspector; got {verdict:?}"
+        );
+        assert_eq!(DelegationPolicy::agent_decision(&verdict), None);
+    }
+
+    #[test]
+    fn the_always_confirm_inspectors_classify_as_human_only() {
+        // Names taken from the inspectors' own `name()` impls.
+        for inspector in ["workspace_mutation", "sensitive_ops", "security"] {
+            assert_eq!(
+                DelegationPolicy::class_of("call-1", &[required_by(inspector, "call-1")]),
+                AskClass::HumanOnly,
+                "{inspector} must not be satisfiable by an agent"
+            );
+        }
+        // The ordinary permission prompt is delegable…
+        assert_eq!(
+            DelegationPolicy::class_of("call-1", &[required_by("permission", "call-1")]),
+            AskClass::Delegable
+        );
+        // …and a finding about a DIFFERENT request must not contaminate this one.
+        assert_eq!(
+            DelegationPolicy::class_of("call-1", &[required_by("workspace_mutation", "call-2")]),
+            AskClass::Delegable
+        );
+    }
+
+    // ------------------------------------ A-4 / A-5: two surfaces, one grant
+
+    #[test]
+    fn approving_at_one_surface_dismisses_the_other_and_never_grants_twice() {
+        let origin = AskId {
+            session_id: "child-1".into(),
+            request_id: "call-1".into(),
+        };
+        register(
+            origin.clone(),
+            AskKey::for_request(&request("call-1", "acme__widget", serde_json::json!({}))).unwrap(),
+            AskClass::Delegable,
+            "root-1".to_string(),
+        );
+        add_surface(&origin, "child-1"); // the subagent's own tab
+        add_surface(&origin, "root-1"); // where the escalation surfaced
+
+        // The user clicks Allow in the ROOT's chat.
+        let first = resolve(&origin, crate::permission::Permission::AllowOnce, "root-1");
+        match first {
+            ResolveOutcome::Resolved { decision, notify } => {
+                assert_eq!(decision, crate::permission::Permission::AllowOnce);
+                // ⚠ The child's card must be named for dismissal. An
+                // implementation that grants without propagating returns an
+                // empty `notify` and leaves the other surface pending forever.
+                assert_eq!(notify, vec!["child-1".to_string()]);
+            }
+            other => panic!("the first decision must resolve; got {other:?}"),
+        }
+
+        // The same user then clicks Allow in the child's tab (or double-clicks).
+        assert_eq!(
+            resolve(&origin, crate::permission::Permission::DenyOnce, "child-1"),
+            ResolveOutcome::AlreadyResolved(crate::permission::Permission::AllowOnce),
+            "a second decision is a no-op, not a second grant and not a panic"
+        );
+
+        // A-5: satisfied for the whole chain, by ask identity.
+        assert_eq!(
+            remembered(
+                "root-1",
+                &AskKey::for_request(&request("call-9", "acme__widget", serde_json::json!({})))
+                    .unwrap()
+            ),
+            Some(crate::permission::Permission::AllowOnce)
+        );
+        forget(&origin);
+    }
+
+    /// A `HumanOnly` ask is deliberately NOT memoized: decision 31's guarantee
+    /// is per-call, and a tree-wide memo would quietly turn "confirms in every
+    /// mode" into "confirms once per tree per process".
+    #[test]
+    fn a_human_only_ask_is_never_memoized() {
+        let origin = AskId {
+            session_id: "child-2".into(),
+            request_id: "call-2".into(),
+        };
+        let key =
+            AskKey::for_request(&request("call-2", "acme__gadget", serde_json::json!({}))).unwrap();
+        register(origin.clone(), key.clone(), AskClass::HumanOnly, "root-2".into());
+        add_surface(&origin, "child-2");
+        assert!(matches!(
+            resolve(&origin, crate::permission::Permission::AllowOnce, "root-2"),
+            ResolveOutcome::Resolved { .. }
+        ));
+        assert_eq!(remembered("root-2", &key), None);
+        forget(&origin);
+    }
+
+    /// Both surfaces, at once. `resolve` takes the registry lock exactly once
+    /// per call, so first-writer-wins is a property of the critical section
+    /// rather than of the ordering. A check-then-set implementation passes the
+    /// sequential test above and fails this one.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_decisions_from_both_surfaces_resolve_exactly_once() {
+        let origin = AskId {
+            session_id: "child-3".into(),
+            request_id: "call-3".into(),
+        };
+        register(
+            origin.clone(),
+            AskKey::for_request(&request("call-3", "acme__widget", serde_json::json!({}))).unwrap(),
+            AskClass::Delegable,
+            "root-3".into(),
+        );
+        add_surface(&origin, "child-3");
+        add_surface(&origin, "root-3");
+
+        let mut handles = Vec::new();
+        for surface in ["child-3", "root-3", "child-3", "root-3", "child-3", "root-3"] {
+            let origin = origin.clone();
+            handles.push(tokio::spawn(async move {
+                resolve(&origin, crate::permission::Permission::AllowOnce, surface)
+            }));
+        }
+        let mut resolved = 0;
+        for handle in handles {
+            if matches!(handle.await.unwrap(), ResolveOutcome::Resolved { .. }) {
+                resolved += 1;
+            }
+        }
+        assert_eq!(resolved, 1, "exactly one of six concurrent decisions may win");
+        forget(&origin);
+    }
+
+    /// A decision may only be routed by a session that is actually showing the
+    /// ask. Fail closed: a request id from another tree resolves nothing.
+    #[test]
+    fn a_decision_from_a_session_that_is_not_a_surface_finds_nothing() {
+        let origin = AskId {
+            session_id: "child-4".into(),
+            request_id: "call-4".into(),
+        };
+        register(
+            origin.clone(),
+            AskKey::for_request(&request("call-4", "acme__widget", serde_json::json!({}))).unwrap(),
+            AskClass::Delegable,
+            "root-4".into(),
+        );
+        add_surface(&origin, "child-4");
+        assert_eq!(lookup("call-4", "child-4"), Some(origin.clone()));
+        assert_eq!(lookup("call-4", "a-stranger"), None);
+        assert_eq!(lookup("call-nope", "child-4"), None);
+        forget(&origin);
+        assert_eq!(lookup("call-4", "child-4"), None);
+    }
+}
+```
+
+(Every `AskId`/root key above is distinct per test — `child-1`…`child-4`, `root-1`…`root-4`
+— because `RELAY` is a process-wide static and libtest runs unit tests concurrently in one
+process. Sharing a key across tests would make them flake. Same rule, same reason, as
+Task 36's `VISIBLE_CHILDREN` keys.)
+
+- [ ] **Step 2: Run to verify failure**
+
+```bash
+cargo test -p biorouter --lib agents::approval_relay
+```
+
+Expected: **COMPILE ERROR**, not FAIL — `crates/biorouter/src/agents/approval_relay.rs`
+does not exist, so `agents::approval_relay` resolves to nothing and the whole `biorouter`
+lib test target fails to build. (`AskId`, `AskKey`, `AskClass`, `DelegationPolicy`,
+`DelegatedVerdict`, `register`, `add_surface`, `resolve`, `lookup`, `remembered`, `forget`
+and `permission_store::exact_call_key` are all undefined.)
+
+⚠ A single `cargo test` filter that matches nothing prints `0 passed` and **exits 0** (see
+Ground rules, "Gate mechanics"). This step must produce a compiler diagnostic; a green
+no-op means you ran it against a tree where the module already exists.
+
+- [ ] **Step 3: Lift the ask identity into one function**
+
+In `permission_store.rs`. `hash_tool_context` never read `self`, and there are now three
+callers, one of which has no store.
+
+```rust
+/// The identity of one **specific** ask: this tool, with these exact arguments.
+///
+/// This is the key `check_permission` and `record_permission` have always built
+/// (`"{tool_name}:{blake3(args)}"`). BR-71 Task 36b lifted it out so the
+/// approval relay keys a delegated grant on exactly the same thing the
+/// remembered-permission tier does, rather than inventing a second identity for
+/// "that very specific ask".
+///
+/// `None` for a malformed request (an `Err` `tool_call`) — the same fail-closed
+/// degradation `check_permission` already performs.
+pub fn exact_call_key(tool_request: &ToolRequest) -> Option<String> {
+    let tool_call = tool_request.tool_call.as_ref().ok()?;
+    Some(format!(
+        "{}:{}",
+        tool_call.name,
+        hash_tool_context(tool_request)
+    ))
+}
+
+/// Hash of the tool's arguments, to differentiate similar calls. A malformed
+/// request (`Err` `tool_call`) hashes as empty rather than panicking, so it
+/// degrades to a stable, argument-less key.
+///
+/// A free function since Task 36b: it never read `self`.
+pub(crate) fn hash_tool_context(tool_request: &ToolRequest) -> String {
+    let mut hasher = Hasher::new();
+    let serialized = tool_request
+        .tool_call
+        .as_ref()
+        .ok()
+        .and_then(|tool_call| serde_json::to_string(&tool_call.arguments).ok())
+        .unwrap_or_default();
+    hasher.update(serialized.as_bytes());
+    hasher.finalize().to_hex().to_string()
+}
+```
+
+Delete the `fn hash_tool_context(&self, …)` method and drop the `self.` from its two
+callers (`check_permission` `:134`, `record_permission` `:160` at `95176cd0`). **The
+existing test `hash_tool_context_is_stable_for_malformed_request` (`:343`) calls it as a
+method** and must lose its receiver too:
+
+```rust
+        let a = hash_tool_context(&malformed_request());
+        let b = hash_tool_context(&malformed_request());
+```
+
+Add one test beside it, so the lifted function is pinned to the key the store actually
+uses rather than to a reimplementation of it:
+
+```rust
+    #[test]
+    fn exact_call_key_is_the_key_the_store_looks_up() {
+        let store = ToolPermissionStore::new();
+        let request = ToolRequest {
+            id: "call-1".to_string(),
+            tool_call: Ok(rmcp::model::CallToolRequestParams {
+                meta: None,
+                name: "developer__shell".into(),
+                arguments: Some(object!({"command": "ls"})),
+                task: None,
+            }),
+            metadata: None,
+            tool_meta: None,
+        };
+        assert_eq!(
+            exact_call_key(&request).unwrap(),
+            format!("developer__shell:{}", hash_tool_context(&request))
+        );
+        // Fail-closed on a request that carries no recoverable identity.
+        assert_eq!(exact_call_key(&malformed_request()), None);
+        // And the store still finds nothing for it (unchanged behaviour).
+        assert_eq!(store.check_permission(&malformed_request()), None);
+    }
+```
+
+- [ ] **Step 4: Implement the relay, the policy point, and the escalation walk**
+
+Create `crates/biorouter/src/agents/approval_relay.rs`:
+
+```rust
+//! BR-71 Task 36b: approval delegation for agent-created sessions.
+//!
+//! **The ruling (2026-07-30).** If an agent spun up a conversation, that
+//! agent owns its approvals: it decides what it can, relays what it cannot to
+//! *its* layer, and only the layer with no layer above it asks the human. The
+//! user may then answer either in the chat where the escalation surfaced or in
+//! the sub-agent's own tab — once, in either place, for that very specific ask.
+//!
+//! **What this replaces.** Task 14's `target_mode_requires_approval` refuses a
+//! `mode:"turn"` injection whenever the target has no live agent, because an
+//! approval prompt raised in a conversation nobody is watching parks until it
+//! times out. That is no longer the only option: an agent-created session's
+//! prompts now route to the agent that created it, and only reach a human at
+//! the root of the chain.
+//!
+//! # The two bounds (plan decisions 30 and 31)
+//!
+//! If a parent may approve for its child, a long enough chain approves anything
+//! and the human is out of the loop by construction. Two limits close that, and
+//! **both live in [`DelegationPolicy`] and nowhere else**, so that loosening
+//! either is a single edit with a single test:
+//!
+//! * **Decision 30 — no amplification (structural).** An agent may grant only
+//!   what it already holds. Enforced by construction rather than by policy:
+//!   [`DelegationPolicy::ask_ancestor`] runs the call through the *ancestor's
+//!   own* [`crate::tool_inspection::ToolInspectionManager`], in the ancestor's
+//!   own [`crate::config::BioRouterMode`], and reads the answer out of the same
+//!   combining function that decides whether the ancestor itself may run a tool.
+//!   [`DelegationPolicy::agent_decision`] caps what an agent can produce at
+//!   `AllowOnce`/`DenyOnce` — the persistent `AlwaysAllow`/`AlwaysDeny` forms
+//!   are a human's to make.
+//! * **Decision 31 — always-confirm still reaches a human (tunable).** An ask
+//!   an always-confirm inspector raised is [`AskClass::HumanOnly`] and no agent
+//!   may satisfy it at any depth, checked *before* the ancestor is consulted so
+//!   no inspector configuration can reach past it. Such an ask is also never
+//!   memoized.
+//!
+//! Both were approved with the qualifier that they may be adjusted once real
+//! users exercise the feature. They are **not one dial**: decision 31 narrows a
+//! set, decision 30 is the security model. See the plan's Round 3 section.
+//!
+//! # Identity
+//!
+//! Two identities, both pre-existing, neither invented here:
+//!
+//! * [`AskId`] — *which parked prompt does this decision resolve*: the tool
+//!   request id [`crate::agents::Agent::handle_confirmation`] already routes by
+//!   (BR-62), paired with the session that owns it.
+//! * [`AskKey`] — *what was approved*: the permission store's exact-args key
+//!   ([`crate::permission::permission_store::exact_call_key`]). "That very
+//!   specific ask" is this tool with these exact arguments — the narrowest
+//!   identity the permission layer has.
+
+use std::collections::{HashMap, HashSet};
+use std::sync::{LazyLock, Mutex};
+
+use crate::agents::Agent;
+use crate::conversation::message::ToolRequest;
+use crate::permission::permission_confirmation::PrincipalType;
+use crate::permission::permission_store::exact_call_key;
+use crate::permission::{Permission, PermissionConfirmation};
+use crate::session::{Session, SessionManager};
+use crate::tool_inspection::{InspectionAction, InspectionResult};
+
+/// How far up a delegation chain the walk will climb. Bounds the work and, with
+/// the visited set in [`ancestor_chain`], makes a corrupted `parent_session_id`
+/// cycle impossible to spin on.
+const MAX_DELEGATION_DEPTH: usize = 16;
+
+/// Inspectors whose `RequireApproval` **no agent may satisfy on the user's
+/// behalf**, at any depth (decision 31). Names are each inspector's own
+/// `ToolInspector::name()`.
+///
+/// `"managed"` is deliberately absent: a managed *Ask* is an org policy that an
+/// ancestor inside the same org policy is entitled to answer, and a managed
+/// *Deny* already arrives as [`InspectionAction::Deny`], which
+/// [`DelegationPolicy::ask_ancestor`] turns into a refusal without asking
+/// anybody.
+///
+/// ⚠ **This is the tunable half.** Narrowing it is a product decision about
+/// approval fatigue. Do not narrow it by deleting the check in `ask_ancestor` —
+/// that is decision 30's half and a different security model.
+pub const HUMAN_ONLY_INSPECTORS: &[&str] = &["workspace_mutation", "sensitive_ops", "security"];
+
+/// Which parked prompt a decision resolves.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct AskId {
+    /// The session whose agent is parked on this prompt — the **origin**.
+    pub session_id: String,
+    /// The tool request id, the key `Agent::pending_confirmations` uses.
+    pub request_id: String,
+}
+
+/// The identity of the ask **itself** — this tool, these exact arguments.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct AskKey(String);
+
+impl AskKey {
+    /// `None` for a request that carries no recoverable identity; the caller
+    /// then leaves the ask undelegated, exactly as before this task.
+    pub fn for_request(request: &ToolRequest) -> Option<Self> {
+        exact_call_key(request).map(Self)
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Whether **any** agent may answer this ask on the user's behalf.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AskClass {
+    /// Only a person may answer it, at any depth (decision 31).
+    HumanOnly,
+    /// An ancestor may answer it within its own authority (decision 30).
+    Delegable,
+}
+
+/// What one ancestor concluded about a descendant's ask.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DelegatedVerdict {
+    /// The ancestor holds this authority itself and confers it.
+    Grant(String),
+    /// The ancestor's own authority stops this call.
+    Refuse(String),
+    /// Beyond this ancestor's authority: relay to its own layer.
+    Escalate(String),
+}
+
+/// **The single policy point for decisions 30 and 31.**
+///
+/// Every question of the form "may an ancestor answer this, and with what?"
+/// goes through this type. Nothing else in the tree reads
+/// [`HUMAN_ONLY_INSPECTORS`], reads an ancestor's `tool_inspection_manager`, or
+/// turns an agent's verdict into a [`Permission`]. That is deliberate: the
+/// bounds are expected to be revisited after real use, and a bound enforced in
+/// three places is a bound that will be relaxed in two.
+pub struct DelegationPolicy;
+
+impl DelegationPolicy {
+    /// Decision 31: classify an ask from the inspection round that raised it.
+    pub fn class_of(request_id: &str, inspection_results: &[InspectionResult]) -> AskClass {
+        let human_only = inspection_results.iter().any(|result| {
+            result.tool_request_id == request_id
+                && matches!(result.action, InspectionAction::RequireApproval(_))
+                && HUMAN_ONLY_INSPECTORS.contains(&result.inspector_name.as_str())
+        });
+        if human_only {
+            AskClass::HumanOnly
+        } else {
+            AskClass::Delegable
+        }
+    }
+
+    /// Decision 31, as a predicate, so the one check has one name.
+    pub fn may_decide(class: AskClass) -> bool {
+        class == AskClass::Delegable
+    }
+
+    /// Decision 30's ceiling: the strongest decision an **agent** may produce.
+    ///
+    /// `AlwaysAllow` and `AlwaysDeny` write a machine-wide, permanent
+    /// `PermissionLevel` (`agents/tool_execution.rs:409-413` / `:418-422`).
+    /// Those are a human's to make; an agent grants for this call only.
+    /// `None` for `Escalate` — there is nothing to deliver.
+    pub fn agent_decision(verdict: &DelegatedVerdict) -> Option<Permission> {
+        match verdict {
+            DelegatedVerdict::Grant(_) => Some(Permission::AllowOnce),
+            DelegatedVerdict::Refuse(_) => Some(Permission::DenyOnce),
+            DelegatedVerdict::Escalate(_) => None,
+        }
+    }
+
+    /// Ask ONE ancestor what it would decide, using only authority it holds.
+    ///
+    /// `call_session` is the **descendant's** session, not the ancestor's:
+    /// authority comes from the ancestor, facts come from the call. BR-24
+    /// directory grants are matched against the paths the call actually names
+    /// (`CallFacts::for_tool_call`, resolved against `session.working_dir`), so
+    /// passing the ancestor's session would let a parent's `/work/a` grant
+    /// authorize a child writing somewhere else — amplification along the
+    /// directory axis.
+    pub async fn ask_ancestor(
+        ancestor: &Agent,
+        request: &ToolRequest,
+        call_session: &Session,
+        class: AskClass,
+    ) -> DelegatedVerdict {
+        // Decision 31, FIRST — before the ancestor is consulted at all, so no
+        // inspector configuration and no permission mode can reach past it.
+        if !Self::may_decide(class) {
+            return DelegatedVerdict::Escalate(
+                "this ask must be answered by a person, in every permission mode".to_string(),
+            );
+        }
+
+        // Decision 30: the ancestor's authority IS its own inspection pipeline,
+        // run in its own mode. Reusing it — rather than restating it as a
+        // parallel policy — is what makes non-amplification a property of
+        // construction instead of a rule someone has to keep true.
+        let results = match ancestor
+            .tool_inspection_manager
+            .inspect_tools(
+                std::slice::from_ref(request),
+                &[],
+                ancestor.config.biorouter_mode,
+                call_session,
+            )
+            .await
+        {
+            Ok(results) => results,
+            // An inspection round we could not complete is not an approval.
+            Err(e) => {
+                return DelegatedVerdict::Escalate(format!(
+                    "could not evaluate this call against the ancestor's policy: {e}"
+                ))
+            }
+        };
+
+        let Some(outcome) = ancestor
+            .tool_inspection_manager
+            .process_inspection_results_with_permission_inspector(
+                std::slice::from_ref(request),
+                &results,
+            )
+        else {
+            // No permission inspector on that agent: no authority to read.
+            return DelegatedVerdict::Escalate(
+                "the ancestor has no permission inspector to consult".to_string(),
+            );
+        };
+
+        if outcome.denied.iter().any(|r| r.id == request.id) {
+            return DelegatedVerdict::Refuse(
+                "the delegating agent's own policy denies this call".to_string(),
+            );
+        }
+        if outcome.approved.iter().any(|r| r.id == request.id) {
+            return DelegatedVerdict::Grant(
+                "the delegating agent holds this authority itself".to_string(),
+            );
+        }
+        // `needs_approval`, or an id the combiner never saw. Both mean the same
+        // thing: not this ancestor's to give.
+        DelegatedVerdict::Escalate(
+            "beyond the delegating agent's own authority".to_string(),
+        )
+    }
+}
+
+// ---------------------------------------------------------------- the relay
+
+struct Pending {
+    key: AskKey,
+    class: AskClass,
+    /// Root of the delegation chain — the memo's scope (A-5).
+    root_session_id: String,
+    /// Sessions currently rendering a card for this ask (A-4). At most two: the
+    /// origin's own tab, and wherever a human was asked.
+    surfaces: Vec<String>,
+    /// `Some` once anybody has decided. First writer wins.
+    decision: Option<Permission>,
+}
+
+#[derive(Default)]
+struct Relay {
+    pending: HashMap<AskId, Pending>,
+    /// A-5: decisions already made in a delegation tree, keyed by
+    /// `(root_session_id, AskKey)`. In memory and for this process only —
+    /// deliberately NOT `ToolPermissionStore`, whose grants are machine-wide
+    /// and permanent.
+    memo: HashMap<(String, AskKey), Permission>,
+}
+
+static RELAY: LazyLock<Mutex<Relay>> = LazyLock::new(|| Mutex::new(Relay::default()));
+
+/// Poisoning cannot leave the relay logically inconsistent — every mutation is
+/// a single map operation — so a panic elsewhere must not turn approval routing
+/// into a process-wide outage. Same reasoning as `session_events::bus()`.
+fn lock() -> std::sync::MutexGuard<'static, Relay> {
+    RELAY
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// What [`resolve`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResolveOutcome {
+    /// This decision won. `notify` is every OTHER surface still showing the ask
+    /// — they must be dismissed, or the second card stays pending forever.
+    Resolved {
+        decision: Permission,
+        notify: Vec<String>,
+    },
+    /// Somebody already decided. A no-op: not a second grant, not a panic.
+    AlreadyResolved(Permission),
+    /// No live ask with that id.
+    Unknown,
+}
+
+pub fn register(origin: AskId, key: AskKey, class: AskClass, root_session_id: String) {
+    lock().pending.insert(
+        origin,
+        Pending {
+            key,
+            class,
+            root_session_id,
+            surfaces: Vec::new(),
+            decision: None,
+        },
+    );
+}
+
+/// Record that `session_id` is rendering a card for this ask.
+pub fn add_surface(origin: &AskId, session_id: &str) {
+    if let Some(entry) = lock().pending.get_mut(origin) {
+        if !entry.surfaces.iter().any(|s| s.as_str() == session_id) {
+            entry.surfaces.push(session_id.to_string());
+        }
+    }
+}
+
+/// Find the ask a decision addresses. **Fails closed**: the posting session must
+/// itself be a surface, so a request id from another tree resolves nothing.
+pub fn lookup(request_id: &str, from_session_id: &str) -> Option<AskId> {
+    let relay = lock();
+    relay
+        .pending
+        .iter()
+        .find(|(id, entry)| {
+            id.request_id == request_id
+                && entry
+                    .surfaces
+                    .iter()
+                    .any(|s| s.as_str() == from_session_id)
+        })
+        .map(|(id, _)| id.clone())
+}
+
+/// A-5. First writer wins, in one critical section — a check-then-set would let
+/// two surfaces both believe they granted.
+pub fn resolve(origin: &AskId, decision: Permission, decided_by: &str) -> ResolveOutcome {
+    let mut relay = lock();
+    let (notify, memo_key) = {
+        let Some(entry) = relay.pending.get_mut(origin) else {
+            return ResolveOutcome::Unknown;
+        };
+        if let Some(existing) = entry.decision.clone() {
+            return ResolveOutcome::AlreadyResolved(existing);
+        }
+        entry.decision = Some(decision.clone());
+        let notify: Vec<String> = entry
+            .surfaces
+            .iter()
+            .filter(|s| s.as_str() != decided_by)
+            .cloned()
+            .collect();
+        entry.surfaces.clear();
+        // Decision 31: an always-confirm ask is answered once per call, never
+        // remembered for the tree.
+        let memo_key = (entry.class == AskClass::Delegable)
+            .then(|| (entry.root_session_id.clone(), entry.key.clone()));
+        (notify, memo_key)
+    };
+    if let Some(key) = memo_key {
+        relay.memo.insert(key, decision.clone());
+    }
+    ResolveOutcome::Resolved { decision, notify }
+}
+
+/// A-5: a decision already made for this exact ask, anywhere in this tree.
+pub fn remembered(root_session_id: &str, key: &AskKey) -> Option<Permission> {
+    lock()
+        .memo
+        .get(&(root_session_id.to_string(), key.clone()))
+        .cloned()
+}
+
+/// Drop a finished ask. Idempotent — called once per prompt beside
+/// `Agent::forget_confirmation`, whatever the outcome.
+pub fn forget(origin: &AskId) {
+    lock().pending.remove(origin);
+}
+
+// ------------------------------------------------------- the escalation walk
+
+/// What [`begin_delegated_approval`] concluded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Delegation {
+    /// No parent, or no recoverable ask identity: the card the caller is about
+    /// to yield is the human's, exactly as before Task 36b.
+    NotDelegated,
+    /// An ancestor decided within its own authority. The decision has already
+    /// been delivered to the waiting prompt, so **no card is shown**.
+    DecidedByAncestor(Permission),
+    /// The chain was exhausted: a person is being asked, in `surfaced_in`, and
+    /// the origin's own tab shows the same ask.
+    AwaitingHuman { surfaced_in: String },
+}
+
+/// A-1/A-2/A-3. Called from `handle_approval_tool_requests` *after* the prompt's
+/// channel is registered and *before* the card would be yielded.
+pub async fn begin_delegated_approval(
+    agent: &Agent,
+    request: &ToolRequest,
+    session: &Session,
+    inspection_results: &[InspectionResult],
+) -> Delegation {
+    // A-1: only an agent-CREATED session delegates. A root conversation's
+    // approvals were always the user's.
+    if session.parent_session_id.is_none() {
+        return Delegation::NotDelegated;
+    }
+    let Some(key) = AskKey::for_request(request) else {
+        // No identity, so no grant that could be scoped to "that very specific
+        // ask". Fail closed to the pre-Task-36b behaviour.
+        return Delegation::NotDelegated;
+    };
+
+    let chain = ancestor_chain(&agent.config.session_manager, session).await;
+    let Some(root) = chain.last().cloned() else {
+        return Delegation::NotDelegated;
+    };
+    let class = DelegationPolicy::class_of(&request.id, inspection_results);
+    let origin = AskId {
+        session_id: session.id.clone(),
+        request_id: request.id.clone(),
+    };
+
+    // A-5: the same ask, already answered in this tree.
+    if DelegationPolicy::may_decide(class) {
+        if let Some(decision) = remembered(&root, &key) {
+            deliver(agent, &origin, decision.clone()).await;
+            return Delegation::DecidedByAncestor(decision);
+        }
+    }
+
+    register(origin.clone(), key, class, root.clone());
+    // A-4, surface one: the sub-agent's own conversation tab.
+    add_surface(&origin, &session.id);
+
+    // A-3: one level at a time. A depth-3 agent asks depth 2, not the user.
+    for ancestor_id in &chain {
+        let Some(ancestor) = peek_ancestor(ancestor_id).await else {
+            // That layer has no live agent in this process, so it cannot be
+            // asked. Climb — do NOT treat silence as an approval.
+            continue;
+        };
+        let verdict =
+            DelegationPolicy::ask_ancestor(&ancestor, request, session, class).await;
+        let Some(decision) = DelegationPolicy::agent_decision(&verdict) else {
+            continue; // Escalate: relay to its own layer.
+        };
+        if let ResolveOutcome::Resolved { .. } = resolve(&origin, decision.clone(), ancestor_id) {
+            deliver(agent, &origin, decision.clone()).await;
+            return Delegation::DecidedByAncestor(decision);
+        }
+        // Raced with a human at one of the surfaces; their decision stands.
+        return Delegation::AwaitingHuman {
+            surfaced_in: root.clone(),
+        };
+    }
+
+    // Chain exhausted: ask the person, at the root of the tree. A-4, surface
+    // two. Registering the surface is what authorizes a decision POSTED from
+    // that session (`lookup` fails closed otherwise); the caller then publishes
+    // the very same card there, so the two surfaces are one ask on the wire.
+    add_surface(&origin, &root);
+    Delegation::AwaitingHuman { surfaced_in: root }
+}
+
+/// Hand a decision to the prompt that is parked on it. Reuses BR-62's routing
+/// wholesale: `handle_confirmation` finds the `oneshot` `register_confirmation`
+/// created and `await_confirmation` is already waiting on it, so the turn loop
+/// needs no new plumbing for the agent-decided path.
+async fn deliver(origin_agent: &Agent, origin: &AskId, permission: Permission) {
+    let _ = origin_agent
+        .handle_confirmation(
+            origin.request_id.clone(),
+            PermissionConfirmation {
+                principal_type: PrincipalType::Tool,
+                permission,
+            },
+        )
+        .await;
+}
+
+async fn peek_ancestor(session_id: &str) -> Option<std::sync::Arc<Agent>> {
+    let manager = crate::execution::manager::AgentManager::instance().await.ok()?;
+    manager.peek_agent(session_id).await
+}
+
+/// The delegation chain above `session`: immediate parent first, root last.
+///
+/// Bounded by [`MAX_DELEGATION_DEPTH`] and by a visited set, so a corrupted
+/// `parent_session_id` cycle cannot spin. A parent row we cannot read ends the
+/// chain there rather than aborting the walk — the ancestors we *did* find are
+/// still the right ones to ask.
+async fn ancestor_chain(session_manager: &SessionManager, session: &Session) -> Vec<String> {
+    let mut chain: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::from([session.id.clone()]);
+    let mut next = session.parent_session_id.clone();
+
+    while let Some(id) = next {
+        if chain.len() >= MAX_DELEGATION_DEPTH || !seen.insert(id.clone()) {
+            break;
+        }
+        // Metadata only — `false` skips loading the conversation.
+        next = match session_manager.get_session(&id, false).await {
+            Ok(parent) => parent.parent_session_id.clone(),
+            Err(_) => None,
+        };
+        chain.push(id);
+    }
+    chain
+}
+```
+
+Register the module in `agents/mod.rs`, in sorted position:
+
+```rust
+pub(crate) mod agent;
+// BR-71 Task 36b: approval routing for agent-created sessions — the relay, the
+// single policy point for the two delegation bounds, and the escalation walk.
+pub mod approval_relay;
+```
+
+**The one call site**, in `tool_execution.rs`'s `handle_approval_tool_requests`, replacing
+the unconditional yield. Anchor on `let confirmation_rx = self.register_confirmation(&request.id);`
+(`:317` at `95176cd0`) and `yield confirmation;` (`:329`):
+
+```rust
+                // BR-62: register this prompt's own channel BEFORE the card is
+                // yielded, so an instant answer cannot arrive before there is a
+                // sender to route it to.
+                let confirmation_rx = self.register_confirmation(&request.id);
+
+                // BR-71 Task 36b: an agent-created session's approvals belong to
+                // the agent that created it. This decides within the chain's own
+                // authority where it can, and otherwise surfaces the ask to a
+                // person — in which case the card below is one of its two
+                // surfaces and carries the same request id.
+                let ask = crate::agents::approval_relay::AskId {
+                    session_id: session.id.clone(),
+                    request_id: request.id.clone(),
+                };
+                let delegation = crate::agents::approval_relay::begin_delegated_approval(
+                    self,
+                    request,
+                    session,
+                    inspection_results,
+                )
+                .await;
+
+                // A card for an ask an ancestor already answered would flash and
+                // vanish. `deliver` has already sent the decision into
+                // `confirmation_rx`, so the wait below returns immediately.
+                if !matches!(
+                    delegation,
+                    crate::agents::approval_relay::Delegation::DecidedByAncestor(_)
+                ) {
+                    let confirmation = Message::assistant()
+                        .with_action_required_with_context(
+                            request.id.clone(),
+                            tool_call.name.to_string().clone(),
+                            arguments,
+                            security_message,
+                            Some(risk),
+                            preview,
+                        )
+                        .user_only();
+                    // A-4, surface TWO. The chat where the escalation landed
+                    // sees the SAME card value, carrying the SAME request id —
+                    // which is what lets `approval_relay::lookup` route a
+                    // decision posted from there back to this parked prompt.
+                    //
+                    // PUBLISHED, never persisted: it is another conversation's
+                    // ask, and writing it into that session's history would put
+                    // a foreign tool call in someone else's transcript
+                    // permanently. `session_events::publish` is the ephemeral
+                    // path and creates no ring of its own — a session nobody is
+                    // observing simply drops it, and the card still shows in the
+                    // origin's own tab.
+                    //
+                    // This does NOT touch reconciliation #23's ordering
+                    // invariant: that is about the ORIGIN session's stream, and
+                    // this publishes to a different session's bus.
+                    if let crate::agents::approval_relay::Delegation::AwaitingHuman {
+                        surfaced_in,
+                    } = &delegation
+                    {
+                        crate::session_events::publish(
+                            surfaced_in,
+                            crate::session_events::SessionBusEvent::Agent(
+                                crate::agents::AgentEvent::Message(confirmation.clone()),
+                            ),
+                        );
+                    }
+                    yield confirmation;
+                }
+```
+
+and beside the existing forget, so the relay entry never outlives its prompt:
+
+```rust
+                // Answered, expired, or cancelled — either way this id is no
+                // longer accepting a decision.
+                self.forget_confirmation(&request.id);
+                crate::agents::approval_relay::forget(&ask);
+```
+
+⚠ **Two things about the block above that a reader will want to "tidy" and must not.**
+
+1. `arguments`, `security_message`, `risk` and `preview` are consumed by the builder, so
+   they must stay declared **above** the `if`, where they already are (`:294-313`). Moving
+   their construction inside the branch is tempting and wrong: `arguments` is
+   `tool_call.arguments.clone().unwrap_or_default()` and the clone is the point.
+2. `confirmation.clone()` is a real clone of a `Message`, and it is the only way the two
+   surfaces are provably showing the *same* card. Building a second, "equivalent" message
+   for the parent's bus is how the two drift — a different risk grade, a different preview,
+   a different id — and a different id makes `lookup` fail, which turns the second surface
+   into a card that does nothing when clicked.
+
+**The route**, `crates/biorouter-server/src/routes/action_required.rs`. This is what makes
+A-4/A-5 true on the wire: a decision from *either* surface addresses the *one* ask.
+
+```rust
+use biorouter::agents::approval_relay::{self, ResolveOutcome};
+
+pub async fn confirm_tool_action(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<ConfirmToolActionRequest>,
+) -> Result<Json<Value>, StatusCode> {
+    let permission = match request.action.as_str() {
+        "always_allow" => Permission::AlwaysAllow,
+        "allow_once" => Permission::AllowOnce,
+        "deny" => Permission::DenyOnce,
+        _ => Permission::DenyOnce,
+    };
+
+    // BR-71 Task 36b: two surfaces, ONE pending ask. The escalation card in the
+    // parent's chat carries the origin's tool request id, so a decision posted
+    // from either session resolves the same relay entry — and the OTHER surface
+    // is dismissed rather than left pending.
+    if let Some(ask) = approval_relay::lookup(&request.id, &request.session_id) {
+        return match approval_relay::resolve(&ask, permission, &request.session_id) {
+            ResolveOutcome::Resolved { decision, notify } => {
+                let origin = state.get_agent_for_route(ask.session_id.clone()).await?;
+                let outcome = origin
+                    .handle_confirmation(
+                        ask.request_id.clone(),
+                        PermissionConfirmation {
+                            principal_type: request.principal_type,
+                            permission: decision,
+                        },
+                    )
+                    .await;
+                dismiss_on(&notify, &ask.request_id).await;
+                Ok(Json(serde_json::json!({
+                    "status": match outcome {
+                        ConfirmationOutcome::Delivered => "delivered",
+                        ConfirmationOutcome::Unknown => "unknown",
+                    },
+                    "dismissed": notify,
+                })))
+            }
+            // The other surface got there first. 200 and the truth: a
+            // double-click is a no-op, and the client reconciles its card from
+            // the decision rather than re-posting.
+            ResolveOutcome::AlreadyResolved(decision) => Ok(Json(serde_json::json!({
+                "status": "already_resolved",
+                "decision": decision,
+            }))),
+            ResolveOutcome::Unknown => Ok(Json(serde_json::json!({ "status": "unknown" }))),
+        };
+    }
+
+    // Not a delegated ask: the pre-Task-36b path, unchanged.
+    let agent = state.get_agent_for_route(request.session_id).await?;
+    let outcome = agent
+        .handle_confirmation(
+            request.id.clone(),
+            PermissionConfirmation {
+                principal_type: request.principal_type,
+                permission,
+            },
+        )
+        .await;
+
+    let status = match outcome {
+        ConfirmationOutcome::Delivered => "delivered",
+        ConfirmationOutcome::Unknown => "unknown",
+    };
+
+    Ok(Json(serde_json::json!({ "status": status })))
+}
+
+/// A-5: tell every other surface the ask is answered, so its card stops showing
+/// as pending. Best-effort — the relay is the truth, and a client that misses
+/// the frame learns on its next POST (`already_resolved`).
+async fn dismiss_on(session_ids: &[String], request_id: &str) {
+    let Some(services) = biorouter::workspace_services::get() else {
+        return;
+    };
+    if !services.gui_attached() {
+        return;
+    }
+    for session_id in session_ids {
+        let _ = services
+            .gui_command(
+                serde_json::json!({
+                    "type": "workspace",
+                    "cmd": "resolve_confirmation",
+                    "session_id": session_id,
+                    "request_id": request_id,
+                }),
+                false,
+            )
+            .await;
+    }
+}
+```
+
+Add the `resolve_confirmation` case to Task 25's `workspaceCommandRegistry` when that task
+runs; until then the frame is a no-op the renderer ignores, and the `already_resolved`
+response is the whole consistency mechanism. **This route change does not alter any
+request or response *type*, so `just generate-openapi` produces no diff** — the handler
+returns `Json<Value>` and always has.
+
+- [ ] **Step 5: Run tests**
+
+```bash
+cargo test -p biorouter --lib agents::approval_relay
+# Expected: test result: ok. 9 passed
+
+cargo test -p biorouter --lib permission::permission_store
+# Expected: PASS — 12 tests (11 before this task, + exact_call_key_is_the_key_the_store_looks_up).
+# Re-measure the "before" number at YOUR head rather than trusting this line:
+#   awk '/^mod tests/,0' crates/biorouter/src/permission/permission_store.rs \
+#     | grep -cE '^\s+#\[(tokio::)?test\]'
+
+cargo test -p biorouter --lib agents::tool_execution
+# Expected: PASS, unchanged. The delegation branch is inert for a session with
+# no parent, which every test in that module uses.
+
+cargo test -p biorouter-server --lib routes::action_required
+# Expected: PASS — the existing endpoint test still 200s on the non-delegated path.
+```
+
+- [ ] **Step 5b: Gate**
+
+⚠ Step 5's tests are all tests of pure functions and of one policy type. Every one of them
+passes against an implementation that **nothing calls** — a relay no turn registers with, a
+route that ignores it, a policy consulted by no walk. So the gate anchors the call sites,
+and each entry below says which wrong implementation it rejects.
+
+```bash
+R=crates/biorouter/src/agents/approval_relay.rs
+T=crates/biorouter/src/agents/tool_execution.rs
+A=crates/biorouter-server/src/routes/action_required.rs
+
+# --- (a) grants but never propagates ------------------------------------------
+# This gate rejects: an implementation that resolves the ask and leaves the other
+# surface's card pending forever — the exact failure the ruling's "only need to
+# approve once in either place" forbids.
+grep -c "ResolveOutcome::Resolved { decision, notify }" "$A"      # Expected: 1
+grep -c "dismiss_on(&notify, &ask.request_id).await" "$A"         # Expected: 1
+grep -c "ResolveOutcome::AlreadyResolved(decision) => Ok(Json(" "$A"   # Expected: 1
+# …and the relay is consulted BEFORE the single-agent path, or a decision posted
+# from the parent's chat 404s into the parent's own empty prompt table.
+grep -c "if let Some(ask) = approval_relay::lookup(&request.id, &request.session_id)" "$A"  # Expected: 1
+# The second surface must actually EXIST. `AwaitingHuman` that registers a surface
+# and never renders a card there is the subtler half of the same failure: nothing
+# is shown in the parent's chat, so "approve in either place" has one place.
+grep -c "Delegation::AwaitingHuman {" "$T"                        # Expected: 1
+grep -c "crate::session_events::publish(" "$T"                    # Expected: 1
+grep -c "AgentEvent::Message(confirmation.clone())" "$T"          # Expected: 1
+# ⚠ and it must be PUBLISHED, not persisted into the other session's history.
+grep -c "add_message_adopting_uid" "$T"                           # Expected: 0
+
+# --- (b) a parent grants more than it holds -----------------------------------
+# This gate rejects: a parallel authority policy that can drift from what the
+# ancestor may actually do, and any agent-side path that produces a permanent
+# grant. All three arms are anchored, so adding a test that MENTIONS
+# `Permission::AlwaysAllow` cannot move the numbers.
+grep -c "DelegatedVerdict::Grant(_) => Some(Permission::AllowOnce)" "$R"   # Expected: 1
+grep -c "DelegatedVerdict::Refuse(_) => Some(Permission::DenyOnce)" "$R"   # Expected: 1
+grep -c "DelegatedVerdict::Escalate(_) => None" "$R"                       # Expected: 1
+# ONE place reads an ancestor's authority. A 2 means bound 30 has two homes and
+# the next person to loosen it will miss one.
+grep -c "\.tool_inspection_manager" "$R"                                   # Expected: 1
+grep -rc "tool_inspection_manager" "$A"                                    # Expected: 0
+
+# --- (c) a parent satisfies an always-confirm inspector -----------------------
+# This gate rejects: a `may_decide` check placed AFTER the inspection round (where
+# an Auto-mode ancestor's blanket Allow reaches it first), or removed entirely.
+grep -c "if !Self::may_decide(class) {" "$R"                               # Expected: 1
+grep -c "fn may_decide" "$R"                                               # Expected: 1
+# ONE reader of the tunable set.
+grep -c "HUMAN_ONLY_INSPECTORS" "$R"                                       # Expected: 2 (the const + class_of)
+grep -rc "HUMAN_ONLY_INSPECTORS" crates/ --include=*.rs | grep -v ":0$"    # Expected: only $R
+
+# --- the turn loop actually delegates -----------------------------------------
+# This gate rejects: a relay that exists, is tested, and is never entered — the
+# failure mode Task 36 Step 5b records at length.
+grep -c "let delegation = crate::agents::approval_relay::begin_delegated_approval(" "$T"  # Expected: 1
+grep -c "crate::agents::approval_relay::forget(&ask);" "$T"                # Expected: 1
+grep -c "Delegation::DecidedByAncestor(_)" "$T"                            # Expected: 1
+```
+
+Each anchored pattern matches the production site **only**, so its expectation is `1` (or
+`0`) and stays there however many tests are added later. The one bare-symbol sweep is
+`HUMAN_ONLY_INSPECTORS`, and it is deliberately expressed as "no other file matches" rather
+than as a count.
+
+**Mutation checks — run each and confirm the named test goes RED.** A gate that stays green
+under these is not testing the invariant.
+
+| Mutation | Must fail |
+|---|---|
+| Move the `if !Self::may_decide(class)` check to *after* the `inspect_tools` call | `an_always_confirm_ask_is_not_delegable_even_to_an_auto_mode_ancestor` |
+| Change `DelegatedVerdict::Grant(_)` to `Some(Permission::AlwaysAllow)` | `an_ancestor_grants_only_once_never_always` |
+| In `ask_ancestor`, pass `ancestor.config.biorouter_mode` as `BioRouterMode::Auto` instead | `an_ancestor_cannot_grant_what_its_own_authority_would_stop` |
+| Make `resolve` return `notify: Vec::new()` | `approving_at_one_surface_dismisses_the_other_and_never_grants_twice` |
+| Drop the `session_events::publish` on the `AwaitingHuman` branch | *(no unit test can see this — it is a call site. The gate's three anchored greps in `$T` are the only net, which is why they are there and why this row says so instead of naming a test.)* |
+| Make `resolve` overwrite `entry.decision` unconditionally | `concurrent_decisions_from_both_surfaces_resolve_exactly_once` |
+| Memoize `HumanOnly` asks too | `a_human_only_ask_is_never_memoized` |
+
+Note the third row: it is what proves the bound-30 test is testing *authority* and not
+merely "Approve mode prompts". And note that **narrowing `HUMAN_ONLY_INSPECTORS` to `&[]`
+must leave both bound-30 tests green** — they pass `AskClass::Delegable` explicitly and
+never read that set. If narrowing it turns a bound-30 test green that was red, the gate has
+been coupled to the tunable half and has rotted; fix the test, not the bound.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add crates/biorouter/src/agents/approval_relay.rs \
+        crates/biorouter/src/agents/mod.rs \
+        crates/biorouter/src/agents/tool_execution.rs \
+        crates/biorouter/src/permission/permission_store.rs \
+        crates/biorouter-server/src/routes/action_required.rs
+git commit -m "feat(agent-loop): approval delegation and single-grant propagation (BR-71)"
+```
+
+No `Co-Authored-By` trailer. **Flag this task for operator review in the PR description** —
+it is permission-relevant code under the Ground rules' review bullet, and it is the only
+task in this plan that lets a non-human answer a permission prompt.
+
+**What Task 37 may now assume:** a subagent tab that renders a `ToolConfirmationRequest`
+card is rendering one of *two* surfaces for the same ask, and a POST from it goes through
+the relay. The header's Stop control is unaffected; the card is not the tab's to own.
+
+**What Task 14 no longer needs to promise:** see the note added to its Step 3 — the
+`None => true` branch of `target_mode_requires_approval` is superseded here, and
+`send_prompt_turn`'s refusal should be narrowed to the case where the target has **no
+parent** (a root conversation nobody is watching) once this task lands. That narrowing is
+deliberately **not** done in this task: it changes a shipped, committed refusal and belongs
+in its own commit with its own test.
+
+**Unresolved without another operator decision, stated rather than hidden:**
+
+1. **Does an intermediate agent that escalates leave a card?** The plan implements **no** —
+   only the origin's tab and the root render one, because A-4 says "the parent's chat,
+   where the escalation surfaced", singular, and a card at every hop of a depth-4 chain is
+   four cards for one ask. If the operator wants each layer to see what passed through it,
+   the fix is an `add_surface` inside the walk plus a "relayed, not yours to answer" flag on
+   the card.
+2. **Should the tree memo survive a daemon restart?** It does not: `Relay::memo` is
+   in-memory and per-process. Persisting it would make "approve once" survive a crash but
+   would also make it a durable grant with no revocation UI, which is what keeping it out of
+   `ToolPermissionStore` was avoiding.
+3. **`Permission::AlwaysAllow` clicked at an escalation surface still writes a
+   machine-wide `PermissionLevel::AlwaysAllow`**, exactly as it does today
+   (`tool_execution.rs:409-413`). That is unchanged button semantics, but it is now
+   reachable from a *different conversation* than the one the tool will run in. If the
+   operator wants the permanent form restricted to the session that raised the ask, that is
+   a change to the card, not to this relay.
 
 ---
 
@@ -15070,10 +21273,73 @@ git commit -m "feat(subagent): visible-by-default children with a 4-tab fan-out 
   hook — session/lineage/grants/spawn-context/Stop, Step 5)
 - Create: `ui/desktop/src/components/subagent/useSubagentSession.test.tsx`
 - Modify: `ui/desktop/src/components/BaseChat.tsx` — ChatGroupsShell mounts BaseChat
-  per tab (`Pair.tsx:7-8`), so the header mounts there when the hook reports
+  per tab (`components/Pair.tsx:6-8` — that file is now only the route-state
+  contract; the component retired when /pair became tabbed), so the header mounts
+  there when the hook reports
   `isSubagent`
 - Modify: `ui/desktop/src/components/chatGroups/ChatTabStrip.tsx` (render the
-  `subagent` badge from Task 26's annotation state)
+  `subagent` badge from Task 26's annotation state — **as a prop**, see the
+  amendment note below)
+- Modify: `ui/desktop/src/components/chatGroups/ChatGroupsShell.tsx` — the only
+  place `ChatTabStrip` is mounted (`:279`; `grep -rn "<ChatTabStrip" ui/desktop/src`
+  finds exactly one non-test hit); it already calls `useChatGroups()` (`:61`) and
+  already threads `runningSessionIds` down (`:284`), so the annotations ride the
+  same wire
+
+**Depends on Task 26** for `ChatGroupsContextValue.tabAnnotations` and for the
+`TabAnnotation` type (`components/chatGroups/workspaceCommandPlanner.ts`).
+
+⚠ **AMENDED 2026-07-28 (Phase-2 reconciliation) — two undefined symbols at the two mount
+sites, both TypeScript errors that stop the build.**
+
+**(a) `openTab(...)` is not a thing.** Step 5 mounted the header with
+`onOpenParent={() => openTab(subagent.parentSessionId!)}` and justified it as *"the
+provider's existing open-or-focus dispatch (`ChatGroupsContext.tsx:105-107` — dedupe by
+session id)"*. `ChatGroupsContext.tsx:104-118` is `handleUrlOpen`, a **module-private
+`useCallback`** handed to `useChatGroupsUrlSync`; it is not exported and not on the
+context. The exported value (`:225-234`) is exactly
+`{ state, dispatch, activeGroup, activeTab, activeSessionId, runningSessionIds }` —
+and after Task 26, `+ tabAnnotations`. In `BaseChat.tsx` the identifier `openTab` is
+simply undefined. The dedupe the justification wanted is real, but it lives in the
+**reducer**: `openTab`'s first rule is *"a sessionId already open ANYWHERE activates that
+tab (and focuses its group) instead of opening a second one"* — the doc comment at
+`chatGroupsReducer.ts:265-266`, implemented at `:274-288` inside `openTab` (`:271`). So
+dispatching the action gets the behaviour; `handleUrlOpen` was only ever one caller of
+it.
+
+**(b) `ChatTabStrip` does not consume the context, by contract.** Step 5 said to *"read
+`tabAnnotations` from `useChatGroups()`"* inside it. `ChatTabStrip` is
+`ChatTabStripProps` + a pure-props function (`ChatTabStrip.tsx:23-62`); the running-state
+analogue `runningSessionIds` is deliberately a **prop**, and the file's own comment at
+`:63-67` says why the one context it does touch (`useChatTabDrag`) has a null fallback:
+*"Bare (as in this component's own tests) the strip falls back to a private, reorder-only
+instance."* Three test files render it bare, outside any provider —
+`ChatTabStrip.test.tsx` (23 tests), `ChatTabStrip.flip.test.tsx` (11),
+`ChatTabStrip.titlebar.test.tsx` (11). A `useChatGroups()` call inside would return
+`null` in all 45 of them (the hook does not throw — `ChatGroupsContext.tsx:59`), so
+`annotations[tab.sessionId]` would be a TypeError on the first render of every one.
+
+The repair is the same shape as `runningSessionIds`: an **optional prop with a `{}`
+default**, passed by `ChatGroupsShell`. Optional-with-default is load-bearing — it is
+what lets all 45 of those tests keep compiling and passing **unedited**. Step 5 below is
+rewritten accordingly, and Step 6's gate now runs those files.
+
+**And there is a second reason the prop must be optional, which the bare-render argument
+alone does not cover.** The three suites that exercise `ChatGroupsShell` —
+`ChatGroupsShell.sessionName.test.tsx` (2 tests), `ChatGroupsShell.terminal.test.tsx` (5)
+and `duplicateSubmissionWiring.test.tsx` (5) — do not mount `ChatGroupsProvider` at all: each
+`vi.mock`s `../../contexts/ChatGroupsContext` and returns a hand-written
+`useChatGroups: () => ({ state, dispatch, … })` stub. Those stubs will **not** have
+`tabAnnotations`, so `groups.tabAnnotations` is `undefined` at runtime there (TypeScript
+still sees the real module's widened type, so it compiles). With `tabAnnotations?` +
+`= {}` that is a no-op; with a required prop, or with a `useChatGroups()` call inside the
+strip, it is `Cannot read properties of undefined` in all three. Do not "tidy" the
+optionality away.
+
+**Anchors:** re-verified against the worktree at `bab6fba2`. Phase 1 is landing commits
+on this branch while Phase 2 runs, so **anchor by symbol, not by these numbers** — the
+desktop files this task touches have not moved, but `reply.rs` / `agent.rs` /
+`session_manager.rs` have moved twice since the Phase-2 survey alone.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -15212,7 +21478,8 @@ export function SubagentTabHeader({
 
 - [ ] **Step 4: Write the failing container-hook test** — the wiring is a hook, not
 prose. `useSubagentSession.test.tsx`, mocking the generated client the way
-`SessionListView.test.tsx:9-17` does:
+`SessionListView.test.tsx:8-22` does (`vi.hoisted` `:8-14`, `vi.mock('../../api', …)`
+`:16-22`; the `:9-17` this line used to give straddles the two):
 
 ```tsx
 import { describe, expect, it, vi, afterEach } from 'vitest';
@@ -15293,8 +21560,12 @@ describe('useSubagentSession', () => {
 ```tsx
 /**
  * BR-71 §4.5: everything the subagent tab header needs, from the generated
- * client. `getSession`/`getSessionExtensions`/`cancelTurn` are the same
- * generated functions the store already imports (`chatStreamStore.tsx:3-17`).
+ * client. `getSession` and `cancelTurn` are two of the functions the store
+ * already imports — the `from '../api'` brace list at `chatStreamStore.tsx:3-17`,
+ * still exact at `bab6fba2` after both `936f5a33` and Phase 1's own edits to
+ * that file. `getSessionExtensions` is NOT in that list; it is a third
+ * generated function from the same module (`sdk.gen.ts:634`, alongside
+ * `getSession` `:587` and `cancelTurn` `:85`).
  */
 import { useCallback, useEffect, useState } from 'react';
 import { cancelTurn, getSession, getSessionExtensions } from '../../api';
@@ -15319,8 +21590,14 @@ export function useSubagentSession(sessionId: string): SubagentSessionInfo {
       const session = (await getSession({ path: { session_id: sessionId } })).data;
       if (cancelled || !session || session.session_type !== 'sub_agent') return;
       // The spawn-context record: first message stamped provenance spawn_context
-      // (Task 32). Field casing follows the generated types — verify with
-      // `grep -n "provenance" ui/desktop/src/api/types.gen.ts` after Task 7's regen.
+      // (Task 32). Casing VERIFIED against the already-regenerated client at
+      // `bab6fba2` (Task 2 has landed): `MessageMetadata` is camelCase with
+      // `provenance?: MessageProvenance | null` (`types.gen.ts:1056`),
+      // `MessageProvenance` is `{ fromSessionId?, fromSessionName?, kind }`
+      // (`:1096`), and `ProvenanceKind` is the snake_case union
+      // `'agent_injection' | 'user_direct' | 'spawn_context'` (`:1297`). So
+      // `m?.metadata?.provenance?.kind === 'spawn_context'` is correct as
+      // written — no post-Task-7 regen is needed for this field.
       const record = (session.conversation ?? []).find(
         (m) => m?.metadata?.provenance?.kind === 'spawn_context'
       );
@@ -15353,11 +21630,17 @@ export function useSubagentSession(sessionId: string): SubagentSessionInfo {
 }
 ```
 
-Mount in `BaseChat.tsx` (ChatGroupsShell mounts BaseChat per tab — `Pair.tsx:7-8`
+Mount in `BaseChat.tsx` (ChatGroupsShell mounts BaseChat per tab — `components/Pair.tsx:6-8`
 records this; BaseChat knows its session id):
 
 ```tsx
   const subagent = useSubagentSession(sessionId);
+  // Returns null outside a ChatGroupsProvider (ChatGroupsContext.tsx:59 — the
+  // hook does NOT throw). BaseChat is mounted per tab by ChatGroupsShell, so in
+  // practice this is non-null wherever a subagent tab exists; the optional call
+  // below is what keeps the standalone mounts (which have no tab strip to open
+  // a parent into) from crashing.
+  const chatGroups = useChatGroups();
   // …above the transcript:
   {subagent.isSubagent && subagent.parentSessionId && (
     <SubagentTabHeader
@@ -15367,11 +21650,22 @@ records this; BaseChat knows its session id):
       extensions={subagent.extensions}
       knowledgeBases={extractKnowledgeBases(subagent.spawnContext)}
       running={chatState !== ChatState.Idle}
-      onOpenParent={() => openTab(subagent.parentSessionId!)}
+      onOpenParent={() =>
+        // The reducer's own DEDUPE rule makes this "open or focus":
+        // chatGroupsReducer.ts:274-288.
+        chatGroups?.dispatch({
+          type: 'openTab',
+          payload: { sessionId: subagent.parentSessionId! },
+        })
+      }
       onStop={() => void subagent.stop()}
     />
   )}
 ```
+
+Import `useChatGroups` from `../contexts/ChatGroupsContext` (BaseChat does not use it
+today — `grep -n "useChatGroups" ui/desktop/src/components/BaseChat.tsx` returns
+nothing).
 
 where `extractKnowledgeBases` reads the `### Knowledge bases` section of the
 spawn-context record (the single source of truth Task 32 wrote) and returns the
@@ -15392,11 +21686,10 @@ export function extractKnowledgeBases(spawnContext?: string): string[] {
 }
 ```
 
-`chatState` is BaseChat's existing stream state,
-and `openTab` is the provider's existing open-or-focus dispatch (`ChatGroupsContext
-.tsx:105-107` — dedupe by session id). `running` derives from the observer stream:
-frames flip the store to streaming, `Finish` returns it to idle — a tab opened
-mid-run shows Stop as soon as the first frame arrives.
+`chatState` is BaseChat's existing stream state (destructured at
+`BaseChat.tsx:1348-1351` from the chat-stream hook, with `ChatState` imported at `:30`).
+`running` derives from the observer stream: frames flip the store to streaming, `Finish`
+returns it to idle — a tab opened mid-run shows Stop as soon as the first frame arrives.
 
 Remaining wiring, all existing behavior (verify, don't build): the tab streams via
 `controller.observeSession()` — already attached by Task 26's executor for
@@ -15406,27 +21699,115 @@ state (grep `interrupt` in `chatStreamStore.tsx`; stamping is server-side, Task 
 Min-width discipline: every flex child that can carry long text has `min-w-0` +
 truncate (the text-overflow lesson in memory).
 
-Badge: `ChatTabStrip.tsx` renders a small `sub` marker for tabs whose session id has
-an annotation with `badge === 'subagent'` — read `tabAnnotations` from
-`useChatGroups()` (Task 26's context field) and render beside the tab title:
+Badge: `ChatTabStrip.tsx` renders a small `sub` marker for tabs whose session id has an
+annotation with `badge === 'subagent'`. It arrives as a **prop**, beside
+`runningSessionIds` — see amendment (b): the strip is pure-props by contract and its own
+45 tests render it bare.
+
+(i) `ChatTabStripProps` (`ChatTabStrip.tsx:23-48`) gains one **optional** field, and the
+destructure (`:50-62`) gains its default:
 
 ```tsx
-  {annotations[tab.sessionId]?.badge === 'subagent' && (
-    <span className="ml-1 rounded bg-background-code px-1 text-[10px] text-text-subtle">
-      sub
-    </span>
-  )}
+import type { TabAnnotation } from './workspaceCommandPlanner';
+
+  /**
+   * BR-71 Task 26's tab annotations, keyed by session id.
+   *
+   * A PROP, not a `useChatGroups()` call, for the same reason `runningSessionIds`
+   * is: this component is pure-props and three test files render it bare, outside
+   * any provider. OPTIONAL with a `{}` default so those files keep compiling and
+   * passing with no edit — the strip's whole contract is that it can be rendered
+   * with nothing but its own props.
+   */
+  tabAnnotations?: Record<string, TabAnnotation>;
 ```
+
+```tsx
+export function ChatTabStrip({
+  tabs,
+  activeTabId,
+  groupId,
+  groupActive = true,
+  runningSessionIds,
+  tabAnnotations = {},
+  // …unchanged
+}: ChatTabStripProps) {
+```
+
+(ii) render it inside the tab button, immediately after the label span
+(`ChatTabStrip.tsx:298`). `flex-none` so it never competes with the label's `min-w-0`
+truncation (the text-overflow rule):
+
+```tsx
+                <span className="br-tab__label">{tab.title}</span>
+                {tabAnnotations[tab.sessionId]?.badge === 'subagent' && (
+                  <span className="ml-1 flex-none rounded bg-background-code px-1 text-[10px] text-text-subtle">
+                    sub
+                  </span>
+                )}
+```
+
+(iii) `ChatGroupsShell.tsx` passes it, one line under the prop it mirrors (`:284`):
+
+```tsx
+        runningSessionIds={groups.runningSessionIds}
+        tabAnnotations={groups.tabAnnotations}
+```
+
+The shell already holds `groups = useChatGroups()` (`:61`) and already null-guards it
+(`if (!groups || !layout) return null;`, `:264`), so this adds no new failure mode.
 
 - [ ] **Step 6: Run tests**
 
-Run: `cd ui/desktop && npm run test:run -- SubagentTabHeader useSubagentSession`
-Expected: 5 passed (3 header + 2 hook).
+```bash
+cd ui/desktop && npm run test:run -- SubagentTabHeader useSubagentSession ChatTabStrip ChatGroupsShell duplicateSubmissionWiring
+```
+
+Expected: **62 passed across 8 files** — the 5 new (3 `SubagentTabHeader` + 2
+`useSubagentSession`) plus the 57 that already pass and must keep passing:
+`ChatTabStrip.test.tsx` 23, `ChatTabStrip.flip.test.tsx` 11,
+`ChatTabStrip.titlebar.test.tsx` 11, `ChatGroupsShell.terminal.test.tsx` 5,
+`duplicateSubmissionWiring.test.tsx` 5, `ChatGroupsShell.sessionName.test.tsx` 2.
+
+(Baseline **measured** on this worktree at `bab6fba2`:
+`npm run test:run -- ChatTabStrip ChatGroupsShell duplicateSubmissionWiring` → 6 files,
+57 tests, all green. `duplicateSubmissionWiring` is in the filter because it renders
+`ChatGroupsShell` too and its filename does not contain "ChatGroupsShell", so the obvious
+filter misses it.)
+
+The mount files are in the filter **deliberately**. The pre-amendment gate was
+`-- SubagentTabHeader useSubagentSession`, which matches only the two new files: a header
+component that compiles but is never rendered in `BaseChat`, and a badge never rendered
+in `ChatTabStrip`, both ship green under it. It is also the only gate before Task 40 that
+would notice the three bare-render suites breaking — which is precisely what the
+pre-amendment `useChatGroups()`-inside-the-strip instruction would have done to all 45 of
+them.
+
+⚠ **One mount is still not covered by a render, and it is the header's.** The filter above
+closes the `ChatTabStrip` badge (three suites render the strip) and the `ChatGroupsShell`
+pass-through, but nothing renders `BaseChat`: its six test files are all `.test.ts` and
+import **exported helper functions** from `BaseChat.tsx` (`selectBilledTokens`,
+`handleCreateSessionError`, `resolveNewSessionWorkingDir`, …), never the component — 6
+files / 73 tests at `bab6fba2`, none of them a render. Adding `BaseChat` to the vitest
+filter would raise the numbers and prove nothing. Use an anchored grep, and say so:
+
+```bash
+grep -c "<SubagentTabHeader" ui/desktop/src/components/BaseChat.tsx        # Expected: 1
+grep -c "from './subagent/SubagentTabHeader'" ui/desktop/src/components/BaseChat.tsx  # Expected: 1
+```
+
+plus Task 40's live GUI pass, which spawns a real subagent and looks at the tab. **If
+`BaseChat` ever gains a render test, replace these two greps with a real assertion** —
+a header conditional on `subagent.parentSessionId` that is inverted, or a null-guard that
+swallows every case, passes both greps and is exactly the kind of thing a render catches.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add ui/desktop/src/components/subagent ui/desktop/src/components/chatGroups/ChatTabStrip.tsx ui/desktop/src/components/BaseChat.tsx
+git add ui/desktop/src/components/subagent \
+        ui/desktop/src/components/chatGroups/ChatTabStrip.tsx \
+        ui/desktop/src/components/chatGroups/ChatGroupsShell.tsx \
+        ui/desktop/src/components/BaseChat.tsx
 git commit -m "feat(ui): subagent tab header with spawn context, grants, and Stop (BR-71)"
 ```
 
@@ -15434,16 +21815,95 @@ git commit -m "feat(ui): subagent tab header with spawn context, grants, and Sto
 
 ### Task 38: History shows subagents grouped under their parent
 
+⚠ **Anchors re-verified at `ea15a4de` (2026-07-28, drift amendment).** Neither this
+branch nor `main` has touched `components/sessions/` or `utils/sessionListCache.ts`, so
+almost everything is exact — but two numbers were wrong and one was wrong in the survey's
+favour. **Re-anchor by symbol at task start** regardless.
+
+| Plan cited | Now at | Note |
+|---|---|---|
+| `SessionListView.tsx:385` (`await refreshSessionList()`) | **`:383`** | inside `loadSessions` (`:374`, exact) |
+| `SessionListView.test.tsx:9-17` ("its `listSessions` mock") | **`:8-14`** (the `vi.hoisted` block) + **`:16-22`** (`vi.mock('../../api', …)`) | `:9-17` straddles the two |
+| `SessionListView.tsx:916-923` (the four callbacks) | **exact** | the survey's `:915-923` is off by one — `:915` is the `group.sessions.map(` line, `:916` is `<SessionItem` |
+| `SessionListView.test.tsx:56-59` (the render shape) | **`:57-60`** | |
+| `SessionListView.test.tsx:42-46` (`clearSessionListCache()` in `beforeEach`) | **`:42-46`**, the call at **`:44`** | exact |
+
+Exact and re-confirmed: `sessionListCache.ts:91-105` (`refreshSessionList`),
+`:112-116` (`clearSessionListCache`), `cachedSessions` `:4`, `inFlightRequest` `:5`;
+`SessionListView.tsx:285` (`useNavigate()`), `:287` (`filteredSessions` state),
+`:219-222` (`SessionListViewProps`), `:438-442` (the `groupSessionsByDate` memo, the
+call at `:439`), `:653` (`const SessionItem = React.memo(function SessionItem({`).
+
+**Task 4 has LANDED, so the API half of this task already typechecks.** Verified at
+`ea15a4de` in the generated client:
+`ListSessionsData.query?.include_subagents?: boolean | null`
+(`types.gen.ts:4744-4753`), `Session.parent_session_id?: string | null`
+(`:1636`), and `SessionType = 'user' | 'scheduled' | 'sub_agent' | 'hidden' | 'terminal'`
+(`:1718`) — which is what makes Step 3's `row.session_type === 'sub_agent'` and Step 4's
+`query: { include_subagents: includeSubagents }` legal **today**, not after some future
+regen. The Rust side is `routes/session.rs:47`/`:55`/`:65`/`:257`.
+
+⚠ **`refreshSessionList` has a SECOND caller and the plan's cache-identity change
+collides with it** (found 2026-07-28; not in the survey). `grep -rn refreshSessionList
+ui/desktop/src` returns three non-cache hits: `SessionListView.tsx:51`/`:383` **and
+`SessionsInsights.tsx:14`/`:91`** — Home's recent-chats loader, which does
+`const sessions = await refreshSessionList(); sessions.slice(0, RECENT_LIMIT)` and does
+**not** filter by `session_type`.
+
+With Step 4's code as written (`refreshSessionList(includeSubagents = false)`, a flag
+change invalidating `cachedSessions` and `inFlightRequest`), two things go wrong, and
+split panes make both reachable — Home and History can be mounted at once:
+
+1. **Cache thrash.** Home's keyless call means `false`. With History's toggle on, every
+   Home render flips the identity, clears the cache, refetches without subagents, and
+   `emitChange()` pushes the subagent-free list into History's subscribers — the toggle
+   still reads "on" and the children have vanished. Navigating back flips it again.
+2. **Home would show subagent runs** if the naive fix ("make the default sticky") is
+   applied, because `SessionsInsights` takes the first `RECENT_LIMIT` rows unfiltered.
+
+Both are avoided with a three-valued parameter plus one line in Home — do this rather
+than the two-argument version:
+
+```ts
+// `undefined` = "whatever identity is cached" (Home, prefetch): never invalidates,
+// never refetches a different shape. `true`/`false` = "I need this identity"
+// (History's toggle): invalidates if it differs. Two callers, one cache, no thrash.
+export async function refreshSessionList(includeSubagents?: boolean): Promise<Session[]> {
+  if (includeSubagents !== undefined && includeSubagents !== cachedIncludeSubagents) {
+    cachedIncludeSubagents = includeSubagents;
+    cachedSessions = null;
+    inFlightRequest = null;
+  }
+  …
+```
+
+and in `SessionsInsights.tsx` (`:91`), drop subagents from the recents regardless of what
+History asked for — Home's recents are for conversations the user started:
+
+```ts
+const sessions = await refreshSessionList();
+const refreshedRecentSessions = sessions
+  .filter((s) => s.session_type !== 'sub_agent')
+  .slice(0, RECENT_LIMIT);
+```
+
 **Files:**
 - Create: `ui/desktop/src/components/sessions/sessionGrouping.ts` +
   `sessionGrouping.test.ts`
 - Modify: **`ui/desktop/src/utils/sessionListCache.ts`** — this is where the fetch
   actually lives. `SessionListView` does **not** call `listSessions`: `grep -n
   listSessions ui/desktop/src/components/sessions/SessionListView.tsx` returns zero
-  hits. Its loader (`:374 loadSessions`) awaits `refreshSessionList()` (`:385`), and
+  hits. Its loader (`:374 loadSessions`) awaits `refreshSessionList()` (`:383`), and
   `refreshSessionList` (`sessionListCache.ts:91-105`) is what calls
   `listSessions<true>({ throwOnError: true })` — with a module-level `cachedSessions`
   and an in-flight dedupe in front of it
+- Modify: **`ui/desktop/src/utils/sessionListCache.test.ts`** — 4 existing tests that
+  call `refreshSessionList()` directly, including
+  `deduplicates a prefetch and a view load that overlap`, which exercises the exact
+  in-flight dedupe the new flag branch sits in front of. This file is the reason Step 5's
+  filter gains a third term; nothing else in the plan runs it (added 2026-07-28)
+- Modify: **`ui/desktop/src/components/sessions/SessionsInsights.tsx`** — the second
+  `refreshSessionList` caller; see the collision note above (added 2026-07-28)
 - Modify: `ui/desktop/src/components/sessions/SessionListView.tsx` — the History
   list; renders `filteredSessions` (:287, grouped by date at :438-442) and defines
   its own `SessionItem` inline at `:653`
@@ -15525,7 +21985,7 @@ their test:
 ```
 
 and pass the flag on the fetch. **The fetch is not in this file** — the loader
-(`:374-385`) awaits `refreshSessionList()`, so the flag threads through
+(`:374-383`) awaits `refreshSessionList()`, so the flag threads through
 `ui/desktop/src/utils/sessionListCache.ts`. Two edits there:
 
 ```ts
@@ -15533,11 +21993,16 @@ and pass the flag on the fetch. **The fetch is not in this file** — the loader
 // toggle serves the stale list and never refetches.
 let cachedIncludeSubagents = false;
 
-export async function refreshSessionList(includeSubagents = false): Promise<Session[]> {
+// ⚠ `includeSubagents?: boolean`, NOT `= false`. This module has TWO consumers
+// (History and Home's `SessionsInsights`) and only one of them has an opinion;
+// a keyless call must mean "whatever is cached", not "false", or Home's every
+// render invalidates History's toggle. See the collision note in this task's
+// header.
+export async function refreshSessionList(includeSubagents?: boolean): Promise<Session[]> {
   // A flag change invalidates both the in-flight request and the cache: the
   // dedupe below is keyed only on "a request is running", so without this a
   // toggle during an in-flight fetch would resolve to the OTHER flag's result.
-  if (includeSubagents !== cachedIncludeSubagents) {
+  if (includeSubagents !== undefined && includeSubagents !== cachedIncludeSubagents) {
     cachedIncludeSubagents = includeSubagents;
     cachedSessions = null;
     inFlightRequest = null;
@@ -15546,7 +22011,9 @@ export async function refreshSessionList(includeSubagents = false): Promise<Sess
 
   inFlightRequest = listSessions<true>({
     throwOnError: true,
-    query: { include_subagents: includeSubagents },
+    // `cachedIncludeSubagents`, not the parameter: a keyless call must send the
+    // identity the cache is holding, not `undefined`.
+    query: { include_subagents: cachedIncludeSubagents },
   })
     .then((response) => {
       cachedSessions = response.data.sessions;
@@ -15561,10 +22028,32 @@ export async function refreshSessionList(includeSubagents = false): Promise<Sess
 }
 ```
 
-and `clearSessionListCache()` (`:112`) also resets `cachedIncludeSubagents = false`.
-In `SessionListView.tsx` the loader becomes
+and `clearSessionListCache()` (`:112-116`) also resets `cachedIncludeSubagents = false`
+— which is what keeps `sessionListCache.test.ts`'s four cases and
+`SessionListView.test.tsx`'s seven independent of each other, since both suites call it
+in `beforeEach`.
+
+In `SessionListView.tsx` the loader (`:383`) becomes
 `await refreshSessionList(showSubagents)` with `showSubagents` added to
-`loadSessions`' dependency array so toggling refetches.
+`loadSessions`' dependency array so toggling refetches. History is the **only** caller
+that passes an argument.
+
+Add one case to `sessionListCache.test.ts` for the three-valued parameter, because it is
+the half a component test cannot reach:
+
+```ts
+  it('a keyless refresh keeps the flagged identity instead of clobbering it', async () => {
+    mocks.listSessions.mockResolvedValue({ data: { sessions: [] } });
+    await refreshSessionList(true);
+    expect(mocks.listSessions).toHaveBeenLastCalledWith(
+      expect.objectContaining({ query: { include_subagents: true } })
+    );
+    mocks.listSessions.mockClear();
+    // Home's loader. It has no opinion, so it must not invalidate History's.
+    await refreshSessionList();
+    expect(mocks.listSessions).not.toHaveBeenCalled();
+  });
+```
 
 The toggle control renders beside the existing search/filter controls:
 
@@ -15615,7 +22104,10 @@ their parent with the badge:
 `SessionItem` is defined **inside `SessionListView.tsx` itself** (`:653`,
 `React.memo(function SessionItem({ session, onEditClick, onDeleteClick,
 onExportClick, onOpenInNewWindow })`), and all four callbacks are required — the four
-handlers above are the exact ones the existing call site at `:916-923` passes. It is
+handlers above are the exact ones the existing call site at `:916-923` passes (verified
+at `ea15a4de`: `<SessionItem` `:916`, `key` `:917`, `session` `:918`, then
+`onEditClick`/`onDeleteClick`/`onExportClick`/`onOpenInNewWindow` `:919-922`, `/>`
+`:923`). It is
 **not** the sibling `sessions/SessionItem.tsx`, which is a different component with
 `{ session, extraActions? }` and is used elsewhere; rendering that one here would
 type-check only after dropping the callbacks and would produce the wrong row.
@@ -15623,8 +22115,9 @@ type-check only after dropping the callbacks and would produce the wrong row.
 Opening a child row works like any session — the observer mode makes the transcript
 readable, which is the issue's "cannot be opened even after the fact" fix.
 
-(c) Test — add to `SessionListView.test.tsx` (its `listSessions` mock already
-exists at :9-17):
+(c) Test — add to `SessionListView.test.tsx` (its `listSessions` mock already exists:
+the `vi.hoisted` block at **`:8-14`** and `vi.mock('../../api', …)` at **`:16-22`**; the
+plan's `:9-17` straddled the two):
 
 ```tsx
   it('the Show-subagent-runs toggle refetches with include_subagents and nests children', async () => {
@@ -15641,8 +22134,8 @@ exists at :9-17):
     });
     // The component calls `useNavigate()` (:285), so it MUST be inside a
     // router, and `onSelectSession` is a required prop
-    // (`SessionListViewProps`, :219-222). This is the exact shape every
-    // existing case in this file uses (`SessionListView.test.tsx:56-59`).
+    // (`SessionListViewProps`, :219-222 — exact). This is the exact shape every
+    // existing case in this file uses (`SessionListView.test.tsx:57-60`).
     render(
       <MemoryRouter>
         <SessionListView onSelectSession={vi.fn()} />
@@ -15660,22 +22153,1211 @@ exists at :9-17):
 ```
 
 The suite's `beforeEach` already calls `clearSessionListCache()`
-(`SessionListView.test.tsx:42-46`) — with the flag now part of the cache identity
-that reset is what keeps this case independent of the ones before it. Note the
-pre-existing `SessionListView` isolation flake recorded in memory "Desktop UI six
-fixes 2026-07" — run this file solo if the suite interferes.
+(`SessionListView.test.tsx:42-46`, the call at `:44`) — with the flag now part of the
+cache identity that reset is what keeps this case independent of the ones before it.
 
 - [ ] **Step 5: Run tests**
 
-Run: `cd ui/desktop && npm run test:run -- sessionGrouping SessionListView`
-Expected: the new grouping + toggle tests pass; pre-existing SessionListView cases
-unchanged.
+Run: `cd ui/desktop && npm run test:run -- sessionGrouping SessionListView sessionListCache`
+
+Expected: **3 files / 14 tests** — `sessionGrouping.test.ts` 1 (new),
+`SessionListView.test.tsx` 8 (its **7**, measured, plus the toggle case above), and
+`sessionListCache.test.ts` 5 (its **4**, measured, plus the keyless-refresh case).
+
+Two things about this gate, both measured on this worktree at `ea15a4de` and both
+changed from the previous revision:
+
+- **`sessionListCache` is in the filter deliberately** (added 2026-07-28). Step 4
+  rewrites `refreshSessionList`'s signature and `clearSessionListCache`'s body, and those
+  four existing tests are the only thing that exercises the in-flight dedupe the new flag
+  branch sits in front of. No other gate in this plan runs them.
+- **The file count matters more than usual**: `sessionGrouping` matches **no file** today
+  (measured — `npx vitest run sessionGrouping` → `No test files found`, exit **1**), so
+  before Step 3 this composite filter runs only the two live terms and still exits 0.
+
+⚠ **`SessionListView.test.tsx` does NOT pass reliably on this machine, and it is not
+this task's fault** (measured 2026-07-28; neither the survey nor the gate sweep checked
+that the 7 tests it counted were *green*). Under a narrow filter,
+`uses the shared notification surface after deleting a session` fails with
+`TestingLibraryElementError: Unable to find role="button" and name "Confirm deletion"`
+after a 5 s `findByRole` timeout — the mocked `ConfirmationModal`
+(`SessionListView.test.tsx:37-40`) never receives `isOpen`. Measured rates on this
+worktree:
+
+| Command | Result |
+|---|---|
+| `npx vitest run SessionListView` (solo) | **1 pass / 5 fail in 6 runs**; the failing runs report `1 failed \| 6 passed (7)`, occasionally `2 failed \| 5 passed` |
+| `npx vitest run SessionListView sessionListCache` | 1 pass / 3 fail in 4 runs |
+| `npx vitest run` (the whole suite) | **green — 186 files / 1726 tests** |
+
+Three consequences, and the first one reverses advice this task used to give:
+
+1. **The previous revision's "run this file solo if the suite interferes" is backwards.**
+   Solo is where it flakes; the full 186-file suite is where it passes. That note is
+   removed. (The memory it cited, "Desktop UI six fixes 2026-07", records a
+   *SessionListView isolation flake*; whatever it was then, the failure today points the
+   other way.)
+2. **Do not "fix" it as part of this task.** `git diff 275d735d..HEAD --
+   ui/desktop/src/components/sessions/` is empty and so is `275d735d..main` — the file
+   and its component are byte-identical to the plan's own anchor tree, so this is a
+   pre-existing red inherited from `main`, not a regression Task 38 introduced. Repairing
+   it here would mix an unrelated fix into a commit whose diff is meant to be reviewable,
+   and "I made the red go away" is indistinguishable from "I deleted the assertion".
+3. **Read the numbers, not the exit code.** `8` in the `SessionListView` column with one
+   named failure is this gate passing; `7` means the toggle case is missing; a *different*
+   failure name is a real regression. If it matters, run
+   `npx vitest run` (full) and confirm the total instead — that is the run that is green.
+
+Worth filing separately against `main`; it is out of BR-71's scope and Task 44's
+`npm run test:run` (full suite) does not currently trip on it.
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add ui/desktop/src
 git commit -m "feat(ui): History groups subagent transcripts under their parent (BR-71)"
+```
+
+---
+
+### Task 38b: `biorouter session list` shows subagents grouped under their parent
+
+**The CLI counterpart of Task 38, and the precondition for Task 38c.** The operator's
+2026-07-30 requirement is that the CLI inherit what the GUI and the server gained: "users
+have the same ways of monitoring the data of different sub-agents … but just without the
+graphic user interface." A user cannot attach to, or monitor, a session id they cannot
+find, and today the terminal cannot find one at all.
+
+**Four measured facts, each verified in the tree at `aad74e79` (the tip of
+`feat/br71-workspace-control` after Task 20 landed). Re-verify by symbol; do not trust the
+line numbers.**
+
+1. **`biorouter session list` cannot see a subagent, at the SQL level.**
+   `commands/session.rs`'s `handle_session_list` calls `SessionManager::list_sessions()`,
+   whose storage impl is exactly
+   `self.list_sessions_by_types(&[SessionType::User, SessionType::Scheduled])`
+   (`session_manager.rs`, `async fn list_sessions(&self)` in the storage impl). A
+   `sub_agent` row is filtered out before the CLI ever sees it. This is not a display
+   problem and no formatting change fixes it.
+2. **`--name` resolution has the same hole.** `cli.rs`'s `lookup_session_id` resolves a
+   name through the same `list_sessions()`, so `--name` can never name a subagent.
+   `--session-id` passes straight through and does work — which is why the gap is easy to
+   miss: by-id is fine, by-name silently isn't.
+3. **Every subagent session carries the SAME name.** `subagent_tool.rs`'s
+   `create_subagent_session` passes the literal `"Subagent task"` to
+   `SessionManager::create_session`. An N-way fan-out therefore produces N rows named
+   `Subagent task`, differing only by uuid — in `biorouter session list`, in Task 38's
+   grouped History, and in `workspace_list`. "Enough identity to tell two sibling
+   sub-agents apart" is not currently available on **any** surface, so this is not a
+   CLI-only repair.
+4. **Live/finished state is not an existing capability to inherit — it has to be
+   published.** `SessionSummary` (`session_manager.rs`) has `parent_session_id` and
+   `session_type` but no running flag, and the GUI's `runningSessionIds`
+   (`ui/desktop/src/contexts/ChatGroupsContext.tsx`) is derived from the renderer's *own*
+   running registry — the chats **this window** started — so it is local state, not a
+   daemon read. The single authority is `AppState::active_turns`, an in-process
+   `Arc<StdMutex<HashMap<String, ActiveTurn>>>` (`state.rs`), reachable only through the
+   daemon. Hence Step 5 adds one read-only route rather than the CLI guessing.
+
+**Files:**
+- Create: `crates/biorouter-cli/src/commands/session_grouping.rs` — the pure
+  parent/child grouping + rendering helpers and their tests (the CLI counterpart of
+  Task 38's `sessionGrouping.ts`, deliberately the same shape so the two surfaces cannot
+  drift in behaviour)
+- Modify: `crates/biorouter-cli/src/commands/mod.rs` (`pub mod session_grouping;`)
+- Modify: `crates/biorouter-cli/src/commands/session.rs` — `handle_session_list` gains
+  the subagent-aware path; `lookup_session_id`'s hole is closed by a widened lookup
+  helper here rather than in `cli.rs`
+- Modify: `crates/biorouter-cli/src/cli.rs` — `SessionCommand::List` (the enum at
+  `:438`, the dispatch arm at `:1498`) gains `--subagents`; `lookup_session_id` (`:407`)
+  widens its type filter
+- Modify: `crates/biorouter/src/agents/subagent_tool.rs` — `create_subagent_session`
+  names the child after its own task (fact 3)
+- Modify: `crates/biorouter-server/src/state.rs` — `AppState::active_turn_session_ids`,
+  beside `is_turn_active`
+- Modify: `crates/biorouter-server/src/routes/session.rs` — `GET /sessions/running`
+- Modify: `crates/biorouter-server/src/openapi.rs` — the new path
+
+**Depends on:** Task 1 (`Session.parent_session_id` — landed, verified present on
+`pub struct Session`), Task 32 (spawn **stamps** it; without Task 32 every child's
+`parent_session_id` is `None` and the grouping is correct but empty), Task 20
+(`configured_port` / `daemon_ok` / `DAEMON_HOST` are already `pub(crate)` in
+`commands/apps.rs` — verified at `aad74e79`, so Step 6 reuses them and adds no HTTP
+dependency).
+
+- [ ] **Step 1: Write the failing tests**
+
+Create `crates/biorouter-cli/src/commands/session_grouping.rs` containing **only** this
+test module to start with, so Step 2's failure is unambiguous:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(id: &str, kind: SessionType, parent: Option<&str>, name: &str) -> SessionRow {
+        SessionRow {
+            id: id.to_string(),
+            name: name.to_string(),
+            session_type: kind,
+            parent_session_id: parent.map(str::to_string),
+            updated_at: chrono::Utc::now(),
+            message_count: 3,
+        }
+    }
+
+    #[test]
+    fn subagents_nest_under_their_parent_and_orphans_stay_top_level() {
+        let rows = vec![
+            row("p1", SessionType::User, None, "Migration review"),
+            row("c1", SessionType::SubAgent, Some("p1"), "Subagent: audit the migration"),
+            row("c2", SessionType::SubAgent, Some("gone"), "Subagent: benchmark"),
+        ];
+        let grouped = group_by_parent(rows);
+
+        let parent = grouped.iter().find(|g| g.session.id == "p1").unwrap();
+        assert_eq!(
+            parent.children.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+            vec!["c1"]
+        );
+        // A child whose parent is not in this page must remain reachable, not
+        // vanish — same rule as Task 38's `groupSessionsByParent`.
+        assert!(grouped.iter().any(|g| g.session.id == "c2"));
+        // …and it must not ALSO appear as a child of anything.
+        assert_eq!(grouped.iter().filter(|g| g.session.id == "c2").count(), 1);
+        assert!(!grouped
+            .iter()
+            .any(|g| g.children.iter().any(|c| c.id == "c2")));
+    }
+
+    /// The discriminating half: a parent row that is itself a `sub_agent`
+    /// (depth-2 delegation) must not swallow its sibling.
+    #[test]
+    fn a_row_is_nested_only_when_it_is_itself_a_subagent() {
+        let rows = vec![
+            row("p1", SessionType::User, None, "root"),
+            // A USER row that happens to carry a parent id (a diverged session
+            // reusing the column would look like this) is NOT a subagent.
+            row("u2", SessionType::User, Some("p1"), "user chat"),
+        ];
+        let grouped = group_by_parent(rows);
+        assert!(
+            grouped.iter().any(|g| g.session.id == "u2"),
+            "only session_type == sub_agent nests"
+        );
+    }
+
+    #[test]
+    fn a_running_row_is_rendered_differently_from_a_finished_one_and_from_an_unknown_one() {
+        let mut r = row("c1", SessionType::SubAgent, Some("p1"), "Subagent: audit");
+        r.message_count = 12;
+        let running = render_child(&r, Liveness::Running);
+        let finished = render_child(&r, Liveness::Finished);
+        let unknown = render_child(&r, Liveness::Unknown);
+        assert_ne!(running, finished);
+        assert_ne!(finished, unknown);
+        assert_ne!(running, unknown);
+        // Identity: the id prefix and the message count are what separate two
+        // siblings whose labels were truncated to the same prefix.
+        assert!(running.contains("c1"));
+        assert!(running.contains("12"));
+    }
+}
+```
+
+and, in `crates/biorouter/src/agents/subagent_tool.rs`'s existing `#[cfg(test)] mod
+tests`:
+
+```rust
+    /// Two children of one fan-out must be distinguishable in every listing.
+    /// Before this, `create_subagent_session` named all of them "Subagent task".
+    ///
+    /// `SubagentParams` derives only `Debug, Deserialize` (no `Default`), so the
+    /// fixtures are built through serde rather than a struct literal — a literal
+    /// here is a compile error the day a field is added.
+    #[test]
+    fn a_subagent_session_is_named_after_its_own_task() {
+        let a: SubagentParams = serde_json::from_value(serde_json::json!({
+            "instructions": "Audit the migration for data loss\nand then report back"
+        }))
+        .unwrap();
+        let b: SubagentParams = serde_json::from_value(serde_json::json!({
+            "instructions": "Benchmark the new covering index"
+        }))
+        .unwrap();
+
+        assert_ne!(subagent_session_label(&a), subagent_session_label(&b));
+        assert!(subagent_session_label(&a).contains("Audit the migration"));
+        // ONE line: a multi-paragraph instruction must not become a multi-line
+        // session name, which every listing renders as broken rows.
+        assert!(!subagent_session_label(&a).contains("report back"));
+        assert!(!subagent_session_label(&a).contains('\n'));
+
+        // A subworkflow run is named for the workflow, not for the ad-hoc
+        // instructions it also carries.
+        let w: SubagentParams = serde_json::from_value(serde_json::json!({
+            "subworkflow": "triage-failures", "instructions": "extra context"
+        }))
+        .unwrap();
+        assert!(subagent_session_label(&w).contains("triage-failures"));
+
+        // …and the fallback is still the old literal, so a paramless spawn does
+        // not produce an empty name.
+        let empty: SubagentParams = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(subagent_session_label(&empty), "Subagent task");
+    }
+```
+
+and, in `crates/biorouter-server/src/routes/session.rs`'s route-test module (the one
+whose header says *"`AppState::new()` opens the REAL user session database, so a route
+test here must be READ-ONLY"*, and whose tests are `#[tokio::test(flavor =
+"multi_thread")] #[serial]`):
+
+```rust
+    /// BR-71 / CLI parity: the daemon is the ONLY authority on liveness
+    /// (`AppState::active_turns` is an in-process map), so it has to publish it.
+    ///
+    /// ⚠ **No session is created and none is deleted.** `try_begin_turn_idempotent`
+    /// inserts into the in-memory `active_turns` map and never consults the store,
+    /// so fabricated ids exercise the whole path — which keeps this test inside
+    /// this module's READ-ONLY rule (`AppState::new()` opens the real user DB).
+    /// The `#[serial]` attribute is not optional: `active_turns` is process-wide
+    /// and a concurrent route test holding a turn would make the first assertion
+    /// flake.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn running_sessions_reports_exactly_the_sessions_holding_a_turn() {
+        let state = AppState::new().await.unwrap();
+        // ⚠ NOT `uuid::Uuid::new_v4()`: `uuid` is not a dependency of
+        // `biorouter-server` (`grep -n uuid crates/biorouter-server/Cargo.toml`
+        // returns nothing), so that would be an unresolved-crate error. A
+        // nanosecond stamp is unique enough for two ids in one test.
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let busy = format!("parity-busy-{stamp}");
+        let idle = format!("parity-idle-{stamp}");
+
+        let before = get_running(state.clone()).await;
+        assert!(!before.contains(&busy), "precondition: {before:?}");
+
+        let guard = state
+            .try_begin_turn_idempotent(&busy, CancellationToken::new(), None)
+            .expect("nothing holds this fabricated session");
+
+        let during = get_running(state.clone()).await;
+        assert!(during.contains(&busy), "a held turn must be reported");
+        assert!(
+            !during.contains(&idle),
+            "a session with no turn must not be reported running"
+        );
+
+        drop(guard);
+        assert!(
+            !get_running(state.clone()).await.contains(&busy),
+            "TurnGuard::drop clears the slot, so the route must read LIVE state — \
+             a snapshot taken at construction passes every assertion above and \
+             fails this one"
+        );
+    }
+```
+
+(Imports: the module already has `use super::*;`, which brings `AppState` and `Arc`;
+add `use serial_test::serial;` if that module does not already have it — `diverge_tests`
+does — and `use tokio_util::sync::CancellationToken;` (`tokio-util 0.7.15` is a direct
+dependency of `biorouter-server`; `serial_test` is a dev-dependency via the workspace).
+`get_running` is a local two-liner in the same shape as this module's existing
+`get_activity` / `get_sidebar_sessions` helpers: `oneshot` the router at
+`GET /sessions/running` and return `Vec<String>` from the body. Reuse them rather than
+inventing a third shape. ⚠ `assert!(before.is_empty())` would be **wrong** here — the
+real daemon-shared `AppState` may legitimately hold another test's turn; assert about
+*this* test's ids only.)
+
+- [ ] **Step 2: Run to verify failure**
+
+```bash
+cargo test -p biorouter-cli --lib commands::session_grouping
+```
+Expected: **COMPILE ERROR** — `error[E0433]: failed to resolve: use of undeclared crate
+or module` / `cannot find function \`group_by_parent\``. The module declares its tests
+before the code they call, and `mod.rs` does not name it yet.
+
+```bash
+cargo test -p biorouter --lib agents::subagent_tool::tests::a_subagent_session_is_named
+```
+Expected: **COMPILE ERROR** — `cannot find function \`subagent_session_label\` in this
+scope` (E0425). It is not a FAIL: the symbol does not exist.
+
+```bash
+cargo test -p biorouter-server --lib routes::session::running_sessions_reports
+```
+Expected: **COMPILE ERROR** — `cannot find function \`get_running\``.
+
+⚠ Confirm each command reports a **non-zero test count or a compiler error**, never
+`0 tests … filtered out; exit 0`. A filter that matches nothing is this repo's most
+frequent green-gate-that-ran-nothing (Task 21's `::tests::` note).
+
+- [ ] **Step 3: Implement the grouping and rendering helpers**
+
+Prepend to `session_grouping.rs`:
+
+```rust
+//! BR-71 CLI parity (operator requirement, 2026-07-30): subagent runs are
+//! discoverable from a terminal, grouped under the session that spawned them.
+//!
+//! Deliberately the same shape as the renderer's
+//! `ui/desktop/src/components/sessions/sessionGrouping.ts` (Task 38): orphans
+//! stay top-level so nothing becomes unreachable, and only a `sub_agent` row
+//! ever nests. Two surfaces, one rule.
+
+use biorouter::session::session_manager::SessionType;
+use chrono::{DateTime, Utc};
+
+/// The fields a listing needs. A projection rather than `biorouter::session::
+/// Session` so the pure helpers below can be tested without a store.
+#[derive(Debug, Clone)]
+pub struct SessionRow {
+    pub id: String,
+    pub name: String,
+    pub session_type: SessionType,
+    pub parent_session_id: Option<String>,
+    pub updated_at: DateTime<Utc>,
+    pub message_count: usize,
+}
+
+/// Whether the daemon says this session has a turn in flight.
+///
+/// Three-valued, for the same reason `SessionLiveness` in
+/// `workspace_extension.rs` is: with no daemon reachable the honest answer is
+/// "not knowable from here", and collapsing that into `Finished` prints
+/// "finished" over a run that is still going.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Liveness {
+    Running,
+    Finished,
+    Unknown,
+}
+
+pub struct Group {
+    pub session: SessionRow,
+    pub children: Vec<SessionRow>,
+}
+
+/// Nest `sub_agent` rows under the parent they name, when that parent is in the
+/// same page. Everything else — including a subagent whose parent was deleted or
+/// falls outside the page — stays top level.
+pub fn group_by_parent(rows: Vec<SessionRow>) -> Vec<Group> {
+    use std::collections::{HashMap, HashSet};
+    let ids: HashSet<&str> = rows.iter().map(|r| r.id.as_str()).collect();
+    let mut children: HashMap<String, Vec<SessionRow>> = HashMap::new();
+    let mut top: Vec<SessionRow> = Vec::new();
+
+    for row in &rows {
+        let parent = match (&row.session_type, &row.parent_session_id) {
+            (SessionType::SubAgent, Some(p)) if ids.contains(p.as_str()) => Some(p.clone()),
+            _ => None,
+        };
+        match parent {
+            Some(p) => children.entry(p).or_default().push(row.clone()),
+            None => top.push(row.clone()),
+        }
+    }
+
+    top.into_iter()
+        .map(|session| {
+            let mut kids = children.remove(&session.id).unwrap_or_default();
+            kids.sort_by(|a, b| a.updated_at.cmp(&b.updated_at));
+            Group { session, children: kids }
+        })
+        .collect()
+}
+
+/// One indented line for a child, carrying the three things that separate two
+/// siblings of one fan-out: its own label, its id, and how far it got.
+pub fn render_child(row: &SessionRow, liveness: Liveness) -> String {
+    let state = match liveness {
+        Liveness::Running => "● live",
+        Liveness::Finished => "○ done",
+        Liveness::Unknown => "· state unknown (no daemon)",
+    };
+    format!(
+        "  └─ {} [{}]  {}  {} msgs  {}",
+        row.name,
+        state,
+        row.id,
+        row.message_count,
+        row.updated_at.format("%Y-%m-%d %H:%M")
+    )
+}
+```
+
+- [ ] **Step 4: Name the child session after its own task**
+
+In `crates/biorouter/src/agents/subagent_tool.rs`, beside `create_subagent_session`:
+
+```rust
+/// A one-line label for a spawned child, so two siblings of one fan-out are
+/// distinguishable everywhere a session is listed — `biorouter session list`,
+/// Task 38's grouped History, and `workspace_list` all read `Session.name`.
+///
+/// Prefers the subworkflow name (a run of a named workflow is best identified by
+/// it) and otherwise the first non-empty line of the ad-hoc instructions.
+/// Falls back to the historical literal so a paramless spawn is never nameless.
+pub(crate) fn subagent_session_label(params: &SubagentParams) -> String {
+    const MAX: usize = 60;
+    let first_line = |s: &str| -> Option<String> {
+        s.lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .map(str::to_string)
+    };
+    let source = params
+        .subworkflow
+        .as_deref()
+        .and_then(first_line)
+        .or_else(|| params.instructions.as_deref().and_then(first_line));
+    let Some(source) = source else {
+        return "Subagent task".to_string();
+    };
+    let mut label: String = source.chars().take(MAX).collect();
+    if source.chars().count() > MAX {
+        label.push('…');
+    }
+    format!("Subagent: {label}")
+}
+```
+
+and thread it through, changing `create_subagent_session`'s signature:
+
+```rust
+ async fn create_subagent_session(
+     config: &AgentConfig,
+     working_dir: PathBuf,
++    params: &SubagentParams,
+ ) -> Result<crate::session::Session, ErrorData> {
+     config
+         .session_manager
+         .create_session(
+             working_dir,
+-            "Subagent task".to_string(),
++            subagent_session_label(params),
+             crate::session::session_manager::SessionType::SubAgent,
+         )
+```
+
+⚠ **There are exactly TWO call sites and both already have `params` in scope** — the
+background branch (`if params.background && subagent_handle::background_enabled()`) and
+the blocking one after the semaphore permit. Verified at `aad74e79`; `grep -n
+create_subagent_session crates/biorouter/src/agents/subagent_tool.rs` must return 3 hits
+(two calls + the definition) after this edit, not 2 or 4. Pass `&params` — the later
+`overridden_task_config(task_config, &params)` also borrows it, so a move here is an
+E0382.
+
+- [ ] **Step 5: Publish liveness from its one authority**
+
+In `crates/biorouter-server/src/state.rs`, beside `is_turn_active`:
+
+```rust
+    /// Every session with a turn in flight right now (BR-71 CLI parity).
+    ///
+    /// `is_turn_active` answers for one session; a listing needs the set, and
+    /// N round-trips for an N-row page is both slower and racier — the rows
+    /// would be read at N different instants.
+    pub fn active_turn_session_ids(&self) -> Vec<String> {
+        self.active_turns
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .keys()
+            .cloned()
+            .collect()
+    }
+```
+
+In `crates/biorouter-server/src/routes/session.rs`:
+
+```rust
+/// BR-71: the sessions holding a turn right now.
+#[derive(Debug, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct RunningSessionsResponse {
+    pub session_ids: Vec<String>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/sessions/running",
+    // EXPLICIT tag, not utoipa's default module path. Task 42b's parity gate
+    // selects the workspace-control route surface by this tag; a BR-71 route
+    // that lands under "Session Management" with the other fifteen operations
+    // is invisible to it.
+    tag = "workspace",
+    responses(
+        (status = 200, description = "Sessions with a turn in flight", body = RunningSessionsResponse),
+        (status = 401, description = "Unauthorized - invalid secret key")
+    )
+)]
+async fn running_sessions(State(state): State<Arc<AppState>>) -> Json<RunningSessionsResponse> {
+    Json(RunningSessionsResponse {
+        session_ids: state.active_turn_session_ids(),
+    })
+}
+```
+
+registered in `pub fn routes` **beside the other static `/sessions/…` siblings**:
+
+```rust
+        .route("/sessions/running", get(running_sessions))
+```
+
+⚠ `/sessions/running` is a static segment competing with `/sessions/{session_id}`. That
+is already the established shape in this router — `/sessions/sidebar`,
+`/sessions/import`, `/sessions/insights` and `/sessions/activity` all coexist with it
+(verified at `aad74e79`; the file even carries a comment saying axum routes the static
+suffix without a guard). If it ever *did* conflict, axum panics at router construction
+and every route test fails at once, so the failure is loud rather than silent.
+
+Add `super::routes::session::running_sessions` to the `paths(...)` list in
+`crates/biorouter-server/src/openapi.rs` and
+`super::routes::session::RunningSessionsResponse` to `components(schemas(...))`, then:
+
+```bash
+just generate-openapi && (cd ui/desktop && npm run generate-api)
+```
+
+- [ ] **Step 6: Wire the CLI**
+
+(a) `cli.rs`, in `SessionCommand::List` (the enum at `:438`), after `limit`:
+
+```rust
+        #[arg(
+            long = "subagents",
+            help = "Include subagent runs, nested under the session that spawned them"
+        )]
+        subagents: bool,
+```
+
+and the dispatch arm at `:1498` gains the field and forwards it.
+
+(b) `cli.rs`'s `lookup_session_id` (`:407`) — close fact 2's hole. Its name branch calls
+`session_manager.list_sessions()`, which cannot see a subagent:
+
+```rust
+     } else if let Some(name) = identifier.name {
+         let session_manager = SessionManager::instance();
+-        let sessions = session_manager.list_sessions().await?;
++        // BR-71: subagent runs are addressable by name too — `list_sessions()`
++        // filters them out at the SQL level (User + Scheduled only).
++        let sessions = session_manager
++            .list_sessions_by_types(&[
++                SessionType::User,
++                SessionType::Scheduled,
++                SessionType::SubAgent,
++            ])
++            .await?;
+```
+
+(c) `commands/session.rs` — `handle_session_list` takes `subagents: bool`, and when it
+is set reads the widened type list and groups:
+
+```rust
+    let mut sessions = if subagents {
+        session_manager
+            .list_sessions_by_types(&[
+                SessionType::User,
+                SessionType::Scheduled,
+                SessionType::SubAgent,
+            ])
+            .await?
+    } else {
+        session_manager.list_sessions().await?
+    };
+```
+
+The existing `working_dir` / `ascending` / `limit` handling is unchanged and runs
+**before** grouping — but ⚠ `limit` must be applied to the **top-level** rows after
+grouping, not to the flat row list before it, or a `--limit 5` on a page whose first
+parent has six children returns one parent and nothing else. Truncate `groups`, not
+`sessions`.
+
+Liveness, best-effort and clearly labelled:
+
+```rust
+    // The daemon owns liveness. With none reachable, say "unknown" rather than
+    // printing "done" over a run that is still going.
+    let live: Option<std::collections::HashSet<String>> = if subagents {
+        crate::commands::session_watch::running_session_ids().await.ok()
+    } else {
+        None
+    };
+```
+
+where `running_session_ids` is a ~15-line addition to `commands/session_watch.rs`
+reusing that module's own `build_get_request` / `stream`-less one-shot read against
+`GET /sessions/running`, and returning `Err` (not an empty set) when no daemon answers —
+so `Liveness::Unknown` is reachable and `render_child` can say so.
+
+The `"json"` arm emits the grouped structure (`{"session": …, "children": […],
+"live": …}`), so a script gets the same information the text arm prints.
+
+- [ ] **Step 7: Gate**
+
+```bash
+cargo test -p biorouter-cli --lib commands::session_grouping
+```
+Expected: `test result: ok. 3 passed`.
+
+```bash
+cargo test -p biorouter --lib agents::subagent_tool
+```
+Expected: green, **including** `a_subagent_session_is_named_after_its_own_task`. The
+module held **10** tests at `aad74e79` (`grep -c '#\[test\]\|#\[tokio::test\]'
+crates/biorouter/src/agents/subagent_tool.rs`), so **11** here — but re-measure the
+pre-task figure rather than trusting this line, because a "pre + 1" assertion against a
+stale baseline reads a shortfall as a pass.
+
+```bash
+cargo test -p biorouter-server --lib routes::session
+```
+Expected: green, including `running_sessions_reports_exactly_the_sessions_holding_a_turn`.
+
+```bash
+cargo test -p biorouter --test subagent_delegation
+```
+Expected: **7**, green. This is the net for Step 4: `create_subagent_session`'s signature
+change touches both spawn paths, and this suite is the only automated exercise of a real
+spawn.
+
+```bash
+just generate-openapi && git diff --exit-code ui/desktop/openapi.json
+```
+Expected: exit 0 — i.e. Step 5's regen was committed.
+
+Live, against `BIOROUTER_SERVER__SECRET_KEY=test just debug-server`:
+
+```bash
+biorouter session list --subagents | head -20
+```
+Expected, after a real fan-out: each parent line followed by indented `└─ Subagent: …`
+children whose **labels differ**, each with `● live` or `○ done`. Stop the daemon and
+re-run: the same tree, every child `· state unknown (no daemon)` — never `○ done`.
+
+**This gate rejects:** a `handle_session_list` that adds a `--subagents` flag but keeps
+calling `list_sessions()` (the flag then changes nothing, because the type filter is in
+SQL — the grouping test alone cannot see this, which is why the live step reads real
+rows); a `group_by_parent` that nests on `parent_session_id.is_some()` instead of on
+`session_type == SubAgent` (caught by
+`a_row_is_nested_only_when_it_is_itself_a_subagent`); a grouping that drops an orphaned
+child instead of keeping it top-level (caught by the orphan assertions, both the
+"appears" and the "appears exactly once, and not as anyone's child" halves); a
+`create_subagent_session` that keeps the shared `"Subagent task"` literal, or that uses
+the whole multi-line instruction as the name (both caught by
+`a_subagent_session_is_named_after_its_own_task`, which asserts inequality between two
+siblings *and* single-linedness, neither of which a length check would catch); a
+`running_sessions` that returns a snapshot captured at startup or that reports an idle
+session (caught by the assert-empty → begin-turn → assert-exact → drop-guard →
+assert-empty sequence, which no constant return value satisfies); and a liveness path
+that renders a daemon-less run as finished (caught by the three-way `assert_ne!` in
+`render_child` plus the daemon-stopped live step).
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add crates/biorouter-cli/src/commands/session_grouping.rs \
+        crates/biorouter-cli/src/commands/mod.rs \
+        crates/biorouter-cli/src/commands/session.rs \
+        crates/biorouter-cli/src/commands/session_watch.rs \
+        crates/biorouter-cli/src/cli.rs
+git commit -m "feat(cli): session list groups subagent runs under their parent (BR-71)"
+
+git add crates/biorouter/src/agents/subagent_tool.rs
+git commit -m "feat(subagent): name a child session after its own task (BR-71)"
+
+git add crates/biorouter-server/src/state.rs \
+        crates/biorouter-server/src/routes/session.rs \
+        crates/biorouter-server/src/openapi.rs \
+        ui/desktop/openapi.json ui/desktop/src/api
+git commit -m "feat(server): GET /sessions/running publishes turn liveness (BR-71)"
+```
+
+---
+
+### Task 38c: `biorouter session attach` — join a LIVE session at its current position
+
+**The operator's headline sentence, 2026-07-30:** *"The users will be able to use either a
+session ID or some other ways to spin up the conversation so that the conversation within
+the terminal is started exactly at the position of the sub-agents."* Followed by: *"the
+same ways of monitoring the data of different sub-agents and injecting problems into them
+if needed, but just without the graphic user interface."*
+
+⚠ **Reading of record: "inject problems" is read as "inject prompts"** — the same act
+`workspace_send_prompt` performs and that `biorouter session send` (Task 20) already
+performs. Nothing in the design has a notion of injecting a *fault*, and the sentence
+sits between "monitor" and "if needed", where a steer belongs. **Recorded explicitly so a
+future reader can correct it**: if the operator meant fault injection, this task is
+mis-scoped and needs re-specifying, not extending.
+
+**Why `--resume` is not this, and cannot be made into it.** `biorouter session --resume
+--id <X>` builds a **second `Agent` in the CLI process** over the shared sessions store
+(`session/builder.rs`: `build_session` → `Agent::new()`, whose `AgentConfig` carries
+`SessionManager::instance()`). The server's single-turn lock is
+`AppState::active_turns`, an **in-process** `Arc<StdMutex<HashMap<String, ActiveTurn>>>`
+(`state.rs`) — a different process shares nothing with it. So resuming a session the
+daemon is currently running gives two uncoordinated writers to one conversation, which is
+precisely the corruption #51 and BR-33 exist to prevent. Resume is for a **finished**
+transcript. Attaching to a **running** one is a different problem and needs a different
+command.
+
+**Three measured facts this design stands on. Verified at `aad74e79`; re-verify by
+symbol.**
+
+1. **The daemon already delivers "the position".**
+   `routes/session_events.rs`'s `observe_session_events` calls
+   `session_events::subscribe(&session_id)` **before** `get_session(&session_id, true)`
+   and sends `MessageEvent::UpdateConversation { conversation, token_state }` as its
+   first frame, then live events — the comment on it says so: *"Join-mid-turn snapshot:
+   the observer starts from the full stored conversation, then applies live events."*
+   Nothing new is needed on the server for the read half. ⚠ **`conversation` is a bare
+   JSON array on the wire**: `Conversation` is `pub struct Conversation(Arc<Vec<Message>>)`
+   with a hand-written `Serialize` that forwards to the inner `Vec`
+   (`crates/biorouter/src/conversation/mod.rs`), so the frame is
+   `{"type":"UpdateConversation","conversation":[…],"token_state":{…}}` — **not**
+   `conversation.messages`. Getting this wrong is invisible until a live run.
+2. **Task 20's `watch` throws that snapshot away.** `session_watch.rs`'s `render_frame`
+   maps `"UpdateConversation"` to the single line
+   `"[snapshot] conversation resynced"`. That is correct for a *resync* mid-stream and
+   useless as a *join*: it is exactly why `biorouter session watch` does not start you
+   "at the position of the sub-agent". Attach renders it.
+3. **A `/reply` stream still owns its turn, even after Task 8.** The runner is detached
+   (`reply.rs` spawns `crate::workspace::turn::run_turn` and, separately,
+   `stream_bus_to_client`), but `stream_event` still does
+   `if tx.send(...).await.is_err() { tracing::info!("client hung up"); cancel_token.cancel(); }`
+   — and that token is the one handed to `run_turn`. **Abandoning a `/reply` response
+   cancels the turn it started.** The read stream is the opposite:
+   `observe_session_events`'s task merely `return`s when its channel closes and cancels
+   nothing. Attach's whole steering design turns on this asymmetry.
+
+**No second steering path is invented.** The two the GUI uses are `interrupt` and
+`reply`, imported from the generated client in
+`ui/desktop/src/hooks/chatStreamStore.tsx` (`await interrupt({…})`, `await reply({…})`,
+`cancelTurn({…})`), and `workspace_send_prompt mode:"steer"` reaches the same primitive
+(`agent.try_queue_soft_interrupt`) that `POST /interrupt` calls. Attach calls those two
+routes and nothing else.
+
+#### How a mid-flight turn is handled
+
+**There is only ever one writer: the turn task inside the daemon.** Attach opens no
+`Agent`, takes no lock, and appends no message itself. Every mutation it causes is a
+request the daemon adjudicates.
+
+**Acceptance is decided by the daemon, atomically, once per attempt — never by the CLI.**
+Attach must not read liveness and then branch on it; that is the two-step #69 removed.
+
+| Attempt | Route | Server-side decision | Answers |
+|---|---|---|---|
+| steer | `POST /interrupt` | `Agent::try_queue_soft_interrupt` — one critical section decides `accepting` **and** enqueues, and returns the turn the text landed in | `202 {turn_id}` / `409` |
+| new turn | `POST /reply` | `AppState::try_begin_turn_idempotent` — one critical section | `200` (SSE) / `409 {running_turn_id, duplicate}` |
+
+**The ladder is bounded at three attempts and delivers at most once.**
+`steer → (409) → new turn → (409, duplicate:false) → steer → (409) → report and stop.`
+A `202` or a `200` ends it immediately, and no branch can send the text on two routes.
+The middle rung exists because a turn can *start* between the first two attempts, and the
+third because it can *end* between the second and third; a fourth flip inside one line of
+typing is not a case worth silently absorbing, so it is reported: *"the session's turn
+state changed three times while your message was in flight; nothing was sent — press
+enter to retry."* Losing the message loudly beats delivering it twice, or into a turn the
+user did not mean.
+
+**When the ladder lands on `/reply`, attach holds that socket open until the turn's
+terminal frame and renders nothing from it** (fact 3). Rendering it would double every
+line, because the observer stream is already showing the same turn; abandoning it would
+cancel the turn attach just started. So the fallback consumes-and-discards to the
+terminal frame. That is one flag on Task 20's existing `stream_frames`, not a new client.
+
+**Detaching cannot cancel anything, and Ctrl-C cannot do it by accident.** The observer
+stream is read-only. But while a `/reply` fallback socket is open, an exit *would* cancel
+the turn — so the first Ctrl-C in that window prints what a second one will do, and only
+the second exits. Outside that window Ctrl-C detaches immediately.
+
+**Files:**
+- Modify: `crates/biorouter-cli/src/commands/session_watch.rs` — the attach loop and the
+  pure helpers; `stream_frames` gains a render flag
+- Modify: `crates/biorouter-cli/src/cli.rs` — `SessionCommand::Attach` (`SessionCommand`
+  at `:438`) and its dispatch arm (beside `Watch`/`Send`, added by Task 20 at `:1498`ff)
+- Modify: `crates/biorouter-cli/src/commands/session_grouping.rs` (Task 38b) — reuse its
+  `SessionRow` projection for the `--of <parent>` resolver
+
+**Depends on:** Task 20 (the socket client, `render_frame`, `feed`), Task 7 (the observer
+route), Task 13c / #69 (`try_queue_soft_interrupt`'s atomic acceptance — landed,
+`428e6067`), Task 33 (a subagent run registers its agent and holds the server turn
+lease; **without it `POST /interrupt` mints a different agent for the child session and
+the steer lands nowhere**, which is reconciliation #2 and the reason this task sits in
+Phase 3 rather than Phase 1), Task 34 (subagent turns publish to the bus, so there is
+anything to observe), Task 38b (discovery).
+
+- [ ] **Step 1: Write the failing tests**
+
+In `session_watch.rs`'s existing `#[cfg(test)] mod tests` (Task 20 created it):
+
+```rust
+    #[test]
+    fn the_join_snapshot_is_rendered_as_a_transcript_not_a_one_liner() {
+        // ⚠ `conversation` is a BARE ARRAY on the wire, not `{ "messages": [...] }`.
+        // `Conversation` is a newtype over `Arc<Vec<Message>>` whose `Serialize`
+        // impl is `self.0.as_ref().serialize(serializer)` (`conversation/mod.rs`),
+        // and its `ToSchema` declares an Array of `Message`. A fixture shaped
+        // `{"messages": […]}` makes this test pass against an implementation that
+        // is wrong on the real wire — which is the shape a reader assumes.
+        let frame = serde_json::json!({
+            "type": "UpdateConversation",
+            "conversation": [
+                { "role": "user", "content": [{ "type": "text", "text": "audit the migration" }],
+                  "metadata": { "userVisible": true } },
+                { "role": "assistant", "content": [{ "type": "text", "text": "found two gaps" }],
+                  "metadata": { "userVisible": true } }
+            ],
+            "token_state": { "totalTokens": 12 }
+        });
+        let lines = render_join_snapshot(&frame);
+        assert!(lines.len() >= 2, "the transcript, not a status line: {lines:?}");
+        assert!(lines.iter().any(|l| l.contains("audit the migration")));
+        assert!(lines.iter().any(|l| l.contains("found two gaps")));
+        // Ordering is the conversation's, oldest first — a reversed render puts
+        // the user at the bottom of their own history.
+        let user = lines.iter().position(|l| l.contains("audit the migration")).unwrap();
+        let assistant = lines.iter().position(|l| l.contains("found two gaps")).unwrap();
+        assert!(user < assistant);
+
+        // Task 20's watch is unchanged: a MID-STREAM resync stays one line.
+        assert_eq!(
+            render_frame(&frame).as_deref(),
+            Some("[snapshot] conversation resynced")
+        );
+    }
+
+    #[test]
+    fn the_delivery_ladder_is_bounded_and_alternates() {
+        assert_eq!(next_attempt(0), Some(Delivery::Steer));
+        assert_eq!(next_attempt(1), Some(Delivery::NewTurn));
+        assert_eq!(next_attempt(2), Some(Delivery::Steer));
+        assert_eq!(next_attempt(3), None);
+        assert_eq!(next_attempt(9), None);
+    }
+
+    /// The property the ladder exists for: exactly ONE delivering request,
+    /// whatever order the daemon refuses in. Driven through the pure planner so
+    /// no socket is needed.
+    #[test]
+    fn a_message_is_delivered_at_most_once_however_the_daemon_refuses() {
+        for accept_on in [0usize, 1, 2, 3] {
+            let mut delivered = Vec::new();
+            let mut attempts = 0u8;
+            while let Some(next) = next_attempt(attempts) {
+                if usize::from(attempts) == accept_on {
+                    delivered.push(next);
+                    break;              // 202 or 200 ends the ladder
+                }
+                attempts += 1;          // refused; try the other route
+            }
+            assert!(
+                delivered.len() <= 1,
+                "accept_on={accept_on} delivered {delivered:?}"
+            );
+            if accept_on < 3 {
+                assert_eq!(delivered.len(), 1, "accept_on={accept_on} must deliver");
+            } else {
+                assert!(delivered.is_empty(), "a fourth flip must report, not send");
+            }
+        }
+    }
+
+    #[test]
+    fn ctrl_c_never_silently_cancels_a_turn_the_attach_started() {
+        assert_eq!(ctrl_c_action(false, false), CtrlCAction::Detach);
+        assert_eq!(ctrl_c_action(false, true), CtrlCAction::Detach);
+        assert_eq!(ctrl_c_action(true, false), CtrlCAction::WarnWouldCancel);
+        assert_eq!(ctrl_c_action(true, true), CtrlCAction::ForceExit);
+    }
+```
+
+- [ ] **Step 2: Run to verify failure**
+
+```bash
+cargo test -p biorouter-cli --lib commands::session_watch
+```
+Expected: **COMPILE ERROR**, not a FAIL — `cannot find function \`render_join_snapshot\``,
+`cannot find function \`next_attempt\``, `cannot find type \`Delivery\``,
+`cannot find function \`ctrl_c_action\`` (E0425/E0433/E0412). Task 20's three tests in
+the same module do not run either, because the crate does not compile; confirm the error
+list names all four missing symbols rather than assuming.
+
+- [ ] **Step 3: Implement the pure parts**
+
+```rust
+/// Render the observer stream's FIRST frame — the join snapshot — as a
+/// transcript. `render_frame`'s one-liner is right for a mid-stream resync and
+/// wrong for a join: it is the difference between "something changed" and "here
+/// is where this conversation is."
+pub(crate) fn render_join_snapshot(frame: &serde_json::Value) -> Vec<String> {
+    // A bare array — see the fixture note above.
+    let Some(messages) = frame.get("conversation").and_then(serde_json::Value::as_array) else {
+        return Vec::new();
+    };
+    messages
+        .iter()
+        // Reuse render_frame's per-message renderer so a transcript line and a
+        // live line can never diverge in shape or in provenance labelling.
+        .filter_map(|message| {
+            render_frame(&serde_json::json!({ "type": "Message", "message": message }))
+        })
+        .collect()
+}
+
+/// Which route to try on attempt `attempts`, or `None` to stop.
+///
+/// Bounded at three deliberately: the daemon can legitimately flip between
+/// "running" and "idle" twice while one line of typing is in flight, and a
+/// fourth flip is a session under someone else's control, not a race worth
+/// absorbing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Delivery {
+    /// `POST /interrupt` — steer the turn already running.
+    Steer,
+    /// `POST /reply` — start a turn.
+    NewTurn,
+}
+
+pub(crate) fn next_attempt(attempts: u8) -> Option<Delivery> {
+    match attempts {
+        0 => Some(Delivery::Steer),
+        1 => Some(Delivery::NewTurn),
+        2 => Some(Delivery::Steer),
+        _ => None,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CtrlCAction {
+    Detach,
+    /// A `/reply` socket is open: exiting now cancels the turn (`stream_event`
+    /// trips the turn's cancellation token when the client hangs up).
+    WarnWouldCancel,
+    ForceExit,
+}
+
+pub(crate) fn ctrl_c_action(reply_socket_open: bool, already_warned: bool) -> CtrlCAction {
+    match (reply_socket_open, already_warned) {
+        (false, _) => CtrlCAction::Detach,
+        (true, false) => CtrlCAction::WarnWouldCancel,
+        (true, true) => CtrlCAction::ForceExit,
+    }
+}
+```
+
+- [ ] **Step 4: Give `stream_frames` a render flag**
+
+Task 20's `async fn stream_frames(request: String, stop_on_terminal: bool)` and
+`fn print_frames(frames: &[serde_json::Value], stop_on_terminal: bool) -> bool` gain a
+`render: bool`. The `/reply` fallback passes `render: false, stop_on_terminal: true`:
+the socket is held to the terminal frame (so the turn is not cancelled) and prints
+nothing (so the observer stream is the only renderer). Task 20's two callers pass
+`render: true` and are otherwise unchanged.
+
+⚠ **Do not "simplify" this into dropping the `/reply` future.** Dropping it closes the
+response channel, `stream_event`'s `tx.send` fails, and the turn is cancelled — the user
+sees their own steer kill the run they were watching, with no error anywhere.
+
+- [ ] **Step 5: The attach loop**
+
+```rust
+/// `biorouter session attach <id>` — render where the session is, follow it
+/// live, and steer it from stdin.
+pub async fn handle_session_attach(session_id: &str, read_only: bool) -> Result<()> {
+    let secret = secret_key()?;
+    // The observer stream, exactly as `watch --follow`, except that its first
+    // frame is rendered as a transcript.
+    // The stdin reader, the observer stream and ctrl-c are three sources in one
+    // `select!` — the same shape `handle_agent_socket` uses for Agent Drafter's
+    // `ui_ask`, and for the same reason: a blocking read on any one of them
+    // makes the other two unresponsive.
+    …
+}
+```
+
+Steering one line of input:
+
+```rust
+/// Deliver `text` to `session_id`, letting the daemon decide which route is
+/// legal at this instant. Returns what actually happened, for printing.
+async fn deliver(session_id: &str, text: &str, secret: &str) -> Result<Delivered> {
+    let mut attempts = 0u8;
+    while let Some(next) = next_attempt(attempts) {
+        match next {
+            Delivery::Steer => match post_interrupt(session_id, text, secret).await? {
+                Accepted::Steered { turn_id } => return Ok(Delivered::Steered { turn_id }),
+                Accepted::Refused => attempts += 1,
+            },
+            Delivery::NewTurn => {
+                // Holds the socket to the terminal frame and prints nothing:
+                // the observer stream renders this turn.
+                match post_reply_quiet(session_id, text, secret).await? {
+                    Accepted::Started => return Ok(Delivered::NewTurn),
+                    Accepted::Refused => attempts += 1,
+                }
+            }
+        }
+    }
+    Ok(Delivered::Nothing)
+}
+```
+
+`--read-only` disables stdin entirely, for the "monitor without touching" case; it is the
+attach equivalent of `watch` with a rendered join.
+
+Resolution: a positional `session_id`, or `--name` (which now reaches subagents, Task 38b
+Step 6b), or `--of <parent-id>` which picks that parent's running child and, when more
+than one is running, **fails with the candidate list** rather than guessing — the same
+shape `#45`'s "no write target" failure uses.
+
+- [ ] **Step 6: Wire the subcommand**
+
+In `SessionCommand`, after Task 20's `Send`:
+
+```rust
+    #[command(
+        about = "Attach to a running session: render where it is, follow it live, and steer it",
+        long_about = "Joins a session that is running RIGHT NOW. Prints the conversation \
+                      so far, then follows it live; anything you type is delivered to the \
+                      running turn (or starts one). Use `session --resume` instead for a \
+                      finished transcript — resuming a live session opens a second agent \
+                      on it and the two do not share the daemon's turn lock."
+    )]
+    Attach {
+        /// Session id to attach to.
+        session_id: Option<String>,
+        #[arg(long, value_name = "NAME", help = "Attach by session name instead of id")]
+        name: Option<String>,
+        #[arg(long = "of", value_name = "PARENT_ID",
+              help = "Attach to the running subagent of this parent session")]
+        of: Option<String>,
+        #[arg(long, help = "Observe only; do not read stdin or send anything")]
+        read_only: bool,
+    },
+    #[command(about = "Stop the turn a session is running (idempotent)")]
+    Cancel {
+        /// Session id whose running turn should be stopped.
+        session_id: String,
+    },
+```
+
+**`Cancel` is the third leg of "monitor and steer", not a separate feature.** Watching a
+subagent go wrong and being unable to stop it from the terminal is the gap the operator's
+sentence closes; `workspace_close scope:"turn"` is the agent's version of the same act,
+and `POST /agent/cancel` is the route both the GUI's Stop button and this share. It is
+~10 lines over Task 20's socket client: one POST, print `cancelled: <bool>` and the
+`turn_id` when there was one.
+
+⚠ **It must stay idempotent and must not report a no-op as an error.** `cancel_turn`'s
+own doc says so in as many words — *"cancelling a session with no turn in flight (a
+double-clicked Stop button, a cancel that raced the turn's own completion) is a 200 with
+`cancelled: false`, never an error"* — so a CLI that exits non-zero on
+`cancelled: false` re-introduces exactly the unreliability BR-62 removed. Pinned by:
+
+```rust
+    #[test]
+    fn a_cancel_that_found_nothing_to_stop_is_reported_as_success() {
+        let nothing = serde_json::json!({ "cancelled": false, "turn_id": null });
+        let stopped = serde_json::json!({ "cancelled": true, "turn_id": "t-7" });
+        assert!(render_cancel(&nothing).is_ok());
+        assert!(render_cancel(&stopped).is_ok());
+        assert_ne!(
+            render_cancel(&nothing).unwrap(),
+            render_cancel(&stopped).unwrap(),
+            "the two outcomes are both successes and must still read differently"
+        );
+        assert!(render_cancel(&stopped).unwrap().contains("t-7"));
+    }
+```
+
+- [ ] **Step 7: Gate**
+
+```bash
+cargo test -p biorouter-cli --lib commands::session_watch
+```
+Expected: `test result: ok. 8 passed` — Task 20's 3 plus this task's 5. A **3** means the
+new module compiled but its tests were not added; a **5** means Task 20's were lost.
+Re-measure Task 20's count at task start rather than trusting this line: it was 3 at
+`aad74e79`, and a "pre + N" assertion against a stale figure reads a shortfall as a pass.
+
+Live end-to-end, which is the only step that exercises the concurrency this task is
+about. Terminal A: `BIOROUTER_SERVER__SECRET_KEY=test just debug-server`. Terminal B, with
+a configured provider:
+
+```bash
+export BIOROUTER_SERVER__SECRET_KEY=test
+# 1. A parent that delegates a long-running child.
+SID=$(curl -s -X POST http://127.0.0.1:3000/agent/start -H 'X-Secret-Key: test' \
+  -H 'Content-Type: application/json' -d '{"working_dir": "/tmp"}' \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
+biorouter session send "$SID" \
+  "Use a subagent to count the .rs files under crates/ one directory at a time, \
+   reporting after each." &
+
+# 2. Find the child and attach to it MID-RUN.
+biorouter session list --subagents | grep '● live'
+biorouter session attach <child-id>
+```
+
+Expected, in order, and each is a separate claim to check:
+1. the conversation **so far** prints as a transcript, not `[snapshot] conversation
+   resynced`;
+2. live frames continue from there without a gap or a repeat of the last line;
+3. typing `stop after crates/biorouter and summarise` returns
+   `[steered turn <id>]` — a `202` naming a real turn — and the child's **next**
+   assistant message reflects it, in the **same** turn (no new user turn appears);
+4. attaching a **second** terminal to the same child shows the same frames — two
+   observers, one turn;
+5. Ctrl-C in either observer detaches and the child keeps running (check with
+   `biorouter session list --subagents`, which must still show `● live`);
+6. after the child finishes, typing into a still-open attach starts a **new** turn
+   (the `/reply` rung) and the observer renders it once, not twice.
+
+Then the refusal path, which step 3 cannot reach:
+
+```bash
+# Steer a session with no turn in flight: /interrupt 409s, /reply takes it.
+biorouter session attach "$SID"   # after its turn has ended
+```
+Expected: `[started a new turn]`, never a bare `409`, and never two copies of the answer.
+
+**This gate rejects:** an attach that re-renders the whole transcript on every
+`UpdateConversation` (the mid-stream resync case — pinned by the second half of
+`the_join_snapshot_is_rendered_as_a_transcript_not_a_one_liner`, which asserts
+`render_frame` is *unchanged* for the same payload); an attach that resolves the target
+by opening a local `Agent` (live step 5 would show the child's state diverge, and the
+`--resume` long_about names why); a "steer" that reads `is_turn_active` and then chooses
+a route locally — the two-step #69 deleted (only the ladder's `next_attempt` decides, and
+its test pins the alternation, so a local liveness branch has nowhere to live); a ladder
+that retries forever or that falls back from `/interrupt` to `/reply` **and** back
+without a bound (`next_attempt(3) == None`, and the at-most-once test sweeps every
+accept point including "never"); a ladder that sends on both routes when the first 202
+is slow (the at-most-once test asserts `delivered.len() <= 1` for every accept point); a
+`/reply` fallback that drops its socket to avoid double-rendering — which cancels the
+turn, and shows up as live step 6 printing nothing and
+`session list --subagents` flipping to `○ done` immediately; and a Ctrl-C handler that
+exits unconditionally while a `/reply` socket is open (pinned by all four rows of
+`ctrl_c_action`, none of which a constant return satisfies).
+
+**What this gate does NOT check, stated rather than hidden:** it does not prove that two
+attached terminals plus the GUI cannot interleave three steers into one turn in an order
+the user did not intend. Ordering within a turn is `Agent`'s soft-interrupt queue (FIFO,
+`drain_soft_interrupts`), and it is correct, but "three humans steering one agent" is a
+UX question this plan does not answer.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add crates/biorouter-cli/src/commands/session_watch.rs crates/biorouter-cli/src/cli.rs
+git commit -m "feat(cli): session attach joins a live session and steers it (BR-71)"
 ```
 
 ---
@@ -15698,11 +23380,22 @@ script — no elisions:
  * end-to-end WITHOUT the GUI. Two tiers:
  *
  *  BASELINE (always runs): connects a fake "window" to /ui/workspace, then
- *  exercises the observation plane on a SubAgent-typed session it creates
- *  directly. Validates: WS auth + echo, observer snapshot-then-live ordering,
- *  Lagged resync (§8.4, with a resync-cost measurement), user_direct stamping
- *  on /reply into a subagent session. It does NOT touch the spawn bridge, so
- *  it can never mask the live tier.
+ *  exercises the observation plane on an ORDINARY session it creates through
+ *  POST /agent/start. Validates: the workspace socket's auth gate in BOTH
+ *  directions (a good secret connects, a wrong one is refused — the only
+ *  end-to-end check that `check_token`'s /ui/workspace exemption did not just
+ *  disable authentication for that path); the echo round trip; observer
+ *  snapshot-then-live ordering; and the §8.4 resync-cost measurement. It does
+ *  NOT touch the spawn bridge, so it can never mask the live tier.
+ *
+ *  ⚠ The baseline canNOT cover `user_direct` stamping, and an earlier revision
+ *  of this comment claimed it did. Stamping fires only for a session whose
+ *  `session_type` is SubAgent, and there is no way to create one over HTTP —
+ *  `StartAgentRequest` (routes/agent.rs:71-81) has `working_dir`, `workflow`,
+ *  `workflow_id`, `workflow_deeplink`, `extension_overrides` and no session
+ *  type. Only a real spawn makes one, so both stamping call sites live in the
+ *  LIVE tier below. A header that lists a check the script does not perform is
+ *  worse than no header: it is the operator's evidence that the check ran.
  *
  *  LIVE (BIOROUTER_HARNESS_LIVE=1 + a configured provider): a parent chat is
  *  asked to spawn a subagent. Validates the Task 33 control-plane chain that
@@ -15710,16 +23403,23 @@ script — no elisions:
  *  streams; POST /interrupt into the RUNNING child returns 202 (the lease
  *  makes is_turn_active true AND the registered agent drains the queue — the
  *  injected text must appear in the child's observer stream with user_direct
- *  provenance); POST /agent/cancel returns cancelled:true with a turn id; the
- *  parent's final transcript reports human_intervened.
+ *  provenance); POST /agent/cancel returns cancelled:true WITH a turn id; a
+ *  /reply into the now-idle child is stamped user_direct too (Task 35's OTHER
+ *  call site — the tab composer — which nothing else in this plan exercises);
+ *  and the parent's final transcript carries "human_intervened":true.
  *
- * Exit 0 = every non-skipped assertion passed.
+ * Exit codes: 0 = every assertion that ran passed. 1 = an assertion failed.
+ *             2 = the harness crashed. 3 = the LIVE tier could not conclude
+ *             (the child finished before it could be steered or cancelled).
+ *             ⚠ 3 is NOT a pass — Task 40's gate requires 0. Re-run it; if it
+ *             recurs, lengthen the child's task rather than relaxing a check.
  */
 const BASE = process.env.BIOROUTER_HARNESS_BASE ?? 'http://127.0.0.1:3000';
 const SECRET = process.env.BIOROUTER_SERVER__SECRET_KEY ?? 'test';
 const LIVE = process.env.BIOROUTER_HARNESS_LIVE === '1';
 
 let failures = 0;
+let inconclusive = 0;
 function assert(name, condition, detail = '') {
   const mark = condition ? '✓' : '✗';
   console.log(`${mark} ${name}${condition ? '' : detail ? ` — ${detail}` : ''}`);
@@ -15727,6 +23427,16 @@ function assert(name, condition, detail = '') {
 }
 function skip(name, why) {
   console.log(`- ${name} (skipped: ${why})`);
+}
+/**
+ * A LIVE-tier check that could not run because the world moved (the child
+ * finished early). Distinct from `skip`, which is "this tier is off": an
+ * inconclusive run must not read as a pass, because these are the assertions
+ * Task 40 calls the flagship gate.
+ */
+function inconclusiveLive(name, why) {
+  console.log(`⚠ ${name} — INCONCLUSIVE: ${why}`);
+  inconclusive += 1;
 }
 
 async function api(path, options = {}) {
@@ -15800,11 +23510,38 @@ async function main() {
       }
     } catch { /* ignore */ }
   };
-  await new Promise((resolve, reject) => {
-    ws.onopen = resolve;
-    ws.onerror = () => reject(new Error('workspace WS refused'));
+  const opened = await new Promise((resolve) => {
+    ws.onopen = () => resolve(true);
+    ws.onerror = () => resolve(false);
   });
-  assert('workspace WS connects with query secret', true);
+  // ⚠ NOT `assert(name, true)`. That was the previous form: a literal that could
+  // not fail, whose only real failure mode was the harness crashing on the
+  // rejected promise above — which prints a stack trace and exit 2, not a `✗`.
+  assert('workspace WS connects with query secret', opened && ws.readyState === WebSocket.OPEN);
+  if (!opened) {
+    console.error('cannot continue without the workspace socket');
+    process.exit(1);
+  }
+
+  // The negative control, and the ONLY end-to-end check that adding
+  // `/ui/workspace` to `check_token`'s exemption list did not simply make the
+  // path unauthenticated. `check_workspace_ws_auth`'s unit tests assert the
+  // predicate; this asserts the predicate is what the server actually runs.
+  const refused = await new Promise((resolve) => {
+    const bad = new WebSocket(
+      `${BASE.replace(/^http/, 'ws')}/ui/workspace?secret=definitely-not-the-secret&window_id=harness-bad`
+    );
+    const done = (value) => {
+      try { bad.close(); } catch { /* already closed */ }
+      resolve(value);
+    };
+    bad.onopen = () => done(false);   // opened with a wrong secret == the gate is gone
+    bad.onerror = () => done(true);
+    bad.onclose = () => done(true);
+    setTimeout(() => done(false), 5000);
+  });
+  assert('workspace WS REFUSES a wrong secret', refused);
+
   ws.send(JSON.stringify({
     type: 'workspace_echo', window_id: 'harness', focused_session: null, layout: [],
   }));
@@ -15854,8 +23591,9 @@ async function main() {
   if (!LIVE) {
     skip('spawn announces open_tab + annotate_tab frames', 'set BIOROUTER_HARNESS_LIVE=1');
     skip('interrupt into the RUNNING child returns 202 and appears user_direct', 'live only');
-    skip('cancel of the child returns cancelled:true (turn lease held)', 'live only');
-    skip('parent transcript reports human_intervened', 'live only');
+    skip('cancel of the child returns cancelled:true with a turn id', 'live only');
+    skip('/reply into a subagent session is stamped user_direct', 'live only');
+    skip('parent transcript reports "human_intervened":true', 'live only');
   } else {
     const parent = await json('/agent/start', {
       method: 'POST', body: JSON.stringify({ working_dir: '/tmp' }),
@@ -15942,30 +23680,114 @@ async function main() {
       );
 
       // Stop: addressable cancel must find the child's ActiveTurn.
-      const cancel = await json('/agent/cancel', {
-        method: 'POST', body: JSON.stringify({ session_id: childId }),
+      //
+      // ⚠ This assertion used to read
+      //   `cancel.body?.cancelled === true || cancel.body?.cancelled === false`
+      // — true for EVERY boolean, and therefore for a run in which `begin_turn`
+      // was never called and nothing was ever registered. It was also the ONLY
+      // automated check that Task 33's turn lease is held, and Task 40 calls it
+      // a gate that blocks the phase. It could not block anything.
+      //
+      // The comment that justified it worried about a real race: the child may
+      // have finished on its own. The fix is to MEASURE that condition rather
+      // than absorb it into the assertion. `/interrupt` returns 202 only while
+      // `is_turn_active(child)` is true — which is precisely the lease — so it
+      // doubles as the liveness probe. A finished child yields exit 3
+      // (inconclusive), never a green tick.
+      //
+      // Verified against the real handler at `03ad602c` (`pub async fn
+      // interrupt(`, routes/reply.rs:1042-1055; the `:1004-1017` this comment
+      // used to give was measured at `ea15a4de`, which is no longer on this
+      // branch): empty text → 400,
+      // `!state.is_turn_active(&req.session_id)` → 409, otherwise 202. There is
+      // no third outcome, so "202" and "the lease is held" are the same fact.
+      const stillRunning = await api('/interrupt', {
+        method: 'POST',
+        body: JSON.stringify({ session_id: childId, text: 'keep going.' }),
       });
+      if (stillRunning.status !== 202) {
+        inconclusiveLive(
+          'cancel of the child returns cancelled:true with a turn id (Task 33 lease held)',
+          `the child was no longer running when the cancel was due (/interrupt → ${stillRunning.status}); ` +
+            'lengthen the delegated task and re-run'
+        );
+      } else {
+        const cancel = await json('/agent/cancel', {
+          method: 'POST', body: JSON.stringify({ session_id: childId }),
+        });
+        // `CancelTurnResponse { cancelled: bool, turn_id: Option<String> }`
+        // (`pub struct CancelTurnResponse`, routes/reply.rs:1065-1071 at
+        // `03ad602c`; the `:1027-1033` here was measured at `ea15a4de`).
+        // `cancelled: true` WITH a turn id is the
+        // lease's observable effect: `state.cancel_turn` found an `ActiveTurn`
+        // registered under the CHILD's session id, which only Task 33 puts there.
+        assert(
+          'cancel of the child returns cancelled:true with a turn id (Task 33 lease held)',
+          cancel.body?.cancelled === true &&
+            typeof cancel.body?.turn_id === 'string' &&
+            cancel.body.turn_id.length > 0,
+          JSON.stringify(cancel.body)
+        );
+      }
+
+      // Task 35's OTHER call site: the tab composer. A human typing into the
+      // child's tab posts /reply, and `run_turn` must stamp it user_direct. The
+      // steer above went through /interrupt, which is a different code path in a
+      // different file; nothing else in this plan drives this one end to end.
+      // The child is idle now (cancelled or finished), so /reply is accepted.
+      await api('/reply', {
+        method: 'POST',
+        body: JSON.stringify({
+          session_id: childId,
+          user_message: {
+            role: 'user', created: 0,
+            content: [{ type: 'text', text: 'typed straight into the subagent tab' }],
+          },
+        }),
+      }).then((r) => r.text());
+      const composed = await json(`/sessions/${childId}`);
+      const rows = composed.body?.conversation?.messages ?? composed.body?.conversation ?? [];
       assert(
-        'cancel of the child returns cancelled:true (turn lease held)',
-        cancel.body?.cancelled === true || cancel.body?.cancelled === false,
-        JSON.stringify(cancel.body)
+        '/reply into a subagent session is stamped user_direct (the tab composer path)',
+        Array.isArray(rows) &&
+          rows.some(
+            (m) =>
+              m?.metadata?.provenance?.kind === 'user_direct' &&
+              JSON.stringify(m?.content ?? '').includes('typed straight into the subagent tab')
+          ),
+        `no user_direct row for the composed message among ${Array.isArray(rows) ? rows.length : '?'} rows`
       );
-      // cancelled:false is legal if the child already finished — but the steer
-      // above ran mid-turn, so expect true unless the run raced to completion.
 
       // Parent resolution: the tool result must carry human_intervened.
+      // Assert the STRUCTURED field, not the substring "intervened": the
+      // parent's /reply stream also carries the model's own prose, which can
+      // contain that word for reasons having nothing to do with the flag.
+      // `human_intervened` is `skip_serializing_if = "std::ops::Not::not"`, so
+      // the key appears only when it is true.
       const parentText = await replyDone;
       assert(
-        'parent transcript reports human_intervened',
-        parentText.includes('human_intervened') || parentText.includes('intervened'),
-        'not found in the parent /reply stream'
+        'parent transcript reports "human_intervened":true',
+        parentText.includes('"human_intervened":true'),
+        'not found in the parent /reply stream — the child ran, was steered, and the ' +
+          'parent was never told'
       );
     }
   }
 
   ws.close();
-  console.log(failures === 0 ? '\nAll assertions passed.' : `\n${failures} FAILED`);
-  process.exit(failures === 0 ? 0 : 1);
+  if (failures > 0) {
+    console.log(`\n${failures} FAILED`);
+    process.exit(1);
+  }
+  if (inconclusive > 0) {
+    console.log(
+      `\n${inconclusive} LIVE assertion(s) INCONCLUSIVE — not a pass. ` +
+        'Re-run; if it recurs, make the delegated task longer.'
+    );
+    process.exit(3);
+  }
+  console.log('\nAll assertions passed.');
+  process.exit(0);
 }
 
 main().catch((error) => {
@@ -15983,14 +23805,21 @@ session, which the harness cannot switch non-interactively.)
 - [ ] **Step 2: Run against a dev daemon**
 
 Terminal A: `just debug-server`
+
 Terminal B (baseline): `node scripts/workspace/glassbox-harness.mjs`
-Expected: the baseline assertions all print `✓`, the live-tier lines print
-`- … (skipped: set BIOROUTER_HARNESS_LIVE=1)`, exit 0.
+Expected: **6** `✓` lines — WS connects, WS refuses a wrong secret, `/agent/start`,
+snapshot-first, turn closure, fresh-observer resync — the five live-tier lines printed as
+`- … (skipped: …)`, and **exit 0** (`echo $?`).
+
 Terminal B (live, provider configured):
 `BIOROUTER_HARNESS_LIVE=1 node scripts/workspace/glassbox-harness.mjs`
-Expected: every line `✓` incl. the interrupt-202, user_direct-stream,
-cancel, and human_intervened assertions; exit 0. Record the printed resync
-latency in the PR (design §8.4 measurement).
+Expected: every line `✓`, **no `⚠ … INCONCLUSIVE` line**, and **exit 0**. Check the exit
+code explicitly — `exit 3` prints `⚠` marks that scan as warnings and is *not* a pass; it
+means the child finished before the flagship chain could be exercised, so the interrupt /
+cancel / `human_intervened` assertions did not run. Re-run; if it keeps happening, make
+the delegated task longer rather than weakening a check.
+
+Record the printed resync latency in the PR (design §8.4 measurement).
 
 - [ ] **Step 3: Commit**
 
@@ -16003,13 +23832,65 @@ git commit -m "test(workspace): glass-box subagent harness against a live daemon
 
 ### Task 40: Phase 3 gate
 
+⚠ **Two measured facts before you read a red as a regression** (added 2026-07-28 by the
+drift amendment; both taken on this worktree at `ea15a4de`, before Phase 2 started).
+⚠ **Amended 2026-07-31 by the Task 40 fixup pass, which re-measured both. The first was
+wrong, and it was wrong in the direction that manufactures a false regression.**
+
+- **The frontend half of this gate is GREEN at HEAD, and the `ea15a4de` baseline was
+  never green.** This bullet used to read "`npm run test:run` is GREEN today:
+  `186 files / 1726 tests` … there is no pre-existing frontend failure to talk past",
+  and a later engineer duly read a red as a Phase 3 regression. Measured on 2026-07-31:
+  - a **clean** `git worktree add --detach … ea15a4de` (not a mixed tree — every file at
+    the baseline commit, `node_modules` symlinked in) runs `186 files / 1726 tests` with
+    **1 failed**, 2 runs out of 2. The failure is
+    `uses the shared notification surface after deleting a session` — the very case the
+    next bullet calls pre-existing. The file and test counts match the 2026-07-28
+    measurement exactly, so it is the same tree and the same suite; only the verdict was
+    recorded wrong.
+  - HEAD (`758162d2`) runs **`202 files / 1837 tests`, 0 failed**, 2 runs out of 2, exit 0.
+    A `--reporter=verbose` run shows that same case passing in **66 ms**, and its sibling
+    `…after editing a session` in 82 ms.
+
+  So the direction of change across Phase 3 is baseline-red → HEAD-green, and there is no
+  frontend regression to attribute. A full-suite red would still be a real signal; there
+  is simply not one. **Do not re-run the confounded version of this experiment** — a
+  control that restores only `SessionListView.tsx`/`.test.tsx` while
+  `utils/sessionListCache.ts`, `toasts.tsx`, `sessionGrouping.ts` and
+  `chatStreamStore.tsx` stay at HEAD cannot distinguish the two hypotheses, because the
+  delete path under test runs through all of them. Use a clean worktree.
+- **…but narrow vitest filters are not equally trustworthy.** Confirmed, and it has
+  widened. At `ea15a4de`, `npx vitest run …/SessionListView.test.tsx` fails
+  `…after deleting a session` (1 failed / 7). At HEAD the same narrow run fails **two**
+  cases (2 failed / 12, 2 runs out of 2) — the deleting one and
+  `…after editing a session` — and so does `npx vitest run src/components/sessions/`
+  (2 failed / 38). Both are `findBy` timeouts at the 5 s test timeout, against elements
+  that resolve in tens of milliseconds inside the full suite. See the ⚠ in Task 38 Step 5.
+  **If a per-task gate is red and the full suite is green, that is this, not a
+  regression** — and the full suite is the only run whose verdict this gate accepts.
+- **`cargo test --workspace --no-fail-fast` has no measured baseline in this document.**
+  Record the number you get here and carry it into Task 44, which runs the same command
+  for the same reason. "All green" cannot distinguish a passing workspace from one whose
+  target dir failed to build a crate.
+
 - [ ] Run the full suites (`cargo test --workspace --no-fail-fast`,
   `cd ui/desktop && npm run test:run && npm run lint:check`) and the harness — BOTH
   tiers: `node scripts/workspace/glassbox-harness.mjs` and
   `BIOROUTER_HARNESS_LIVE=1 node scripts/workspace/glassbox-harness.mjs` (Task 39).
-  **The live tier is the flagship gate — the interrupt-202 / user_direct /
-  cancel-true assertions must pass; a 409 on the child interrupt means the Task 33
+  **The live tier is the flagship gate — the interrupt-202, the user_direct steer, the
+  `/reply` tab-composer stamp, `cancelled:true` with a turn id, and
+  `"human_intervened":true` must all pass; a 409 on the child interrupt means the Task 33
   control-plane bridge regressed and blocks the phase.**
+
+  **Check `echo $?` on both runs; the gate is exit 0.** ⚠ Amended 2026-07-28: this
+  bullet used to name a "cancel-true assertion" that did not exist. The harness asserted
+  `cancelled === true || cancelled === false` — true for every boolean, and the *only*
+  automated check anywhere that Task 33's turn lease is held. A run in which `begin_turn`
+  was never called printed `✓` and this gate declared the phase clear. It now asserts
+  `cancelled === true` **with a non-empty `turn_id`**, and when the child finishes before
+  the chain can run the harness exits **3** and prints `⚠ … INCONCLUSIVE`. Exit 3 does
+  **not** satisfy this gate: those assertions did not run, so nothing was verified. Re-run
+  it; if it recurs, lengthen the delegated task in the harness rather than accepting the 3.
 - [ ] Live GUI pass per the Task 31 rules, with a real provider: spawn a subagent
   from chat, watch the tab open with badge + header **without being asked for
   `visible: true`** (decision 24), type a steer into the child mid-run through the
@@ -16025,10 +23906,60 @@ git commit -m "test(workspace): glass-box subagent harness against a live daemon
 - [ ] **Decision 21 (auto-enable):** in a session where the user has NEVER enabled
   Workspace Control, verify delegation still works and that `workspace_list` is not
   offered — the two-tier surface holding in the real app.
+
+  ⚠ **Amended 2026-07-31: this is now automated and no longer needs the GUI.** It was
+  written as a GUI step, was the one gate bullet a Phase 3 pass silently skipped, and
+  neither half actually needs a browser. The harness's LIVE tier settles both on its
+  parent session, which *is* the bullet's subject — a bare `POST /agent/start` chat that
+  nothing enabled the extension for. The first half is proved by execution (that session
+  has already spawned a real child by then); the second is one `GET /agent/tools`, a thin
+  wrapper over `Agent::list_tools`, which is the function decision 21 lives in. Two
+  assertions: `workspace__subagent` present, `workspace__workspace_list` absent —
+  asserted as a **pair**, because `workspace_list` is absent from an empty list too.
+  Skipped with its reason on a daemon that enables Workspace Control in config.
+
+  ⚠ It does **not** work in the baseline tier, and the first attempt put it there. A bare
+  `/agent/start` session has no non-injected extension loaded — measured, its entire tool
+  list is `["platform__ingest_conversation", "platform__manage_schedule"]` — and
+  `subagents_enabled` ends on `has_non_injected_extensions()`, so the gate correctly
+  answers "no delegation here" and the missing spawn tool says nothing about decision 21.
+
+  A GUI pass is still worth doing for the *rendering* of the two-tier surface, but the
+  behaviour this bullet asserts is now covered by an automated gate that runs every time.
 - [ ] Elicitation check (reconciliation #8): in a manual-approval-mode session,
   spawn a subagent whose task needs a gated tool; verify the
   `ToolConfirmationRequest` renders in the child's tab and answering it resumes the
   child.
+- [ ] ⚠ **The CLI half of the same flagship, with the GUI CLOSED** (Tasks 38b/38c —
+  the operator's 2026-07-30 requirement). Every step above is a *GUI* verification, so
+  none of them can see a terminal-side regression, and "the CLI inherits it" is precisely
+  the claim that rots silently. In a terminal against `just debug-server`:
+
+  ```bash
+  cargo test -p biorouter-cli --lib -- commands::session_grouping commands::session_watch
+  ```
+  Expected: green, with a **non-zero** count on both filters — Task 38b's 3 plus Task
+  38c's 5 alongside Task 20's 3. ⚠ Note the `--`: `cargo test --lib a b` is
+  `error: unexpected argument`, exit 1, and the obvious repair silently turns a
+  two-module sweep into a one-module one (Ground rules, "Gate mechanics").
+
+  Then, by hand, delegating a long-running fan-out from a `biorouter session` and with no
+  desktop app running:
+  1. `biorouter session list --subagents` shows the children nested under their parent,
+     with **different labels** and a `● live` marker. Two identical `Subagent: …` labels
+     mean Task 38b Step 4 did not land;
+  2. `biorouter session attach <child-id>` prints the child's conversation **so far** as
+     a transcript and then follows it — one line reading
+     `[snapshot] conversation resynced` means Task 38c Step 3 did not land;
+  3. a line typed into that attach returns `[steered turn <id>]` and lands in the same
+     turn. **A `409` here is the same Task 33 control-plane regression the harness's live
+     tier hunts, arriving on the other surface** — the child agent is not registered, so
+     `/interrupt` resolves a different one;
+  4. `biorouter session cancel <child-id>` stops it and reports the turn id; a second
+     call reports `cancelled: false` and still exits 0;
+  5. Ctrl-C out of the attach and confirm with `biorouter session list --subagents` that
+     the sibling children are **still running** — detaching an observer must not cancel
+     anything.
 - [ ] Update the design-doc status header (Slice 3 shipped); commit:
 
 ```bash
@@ -16036,9 +23967,77 @@ git add docs/agent-loop/designs/agent-workspace-control.md
 git commit -m "docs(br71): mark slice 3 implemented in the design status header"
 ```
 
+**What this gate actually measured, 2026-07-31** (recorded here rather than in a report,
+because Task 44 runs three of the same commands and needs the numbers to compare against;
+a "pre + N" assertion against a figure nobody wrote down reads a shortfall as a pass):
+
+| Command | Result |
+|---|---|
+| `node scripts/workspace/glassbox-harness.mjs` | **10 assertions, 0 failed, exit 0** (13 live-tier checks listed as skipped) |
+| `BIOROUTER_HARNESS_LIVE=1 node …` | **25 assertions, 0 failed, exit 0** — the whole flagship chain, incl. `/interrupt` → 202, the `user_direct` steer, `cancelled:true` with a turn id, the tab-composer stamp, `"human_intervened":true`, and both new decision-21 checks |
+| `cd ui/desktop && npm run test:run` | **202 files / 1837 tests, 0 failed, exit 0** (2 runs of 2) |
+| `cargo test -p biorouter-cli --lib -- commands::session_grouping commands::session_watch` | **25 passed, 0 failed** (4 grouping + 21 watch; non-zero on both filters, as required) |
+| `cargo test --workspace --no-fail-fast` | **3964 passed / 5 failed / 25 ignored, 82 binaries** — all five environmental; the breakdown and what Task 44 should expect are tabulated under Task 44 |
+
+⚠ **Run the daemon exactly as `just debug-server` does, `BIOROUTER_DISABLE_KEYRING=true`
+included.** Launching `biorouterd agent` without it wedges the daemon **permanently** on
+this machine: the dev binary is ad-hoc signed, so the first secret read raises a macOS
+Keychain authorization prompt that no one can answer from a headless shell, and the call
+never returns. Every subsequent request — `/config/read`, even the `/ui/workspace`
+upgrade — then hangs, which reads exactly like a daemon defect and cost this pass two
+false diagnoses (a hung `POST /agent/update_provider` first blamed on the `medcp` stdio
+extension). With the flag set, the same `update_provider` against the same unmodified
+config answers in **390 ms**. This is the `dev-cli-rebuild-keychain` gotcha wearing a
+server costume.
+
 ---
 
 # Phase 4 — Instructions, docs, release gates (design Slice 4)
+
+Also the home of **Task 42b**, the standing CLI-parity gate: the operator's 2026-07-30
+requirement is a *property* ("whatever changes we applied to the GUI and the server side
+will be inherited in the CLI"), and a property needs a mechanism, not a promise. It lands
+here because the capability table cannot be complete until Phase 3 is, and because a gate
+that lands red blocks the phase that introduced it.
+
+### Task 40b: Diagnose the subagent Auto Visualiser daemon abort
+
+**Carried over from the Phase 3 gate (2026-07-31).** The gate turned up a reproducible
+crash and Task 40 could only write it into a status header. A defect that kills
+`biorouterd`, reachable from the slice that gate just marked implemented, needs a work
+item — a paragraph in a header is not one, and Phase 4 rewrites that header.
+
+**The observation.** A subagent that calls an Auto Visualiser tool aborts the daemon with
+`fatal runtime error: stack overflow` in a `tokio-runtime-worker`. Reproduced **3/3** on
+fresh daemons, with and without `BIOROUTER_AUTOVIS_CDN=1`. **Not** reproducible for the
+same tool in an ordinary (non-subagent) session, and **not** the cancel path — it
+reproduces with no cancel involved.
+
+**The standing hypothesis, and why it is not yet an answer.** The blocking delegation
+awaits the child's whole agent loop inside the parent's `dispatch_tool_call`, so the
+child's frames sit on the parent's stack. That nesting predates this campaign. No custom
+worker stack size is set anywhere in `biorouter-server` or `biorouter` — the only
+`stack_size` in the tree is in `code_execution_extension.rs`, a different sandbox — so
+the workers run tokio's default ~2 MiB. Whether Slice 3 merely pushed an already-marginal
+stack over the edge is **unresolved**, and the difference matters: "pre-existing,
+exposed" and "introduced here" have different owners and different fixes.
+
+- [ ] Reproduce on a **build** of `ea15a4de` (the pre-Phase-2 baseline). That single
+  measurement decides the ownership question and nothing cheaper does. ⚠ A baseline
+  *checkout* is not enough — the crash is in the running daemon, so the binary has to be
+  the baseline one.
+- [ ] Capture the overflowing frames: `RUST_BACKTRACE=full` on the abort, or the daemon
+  under a debugger. The repeating frame group is the answer.
+- [ ] If it is the nesting, the fix is to stop awaiting the child's loop on the parent's
+  stack (spawn the child's turn, await a channel) — **not** to raise the worker stack
+  size, which only moves the depth at which it aborts and hides the next regression.
+  Raising it is acceptable solely as an explicitly-labelled stopgap with this task open.
+- [ ] Regression test covering a subagent whose tool call nests deeply, so the depth is
+  asserted rather than remembered.
+
+⚠ **This blocks the release gate, not Phase 4's docs.** `autovisualiser` is enabled in a
+normal config and delegation is auto-enabled by decision 21, so the two meet without the
+user opting into anything. Task 44 must not sign off with this open.
 
 ### Task 41: Unify Agent Drafter `consult` onto the workspace spine
 
@@ -16063,15 +24062,78 @@ bus. Three things follow for free, and they are the point:
 | Steering | None — the worker agent is not in `AgentManager`, so `/interrupt` mints a different one | The worker holds a turn lease and is registered (Task 33's machinery, reused verbatim) |
 | Cancellation | The consult timeout cancels its own token | Plus `workspace_close scope:"turn"` and `/agent/cancel`, converging on the same token |
 
+⚠ **Anchors re-verified at `ea15a4de` (2026-07-28, drift amendment), and the task's two
+headline citations were both pointing at the wrong function.** `apps.rs` is untouched by
+this branch, so these are pure pre-existing plan errors, not drift. `state.rs` **is**
++45 on this branch and all four of its anchors moved. **Re-anchor by symbol at task
+start.**
+
+| Plan cited | Now at | Symbol |
+|---|---|---|
+| `apps.rs:1651-1690` "(`run_bounded_turn`)" | **`:1688`** | `async fn run_bounded_turn` — `:1632-1686` is **`build_worker`**, a different function |
+| `apps.rs:1638-1647` "the worker-builder struct" | struct **`:1320`**, its literal **`:1674-1683`** | `struct WorkerHandle` is declared 300 lines earlier; `:1674` is `Some(WorkerHandle {` inside `build_worker` |
+| `state.rs:131` | **`:151`** | `try_begin_turn_idempotent(&self, session_id: &str, cancel: CancellationToken, idempotency_key: Option<String>) -> Result<TurnGuard, TurnConflict>` — exactly the signature Step 3 uses |
+| `state.rs:194` | **`:214`** | `is_turn_active` |
+| `state.rs:283` | **`:303`** | `get_agent` |
+| `state.rs:290` | **`:310`** | `get_agent_for_route` |
+| `agent.rs:5655` | **`:5723`** | `pub async fn update_provider` |
+| `reply_parts.rs:512-543` | **`crates/biorouter/src/agents/reply_parts.rs`**, struct `:514`, `impl Provider` `:519` | a **different crate** — and it lives inside that file's `#[cfg(test)] mod tests`, so it cannot be imported. Step 1's `AnsweringProvider` is a deliberate copy, and the four methods it implements (`metadata`, `get_name`, `get_model_config`, `complete_with_model`) are exactly the trait's required set (`providers/base.rs:496-560`) |
+
+Exact and re-confirmed: `apps.rs:1663` (`let agent = state.get_agent(session_id.clone()).await.ok()?;`
+— the load-bearing citation for the refcount argument), `apps.rs:4624`
+(`#[cfg(test)] mod tests`, so the filter `routes::apps::tests::a_consulted_worker_turn`
+resolves), `control.rs:4022-4030` (`#[tool(name = "consult", description = …)]`),
+`ModelConfig::new(model_name: &str) -> Result<Self, ConfigError>` (`model.rs:400`, so the
+`.unwrap()` in Step 1 is right).
+
+**The two unstated dependencies the survey flagged are now SATISFIED, not pending.**
+
+- `turn_guard.turn_id()` — Task 6 has landed. `impl TurnGuard` is `state.rs:65-83` with
+  `pub fn turn_id(&self) -> &str` at **`:68`** and `pub fn session_id(&self)` at
+  **`:80`**; `Drop` at `:85-98` removes the slot only if the stored `turn_id` is still
+  this guard's (`05b2097c`). The 2026-07-28 survey said `state.rs` "still has **no**
+  `impl TurnGuard`, so Task 6's accessor remains a hard prerequisite" — that was true
+  when it was written and is false now.
+- `session_events::{subscribe, publish, SessionBusEvent}` — Task 5 has landed.
+  `crates/biorouter/src/session_events.rs`: `pub enum SessionBusEvent` **`:74-117`** with
+  exactly the four variants Step 1 and Step 3 use (`TurnStarted { turn_id }`,
+  `Agent(AgentEvent)`, `TurnError { message, code, scope, retryable, provider_kind }`,
+  `TurnFinished { reason, token_state: Option<TokenState> }`), `subscribe` **`:158`**,
+  `publish` **`:257`**, and `Subscription::try_recv` **`:213`** — so Step 1's
+  `while let Ok(event) = rx.try_recv()` compiles.
+
+⚠ **This task adds a THIRD publication site, and it inherits reconciliation #23's
+ordering rule.** `run_bounded_turn`'s loop publishes `SessionBusEvent::Agent(event)`
+once per event, in stream order, for **every** variant — including
+`AgentEvent::MessagesPersisted`. That is what keeps the producer-side invariant
+(*"no `MessagesPersisted` may precede a `Message` frame carrying one of the ids it
+publishes"*, `agent.rs:263-287`, stated at `:280-282`) true through this relay, and it is
+free only because the publish sits **after** the text accumulation and **outside** the
+`if let AgentEvent::Message(...)` arm. Do not restructure it into a match that publishes
+per-variant, and do not skip `MessagesPersisted` "because consult ignores it" — a
+consulted worker is exactly the session a `workspace_open` observer tab watches, and the
+observer needs the frame.
+
 **Files:**
-- Modify: `crates/biorouter-server/src/routes/apps.rs` (`run_bounded_turn` at :1651-1690,
-  and its caller — the consult service function immediately below it)
+- Modify: `crates/biorouter-server/src/routes/apps.rs` (`run_bounded_turn` at **:1688**,
+  and its caller — the consult service function below it; `build_worker` is `:1632-1686`
+  and `struct WorkerHandle` is `:1320`)
 - Modify: `crates/biorouter-mcp/src/agent_drafter/control.rs` (docs only: the `consult`
   tool description gains one sentence)
 - Modify: `docs/agent-drafter/apps-platform-design.md` (record the unification)
 
-- [ ] **Step 1: Write the failing test** (in `apps.rs`'s test module — `cargo test -p
-biorouter-server --lib routes::apps` is the ~54-test suite that must stay green)
+- [ ] **Step 1: Write the failing test** (in `apps.rs`'s test module, `#[cfg(test)] mod
+tests` at **`:4624`** — `cargo test -p biorouter-server --lib routes::apps` is the suite
+that must stay green; **take its size from Task 33 Step 5's measured number, not from
+CLAUDE.md's "~54"**, which is an approximation for a different build. Step 4 says the
+same thing and means it.)
+
+⚠ **Both new tests call `AppState::new()`, which opens the developer's REAL session
+database** (`~/.config/biorouter/sessions/`) — the same caveat Phase 1 raised for Tasks
+6-10. They create sessions named `"worker"` and `"worker-text"`. Keep the names unique,
+never assert on row counts, and prefer running this filter under
+`BIOROUTER_PATH_ROOT=$(mktemp -d)` as the Phase-1 tasks now do. The rows are otherwise
+harmless but they are permanent.
 
 ```rust
     /// BR-71 decision 13: a consulted worker's turn is observable like any
@@ -16139,7 +24201,12 @@ biorouter-server --lib routes::apps` is the ~54-test suite that must stay green)
         use rmcp::model::Tool;
 
         /// The smallest provider that answers: one assistant message, no tools.
-        /// Modelled on `reply_parts.rs:512-543`'s `MockProvider`.
+        /// Modelled on the `MockProvider` in
+        /// `crates/biorouter/src/agents/reply_parts.rs` (struct :514, `impl
+        /// Provider` :519) — a DIFFERENT crate, and inside that file's
+        /// `#[cfg(test)] mod tests`, so it cannot be imported. This is a copy on
+        /// purpose. The four methods below are the trait's full required set
+        /// (`providers/base.rs:496-560`).
         #[derive(Clone)]
         struct AnsweringProvider;
 
@@ -16356,7 +24423,7 @@ async fn run_bounded_turn(
 /// **Consult is the case that forced `register_agent` to be refcounted.** A
 /// glass-box subagent's agent is built by the run and belongs to it; a consulted
 /// worker's agent is an ordinary `AgentManager` cache entry obtained through
-/// `state.get_agent` (`apps.rs:1628`) and, for a durable worker, is the SAME
+/// `state.get_agent` (`routes/apps.rs:1663`, inside `build_worker`) and, for a durable worker, is the SAME
 /// `Arc` across consults. Two things follow, and Task 33's API handles both:
 ///
 /// - `deregister_agent_if_same` must not pop the LRU entry, because this run did
@@ -16385,8 +24452,10 @@ impl Drop for ConsultRegistration {
 ```
 
 Update the call site (the consult service function directly below) to pass `state` and an
-`Arc<Agent>`. The worker builder above it already produces an `Arc<Agent>` in the struct
-at :1638-1647 — pass the `Arc`, not a `&Agent`, so the registration can hold it.
+`Arc<Agent>`. `build_worker` (**`:1632-1686`**) already produces an `Arc<Agent>` inside
+the `Some(WorkerHandle { … })` literal at **`:1674-1683`** (the struct itself is declared
+at **`:1320`**) — pass the `Arc`, not a `&Agent`, so the registration can hold it. The
+plan's `:1638-1647` pointed at neither.
 
 `AppState` is reachable at the call site: the consult handler runs inside the app socket
 loop, which already holds `State(state): State<Arc<AppState>>` (grep `handle_agent_socket`
@@ -16404,14 +24473,21 @@ visible to the user while it runs, and they may intervene in it.
 - [ ] **Step 4: Run the apps suites — this is a cross-subsystem change**
 
 ```bash
-cargo test -p biorouter-server --lib routes::apps        # ~54 tests, the gate
+cargo test -p biorouter-server --lib routes::apps        # the gate — see the count note
 cargo test -p biorouter-mcp --lib agent_drafter::
 cargo test -p biorouter-mcp --test ui_example_apps
 node scripts/agent-drafter/ui-control-harness.mjs        # real sdk.ts vs a mock daemon
 ```
 
-Expected: all green. A failure in `routes::apps` consult tests means the collected-text
-contract moved — fix the refactor, do not adjust the assertion.
+Expected: all green, and `routes::apps` reporting **its Task 33 baseline + 2** (this
+task's two new cases). CLAUDE.md's "~54 tests" is an approximation from a different
+build — do not use it as the expectation. Take the real number from **Task 33 Step 5**,
+which runs the same filter for the same reason, and compare. A `cargo test` filter that
+matches nothing prints `0 passed` and exits 0, so "all green" on its own cannot tell a
+passing suite from an absent one.
+
+A failure in the `routes::apps` consult tests means the collected-text contract moved —
+fix the refactor, do not adjust the assertion.
 
 - [ ] **Step 5: Record it in the apps-platform design doc**
 
@@ -16455,13 +24531,13 @@ which tool the model picks:
    that the model does not ask for a `workspace_spawn_subagent` that no longer
    exists).
 4. "Remember that I prefer uv over pip" → Memory, never workspace.
-6. "Tell me as soon as one of those three background jobs is done" →
+5. "Tell me as soon as one of those three background jobs is done" →
    `workspace_watch`, not a `workspace_read_conversation` poll loop. A poll loop
    here is the clearest sign the `subagent_status` migration did not land in the
    instructions.
-7. "Give that other conversation the single-cell skill" → `workspace_set_tools`
+6. "Give that other conversation the single-cell skill" → `workspace_set_tools`
    with `add_skills`, NOT a suggestion that the user change Settings.
-5. A misroute in any probe → adjust the routing sentences in `INSTRUCTIONS` (keep
+7. A misroute in any probe → adjust the routing sentences in `INSTRUCTIONS` (keep
    ≤2.5k chars — the existing unit test enforces it) and re-probe.
 
 - [ ] **Step 2: Add the routing row** to `docs/agent-loop/tool-routing.md` (the file's
@@ -16471,6 +24547,34 @@ waiting on background work → `workspace_watch`; durable facts → Memory; fold
 `platform__ingest_conversation`; blobs → `platform__read_session_blob`. Task 19b already
 removed the `subagent_status` mention at :33; this step is the positive half.
 
+- [ ] **Step 2b: Run the gate this task needs and did not have**
+
+⚠ Added 2026-07-28 by the gate sweep: **Task 42 had no verification step at all.** It
+edits `INSTRUCTIONS` in `workspace_extension.rs` — free prose inside a Rust string — and
+went straight from a manual probe loop to a commit. Two existing assertions in that
+module are exactly the ones an instruction edit breaks, and neither was being run:
+
+```bash
+BIOROUTER_PATH_ROOT=$(mktemp -d) cargo test -p biorouter --lib agents::workspace_extension
+cargo fmt --check
+```
+
+Expected: green. The two that matter here are (a) the ≤2,500-character injection budget
+(§6) and (b) the loop in that same test asserting that **every tool named in a `- tool:`
+line of `INSTRUCTIONS` is registered by `get_tools()`**.
+
+⚠ Corrected 2026-07-31 by the Task 42 fixup: this step used to claim (b) meant "a routing
+sentence that mentions `workspace_spawn_subagent` or the deleted `subagent_status` fails
+the build". It did not, and reviewers of the Task 42 commit caught it. The `- tool:` loop
+reads bullet **heads** only, so it never sees prose; the neighbouring token scan filters on
+the `workspace_` prefix, so it catches `workspace_spawn_subagent` and is blind to
+`subagent_status` — the very name decision 23 retired. Between them a stale routing
+sentence shipped clean. The fixup closes the gap with a third assertion over
+`RETIRED_TOOL_NAMES`, a plain substring scan of the whole block, verified by poisoning
+`INSTRUCTIONS` and watching only the new assertion fire. The claim above is now true of
+the gate as it stands — which is the half of Step 1's probe 3 and probe 6 that a unit test
+can own. The other half, whether a real model routes correctly, still needs the probes.
+
 - [ ] **Step 3: Commit**
 
 ```bash
@@ -16478,13 +24582,496 @@ git add crates/biorouter/src/agents/workspace_extension.rs docs/agent-loop/tool-
 git commit -m "docs(br71): tuned workspace instructions + tool-routing table"
 ```
 
+### Task 42b: The CLI-parity gate — a workspace capability cannot ship GUI-or-daemon-only
+
+**The operator's 2026-07-30 requirement is a property, not a feature:** *"whatever changes
+we applied to the Graphic User Interface and the server side will be inherited in the CLI
+as well."* Tasks 20, 38b and 38c satisfy it **today**. A sentence in a design doc will not
+keep it satisfied — this repo's own history is a list of promises that rotted quietly, and
+of gates that passed by accident (a `grep -c` piped to `echo`, so the exit status was
+always 0; a `cargo test` filter that matched nothing and exited 0 reporting
+`181 filtered out`; an assertion true for every input). So the guarantee is mechanical:
+**adding a workspace capability without a CLI row fails the build.**
+
+**Why gating the daemon's surface also gates the GUI's, with the evidence and its two
+exceptions.** The renderer's entire daemon surface is `ui/desktop/src/api/`, generated
+from `ui/desktop/openapi.json` (`ui/desktop/openapi-ts.config.ts`; CLAUDE.md: *"auto-
+generated from OpenAPI spec (do not hand-edit)"*), and the workspace-control call sites
+use it — `hooks/chatStreamStore.tsx` imports `reply`, `interrupt`, `cancelTurn` and
+`getSession` from `../api`. So the GUI can only reach what the document describes, and a
+capability the GUI has that the CLI lacks must appear there. **Measured exceptions, both
+checked at `aad74e79` and neither workspace-related:** `utils/sessionCache.ts` hand-rolls
+`fetch(getApiUrl('/agent/resume'))` and `hooks/useWhisper.ts` hand-rolls a transcription
+POST; `grep -rn getApiUrl ui/desktop/src` returns exactly those two consumers plus the
+helper's own definition. If a third appears on a workspace route, this argument weakens
+and the gate must grow a renderer-side half — say so in the PR rather than letting it
+pass.
+
+**And the one thing this argument does not cover:** the `GET /ui/workspace` WebSocket
+(Task 23) is not in the OpenAPI document, because utoipa does not describe upgrades. It
+is a **transport for daemon→GUI frames**, not a capability: every frame it carries is the
+GUI rendering of a `workspace_*` tool that the table already covers (Task 24's
+`workspace_open` → an open-tab frame, Task 15's set-tools toast, Task 14's steer toast).
+That claim is load-bearing, so it is written down: **if a future frame ever does
+something no `workspace_*` tool does, this gate cannot see it** and the frame vocabulary
+needs its own row.
+
+**Files:**
+- Create: `crates/biorouter-cli/src/commands/workspace_parity.rs` — the capability table
+  (production code: it is a contract) and the four checks that enforce it
+- Modify: `crates/biorouter-cli/src/commands/mod.rs` (`pub mod workspace_parity;`)
+- Modify: `crates/biorouter-cli/src/cli.rs` — `pub fn command_tree() -> clap::Command`,
+  so a test can walk the **real** clap tree instead of a description of it
+- Modify: `crates/biorouter/src/agents/workspace_extension.rs` — `fn get_tools()` becomes
+  `pub fn get_tools()` (it is already an associated function taking no `self`, so it is
+  callable as `WorkspaceClient::get_tools()`; `pub mod workspace_extension` is already in
+  `agents/mod.rs`)
+- Modify: `crates/biorouter-server/src/routes/reply.rs` and
+  `crates/biorouter-server/src/routes/session_events.rs` — add `tag = "workspace"` to the
+  four workspace operations' `#[utoipa::path(…)]` attributes (`reply`, `interrupt`,
+  `cancel_turn`, `observe_session_events`). `tag = "…"` is an established pattern in this
+  router (`routes/schedule.rs`, `routes/reset.rs`, `routes/active_work.rs`), and the
+  generated TS client is flat (`src/api/sdk.gen.ts`), so a tag change does not rename or
+  relocate a single generated symbol — but regenerate and diff, do not assume
+- Modify: `ui/desktop/openapi.json` + `ui/desktop/src/api` (regen)
+
+**Every API this task leans on was checked against the vendored source, not recalled**
+(2026-07-30): `clap_builder-4.6.0` has `Command::get_subcommands() -> impl Iterator<Item
+= &Command>`, `Command::get_arguments() -> impl Iterator<Item = &Arg>`,
+`Command::get_name() -> &str` and `Id::as_str() -> &str` (⚠ `a.get_id() == *arg` is
+`&Id == &str` and does **not** compile — `Id` implements `PartialEq<&str>` but the
+comparison is between references; use `.as_str()`); `rmcp-0.14.0`'s
+`Tool.name` is `Cow<'static, str>`, so `.to_string()` is right; and `#[derive(Parser)]`
+already supplies `clap::CommandFactory`, so `command_tree` needs only the `use`.
+
+**Placement.** Phase 4, after Task 42 and before Task 43: the table cannot be complete
+until every capability exists (Phase 3), a gate that lands red blocks the phase that
+introduced it, and Task 43's user docs should document the guarantee this task makes
+enforceable. Task 44 gains one line that runs it.
+
+- [ ] **Step 1: Write the failing tests**
+
+Create `workspace_parity.rs` with **only** its test module, so Step 2's failure names
+every missing symbol at once:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    /// A: every tool the workspace extension advertises has a row, and every
+    /// tool-backed row names a tool that still exists. EXACT SET EQUALITY, both
+    /// directions — a subset check passes the exact regression this gate exists
+    /// to catch.
+    #[test]
+    fn the_table_matches_the_workspace_tool_surface_exactly() {
+        let advertised: BTreeSet<String> =
+            biorouter::agents::workspace_extension::WorkspaceClient::get_tools()
+                .into_iter()
+                .map(|tool| tool.name.to_string())
+                .collect();
+        assert!(
+            !advertised.is_empty(),
+            "get_tools() returned nothing — the selector, not the surface, is broken"
+        );
+        let tabled: BTreeSet<String> = ALL_CAPABILITIES
+            .iter()
+            .filter_map(|c| match surface(*c) {
+                Surface::Tool(name) => Some(name.to_string()),
+                Surface::Route { .. } => None,
+            })
+            .collect();
+        assert_eq!(
+            tabled, advertised,
+            "workspace tools and CLI-parity rows disagree.\n\
+             In the surface, not the table (add a CLI row): {:?}\n\
+             In the table, not the surface (delete the row): {:?}",
+            advertised.difference(&tabled).collect::<Vec<_>>(),
+            tabled.difference(&advertised).collect::<Vec<_>>()
+        );
+    }
+
+    /// B: every daemon operation tagged `workspace` has a row, and vice versa.
+    #[test]
+    fn the_table_matches_the_tagged_daemon_route_surface_exactly() {
+        let described = workspace_tagged_operations();
+        assert!(
+            !described.is_empty(),
+            "no operation carries the `workspace` tag — the selector matched \
+             nothing, which is how a gate exits 0 having checked nothing"
+        );
+        let tabled: BTreeSet<(String, String)> = ALL_CAPABILITIES
+            .iter()
+            .filter_map(|c| match surface(*c) {
+                Surface::Route { method, path } => {
+                    Some((method.to_string(), path.to_string()))
+                }
+                Surface::Tool(_) => None,
+            })
+            .collect();
+        assert_eq!(tabled, described, "tagged routes and CLI-parity rows disagree");
+    }
+
+    /// C: every row's CLI counterpart resolves against the REAL clap tree.
+    /// A row is a claim about the binary; this is what makes it checkable.
+    #[test]
+    fn every_counterpart_exists_in_the_real_cli() {
+        let root = crate::cli::command_tree();
+        for capability in ALL_CAPABILITIES {
+            match cli_counterpart(*capability) {
+                Counterpart::Cli { path, args } => {
+                    let command = resolve(&root, path).unwrap_or_else(|| {
+                        panic!("{capability:?}: no `biorouter {}` subcommand", path.join(" "))
+                    });
+                    for arg in args {
+                        assert!(
+                            command.get_arguments().any(|a| a.get_id().as_str() == *arg),
+                            "{capability:?}: `biorouter {}` has no --{arg}",
+                            path.join(" ")
+                        );
+                    }
+                }
+                Counterpart::Asymmetry { reason } => assert!(
+                    reason.len() > 40,
+                    "{capability:?}: an accepted asymmetry needs a real reason, \
+                     not a placeholder"
+                ),
+            }
+        }
+    }
+
+    /// C-negative: the resolver can actually FAIL. Without this, a `resolve`
+    /// that returns the root for any path makes check C vacuous — which is the
+    /// "assertion true for all inputs" failure this campaign keeps finding.
+    #[test]
+    fn the_counterpart_resolver_rejects_a_subcommand_that_does_not_exist() {
+        let root = crate::cli::command_tree();
+        assert!(resolve(&root, &["session", "list"]).is_some());
+        assert!(resolve(&root, &["session", "teleport"]).is_none());
+        assert!(resolve(&root, &["teleport"]).is_none());
+        let sessions_list = resolve(&root, &["session", "list"]).unwrap();
+        assert!(sessions_list.get_arguments().any(|a| a.get_id().as_str() == "subagents"));
+        assert!(!sessions_list.get_arguments().any(|a| a.get_id().as_str() == "teleport"));
+    }
+
+    /// D: at most one accepted asymmetry per capability family, and each one is
+    /// deliberate. A table that answers "Asymmetry" for everything is a table
+    /// that gates nothing.
+    #[test]
+    fn accepted_asymmetries_stay_a_short_and_declared_list() {
+        let asymmetric: Vec<_> = ALL_CAPABILITIES
+            .iter()
+            .filter(|c| matches!(cli_counterpart(**c), Counterpart::Asymmetry { .. }))
+            .collect();
+        assert!(
+            asymmetric.len() <= 2,
+            "{} accepted asymmetries — each new one needs operator sign-off in \
+             the plan, not a table edit: {asymmetric:?}",
+            asymmetric.len()
+        );
+    }
+}
+```
+
+- [ ] **Step 2: Run to verify failure**
+
+```bash
+cargo test -p biorouter-cli --lib commands::workspace_parity
+```
+Expected: **COMPILE ERROR** — `cannot find value \`ALL_CAPABILITIES\``,
+`cannot find function \`surface\``, `cannot find function \`cli_counterpart\``,
+`cannot find function \`resolve\``, `cannot find function \`workspace_tagged_operations\``
+(E0425), plus `cannot find function \`command_tree\` in module \`crate::cli\`` and
+`function \`get_tools\` is private` (E0603) once the local symbols exist. Confirm the
+error list, not the exit code.
+
+- [ ] **Step 3: Implement the table**
+
+```rust
+//! BR-71 CLI parity gate (operator requirement, 2026-07-30).
+//!
+//! One row per workspace capability, mapping it to the CLI that delivers it.
+//! Three properties are enforced, and the FIRST is a compile error rather than a
+//! test failure:
+//!
+//! 1. `cli_counterpart` and `surface` are exhaustive `match`es with **no
+//!    wildcard arm**. A new `WorkspaceCapability` variant that nobody gave a CLI
+//!    row is `error[E0004]: non-exhaustive patterns` — the build fails.
+//! 2. The tool-backed rows equal `WorkspaceClient::get_tools()` exactly, and the
+//!    route-backed rows equal the `workspace`-tagged OpenAPI operations exactly.
+//!    So a capability added to a *surface* without a variant here is a red test.
+//! 3. Every row resolves against the real clap tree.
+//!
+//! Together: a capability cannot enter the daemon or the GUI without either a
+//! working CLI counterpart or a written, bounded, operator-visible exception.
+//!
+//! ⚠ `ALL_CAPABILITIES` is hand-listed (counting enum variants needs a derive
+//! this crate does not carry). It cannot go stale *usefully*: a variant added to
+//! the enum but omitted here describes a surface entry that property 2 then
+//! reports as unclaimed. A variant omitted here that describes NOTHING is
+//! already dead code.
+
+#[cfg(test)]
+use std::collections::BTreeSet;
+
+/// Every capability of BR-71 workspace control, at the granularity a user cares
+/// about. Adding a variant without a `cli_counterpart` arm does not compile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkspaceCapability {
+    // The agent-facing tool surface (`WorkspaceClient::get_tools()`).
+    List,
+    ReadConversation,
+    SendPrompt,
+    SetTools,
+    Close,
+    Watch,
+    Open,
+    Spawn,
+    // The daemon HTTP surface the GUI stands on (tag = "workspace").
+    RouteReply,
+    RouteInterrupt,
+    RouteCancel,
+    RouteObserve,
+    RouteRunning,
+}
+
+pub const ALL_CAPABILITIES: &[WorkspaceCapability] = &[ /* every variant above */ ];
+
+pub enum Surface {
+    Tool(&'static str),
+    Route { method: &'static str, path: &'static str },
+}
+
+/// Where this capability is reachable from the GUI or the daemon.
+pub fn surface(capability: WorkspaceCapability) -> Surface { /* exhaustive match */ }
+
+pub enum Counterpart {
+    /// `biorouter <path…> [--args…]`, resolved against the real clap tree.
+    Cli { path: &'static [&'static str], args: &'static [&'static str] },
+    /// A capability with no terminal analogue. Requires a stated reason and is
+    /// capped at two by the tests.
+    Asymmetry { reason: &'static str },
+}
+
+/// ⚠ NO WILDCARD ARM. This is the compile-time half of the guarantee.
+pub fn cli_counterpart(capability: WorkspaceCapability) -> Counterpart {
+    use WorkspaceCapability as C;
+    match capability {
+        C::List => Counterpart::Cli {
+            path: &["session", "list"],
+            args: &["subagents"],
+        },
+        C::ReadConversation => Counterpart::Cli {
+            path: &["session", "export"],
+            args: &["format"],
+        },
+        C::SendPrompt => Counterpart::Cli { path: &["session", "send"], args: &[] },
+        C::Watch => Counterpart::Cli { path: &["session", "watch"], args: &["follow"] },
+        C::Close => Counterpart::Cli { path: &["session", "cancel"], args: &[] },
+        C::Spawn => Counterpart::Asymmetry {
+            reason: "Spawning is a TOOL the model calls, not a command the user \
+                     types, and it already works in the CLI: the CLI's reply path \
+                     is Agent::reply -> prepare_tools_and_prompt -> list_tools -> \
+                     ensure_spawn_extension, so `workspace__subagent` is advertised \
+                     in a `biorouter session` exactly as in the daemon. Verified in \
+                     Task 42b's investigation; there is nothing for a subcommand to add.",
+        },
+        C::SetTools => Counterpart::Asymmetry {
+            reason: "Reconfiguring ANOTHER session's extensions/skills/model from a \
+                     terminal is outside the operator's requirement (spin up, monitor, \
+                     inject) and would duplicate `biorouter extension`/`skill`, which \
+                     are machine-wide rather than session-scoped. Revisit only with \
+                     an explicit request.",
+        },
+        C::Open => Counterpart::Cli { path: &["session"], args: &["name"] },
+        C::RouteReply => Counterpart::Cli { path: &["session", "send"], args: &[] },
+        C::RouteInterrupt => Counterpart::Cli { path: &["session", "attach"], args: &[] },
+        C::RouteCancel => Counterpart::Cli { path: &["session", "cancel"], args: &[] },
+        C::RouteObserve => Counterpart::Cli { path: &["session", "attach"], args: &["of"] },
+        C::RouteRunning => Counterpart::Cli {
+            path: &["session", "list"],
+            args: &["subagents"],
+        },
+    }
+}
+
+/// Walk the real clap tree. Returns `None` for a path that does not exist —
+/// which is what makes check C non-vacuous.
+pub fn resolve<'a>(root: &'a clap::Command, path: &[&str]) -> Option<&'a clap::Command> {
+    let mut current = root;
+    for segment in path {
+        current = current.get_subcommands().find(|c| c.get_name() == *segment)?;
+    }
+    Some(current)
+}
+
+/// The `(METHOD, path)` of every OpenAPI operation tagged `workspace`.
+///
+/// `include_str!` rather than a runtime read: the path is resolved at compile
+/// time from `CARGO_MANIFEST_DIR`, so a moved or missing document is a build
+/// error rather than a test that silently sees an empty set. The document is
+/// kept current by `just generate-openapi` and by Task 44's
+/// `git diff --exit-code ui/desktop/openapi.json`.
+///
+/// ⚠ **`#[cfg(test)]`, and that is not tidiness.** `ui/desktop/openapi.json` is
+/// **275 KB** (measured 2026-07-30). The capability table above is production
+/// code because it is a contract, but embedding a quarter-megabyte document into
+/// the shipped `biorouter` binary to satisfy a test is not — and a reviewer who
+/// notices the size later will delete the wrong half. Keep the table public and
+/// the reader test-only.
+#[cfg(test)]
+pub fn workspace_tagged_operations() -> BTreeSet<(String, String)> {
+    const DOC: &str =
+        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../ui/desktop/openapi.json"));
+    let doc: serde_json::Value = serde_json::from_str(DOC).expect("openapi.json is valid JSON");
+    let mut out = BTreeSet::new();
+    for (path, methods) in doc["paths"].as_object().expect("paths is an object") {
+        for (method, operation) in methods.as_object().expect("methods is an object") {
+            let tagged = operation["tags"]
+                .as_array()
+                .is_some_and(|tags| tags.iter().any(|t| t == "workspace"));
+            if tagged {
+                out.insert((method.to_uppercase(), path.clone()));
+            }
+        }
+    }
+    out
+}
+```
+
+and in `cli.rs`:
+
+```rust
+/// The real clap command tree, for tests that must assert against the CLI's
+/// actual surface rather than a description of it (Task 42b).
+///
+/// `Cli` stays private; only the built `Command` escapes.
+pub fn command_tree() -> clap::Command {
+    <Cli as clap::CommandFactory>::command()
+}
+```
+
+(needs `use clap::CommandFactory;` — `#[derive(Parser)]` already implements it.)
+
+- [ ] **Step 4: Tag the workspace routes and regenerate**
+
+Add `tag = "workspace"` to the `#[utoipa::path(…)]` of `reply`, `interrupt` and
+`cancel_turn` (`routes/reply.rs`) and `observe_session_events`
+(`routes/session_events.rs`). Task 38b already tagged `running_sessions`.
+
+```bash
+just generate-openapi && (cd ui/desktop && npm run generate-api)
+git diff --stat ui/desktop/src/api
+```
+Expected: **no change under `ui/desktop/src/api`** — the client is flat, so tags move no
+symbols. A non-empty diff there means the generator *is* tag-sensitive on this version
+and the renaming must be reviewed before committing; do not commit a surprise client
+rewrite inside a gate task.
+
+- [ ] **Step 5: Gate**
+
+```bash
+cargo test -p biorouter-cli --lib commands::workspace_parity
+```
+Expected: `test result: ok. 5 passed`. ⚠ A `0 tests` line here is a **failure**, not a
+pass — check the count.
+
+Then prove the gate can fail, which is the only evidence that it is a gate. Perform each
+mutation, run the command, confirm the named failure, and revert:
+
+| Mutation | Must fail with |
+|---|---|
+| Add a ninth tool to `WorkspaceClient::get_tools()` and nothing else | check A: *"In the surface, not the table"* naming it |
+| Delete `C::Watch` from `ALL_CAPABILITIES` | check A: *"In the surface, not the table: [workspace_watch]"* |
+| Add a `WorkspaceCapability` variant | **compile error** `E0004` in `cli_counterpart` and in `surface` |
+| Point `C::List` at `&["session", "teleport"]` | check C: *"no `biorouter session teleport` subcommand"* |
+| Point `C::List` at `&["session", "list"]` with `args: &["teleport"]` | check C: *"has no --teleport"* |
+| Change the tag selector to `"workspce"` | check B: *"the selector matched nothing"* |
+| Add `tag = "workspace"` to an unrelated route | check B: set inequality naming it |
+| Turn `C::Close` into `Asymmetry { reason: "n/a" }` | check C (reason too short) **and** check D (three asymmetries) |
+
+**This gate rejects:** a workspace capability that ships GUI-or-daemon-only — the exact
+regression the operator's requirement forbids — in three distinguishable ways: as a
+**compile error** when a capability is added to the enum with no CLI row; as an
+**exact-set-equality failure** when it is added to a real surface (a new `get_tools()`
+entry, or a new `workspace`-tagged operation) with no row; and as a **resolution failure**
+when a row *claims* a CLI counterpart the binary does not have. It also rejects the three
+ways a gate like this normally rots: a **selector that matches nothing** (both A and B
+assert their source set is non-empty *before* comparing, so an empty surface is a failure,
+not a trivial pass); a **subset instead of an equality** (both use `assert_eq!` on
+`BTreeSet`s and print both differences, so a stale row for a deleted capability fails too);
+and an **escape hatch that swallows everything** (`Asymmetry` requires a >40-character
+reason and is capped at two, so "declare it asymmetric" is not a way past the gate).
+
+**What it cannot check, stated rather than hidden:** that a CLI counterpart is *correct*.
+A `session attach` that resolved, declared `--of`, and did nothing would pass every
+check here. That is what Task 38c's live step and Task 44's `session attach` run are for
+— this gate proves a capability is *reachable* from the terminal, not that it works.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add crates/biorouter-cli/src/commands/workspace_parity.rs \
+        crates/biorouter-cli/src/commands/mod.rs crates/biorouter-cli/src/cli.rs \
+        crates/biorouter/src/agents/workspace_extension.rs \
+        crates/biorouter-server/src/routes/reply.rs \
+        crates/biorouter-server/src/routes/session_events.rs \
+        ui/desktop/openapi.json
+git commit -m "test(cli): fail the build when a workspace capability has no CLI counterpart (BR-71)"
+```
+
+---
+
 ### Task 43: User docs + design-doc closure
 
 **Files:**
 - Create: `docs/extensions/built-in/workspace.md` (check the directory's existing
   built-in extension docs for the template; create the directory if it does not exist)
 - Modify: `docs/agent-loop/subagents.md`
-- Modify: `docs/agent-loop/designs/agent-workspace-control.md` (final status header)
+- Modify: `docs/agent-loop/designs/agent-workspace-control.md` (final status header at
+  **:10-12**, which at `275d735d` still reads *"Current — **proposal only; nothing
+  below is implemented.**"* — correct today, and this task is what makes it false)
+
+⚠ **The `subagent_status` doc sweep has FOUR live sites, not three** (amended
+2026-07-28). Task 19b owns `docs/agent-loop/tool-routing.md:33` and the newly-found
+`docs/security/privacy-tiers.md:1677`; **this** task owns the two in the design doc,
+`agent-workspace-control.md:421` (§4.5 step 5's "the existing `subagent_status` cancel")
+and `:545` (§ the polish-phase bullet). Task 21 Step 6 already rewrites `:421` as part
+of aligning the design with the merged surface; confirm both are gone here rather than
+assuming. The authoritative check is the same command Task 19b Step 1 uses:
+
+```bash
+grep -rn "subagent_status" docs/ | grep -v "^docs/history/" | grep -v br71-execution-plan
+# Expected by the end of this task: no output.
+# docs/history/** keeps its 3 hits and is an immutable record — never edit it.
+```
+
+⚠ **A "no output" gate needs a positive control** (added 2026-07-28 by the gate sweep).
+The grep above is satisfied by a deleted `docs/` tree, by a typo in the pattern, and by a
+sweep that removed every mention of `subagent_status` **without writing the migration
+note that is the point of Step 3** — a user whose skill still calls `subagent_status`
+then finds nothing at all, which is strictly worse than finding the old name. Pair it
+with the checks for what must now be *present*:
+
+```bash
+# Step 3's migration note exists and names all four replacements.
+for t in workspace_list workspace_read_conversation workspace_watch workspace_close; do
+  grep -q "$t" docs/agent-loop/subagents.md || echo "MISSING from subagents.md: $t"
+done
+grep -c "subagent_status\` was removed" docs/agent-loop/subagents.md   # Expected: 1
+# Step 1's user doc exists AND documents every tool the extension advertises.
+for t in workspace_list workspace_read_conversation workspace_send_prompt \
+         workspace_set_tools workspace_open workspace_close workspace_watch subagent; do
+  grep -q "$t" docs/extensions/built-in/workspace.md || echo "MISSING from workspace.md: $t"
+done
+```
+
+Expected: **no `MISSING` lines**, and `1`. A bare `test -f workspace.md` would pass on an
+empty file; this asserts the content the task exists to produce. (The eight names are the
+merged surface after Tasks 19/19b — seven `workspace_*` tools plus `subagent`. If
+`get_tools()` disagrees with this list, the list is stale: derive it from the module, not
+from here.)
 
 - [ ] **Step 1: Write `workspace.md`** covering: what the extension does; the **two
 tiers** and why they differ (decision 21 — a session with delegation enabled loads the
@@ -16528,23 +25115,219 @@ git commit -m "docs(br71): workspace extension user docs + subagents glass-box u
 
 ### Task 44: Final release gates
 
+**RUN 2026-08-01, at `8cc8f0d0`. Every gate below was executed. All pass. The task does
+NOT sign off**, because Task 40b is still open and its own text forbids it ("Task 44 must
+not sign off with this open"), and because the PR was not opened — the operator's standing
+instruction for this run was "do NOT push", which an `open the PR` step cannot honour.
+
+One gate failed on first run and was fixed rather than rebaselined:
+`./scripts/clippy-lint.sh` reported three NEW `clippy::too_many_lines` violations, all of
+them this campaign's (`handle_session_list` 117/100, `handle_session_attach` 104/100,
+`run_bounded_turn` 110/100), none of them in `clippy-baselines/too_many_lines.txt`. Split
+at seams each function already had, in `8cc8f0d0`.
+
+Measured results, all sums taken from the real output rather than from this plan:
+
+| Gate | Result |
+|---|---|
+| `cargo fmt --all -- --check` | clean |
+| `./scripts/clippy-lint.sh` | exit 0 (after `8cc8f0d0`) |
+| `just check-everything` | exit 0 — themes 3, contrast 252, OpenAPI current, versions agree on 1.88.6 |
+| `cargo test --workspace --no-fail-fast` | **82 binaries, 3976 passed, 6 failed, 25 ignored** |
+| `biorouter --lib -- agents:: session:: session_events conversation::message` | 859 passed |
+| `biorouter-server --lib -- routes:: workspace:: state::` | 237 passed |
+| `biorouter-mcp --lib knowledge::` | 190 passed |
+| `biorouter-server --lib routes::apps` | 94 passed |
+| `conversation_writeback_freshness` / `_stress` | **32** / 9 |
+| `routes::reply::tests::writeback_tests` | **6** (the `::tests::` segment resolves) |
+| `biorouter --lib context_mgmt` | 50 passed |
+| subagent targets (delegation / cancellation / tool / abort / soft-interrupt) | **7 / 1 / 4 / 4 / 5** |
+| CLI parity (`workspace_parity` + `session_grouping` + `session_watch`) | **30 passed** |
+| `just generate-openapi` then `git diff --exit-code` | exit 0, whole worktree clean |
+| `npm run test:run` | **202 files / 1837 tests** |
+| `npm run lint:check` | pass |
+| glass-box harness, baseline tier | exit 0 |
+| glass-box harness, `BIOROUTER_HARNESS_LIVE=1` | exit 0, all 25 assertions |
+| `ui-control-harness.mjs` | `ALL PASS` |
+
+Three expectations in the text below were **low**, and the direction matters — the plan
+warns only about counts coming back *under* expectation, which is the signal that a suite
+stopped being collected. Desktop test files: expected 198 (186 + 12), actual **202**
+(186 + **16**); the enumeration under *New files* missed four. Subagent targets: expected
+`7/1/3/4/4`, actual `7/1/4/4/5`. CLI parity: expected 16, actual **30**.
+
+The workspace run's 6 failures are **exactly** the two recorded environmental families,
+with no third: `test_anthropic_provider` (400, credit balance), the
+`generated_serve_and_launchers_are_syntactically_valid` transient (`bin/node: line 21:
+basename: No such file or directory` — the hermit shim, verbatim as recorded), and
+`tunnel::lapstone_test::{test_tunnel_end_to_end, test_tunnel_post_request}` (503 from the
+live Cloudflare worker) in **both** binaries. The baseline's table counted
+`test_tunnel_post_request` once where it in fact fails twice, so 6 rather than 5 is that
+row being completed, not a new failure — this is the ±1 the baseline note anticipates.
+Binary count (82) and ignored count (25) match the baseline exactly, so no crate failed
+to build.
+
+§8.4 resync-cost measurement, for the design doc: **2-4 ms** to the first
+`UpdateConversation` frame for a 1-message session (4 ms baseline run, 2 ms live run).
+
+The **end-to-end CLI run** was driven against that same daemon with no desktop app
+attached, and all four steps exit 0: `session list --subagents` nests the child under its
+parent with a distinct task-derived name and a `[○ done]` marker; `session attach` renders
+the transcript so far, prints `── live from here ──`, and a typed line comes back
+`[assistant] ACK` in the same turn — **no 409**, so the Task 33 control plane is intact;
+`session cancel` reports `cancelled turn turn-9` against a running turn and
+`nothing to cancel: this session had no turn in flight` against an idle one, which
+`render_cancel`'s own doc calls a success; and ctrl-c detaches with exit 0 while the
+session keeps running.
+
+⚠ **Two measurement traps, both hit and both worth recording** so the next runner does not
+mistake either for a defect. (1) `pkill -INT -f "session attach"` matches the *wrapping
+shell* as well as the CLI — `pgrep -fl` shows two pids — so the job reports exit 1 while
+the CLI itself detached cleanly. `pkill -INT -x biorouter` gives the true reading, exit 0.
+(2) A steer into a subagent session that the daemon has never bound a provider to fails
+`[error:inference_start_failed] Provider not set`. That is **not** BR-71's: a daemon
+session has no provider until one is attached, which is why the harness's own live tier
+POSTs `/agent/update_provider` to its parent before spawning. Doing the same for the child
+makes the steer succeed.
+
+⚠ **This task re-runs the sweeps and counts corrected in Tasks 19, 19b and 21, and
+inherits every one of them** (amended 2026-07-28). Nothing here re-derives a number: the
+authoritative expectations are Task 19 Step 1 (**13** spawn-tool sites in 3 files), Task
+19b Step 1 (**31** `subagent_status` code sites in 5 files, **4** live doc sites) and
+Task 21 Step 4. If a count here disagrees with one of those, the task text is stale, not
+the tree — fix it there, once, rather than in two places.
+
 - [ ] `cargo fmt && ./scripts/clippy-lint.sh` — clean.
 - [ ] `just check-everything` — includes version-consistency + `npm run themes -- --check`.
 - [ ] `cargo test --workspace --no-fail-fast` — green modulo the recorded pre-existing
-  baseline; specifically re-run the named suites:
-  `cargo test -p biorouter --lib agents:: session:: session_events conversation::message`,
-  `cargo test -p biorouter-server --lib routes:: workspace:: state::`,
-  `cargo test -p biorouter-mcp --lib knowledge::` (untouched, must stay green),
-  `cargo test -p biorouter-server --lib routes::apps` (the pattern donor must be
-  unaffected).
+  baseline; specifically re-run the named suites. ⚠ **Note the `--` in the first two**
+  (amended 2026-07-28): `cargo test --lib a b c` is `error: unexpected argument`, exit 1,
+  with nothing run — and the obvious repair is to drop the extra filters, which quietly
+  turns a four-module sweep into a one-module one. See Ground rules, "Gate mechanics".
+
+  ⚠ **"The recorded pre-existing baseline" now has a number** (measured 2026-07-31 by the
+  Task 40 gate, which Task 40 was told to record and carry here). On this machine, at
+  `758162d2`, the command reports **3964 passed / 5 failed / 25 ignored across 82 test
+  binaries**. All five failures are environmental and none is BR-71's:
+
+  | Failure | Why it is not yours |
+  |---|---|
+  | `providers::test_anthropic_provider` | live Anthropic API; fails with `400 … credit balance is too low`. |
+  | `tunnel::lapstone_test::test_tunnel_end_to_end` (×2 binaries) | live service, intermittent 503. |
+  | `tunnel::lapstone_test::test_tunnel_post_request` | same family. |
+  | `agent_drafter::render::tests::generated_serve_and_launchers_are_syntactically_valid` | **transient**, and the one to expect variation on. It fails with `bin/node: line 21: basename: No such file or directory` — the hermit `node` shim, not the generated ESM. Re-run alone it passes, both with and without `bin/` prepended to `PATH`. |
+
+  So **Task 44 should expect 3964/5 or 3965/4** depending on whether that last one lands,
+  and must not read the ±1 as an anomaly or as evidence a crate failed to build. Sum the
+  per-binary lines rather than trusting a final tally — `--no-fail-fast` prints one
+  `test result:` per binary and no grand total, and "all green" cannot distinguish a
+  passing workspace from one whose target dir failed to build a crate.
+
+  ```bash
+  cargo test -p biorouter --lib -- agents:: session:: session_events conversation::message
+  cargo test -p biorouter-server --lib -- routes:: workspace:: state::
+  cargo test -p biorouter-mcp --lib knowledge::        # untouched, must stay green
+  cargo test -p biorouter-server --lib routes::apps    # the pattern donor must be unaffected
+  ```
+- [ ] ⚠ **The four families this plan must PRESERVE, run by name** (added 2026-07-28).
+  `--workspace` covers them, but a `--lib`-only spot check does not, and three of the
+  four live in **integration** targets that no `--lib` filter can reach. Each is the net
+  for an invariant a BR-71 task is capable of breaking silently:
+
+  ```bash
+  cargo test -p biorouter --test conversation_writeback_freshness   # 32 tests: 5 #59 completeness + 3 #59 ordering + the #51 set
+  cargo test -p biorouter --test conversation_writeback_stress      # #51 under concurrent append
+  cargo test -p biorouter-server --lib routes::reply::tests::writeback_tests   # 6 — #51 W5's 409 refusal (the `::tests::` segment is required; see Task 21)
+  cargo test -p biorouter --lib context_mgmt                        # pin_tests + pins.rs + the 2 eager-compaction tests
+  ```
+
+  Expected: all green. Counts re-verified at `03ad602c`:
+  `conversation_writeback_freshness` has **32** `#[tokio::test]`; `mod writeback_tests`
+  — bounded at its own closing brace, not to end of file — has **6**; `pin_tests` is
+  **15** after Task 14 (**14** before it, measured); `pins.rs`'s `mod tests` is **12**
+  and unchanged; and `run_eager_compaction_preserves_a_concurrent_append` /
+  `run_eager_compaction_aborts_when_the_prefix_moved` are the two that replaced the
+  deleted `eager_swap_is_safe`. **`PLATFORM_EXTENSIONS.len()` is the one assertion in
+  this list BR-71 is entitled to change** (5 → 6, reconciliation #5); a red result
+  anywhere else here is a BR-71 regression, not a test to update.
+
+- [ ] ⚠ **The subagent integration targets, run by name** (added 2026-07-28 by the gate
+  sweep). Same argument as the four families above, for the four suites Phase 3 rewrites:
+  no `--lib` filter can reach any of them, and each is the only automated exercise of a
+  path a Phase-3 task changes.
+
+  ```bash
+  cargo test -p biorouter --test subagent_delegation      # 7  — Tasks 33/34/36: real spawns
+  cargo test -p biorouter --test subagent_cancellation    # 1  — Task 33's run token
+  cargo test -p biorouter --test subagent_tool_tests      # 3  — Task 36's SubagentParams + refusal
+  cargo test -p biorouter --test turn_abort_tests         # 4  — Task 34's rewritten abort arm
+  cargo test -p biorouter --test soft_interrupt_agent_loop # 4 — Task 35's /interrupt queue path
+  ```
+
+  Expected: **7 / 1 / 3 / 4 / 4**, all green. Counts re-verified at `03ad602c`.
+
+  (⚠ Ordering repair, 2026-07-28: the gate sweep inserted this bullet **between** the
+  four-preservation-families bullet and that bullet's own `Expected:` paragraph, so the
+  `context_mgmt` numbers appeared to belong to the subagent suites and the one sentence
+  naming BR-71's single entitled red result was detached from its list. Each bullet now
+  carries its own expectation.)
 - [ ] `just generate-openapi && git diff --exit-code ui/desktop/openapi.json` — exit 0.
-- [ ] `cd ui/desktop && npm run test:run && npm run lint:check` — green.
+- [ ] `cd ui/desktop && npm run test:run && npm run lint:check` — green, and **with a
+  number** (amended 2026-07-28 by the drift amendment). The pre-BR-71 baseline was
+  measured on this worktree at `ea15a4de`: **186 files / 1726 tests, green** (`find
+  ui/desktop/src -name '*.test.ts*' | wc -l` re-confirms 186 at `03ad602c`). BR-71 adds
+  **12** desktop test files (9 in Phase 2 — enumerated in Task 31, and including
+  `ProvenanceChip`, which this line and Task 31 both omitted until 2026-07-28 — plus 3
+  in Phase 3: `SubagentTabHeader`, `useSubagentSession`, `sessionGrouping`; all
+  enumerated under **New files** in
+  [File structure](#file-structure)), so the final figure is **198 files**. Anything
+  materially below that means a suite stopped being collected — which
+  `npm run test:run` reports as a smaller *green* run, not as a failure. Two related
+  facts, both measured and both worth having in front of you here:
+  - A narrow filter can flake where the full suite does not:
+    `npx vitest run SessionListView` fails ~5 runs in 6 on the pre-existing
+    `uses the shared notification surface after deleting a session`, and passes inside
+    the full run. Task 38 Step 5 has the detail. **Do not** repair it inside a BR-71
+    commit.
+  - `main` is 6 commits ahead of this branch's fork point and unmerged; one of them
+    (#67, `b80ae07e`) adds a test to `chatStreamStore.test.ts`. After a merge the
+    baseline is 1727, not 1726. Re-measure rather than treating the delta as BR-71's.
 - [ ] `node scripts/workspace/glassbox-harness.mjs` against `just debug-server` —
-  exit 0; and `BIOROUTER_HARNESS_LIVE=1 node scripts/workspace/glassbox-harness.mjs`
-  with a configured provider — exit 0 (the flagship chain).
+  **exit 0** (`echo $?`); and `BIOROUTER_HARNESS_LIVE=1 node scripts/workspace/glassbox-harness.mjs`
+  with a configured provider — **exit 0** (the flagship chain). Exit **3** is
+  `INCONCLUSIVE`, not a pass: the interrupt / cancel / `human_intervened` assertions did
+  not run because the child finished early. Re-run it (Task 39 Step 2, Task 40).
 - [ ] `cargo test -p biorouter-server --lib routes::apps` and
   `node scripts/agent-drafter/ui-control-harness.mjs` — the consult unification (Task 41)
   is cross-subsystem and this is its regression gate.
+- [ ] ⚠ **The standing CLI-parity gate (Task 42b), which is the only check in this list
+  that fails for something nobody wrote.** Every other gate here verifies work that was
+  done; this one fails when work was *not* done — a workspace capability that reached the
+  GUI or the daemon without a terminal counterpart.
+
+  ```bash
+  cargo test -p biorouter-cli --lib -- commands::workspace_parity commands::session_grouping commands::session_watch
+  ```
+  Expected: green, with a **non-zero and stated** count — 5 (Task 42b) + 3 (Task 38b) + 8
+  (Task 20's 3 plus Task 38c's 5) = **16**. Re-measure rather than trusting the sum: a
+  "pre + N" assertion against a stale figure reads a shortfall as a pass, which is the
+  failure this campaign has hit more than once. Note the `--` (same reason as the four
+  preservation families above).
+
+  Three distinct failure shapes, and what each means:
+  - **a compile error in `cli_counterpart` (`E0004`)** — a `WorkspaceCapability` variant
+    was added with no CLI row. This is the guarantee working: fix the table, not the
+    match;
+  - **`the_table_matches_the_workspace_tool_surface_exactly` / `…the_tagged_daemon_route_surface_exactly`
+    red** — a capability entered `WorkspaceClient::get_tools()` or gained
+    `tag = "workspace"` and nobody gave the terminal a way to reach it. That is the
+    operator requirement being violated, not a stale test;
+  - **`every_counterpart_exists_in_the_real_cli` red** — a row *claims* a subcommand or
+    flag the binary does not have. A rename in `cli.rs` lands here.
+- [ ] The end-to-end CLI run, **with no desktop app running**, per Task 40's CLI half:
+  `session list --subagents` → `session attach <child>` → steer → `session cancel`.
+  Exit 0 on each, and a `409` on the steer is the Task 33 control-plane regression, not a
+  CLI bug.
 - [ ] Squash-review the branch diff for the permission-relevant files (Tasks 6, 8, 10,
   14-16, 18, 19, 19b, 23, 33, 35-36) and flag them for **human security review** in the
   PR body, per `.github/copilot-instructions.md`. Call out four by name: **Task 8** (the
@@ -16570,7 +25353,10 @@ removing security-relevant or adding process-spawning extensions confirms **rega
 permission mode** — ships with v1, not as a fast-follow, using the
 `SensitiveOpsInspector` precedent. → **Task 10** (`WorkspaceMutationInspector`). Precedence
 is free: `apply_inspection_results_to_permissions` promotes any `RequireApproval` over
-another inspector's `Allow` (`tool_inspection.rs:262-278`), so it beats Auto mode and a
+another inspector's `Allow` (`crate::tool_inspection` — a **top-level** module, not
+`agents/tool_inspection.rs`: `apply_inspection_results_to_permissions` at `:205`, the
+`needs_approval.push` at `:273`, the "*don't override other inspectors' decisions*"
+comment at `:277-280`), so it beats Auto mode and a
 per-tool always-allow grant alike.
 *Implementation refined after review, four ways —* the guarantee is scoped to "grants a
 capability to another conversation", not to one tool name: it inspects **`workspace_open`
@@ -16579,7 +25365,7 @@ escalation by an easier route); it classifies add-risk **structurally across all
 `ExtensionConfig` variants** rather than matching `Stdio` alone (`InlinePython` execs
 `uvx`; `Sse`/`StreamableHttp` carry credentials to a remote endpoint); it **normalizes
 both sides** of every name comparison, because the executor normalizes before removing
-(`extension_manager.rs:834-839`), so `remove_extensions: ["Workspace"]` really does
+(`extension_manager.rs:976-981`), so `remove_extensions: ["Workspace"]` really does
 strip the audit trail; and it confirms the two capability dimensions decisions b and c
 added to `workspace_set_tools` after §5 was written — a **provider switch** and a
 **skill grant**. See reconciliation #19.
@@ -16595,9 +25381,13 @@ redirects a turn the user is watching and is the most intrusive thing the tool d
 (ii) the injected text is wrapped in an **untrusted-data envelope**
 (reconciliation #15) — provenance lives in `MessageMetadata`, which never reaches the
 provider, so without framing another agent's output arrives as an indistinguishable
-user instruction; (iii) `mode:"note"` **refuses a target with a turn in flight**
-(reconciliation #16), because an in-turn compaction would silently delete the note
-after the tool reported success.
+user instruction; (iii) `mode:"note"` is **persisted pinned**
+(`Message::pinned`, `message.rs:1033`), so it survives both the concurrent write-back
+and the next compaction. *Superseded 2026-07-28:* this clause used to read *"refuses a
+target with a turn in flight (reconciliation #16), because an in-turn compaction would
+silently delete the note after the tool reported success"*. #51 removed that hazard —
+both in-turn rewrite sites now carry a foreign append over instead of deleting it — so
+the refusal is retired and the pin takes its place.
 
 **3. Observer stream: same-secret, all-sessions — ACCEPTED**, including the Electron
 origin allowance. The new exposure is *liveness* (transcripts were already readable via
@@ -16605,19 +25395,32 @@ origin allowance. The new exposure is *liveness* (transcripts were already reada
 *Implementation refined after review:* the allowance is **`file://` only — `null` is
 refused.** `null` is the opaque origin of every sandboxed frame, including the
 agent-authored figures this app itself serves through the unauthenticated
-`/mcp-ui-proxy` (`sandbox='allow-scripts allow-downloads'`, no `allow-same-origin`,
-`mcp_ui_proxy.rs:44`), and `routes/mod.rs`'s own `origin_tests` rejects it by name.
+`/mcp-ui-proxy` (`sandbox='allow-scripts allow-downloads'`, no `allow-same-origin` —
+the attribute is set in the **served document**,
+`routes/templates/mcp_ui_proxy.html:43`, and pinned by the assertion at
+`routes/mcp_ui_proxy.rs:45`; the plan's old `mcp_ui_proxy.rs:44` is the *neighbouring*
+assertion, about `params.get('url')`, which is a different property), and
+`routes/mod.rs`'s own `origin_tests` rejects it by name.
 Admitting it would make this socket's origin gate strictly weaker than the app agent
 socket's (`apps.rs:538-546`), which the design claims parity with. Task 31 must record
 what the packaged renderer actually sends; if it is `null`, the fix is on the renderer
 side, not by widening the gate.
+*Implementation refined again 2026-07-28 (gate sweep):* "same-secret" has a second half
+that had no test — the socket must be **added to `check_token`'s exemption list**, and an
+exemption is a hole in the daemon's only authentication. Task 23 now lifts that list into
+a pure `is_unauthenticated_path` (mirroring `is_public_app_get`, `auth.rs:52`) with a case
+asserting `/ui/workspace` is exempt and `/ui/workspaceX` is not; the Task 39 harness adds
+the end-to-end half, connecting once with the real secret and once with a wrong one and
+requiring the second to be refused. Before this, the exemption was requested only in
+prose, and the socket's *own* auth tests would pass identically whether the server ran
+`check_workspace_ws_auth` or nothing at all.
 
 **4. Elicitation: `mode:"turn"` REFUSES when the TARGET is in an approval mode and no
 GUI is attached.** No invisible parked prompts; an explicit error that names the two ways
 forward (`mode:"note"`, or open the app). → **Task 14**.
 *Implementation refined after review, three ways:* (i) the mode read is the **target
 agent's** `AgentConfig.biorouter_mode` (fixed at agent creation,
-`execution/manager.rs:119-121`), not `Config::global().get_biorouter_mode()`; (ii) it is
+`execution/manager.rs:120-122`), not `Config::global().get_biorouter_mode()`; (ii) it is
 read with a **non-constructive `AgentManager::peek_agent`**, because
 `get_or_create_agent` is create-on-miss and its miss path performs exactly the global
 read this refinement exists to avoid — and leaves a bare, provider-less agent cached for
@@ -16625,8 +25428,15 @@ the turn runner to pick up. No live agent ⇒ take the conservative branch; (iii
 "approval mode" is the **two modes that can actually prompt** (`Approve`,
 `SmartApprove`). `Chat` cannot: `PermissionInspector::inspect` returns early
 (`permission/permission_inspector.rs:449-452`) and the agent loop skips every tool call
-(`agent.rs:3706-3716`), so refusing there would block the safest configuration there is
+(`agent.rs:4355-4371`), so refusing there would block the safest configuration there is
 with a message that is false for it.
+*Half of this is SUPERSEDED by decision 29 (2026-07-30).* Refinement (ii)'s "no live agent
+⇒ take the conservative branch" is what makes headless `mode:"turn"` refuse most of the
+time in practice, and Task 36b removes its premise: an agent-created session's prompts now
+route to the agent that created it and reach a human only at the root of the chain. The
+refusal is right for a target with **no parent** and nobody watching, and wrong for a
+child. Task 14's code is unchanged — the narrowing is its own commit, and Task 14's Step 3
+says so at the branch itself. Refinements (i) and (iii) are untouched.
 
 **5. `workspace_open.new.working_dir` DEFAULTS to the caller's directory.** A different
 directory is allowed but never silent: the tool result names it and a GUI toast shows it.
@@ -16683,16 +25493,70 @@ See reconciliation #14.
 **d. Theme control: OUT OF SCOPE.** Explicitly deferred; no task, no tool field, no
 mention in the instruction block.
 
+**e. CLI parity is a standing requirement, not a feature** (operator, 2026-07-30):
+*"whatever changes we applied to the Graphic User Interface and the server side will be
+inherited in the CLI as well. The CLI will be able to spin up sub-agents, monitor the
+sub-agents, and potentially inject problems into sub-agents. The users will be able to use
+either a session ID or some other ways to spin up the conversation so that the
+conversation within the terminal is started exactly at the position of the sub-agents.
+Users have the same ways of monitoring the data of different sub-agents and injecting
+problems into them if needed, but just without the graphic user interface."*
+→ **Tasks 38b, 38c and 42b.**
+
+*Reading of record:* **"inject problems" is read as "inject prompts"** — the act
+`workspace_send_prompt` performs and that `biorouter session send` already performs.
+Nothing in the design has a notion of injecting a *fault*, and the phrase sits between
+"monitoring" and "if needed", where a steer belongs. Recorded so it can be corrected: if
+fault injection was meant, Task 38c is mis-scoped and needs re-specifying.
+
+*Three gaps, one confirmation, all measured at `aad74e79` rather than assumed:*
+- **Discovery was impossible from a terminal.** `handle_session_list` → `list_sessions()`
+  → `list_sessions_by_types(&[User, Scheduled])`: `sub_agent` rows are filtered out in
+  SQL, and `lookup_session_id`'s `--name` branch reads the same list. → Task 38b, which
+  also fixes the fact that `create_subagent_session` named **every** child the literal
+  `"Subagent task"`, so no surface — CLI, History, or `workspace_list` — could tell two
+  siblings apart.
+- **`--resume` cannot be made into "attach".** It builds a second `Agent` in the CLI
+  process over the shared store, and the turn lock (`AppState::active_turns`) is an
+  in-process map, so nothing coordinates the two writers. Attaching to a *live* session is
+  a different problem. → Task 38c, which reuses the GUI's own two routes (`/interrupt`,
+  `/reply`) and invents no second steering path.
+- **The property needed a mechanism.** → Task 42b: a capability table whose
+  `cli_counterpart` match has no wildcard arm (a new capability with no CLI row is
+  `E0004`, a build failure), checked for exact-set equality against
+  `WorkspaceClient::get_tools()` and against the `workspace`-tagged OpenAPI operations.
+- **Spawning from the CLI already works, and this was verified rather than assumed.** The
+  CLI links the agent library directly and drives `Agent::reply` →
+  `prepare_tools_and_prompt` → `list_tools` → `ensure_spawn_extension`, the same chain the
+  daemon uses; `subagent_tool_enabled` initialises to `true` and the CLI's `AgentConfig`
+  takes `biorouter_mode` from the global config (default `Auto`), so `subagents_enabled`
+  holds for any CLI session with at least one real extension loaded. Task 33's turn lease
+  is explicitly optional (`match workspace_services::get() { Some(..) => …, None => … }`),
+  so Phase 3 does not break the headless spawn. **No fourth task is needed** — the gap was
+  never spawning, it was seeing and steering what was spawned.
+
+*One asymmetry that remains, deliberately.* `workspace_services::get()` is `None` in a CLI
+process — `install_workspace_services` is called only from `biorouter-server`'s
+`commands/agent.rs` — so an agent running **inside** `biorouter` can `note` into another
+session but cannot `turn` or `steer` it. That bounds an *agent's* reach in a headless
+process; it does not bound the *human's*, who reaches the daemon through Task 38c. Task
+42b records it as a declared row rather than letting it pass unnoticed.
+
 ## Other decisions
 
-**6. KB plurality is a separate issue, implemented FIRST.** Single-active-KB is the real
-design, not a testing artifact (verified: `set_active_for_session` persists one id;
-`kb_id_or_active` errors without one; single-base search; `active_kb: Option<String>` on
-the wire; single-select GUI chip). It became [issue
+**6. KB plurality is a separate issue, implemented FIRST.** Single-active-KB was the real
+design at the time, not a testing artifact (verified then: `set_active_for_session`
+persists one id; `kb_id_or_active` errors without one; single-base search;
+`active_kb: Option<String>` on the wire; single-select GUI chip). It became [issue
 #45](https://github.com/BaranziniLab/biorouter/issues/45) with its own plan. BR-71
-*consumes* the plural API for assignment at session start and hot-swap mid-session.
-→ [Prerequisites](#prerequisites--two-both-ship-before-this-plan), Tasks 9, 12,
-15, 24, 32 — with a clearly-marked single-KB fallback if #45 slips.
+*consumes* the resulting API for assignment at session start and hot-swap mid-session.
+→ [Prerequisites](#prerequisites--two-both-now-shipped), Tasks 9, 12,
+15, 24, 32.
+*Amended 2026-07-28, after #45 landed:* what shipped is a **subtractive hidden-set model
+with a validated primary pointer**, not a plural rename of the old names, so the
+decision's *consumption* half is unchanged but every signature moved. The single-KB
+fallback this decision used to point at is **deleted** — it described a world neither
+branch of #45 produced. See reconciliation #6.
 
 **7. Focus etiquette ships NOW** (design §8.1): a "never open tabs automatically" setting,
 honoured by the daemon (so the tool result cannot claim a tab opened when none did).
@@ -16704,12 +25568,21 @@ the setting on, every child would otherwise consume one of the four slots while 
 ever opened, and the fifth spawn would be told "you already have 4 subagent tabs open,
 which is the limit" when the true count is zero. That is the same fabricated constraint
 this task's `handle_open` rewrite exists to prevent on the `workspace_open` path.
+*Implementation refined again 2026-07-28 (gate sweep):* the decision's operative clause is
+*"so the tool result cannot claim a tab opened when none did"*, and that string was
+written inline in `handle_open` with **no test**. Task 29 now lifts it into a pure
+`open_result_text(session_id, placement, focus, announce_only, gui_result)` and asserts
+both arms — announce-only must not contain the word "opened" and must carry the explicit
+"Do not tell the user you opened a tab"; the normal arm must distinguish
+`opened` / `NOT opened` and `focused` / `background`. `apply_focus_etiquette`'s frame
+assertions are identical whether or not the text lies, so the frame tests could never have
+caught this.
 
 **8. `MessageMetadata` loses `Copy` — accepted.** Mechanical `.clone()` fallout.
 → **Task 2**, reconciliation #4.
 
-**9. CLI surface ships in Phase 1**: `biorouter sessions watch` and
-`biorouter sessions send`, over a raw socket so the CLI gains no HTTP dependency.
+**9. CLI surface ships in Phase 1**: `biorouter session watch` and
+`biorouter session send`, over a raw socket so the CLI gains no HTTP dependency.
 → **Task 20**.
 
 **10. Registered children are PINNED out of the `AgentManager` LRU** (a `HashMap`
@@ -16748,10 +25621,26 @@ the workspace spine — turn lease, `AgentManager` registration, bus publication
 consulted worker is observable, steerable and cancellable like a glass-box subagent. Its
 own contract (name, params, depth-1, per-profile timeout, blocking answer, error
 envelopes) is unchanged. → **Task 41**.
+*Implementation note added 2026-07-28 (drift sweep):* "bus publication" makes this the
+**third** publication site in the plan, after `run_turn` (Task 6) and the subagent tee
+(Task 34), and it inherits reconciliation #23's ordering obligation — publish every
+`AgentEvent` variant once, in stream order, `MessagesPersisted` included. Task 41's loop
+does this for free because the publish sits after the text accumulation and outside the
+`if let AgentEvent::Message(...)` arm; restructuring it into a per-variant match, or
+skipping the accounting frame "because consult ignores it", breaks the invariant for the
+observer tab this decision exists to enable. Also confirmed by the same sweep: the two
+prerequisites this task was said to be waiting on have **shipped** — `impl TurnGuard`
+with `turn_id()` (`state.rs:65-83`, Task 6) and `session_events::{subscribe, publish,
+SessionBusEvent, Subscription::try_recv}` (Task 5).
 
 **14. The chatrecall suggestion is BUILT, not a docs note.** Enabling Workspace Control
 surfaces a one-time, dismissible suggestion to enable Chat Recall. Suggest, never force —
 the design's word. → **Task 30**.
+*Implementation note added 2026-07-28 (drift sweep):* the affordance is bypassed
+entirely when `ExtensionsSection` is given a `customToggle` prop (`:94-97` returns before
+the suggestion). Nothing in the app passes it today — verified, `grep -rn customToggle
+ui/desktop/src` matches only the component's own declaration — but an onboarding surface
+that adopted it would silently drop decision 14.
 
 **15. §8.3 cross-window targeting: the focused-else-most-recent heuristic is confirmed
 for v1.** No `window_id` parameter on `workspace_open` yet. → **Task 22**
@@ -16781,7 +25670,7 @@ dispatches, both `workspace__subagent` and the bare `subagent` are intercepted.
 → **Task 19**.
 *Implementation refined after review:* because the interception happens **before**
 `ExtensionManager::dispatch_tool_call`, the `available_tools` check at
-`extension_manager.rs:1333` never runs for this name — so the arm re-checks the grant
+`extension_manager.rs:1483-1484` never runs for this name — so the arm re-checks the grant
 itself (`is_extension_tool_available("workspace", "subagent")`). Without it, a session
 whose `workspace` entry was deliberately restricted could still spawn via the bare name.
 
@@ -16795,7 +25684,7 @@ subagents spawn this way; the standalone `create_subagent_tool` advertisement go
 **21. AUTO-ENABLE: a session with subagents enabled gets the workspace extension
 injected.** Two-tier, so §5's blast radius is unchanged: an auto-injected entry carries
 `available_tools: ["subagent"]` (enforced on both the advertisement path,
-`extension_manager.rs:971`, and the dispatch path, `:1332`), while a user-enabled entry
+`extension_manager.rs:1119`, and the dispatch path, `:1483-1484`), while a user-enabled entry
 carries `[]` = everything. → **Task 18**.
 *Implementation refined after review, twice:* (i) the injection runs **before**
 `get_prefixed_tools`, not where the old push was — that function reads the extension
@@ -16836,6 +25725,18 @@ out; headless degrades to today's invisible run with no parameter and no error.
 **25. Nesting stays FLAT — no nested subagents.** Now enforced twice: the precise
 `is_spawn_tool_call` guard and the broader §5 workspace guard (the spawn tool is a
 workspace tool). → **Task 36**.
+⚠ **`is_spawn_tool_call` does not exist in the tree — this plan creates it.** Read
+"enforced twice" as the *post-plan* state. At HEAD the spawn-call test is an inline
+predicate, `let bound_dispatch = tool_call.name != SUBAGENT_TOOL_NAME;`
+(**`agent.rs:2843`** in a worktree at `bab6fba2`; the `:2812` this note used to give is
+pre-drift — Phase 1's own commits moved `agent.rs` +198 lines — reasoning `:2805-2810`),
+and **Task 19 Step 5 extracts it into `is_spawn_tool_call` before Task 36 can guard with
+it**. That makes 19 → 36 a real dependency, not just a number ordering. Noted here
+because a reader who takes this decision at face value goes looking for a helper that has
+never existed — the same phantom hunt reconciliation #17 was corrected to prevent. *As of
+the 2026-07-28 Phase-2/3 reconciliation the dependency is also stated in the two tasks
+themselves* (Task 19 Step 5's consumer note, Task 36's Depends block), so it survives a
+reader who never opens this section.
 
 **26. Visible child tabs are CAPPED at 4 per fan-out.** Beyond the cap children run in the
 background — never refused — and are reachable from History and from the parent's summary,
@@ -16845,7 +25746,9 @@ with `BIOROUTER_WORKSPACE_MAX_VISIBLE_CHILD_TABS`, matching the injected-turn ca
 decision explicitly points at; (ii) the cap is claimed **atomically** inside
 `VisibleChildGuard::try_claim`. The check-then-claim shape it replaced cannot hold under
 a parallel fan-out — which is the only situation the cap exists for, since subagent
-dispatch is deliberately excluded from the tool-dispatch semaphore (`agent.rs:2318`) and
+dispatch is deliberately excluded from the tool-dispatch semaphore (**`agent.rs:2843`** at
+`bab6fba2`, the `let bound_dispatch = tool_call.name != SUBAGENT_TOOL_NAME;` line; the
+`:2812` given here before is pre-drift; reasoning `:2805-2810`) and
 concurrent calls are driven by `select_all`; (iii) **announce-only (decision 7) claims
 no slot**, so the cap counts tabs that actually exist and its message stays true;
 (iv) "the parent's summary, which says why" is delivered on the **background path too**
@@ -16854,11 +25757,89 @@ spawn returns before any `SubagentResult` exists, and a fan-out of background ch
 is precisely the shape this cap exists for.
 
 **27. Build order: multi-KB (#45) first, then this plan end-to-end** (all four phases).
-→ [Prerequisites](#prerequisites--two-both-ship-before-this-plan).
+→ [Prerequisites](#prerequisites--two-both-now-shipped).
 
 **28. Review mode: revise → re-run the adversarial critics → fix findings → summarize.**
 Implementation does not start on the summary alone; the operator reviews the revised plan
 first. (Process decision; it governs how this document reached you, not what it builds.)
+
+## Round 3 — approval delegation for agent-created sessions (operator ruling, 2026-07-30)
+
+**29. An agent-created session's approvals belong to the agent that created it.** The
+parent decides what it can from its own task context; what is beyond it it relays to *its*
+layer, one hop at a time, until the root asks a person. The user may answer at the
+escalation surface **or** in the sub-agent's own tab — once, in either place — and the
+grant is satisfied for the whole chain, scoped to that one specific ask (this tool, these
+exact arguments; the permission store's existing key). → **Task 36b**.
+*Supersedes* Task 14's `target_mode_requires_approval` `None => true` branch, which
+refused headless `mode:"turn"` whenever the target had no live agent — the normal case.
+Task 14's code is unchanged; the narrowing is its own commit.
+
+The next two decisions are **bounds the operator did not state**, added on the
+implementer's judgement and **approved on 2026-07-30 with an explicit qualifier**:
+
+> that sounds good. we can potentially adjust it as the users test use this functionality
+
+So both are a deliberately conservative **launch setting**, not a permanent invariant.
+They are **not one dial**, and the difference is the whole point of recording them
+separately: decision 31 narrows a *set*, decision 30 *is* the security model. Both are
+enforced at one place — `DelegationPolicy` in
+`crates/biorouter/src/agents/approval_relay.rs` — precisely so that whoever revisits them
+has a single edit and a single test, rather than three checks in three functions of which
+the first relaxation will miss one.
+
+**30. NO AMPLIFICATION: an agent may grant only what it already holds. STRUCTURAL.**
+A parent cannot confer authority it does not itself have, so delegation narrows down the
+chain and never widens. Enforced by construction rather than by policy:
+`DelegationPolicy::ask_ancestor` runs the descendant's call through the **ancestor's own**
+`ToolInspectionManager`, in the ancestor's own `BioRouterMode`, and reads the verdict out
+of the same combining function that decides whether the ancestor itself may run a tool
+(`tool_inspection.rs:175` → `:205`). `DelegationPolicy::agent_decision` caps what an agent
+can produce at `Permission::AllowOnce`/`DenyOnce` — the persistent `AlwaysAllow` /
+`AlwaysDeny` forms write a machine-wide `PermissionLevel` and remain a human's to make.
+→ **Task 36b**, Step 4 and Step 5b gate (b).
+
+*Why conservative at launch:* an agent that can confer more than it holds turns a
+delegation chain into an escalation ladder — the failure is silent, compounding, and
+indistinguishable from correct operation until something destructive runs.
+*What would justify loosening it:* **nothing short of a different security model.** This is
+not a tuning knob. A concrete request that looks like loosening it — "a coordinator should
+be able to grant a worker the `developer` extension it was spawned without" — is really a
+request to widen what the *coordinator* holds, which is an ordinary permission decision
+made in the coordinator's own session, and leaves this bound untouched.
+*What must not be loosened even then:* the `AllowOnce` ceiling. An agent producing a
+persistent grant means one delegated decision silently rewrites machine-wide permissions.
+
+**31. ALWAYS-CONFIRM INSPECTORS STILL REACH A HUMAN, AT ANY DEPTH. TUNABLE.**
+Decision 1 specified `WorkspaceMutationInspector` to confirm *"regardless of mode"*; a
+parent agent must not be able to satisfy that on the user's behalf, and the same holds for
+anything `SensitiveOpsInspector` or `SecurityInspector` flags. Such an ask is classified
+`AskClass::HumanOnly` by `DelegationPolicy::class_of` (the only reader of
+`HUMAN_ONLY_INSPECTORS`), and `ask_ancestor` checks it **before** consulting the ancestor
+at all, so no permission mode and no inspector configuration can reach past it. A
+`HumanOnly` ask is also never memoized across the tree. This preserves the existing
+guarantee that a security inspector's `RequireApproval` beats a user `always_allow`
+(`tool_inspection.rs:261-280`) — Task 36b must not become a way around it.
+→ **Task 36b**, Step 4 and Step 5b gate (c).
+
+*Why conservative at launch:* the set was chosen before anyone had watched the feature run,
+and an always-confirm inspector firing on a delegated call is exactly the case where a
+silent auto-approval would be least recoverable.
+*What would justify loosening it:* real usage showing a specific inspector confirming
+repeatedly on calls the user approves every time — approval fatigue is a real harm, and the
+honest fix is dropping that inspector's name from `HUMAN_ONLY_INSPECTORS`, not weakening
+decision 30.
+*What must not be loosened even then:* `workspace_mutation` on a **cross-session** capability
+change — decision 1 made that a blocker for the whole plan, and delegation is not the place
+to quietly retire it. And the check's **position** must stay first in `ask_ancestor`: moving
+it after the inspection round lets an Auto-mode ancestor's blanket allow arrive first, which
+is a silent bypass rather than a narrowing. The Step 5b mutation table asserts both.
+
+⚠ **Do not couple the two in the tests.** Task 36b's bound-30 tests pass
+`AskClass::Delegable` explicitly and never read `HUMAN_ONLY_INSPECTORS`, so narrowing that
+set — even to `&[]` — cannot make them pass for the wrong reason. If a future edit makes a
+bound-30 test go green because the confirm set shrank, the gate has rotted; fix the test,
+not the bound.
 
 ## New questions this revision surfaced
 
@@ -16875,40 +25856,41 @@ entries below are kept for the reasoning, each prefixed with the ruling:
 - **Question 2 — RULED: keep 600 s.** `workspace_watch` inherits `send_prompt`'s clamp
   verbatim, per decision a. Question 8, which asks the same thing from the other
   direction, is settled by the same ruling.
-- **Question 9 — RULED: fix the root cause instead.** The operator rejected both in-plan
-  options (refuse, and route through the soft-interrupt queue). The requirement they set
-  is stronger than either, and stronger than "don't lose the write":
+- **Question 9 — RULED: fix the root cause instead. SATISFIED 2026-07-28.** The operator
+  rejected both in-plan options (refuse, and route through the soft-interrupt queue). The
+  requirement they set is stronger than either, and stronger than "don't lose the write":
 
   > **A note must always be inserted into the prompt, wherever in the conversation it
   > sits — and it must not disappear when the conversation is compacted.**
 
-  That is **two** defects, not one, and `note` is unsafe until both are fixed:
+  That is **two** defects, not one, and `note` was unsafe until both were fixed. Both
+  shipped, merged as `a869a650` (#51):
 
-  **(a) The append is destroyed by a concurrent write-back.**
+  **(a) The append is destroyed by a concurrent write-back. FIXED.**
   `replace_conversation` DELETEs and re-INSERTs the entire message set, so a turn that
-  computed its conversation before the note existed writes a set without it. BR-12's
-  freshness discipline (`eager_swap_is_safe`, `context_mgmt/mod.rs:661-671`) guards the
-  background compaction path but was never extended to the in-turn sites
-  (`agents/agent.rs:3061`, `:4388`). The tool has already returned success by then.
+  computed its conversation before the note existed wrote a set without it — after the
+  tool had already returned success. Both in-turn sites now go through
+  `replace_conversation_preserving_tail`, which carries a foreign append over instead of
+  deleting it (`agent.rs:3606-3613`; `:5034` → `:2086`/`:2188`). The old guard this
+  section named, `eager_swap_is_safe`, was **deleted** by `505fe77c` — the discipline
+  moved into the store rather than being extended outward.
 
-  **(b) The note is summarized away even when the write survives.**
+  **(b) The note is summarized away even when the write survives. FIXED — and it is now
+  Task 14's job to use the fix.**
   Compaction keeps only the last `keep_last_turns` turns verbatim (default 4,
-  `DEFAULT_COMPACT_KEEP_LAST_TURNS`) and summarizes the older prefix
-  (`recent_window_split`, `compact_messages_with_window`). **There is no mechanism to
-  preserve an individual message across that boundary** — no pin, no sticky flag, nothing
-  `recent_window_split` consults. So a note that has fallen more than four turns back is
-  dissolved into a summary at best and dropped at worst. Fixing (a) alone would produce a
-  note that lands, is confirmed, and then quietly evaporates a few turns later — which is
-  the same broken promise arriving more slowly.
+  `DEFAULT_COMPACT_KEEP_LAST_TURNS`) and summarizes the older prefix. When this question
+  was written there was **no mechanism** to preserve an individual message across that
+  boundary. There is now: `MessageMetadata.pinned`, honoured at all five compaction
+  sites, with a budget and oldest-first eviction (`context_mgmt::pins`). It is
+  unconsumed in the shipped tree and reserved for this call **by name**
+  (`message.rs:617-621`).
 
-  Both parts are `biorouter`-crate changes outside this plan's blast radius, tracked on
-  `fix/conversation-writeback-freshness`. Reconciliation #16's "refuse" is the interim
-  behaviour, not the answer.
-
-  **What Task 14 may assume once the prerequisite lands:** that a message marked for
-  preservation is carried verbatim through every compaction path, so `note` can append and
-  return success truthfully. **What it must not do before then:** ship any `note`
-  implementation, including one that appends and hopes.
+  **What Task 14 must do:** call `Message::pinned` on the note. Half (a) alone would
+  produce a note that lands, is confirmed, and then quietly evaporates a few turns later
+  — the same broken promise arriving more slowly, which is what this ruling exists to
+  prevent. Reconciliation #16's interim "refuse" is **retired**, not merely satisfied:
+  the hazard it named is gone, and refusing would deny the tool's own recommended
+  headless fallback in the case a parent most wants it.
 
 1. **Should the auto-injected spawn surface be visible in Settings?** *Restated after
    review — the previous version of this question was based on a false premise.* It
@@ -16978,16 +25960,14 @@ entries below are kept for the reasoning, each prefixed with the ruling:
    lower it in both places and add a per-process cap on concurrently parked workspace
    waits.
 9. **Should `mode:"note"` queue instead of refusing when the target is mid-turn?**
-   Reconciliation #16 makes it refuse, because a note appended during a turn that then
-   compacts is silently deleted after the tool reported success. Refusing is the
-   conservative direction and names the alternatives (`steer` now, or `workspace_watch`
-   then retry). The richer fix — route `note` through the soft-interrupt queue so the
-   running turn itself persists it — would make it always succeed, at the cost of
-   changing "note" from "append quietly" into "the running agent sees this mid-turn",
-   which is `steer`'s semantics. A third option is to fix the root cause: extend the
-   BR-12 freshness discipline (`context_mgmt/mod.rs:661-671`) to the two in-turn
-   `replace_conversation` sites, which is a `biorouter` change outside this plan's blast
-   radius and deserves its own issue.
+   **CLOSED — neither. It appends, pinned, mid-turn or not.** The question presupposed
+   that a note appended during a turn that then compacts is silently deleted after the
+   tool reported success. It no longer is: the third option this entry floated — fix the
+   root cause — is what the operator chose and what shipped (#51). Both in-turn rewrite
+   sites are guarded, a foreign append is carried over, and `MessageMetadata.pinned`
+   keeps the note out of the summary. So neither the refusal (reconciliation #16,
+   retired) nor the soft-interrupt-queue variant (which would have silently turned
+   "append quietly" into `steer`'s "the running agent sees this mid-turn") is needed.
 10. **Is `AnnounceOnly` a fourth spawn outcome the GUI should surface differently?**
     Task 36 gives it its own `ChildVisibility` variant and its own truthful
     `parent_note`, and it still posts the downgraded notification. What it does not do
@@ -17009,13 +25989,34 @@ following three adversarial critic passes (decision 28's review gate is satisfie
 - **Execution mode: subagent-driven, task by task** — option 1 below. A fresh implementer
   per task carrying the FULL task text, then a spec-compliance reviewer and a
   code-quality reviewer per task. Never parallel implementers. Stop on BLOCKED.
+- **Binding orderings inside Phase 1 — FIVE, not four:** 6 → 8, **7 → 8**, 11 → 15,
+  18 → 19, 19 → 19b. The 7 → 8 entry was added by the 2026-07-28 drift reconciliation
+  and is the one an orchestrator is most likely to violate, because 7 and 8 look like
+  independent files. They are not: Task 8's SSE loop calls two functions Task 7 creates,
+  and one of them (`map_bus_event`) must gain a `MessagesPersisted` arm to compile at all
+  against today's eight-variant `AgentEvent`. Dispatching 8 before 7 produces an
+  implementer under compile pressure who reaches for `_ => None` and silently turns off
+  #59 for every `/reply` client. See [Execution options](#execution-options).
+- **Binding orderings inside Phase 3 — TWO** (added 2026-07-30 with Task 36b): 32 → 36b
+  and 33 → 36b. Task 36b routes along `Session.parent_session_id`, which **Task 32**
+  stamps — without it every session looks like a root and 36b is inert, with every one of
+  its unit tests still green (they construct sessions directly). And its ancestor lookup
+  is `AgentManager::peek_agent`, which **Task 33** extends to consult the pinned sidecar —
+  before that, an ancestor that is itself a registered child is invisible and depth-2
+  delegation silently degrades to "ask the human". Both are stated in 36b's own Depends
+  block so they survive a reader who never opens this section.
 - **Prerequisite 1 — issue #45 (multi-KB): SATISFIED.** Merged to `main` in `84d27fd4`
   on 2026-07-27; verification recorded in `docs/knowledge-base/multi-kb-verification.md`.
-- **Prerequisite 2 — a note always reaches the prompt: IN PROGRESS** on
-  `fix/conversation-writeback-freshness`. Task 1 does not start until it merges, and
-  Task 14 must not ship a `mode: "note"` implementation before it. It has **two parts**
-  (see the ruling on question 9): the append must survive the write-back race, *and* it
-  must survive compaction.
+  ⚠ It shipped in a **different shape** from the one this plan predicted — a subtractive
+  hidden-set model with a mandatory, validated primary pointer, not a plural rename. See
+  [Prerequisites](#prerequisites--two-both-now-shipped) and reconciliation #6;
+  Tasks 9, 12, 15, 24 and 32 were rewritten against the real API on 2026-07-28.
+- **Prerequisite 2 — a note always reaches the prompt: SATISFIED.** Merged to `main` as
+  `a869a650` (#51). Both parts landed (see the ruling on question 9): the append survives
+  the write-back race (`replace_conversation_preserving_tail` at both in-turn sites), and
+  it survives compaction (`MessageMetadata.pinned`). Task 1 is unblocked. **Task 14 now
+  carries an obligation rather than a prohibition:** it must persist the note *pinned*,
+  and reconciliation #16's interim mid-turn refusal is retired.
 
 Also ruled on at approval time, and folded into the questions section above: question 1
 (stay silent — no delegation badge), questions 2 and 8 (keep the 600 s clamp), and
@@ -17037,17 +26038,36 @@ its runner, the always-confirm hook, the auto-injection and its persistence excl
 the breaking tool-surface change, permission-relevant code, the control-plane bridge, and
 the cross-subsystem consult unification — on the most capable.
 
-**Four orderings inside Phase 1 are not negotiable**, because each earlier task removes
-a hazard the later one would otherwise create: Task 6 before Task 8; Task 11 before
-Task 15; **Task 18 before Task 19** (Task 19 deletes the standalone spawn advertisement,
-so without Task 18's injection *and* its extension-side advertisement every existing
-config loses delegation the moment it lands); and **Task 19 before Task 19b** (19b's
-`subagent_status` removal assumes the dispatch rewiring is already in).
+**Five orderings inside Phase 1 are not negotiable**, because each earlier task removes
+a hazard the later one would otherwise create: Task 6 before Task 8; **Task 7 before
+Task 8** (see below); Task 11 before Task 15; **Task 18 before Task 19** (Task 19 deletes
+the standalone spawn advertisement, so without Task 18's injection *and* its
+extension-side advertisement every existing config loses delegation the moment it lands);
+and **Task 19 before Task 19b** (19b's `subagent_status` removal assumes the dispatch
+rewiring is already in).
+
+**7 → 8 is a hard build dependency, not a numbering convention.** Task 8's SSE
+subscription calls `crate::routes::session_events::map_bus_event` and
+`bus_lag_resync_frame`; both are created by Task 7, so a Task 8 landed first does not
+compile. It is listed here as binding because the failure it prevents is worse than a
+missing symbol: `map_bus_event` must carry an explicit `AgentEvent::MessagesPersisted`
+arm (`AgentEvent` has eight variants — `agent.rs:672`), and an implementer who writes
+Task 8's loop first, hits `E0004`, and silences it with `_ => None` gets a green build,
+a green test suite, and no `/reply` client that ever learns a stored message id again.
 
 **2. Inline Execution** — the executing-plans skill in one session with checkpoints at
 each phase gate (Tasks 21, 31, 40, 44).
 
-# Self-review (re-performed after the SECOND and THIRD adversarial-critic fix passes, 2026-07-27)
+# Self-review (re-performed after the SECOND and THIRD adversarial-critic fix passes, 2026-07-27; a FOURTH pass — the drift amendment — was added 2026-07-28)
+
+> **Read this first.** The three passes below ran against a tree that no longer exists.
+> On 2026-07-28 this plan was amended against **181 commits** of `main`
+> (`67822ea3` → `275d735d`; 175 non-merge, 11 merges, 146 files, +42,112/−4,173), and
+> **eight of its 45 tasks were CONFLICTED** — not drifted, *conflicted*: they rested on
+> premises the tree had made false. See [Fourth pass](#fourth-pass--the-drift-amendment-2026-07-28-181-commits)
+> for what changed and what is still unverified. **Nothing in this plan has been
+> compiled**, before or after the amendment; that has been true at every pass and is
+> the single most important thing to know about it.
 
 A fresh pass over the twice-revised document, then a third pass over the result. Each
 self-review made claims the next critic falsified; those are corrected here rather than
@@ -17100,6 +26120,11 @@ incompletely** — 45 findings, all applied:
   a `reply.rs` session read and `agent.reply` call that Task 8 removes 27 tasks earlier,
   which would have left `human_intervened` permanently false with every unit test green;
   and Task 29's Files list named a function Task 36 creates one phase later.
+  *(The 2026-07-28 Phase-2/3 reconciliation found the **other half** of the first one: the
+  body had been repaired but Task 35's **Files list** still said "`reply.rs` (`interrupt`
+  only, `:910`)", and `:910` is inside `pub async fn reply(` — the very range Task 8
+  replaces. A repaired body plus an unrepaired Files list is worse than neither, because
+  the Files list is read first. Both now name `interrupt` by symbol.)*
 - *Four security gaps*, all inside guarantees the decisions already made:
   `workspace_open { new: { extensions } }` bypassed decision 1's always-confirm hook
   entirely; `workspace_set_tools { add_extensions }` bypassed issue #42's
@@ -17194,8 +26219,9 @@ every Rust and TypeScript anchor in this plan is unmoved).
   `import { ExtensionsSection }` is `undefined` and React throws at render);
   `<ExtensionsSection /* the props the component requires */ />`, prose in a code fence;
   and no `ConfigContext` mock, though the component calls `useConfig()`, which **throws**
-  outside a provider (`ConfigContext.tsx:341-347`) — and the context object is
-  module-private (`:66`), so it cannot simply be wrapped. Rewritten in full against the
+  outside a provider (`ConfigContext.tsx:437-443`, throw at `:440` — the third pass's
+  `:341-347` was correct at `67822ea3` and is pre-drift now) — and the context object is
+  module-private (`:90`, was `:66`), so it cannot simply be wrapped. Rewritten in full against the
   sibling `capabilities/CapabilitiesSection.test.tsx` precedent, and — unlike every other
   code block in this document — **executed against the real component before being
   written down**, including the negative control (with the Step 3 wiring removed the
@@ -17245,6 +26271,332 @@ every Rust and TypeScript anchor in this plan is unmoved).
   its test, and the new `ExtensionsSection.test.tsx` — were missing from the created-files
   inventory and are added.
 
+## Fourth pass — the drift amendment, 2026-07-28 (181 commits)
+
+Not an adversarial-critic pass. A **reconciliation against the tree**, forced by the
+gap between where this plan was written and where `main` had got to, and run in three
+phases (blockers → drift → defects) against `275d735d`.
+
+**The measurement, stated plainly so nobody re-derives it:**
+
+```bash
+git log --oneline 67822ea3..275d735d | wc -l              # 181  (175 non-merge, 11 merges)
+git diff --stat 67822ea3..275d735d | tail -1              # 146 files, +42,112 / -4,173
+git log --oneline 67822ea3..275d735d -- crates/biorouter/src/agents/agent.rs | wc -l  # 13
+```
+
+The churn landed on exactly the files this plan modifies most: `agent.rs` **13**
+commits (6,001 → 6,817 lines), `session_manager.rs` **11**, `context_mgmt/` **6**,
+`routes/reply.rs` **4** (1,429 → 1,832), `extension_manager.rs` **4**.
+
+**Eight of 45 tasks were CONFLICTED — 6, 7, 8, 9, 14, 15, 24, 34.** "Conflicted" is a
+stronger word than the twenty-one merely-drifted tasks earn, and it is the right one:
+each rested on a premise the tree had made false, so following the task literally
+produced code that did not compile or, worse, compiled and was wrong.
+
+- **7 and 34** were straight `E0004`s. `AgentEvent` gained an eighth variant
+  (`MessagesPersisted`, `agent.rs:672`); the plan's `map_bus_event` matched seven
+  arms with no wildcard. The dangerous part was never the compile error but its
+  obvious repair: `_ => None` builds green, tests green, and **no `/reply` client ever
+  learns a stored message id again** — silently undoing #59.
+- **6 and 8** would have reintroduced #51 W5, a data-loss fix that had merged eight
+  commits earlier, *and certified it*: Task 8's gate read
+  `grep -c "replace_conversation" turn.rs # Expected: 1`, so an implementer who wrote
+  the correct seed-only runner would have seen `0`, read the gate, and **added** the
+  destructive call to satisfy it. Both greps are now anchored patterns behind two
+  property tests, with "necessary and not sufficient" stated in the task.
+- **9, 15, 24 and 32** were written against `get_active_for_session` /
+  `set_active_for_session`, which #45 did not make plural — it deleted them. The
+  replacement is a subtractive hidden-set model plus a mandatory four-valued primary
+  pointer. The plan's single-KB FALLBACK block was **deleted rather than left**,
+  because #45 invalidated *both* of its branches and a stale escape hatch reads as a
+  fully-specified design.
+- **14** conflicted in the plan's favour: its blocker had shipped. `eager_swap_is_safe`
+  was deleted, both in-turn rewrite sites are guarded, and `MessageMetadata.pinned`
+  landed reserved for `workspace_send_prompt { mode: "note" }` **by name**. So
+  reconciliation #16's mid-turn refusal is retired and Task 14 gained an obligation
+  instead: call `.pinned()`.
+
+**What the amendment also had to fix that was never drift.** Three review passes had
+each approved text the next pass falsified, and this one found the same. The sharpest:
+`is_spawn_tool_call` — cited by reconciliation #17 *and* Task 19 Step 5 *and* decision
+25 as something to extend — **has never existed anywhere under `crates/`** (the only
+hits in the repo are this plan file's own 29 references to the name). The exemption
+is an inline `let bound_dispatch = tool_call.name != SUBAGENT_TOOL_NAME;`
+(`agent.rs:2812`), so Task 19 Step 5 now *extracts* the predicate and then adds its
+sibling, in that order, and decision 25 says so too.
+
+**Two of the drift survey's own findings did not survive re-measurement, and the plan
+now records the adjudication rather than the finding.** The survey reported Task 19's
+`create_subagent_tool` sweep as "13 expected, 10 actual" and Task 19b's
+`subagent_status` sweep as "31 expected, 22 actual". Re-running the plan's *exact*
+pipelines at `275d735d` reproduces **13** (agent.rs 6 / reply_parts.rs 2 /
+subagent_tool_tests.rs 5) and **31** (subagent_tool.rs 17 / agent.rs 5 /
+subagent_handle.rs 5 / reply_parts.rs 3 / agents/mod.rs 1), line for line. The survey
+had dropped the `SUBAGENT_TOOL_NAME` alternation and the `grep -v` exclusion from the
+first, and counted occurrences rather than lines in the second. Both steps now carry a
+⚠ telling the engineer to **run the command as written and suspect the command before
+the tree** — because this plan's own warning applies to its reviewers too: *an
+engineer who reads a live count as a regression may delete a live call site to make
+the number match.*
+
+**Anchors: re-verified where amended, NOT globally.** Every file:line written *into*
+the plan by this pass was read out of `275d735d` first, and a resolver was run over
+all ~19,400 lines to prove no citation points past the end of its file. That is a
+weaker guarantee than it sounds: a citation can be in range and still wrong, and the
+near misses are the expensive ones. Three found by this pass, each in text a previous
+pass had approved:
+
+- `extension_manager.rs:999` was cited for `is_extension_enabled` in **Task 18** — the
+  one task whose whole subject is that `get_extension_configs` (which *is* at `:999`)
+  snapshots every loaded extension. `is_extension_enabled` is `:987`. Following the
+  citation lands on the exact function the task exists to defend against.
+- `CHAT_MODE_TOOL_SKIPPED_RESPONSE` moved **files**, not just lines
+  (`agents/tool_execution.rs:43`); no line-offset sweep finds that.
+- `routes/apps.rs:1879` was correct at the anchor commit and now lands in
+  `consult_deadline`'s doc. The anchor is `app_data_envelope` (`:1919`).
+
+**Where the amendment's blind spot was.** The drift pass re-anchored 24 task *bodies*
+and left **fourteen stale anchors in the reconciliations table** — the section a
+reader opens precisely when a task's number misses. Task bodies carry a
+"re-verified at `275d735d`" banner and get swept; the reconciliations read as settled
+prose about *decisions* and do not. The same asymmetry produced the three near misses
+above, all of which sit in prose rather than in a Files list. **A future drift pass
+should treat the preamble, the decisions of record and the self-review as first-class
+targets**, not as commentary on the tasks.
+
+**That blind spot was still open when this was written, and a later pass proved it
+(2026-07-28, second verification).** The paragraph above correctly *names* the failure
+mode and then does not close it. An independent sweep of all 122 comment-embedded
+citations found ten more errors, every one of them inside a `//` comment in a code
+snippet or in running prose, and **not one** in a Files list or an anchor table — the
+distribution the paragraph predicts. Two of them were inside tasks this very amendment
+rewrote. Concretely:
+
+- **Task 18** cited `:2424-2439` and `:2445-2461` for the two bodies its Step-3 snippet
+  leaves unchanged (real `:2918-2933` / `:2940-2955`), `:2565` for the non-Frontend
+  `add_extension` arm (real `:3057-3061`), and `:2596` / `:2600-2607` for
+  `subagents_enabled`'s mode gate and gemini refusal (real `:3082-3084` / `:3085-3092`).
+  All five are ~+490 off and all five land on plausible, unrelated code — while the same
+  task's Files list was correctly re-anchored, which is exactly what makes the comments
+  dangerous: an implementer who checks the Files list will trust the comments.
+- **Task 19** cited `:2656-2657` for the `sub_workflows` read feeding
+  `create_subagent_tool` (real `:3150-3151`), and **Task 19b** `:2653` for the
+  `if subagents_enabled { … }` block it empties (real `:3149-3160`) — same drift family.
+- **Task 13** attributed `message_blobs::externalize` to `session_manager.rs:3223`, which
+  is `get_conversation` (real call sites `:3475` and `:3687`).
+- **Task 1** placed the `ensure_session_incarnation_schema` call in `run_migrations`
+  (it is in `reconcile_loop_schema`) and cited a test at `:5620` (real `:5615`).
+- **Task 9's** server impl would not have compiled: its import list named
+  `WorkspaceServices` and `WorkspaceTurnLease` but not `KbPrimaryChoice` /
+  `KbSelectionView`, which the impl's own signatures use — an E0412 the plan flagged as a
+  class *two lines earlier*, for the neighbouring type.
+
+Worse than any anchor, that pass found a **gate that ran zero tests and exited 0**:
+Tasks 21 and 44 both filtered on `routes::reply::writeback_tests`, but the module is
+nested inside `mod tests`, so the substring never matched and the command reported
+`0 passed` — green, while testing nothing, over the exact regression blocker B2 exists to
+prevent. Every `--lib` filter in this plan has since been executed against the real test
+lists of all four crates; that one was the only filter naming existing code that matched
+nothing, and it is fixed. The remaining zero-match filters all name modules a task
+*creates*, which is correct by construction.
+
+**So the honest statement of this plan's citation coverage is** (restated 2026-07-28 by
+the verification amendment, which ran the same mechanical sweep over Tasks 22-44):
+
+- **Files lists and anchor tables** — swept repeatedly, for Tasks 1-21 at `275d735d` and
+  for Tasks 22-44 at `03ad602c`. Reliable, and they were reliable *even while the prose
+  beside them was wrong*, which is this document's demonstrated failure shape: in every
+  one of D2-D6 below, the Files list was correct and the comment or the running prose
+  next to it was not.
+- **Comment- and prose-embedded citations in Tasks 1-21** — swept once, mechanically, at
+  `275d735d` (ten errors found and fixed; listed above).
+- **Comment- and prose-embedded citations in Tasks 22-44** — swept once, mechanically,
+  at `03ad602c`: every `file.ext:NNN` in the range was extracted, resolved to a real
+  path, and compared against the line it names (203 citations). **Eight were wrong and
+  are fixed** (§ *Seventh pass*, S1-S8). The sweep resolves a citation to a file and a
+  line; it cannot tell that a *correct* line is being described wrongly, so it is a floor
+  on quality, not a proof.
+- **Not swept — and known to be wrong in 15 known places.** Five of the stale anchors
+  the Tasks 22-44 sweep corrected also appear **outside** that range, in Phase 1 tasks,
+  in the design-conformance section and in this self-review's own prose. This pass left
+  them alone deliberately: Phase 1 is being implemented on this branch *right now*, and
+  rewriting the tasks under an implementer's cursor is not this amendment's scope.
+  Grep for each and fix them in a pass that owns Phase 1
+  (`grep -n 'agent.rs:672\|agent.rs:605-673\|state.rs:290\|state.rs:65-79\|agent.rs:2812' <this file>`):
+
+  | Stale | Correct at `03ad602c` | Symbol | Hits outside Tasks 22-44 |
+  |---|---|---|---|
+  | `agent.rs:672` | **`:679`** | `MessagesPersisted(Vec<PersistedMessage>)` | 5 |
+  | `agent.rs:605-673` | **`:613-680`** | `pub enum AgentEvent` (8 variants) | 3 |
+  | `agent.rs:2812` | **`:2843`** | `let bound_dispatch = tool_call.name != SUBAGENT_TOOL_NAME;` | 3 |
+  | `state.rs:290` | **`:310`** | `AppState::get_agent_for_route` (`get_agent` is `:303`) | 1 |
+  | `state.rs:65-79` | **`:65-83`** | `impl TurnGuard` | 3 |
+
+  (Task 41's anchor table already carries `state.rs:290` **→ `:310`** as a *correction*,
+  which is why it is not counted here.) None of the five is capable of a silent wrong
+  edit — each names its symbol beside the number — but they are the same class the
+  Tasks 22-44 sweep just closed, and leaving them recorded beats leaving them hidden.
+
+The anchor rule (trust the symbol, not the number) is what makes the residue survivable,
+and it is why none of these was capable of causing a silent wrong edit — but it is not a
+substitute for the sweep.
+
+**What this pass did NOT do**, stated so it is not mistaken for done:
+
+- **It compiled nothing.** See the honest note below; the amendment does not weaken it.
+- It did not walk the bodies of the tasks the survey marked CLEAN (16, 17, 20, 22, 23,
+  25, 26, 28-31, 38-42) symbol by symbol. They received the whole-file citation sweep
+  and the semantic spot-check that found the `ConfigContext.tsx` anchors, and nothing
+  more.
+- It did not re-derive the design; every amendment is a change of *premise* or of
+  *anchor*, and where a decision's implementation moved, the decision of record was
+  edited to match rather than left to disagree with its task.
+
+## Seventh pass — the verification amendment, 2026-07-28 (nine defects *in the amendment*)
+
+An independent verifier re-ran the three amendment passes (blockers → gates → drift)
+against the tree and asked two questions of the result: *is each rewritten gate now
+capable of failing a wrong implementation?* and *is each re-anchored citation actually
+right?* It executed both Task 26 fixtures against the real reducer (the blocker is
+genuinely closed) and constructed a plausible wrong implementation for each of the twelve
+rewritten gates — **eleven of twelve catch it**. It then found eight defects in the
+amendment itself. This pass verified each independently at `03ad602c` and fixed them,
+plus the one residual gate hole and eight further citation errors turned up by a
+mechanical sweep of Tasks 22-44.
+
+**HEAD moved three times across these passes** — `ea15a4de` → `aaae5889` → `03ad602c` —
+and `ea15a4de` is **no longer an ancestor of HEAD** (rebased into `aaae5889`). That is
+new and it matters: dozens of anchors in this document are stamped "verified at
+`ea15a4de`", a commit a fresh clone cannot resolve. Ground rules' fourth bullet now says so.
+
+**D1 — Task 23's gate expected 10 where a correct implementation reports 24.**
+`cargo test -p biorouter-server --lib -- routes::workspace workspace:: auth::tests`
+was documented as `2 + 5 + 3 = 10`, but the bare `workspace::` filter also selects
+**`workspace::turn::tests::*`** — Task 6's runner suite, **14** tests (measured at
+`ea15a4de` and again at `03ad602c`; unchanged by Task 8). True total **24**. The middle
+filter is now **`workspace::bridge`**, which is disjoint from the other two and stable
+against Phase 1's churn, so `10` is again the right number *and* derivable from its
+three components. The fifth pass's own warning — *"the cheapest way to make a run of 10
+match an expectation of 9 is to delete a test, and the newest one here is the
+`/ui/workspace` exemption case"* — applied to the sixth pass's repair, 14× harder.
+
+**D2 — Task 36 Step 5b: two of six grep expectations were unproducible.**
+`grep -c "is_workspace_tool_refused_for(" agent.rs` was stated as **3** ("2 call sites +
+1 definition"); a correct implementation yields **9** — 1 definition, **1** production
+call (the task writes one, not two), and 7 test calls (3 in Step 1's block, 4 in Step 4's
+`the_workspace_guard_does_not_swallow_a_third_party_extension`).
+`grep -c "VisibleChildGuard::try_claim(" subagent_tool.rs` was stated as **2** ("the impl
+fn + the one call") and is wrong twice: the definition is `pub fn try_claim(` inside
+`impl VisibleChildGuard` and **does not match the pattern at all**, and Step 1 calls it
+six times. Real count **7**. Both are corrected, each now carries its breakdown, and an
+**anchored** companion grep (`if is_workspace_tool_refused_for(session.session_type, …)`
+→ 1; `match VisibleChildGuard::try_claim(parent_session_id)` → 1) was added so the
+production wiring has a gate that a later test cannot move. The step's closing paragraph
+now separates *anchored* patterns (a contract) from *bare symbol* patterns (a coarse net)
+instead of claiming all six were anchored — the same step already got
+`strip_workspace_extension` right and explained the hazard, so the distinction existed
+and was simply not applied twice in one block.
+
+**D3 — Task 35's Step-3 insertion instruction had inverted in meaning.** It read
+*"Task 6 reads it into `session` at `turn.rs:422-435` before building `SessionConfig` at
+`:437`. Insert the stamp after that read and before `turn.rs:458`."* At `03ad602c` the
+read is `:417-430`, `:435` is inside the `SessionConfig` literal, and **`:458` is the
+`.reply(` statement** — so read literally the instruction now permitted inserting between
+`all_messages.push(user_message.clone())` and `.reply(`, which is exactly the "one line
+too late" ordering bug the ⚠ block three lines below exists to prevent. The task held
+**three mutually inconsistent anchor sets within 250 lines**: a correct Files list, this
+inverted prose, and a code block still commented `// :458 / :461 / :464` from `bab6fba2`.
+All three are now one set, and the instruction names the statements
+(`let session = match state.session_manager().get_session(…)`, `let mut all_messages =
+extras`, `all_messages.push(user_message.clone())`, the `.reply(` call) with the numbers
+demoted to orientation. Only the Step-4 ordering gate (`stamp < push`, a `grep -n`
+comparison) kept this from being a shipped defect; that is now stated.
+
+**D4 — Task 35 cited `reply.rs:1123`/`:1134` for `interrupt`.** At `ea15a4de` those land
+on a doc-comment fragment and a test-fixture literal; at `03ad602c` `pub async fn
+interrupt(` is **`:1042`** and the queue call **`:1053`**. The Files list's `:1004`/`:1015`
+(correct at `ea15a4de`) and its "insert above `:1014`" are re-anchored to `:1042`/`:1053`
+and to the `let agent = state.get_agent_for_route(req.session_id).await?;` line (`:1052`)
+respectively.
+
+**D5 — Task 35 contradicted itself about whether `reply.rs` still holds the turn.** Its
+⚠ said `reply.rs` contains no session read and no `agent.reply(` call and that
+`grep -n "\.reply("` returns nothing; its body said *"At HEAD the `/reply` handler does
+read the session at `reply.rs:753` and call `.reply(` at `:798`"*. The grep returns
+nothing at `ea15a4de` **and** `03ad602c` — the ⚠ was right, the body was false, and the
+body is what an implementer reads inside the step. The body now states the deletion as
+fact, keeps the old anchors only as history, and records the contradiction.
+
+**D6 — Task 27's transport anchors, and the Ground-rules incident built on them.**
+Task 27 gave `content_type = "text/event-stream"` at `reply.rs:675` and `pub async fn
+reply(` at `:684`; at `03ad602c` they are **`:838`** and **`:847`**. ⚠ **Partially
+disagreeing with the verifier here, on evidence:** it reported those numbers as wrong at
+*every* revision including `ea15a4de`, and they are **not** — `git show
+ea15a4de:…/reply.rs` gives exactly `:675`/`:684`. So the Ground-rules "+163 lines, in one
+session, uncommitted" incident is **real, not a miscount**: the drift pass compared
+committed `ea15a4de` (`:684`) against a working tree that had Task 8's refactor open
+(`:847`). That work is now committed *as* `03ad602c`, which is why `:847` is what the
+tree reports today. The lesson is kept and the evidence made reproducible
+(`git show 03ad602c:… | grep -n 'pub async fn reply('`), and the bullet gains the half
+the incident could not have known: `ea15a4de` was then rebased away, so a stamp is a
+timestamp and never a citation.
+
+**D7 — the desktop new-test-file inventory was short by one, in three places.**
+`ui/desktop/src/components/ProvenanceChip.tsx` is a `Create: … + test` in Task 28 whose
+gate expects 3 tests in it, and neither the component nor its test appeared in the
+File-structure **New files** block. Both are added; Task 31's Phase-2 count goes
+**8 → 9** (`186 + 9 = 195`) and Task 44's total **11 → 12** (`186 + 12 = **198**`, not
+197). The 186 baseline is re-confirmed (`find ui/desktop/src -name '*.test.ts*' | wc -l`).
+
+**D8 — Task 44 had an orphaned `Expected:` paragraph.** The gate sweep inserted the
+"subagent integration targets" bullet *between* the four-preservation-families bullet and
+that bullet's own expectation, so `pin_tests`/`pins`/eager-compaction and the one sentence
+naming BR-71's single entitled red result (`PLATFORM_EXTENSIONS.len()` 5 → 6) visually
+attached to the wrong list. Each bullet now carries its own `Expected:`. Every number in
+it re-verified at `03ad602c`: `conversation_writeback_freshness` **32**,
+`writeback_tests` **6**, `pin_tests` **14** (→ 15 after Task 14), `pins::tests` **12**,
+and 7 / 1 / 3 / 4 / 4 for the five subagent targets.
+
+**D9 (the residual gate hole) — Task 33's sentinel proves absence, and one wrong
+implementation also produces absence.** A run that never registers but tears down with a
+blunt `manager.remove_session(&child.id)` removes the sentinel and passes the assertion.
+Closed with a grep pair in Step 5 — `deregister_agent_if_same` **1**, `remove_session(`
+**0** in `subagent_handler.rs` (it is 0 today, measured) — and a sentence in the
+sentinel's doc comment saying why identity-scoped removal is the point rather than a
+stylistic preference.
+
+**S1-S8 — the Tasks 22-44 citation sweep.** All 203 `file.ext:NNN` citations in the range
+were extracted, resolved and compared against the line they name. Eight more were wrong,
+every one of them in a code comment or in running prose while the Files list beside it
+was correct — this document's demonstrated blind spot, exactly as in Phase 1:
+
+| | Where | Was | Now |
+|---|---|---|---|
+| S1 | Task 36, `resolve_visibility` doc comment | `agent.rs:2812` (semaphore exemption) | **`:2843`** — the rest of Task 36 already said `:2843` |
+| S2 | Task 34, `E0004` warning | `agent.rs:672` (`MessagesPersisted`) | **`:679`** |
+| S3 | Task 34, the eight-arm match comment | `agent.rs:605-673` (`AgentEvent`) | **`:613-680`** (`:605` is inside the `Agent` struct's doc comment) |
+| S4 | Task 33, sentinel test doc comment | `state.rs:290` | **`:310`** `get_agent_for_route` (`get_agent` `:303`) |
+| S5 | Task 33, `deregister_agent_if_same` doc comment | `state.rs:65-79` (`impl TurnGuard`) | **`:65-83`** — Task 41's table already said `:65-83` |
+| S6 | Task 23, anchor table | `routes/mod.rs:101` "still the last `.merge`" | **`:102`** — Task 7's `session_events::routes` is the last `.merge`; insert after it |
+| S7 | Task 39, harness comments | `routes/reply.rs:1004-1017`, `:1027-1033` | **`:1042-1055`** (`interrupt`), **`:1065-1071`** (`CancelTurnResponse`) |
+| S8 | Tasks 27 and 37 | `SessionListView.test.tsx:9-17`, module `'../api'` | **`:8-14`** (`vi.hoisted`) + **`:16-22`** (`vi.mock('../../api', …)`) — Task 38's table already carried the correction, and the other two tasks did not |
+
+Also tightened: `agent.rs:2663-2673` → **`:2663-2672`** (the guard block's closing brace
+is `:2672`; `:2673` is blank).
+
+**Verified and left alone, for the record.** `announce_subagent_tab(` = 3 and both
+`fn …` greps = 1 in Task 36 Step 5b are right. `reply.rs:265` (the runtime SSE header) is
+right. Every "Now at" value in Tasks 32's and 41's anchor tables was re-measured at
+`03ad602c` and is right (`agent.rs` `:5775`/`:3638`/`:2117`/`:2219`/`:3107`/`:5723`,
+`session_manager.rs:1010`, `state.rs` `:151`/`:214`/`:303`/`:310`,
+`subagent_handler.rs` `:134`/`:309`). So are `message.rs` `:620`/`:629`/`:630`/`:634`/
+`:863`/`:1288`, `subagent_handler.rs` `:40`/`:48`/`:88-92`/`:149`/`:176`/`:247-254`,
+`subagent_tool.rs` `:27`/`:86-99`/`:507`/`:526`/`:545`, `extension_manager.rs`
+`:1119`/`:1121`/`:1444-1457`, `manager.rs` `:181`/`:348-360`,
+`routes/templates/mcp_ui_proxy.html:43`, and the desktop anchors in Tasks 25-30 and
+37-38 that the sweep touched.
+
 ## Coverage and consistency (re-checked, not carried forward)
 
 - **Decision coverage:** all 28 decisions are implemented and traceable —
@@ -17255,7 +26607,14 @@ every Rust and TypeScript anchor in this plan is unmoved).
   without a task or a stated non-action. Decisions **1, 2, 3, 4, a, b, c, 7, 10, 11, 17,
   19, 21, 23 and 26** carry an "*Implementation refined after review*" note in
   [Decisions of record](#decisions-of-record-operator-approved-2026-07-27) naming what
-  changed and why.
+  changed and why — fifteen decisions, fifteen notes, re-counted.
+  *Three decisions were edited by the 2026-07-28 amendment and say so in place:*
+  **2** (clause (iii): the `note` is *persisted pinned* — the superseded text is quoted
+  so a reader of the old plan sees what replaced it), **6** (the KB API #45 actually
+  shipped, and the deletion of the single-KB fallback the decision used to point at),
+  and **25** (`is_spawn_tool_call` is created by Task 19 Step 5, which makes 19 → 36 a
+  dependency rather than a numbering). Decision **4**'s Chat-mode citation and decision
+  **1**'s `tool_inspection` path were re-anchored without changing the ruling.
 - **Spec coverage:** every design-doc section maps to tasks (conformance table). The
   seven tools (12, 13, 14, 15, 16, 17, 24) plus the merged `subagent` (18 advertises,
   19 rewires), both spine pieces (5-8), the bridge + frames + echo (22, 23, 25, 26),
@@ -17265,10 +26624,40 @@ every Rust and TypeScript anchor in this plan is unmoved).
   `/interrupt` → pinned registered live child → drain (steer); Stop → `/agent/cancel` →
   lease token → `SubagentResult` → parent resolution — and asserted live by the Task 39
   harness (interrupt-202, user_direct-in-stream, cancel-true) gated at Task 40.
-- **Reconciliations:** twenty entries, six added by this pass (15 untrusted framing, 16
-  note-vs-compaction, 17 semaphore exemption, 18 bus ring reclamation, 19 the widened
-  always-confirm hook, 20 the operator-disabled gate), plus amendments to 12 (list scope),
-  13 (both persist paths) and 14 (bundle composition).
+- **Reconciliations:** twenty entries at the time of this pass, six added by it (15
+  untrusted framing, 16 note-vs-compaction, 17 semaphore exemption, 18 bus ring
+  reclamation, 19 the widened always-confirm hook, 20 the operator-disabled gate), plus
+  amendments to 12 (list scope), 13 (both persist paths) and 14 (bundle composition).
+  *Now **twenty-three**:* the 2026-07-28 drift reconciliation added **21** (the client
+  write-back stays in `/reply`; the runner performs no whole-history rewrite), **22**
+  (`map_bus_event` carries `MessagesPersisted`, exhaustively) and **23** (the subagent
+  bus tee is total while the parent's accumulation is not — `subagent_handler.rs` owns a
+  *second* exhaustive `AgentEvent` match that 22 does not reach), **retired 16** (its
+  hazard was closed by #51; `note` pins instead of refusing), and rewrote **6** against
+  the API #45 actually shipped. The same pass re-anchored the stale `agent.rs` /
+  `reply.rs` / `extension_manager.rs` numbers inside **1, 2, 9, 11, 12, 13, 14 and 17**;
+  those are line-number repairs, not changes of substance, and each names the pre-drift
+  number it replaced so a reader of the old plan is not left guessing.
+  *No entry was added by the amendment's third (defects) phase* — it introduced no
+  deviation from the design, only repairs: the pre-drift `is_spawn_tool_call` phantom
+  (now also flagged on **decision 25**, which had it too), three near-miss anchors in
+  prose rather than in Files lists (`routes/apps.rs`'s `app_data_envelope`,
+  `mcp_ui_proxy`'s sandbox attribute, `ConfigContext.tsx`'s `useConfig` throw), the
+  `start_agent` / working-dir-guard pair in **#7**, the `extension_manager.rs`
+  prefix-stripping precedent that Task 36's doc comment still gave as `:1294-1304`
+  while **#11** had already corrected it to `:1444-1457`, and a broken intra-document
+  link — five references to `#prerequisites--two-both-ship-before-this-plan`, an anchor
+  the amendment itself invalidated when it retitled that section to
+  "BOTH NOW SHIPPED".
+  *Now **twenty-five**:* the 2026-07-28 **gate sweep** added **24** (twelve Phase-2/4
+  gates that passed a plausible wrong implementation, and the three production-code
+  changes its repair forced, in Tasks 22, 23 and 29), and the 2026-07-28 **Phase-2/3/4
+  drift sweep** added **25** (anchors moving from three directions at once, plus the
+  three findings that changed what gets built: Task 27's `sseMaxRetryAttempts`, Task
+  38's second `refreshSessionList` consumer, Task 23's mis-summed gate count). The drift
+  pass re-anchored Tasks **23, 24, 27, 30, 32, 38, 40 and 41** against `ea15a4de` and
+  added the missing **Task 14 → Task 24** dependency for `caller_provenance` — the same
+  class of unstated cross-task symbol dependency that produced `is_spawn_tool_call`.
 - **Type consistency:** `SessionBusEvent`'s four variants (Task 5) are what Tasks 6, 8,
   14, 17, 34 and 41 publish and Task 7 maps — including `TurnFinished.token_state` at
   **every** construction site and the five `TurnError` fields, with `scope` documented
@@ -17276,9 +26665,13 @@ every Rust and TypeScript anchor in this plan is unmoved).
   13, 14, 32, 35 with the same three variants; `TurnExtras.reasoning_effort` is
   `Option<ReasoningEffort>`, matching `ChatRequest` and `SessionConfig`;
   `WorkspaceServices` (Task 9) signatures match every call site in 14-17, 23, 24, 32, 33,
-  36 — with the **plural** `set_knowledge_bases(&[String])` /
-  `active_knowledge_bases() -> Vec<String>`, and `WorkspaceTurnLease` imported where it
-  is named; `list_session_summaries` takes four arguments after Task 4 and every caller
+  36 — *as amended 2026-07-28*, the KB pair is
+  `set_knowledge_bases(&str, &[String], KbPrimaryChoice) -> Result<KbSelectionView, String>`
+  and `knowledge_selection(&str) -> KbSelectionView`, and `start_session` takes a fourth
+  `KbPrimaryChoice` argument; the previous revision's `active_knowledge_bases() ->
+  Vec<String>` is gone, along with the `set_active_for_session` it was written against
+  (reconciliation #6). `WorkspaceTurnLease` is imported where it is named;
+  `list_session_summaries` takes four arguments after Task 4 and every caller
   in the tree is enumerated; `WorkspaceCommand` fields (Task 25) match the frames emitted
   in 14, 15, 16, 24, 29, 36; `human_intervened` flows 35 → 37 → harness 39; the run token
   flows parent-token → `child_token()` → lease / active-work / `agent.reply` in Task 33;
@@ -17291,9 +26684,10 @@ every Rust and TypeScript anchor in this plan is unmoved).
   `#[serial_test::serial(workspace_services)]`; **every whole-module workspace-extension
   run** is sandboxed with `BIOROUTER_PATH_ROOT=$(mktemp -d)`, because
   `AgentManager::instance()` resolves the real data dir and runs first-run init —
-  `grep -c 'BIOROUTER_PATH_ROOT=\$(mktemp -d)'` returns **11**, which is every "Step 4/5:
+  `grep -c 'BIOROUTER_PATH_ROOT=\$(mktemp -d)'` returns **12**, which is every "Step 4/5:
   Run tests" command that names `agents::workspace_extension` (the previous revision's
-  "four" was stale when written). The eight unsandboxed occurrences are all fail-first
+  "four" was stale when written, and the "11" that replaced it was itself off by one —
+  re-counted against this file). The eight unsandboxed occurrences are all fail-first
   Step 2 commands filtered to a single not-yet-existing test, where the expected outcome
   is a compile error and no handler runs; that is sound but **unverified per command**,
   and it is listed under residuals rather than claimed as audited. The tests that reach
@@ -17308,7 +26702,7 @@ every Rust and TypeScript anchor in this plan is unmoved).
   ≤2,500-character budget holds at each step (2,061 → 2,195 → 2,252 measured).
 - **Mechanical-move discipline:** the moves are marked as such WITH their verification
   commands — Task 6's `emit_completion_metrics` is explicitly a **derived copy, not a
-  move**, Task 8's handler rewrite has seven greps with expected counts including three
+  move**, Task 8's handler rewrite has ten greps (`:4878-4916`) with expected counts including three
   that catch a *silent deletion* rather than a compile error, and Task 34's stream-loop
   re-nesting. Task 19's dispatch-arm change states which lines must be byte-identical.
   Task 8's rollback note now names the commit at which its byte-for-byte revert window
@@ -17331,6 +26725,11 @@ every Rust and TypeScript anchor in this plan is unmoved).
   client resyncs" (reconciliation #9, tested).
 - `workspace_list`'s 20,000-row scan ceiling is reported rather than eliminated (new
   question 5).
+- `/ui/workspace` ships with both of Task 23's recorded gaps open — no keepalive (a
+  half-open connection holds `gui_attached: true`) and a writer that blocks the reader.
+  Task 31 decided to defer both rather than land a `select!` change under a gate task;
+  the decision, its reasoning and what closes each are recorded at that task, which is
+  where `handle_workspace_socket`'s doc comment points.
 - A `Task 19 → 19b` commit boundary exists at which both `subagent` and
   `workspace__subagent` are advertised (deliberate, and safer than the alternative).
 - Between the Task 12 and Task 17 commits the instruction block names five tools whose
@@ -17351,15 +26750,31 @@ every Rust and TypeScript anchor in this plan is unmoved).
 
 ## Honest note on what this pass did NOT verify
 
-**Almost nothing in this plan has been compiled.** Every code block is written against
-symbols and signatures read from the tree (`a01be9b7`, re-confirmed unmoved at
-`67822ea3`), and all three critic passes found real compile errors in code the previous
-pass had already reviewed — which is the empirical argument for treating "reads
+**Almost nothing in this plan has been compiled.** ⚠ **Still true after the 2026-07-28
+drift amendment — which re-anchored and re-premised the document against 181 commits
+without running `cargo check` once.** Every code block is written against symbols and
+signatures read from the tree: originally `a01be9b7`, re-confirmed unmoved at
+`67822ea3`, and — for the parts the amendment touched, which is most of Phase 1 —
+re-read at `275d735d`. Three critic passes each found real compile errors in code the
+previous pass had already reviewed, which is the empirical argument for treating "reads
 correctly" as strictly weaker than `cargo check`. The second pass found eleven; it
 predicted "a third pass would find fewer but not zero", and the third pass found one
 more (Task 12's `E0599` on two `AgentManager` methods that do not exist until Task 33),
 which is the worst kind, because it fails the whole crate's test target rather than one
-test. **Assume a fourth pass would still find something.**
+test. **That prediction then came true a fourth time, and harder**: the drift
+reconciliation found two more `E0004`s (Tasks 7 and 34, on an `AgentEvent` variant that
+did not exist when the plan was written) plus four tasks written against knowledge-base
+functions that had been deleted. **Assume a fifth pass would still find something.**
+
+**The amendment did not make this claim weaker or stronger — it made it broader.** The
+three critic passes were reading a plan against a *fixed* tree. The fourth was reading
+it against a tree that had moved 181 commits, so "the symbol is there" had to be
+re-established for every claim it touched, and could not be for the claims it did not.
+The plan is therefore in two states at once: the amended surfaces are accurate as of
+`275d735d`, and the untouched ones are accurate as of `67822ea3`. **The ground rule is
+what reconciles them — anchor on the SYMBOL, never the line number** — and the reason
+the plan says how far the numbers are off (`agent.rs` by ~+490, `reply.rs` by ~+180) is
+so a near miss is not mistaken for a hit.
 
 The one exception is Task 30's Step 3b. That component test — with its three mocks, the
 `Toggle Workspace extension` switch label, and the disabled-between-clicks behaviour —
@@ -17369,6 +26784,73 @@ negative control. That single 40-second experiment found a defect
 readings had walked past, because the mistake was invisible in the snippet and only
 visible in the *component's* filter three files away. Where an experiment is that cheap,
 reading is not a substitute for it.
+
+**And a fifth pass duly found something — a whole class of it.** The 2026-07-28 gate
+sweep of Tasks 22-44 asked one question of every gate command: *would this FAIL a
+plausible wrong implementation?* Twelve would not. Four were assertions true for all
+inputs (`cancelled === true || cancelled === false`; `assert(name, true)`;
+`!rendered.is_empty()`; `toBeLessThanOrEqual(2)` satisfied by zero), one was a guard that
+skipped itself on the failure path (`if let Some(first) = msgs.first()`), one was a
+negative-string assertion satisfied by any other output, and the rest were filters that
+ran green over code they could not reach. Two of them — Task 39's cancel and Task 34's
+follow-through — were **the** automated check on Tasks 33 and 32 respectively, and the
+plan reported them as gates that block a phase.
+
+That sweep *was* mechanical where it could be, and the two facts it measured are now
+Ground rules: `cargo test --lib A B` is `error: unexpected argument`, not two filters (it
+appears nine more times in Phase 1, unswept); a vitest composite filter with one dead term
+exits 0 (Task 30 Step 3b, generalised — the plan found this once and did not carry the
+lesson). Two things it did **not** do: it did not compile anything either, and it did not
+sweep Tasks 1-21, whose gates have had one implementer's worth of contact with reality
+and no systematic review. **A sixth pass should start there.**
+
+**A sixth pass ran the same day and found the thing the fifth could not have.** The
+Phase-2/3/4 **drift** sweep (Tasks 23, 24, 27, 30, 32, 38, 40, 41) re-read every anchor
+against the *implementing* tree at `ea15a4de` rather than the *planning* tree, and the
+difference is the whole finding: the plan is now drifting from **three** sources at once
+— its original 181 commits, Phase 1's own landed commits, and `main`, which is 6 commits
+past this branch's fork point and unmerged. Reconciliation #25 and the third Ground-rules
+bullet record it. Two of that pass's findings changed what gets *built* rather than how
+it is checked (Task 27 must pass `sseMaxRetryAttempts: 1` or its documented reconnect
+policy is dead code under the generated SSE client's own unbounded retry; Task 38's
+cache-identity change fights a second `refreshSessionList` consumer the plan never
+mentioned), and a third was an arithmetic slip *in the fifth pass* — Task 23's gate
+summed 2 + 5 + 3 to `9`. That is the fourth consecutive pass to find a real defect in
+text a previous pass had approved.
+
+It also did the one thing none of the five earlier passes did: **it ran the frontend
+suite.** `npm run test:run` is green (186 files / 1726 tests) — but
+`npx vitest run SessionListView`, the file Task 38 modifies, fails **5 runs in 6** on a
+pre-existing case. Every count in this document before that pass was a *grep* of `it(` or
+`#[tokio::test]`, which counts tests without ever learning whether they pass. **A seventh
+pass should run the gates it is reviewing, not read them** — and should still start with
+Tasks 1-21, which remain unswept for both gate quality and drift.
+
+**A seventh pass ran, and the prediction held for the fifth consecutive time.** An
+independent verifier checked the three amendment passes and found **eight** defects *in
+the amendment* — including a gate expecting `10` where a correct implementation reports
+`24`, two grep expectations no correct implementation can produce, and a Step-3
+instruction that had drifted into permitting the exact ordering bug the ⚠ block beside it
+warns against. The verification amendment fixed those, closed the one residual gate hole
+(Task 33's sentinel), and swept all 203 comment- and prose-embedded citations in Tasks
+22-44, finding eight more errors. § *Seventh pass* has the entries. Two things it
+established that change how the earlier passes should be read:
+
+- **A stamp is a timestamp, not a citation.** `ea15a4de`, which dozens of anchors in this
+  document are stamped against, was rebased into `aaae5889` and is **no longer an
+  ancestor of HEAD**. It resolves only while the loose object survives locally.
+- **Two of the amendment's own "corrections" were themselves the defect.** The drift pass
+  corrected Task 23's gate from `9` to `10` while writing the paragraph explaining why a
+  low number is the dangerous direction — and the number was still 14 too low. The gate
+  sweep explained the anchored-vs-bare grep hazard for `strip_workspace_extension` and
+  then made exactly that mistake twice in the same code block. **Being the pass that
+  names a failure mode is not protection against committing it three lines later.**
+
+This pass still compiled nothing, still did not run a single gate command against a real
+implementation (there is none yet for Tasks 22-44), and still did not touch Tasks 1-21 —
+whose gates and citations remain the largest unswept surface, now with a named list of
+15 stale anchors waiting in them (§ *Coverage*, "Not swept"). **An eighth pass should
+start there, and should execute rather than read.**
 
 Two things follow. First, each task's Step 2 ("run to verify failure") is the first point
 where the compiler gets a say, and it is deliberately placed before every Implement step
@@ -17398,3 +26880,13 @@ symbols its seven findings name (`AgentManager`'s method surface,
 `ExtensionsSection`'s export form and props, `useConfig`'s throw, `chatrecall`'s
 capability membership, `serial_test` in `crates/biorouter/Cargo.toml:139`, Task 18's
 Files list) rather than re-auditing every anchor.*
+
+*⚠ **That anchoring statement is now historical.** The fourth pass (2026-07-28) ran at
+`275d735d`, where `git log --oneline 67822ea3..275d735d | wc -l` is **181** and
+`git diff --stat` is 146 files / +42,112 / −4,173 — so the "no anchor moved" claim
+above holds only up to `67822ea3`. Eight tasks (6, 7, 8, 9, 14, 15, 24, 34) were
+CONFLICTED and were re-premised; twenty-one were re-anchored; both prerequisites (#45
+in `84d27fd4`, #51 in `a869a650`) **shipped** and their sections were rewritten from
+blockers into records. Task counts are unchanged: still 45 units across 4 phases,
+still gated at 21 / 31 / 40 / 44. What changed is what those tasks are written
+against — and, in Tasks 6 and 8, what they would have destroyed.*

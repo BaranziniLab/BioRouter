@@ -193,6 +193,21 @@ in `ready.profiles`. The app addresses one via `br.agent(name)` (frames carry
 depth 1). **Serialized, not parallel** — one worker (or the main agent) runs at a
 time on the app socket; parallel-across-profiles turns are a stretch goal.
 
+**`consult` runs on the BR-71 workspace spine (2026-07).** A consulted worker's turn
+holds the server turn lock, registers its agent in `AgentManager`, and publishes to the
+session event bus — so it is observable via `GET /sessions/{id}/events`, steerable via
+`POST /interrupt`, and cancellable via `workspace_close scope:"turn"`, exactly like a
+glass-box subagent. `consult`'s own contract (name, params, depth-1, per-profile
+timeout, blocking answer, error envelopes) is unchanged. See
+[BR-71 §8.2](../agent-loop/designs/agent-workspace-control.md).
+
+The bracket closes on **every** exit, including the per-profile deadline. That
+deadline drops the worker's future rather than unwinding it, so the closing publish
+runs from a destructor (`TerminalOnDrop` in `routes/apps.rs`) and emits
+`TurnError { code: "worker_timeout" }` — the same envelope
+`workspace::turn::classify_abort` produces for `TurnAbortCode::WorkerTimeout`.
+Without it an observer watched the most common consult failure begin and never end.
+
 > **Currency caveat.** This section was written while the worker-profiles work was
 > landing, and named a `feat/apps-sdk-v2` branch that no longer exists in this
 > repository. Treat the code — `consult` in `control.rs`, `AgentFacade` in

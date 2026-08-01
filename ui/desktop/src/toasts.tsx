@@ -66,11 +66,17 @@ class ToastService {
     return toastId;
   }
 
-  success({ title, msg }: { title: string; msg: string }): void {
+  /**
+   * `toastOptions` overrides the shared defaults for this one toast. The case it
+   * exists for is a message that must not be able to expire unread — see the
+   * BR-71 chatrecall suggestion, which is shown exactly once per install and so
+   * passes `{ autoClose: false }`. Everything else should keep the 3s default.
+   */
+  success({ title, msg }: { title: string; msg: string }, toastOptions: ToastOptions = {}): void {
     if (this.silent) {
       return;
     }
-    toastSuccess({ title, msg });
+    toastSuccess({ title, msg, toastOptions });
   }
 
   dismiss(toastId?: string | number): void {

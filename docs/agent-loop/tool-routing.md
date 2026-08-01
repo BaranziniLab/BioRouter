@@ -29,9 +29,11 @@ extension** (`crates/biorouter-mcp/src/lib.rs`, `BUILTIN_EXTENSIONS["developer"]
 which is a real, loadable, disable-able extension that merely happens to be enabled
 by default in essentially every session. The only always-present, genuinely
 extension-free tools are the gated `platform__*` tools (`ingest_conversation`,
-`manage_schedule`, `read_session_blob`), `workflow__final_output`, and
-`subagent`/`subagent_status` (which paradoxically require at least one extension to
-be loaded). None of those do file or shell work.
+`manage_schedule`, `read_session_blob`) and `workflow__final_output`. Delegation is
+no longer in that list at all: since BR-71 the spawn tool is advertised by the
+`workspace` extension as `workspace__subagent` (auto-injected when delegation is
+enabled), and it still paradoxically requires at least one extension to be loaded.
+None of those do file or shell work.
 
 So "tools without any extensions" cannot be read literally. The faithful reading of
 the directive is a **tier model** by simplicity, not by extension-vs-not:
@@ -55,7 +57,8 @@ edit files at all.
 | Tier | Tools | Reach for it when… |
 |------|-------|--------------------|
 | **1 — primitives** | `developer/shell`, `developer/text_editor` | Listing, reading, writing, editing, copying, moving, deleting, or finding files; running one-off commands; anything straightforward. **Default.** |
-| **1 — always-on platform** | `platform__ingest_conversation`, `platform__manage_schedule`, `platform__read_session_blob`, `subagent` | Saving a conversation to a knowledge base (KB); scheduling a workflow; re-reading a large externalized tool output; delegating a bounded sub-task. |
+| **1 — always-on platform** | `platform__ingest_conversation`, `platform__manage_schedule`, `platform__read_session_blob` | Saving a conversation to a knowledge base (KB); scheduling a workflow; re-reading a large externalized tool output. |
+| **1 — workspace control** | `workspace_list`, `workspace_open`, `workspace_read_conversation`, `workspace_send_prompt`, `workspace_set_tools`, `workspace_close`, `workspace_watch`, `subagent` | Operating the conversations themselves — inspecting, opening, steering, reconfiguring or closing another chat; waiting on background work; delegating a bounded sub-task. Advertised by the `workspace` extension, which is **not** on by default: the user enables it to get the whole set. Enabling delegation alone auto-injects the extension with `subagent` and nothing else, so the seven `workspace_*` tools are tier 1 only where Workspace Control is on. See the routing table below. |
 | **2 — computation / chaining** | `code_execution` (`execute_code`, `search_modules`, `read_module`) | Several **dependent** tool calls whose outputs feed each other in one round-trip, or real loops/aggregation/conditionals over their results. |
 | **2 — specialized domains** | `autovisualiser/*`, `knowledge`/`bokf_*`, `computercontroller/*`, `playwright/*`, `agent_drafter` (`files_server`, `compute_server`, `appcontrol`), data-query extensions | The task is squarely in that extension's domain (a figure, a knowledge base, GUI/browser automation, an app sandbox). |
 
@@ -101,6 +104,38 @@ edit files at all.
 - **Don't:** use them as general file/shell tools for the user's own workspace — that
   is `developer`'s job.
 
+### `workspace_*` / `subagent` (Workspace Control) vs. `chatrecall` vs. Memory
+
+The workspace extension operates the **live** workspace — the conversations
+themselves. It is routinely confused with three neighbours that all touch "other
+conversations" in some sense, so route by *what is being asked for*, not by the
+word "conversation" appearing in the question:
+
+| The user wants… | Route to | Not to |
+|-----------------|----------|--------|
+| The **content** of a past chat ("what did we conclude about the volcano plot last week?") | `chatrecall` (search by query, or load a session by id) | `workspace_read_conversation` — it reads a session you already identified, it does not search by content |
+| **Live control** of another chat, or a **structured read** of one ("what is that other conversation doing right now?") | `workspace_list`, then `workspace_read_conversation` with `view:"tool_calls"` | a `chatrecall` load, which returns only the first/last few messages |
+| To **change another chat's setup** ("give that other conversation the single-cell skill") | `workspace_set_tools` with `add_skills` / `add_extensions` / `set_knowledge_bases` — do it, session-scoped | telling the user to open Settings, which is machine-wide and is not the ask |
+| To **delegate** a bounded sub-task ("delegate checking the test suite to a subagent I can watch") | `subagent` — the one spawn tool, advertised by the workspace extension | any `workspace_spawn_subagent`; no such tool exists |
+| To **wait on background work** ("tell me as soon as one of those three background jobs is done") | `workspace_watch` on the session ids | a `workspace_read_conversation` poll loop — the failure mode the `subagent_status` → `workspace_watch` migration exists to remove |
+| To **remember a durable fact** ("remember that I prefer uv over pip") | Memory (`remember_memory`) | any workspace tool; workspace state is per-conversation and transient |
+| To **fold a conversation into a knowledge base** | `platform__ingest_conversation` | `workspace_read_conversation` followed by a hand-written KB write |
+| To **re-read a large externalized tool output** | `platform__read_session_blob` | re-running the tool that produced it |
+
+Names above are the tools' own names, as the extension registers them; on the wire
+the agent sees them prefixed with the extension — `workspace__workspace_list`,
+`workspace__subagent`, and so on.
+
+- **Don't:** use `workspace_read_conversation` as a search engine, or poll it in a
+  loop when `workspace_watch` will park until something finishes.
+- **Do:** treat another conversation's content as sensitive — read the narrowest
+  view (`summary` before `transcript`, `tool_calls` when the question is "what did
+  it *do*") and only what the task needs.
+
+The same guidance is mirrored in the extension's own `INSTRUCTIONS` block
+(`crates/biorouter/src/agents/workspace_extension.rs`), which a unit test holds to
+≤2,500 characters and to naming only tools `get_tools()` actually registers.
+
 ## Overlap matrix
 
 Rows are capabilities; cells mark tools that can do it. **Bold** = the tool to prefer.
@@ -131,6 +166,11 @@ The rule the matrix encodes: **the leftmost bold cell wins for a simple task**;
   `crates/biorouter/src/agents/code_execution_extension.rs`.
 - **developer extension** — base `instructions` and the `shell` tool description in
   `crates/biorouter-mcp/src/developer/rmcp_developer.rs`.
+- **workspace extension** — the `INSTRUCTIONS` block in
+  `crates/biorouter/src/agents/workspace_extension.rs`, whose closing `Routing:`
+  sentences are the compressed form of the table above (chatrecall for content,
+  Memory for durable facts, `ingest_conversation` for fold-into-KB,
+  `read_session_blob` for externalized payloads).
 
 ---
 

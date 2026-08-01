@@ -62,6 +62,26 @@ pub struct TurnGuard {
     active_turns: Arc<StdMutex<HashMap<String, ActiveTurn>>>,
 }
 
+impl TurnGuard {
+    /// The server-assigned id of the turn this guard owns (BR-71: published as
+    /// `SessionBusEvent::TurnStarted` so consumers can correlate lifecycles).
+    pub fn turn_id(&self) -> &str {
+        &self.turn_id
+    }
+
+    /// The session this guard locked.
+    ///
+    /// BR-71's `run_turn` takes the request and the guard as separate
+    /// arguments, and both Task 8 and Task 14 acquire the guard themselves
+    /// before calling it — so without this there is nothing stopping
+    /// `run_turn(state, request_for_B, guard_for_A)` from compiling, running an
+    /// unguarded turn on B while holding A's lock. The runner `debug_assert`s
+    /// on it.
+    pub fn session_id(&self) -> &str {
+        &self.session_id
+    }
+}
+
 impl Drop for TurnGuard {
     fn drop(&mut self) {
         let mut turns = self
@@ -102,6 +122,37 @@ impl AppState {
         let agent_manager = AgentManager::instance().await?;
         let tunnel_manager = Arc::new(TunnelManager::new());
         let knowledge_service = Arc::new(KnowledgeService::new_default()?);
+
+        Ok(Arc::new(Self {
+            agent_manager,
+            workflow_file_hash_map: Arc::new(Mutex::new(HashMap::new())),
+            workflow_session_tracker: Arc::new(Mutex::new(HashSet::new())),
+            active_turns: Arc::new(StdMutex::new(HashMap::new())),
+            tunnel_manager,
+            extension_loading_tasks: Arc::new(Mutex::new(HashMap::new())),
+            knowledge_service,
+        }))
+    }
+
+    /// [`AppState::new`] with its `KnowledgeService` rooted at `knowledge_root`
+    /// instead of the developer's real knowledge tree.
+    ///
+    /// Test-only, and it exists because a test of the knowledge-selection seam
+    /// has to CREATE knowledge bases and move a session's write target around.
+    /// Against `new_default()` that would write into
+    /// `~/.config/biorouter/knowledge` — inventing bases in the developer's own
+    /// sidebar and repointing their primary. The session database behind
+    /// `AgentManager::instance()` still cannot be relocated from inside a
+    /// running test binary (`BIOROUTER_PATH_ROOT` is read before the process
+    /// starts), so this isolates the part that can be isolated; see the
+    /// preamble in `workspace/services.rs`'s tests.
+    #[cfg(test)]
+    pub(crate) async fn new_with_knowledge_root(
+        knowledge_root: PathBuf,
+    ) -> anyhow::Result<Arc<AppState>> {
+        let agent_manager = AgentManager::instance().await?;
+        let tunnel_manager = Arc::new(TunnelManager::new());
+        let knowledge_service = Arc::new(KnowledgeService::new(knowledge_root));
 
         Ok(Arc::new(Self {
             agent_manager,
@@ -196,6 +247,20 @@ impl AppState {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .contains_key(session_id)
+    }
+
+    /// Every session with a turn in flight right now (BR-71 CLI parity).
+    ///
+    /// `is_turn_active` answers for one session; a listing needs the set, and
+    /// N round-trips for an N-row page is both slower and racier — the rows
+    /// would be read at N different instants.
+    pub fn active_turn_session_ids(&self) -> Vec<String> {
+        self.active_turns
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .keys()
+            .cloned()
+            .collect()
     }
 
     pub fn has_active_turns(&self) -> bool {
@@ -404,6 +469,31 @@ mod tests {
             .try_begin_turn_idempotent("s1", CancellationToken::new(), None)
             .expect_err("no second turn starts");
         assert!(!conflict.duplicate);
+    }
+
+    #[tokio::test]
+    async fn turn_guard_exposes_its_turn_id() {
+        let state = AppState::new().await.unwrap();
+        let guard = state
+            .try_begin_turn_idempotent("tg-id-test", CancellationToken::new(), None)
+            .unwrap();
+        assert!(guard.turn_id().starts_with("turn-"));
+    }
+
+    /// A guard must also say WHICH session it locked.
+    ///
+    /// BR-71's runner takes a `TurnRequest` and a `TurnGuard` as separate
+    /// arguments, and Tasks 8 and 14 both acquire the guard themselves before
+    /// calling `run_turn`. Without an accessor there is nothing — not a type,
+    /// not an assertion — stopping `run_turn(state, request_for_B, guard_for_A)`
+    /// from compiling and running an unguarded turn on B while holding A's lock.
+    #[tokio::test]
+    async fn turn_guard_exposes_the_session_it_locked() {
+        let state = AppState::new().await.unwrap();
+        let guard = state
+            .try_begin_turn_idempotent("tg-session-test", CancellationToken::new(), None)
+            .unwrap();
+        assert_eq!(guard.session_id(), "tg-session-test");
     }
 
     /// A guard may only ever clear its own turn. If a guard outlived its slot and

@@ -190,7 +190,7 @@
     "/agent/cancel": {
       "post": {
         "tags": [
-          "super::routes::reply"
+          "workspace"
         ],
         "summary": "Hard cancel: trip the cancellation token of the turn in flight for this",
         "description": "session (BR-62).\n\nBefore this route, cancelling meant dropping the SSE socket — the only thing\nthat closed `tx` and tripped the token — so a turn could not be stopped by a\nsecond client, the CLI, or a script, and `/agent/stop` merely evicted the\nagent from the LRU while the in-flight reply task ran on happily against its\nown `Arc<Agent>`. Tripping the token unwinds the agent loop at its next\nboundary and unblocks a tool-permission prompt it may be parked on.\n\nDeliberately **idempotent**: cancelling a session with no turn in flight (a\ndouble-clicked Stop button, a cancel that raced the turn's own completion) is\na 200 with `cancelled: false`, never an error. A cancel that reports failure\nbecause the thing was already stopped is exactly the unreliability this BR\nexists to remove.",
@@ -1462,10 +1462,10 @@
     "/interrupt": {
       "post": {
         "tags": [
-          "super::routes::reply"
+          "workspace"
         ],
         "summary": "Soft interrupt: queue a user message to be injected into the session's",
-        "description": "running turn at the next safe loop boundary, instead of cancelling the turn\nand re-sending the whole context. Returns 202 Accepted; the message surfaces\nas a normal user message in the active reply stream on the next loop step.\n\nBR-61: rejected with 409 when the session has no turn in flight — with no\nrunning loop to drain the queue the text would sit on the agent until some\nunrelated later turn injected it. Clients treat 409 as \"just send it as a\nnormal message\".",
+        "description": "running turn at the next safe loop boundary, instead of cancelling the turn\nand re-sending the whole context. Returns 202 Accepted; the message surfaces\nas a normal user message in the active reply stream on the next loop step.\n\nBR-61: rejected with 409 when the session has no turn in flight — with no\nrunning loop to drain the queue the text would sit on the agent until some\nunrelated later turn injected it. Clients treat 409 as \"just send it as a\nnormal message\".\n\n#69: the 409 is now decided by the *agent's own queue*, not by the turn-lock\ncheck above it. Checking the lock and then queueing are two steps against\nstate the reply loop changes underneath them: a steer could be accepted (202)\nafter the loop had already performed its final empty-queue check, and the text\nthen surfaced in an unrelated later turn. `try_queue_soft_interrupt` decides\nacceptance and enqueues in one critical section, and reports back *which* turn\ntook the message — so a 202 names something real.",
         "operationId": "interrupt",
         "requestBody": {
           "content": {
@@ -1479,13 +1479,20 @@
         },
         "responses": {
           "202": {
-            "description": "Message queued for injection into the running turn"
+            "description": "Message queued for injection into the running turn",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InterruptAccepted"
+                }
+              }
+            }
           },
           "400": {
             "description": "Empty message text"
           },
           "409": {
-            "description": "No turn is in flight for this session"
+            "description": "No turn is accepting interrupts for this session"
           },
           "500": {
             "description": "Internal server error"
@@ -2760,7 +2767,7 @@
     "/reply": {
       "post": {
         "tags": [
-          "super::routes::reply"
+          "workspace"
         ],
         "operationId": "reply",
         "requestBody": {
@@ -3240,6 +3247,18 @@
           "Session Management"
         ],
         "operationId": "list_sessions",
+        "parameters": [
+          {
+            "name": "include_subagents",
+            "in": "query",
+            "description": "Include sub_agent sessions (grouped under parent_session_id); default false",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "nullable": true
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "List of available sessions retrieved successfully",
@@ -3384,6 +3403,29 @@
         ]
       }
     },
+    "/sessions/running": {
+      "get": {
+        "tags": [
+          "workspace"
+        ],
+        "operationId": "running_sessions",
+        "responses": {
+          "200": {
+            "description": "Sessions with a turn in flight",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunningSessionsResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized - invalid secret key"
+          }
+        }
+      }
+    },
     "/sessions/sidebar": {
       "get": {
         "tags": [
@@ -3413,6 +3455,16 @@
               "format": "int32",
               "nullable": true,
               "minimum": 0
+            }
+          },
+          {
+            "name": "include_subagents",
+            "in": "query",
+            "description": "Include sub_agent sessions (grouped under parent_session_id); default false",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "nullable": true
             }
           }
         ],
@@ -3643,6 +3695,43 @@
             "api_key": []
           }
         ]
+      }
+    },
+    "/sessions/{session_id}/events": {
+      "get": {
+        "tags": [
+          "workspace"
+        ],
+        "operationId": "observe_session_events",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "description": "Session to observe",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Read-only observer stream of the session's live events",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageEvent"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized - invalid secret key"
+          },
+          "404": {
+            "description": "No such session"
+          }
+        }
       }
     },
     "/sessions/{session_id}/export": {
@@ -4698,7 +4787,7 @@
           },
           "kind": {
             "type": "string",
-            "description": "`background_job`, `subagent`, or `scheduled_run`."
+            "description": "`background_job`, `subagent`, `detached_turn`, or `scheduled_run`."
           },
           "runningForSeconds": {
             "type": "integer",
@@ -6411,6 +6500,19 @@
           }
         }
       },
+      "InterruptAccepted": {
+        "type": "object",
+        "description": "Response body for an accepted soft interrupt (#69).",
+        "required": [
+          "turn_id"
+        ],
+        "properties": {
+          "turn_id": {
+            "type": "string",
+            "description": "The agent-loop turn that took the message and will inject it. Identifies\nthe reply loop, and is deliberately *not* the `turn_id` `/agent/cancel`\nreports (that one names the server's turn lock); the two id spaces are\nshaped differently so they cannot be confused."
+          }
+        }
+      },
       "InterruptRequest": {
         "type": "object",
         "description": "Request body for the soft-interrupt route.",
@@ -7581,9 +7683,37 @@
             "type": "boolean",
             "description": "#51: carry this message verbatim through every compaction instead of\ndissolving it into a summary. Never dropped by summarization — but still\nsubject to the overall context budget, which trims the oldest pins first\nand reports it. Defaults to false."
           },
+          "provenance": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/MessageProvenance"
+              }
+            ],
+            "nullable": true
+          },
           "userVisible": {
             "type": "boolean",
             "description": "Whether the message should be visible to the user in the UI"
+          }
+        }
+      },
+      "MessageProvenance": {
+        "type": "object",
+        "description": "Where a message came from, when it did not originate with this session's own\nuser↔agent pair. Cross-session control without provenance is\nindistinguishable from prompt injection (BR-71 §2.4) — stamped in storage,\nnot just in the UI.\n\n**The guarantee, stated as what is actually enforced.** A stamp is not\nsuppressible by anything on the normalize → compact → write-back path, which\nis the path that decides what the model sees and what the store keeps. Three\nsites across two stages had to be taught it, because each rebuilds or\nreplaces metadata rather than updating it — the `..self` builders inherited\nthe field for free, which is exactly why these stood out:\n\n- [`crate::conversation::merge_consecutive_messages`] keeps only the first\nmessage's metadata, so a change of origin is a merge boundary\n(`is_provenance_boundary`), exactly as `pinned` is.\n- the legacy compaction path replaces the archived original's metadata with\n`MessageMetadata::invisible()`, and rebuilds the preserved copy from its\ntext alone; both carry the stamp across explicitly\n(`crate::context_mgmt`).\n\nIt is deliberately NOT a claim about anything outside that path. A caller\nholding a `Message` can always construct an unstamped one, and a stamp whose\n`kind` a reader does not recognise degrades to `None` rather than taking the\nrest of the metadata down with it (see `MessageMetadata::provenance`). The\ndefence a stamp *enables* — [`frame_workspace_injection`] — is baked into\nmessage content, not metadata, precisely so it cannot be undone by a metadata\nedit.\n\n`Hash` is derived deliberately: this value is part of\n[`crate::conversation::normalize`]'s per-message cache validator. See\n`message_fingerprint` there.",
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "fromSessionId": {
+            "type": "string",
+            "nullable": true
+          },
+          "fromSessionName": {
+            "type": "string",
+            "nullable": true
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ProvenanceKind"
           }
         }
       },
@@ -7972,6 +8102,14 @@
         "enum": [
           "Extension",
           "Tool"
+        ]
+      },
+      "ProvenanceKind": {
+        "type": "string",
+        "enum": [
+          "agent_injection",
+          "user_direct",
+          "spawn_context"
         ]
       },
       "ProviderDetails": {
@@ -8653,6 +8791,21 @@
           }
         }
       },
+      "RunningSessionsResponse": {
+        "type": "object",
+        "description": "BR-71: the sessions holding a turn right now.",
+        "required": [
+          "session_ids"
+        ],
+        "properties": {
+          "session_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
       "SaveWorkflowRequest": {
         "type": "object",
         "required": [
@@ -8847,6 +9000,11 @@
           "output_tokens": {
             "type": "integer",
             "format": "int32",
+            "nullable": true
+          },
+          "parent_session_id": {
+            "type": "string",
+            "description": "Id of the parent session that spawned this one as a subagent (BR-71).\nSibling of `diverged_from` (branch lineage): `diverged_from` records a\nuser fork; this records a delegation. `None` for non-subagent sessions.",
             "nullable": true
           },
           "provider_name": {
@@ -9061,6 +9219,16 @@
           },
           "name": {
             "type": "string"
+          },
+          "parent_session_id": {
+            "type": "string",
+            "description": "BR-71: `sub_agent` rows are grouped under this parent in History.",
+            "nullable": true
+          },
+          "session_type": {
+            "type": "string",
+            "description": "BR-71: the session's type as stored (`user`/`scheduled`/`sub_agent`).",
+            "nullable": true
           },
           "updated_at": {
             "type": "string",

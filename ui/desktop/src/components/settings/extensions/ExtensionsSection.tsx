@@ -9,10 +9,16 @@ import {
   ExtensionFormData,
   extensionToFormData,
   getDefaultFormData,
+  nameToKey,
 } from './utils';
 
 import { activateExtensionDefault, deleteExtension, toggleExtensionDefault } from './index';
 import { isCapabilityExtension } from '../capabilities/capabilities';
+import {
+  CHATRECALL_KEY,
+  markChatrecallSuggestionSeen,
+  shouldSuggestChatrecall,
+} from './chatrecallSuggestion';
 import { toastService } from '../../../toasts';
 import type { ExtensionConfig } from '../../../api/types.gen';
 import { BrxtInstallModal } from '../../BrxtInstallModal';
@@ -105,6 +111,41 @@ export default function ExtensionsSection({
     });
 
     await fetchExtensions();
+
+    if (
+      shouldSuggestChatrecall(
+        { name: extensionConfig.name, nowEnabled: !extensionConfig.enabled },
+        {
+          // Keyed, not name-matched: the entry the daemon sends is called
+          // "Chat Recall", so `e.name === 'chatrecall'` never matched and this
+          // read `false` even with chatrecall already on — which would have
+          // suggested it to someone who has it.
+          chatrecallEnabled:
+            extensionsList.find((e) => nameToKey(e.name) === CHATRECALL_KEY)?.enabled ?? false,
+        }
+      )
+    ) {
+      // Show first, THEN burn the one-shot. `toastService.success` returns early
+      // when the singleton is in silent mode (`toasts.tsx`, `if (this.silent) return;`),
+      // and `silent` is sticky once set — `handleError`'s options flow into
+      // `configure()`. Burning the flag first would spend decision 14's single
+      // suggestion on a toast the user never saw.
+      toastService.success(
+        {
+          title: 'Workspace Control enabled',
+          msg: 'Chat Recall pairs with it: Workspace reads and steers live conversations, Chat Recall searches past ones. Turn it on under Settings → Chat → Capabilities.',
+        },
+        // No auto-close: this is a once-per-install prompt whose flag is burned
+        // as soon as it is shown, so the shared 3s default would let decision
+        // 14's only suggestion expire long before its message can be read. It
+        // stays until the user dismisses it — which is also what separates it
+        // from `toggleExtensionDefault`'s own "Extension enabled in defaults"
+        // toast, fired for the same click and gone after 3s.
+        { autoClose: false }
+      );
+      markChatrecallSuggestionSeen();
+    }
+
     return true;
   };
 

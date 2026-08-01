@@ -9,19 +9,16 @@ use std::net::SocketAddr;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-/// Compare secrets without an early return, so a caller cannot recover the key
-/// one byte at a time by timing the response.
-fn secret_matches(candidate: &str, expected: &str) -> bool {
-    let (a, b) = (candidate.as_bytes(), expected.as_bytes());
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut diff = 0u8;
-    for (x, y) in a.iter().zip(b.iter()) {
-        diff |= x ^ y;
-    }
-    diff == 0
-}
+/// The constant-time secret comparison this middleware gates on.
+///
+/// The implementation moved to `routes` (with its rationale) so that
+/// `routes::workspace`'s WebSocket gate — which checks the same server secret,
+/// on a path this module exempts from the header check *and therefore from the
+/// rate limiter* — can share it instead of re-implementing it. `src/routes/` is
+/// compiled into the `biorouterd` binary as well as the lib and cannot name
+/// `crate::auth`, so the shared direction is this one. Re-exported here so
+/// `check_token` and `mod tests` are unaffected.
+use crate::routes::secret_matches;
 
 static FAILED_ATTEMPTS: OnceLock<Mutex<HashMap<String, Vec<Instant>>>> = OnceLock::new();
 
@@ -77,13 +74,32 @@ fn is_public_app_get(method: &axum::http::Method, path: &str) -> bool {
     ) || matches!(tail.as_slice(), ["dist" | "assets", _, ..])
 }
 
+/// Paths served without the `X-Secret-Key` header. Each one carries its own
+/// gate; the list is a predicate rather than a chain of `||` inside
+/// `check_token` so it is unit-testable — a security allowlist that no test
+/// can reach is one refactor away from admitting `/ui/workspaceX`.
+fn is_unauthenticated_path(path: &str) -> bool {
+    matches!(
+        path,
+        "/status"
+            | "/mcp-ui-proxy"
+            | "/mcp-app-proxy"
+            // BR-71: the desktop renderer opens this WebSocket, and a browser
+            // WebSocket cannot send headers. The route carries its own two
+            // gates — the same secret as a query token, plus the Origin check
+            // (CSWSH) — in `routes::workspace::check_workspace_ws_auth`,
+            // exactly as the app agent socket does (`apps::agent_ws`).
+            | "/ui/workspace"
+    )
+}
+
 pub async fn check_token(
     State(state): State<String>,
     request: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
     let path = request.uri().path();
-    if path == "/status" || path == "/mcp-ui-proxy" || path == "/mcp-app-proxy" {
+    if is_unauthenticated_path(path) {
         return Ok(next.run(request).await);
     }
     // Biorouter apps are opened directly in the browser (and connect a WebSocket),
@@ -128,8 +144,25 @@ pub async fn check_token(
 
 #[cfg(test)]
 mod tests {
-    use super::{is_public_app_get, secret_matches};
+    use super::{is_public_app_get, is_unauthenticated_path, secret_matches};
     use axum::http::Method;
+
+    #[test]
+    fn the_workspace_socket_is_exempt_and_nothing_that_merely_starts_with_it_is() {
+        assert!(is_unauthenticated_path("/ui/workspace"));
+        // Exact match only. A `starts_with` would exempt every future route
+        // under this prefix, and the daemon has no other authentication.
+        assert!(!is_unauthenticated_path("/ui/workspaceX"));
+        assert!(!is_unauthenticated_path("/ui/workspace/admin"));
+        assert!(!is_unauthenticated_path("/ui/workspace?secret=x"));
+        // The three that were already exempt still are.
+        assert!(is_unauthenticated_path("/status"));
+        assert!(is_unauthenticated_path("/mcp-ui-proxy"));
+        assert!(is_unauthenticated_path("/mcp-app-proxy"));
+        // …and nothing else is.
+        assert!(!is_unauthenticated_path("/reply"));
+        assert!(!is_unauthenticated_path("/sessions"));
+    }
 
     #[test]
     fn secret_compare_is_exact() {

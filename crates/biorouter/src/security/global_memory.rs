@@ -1434,7 +1434,19 @@ record_result(all);"#;
             .and_then(|p| p.parent())
             .expect("crates/biorouter has a workspace root above it")
             .to_path_buf();
-        let forms = store_path_spellings();
+
+        // The DOCUMENTED spelling, not the resolved one. `store_path_spellings`
+        // asks `global_memory_dir()` where the store is right now, and this
+        // binary answers with a temp directory: `crate::test_sandbox` sets
+        // `BIOROUTER_PATH_ROOT` before any test runs, so a stray test cannot
+        // write into the developer's real `~/.config/biorouter`. Prose in the
+        // repository names the user-facing path and always will, so a runtime
+        // form can never appear in it — the sampled docs would all miss, and the
+        // vacuity assertion below would fire on a tree where nothing is wrong.
+        // Every other test in this module wants the resolved path; this one
+        // wants the one a human would type.
+        let mut forms = vec!["~/.config/biorouter/memory".to_string()];
+        forms.extend(store_path_spellings());
 
         let mut checked_one_that_quotes_the_store = false;
         for doc in [

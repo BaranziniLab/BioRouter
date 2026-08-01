@@ -29,6 +29,7 @@ import { SearchView } from '../conversation/SearchView';
 import { SearchHighlighter } from '../../utils/searchHighlighter';
 import { MainPanelLayout } from '../Layout/MainPanelLayout';
 import { groupSessionsByDate, type DateGroup } from '../../utils/dateUtils';
+import { groupSessionsByParent, withoutSubagents } from './sessionGrouping';
 import { Skeleton } from '../ui/skeleton';
 import { ConfirmationModal } from '../ui/ConfirmationModal';
 import { ImportSessionModal } from './ImportSessionModal';
@@ -284,9 +285,14 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
     const initialSessions = useRef(getCachedSessionList()).current;
     const navigate = useNavigate();
     const [sessions, setSessions] = useState<Session[]>(initialSessions ?? []);
-    const [filteredSessions, setFilteredSessions] = useState<Session[]>(initialSessions ?? []);
+    // The toggle below starts off, so the warm cache — which a sibling pane may
+    // have filled with subagent rows — is filtered before it reaches the first
+    // paint.
+    const [filteredSessions, setFilteredSessions] = useState<Session[]>(() =>
+      withoutSubagents(initialSessions ?? [])
+    );
     const [dateGroups, setDateGroups] = useState<DateGroup[]>(() =>
-      groupSessionsByDate(initialSessions ?? [])
+      groupSessionsByDate(withoutSubagents(initialSessions ?? []))
     );
     const [isLoading, setIsLoading] = useState(initialSessions === null);
     const [showSkeleton, setShowSkeleton] = useState(initialSessions === null);
@@ -299,6 +305,39 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
     } | null>(null);
 
     const [visibleSessionCount, setVisibleSessionCount] = useState(INITIAL_VISIBLE_SESSIONS);
+
+    // BR-71: subagent transcripts are hidden by default — they are machinery,
+    // not conversations the user started. Turning this on refetches with
+    // `include_subagents` and nests each run under the session that spawned it.
+    const [showSubagents, setShowSubagents] = useState(false);
+
+    // `showSubagents` is this pane's state, but the session cache behind it is
+    // module-global — a second History pane, or Home, can publish subagent rows
+    // into this one at any time (and an orphaned request can leave the cache
+    // holding the other identity for a moment). The toggle decides what is
+    // FETCHED; this decides what this pane will SHOW, so the two can never
+    // disagree on screen.
+    const visibleSessions = useMemo(
+      () => (showSubagents ? sessions : withoutSubagents(sessions)),
+      [sessions, showSubagents]
+    );
+
+    // Parent grouping runs BEFORE date bucketing. `groupSessionsByDate` buckets
+    // on `updated_at` and a parent's advances every time the conversation is
+    // resumed, so a subagent that ran on an earlier day sits in a different
+    // bucket — grouping within each bucket would drop it back to top level,
+    // which is exactly the orphaned, unexplained row this feature removes.
+    const parentGroups = useMemo(() => groupSessionsByParent(filteredSessions), [filteredSessions]);
+    // Only top-level rows are dated and paginated; children ride with their
+    // parent, so `visibleSessionCount` counts rendered parents, not raw rows.
+    const topLevelSessions = useMemo(() => parentGroups.map((g) => g.session), [parentGroups]);
+    const childrenByParentId = useMemo(() => {
+      const map = new Map<string, Session[]>();
+      for (const { session, children } of parentGroups) {
+        if (children.length > 0) map.set(session.id, children);
+      }
+      return map;
+    }, [parentGroups]);
 
     // Edit modal state
     const [showEditModal, setShowEditModal] = useState(false);
@@ -353,23 +392,23 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
 
         if (
           scrollHeight - scrollTop - clientHeight < threshold &&
-          visibleSessionCount < filteredSessions.length
+          visibleSessionCount < topLevelSessions.length
         ) {
           setVisibleSessionCount((previousCount) =>
-            Math.min(previousCount + VISIBLE_SESSION_BATCH, filteredSessions.length)
+            Math.min(previousCount + VISIBLE_SESSION_BATCH, topLevelSessions.length)
           );
         }
       },
-      [visibleSessionCount, filteredSessions.length]
+      [visibleSessionCount, topLevelSessions.length]
     );
 
     useEffect(() => {
       if (debouncedSearchTerm) {
-        setVisibleSessionCount(filteredSessions.length);
+        setVisibleSessionCount(topLevelSessions.length);
       } else {
         setVisibleSessionCount(INITIAL_VISIBLE_SESSIONS);
       }
-    }, [debouncedSearchTerm, filteredSessions.length]);
+    }, [debouncedSearchTerm, topLevelSessions.length]);
 
     const loadSessions = useCallback(async () => {
       const hasCachedSessions = getCachedSessionList() !== null;
@@ -380,11 +419,13 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
         setError(null);
       }
       try {
-        const refreshedSessions = await refreshSessionList();
+        const refreshedSessions = await refreshSessionList(showSubagents);
         // Use startTransition to make state updates non-blocking
         startTransition(() => {
           setSessions(refreshedSessions);
-          setFilteredSessions(refreshedSessions);
+          setFilteredSessions(
+            showSubagents ? refreshedSessions : withoutSubagents(refreshedSessions)
+          );
           setError(null);
         });
       } catch (err) {
@@ -397,7 +438,7 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
       } finally {
         if (!hasCachedSessions) setIsLoading(false);
       }
-    }, []);
+    }, [showSubagents]);
 
     useEffect(() => {
       loadSessions();
@@ -435,11 +476,11 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
 
     // Memoize date groups calculation to prevent unnecessary recalculations
     const memoizedDateGroups = useMemo(() => {
-      if (filteredSessions.length > 0) {
-        return groupSessionsByDate(filteredSessions);
+      if (topLevelSessions.length > 0) {
+        return groupSessionsByDate(topLevelSessions);
       }
       return [];
-    }, [filteredSessions]);
+    }, [topLevelSessions]);
 
     // Update date groups when filtered sessions change
     useEffect(() => {
@@ -451,7 +492,10 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
     // Scroll to the selected session when returning from session history view
     useEffect(() => {
       if (selectedSessionId) {
-        const selectedIndex = filteredSessions.findIndex(
+        // Indexes into the paginated top-level list; a nested child is not in
+        // it, so the count bump is skipped and the scroll falls through to the
+        // row's own ref, which children register too.
+        const selectedIndex = topLevelSessions.findIndex(
           (session) => session.id === selectedSessionId
         );
         if (selectedIndex >= visibleSessionCount) {
@@ -465,13 +509,13 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
           });
         }
       }
-    }, [filteredSessions, selectedSessionId, sessions, visibleSessionCount]);
+    }, [topLevelSessions, selectedSessionId, sessions, visibleSessionCount]);
 
     // Debounced search effect - performs actual filtering
     useEffect(() => {
       if (!debouncedSearchTerm) {
         startTransition(() => {
-          setFilteredSessions(sessions);
+          setFilteredSessions(visibleSessions);
           setSearchResults(null);
         });
         return;
@@ -480,7 +524,7 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
       // Use startTransition to make search non-blocking
       startTransition(() => {
         const searchTerm = caseSensitive ? debouncedSearchTerm : debouncedSearchTerm.toLowerCase();
-        const filtered = sessions.filter((session) => {
+        const filtered = visibleSessions.filter((session) => {
           const description = session.name;
           const workingDir = session.working_dir;
           const sessionId = session.id;
@@ -503,7 +547,7 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
         setFilteredSessions(filtered);
         setSearchResults(filtered.length > 0 ? { count: filtered.length, currentIndex: 1 } : null);
       });
-    }, [debouncedSearchTerm, caseSensitive, sessions]);
+    }, [debouncedSearchTerm, caseSensitive, visibleSessions]);
 
     // Handle immediate search input (updates search term for debouncing)
     const handleSearch = useCallback((term: string, caseSensitive: boolean) => {
@@ -709,6 +753,20 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
           className="biorouter-list-row session-item flex items-center gap-3 py-2 px-4 relative group"
           ref={(el) => setSessionRefs(session.id, el)}
         >
+          {/* BR-71: the badge lives INSIDE the row, and is derived from the row
+              itself rather than from where it was rendered — so a subagent run
+              whose parent is missing from the list is still labelled instead of
+              reading as an unexplained bare conversation. */}
+          {session.session_type === 'sub_agent' && (
+            <span
+              data-testid="subagent-badge"
+              title="Subagent run"
+              className="flex-shrink-0 rounded bg-background-code px-1 text-[10px] text-text-subtle"
+            >
+              sub
+            </span>
+          )}
+
           {/* Title + metadata */}
           <button
             type="button"
@@ -912,21 +970,43 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
                 </h2>
               </div>
               <div className="session-grid biorouter-list-shell">
-                {group.sessions.map((session) => (
-                  <SessionItem
-                    key={session.id}
-                    session={session}
-                    onEditClick={handleEditSession}
-                    onDeleteClick={handleDeleteSession}
-                    onExportClick={handleExportSession}
-                    onOpenInNewWindow={handleOpenInNewWindow}
-                  />
-                ))}
+                {group.sessions.map((session) => {
+                  const children = childrenByParentId.get(session.id);
+                  return (
+                    <React.Fragment key={session.id}>
+                      <SessionItem
+                        session={session}
+                        onEditClick={handleEditSession}
+                        onDeleteClick={handleDeleteSession}
+                        onExportClick={handleExportSession}
+                        onOpenInNewWindow={handleOpenInNewWindow}
+                      />
+                      {/* One indented block for all of a parent's children, not
+                          one wrapper each: a lone row inside its own wrapper is
+                          `:last-child` and loses the separator every other row
+                          in the list has. */}
+                      {children && (
+                        <div className="ml-6 flex flex-col border-l border-border-subtle pl-2">
+                          {children.map((child) => (
+                            <SessionItem
+                              key={child.id}
+                              session={child}
+                              onEditClick={handleEditSession}
+                              onDeleteClick={handleDeleteSession}
+                              onExportClick={handleExportSession}
+                              onOpenInNewWindow={handleOpenInNewWindow}
+                            />
+                          ))}
+                        </div>
+                      )}
+                    </React.Fragment>
+                  );
+                })}
               </div>
             </div>
           ))}
 
-          {visibleSessionCount < filteredSessions.length && (
+          {visibleSessionCount < topLevelSessions.length && (
             <div className="flex justify-center py-8">
               <div className="flex items-center space-x-2 text-text-muted">
                 <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-text-muted"></div>
@@ -960,6 +1040,14 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
                   View and search your past conversations with Biorouter. {getSearchShortcutText()}{' '}
                   to search.
                 </p>
+                <label className="mt-3 flex items-center gap-1 text-xs text-text-subtle">
+                  <input
+                    type="checkbox"
+                    checked={showSubagents}
+                    onChange={(e) => setShowSubagents(e.target.checked)}
+                  />
+                  Show subagent runs
+                </label>
               </ReadableContent>
             </div>
 

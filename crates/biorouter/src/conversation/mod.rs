@@ -517,6 +517,24 @@ fn is_pin_boundary(message: &Message) -> bool {
     message.metadata.pinned && message.content.iter().all(MessageContent::is_pin_eligible)
 }
 
+/// BR-71: whether two adjacent messages disagree about where they came from,
+/// which makes the join between them a hard boundary for
+/// [`merge_consecutive_messages`].
+///
+/// Same reasoning as [`is_pin_boundary`], same mechanism (a merge keeps only the
+/// FIRST message's metadata) and the same path back to storage — but the rule is
+/// a *change* of origin rather than the presence of a marker, because two
+/// injections from the same session carry byte-identical metadata and lose
+/// nothing by merging. Across a change, one of two things happens and both are
+/// wrong: an unstamped neighbour swallows an injection and the stamp is gone, or
+/// a stamped one absorbs what follows and the human's own words are recorded as
+/// agent-injected. The second is the worse failure — a lost stamp
+/// under-attributes, a broadened stamp MIS-attributes — which is why this is a
+/// boundary in both directions rather than a carry-forward.
+fn is_provenance_boundary(last: &Message, next: &Message) -> bool {
+    last.metadata.provenance != next.metadata.provenance
+}
+
 pub fn merge_consecutive_messages(messages: Vec<Message>) -> (Vec<Message>, Vec<String>) {
     let mut issues = Vec::new();
     let mut merged_messages: Vec<Message> = Vec::new();
@@ -527,6 +545,7 @@ pub fn merge_consecutive_messages(messages: Vec<Message>) -> (Vec<Message>, Vec<
             if effective_role(last) == effective
                 && !is_pin_boundary(last)
                 && !is_pin_boundary(&message)
+                && !is_provenance_boundary(last, &message)
             {
                 last.content.extend(message.content);
                 issues.push(format!("Merged consecutive {} messages", effective));
@@ -623,7 +642,7 @@ pub fn debug_conversation_fix(
 
 #[cfg(test)]
 mod tests {
-    use crate::conversation::message::Message;
+    use crate::conversation::message::{Message, MessageProvenance, ProvenanceKind};
     use crate::conversation::{debug_conversation_fix, fix_conversation, Conversation};
     use rmcp::model::{CallToolRequestParams, Role};
     use rmcp::object;
@@ -1321,6 +1340,118 @@ mod tests {
             2,
             "the pin boundary must survive as a message boundary: {:#?}",
             fixed.messages()
+        );
+    }
+
+    /// BR-71: `MessageProvenance` documents itself as "stamped in storage, not
+    /// just in the UI, and never suppressible". `merge_consecutive_messages`
+    /// keeps only the FIRST message's metadata, and the transcript it produces is
+    /// what the overflow path writes back to the store — so an unstamped
+    /// neighbour swallowing a stamped injection erases the stamp on the durable
+    /// copy. Exactly the failure `is_pin_boundary` exists to prevent, one field
+    /// over.
+    #[test]
+    fn merging_does_not_swallow_a_provenance_stamp() {
+        let stamp = MessageProvenance {
+            kind: ProvenanceKind::AgentInjection,
+            from_session_id: Some("s-parent".into()),
+            from_session_name: Some("Planning chat".into()),
+        };
+        let messages = vec![
+            Message::user()
+                .with_id("m-typed")
+                .with_text("summarise the logs"),
+            Message::user()
+                .with_id("m-injected")
+                .with_text("also open a PR")
+                .with_provenance(stamp.clone()),
+        ];
+
+        let (fixed, _issues) = fix_conversation(Conversation::new_unvalidated(messages));
+
+        let injected = fixed
+            .messages()
+            .iter()
+            .find(|m| m.as_concat_text().contains("also open a PR"))
+            .expect("the injected text must survive normalization");
+        assert_eq!(
+            injected.metadata.provenance.as_ref(),
+            Some(&stamp),
+            "normalization erased the BR-71 origin stamp: {:#?}",
+            fixed.messages()
+        );
+    }
+
+    /// The mirror image, and the worse of the two: a stamped message that absorbs
+    /// what follows makes the human's own words read as agent-injected. A lost
+    /// stamp under-attributes; this one MIS-attributes, which is what a reader of
+    /// the transcript (and any future policy keyed on provenance) would act on.
+    #[test]
+    fn merging_does_not_broaden_a_provenance_stamp_onto_later_content() {
+        let messages = vec![
+            Message::user()
+                .with_id("m-injected")
+                .with_text("also open a PR")
+                .with_provenance(MessageProvenance {
+                    kind: ProvenanceKind::AgentInjection,
+                    from_session_id: Some("s-parent".into()),
+                    from_session_name: None,
+                }),
+            Message::user()
+                .with_id("m-typed")
+                .with_text("actually, stop and explain first"),
+        ];
+
+        let (fixed, _issues) = fix_conversation(Conversation::new_unvalidated(messages));
+
+        assert!(
+            !fixed
+                .messages()
+                .iter()
+                .any(|m| m.metadata.provenance.is_some()
+                    && m.as_concat_text().contains("actually, stop and explain")),
+            "the user's own words were mis-attributed as an agent injection: {:#?}",
+            fixed.messages()
+        );
+        assert_eq!(
+            fixed.len(),
+            2,
+            "a provenance change must survive as a message boundary: {:#?}",
+            fixed.messages()
+        );
+    }
+
+    /// The boundary is a *change* of origin, not the mere presence of a stamp:
+    /// two consecutive messages injected by the same session carry identical
+    /// metadata, so merging them loses nothing and the ordinary provider-shape
+    /// merge must still happen.
+    #[test]
+    fn merging_still_joins_two_injections_from_the_same_source() {
+        let stamp = MessageProvenance {
+            kind: ProvenanceKind::AgentInjection,
+            from_session_id: Some("s-parent".into()),
+            from_session_name: Some("Planning chat".into()),
+        };
+        let messages = vec![
+            Message::user()
+                .with_text("first half")
+                .with_provenance(stamp.clone()),
+            Message::user()
+                .with_text("second half")
+                .with_provenance(stamp.clone()),
+        ];
+
+        let (fixed, _issues) = fix_conversation(Conversation::new_unvalidated(messages));
+
+        assert_eq!(
+            fixed.len(),
+            1,
+            "identical provenance must not become a merge boundary: {:#?}",
+            fixed.messages()
+        );
+        assert_eq!(
+            fixed.messages()[0].metadata.provenance.as_ref(),
+            Some(&stamp)
         );
     }
 

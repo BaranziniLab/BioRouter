@@ -3,6 +3,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '../ui/tabs';
 import { View, ViewOptions } from '../../utils/navigationUtils';
 import ModelsSection from './models/ModelsSection';
 import AppSettingsSection from './app/AppSettingsSection';
+import { WorkspaceSettingsSection } from './app/WorkspaceSettingsSection';
 import ConfigSettings from './config/ConfigSettings';
 import { ExtensionConfig } from '../../api';
 import { MainPanelLayout } from '../Layout/MainPanelLayout';
@@ -126,6 +127,7 @@ export default function SettingsView({
                     <div>
                       {CONFIGURATION_ENABLED && <ConfigSettings />}
                       <AppSettingsSection scrollToSection={viewOptions.section} />
+                      <WorkspaceSettingsSection />
                     </div>
                   </TabsContent>
                 </ReadableContent>

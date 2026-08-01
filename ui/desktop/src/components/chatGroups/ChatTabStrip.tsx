@@ -12,6 +12,7 @@ import {
 import { ChatTab, ChatTabId, ChatGroupId } from './chatGroupsTypes';
 import { useTabDragReorder } from './useTabDragReorder';
 import { useChatTabDrag } from './ChatTabDragContext';
+import type { TabAnnotation } from './workspaceCommandPlanner';
 
 function prefersReducedMotion(): boolean {
   return (
@@ -35,6 +36,18 @@ export interface ChatTabStripProps {
   groupActive?: boolean;
   /** Session ids with a live turn — from useRunningChats(). */
   runningSessionIds: readonly string[];
+  /**
+   * BR-71 Task 26's tab annotations, keyed by session id.
+   *
+   * A PROP, not a `useChatGroups()` call, for the same reason `runningSessionIds`
+   * is: this component is pure-props and three test files render it bare, outside
+   * any provider. OPTIONAL with a `{}` default so those files keep compiling and
+   * passing with no edit — the strip's whole contract is that it can be rendered
+   * with nothing but its own props. The shell's own suites additionally mock
+   * `useChatGroups` with hand-written stubs that have no `tabAnnotations`, so the
+   * default is what keeps `groups.tabAnnotations` being `undefined` a no-op there.
+   */
+  tabAnnotations?: Record<string, TabAnnotation>;
   onSelect: (tabId: ChatTabId) => void;
   onClose: (tabId: ChatTabId) => void;
   onReorder: (draggedTabId: ChatTabId, targetTabId: ChatTabId) => void;
@@ -53,6 +66,7 @@ export function ChatTabStrip({
   groupId,
   groupActive = true,
   runningSessionIds,
+  tabAnnotations = {},
   onSelect,
   onClose,
   onReorder,
@@ -296,6 +310,11 @@ export function ChatTabStrip({
               >
                 <MessageSquare className="h-4 w-4 flex-none" />
                 <span className="br-tab__label">{tab.title}</span>
+                {tabAnnotations[tab.sessionId]?.badge === 'subagent' && (
+                  <span className="ml-1 flex-none rounded bg-background-code px-1 text-[10px] text-text-subtle">
+                    sub
+                  </span>
+                )}
               </button>
 
               {isRunning ? (

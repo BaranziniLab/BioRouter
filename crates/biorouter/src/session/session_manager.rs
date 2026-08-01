@@ -26,7 +26,7 @@ use std::sync::{Arc, LazyLock};
 use tracing::{debug, info, warn};
 use utoipa::ToSchema;
 
-pub const CURRENT_SCHEMA_VERSION: i32 = 16;
+pub const CURRENT_SCHEMA_VERSION: i32 = 17;
 pub const SESSIONS_FOLDER: &str = "sessions";
 pub const DB_NAME: &str = "sessions.db";
 
@@ -159,6 +159,11 @@ pub struct Session {
     /// whole-second timestamp is what fixes the same-second over-truncation.
     #[serde(default)]
     pub branch_point_msg_uid: Option<String>,
+    /// Id of the parent session that spawned this one as a subagent (BR-71).
+    /// Sibling of `diverged_from` (branch lineage): `diverged_from` records a
+    /// user fork; this records a delegation. `None` for non-subagent sessions.
+    #[serde(default)]
+    pub parent_session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema, sqlx::FromRow)]
@@ -169,6 +174,12 @@ pub struct SessionSummary {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub message_count: i64,
+    /// BR-71: `sub_agent` rows are grouped under this parent in History.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_session_id: Option<String>,
+    /// BR-71: the session's type as stored (`user`/`scheduled`/`sub_agent`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_type: Option<String>,
 }
 
 /// One turn's token usage, applied additively and atomically in SQL.
@@ -230,6 +241,7 @@ pub struct SessionUpdateBuilder<'a> {
     model_config: Option<Option<ModelConfig>>,
     diverged_from: Option<Option<String>>,
     branch_point_msg_uid: Option<Option<String>>,
+    parent_session_id: Option<Option<String>>,
 }
 
 #[derive(Serialize, ToSchema, Debug)]
@@ -858,6 +870,7 @@ impl<'a> SessionUpdateBuilder<'a> {
             model_config: None,
             diverged_from: None,
             branch_point_msg_uid: None,
+            parent_session_id: None,
         }
     }
 
@@ -989,6 +1002,13 @@ impl<'a> SessionUpdateBuilder<'a> {
     /// session was branched at (BR-45 divergence point).
     pub fn branch_point_msg_uid(mut self, branch_point_msg_uid: Option<String>) -> Self {
         self.branch_point_msg_uid = Some(branch_point_msg_uid);
+        self
+    }
+
+    /// Record (or clear) the id of the session that spawned this one as a
+    /// subagent (BR-71 delegation lineage).
+    pub fn parent_session_id(mut self, parent_session_id: Option<String>) -> Self {
+        self.parent_session_id = Some(parent_session_id);
         self
     }
 }
@@ -1231,6 +1251,67 @@ impl SessionManager {
         SessionUpdateBuilder::new(self, id.to_string())
     }
 
+    /// Read ONE key out of a session's `extension_data`, without the
+    /// `COUNT(*)` over `messages` and the metadata deserialization
+    /// [`Self::get_session`] pays for. A cleared key (persisted as JSON `null`,
+    /// which is how `goal.rs` erases a resolved goal) reads as absent, matching
+    /// `RunState::load_from`.
+    ///
+    /// Returns `Ok(None)` both when the session does not exist and when it has
+    /// no value under that key — callers that need to tell those apart should
+    /// ask for the session.
+    pub async fn get_extension_state(
+        &self,
+        session_id: &str,
+        extension: &str,
+        version: &str,
+    ) -> Result<Option<serde_json::Value>> {
+        self.storage
+            .get_extension_state(session_id, extension, version)
+            .await
+    }
+
+    /// Atomically read-modify-write ONE key of a session's `extension_data`.
+    ///
+    /// `extension_data` is a single JSON column shared by every per-session
+    /// extension (`goal.v0`, `run_state.*`, `todo.v0`, `workspace_skills.v1`).
+    /// The older writer shape — `get_session` → mutate the whole
+    /// [`ExtensionData`] → `update(id).extension_data(..)` — reads and writes in
+    /// two separate statements, so two overlapping writers each serialize a
+    /// stale snapshot of the WHOLE object and the later commit silently erases
+    /// the earlier one, even when they touched different keys. Tool calls do
+    /// overlap (the agent loop drives them through `select_all`), so this is
+    /// reachable, not theoretical.
+    ///
+    /// Here the read and the write happen inside one transaction that OPENS
+    /// WITH A WRITE — the same load-bearing trick as
+    /// `replace_conversation_inner`: a deferred WAL transaction that reads
+    /// first pins a read snapshot and gets an immediate `SQLITE_BUSY_SNAPSHOT`
+    /// on upgrade (the busy handler is not consulted for a snapshot upgrade),
+    /// whereas taking the single per-file write lock up front makes any SELECT
+    /// that follows read true latest-committed state and makes a concurrent
+    /// writer wait on the busy timeout instead. Writers are therefore fully
+    /// serialized and no merge basis can be stale — no CAS/retry needed.
+    ///
+    /// `mutate` sees the currently persisted value (`None` when absent or
+    /// cleared) and returns the value to store. Returns the stored value, or
+    /// `Ok(None)` if no such session exists (nothing is written, and no row is
+    /// created). A `mutate` error rolls the transaction back.
+    pub async fn update_extension_state<F>(
+        &self,
+        session_id: &str,
+        extension: &str,
+        version: &str,
+        mutate: F,
+    ) -> Result<Option<serde_json::Value>>
+    where
+        F: FnOnce(Option<&serde_json::Value>) -> Result<serde_json::Value> + Send,
+    {
+        self.storage
+            .update_extension_state(session_id, extension, version, mutate)
+            .await
+    }
+
     /// Set the session's working directory **only if the chat is still empty**
     /// (#44), as one atomic conditional `UPDATE`: the emptiness check is the
     /// statement's own `WHERE NOT EXISTS (…messages…)` clause, so a first
@@ -1400,12 +1481,22 @@ impl SessionManager {
         self.storage.list_sessions().await
     }
 
+    /// Lightweight session rows for the History sidebar.
+    ///
+    /// `include_subagents` widens the type filter to `sub_agent` rows (BR-71);
+    /// `include_empty` swaps the `messages` INNER JOIN for a LEFT JOIN so a
+    /// session that has not yet recorded a message is still listed (used by
+    /// `workspace_list`, never by the sidebar).
     pub async fn list_session_summaries(
         &self,
         limit: u32,
         offset: u32,
+        include_subagents: bool,
+        include_empty: bool,
     ) -> Result<Vec<SessionSummary>> {
-        self.storage.list_session_summaries(limit, offset).await
+        self.storage
+            .list_session_summaries(limit, offset, include_subagents, include_empty)
+            .await
     }
 
     pub async fn list_sessions_by_types(&self, types: &[SessionType]) -> Result<Vec<Session>> {
@@ -1803,6 +1894,7 @@ impl Default for Session {
             model_config: None,
             diverged_from: None,
             branch_point_msg_uid: None,
+            parent_session_id: None,
         }
     }
 }
@@ -1974,6 +2066,7 @@ impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for Session {
             // Tolerant read: SELECTs that omit the column (e.g. the session
             // list) yield None rather than erroring, mirroring `model_config`.
             branch_point_msg_uid: row.try_get("branch_point_msg_uid").ok().flatten(),
+            parent_session_id: row.try_get("parent_session_id").ok().flatten(),
         })
     }
 }
@@ -2091,6 +2184,7 @@ impl SessionStorage {
                 provider_name TEXT,
                 model_config_json TEXT,
                 diverged_from TEXT,
+                parent_session_id TEXT,
                 external_key TEXT,
                 branch_point_msg_uid TEXT,
                 incarnation INTEGER NOT NULL DEFAULT 0
@@ -2266,8 +2360,8 @@ impl SessionStorage {
             total_tokens, input_tokens, output_tokens,
             accumulated_total_tokens, accumulated_input_tokens, accumulated_output_tokens,
             schedule_id, workflow_json, user_workflow_values_json,
-            provider_name, model_config_json, diverged_from, incarnation
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, random())
+            provider_name, model_config_json, diverged_from, parent_session_id, incarnation
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, random())
         "#,
         )
         .bind(&session.id)
@@ -2290,6 +2384,7 @@ impl SessionStorage {
         .bind(&session.provider_name)
         .bind(model_config_json)
         .bind(&session.diverged_from)
+        .bind(&session.parent_session_id)
         .execute(&mut *tx)
         .await?;
 
@@ -2729,6 +2824,15 @@ impl SessionStorage {
                 // inline messages remain untouched.
                 Self::create_message_blobs_table(pool).await?;
             }
+            17 => {
+                sqlx::query(
+                    r#"
+                    ALTER TABLE sessions ADD COLUMN parent_session_id TEXT
+                "#,
+                )
+                .execute(pool)
+                .await?;
+            }
             _ => {
                 anyhow::bail!("Unknown migration version: {}", version);
             }
@@ -2988,7 +3092,7 @@ impl SessionStorage {
                total_tokens, input_tokens, output_tokens,
                accumulated_total_tokens, accumulated_input_tokens, accumulated_output_tokens,
                schedule_id, workflow_json, user_workflow_values_json,
-               provider_name, model_config_json, diverged_from, branch_point_msg_uid
+               provider_name, model_config_json, diverged_from, branch_point_msg_uid, parent_session_id
         FROM sessions
         WHERE id = ?
     "#,
@@ -3068,6 +3172,109 @@ impl SessionStorage {
         }
     }
 
+    /// See [`SessionManager::get_extension_state`].
+    async fn get_extension_state(
+        &self,
+        session_id: &str,
+        extension: &str,
+        version: &str,
+    ) -> Result<Option<serde_json::Value>> {
+        let pool = self.pool().await?;
+        let Some(raw) = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT extension_data FROM sessions WHERE id = ?",
+        )
+        .bind(session_id)
+        .fetch_optional(pool)
+        .await?
+        .flatten() else {
+            return Ok(None);
+        };
+        let data = Self::parse_extension_data(&raw)?;
+        Ok(data
+            .get_extension_state(extension, version)
+            .filter(|v| !v.is_null())
+            .cloned())
+    }
+
+    /// See [`SessionManager::update_extension_state`] — including why the first
+    /// statement of the transaction must be a write.
+    async fn update_extension_state<F>(
+        &self,
+        session_id: &str,
+        extension: &str,
+        version: &str,
+        mutate: F,
+    ) -> Result<Option<serde_json::Value>>
+    where
+        F: FnOnce(Option<&serde_json::Value>) -> Result<serde_json::Value> + Send,
+    {
+        let pool = self.pool().await?;
+        let mut tx = pool.begin().await?;
+
+        // LOAD-BEARING FIRST STATEMENT, AND IT MUST BE A WRITE. DO NOT REORDER.
+        // See `replace_conversation_inner` for the measurement behind this: a
+        // deferred WAL transaction that reads first cannot upgrade to a writer
+        // without an immediate `SQLITE_BUSY_SNAPSHOT`, and the busy timeout does
+        // not apply. Taking the write lock up front makes the SELECT below read
+        // latest-committed state, which is what makes the merge sound.
+        //
+        // It also keeps `updated_at` moving, exactly as the
+        // `update(id).extension_data(..)` path this replaces did.
+        let touched = sqlx::query("UPDATE sessions SET updated_at = datetime('now') WHERE id = ?")
+            .bind(session_id)
+            .execute(&mut *tx)
+            .await?;
+        if touched.rows_affected() == 0 {
+            tx.rollback().await?;
+            return Ok(None);
+        }
+
+        let raw = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT extension_data FROM sessions WHERE id = ?",
+        )
+        .bind(session_id)
+        .fetch_one(&mut *tx)
+        .await?
+        .unwrap_or_else(|| "{}".to_string());
+        let mut data = match Self::parse_extension_data(&raw) {
+            Ok(data) => data,
+            Err(e) => {
+                tx.rollback().await?;
+                return Err(e);
+            }
+        };
+
+        let current = data
+            .get_extension_state(extension, version)
+            .filter(|v| !v.is_null())
+            .cloned();
+        let next = match mutate(current.as_ref()) {
+            Ok(next) => next,
+            Err(e) => {
+                tx.rollback().await?;
+                return Err(e);
+            }
+        };
+        data.set_extension_state(extension, version, next.clone());
+
+        sqlx::query("UPDATE sessions SET extension_data = ? WHERE id = ?")
+            .bind(serde_json::to_string(&data)?)
+            .bind(session_id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(Some(next))
+    }
+
+    /// Strict, unlike the tolerant `unwrap_or_default()` in `Session::from_row`.
+    /// A read-modify-write of one key rewrites the WHOLE column, so silently
+    /// treating an unparseable blob as empty would erase every other
+    /// extension's state; refusing to write is the only safe answer.
+    fn parse_extension_data(raw: &str) -> Result<ExtensionData> {
+        serde_json::from_str(raw)
+            .map_err(|e| anyhow::anyhow!("session extension_data is not a JSON object: {e}"))
+    }
+
     #[allow(clippy::too_many_lines)]
     async fn apply_update(&self, builder: SessionUpdateBuilder<'_>) -> Result<()> {
         let mut updates = Vec::new();
@@ -3130,6 +3337,7 @@ impl SessionStorage {
         add_update!(builder.model_config, "model_config_json");
         add_update!(builder.diverged_from, "diverged_from");
         add_update!(builder.branch_point_msg_uid, "branch_point_msg_uid");
+        add_update!(builder.parent_session_id, "parent_session_id");
 
         if updates.is_empty() {
             return Ok(());
@@ -3209,6 +3417,9 @@ impl SessionStorage {
         }
         if let Some(branch_point_msg_uid) = builder.branch_point_msg_uid {
             q = q.bind(branch_point_msg_uid);
+        }
+        if let Some(parent_session_id) = builder.parent_session_id {
+            q = q.bind(parent_session_id);
         }
 
         let pool = self.pool().await?;
@@ -4062,7 +4273,7 @@ impl SessionStorage {
                    s.total_tokens, s.input_tokens, s.output_tokens,
                    s.accumulated_total_tokens, s.accumulated_input_tokens, s.accumulated_output_tokens,
                    s.schedule_id, s.workflow_json, s.user_workflow_values_json,
-                   s.provider_name, s.model_config_json, s.diverged_from,
+                   s.provider_name, s.model_config_json, s.diverged_from, s.parent_session_id,
                    COUNT(m.id) as message_count
             FROM sessions s
             INNER JOIN messages m ON s.id = m.session_id
@@ -4087,29 +4298,54 @@ impl SessionStorage {
             .await
     }
 
-    async fn list_session_summaries(&self, limit: u32, offset: u32) -> Result<Vec<SessionSummary>> {
-        let pool = self.pool().await?;
-        sqlx::query_as::<_, SessionSummary>(
+    async fn list_session_summaries(
+        &self,
+        limit: u32,
+        offset: u32,
+        include_subagents: bool,
+        include_empty: bool,
+    ) -> Result<Vec<SessionSummary>> {
+        let type_filter = if include_subagents {
+            "('user', 'scheduled', 'sub_agent')"
+        } else {
+            "('user', 'scheduled')"
+        };
+        // The sidebar deliberately hides message-less sessions (an INNER JOIN on
+        // `messages`) so "Untitled chat" placeholders never appear in History.
+        // `workspace_list` needs the opposite: a session `workspace_open` just
+        // created has no message yet and must still be listable. `COUNT(m.id)`
+        // ignores NULLs, so the LEFT JOIN still yields 0.
+        let join = if include_empty {
+            "LEFT JOIN messages m ON s.id = m.session_id"
+        } else {
+            "INNER JOIN messages m ON s.id = m.session_id"
+        };
+        let query = format!(
             r#"
             SELECT s.id,
                    s.working_dir,
                    COALESCE(NULLIF(s.name, ''), NULLIF(s.description, ''), 'Untitled chat') AS name,
                    s.created_at,
                    s.updated_at,
+                   s.parent_session_id,
+                   s.session_type,
                    COUNT(m.id) AS message_count
             FROM sessions s
-            INNER JOIN messages m ON s.id = m.session_id
-            WHERE s.session_type IN ('user', 'scheduled')
+            {join}
+            WHERE s.session_type IN {type_filter}
             GROUP BY s.id
             ORDER BY s.updated_at DESC, s.id ASC
             LIMIT ? OFFSET ?
-            "#,
-        )
-        .bind(i64::from(limit))
-        .bind(i64::from(offset))
-        .fetch_all(pool)
-        .await
-        .map_err(Into::into)
+            "#
+        );
+
+        let pool = self.pool().await?;
+        sqlx::query_as::<_, SessionSummary>(&query)
+            .bind(i64::from(limit))
+            .bind(i64::from(offset))
+            .fetch_all(pool)
+            .await
+            .map_err(Into::into)
     }
 
     async fn delete_session(&self, session_id: &str) -> Result<()> {
@@ -5780,6 +6016,181 @@ mod tests {
         }
     }
 
+    /// BR-71: `extension_data` is ONE JSON column shared by every per-session
+    /// extension (`goal.v0`, `run_state.*`, `todo.v0`, `workspace_skills.v1`).
+    /// The pre-existing writer pattern — `get_session` → mutate the whole
+    /// `ExtensionData` → `update().extension_data(..)` — reads and writes in
+    /// two separate statements, so two overlapping writers each serialize a
+    /// stale snapshot of the WHOLE object and the later commit silently erases
+    /// the earlier one, even when they touched different keys.
+    ///
+    /// `update_extension_state` closes that by doing the read-modify-write of a
+    /// SINGLE key inside one transaction that opens with a write (the same
+    /// load-bearing trick as `replace_conversation_inner`: a deferred WAL
+    /// transaction that reads first pins a snapshot and gets an immediate
+    /// `SQLITE_BUSY_SNAPSHOT` on upgrade, bypassing the busy timeout).
+    mod extension_state_atomicity {
+        use super::*;
+
+        const KEY: &str = "workspace_skills";
+        const VER: &str = "v1";
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn concurrent_updates_of_one_key_never_lose_a_write() {
+            let store = TempDir::new().unwrap();
+            let sm = Arc::new(SessionManager::new(store.path().to_path_buf()));
+            let session = sm
+                .create_session(store.path().into(), "s".into(), SessionType::User)
+                .await
+                .unwrap();
+
+            let mut tasks = Vec::new();
+            for i in 0..8 {
+                let sm = Arc::clone(&sm);
+                let id = session.id.clone();
+                tasks.push(tokio::spawn(async move {
+                    sm.update_extension_state(&id, KEY, VER, move |current| {
+                        let mut names: Vec<String> = current
+                            .and_then(|v| serde_json::from_value(v.clone()).ok())
+                            .unwrap_or_default();
+                        names.push(format!("skill-{i}"));
+                        Ok(serde_json::to_value(names)?)
+                    })
+                    .await
+                    .unwrap()
+                }));
+            }
+            for task in tasks {
+                task.await.unwrap();
+            }
+
+            let stored = sm
+                .get_extension_state(&session.id, KEY, VER)
+                .await
+                .unwrap()
+                .expect("state persisted");
+            let names: Vec<String> = serde_json::from_value(stored).unwrap();
+            assert_eq!(
+                names.len(),
+                8,
+                "every concurrent append must survive; got {names:?}"
+            );
+        }
+
+        /// The blast radius of the stale-snapshot write: a skill grant must not
+        /// erase a goal, a todo list, or a paused approval that a concurrent
+        /// turn wrote to a DIFFERENT key of the same column.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn a_concurrent_write_to_another_key_is_not_erased() {
+            let store = TempDir::new().unwrap();
+            let sm = Arc::new(SessionManager::new(store.path().to_path_buf()));
+            let session = sm
+                .create_session(store.path().into(), "s".into(), SessionType::User)
+                .await
+                .unwrap();
+
+            let skills = {
+                let sm = Arc::clone(&sm);
+                let id = session.id.clone();
+                tokio::spawn(async move {
+                    sm.update_extension_state(&id, KEY, VER, |_| {
+                        Ok(serde_json::json!({"add": ["single-cell"]}))
+                    })
+                    .await
+                })
+            };
+            let goal = {
+                let sm = Arc::clone(&sm);
+                let id = session.id.clone();
+                tokio::spawn(async move {
+                    sm.update_extension_state(&id, "goal", "v0", |_| {
+                        Ok(serde_json::json!({"text": "finish BR-71"}))
+                    })
+                    .await
+                })
+            };
+            skills.await.unwrap().unwrap();
+            goal.await.unwrap().unwrap();
+
+            let reread = sm.get_session(&session.id, false).await.unwrap();
+            assert_eq!(
+                reread
+                    .extension_data
+                    .get_extension_state(KEY, VER)
+                    .and_then(|v| v["add"][0].as_str()),
+                Some("single-cell"),
+            );
+            assert_eq!(
+                reread
+                    .extension_data
+                    .get_extension_state("goal", "v0")
+                    .and_then(|v| v["text"].as_str()),
+                Some("finish BR-71"),
+                "a concurrent write to another extension's key must survive"
+            );
+        }
+
+        /// The persisted value is the basis for the next merge — not a
+        /// process-local cache. A reader opened after the writer's process
+        /// would have exited sees the committed value.
+        #[tokio::test]
+        async fn the_merge_basis_is_the_persisted_value_not_an_in_memory_one() {
+            let store = TempDir::new().unwrap();
+            let id = {
+                let sm = SessionManager::new(store.path().to_path_buf());
+                let session = sm
+                    .create_session(store.path().into(), "s".into(), SessionType::User)
+                    .await
+                    .unwrap();
+                sm.update_extension_state(&session.id, KEY, VER, |current| {
+                    assert!(current.is_none(), "nothing persisted yet");
+                    Ok(serde_json::json!({"add": ["proteomics"]}))
+                })
+                .await
+                .unwrap();
+                sm.close().await;
+                session.id
+            };
+
+            // A cold manager over the same directory: no shared in-process state.
+            let cold = SessionManager::new(store.path().to_path_buf());
+            let seen = std::sync::Arc::new(std::sync::Mutex::new(None));
+            let sink = std::sync::Arc::clone(&seen);
+            cold.update_extension_state(&id, KEY, VER, move |current| {
+                *sink.lock().unwrap() = current.cloned();
+                Ok(serde_json::json!({"add": ["proteomics", "single-cell"]}))
+            })
+            .await
+            .unwrap();
+            assert_eq!(
+                seen.lock()
+                    .unwrap()
+                    .as_ref()
+                    .and_then(|v| v["add"][0].as_str()),
+                Some("proteomics"),
+                "the mutator must see the persisted value, not an empty default"
+            );
+        }
+
+        #[tokio::test]
+        async fn a_missing_session_reports_not_found_instead_of_creating_one() {
+            let store = TempDir::new().unwrap();
+            let sm = SessionManager::new(store.path().to_path_buf());
+            let outcome = sm
+                .update_extension_state("no-such-session", KEY, VER, |_| {
+                    Ok(serde_json::json!({"add": []}))
+                })
+                .await
+                .unwrap();
+            assert!(outcome.is_none(), "no row to update");
+            assert!(sm
+                .get_extension_state("no-such-session", KEY, VER)
+                .await
+                .unwrap()
+                .is_none());
+        }
+    }
+
     #[tokio::test]
     async fn clear_all_sessions_removes_history_usage_and_side_tables() {
         let temp_dir = TempDir::new().unwrap();
@@ -6458,8 +6869,8 @@ mod tests {
             seed_session_with_messages(&sm, 3).await,
         ];
 
-        let first_page = sm.list_session_summaries(2, 0).await.unwrap();
-        let second_page = sm.list_session_summaries(2, 2).await.unwrap();
+        let first_page = sm.list_session_summaries(2, 0, false, false).await.unwrap();
+        let second_page = sm.list_session_summaries(2, 2, false, false).await.unwrap();
 
         assert_eq!(first_page.len(), 2);
         assert_eq!(second_page.len(), 1);
@@ -6476,6 +6887,88 @@ mod tests {
             .map(|session| session.id)
             .collect();
         assert_eq!(actual_ids, expected_ids);
+    }
+
+    #[tokio::test]
+    async fn list_session_summaries_hides_subagents_unless_asked() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let manager = SessionManager::new(temp.path().to_path_buf());
+        let parent = manager
+            .create_session(
+                temp.path().to_path_buf(),
+                "p".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        let child = manager
+            .create_session(
+                temp.path().to_path_buf(),
+                "c".to_string(),
+                SessionType::SubAgent,
+            )
+            .await
+            .unwrap();
+        manager
+            .update(&child.id)
+            .parent_session_id(Some(parent.id.clone()))
+            .apply()
+            .await
+            .unwrap();
+        // `include_subagents` widens the type filter by exactly one type. A
+        // regression that dropped the `WHERE s.session_type IN (…)` clause
+        // altogether would satisfy every assertion about `child` while quietly
+        // leaking `hidden` sessions, which this codebase excludes from user-
+        // facing listings everywhere else (see
+        // `usage_report_includes_subagent_spend_and_excludes_hidden_sessions`).
+        // This row is the sentinel for that.
+        let hidden = manager
+            .create_session(
+                temp.path().to_path_buf(),
+                "h".to_string(),
+                SessionType::Hidden,
+            )
+            .await
+            .unwrap();
+
+        // `list_session_summaries` INNER JOINs `messages` and `create_session`
+        // writes NO message, so a freshly created session is invisible to this
+        // query until it has one. The pre-existing paging test uses
+        // `seed_session_with_messages` for exactly this reason. Without these
+        // two writes both assertions below fail against an empty row set.
+        for s in [&parent, &child, &hidden] {
+            manager
+                .add_message(
+                    &s.id,
+                    &crate::conversation::message::Message::user().with_text("x"),
+                )
+                .await
+                .unwrap();
+        }
+
+        // (limit, offset, include_subagents, include_empty) — see Step 3.
+        let default_list = manager
+            .list_session_summaries(50, 0, false, false)
+            .await
+            .unwrap();
+        assert!(default_list.iter().any(|s| s.id == parent.id));
+        assert!(!default_list.iter().any(|s| s.id == child.id));
+        assert!(!default_list.iter().any(|s| s.id == hidden.id));
+
+        let full = manager
+            .list_session_summaries(50, 0, true, false)
+            .await
+            .unwrap();
+        let child_row = full
+            .iter()
+            .find(|s| s.id == child.id)
+            .expect("child listed");
+        assert_eq!(
+            child_row.parent_session_id.as_deref(),
+            Some(parent.id.as_str())
+        );
+        assert_eq!(child_row.session_type.as_deref(), Some("sub_agent"));
+        assert!(!full.iter().any(|s| s.id == hidden.id));
     }
 
     #[tokio::test]
@@ -9108,6 +9601,7 @@ mod tests {
             model_config: None,
             diverged_from: None,
             branch_point_msg_uid: None,
+            parent_session_id: None,
         };
         SessionStorage::import_legacy_session(pool, &legacy)
             .await
@@ -10750,6 +11244,62 @@ mod tests {
             "LIKE fallback still finds the message"
         );
         assert_eq!(res.results[0].session_id, "s1");
+    }
+
+    #[tokio::test]
+    async fn parent_session_id_round_trips() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let manager = SessionManager::new(temp.path().to_path_buf());
+
+        let parent = manager
+            .create_session(
+                temp.path().to_path_buf(),
+                "parent".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        let child = manager
+            .create_session(
+                temp.path().to_path_buf(),
+                "child".to_string(),
+                SessionType::SubAgent,
+            )
+            .await
+            .unwrap();
+
+        // Normally-created sessions carry no parent.
+        assert_eq!(child.parent_session_id, None);
+
+        manager
+            .update(&child.id)
+            .parent_session_id(Some(parent.id.clone()))
+            .apply()
+            .await
+            .unwrap();
+
+        let mut child_message = Message::user().with_text("make the child listable");
+        manager
+            .add_message_adopting_uid(&child.id, &mut child_message)
+            .await
+            .unwrap();
+
+        let listed = manager
+            .list_sessions_by_types(&[SessionType::SubAgent])
+            .await
+            .unwrap();
+        let listed_child = listed
+            .iter()
+            .find(|session| session.id == child.id)
+            .expect("child is returned by the full-session listing");
+        assert_eq!(
+            listed_child.parent_session_id.as_deref(),
+            Some(parent.id.as_str()),
+            "the tolerant row reader must not hide a missing SELECT column"
+        );
+
+        let reread = manager.get_session(&child.id, false).await.unwrap();
+        assert_eq!(reread.parent_session_id, Some(parent.id));
     }
 }
 

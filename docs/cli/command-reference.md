@@ -162,6 +162,7 @@ List all saved sessions.
 - **`--ascending`**: Sort sessions by date in ascending order (oldest first)
 - **`-w, --working_dir <path>`**: Filter sessions by working directory
 - **`-l, --limit <number>`**: Limit the number of results
+- **`--subagents`**: Include subagent runs, nested under the session that spawned them
 
 **Usage:**
 
@@ -180,7 +181,42 @@ biorouter session list -w ~/projects/myapp
 
 # List only the 10 most recent sessions
 biorouter session list --limit 10
+
+# Show subagent runs too, grouped under the session that spawned them
+biorouter session list --subagents
 ```
+
+#### Listing subagent runs
+
+By default a listing shows only your own chats and scheduled runs — the work an
+agent delegates to a subagent is filtered out, so a fan-out of five children is
+invisible from the terminal. `--subagents` includes those runs and nests each one
+under the session that spawned it:
+
+```
+20260731_1 - Migration review - 2026-07-31 15:04:11 UTC
+  └─ Subagent: audit the migration for data loss [● live]  20260731_2  14 msgs  2026-07-31 15:09
+  └─ Subagent: benchmark the covering index [○ done]  20260731_3  8 msgs  2026-07-31 15:07
+```
+
+Each child line carries its own label, its session id and its message count —
+enough to tell two siblings of one fan-out apart, and enough to hand the id to
+`biorouter session --resume` or `biorouter sessions watch`.
+
+Two behaviours differ from a plain listing:
+
+- **`--limit` counts top-level sessions, not rows.** `--limit 5` returns five
+  parents with all of their children, rather than five rows total. Truncating
+  before grouping would let one parent's six children consume the whole budget.
+- **Live/finished state is read from a running daemon**, which is the only
+  authority on it (`biorouterd` tracks in-flight turns in memory). When no daemon
+  can be reached — none running, or `BIOROUTER_SERVER__SECRET_KEY` not set or not
+  matching — every run reads `· state unknown` and the reason is printed once on
+  stderr. It never reads `done`, because "finished" and "not knowable from here"
+  are different answers and only one of them is safe to guess.
+
+`--name` resolves subagent runs too, so a run found this way can be addressed by
+its label as well as by its id.
 
 ### session remove [options]
 

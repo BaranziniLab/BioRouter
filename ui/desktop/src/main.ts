@@ -4238,6 +4238,13 @@ async function appMain() {
     const sources = [
       "'self'",
       'http://127.0.0.1:*',
+      // BR-71 §4.3: the workspace channel (`hooks/useWorkspaceChannel.ts`) is
+      // the renderer's only WebSocket to the daemon. CSP will not stretch an
+      // `http:` source over a `ws:` URL — CSP3 §6.6.2.6 relaxes `http`→`https`
+      // and `ws`→`wss`/`http`/`https`, never `http`→`ws` — so without this the
+      // socket is blocked before it leaves the renderer and every
+      // `workspace_list` reports `gui_attached: false` with the GUI on screen.
+      'ws://127.0.0.1:*',
       'https://api.github.com',
       'https://github.com',
       'https://objects.githubusercontent.com',
@@ -4248,6 +4255,10 @@ async function appMain() {
       try {
         const externalUrl = new URL(settings.externalBiorouterd.url);
         sources.push(externalUrl.origin);
+        // Same reason as the loopback ws entry above: an external backend needs
+        // the ws form of its own origin, derived exactly the way the hook
+        // derives the socket URL (`getApiUrl(...).replace(/^http/, 'ws')`).
+        sources.push(externalUrl.origin.replace(/^http/, 'ws'));
       } catch {
         console.warn('Invalid external biorouterd URL in settings, skipping CSP entry');
       }

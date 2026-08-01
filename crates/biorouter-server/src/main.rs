@@ -6,6 +6,13 @@ mod openapi;
 mod routes;
 mod state;
 mod tunnel;
+// BR-71 Task 6: the daemon compiles the turn runner, but nothing reachable from
+// `main` calls it until Task 8 switches `/reply` onto it. `main.rs` re-declares
+// the module tree rather than using the lib, so the bin's dead-code analysis
+// walks only from `main` and would otherwise reject the whole runner. Drop this
+// `allow` with the Task 8 cutover.
+#[allow(dead_code)]
+mod workspace;
 
 use biorouter::config::paths::Paths;
 use biorouter_mcp::{

@@ -53,12 +53,42 @@ use serde_json::Value;
 pub const MOIM_OPEN_TAG: &str = "<info-msg>";
 pub const MOIM_CLOSE_TAG: &str = "</info-msg>";
 
+/// How an extension entry came to be loaded.
+///
+/// BR-71 decision 21: the agent loads `workspace` for ITSELF whenever a session
+/// may delegate, with a spawn-only `available_tools`. That grant is a derived
+/// per-turn consequence of `subagents_enabled`, not a user decision, and four
+/// separate consumers have to tell the two apart — session persistence, the
+/// `TaskConfig` handed to a child agent, a generated workflow's extension list,
+/// and an explicit enable that arrives later and must replace it.
+///
+/// The distinction therefore lives HERE, on the entry, under the same mutex as
+/// the config. Kept anywhere else it is a second source of truth that is
+/// written in a different critical section from the load it describes, so a
+/// reader can observe an injection that is not yet marked (and persist it), and
+/// a late injection can claim provenance for the explicit entry that beat it
+/// (and silently stop persisting the user's own choice).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExtensionOrigin {
+    /// A user decision: Settings, `biorouter configure`, `/agent/add_extension`,
+    /// the session's own stored configuration, or the model's
+    /// `manage_extensions`.
+    Explicit,
+    /// Loaded by the agent itself as a consequence of session state.
+    AutoInjected,
+}
+
 struct Extension {
     pub config: ExtensionConfig,
 
     client: McpClientBox,
     server_info: Option<ServerInfo>,
     _temp_dir: Option<tempfile::TempDir>,
+    /// See [`ExtensionOrigin`]. `AutoInjected` entries are excluded from
+    /// [`ExtensionManager::get_extension_configs`], so they are never persisted,
+    /// replayed, or propagated — the same treatment `inprocess` gets, for the
+    /// same reason.
+    origin: ExtensionOrigin,
     /// True for per-app in-process servers injected via `add_inprocess_server`.
     /// Their `config` is a synthetic name-only marker that is NOT spawnable from
     /// any registry, so they are excluded from `get_extension_configs` (never
@@ -85,6 +115,7 @@ impl Extension {
             _temp_dir: temp_dir,
             inprocess: false,
             _pooled: None,
+            origin: ExtensionOrigin::Explicit,
         }
     }
 
@@ -363,7 +394,10 @@ pub fn get_parameter_names(tool: &Tool) -> Vec<String> {
 /// daemon-private variables from a child no matter who put them there.
 ///
 /// The working directory is resolved here too (explicit argument first, then
-/// `BIOROUTER_WORKING_DIR`).
+/// `BIOROUTER_WORKING_DIR`). A resolved base is always *named* to the child;
+/// only the child's cwd is conditional on that base still existing. See the
+/// comment on the branch below — collapsing the two back into one condition is
+/// issue #68's jail-widening defect.
 fn prepare_child_environment(command: &mut Command, working_dir: Option<&PathBuf>) {
     if let Ok(path) = SearchPaths::builder().path() {
         command.env("PATH", path);
@@ -377,15 +411,27 @@ fn prepare_child_environment(command: &mut Command, working_dir: Option<&PathBuf
     });
 
     if let Some(ref dir) = effective_working_dir {
+        // ALWAYS name the base, even when it has vanished (issue #68 / F1). The
+        // two signals are deliberately no longer under one condition: a child
+        // that is told nothing does not fail safe, it falls back to its
+        // inherited environment and the daemon's process cwd — `/` under the
+        // packaged desktop app — and roots its file jail there, so a session
+        // whose directory was deleted mid-conversation gets a *wider* jail than
+        // one whose directory still exists. Naming a missing base is what lets
+        // `DeveloperServer` refuse the call instead of re-rooting it elsewhere.
+        command.env("BIOROUTER_WORKING_DIR", dir);
+
         if dir.exists() && dir.is_dir() {
             tracing::info!("Setting MCP process working directory: {:?}", dir);
             command.current_dir(dir);
-            // Also set BIOROUTER_WORKING_DIR env var for the child process
-            command.env("BIOROUTER_WORKING_DIR", dir);
         } else {
+            // Only the *cwd* stays conditional: `current_dir` on a path that
+            // does not exist is a spawn failure, which would take the extension
+            // down entirely and leave the child-side fallback unreachable.
             tracing::warn!(
-                "Working directory doesn't exist or isn't a directory: {:?}",
-                dir
+                working_dir = %dir.display(),
+                "extension working directory does not exist or is not a directory; \
+                 spawning without a cwd and letting the child refuse against this base"
             );
         }
     } else {
@@ -655,6 +701,11 @@ impl ExtensionManager {
     /// Resolve the working directory for an extension.
     /// Prefers the session working directory (set via `set_working_dir`), and
     /// falls back to the process cwd when it is not available (e.g. the CLI).
+    ///
+    /// Deliberately **not** existence-checked: a session directory that has been
+    /// deleted is still this session's base, and dropping it here would send the
+    /// child no base at all — issue #68's jail widening. Existence is decided
+    /// once, at the spawn, by [`prepare_child_environment`].
     async fn resolve_working_dir(&self) -> PathBuf {
         if let Some(dir) = self.working_dir.lock().await.clone() {
             return dir;
@@ -670,12 +721,59 @@ impl ExtensionManager {
             .any(|ext| ext.supports_resources())
     }
 
-    #[allow(clippy::too_many_lines)]
+    /// Load an extension the user asked for. Idempotent by key, except that an
+    /// explicit config REPLACES an [`ExtensionOrigin::AutoInjected`] entry of
+    /// the same name — see [`Self::add_extension_with_origin`].
     pub async fn add_extension(self: &Arc<Self>, config: ExtensionConfig) -> ExtensionResult<()> {
+        self.add_extension_with_origin(config, ExtensionOrigin::Explicit)
+            .await
+    }
+
+    /// Load an extension the agent decided to load for itself (BR-71 decision
+    /// 21). Never replaces or re-labels an entry that is already loaded, so an
+    /// explicit enable that lands first always wins.
+    pub async fn add_extension_auto_injected(
+        self: &Arc<Self>,
+        config: ExtensionConfig,
+    ) -> ExtensionResult<()> {
+        self.add_extension_with_origin(config, ExtensionOrigin::AutoInjected)
+            .await
+    }
+
+    /// The one lifecycle path, with provenance decided in the same critical
+    /// sections as the map itself.
+    ///
+    /// Whether an add is a no-op depends on the EXISTING entry's origin, not
+    /// merely on its presence:
+    ///
+    /// | existing | incoming | outcome |
+    /// |---|---|---|
+    /// | none | either | load, recording `origin` |
+    /// | explicit | explicit | no-op (idempotent by key, as always) |
+    /// | explicit | auto | no-op, and provenance is left alone |
+    /// | auto | explicit | **replace** — the user outranks the injection |
+    /// | auto | auto | no-op |
+    ///
+    /// The decision is taken twice: once before the (slow, awaiting) client
+    /// construction so the common no-op costs nothing, and again under the very
+    /// lock the insert happens on, because another writer can land in between.
+    /// Without the second check two adds that both saw an empty slot would each
+    /// insert, and an auto-injection could overwrite the explicit entry that
+    /// beat it to the map.
+    ///
+    /// Replacement is an overwrite in place, never a remove-then-add: the key
+    /// is continuously occupied, so a dispatch that resolved a client from this
+    /// map can never find the entry missing when it checks the config.
+    #[allow(clippy::too_many_lines)]
+    async fn add_extension_with_origin(
+        self: &Arc<Self>,
+        config: ExtensionConfig,
+        origin: ExtensionOrigin,
+    ) -> ExtensionResult<()> {
         let config_name = config.key().to_string();
         let sanitized_name = normalize(&config_name);
 
-        if self.extensions.lock().await.contains_key(&sanitized_name) {
+        if !Self::should_load_over(self.extensions.lock().await.get(&sanitized_name), origin) {
             return Ok(());
         }
 
@@ -859,6 +957,13 @@ impl ExtensionManager {
         } else {
             sanitized_name
         };
+        // Re-decide under the insert's own lock: another writer may have landed
+        // while this one was building its client. Dropping the freshly built
+        // `entry` here is the correct outcome — the map already holds something
+        // that outranks it.
+        if !Self::should_load_over(extensions.get(&final_name), origin) {
+            return Ok(());
+        }
         extensions.insert(
             final_name,
             Extension {
@@ -868,12 +973,78 @@ impl ExtensionManager {
                 _temp_dir: None,
                 inprocess: false,
                 _pooled: Some(entry),
+                origin,
             },
         );
         drop(extensions);
         self.invalidate_tools_cache_and_bump_version().await;
 
         Ok(())
+    }
+
+    /// The provenance rule of [`Self::add_extension_with_origin`], as a pure
+    /// function of the slot's current occupant and the incoming origin, so both
+    /// checks in that method can never drift apart.
+    fn should_load_over(existing: Option<&Extension>, incoming: ExtensionOrigin) -> bool {
+        match existing {
+            None => true,
+            // The only overwrite there is: a user decision displacing a grant
+            // the agent derived for itself.
+            Some(existing) => {
+                incoming == ExtensionOrigin::Explicit
+                    && existing.origin == ExtensionOrigin::AutoInjected
+            }
+        }
+    }
+
+    /// How `name` came to be loaded, or `None` when it is not loaded at all.
+    /// One lock, so callers never see presence and provenance disagree.
+    pub async fn extension_origin(&self, name: &str) -> Option<ExtensionOrigin> {
+        self.extensions
+            .lock()
+            .await
+            .get(&normalize(name))
+            .map(|extension| extension.origin)
+    }
+
+    /// Remove `name` only if it is still an auto-injection, in one critical
+    /// section. BR-71: the injection is derived state and has to be dropped
+    /// when its cause is gone, but a plain check-then-remove would throw away
+    /// an explicit enable that landed in between.
+    ///
+    /// Returns whether anything was removed.
+    pub async fn remove_if_auto_injected(&self, name: &str) -> bool {
+        let removed = {
+            let mut extensions = self.extensions.lock().await;
+            let key = normalize(name);
+            match extensions.get(&key) {
+                Some(extension) if extension.origin == ExtensionOrigin::AutoInjected => {
+                    extensions.remove(&key).is_some()
+                }
+                _ => false,
+            }
+        };
+        if removed {
+            self.invalidate_tools_cache_and_bump_version().await;
+        }
+        removed
+    }
+
+    /// True when at least one loaded extension is NOT an auto-injection.
+    ///
+    /// BR-71: `subagents_enabled` refuses when nothing is loaded, and the
+    /// extension it injects is loaded. Counting that injection would make the
+    /// predicate sustain itself — a session that removed its last real
+    /// extension would keep delegating forever off the back of the grant its
+    /// own earlier turn derived. In-process per-app servers DO count here
+    /// (unlike in `get_extension_configs`): they are real capability, they are
+    /// just not re-spawnable from a config.
+    pub async fn has_non_injected_extensions(&self) -> bool {
+        self.extensions
+            .lock()
+            .await
+            .values()
+            .any(|extension| extension.origin != ExtensionOrigin::AutoInjected)
     }
 
     pub async fn add_client(
@@ -950,6 +1121,11 @@ impl ExtensionManager {
                 _temp_dir: None,
                 inprocess: true,
                 _pooled: None,
+                // An in-process server is injected by `configure_agent` at the
+                // caller's request, i.e. as explicitly as anything gets; it is
+                // withheld from `get_extension_configs` by `inprocess`, on its
+                // own unrelated grounds.
+                origin: ExtensionOrigin::Explicit,
             },
         );
         self.invalidate_tools_cache_and_bump_version().await;
@@ -988,6 +1164,21 @@ impl ExtensionManager {
         self.extensions.lock().await.contains_key(name)
     }
 
+    /// Is `tool` granted for `extension` in this session's configuration?
+    ///
+    /// Extracted so the agent loop can apply the SAME `available_tools` rule to
+    /// tools it intercepts before `dispatch_tool_call` (BR-71's merged spawn
+    /// tool is the only one). `true` when the extension is not loaded at all —
+    /// the caller has its own reason to refuse in that case, and this predicate
+    /// answers only the grant question.
+    pub async fn is_extension_tool_available(&self, extension: &str, tool: &str) -> bool {
+        self.extensions
+            .lock()
+            .await
+            .get(extension)
+            .is_none_or(|e| e.config.is_tool_available(tool))
+    }
+
     pub async fn is_bundled_target_enabled(&self, target: &BundledExtensionTarget) -> bool {
         self.extensions
             .lock()
@@ -996,16 +1187,30 @@ impl ExtensionManager {
             .is_some_and(|extension| target.matches_config(&extension.config))
     }
 
+    /// The extension configs that are safe to write down: everything a user
+    /// decision put here, and nothing this process derived for itself.
+    ///
+    /// Two exclusions, for two different reasons, both about the same hazard —
+    /// this snapshot is what gets persisted to the session row, replayed on
+    /// resume, handed to a child agent's `TaskConfig`, and baked into a
+    /// generated workflow file:
+    ///
+    /// * per-app in-process servers (`inprocess`): their config is a name-only
+    ///   marker that no registry can re-spawn, so replaying it would simply
+    ///   fail to load. They are re-injected per connect by `configure_agent`.
+    /// * auto-injections (BR-71 decision 21): a spawn-only `workspace` grant
+    ///   derived from `subagents_enabled`, re-derived every turn. Written down
+    ///   it becomes a *dead* grant that outlives its cause — it reloads into a
+    ///   session whose mode no longer enables delegation (where the dispatch
+    ///   gate keys on `session_type`, not on `subagents_enabled`, so it is
+    ///   live and callable), and it shows in Settings as though the user had
+    ///   enabled Workspace Control.
     pub async fn get_extension_configs(&self) -> Vec<ExtensionConfig> {
         self.extensions
             .lock()
             .await
             .values()
-            // Exclude per-app in-process servers: their config is a name-only
-            // marker that no registry can re-spawn, so it must never be persisted,
-            // replayed on resume, or propagated to sub-agents (it would fail to
-            // load). They are re-injected per connect via configure_agent.
-            .filter(|ext| !ext.inprocess)
+            .filter(|ext| !ext.inprocess && ext.origin != ExtensionOrigin::AutoInjected)
             .map(|ext| ext.config.clone())
             .collect()
     }
@@ -1179,14 +1384,34 @@ impl ExtensionManager {
         prompt_template::render_global_file("plan.md", &context).expect("Prompt should render")
     }
 
-    /// Find and return a reference to the appropriate client for a tool call
-    async fn get_client_for_tool(&self, prefixed_name: &str) -> Option<(String, McpClientBox)> {
+    /// Resolve a prefixed tool name to the extension that owns it: its key, its
+    /// client, and — from the SAME snapshot — the config that says whether the
+    /// tool may be called at all.
+    ///
+    /// The config is returned here rather than looked up again by the caller
+    /// because the two lookups could disagree. `dispatch_tool_call` used to
+    /// re-read the entry to check `available_tools` and, finding nothing,
+    /// skipped the check instead of failing it — so an extension removed
+    /// between the two lookups let a forbidden tool through on a client that
+    /// had already been cloned. Resolving both together makes that window
+    /// disappear: absence at this point is answered with "not found", presence
+    /// carries its own authority.
+    async fn get_client_for_tool(
+        &self,
+        prefixed_name: &str,
+    ) -> Option<(String, McpClientBox, ExtensionConfig)> {
         self.extensions
             .lock()
             .await
             .iter()
             .find(|(key, _)| prefixed_name.starts_with(*key))
-            .map(|(name, extension)| (name.clone(), extension.get_client()))
+            .map(|(name, extension)| {
+                (
+                    name.clone(),
+                    extension.get_client(),
+                    extension.config.clone(),
+                )
+            })
     }
 
     // Function that gets executed for read_resource tool
@@ -1456,17 +1681,19 @@ impl ExtensionManager {
             tool_name_str
         };
 
-        // Dispatch tool call based on the prefix naming convention
-        let (client_name, client) =
-            self.get_client_for_tool(&prefixed_name)
-                .await
-                .ok_or_else(|| {
-                    ErrorData::new(
-                        ErrorCode::RESOURCE_NOT_FOUND,
-                        format!("Tool '{}' not found", tool_call.name),
-                        None,
-                    )
-                })?;
+        // Dispatch tool call based on the prefix naming convention. The client
+        // and the config that authorizes it come out of ONE snapshot — see
+        // `get_client_for_tool`.
+        let (client_name, client, client_config) = self
+            .get_client_for_tool(&prefixed_name)
+            .await
+            .ok_or_else(|| {
+            ErrorData::new(
+                ErrorCode::RESOURCE_NOT_FOUND,
+                format!("Tool '{}' not found", tool_call.name),
+                None,
+            )
+        })?;
 
         let tool_name = prefixed_name
             .strip_prefix(client_name.as_str())
@@ -1480,18 +1707,19 @@ impl ExtensionManager {
             })?
             .to_string();
 
-        if let Some(extension) = self.extensions.lock().await.get(&client_name) {
-            if !extension.config.is_tool_available(&tool_name) {
-                return Err(ErrorData::new(
-                    ErrorCode::RESOURCE_NOT_FOUND,
-                    format!(
-                        "Tool '{}' is not available for extension '{}'",
-                        tool_name, client_name
-                    ),
-                    None,
-                )
-                .into());
-            }
+        // Unconditional: the config was resolved with the client, so there is no
+        // "the extension has gone" branch that could skip the check rather than
+        // fail it.
+        if !client_config.is_tool_available(&tool_name) {
+            return Err(ErrorData::new(
+                ErrorCode::RESOURCE_NOT_FOUND,
+                format!(
+                    "Tool '{}' is not available for extension '{}'",
+                    tool_name, client_name
+                ),
+                None,
+            )
+            .into());
         }
 
         // BR-23: central secret-redaction boundary. The `.biorouterignore`/secret
@@ -2570,6 +2798,60 @@ mod tests {
         assert!(result.is_ok());
     }
 
+    /// The authorization input must travel WITH the client, out of one snapshot
+    /// of the map.
+    ///
+    /// `dispatch_tool_call` used to resolve the client under one lock and then
+    /// take a second lock to read the entry's `available_tools` — inside an
+    /// `if let Some(extension) = …get(&client_name)`, so when that second
+    /// lookup missed, the check was not failed but SKIPPED, and the client
+    /// resolved a moment earlier went on to execute. Any removal landing in
+    /// that window turned a forbidden tool into an authorized one, and removals
+    /// are ordinary: disabling an extension in Settings, `manage_extensions
+    /// disable`, and (BR-71) an explicit enable displacing an auto-injection.
+    ///
+    /// With the config resolved alongside the client there is no second lookup
+    /// to miss: an entry that is gone at resolve time already answers "not
+    /// found", and one that was present is judged by its own config. The
+    /// interleaving is unrepresentable rather than unlikely, which is why this
+    /// pins the contract instead of racing a barrier against it.
+    #[tokio::test]
+    async fn dispatch_authorization_is_resolved_with_the_client_not_looked_up_again() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let extension_manager =
+            ExtensionManager::new_without_provider(temp_dir.path().to_path_buf());
+
+        extension_manager
+            .add_mock_extension_with_tools(
+                "guarded".to_string(),
+                Arc::new(MockClient {}),
+                vec!["allowed".to_string()],
+            )
+            .await;
+
+        let (name, _client, config) = extension_manager
+            .get_client_for_tool("guarded__forbidden")
+            .await
+            .expect("the extension resolves");
+        assert_eq!(name, "guarded");
+        assert!(
+            !config.is_tool_available("forbidden"),
+            "the resolved config is the one the dispatch must be judged by"
+        );
+        assert!(config.is_tool_available("allowed"));
+
+        // And once it is gone, resolution itself fails — a removal can only
+        // ever deny, never skip.
+        extension_manager.remove_extension("guarded").await.unwrap();
+        assert!(
+            extension_manager
+                .get_client_for_tool("guarded__forbidden")
+                .await
+                .is_none(),
+            "a disappeared extension must deny, not fall through"
+        );
+    }
+
     #[tokio::test]
     async fn test_streamable_http_header_env_substitution() {
         let mut env_map = HashMap::new();
@@ -3202,5 +3484,99 @@ mod tests {
                  regression.\nchild env:\n{child_env}"
             );
         }
+    }
+
+    // ---- issue #68 / F1: the parent half of the jail-widening defect ---------
+
+    /// The value of `BIOROUTER_WORKING_DIR` the child actually received, read
+    /// out of a **real spawned process** rather than off the `Command` builder.
+    /// Reading the builder would prove only that a field was set; the defect is
+    /// about what crosses the process boundary, so the probe crosses it.
+    #[cfg(unix)]
+    async fn child_working_dir_env(command: &mut Command) -> Option<String> {
+        let out = command.output().await.expect("extension child must spawn");
+        assert!(
+            out.status.success(),
+            "probe child failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .find_map(|line| line.strip_prefix("BIOROUTER_WORKING_DIR="))
+            .map(str::to_owned)
+    }
+
+    /// Issue #68 / F1: an out-of-process extension spawned **after** its session
+    /// directory has vanished must still be told what that directory was.
+    ///
+    /// This constructs the real condition rather than simulating it: a real
+    /// directory is created, really deleted, and a real child is really spawned
+    /// through the real [`prepare_child_environment`] — the same call
+    /// `child_process_client` makes for every stdio extension.
+    ///
+    /// Before the fix, `current_dir` and `BIOROUTER_WORKING_DIR` were both set
+    /// inside one `dir.exists() && dir.is_dir()` guard, so a vanished directory
+    /// sent the child **neither** signal. `DeveloperServer::new()` then adopted
+    /// the inherited environment and the daemon's process cwd — `/` under the
+    /// packaged desktop app — and rooted its file jail there, widening it to the
+    /// whole filesystem. Naming the base unconditionally is what lets the child
+    /// refuse instead of re-rooting; the cwd stays conditional because a
+    /// nonexistent `current_dir` is a spawn failure.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_vanished_working_dir_is_still_named_to_the_extension_child() {
+        let scratch = tempdir().expect("temp dir");
+        let vanished = scratch.path().to_path_buf();
+        drop(scratch);
+        assert!(
+            !vanished.exists(),
+            "the directory under test must really be gone"
+        );
+
+        let mut command = Command::new("printenv");
+        prepare_child_environment(&mut command, Some(&vanished));
+
+        // The other half of the fix: a directory that does not exist must NOT
+        // become the child's cwd — that is a spawn error, and it is what makes
+        // the child's own fallback unreachable.
+        assert_eq!(
+            command.as_std().get_current_dir(),
+            None,
+            "a vanished directory must not be handed to the child as its cwd"
+        );
+
+        assert_eq!(
+            child_working_dir_env(&mut command).await.as_deref(),
+            Some(vanished.to_string_lossy().as_ref()),
+            "issue #68: an extension spawned after its session directory vanished \
+             received no BIOROUTER_WORKING_DIR, so it adopts the daemon's cwd \
+             (`/` under the packaged app) and widens its file jail to the whole \
+             filesystem instead of refusing"
+        );
+    }
+
+    /// The other direction, so the conditional-cwd half cannot be "fixed" by
+    /// dropping `current_dir` altogether: a directory that still exists is both
+    /// named to the child and made its working directory, and the child really
+    /// runs there.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_existing_working_dir_still_becomes_the_extension_child_cwd() {
+        let scratch = tempdir().expect("temp dir");
+        let dir = scratch.path().to_path_buf();
+
+        let mut command = Command::new("sh");
+        command.args(["-c", "printf ran > ./marker; printenv"]);
+        prepare_child_environment(&mut command, Some(&dir));
+
+        assert_eq!(command.as_std().get_current_dir(), Some(dir.as_path()));
+        assert_eq!(
+            child_working_dir_env(&mut command).await.as_deref(),
+            Some(dir.to_string_lossy().as_ref())
+        );
+        assert!(
+            dir.join("marker").exists(),
+            "the child's relative write landed outside its session directory"
+        );
     }
 }

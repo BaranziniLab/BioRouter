@@ -23,6 +23,31 @@ pub fn is_local_origin(origin: &str) -> bool {
     }
 }
 
+/// Compare secrets without an early return, so a caller cannot recover the key
+/// one byte at a time by timing the response.
+///
+/// It lives here, beside `is_local_origin`, rather than in `auth.rs` with the
+/// middleware that is its main caller, for the reason that already put
+/// `is_local_origin` here: `auth` is a **lib-only** module (`main.rs`
+/// re-declares the module tree and pulls `check_token` from the lib —
+/// `commands::agent`'s `use biorouter_server::auth::check_token`), while
+/// `src/routes/` is compiled into the `biorouterd` binary as well, so nothing
+/// under `src/routes/` can name `crate::auth`. `routes::workspace`'s socket gate
+/// checks this very secret and has to use the middleware's own comparator rather
+/// than a second copy of it. `auth` re-exports this, so `check_token` and
+/// `auth::tests::secret_compare_is_exact` are unchanged.
+pub(crate) fn secret_matches(candidate: &str, expected: &str) -> bool {
+    let (a, b) = (candidate.as_bytes(), expected.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
 #[cfg(test)]
 mod origin_tests {
     use super::is_local_origin;
@@ -66,6 +91,7 @@ pub mod reply;
 pub mod reset;
 pub mod schedule;
 pub mod session;
+pub mod session_events;
 pub mod setup;
 pub mod status;
 pub mod tunnel;
@@ -73,6 +99,7 @@ pub mod usage;
 pub mod utils;
 pub mod workflow;
 pub mod workflow_utils;
+pub mod workspace;
 
 use std::sync::Arc;
 
@@ -99,7 +126,9 @@ pub fn configure(state: Arc<crate::state::AppState>, secret_key: String) -> Rout
         .merge(memory::routes(state.clone()))
         .merge(tunnel::routes(state.clone()))
         .merge(mcp_ui_proxy::routes())
-        .merge(mcp_app_proxy::routes(secret_key))
+        .merge(mcp_app_proxy::routes(secret_key.clone()))
+        .merge(workspace::routes(state.clone(), secret_key.clone()))
+        .merge(session_events::routes(state.clone()))
         .nest(
             "/knowledge",
             knowledge::router(state.knowledge_service.clone()),

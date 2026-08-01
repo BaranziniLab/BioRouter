@@ -1682,16 +1682,118 @@ async fn build_worker(
     })
 }
 
+/// Publish a `TurnError` terminal frame for a worker turn.
+///
+/// Split out of [`run_bounded_turn`] so that function stays under the
+/// `clippy::too_many_lines` baseline. The four other fields are identical on
+/// both call sites — only the message and the code differ — so this factors out
+/// the whole of what they share, not an arbitrary slice of it.
+fn publish_worker_turn_error(session_id: &str, message: String, code: &str) {
+    use biorouter::session_events::{self, SessionBusEvent};
+
+    session_events::publish(
+        session_id,
+        SessionBusEvent::TurnError {
+            message,
+            code: code.into(),
+            scope: "inference".into(),
+            retryable: false,
+            provider_kind: None,
+        },
+    );
+}
+
+/// Close a worker turn's bus bracket: `TurnError` when the stream failed,
+/// `TurnFinished` otherwise.
+///
+/// The caller must still `disarm()` its [`TerminalOnDrop`] after this returns —
+/// this publishes the terminal frame, it does not own the guard that would
+/// publish one on drop.
+fn publish_worker_terminal(session_id: &str, failure: Option<&str>, cancelled: bool) {
+    use biorouter::session_events::{self, SessionBusEvent};
+
+    match failure {
+        Some(message) => publish_worker_turn_error(session_id, message.to_string(), "stream_error"),
+        None => session_events::publish(
+            session_id,
+            SessionBusEvent::TurnFinished {
+                reason: if cancelled {
+                    "cancelled".into()
+                } else {
+                    "stop".into()
+                },
+                token_state: None,
+            },
+        ),
+    }
+}
+
 /// Run a single bounded turn on a worker agent, collecting its assistant text.
-/// Used by `consult` (which needs a plain answer, not a streamed one). The turn is
-/// bounded by `max_turns` and the outer `consult` timeout, and honors `cancel`.
+/// Used by `consult` (which needs a plain answer, not a streamed one). The turn
+/// is bounded by `max_turns` and the outer `consult` timeout, and honors
+/// `cancel`.
+///
+/// BR-71 decision 13: the turn is ALSO published to the worker session's event
+/// bus and holds the server turn lock, so a consulted worker is observable
+/// (`GET /sessions/{id}/events`), steerable (`POST /interrupt` reaches the live
+/// agent) and cancellable (`workspace_close scope:"turn"`) exactly like a
+/// subagent — the "same gap in miniature" §3.3 named. The collected-text
+/// contract is unchanged: callers still get the assistant text, or an error.
+///
+/// The bus bracket is closed on every exit, including the one where this future
+/// is DROPPED mid-turn by the consult deadline — see [`TerminalOnDrop`].
+///
+/// It cannot simply delegate to `workspace::turn::run_turn`: that spawns a
+/// detached task, and this caller needs the collected text BACK, with the
+/// worker's profile-specific `max_turns`. So it composes the same three
+/// properties explicitly.
 async fn run_bounded_turn(
-    agent: &biorouter::agents::Agent,
+    state: Arc<AppState>,
+    agent: &Arc<biorouter::agents::Agent>,
     session_id: &str,
     prompt: &str,
     max_turns: u32,
     cancel: CancellationToken,
 ) -> Result<String, String> {
+    use biorouter::session_events::{self, SessionBusEvent};
+
+    // (1) The worker's run holds the per-session turn lock, so the one-turn-per-
+    //     session invariant covers it and /agent/cancel can reach it.
+    let turn_guard = state
+        .try_begin_turn_idempotent(session_id, cancel.clone(), None)
+        .map_err(|conflict| {
+            format!(
+                "the worker session is already running a turn ({})",
+                conflict.running_turn_id
+            )
+        })?;
+    let turn_id = turn_guard.turn_id().to_string();
+
+    // (2) The live worker agent is addressable, so /interrupt and
+    //     workspace_send_prompt mode:"steer" reach THIS instance rather than
+    //     minting a fresh one (the AgentManager::register_agent added in Task 33).
+    let manager = biorouter::execution::manager::AgentManager::instance()
+        .await
+        .map_err(|e| e.to_string())?;
+    manager
+        .register_agent(session_id.to_string(), agent.clone())
+        .await;
+    let registration = ConsultRegistration {
+        manager: manager.clone(),
+        agent: agent.clone(),
+        session_id: session_id.to_string(),
+    };
+
+    session_events::publish(session_id, SessionBusEvent::TurnStarted { turn_id });
+
+    // The bracket is now OPEN, and something must close it on EVERY path —
+    // including the one that runs no code at all. Declared AFTER the guard and
+    // the registration so it drops FIRST: the terminal goes out while this turn
+    // still owns the session, and no successor's `TurnStarted` can slip in
+    // front of it (the ordering `workspace::turn::supervise_turn` documents for
+    // the same reason).
+    let mut terminal = TerminalOnDrop::armed(session_id);
+
     let user = Message::user().with_text(prompt.to_string());
     let session_config = SessionConfig {
         id: session_id.to_string(),
@@ -1702,25 +1804,198 @@ async fn run_bounded_turn(
         retry_config: None,
         reasoning_effort: None,
     };
-    let mut stream = agent
-        .reply(user, session_config, Some(cancel))
+    let mut stream = match agent
+        .reply(user, session_config, Some(cancel.clone()))
         .await
-        .map_err(|e| e.to_string())?;
+    {
+        Ok(stream) => stream,
+        Err(e) => {
+            publish_worker_turn_error(session_id, e.to_string(), "inference_start_failed");
+            terminal.disarm();
+            drop(registration);
+            drop(turn_guard);
+            return Err(e.to_string());
+        }
+    };
+
     let mut out = String::new();
+    let mut failure: Option<String> = None;
     while let Some(ev) = stream.next().await {
         match ev {
-            Ok(AgentEvent::Message(message)) => {
-                for content in &message.content {
-                    if let MessageContent::Text(t) = content {
-                        out.push_str(&t.text);
+            Ok(event) => {
+                if let AgentEvent::Message(message) = &event {
+                    for content in &message.content {
+                        if let MessageContent::Text(t) = content {
+                            out.push_str(&t.text);
+                        }
                     }
                 }
+                // (3) Observable: exactly the events a /reply client would see.
+                //
+                // Every variant, in stream order, from OUTSIDE the `Message`
+                // arm — including `AgentEvent::MessagesPersisted`. That is what
+                // keeps the producer-side invariant ("no `MessagesPersisted`
+                // may precede a `Message` frame carrying one of the ids it
+                // publishes", `agent.rs`) true through this relay, and it is
+                // free only because the publish sits after the text
+                // accumulation. Do not restructure into a per-variant match,
+                // and do not skip `MessagesPersisted` "because consult ignores
+                // it" — a consulted worker is exactly the session a
+                // `workspace_open` observer tab watches, and it needs the frame.
+                session_events::publish(session_id, SessionBusEvent::Agent(event));
             }
-            Ok(_) => {}
-            Err(e) => return Err(e.to_string()),
+            Err(e) => {
+                failure = Some(e.to_string());
+                break;
+            }
         }
     }
-    Ok(out)
+
+    publish_worker_terminal(session_id, failure.as_deref(), cancel.is_cancelled());
+    terminal.disarm();
+
+    drop(registration);
+    drop(turn_guard);
+    match failure {
+        Some(e) => Err(e),
+        // A CANCELLED turn is not an answer. This task is what first let
+        // `/agent/cancel` and `workspace_close scope:"turn"` reach a consulted
+        // worker, and a cancelled stream simply ends — no `Err`, so the collected
+        // text (often empty, at best a fragment) went back to `run_consult`,
+        // which builds `{"text": …}` from an `Ok` and hands it to the MAIN agent
+        // as the worker's considered answer. The bus said `reason: "cancelled"`
+        // in the same breath; the tool boundary now agrees with it, and the main
+        // agent gets to decide what to do about a worker that was stopped.
+        //
+        // The consult DEADLINE does not come through here — it drops this future
+        // outright and reports `{"status":"timeout"}` from `run_consult` — so
+        // this changes the external-cancel path only.
+        None if cancel.is_cancelled() => {
+            Err("the worker's turn was cancelled before it answered".to_string())
+        }
+        None => Ok(out),
+    }
+}
+
+/// RAII deregistration, matching the subagent run's discipline (Task 33): a
+/// finished consult releases exactly one of its own registrations, never a
+/// successor's. RAII rather than a plain call at the end, because the consult
+/// deadline in `run_consult` DROPS this future outright — without a destructor
+/// the pin (and the turn lease beside it) would leak on every timeout.
+///
+/// **Consult is the case that forced `register_agent` to be refcounted.** A
+/// glass-box subagent's agent is built by the run and belongs to it; a consulted
+/// worker's agent is an ordinary `AgentManager` cache entry obtained through
+/// `state.get_agent` (in `build_worker`) and, for a durable worker, is the SAME
+/// `Arc` across consults. Two things follow, and Task 33's API handles both:
+///
+/// - `deregister_agent_if_same` must not pop the LRU entry, because this run did
+///   not create it. Otherwise every consult evicts a cached worker.
+/// - the registration is refcounted, because consult #1's spawned cleanup can
+///   land *after* consult #2 registered the same `Arc`. With a plain remove,
+///   `Arc::ptr_eq` matches and the live registration disappears mid-turn — and
+///   "steerable via `/interrupt`", the property this task advertises, silently
+///   stops being true.
+struct ConsultRegistration {
+    manager: Arc<biorouter::execution::manager::AgentManager>,
+    agent: Arc<biorouter::agents::Agent>,
+    session_id: String,
+}
+
+impl Drop for ConsultRegistration {
+    fn drop(&mut self) {
+        let manager = self.manager.clone();
+        let agent = self.agent.clone();
+        let session_id = std::mem::take(&mut self.session_id);
+        // `tokio::spawn` PANICS with no runtime, and this guard can be dropped
+        // without one — the app socket's future torn down during daemon
+        // shutdown. A panic in `Drop` while another panic unwinds ABORTS the
+        // process, so ask for the handle instead of spawning unconditionally.
+        // Same reasoning, same shape as `subagent_handler::Deregister`.
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                handle.spawn(async move {
+                    manager.deregister_agent_if_same(&session_id, &agent).await;
+                });
+            }
+            Err(_) => tracing::debug!(
+                "no tokio runtime while releasing the consult registration for {session_id}; \
+                 the pin is left to the process exit"
+            ),
+        }
+    }
+}
+
+/// One terminal frame per turn, **always** — including when the turn's future is
+/// dropped instead of finishing.
+///
+/// `run_consult` wraps the worker's turn in `tokio::time::timeout`, and expiry
+/// DROPS that future rather than unwinding it: no code after the current await
+/// point runs, so `run_bounded_turn`'s closing publish was skipped while its
+/// `TurnStarted` had already gone out. An SSE observer on
+/// `GET /sessions/{worker}/events` — the `workspace_open` tab this whole task
+/// exists for — then watched the worker turn begin and never end, on the single
+/// most common consult failure path. `wait:"final_message"` degrades to its own
+/// timeout; a watching human just sees a turn that never stops.
+///
+/// This is the hole [`crate::workspace::turn::run_turn`]'s supervisor closes for
+/// browser-driven turns (*"a turn that publishes a start and then nothing,
+/// forever — 'one terminal event per turn, always' becomes zero, and every
+/// observer blocks on a frame that never comes"*). A `catch_unwind` cannot help
+/// here because there is no unwind, so the guarantee is a destructor instead.
+///
+/// Armed only once `TurnStarted` is out, and disarmed by every path that
+/// publishes its own terminal, so it can never produce a second one.
+///
+/// The consult deadline is the reachable cause; a dropped app socket (client
+/// gone, daemon shutting down) produces the same frame, deliberately — the only
+/// alternative on that path is the silence this guard exists to prevent.
+struct TerminalOnDrop {
+    session_id: String,
+    armed: bool,
+}
+
+impl TerminalOnDrop {
+    fn armed(session_id: &str) -> Self {
+        Self {
+            session_id: session_id.to_string(),
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for TerminalOnDrop {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        // `session_events::publish` is a synchronous map lookup plus a
+        // non-awaiting `send`, so it is safe from a destructor with no runtime —
+        // unlike the registration release next door, which needs a `spawn`.
+        //
+        // `worker_timeout` is not invented here: it is
+        // `TurnAbortCode::WorkerTimeout`'s wire code, and
+        // `workspace::turn::classify_abort` already maps that abort to exactly
+        // this envelope — scope `inference`, retryable. A consult timeout
+        // reaching an observer through the bus and through the CLI's abort
+        // classifier therefore reads identically.
+        biorouter::session_events::publish(
+            &self.session_id,
+            biorouter::session_events::SessionBusEvent::TurnError {
+                message: "The consulted worker's turn was abandoned before it answered \
+                          (its deadline expired, or the app disconnected)."
+                    .to_string(),
+                code: "worker_timeout".into(),
+                scope: "inference".into(),
+                retryable: true,
+                provider_kind: None,
+            },
+        );
+    }
 }
 
 /// Service one `consult` request: resolve the named profile, run a bounded worker
@@ -1769,7 +2044,10 @@ where
 }
 
 struct ConsultContext<'a> {
-    state: &'a AppState,
+    /// Owned, not borrowed: `run_bounded_turn` now takes the turn lock and
+    /// registers the worker agent, so it needs an `Arc<AppState>` of its own
+    /// (BR-71 decision 13). The socket loop already holds one.
+    state: Arc<AppState>,
     manifest: &'a Manifest,
     valid: &'a std::collections::BTreeMap<String, AgentConfig>,
     worker_agents: &'a mut std::collections::HashMap<String, WorkerHandle>,
@@ -1813,7 +2091,7 @@ async fn run_consult(context: ConsultContext<'_>) -> serde_json::Value {
 
     if !worker_agents.contains_key(&req.agent) {
         match build_worker(
-            state,
+            &state,
             manifest,
             valid,
             &req.agent,
@@ -1847,6 +2125,7 @@ async fn run_consult(context: ConsultContext<'_>) -> serde_json::Value {
     let worker_cancel = cancel.child_token();
 
     let turn = run_bounded_turn(
+        state.clone(),
         &handle.agent,
         &handle.session_id,
         &req.prompt,
@@ -3755,7 +4034,7 @@ async fn handle_agent_socket(
                             json!({"error":"consult is limited to depth 1: a worker profile cannot consult another profile"})
                         } else {
                             run_consult(ConsultContext {
-                                state: &state,
+                                state: state.clone(),
                                 manifest: &manifest,
                                 valid: &valid_profiles.valid,
                                 worker_agents: &mut worker_agents,
@@ -4623,9 +4902,486 @@ pub fn routes(state: Arc<AppState>) -> Router {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_pii_policy, decide_output, ClientFrame, OutputDecision, PiiMode, PiiOutcome,
+        apply_pii_policy, decide_output, run_bounded_turn, ClientFrame, OutputDecision, PiiMode,
+        PiiOutcome,
     };
     use serde_json::json;
+
+    // NOTE — the four `run_bounded_turn` tests below call `AppState::new()`,
+    // which opens the developer's REAL session database (via
+    // `AgentManager::instance()` → `SessionManager::instance()`), exactly as the
+    // `workspace::turn` tests warn. They create rows named "worker",
+    // "worker-text", "worker-abandoned" and "worker-cancelled". Keep the names
+    // unique, never assert on row counts, and prefer running this filter under
+    // `BIOROUTER_PATH_ROOT=<a temp dir>`. The `TempDir` is the session's WORKING
+    // DIR, not a database.
+
+    /// BR-71 decision 13: a consulted worker's turn is observable like any
+    /// other. Before this task, nothing outside `run_bounded_turn` could see it.
+    #[tokio::test]
+    async fn a_consulted_worker_turn_publishes_to_the_session_bus() {
+        use biorouter::session_events::{self, SessionBusEvent};
+
+        let state = crate::state::AppState::new().await.unwrap();
+        let temp = tempfile::TempDir::new().unwrap();
+        let worker = state
+            .session_manager()
+            .create_session(
+                temp.path().to_path_buf(),
+                "worker".to_string(),
+                biorouter::session::session_manager::SessionType::User,
+            )
+            .await
+            .unwrap();
+
+        let mut rx = session_events::subscribe(&worker.id);
+
+        // No provider on a fresh agent → the turn fails fast; the bracket is
+        // what this asserts, exactly as in the Task 6 tests.
+        let agent = state.get_agent(worker.id.clone()).await.unwrap();
+        let _ = run_bounded_turn(
+            state.clone(),
+            &agent,
+            &worker.id,
+            "what do you think?",
+            3,
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await;
+
+        let mut saw_started = false;
+        let mut saw_terminal = false;
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                SessionBusEvent::TurnStarted { .. } => saw_started = true,
+                SessionBusEvent::TurnFinished { .. } | SessionBusEvent::TurnError { .. } => {
+                    saw_terminal = true
+                }
+                _ => {}
+            }
+        }
+        assert!(
+            saw_started && saw_terminal,
+            "a consulted worker turn must bracket itself on the bus"
+        );
+    }
+
+    /// The contract `consult` depends on is unchanged: it still returns the
+    /// worker's assistant text, and still returns it only when the turn ends.
+    /// The point of this test is that the refactor is a MOVE, not a change of
+    /// contract — every consult error envelope above it is built from this
+    /// `Result<String, String>`.
+    #[tokio::test]
+    async fn run_bounded_turn_still_returns_collected_assistant_text() {
+        use async_trait::async_trait;
+        use biorouter::conversation::message::Message;
+        use biorouter::model::ModelConfig;
+        use biorouter::providers::base::{Provider, ProviderMetadata, ProviderUsage, Usage};
+        use biorouter::providers::errors::ProviderError;
+        use rmcp::model::Tool;
+
+        /// The smallest provider that answers: one assistant message, no tools.
+        /// Modelled on the `MockProvider` in
+        /// `crates/biorouter/src/agents/reply_parts.rs` — a DIFFERENT crate, and
+        /// inside that file's `#[cfg(test)] mod tests`, so it cannot be
+        /// imported. This is a copy on purpose. The four methods below are the
+        /// trait's full required set (`providers/base.rs`).
+        #[derive(Clone)]
+        struct AnsweringProvider;
+
+        #[async_trait]
+        impl Provider for AnsweringProvider {
+            fn metadata() -> ProviderMetadata {
+                ProviderMetadata::empty()
+            }
+            fn get_name(&self) -> &str {
+                "mock"
+            }
+            fn get_model_config(&self) -> ModelConfig {
+                ModelConfig::new("test-model").unwrap()
+            }
+            async fn complete_with_model(
+                &self,
+                _model_config: &ModelConfig,
+                _system: &str,
+                _messages: &[Message],
+                _tools: &[Tool],
+            ) -> anyhow::Result<(Message, ProviderUsage), ProviderError> {
+                Ok((
+                    Message::assistant().with_text("collected answer"),
+                    ProviderUsage::new("mock".to_string(), Usage::default()),
+                ))
+            }
+        }
+
+        let state = crate::state::AppState::new().await.unwrap();
+        let temp = tempfile::TempDir::new().unwrap();
+        let worker = state
+            .session_manager()
+            .create_session(
+                temp.path().to_path_buf(),
+                "worker-text".to_string(),
+                biorouter::session::session_manager::SessionType::User,
+            )
+            .await
+            .unwrap();
+        let agent = state.get_agent(worker.id.clone()).await.unwrap();
+        agent
+            .update_provider(std::sync::Arc::new(AnsweringProvider), &worker.id)
+            .await
+            .unwrap();
+
+        let mut rx = biorouter::session_events::subscribe(&worker.id);
+
+        let answer = run_bounded_turn(
+            state.clone(),
+            &agent,
+            &worker.id,
+            "what do you think?",
+            3,
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .expect("the worker answers");
+        assert!(
+            answer.contains("collected answer"),
+            "the collected-text contract must survive the move: {answer:?}"
+        );
+
+        // …and the turn released its lock, so the next consult on this durable
+        // worker is not refused by the lease it just took. This pins RELEASE
+        // only — on its own it passes against an implementation that never took
+        // the lock at all. Acquisition is pinned mid-flight by
+        // `an_abandoned_worker_turn_still_closes_its_bracket`.
+        assert!(!state.is_turn_active(&worker.id));
+
+        // Observability is the property this task exists to deliver, and the
+        // bracket alone does not pin it: an implementation that published
+        // `TurnStarted`/`TurnFinished` and dropped every `Agent(…)` event on the
+        // floor satisfies the bus test next door while being worth nothing to
+        // the `workspace_open` tab watching this worker.
+        use biorouter::agents::AgentEvent;
+        use biorouter::session_events::SessionBusEvent;
+        let mut relayed = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            relayed.push(event);
+        }
+
+        assert!(
+            relayed.iter().any(|e| matches!(
+                e,
+                SessionBusEvent::Agent(AgentEvent::Message(m))
+                    if m.as_concat_text().contains("collected answer")
+            )),
+            "the worker's assistant message must reach the BUS, not just the caller: {relayed:#?}"
+        );
+
+        // One terminal per turn, exactly — `TerminalOnDrop` closes the bracket
+        // when the deadline abandons the future, and a path that forgot to
+        // disarm it would publish a second one that no count-blind boolean
+        // assertion could see.
+        let terminals = relayed
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    SessionBusEvent::TurnFinished { .. } | SessionBusEvent::TurnError { .. }
+                )
+            })
+            .count();
+        assert_eq!(terminals, 1, "exactly one terminal frame: {relayed:#?}");
+
+        // Reconciliation #59, through this relay: **no `MessagesPersisted` may
+        // precede a `Message` frame carrying one of the ids it publishes**
+        // (`agents/agent.rs`, `messages_then_persisted`). The agent guarantees it
+        // producer-side; this relay's only job is not to reorder, and nothing
+        // but a sequence assertion can tell that it didn't.
+        //
+        // Scoped to ids the stream actually yields as content, which is what the
+        // invariant says and not a weakening of it: the FIRST accounting frame
+        // of a consult names the caller's own prompt — `run_bounded_turn` builds
+        // that `Message::user()` itself and hands it to `agent.reply`, so it is
+        // never yielded back — and the doc names that case ("rows that are never
+        // yielded at all"). `checked` is what keeps the scoping from quietly
+        // turning the whole assertion vacuous.
+        let carried_ids: std::collections::HashSet<String> = relayed
+            .iter()
+            .filter_map(|e| match e {
+                SessionBusEvent::Agent(AgentEvent::Message(m)) => m.id.clone(),
+                _ => None,
+            })
+            .collect();
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut checked = false;
+        for event in &relayed {
+            match event {
+                SessionBusEvent::Agent(AgentEvent::Message(m)) => {
+                    if let Some(id) = &m.id {
+                        seen.insert(id.clone());
+                    }
+                }
+                SessionBusEvent::Agent(AgentEvent::MessagesPersisted(rows)) => {
+                    for row in rows.iter().filter(|r| carried_ids.contains(&r.id)) {
+                        checked = true;
+                        assert!(
+                            seen.contains(&row.id),
+                            "MessagesPersisted named {} before the Message frame carrying it: \
+                             {relayed:#?}",
+                            row.id
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
+        assert!(
+            checked,
+            "the accounting frame must survive the relay and name a yielded row — a consult \
+             that drops it leaves an observer unable to satisfy `expectedMessageIds`: \
+             {relayed:#?}"
+        );
+    }
+
+    /// The consult deadline **drops** the worker's future rather than unwinding
+    /// it (`run_consult` wraps it in `tokio::time::timeout`), and a dropped
+    /// future runs no code after its current await point — so the terminal
+    /// publish at the end of `run_bounded_turn` was skipped and an observer on
+    /// `GET /sessions/{worker}/events` watched the turn start and never end.
+    /// That is the single most common consult failure path, and it is exactly
+    /// the hole `workspace::turn::supervise_turn` exists to close for
+    /// browser-driven turns: *"a turn that publishes a start and then nothing,
+    /// forever — one terminal event per turn, always becomes zero."*
+    ///
+    /// The test reproduces the drop precisely, and on the way through it pins
+    /// the one property no other assertion covers: the turn lock is held
+    /// **while** the turn runs, not merely absent after it.
+    #[tokio::test]
+    async fn an_abandoned_worker_turn_still_closes_its_bracket() {
+        use async_trait::async_trait;
+        use biorouter::conversation::message::Message;
+        use biorouter::model::ModelConfig;
+        use biorouter::providers::base::{Provider, ProviderMetadata, ProviderUsage};
+        use biorouter::providers::errors::ProviderError;
+        use biorouter::session_events::{self, SessionBusEvent};
+        use rmcp::model::Tool;
+        use std::sync::Arc;
+
+        /// Announces that it was reached, then never answers — so the turn is
+        /// provably mid-flight, and provably still holding its lease, at the
+        /// moment the test drops it.
+        #[derive(Clone)]
+        struct HangingProvider {
+            entered: Arc<tokio::sync::Notify>,
+        }
+
+        #[async_trait]
+        impl Provider for HangingProvider {
+            fn metadata() -> ProviderMetadata {
+                ProviderMetadata::empty()
+            }
+            fn get_name(&self) -> &str {
+                "hanging"
+            }
+            fn get_model_config(&self) -> ModelConfig {
+                ModelConfig::new("test-model").unwrap()
+            }
+            async fn complete_with_model(
+                &self,
+                _model_config: &ModelConfig,
+                _system: &str,
+                _messages: &[Message],
+                _tools: &[Tool],
+            ) -> anyhow::Result<(Message, ProviderUsage), ProviderError> {
+                self.entered.notify_one();
+                std::future::pending::<()>().await;
+                unreachable!("the hanging provider never answers")
+            }
+        }
+
+        let state = crate::state::AppState::new().await.unwrap();
+        let temp = tempfile::TempDir::new().unwrap();
+        let worker = state
+            .session_manager()
+            .create_session(
+                temp.path().to_path_buf(),
+                "worker-abandoned".to_string(),
+                biorouter::session::session_manager::SessionType::User,
+            )
+            .await
+            .unwrap();
+        let agent = state.get_agent(worker.id.clone()).await.unwrap();
+        let entered = Arc::new(tokio::sync::Notify::new());
+        agent
+            .update_provider(
+                Arc::new(HangingProvider {
+                    entered: entered.clone(),
+                }),
+                &worker.id,
+            )
+            .await
+            .unwrap();
+
+        let mut rx = session_events::subscribe(&worker.id);
+
+        // Boxed, not `tokio::pin!`ed: this test has to DROP the future, and
+        // `tokio::pin!` would rebind the name to a `Pin<&mut _>` whose drop
+        // releases a borrow and leaves the future itself alive on the stack.
+        let mut turn = Box::pin(run_bounded_turn(
+            state.clone(),
+            &agent,
+            &worker.id,
+            "what do you think?",
+            3,
+            tokio_util::sync::CancellationToken::new(),
+        ));
+        tokio::select! {
+            _ = &mut turn => panic!("the hanging worker cannot finish a turn"),
+            _ = entered.notified() => {}
+        }
+
+        assert!(
+            state.is_turn_active(&worker.id),
+            "a consulted worker's turn must HOLD the session turn lock while it runs"
+        );
+
+        // Exactly what the consult deadline does. No unwind, so no
+        // `catch_unwind` can help here — only a destructor.
+        drop(turn);
+
+        assert!(
+            !state.is_turn_active(&worker.id),
+            "an abandoned turn must release the session turn lock"
+        );
+
+        let mut saw_started = false;
+        let mut saw_terminal = false;
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                SessionBusEvent::TurnStarted { .. } => saw_started = true,
+                SessionBusEvent::TurnFinished { .. } | SessionBusEvent::TurnError { .. } => {
+                    saw_terminal = true
+                }
+                _ => {}
+            }
+        }
+        assert!(saw_started, "the abandoned turn still opened its bracket");
+        assert!(
+            saw_terminal,
+            "an abandoned consult must still publish ONE terminal frame — a \
+             `workspace_open` observer on the worker session blocks forever otherwise"
+        );
+    }
+
+    /// A cancelled worker turn is not an answer.
+    ///
+    /// Task 41 is what made `/agent/cancel` and `workspace_close scope:"turn"`
+    /// reach a consulted worker at all (its own table lists that as the point).
+    /// The collected-text contract then handed whatever partial text the worker
+    /// had produced back to `run_consult`, which reported it to the MAIN agent
+    /// as `{"text": …}` — indistinguishable from a considered answer — while the
+    /// bus correctly said `reason: "cancelled"`. The main agent could act on half
+    /// an analysis without ever being told it was half.
+    ///
+    /// The consult deadline is unaffected and must stay so: it drops the future
+    /// before this decision is reached and keeps reporting `{"status":"timeout"}`.
+    #[tokio::test]
+    async fn a_cancelled_worker_turn_is_not_reported_as_an_answer() {
+        use async_trait::async_trait;
+        use biorouter::conversation::message::Message;
+        use biorouter::model::ModelConfig;
+        use biorouter::providers::base::{Provider, ProviderMetadata, ProviderUsage, Usage};
+        use biorouter::providers::errors::ProviderError;
+        use biorouter::session_events::{self, SessionBusEvent};
+        use rmcp::model::Tool;
+        use std::sync::Arc;
+        use tokio_util::sync::CancellationToken;
+
+        /// Answers, but trips the turn's token on the way — the real shape of an
+        /// external cancel landing on a worker that has already said something.
+        #[derive(Clone)]
+        struct CancellingProvider {
+            cancel: CancellationToken,
+        }
+
+        #[async_trait]
+        impl Provider for CancellingProvider {
+            fn metadata() -> ProviderMetadata {
+                ProviderMetadata::empty()
+            }
+            fn get_name(&self) -> &str {
+                "cancelling"
+            }
+            fn get_model_config(&self) -> ModelConfig {
+                ModelConfig::new("test-model").unwrap()
+            }
+            async fn complete_with_model(
+                &self,
+                _model_config: &ModelConfig,
+                _system: &str,
+                _messages: &[Message],
+                _tools: &[Tool],
+            ) -> anyhow::Result<(Message, ProviderUsage), ProviderError> {
+                self.cancel.cancel();
+                Ok((
+                    Message::assistant().with_text("half an answer"),
+                    ProviderUsage::new("cancelling".to_string(), Usage::default()),
+                ))
+            }
+        }
+
+        let state = crate::state::AppState::new().await.unwrap();
+        let temp = tempfile::TempDir::new().unwrap();
+        let worker = state
+            .session_manager()
+            .create_session(
+                temp.path().to_path_buf(),
+                "worker-cancelled".to_string(),
+                biorouter::session::session_manager::SessionType::User,
+            )
+            .await
+            .unwrap();
+        let agent = state.get_agent(worker.id.clone()).await.unwrap();
+        let cancel = CancellationToken::new();
+        agent
+            .update_provider(
+                Arc::new(CancellingProvider {
+                    cancel: cancel.clone(),
+                }),
+                &worker.id,
+            )
+            .await
+            .unwrap();
+
+        let mut rx = session_events::subscribe(&worker.id);
+
+        let outcome = run_bounded_turn(
+            state.clone(),
+            &agent,
+            &worker.id,
+            "what do you think?",
+            3,
+            cancel.clone(),
+        )
+        .await;
+
+        assert!(
+            outcome.is_err(),
+            "a cancelled worker turn must not be handed to the main agent as the \
+             worker's answer — `run_consult` builds `{{\"text\": …}}` from an `Ok`: {outcome:?}"
+        );
+
+        // The bus already told the truth; the tool boundary now agrees with it.
+        let mut named_cancellation = false;
+        while let Ok(event) = rx.try_recv() {
+            if let SessionBusEvent::TurnFinished { reason, .. } = &event {
+                named_cancellation |= reason == "cancelled";
+            }
+        }
+        assert!(
+            named_cancellation,
+            "the terminal frame must still name the cancellation"
+        );
+    }
 
     /// Production topology, which the previous version of this test did not
     /// have: the main agent's session is keyed `app:<id>:<client>` and every

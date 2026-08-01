@@ -1,0 +1,724 @@
+//! BR-71 §5, the always-confirm special case: *"Removing security-relevant
+//! extensions or adding process-spawning ones on any target surfaces a
+//! confirmation regardless of mode."*
+//!
+//! Sibling of [`crate::security::sensitive_ops::SensitiveOpsInspector`], with
+//! one deliberate difference: that inspector returns early outside Auto mode
+//! because every other mode already gates file writes. This one has no mode
+//! gate at all, because no mode gates a cross-session capability change — the
+//! capability `workspace_set_tools` exercises did not exist before BR-71.
+//!
+//! Precedence is free: `apply_inspection_results_to_permissions` promotes any
+//! `RequireApproval` over another inspector's `Allow`
+//! (`crate::tool_inspection`, `:205` / `:273` / `:277-280`), so this beats Auto
+//! mode's blanket allow and a per-tool always-allow grant alike.
+
+use anyhow::Result;
+use async_trait::async_trait;
+use rmcp::model::JsonObject;
+use uuid::Uuid;
+
+use crate::config::BioRouterMode;
+use crate::conversation::message::{Message, ToolRequest};
+use crate::session::Session;
+use crate::tool_inspection::{InspectionAction, InspectionResult, ToolInspector};
+
+/// Extensions that spawn or execute code, named as builtins/platform entries.
+/// `ExtensionConfig::Stdio` and `::InlinePython` are process-spawning **by
+/// construction**, so they are caught structurally below rather than by name —
+/// this list is only for the in-process ones (`Builtin`/`Platform`) whose
+/// capability is not visible in the config shape.
+const PROCESS_SPAWNING_EXTENSIONS: &[&str] = &["developer", "computercontroller", "code_execution"];
+
+/// How dangerous an extension is *by its config shape*, independent of its name.
+///
+/// Exhaustive on purpose: `ExtensionConfig` has SEVEN variants
+/// (`agents/extension.rs:236-358` — `sse` :238, `stdio` :251, `builtin` :272,
+/// `platform` :288, `streamable_http` :301, `frontend` :324, `inline_python`
+/// :341) and a `matches!(…, Stdio { .. })` covers one of them. `InlinePython`
+/// is documented as "Inline Python code that will be executed using uvx"
+/// (`:340`) and `extension_manager.rs:802-833` proves it — it writes the code
+/// to a tempdir and builds `Command::new("uvx")` (`:814`) — so it is
+/// process-spawning by exactly the same reasoning that makes `Stdio` structural.
+/// `Sse` and `StreamableHttp` carry `uri` + `envs` + `env_keys` + `headers`
+/// (`:301-323`): adding one points another conversation's traffic at an
+/// arbitrary remote MCP endpoint, with credentials.
+///
+/// A `match` rather than a `matches!` so that an eighth variant is a compile
+/// error here instead of silently defaulting to "harmless".
+enum AddShapeRisk {
+    /// Spawns a child process on the target's machine.
+    ProcessSpawning,
+    /// Sends the target's traffic (and credentials) to a remote endpoint.
+    NetworkEgress,
+    /// Shape alone says nothing; fall through to the name list.
+    Opaque,
+}
+
+fn add_shape_risk(name: &str) -> AddShapeRisk {
+    use crate::agents::extension::ExtensionConfig as E;
+    match crate::config::get_extension_by_name(name) {
+        Some(E::Stdio { .. }) | Some(E::InlinePython { .. }) => AddShapeRisk::ProcessSpawning,
+        Some(E::Sse { .. }) | Some(E::StreamableHttp { .. }) => AddShapeRisk::NetworkEgress,
+        Some(E::Builtin { .. }) | Some(E::Platform { .. }) | Some(E::Frontend { .. }) | None => {
+            AddShapeRisk::Opaque
+        }
+    }
+}
+
+/// Compare extension names the way the EXECUTOR does.
+///
+/// `Agent::remove_extension` forwards to `ExtensionManager::remove_extension`,
+/// whose first line is `let sanitized_name = normalize(name);`
+/// (`extension_manager.rs:976-981`, `normalize` itself at `:159`) — lower-cased,
+/// whitespace-stripped, non-`[A-Za-z0-9_-]` mapped to `_`. So `"Workspace"`,
+/// `"WORKSPACE"` and `"work space"` all really do remove the `workspace`
+/// extension, while a raw-string `contains("workspace")` check here would see
+/// none of them and return `None` — no confirmation, in any mode, for the
+/// removal of the audit trail. (The ADD path fails closed instead:
+/// `find_entry_by_name` is an exact match on `config.name()`
+/// (`config/extensions.rs:183-190`), so a mis-cased add is rejected as an
+/// unknown extension.)
+///
+/// ⚠ **Keep this as plain `normalize`. Do NOT "modernize" it to PR #48's
+/// `BundledExtensionTarget::key()`** (ruled 2026-07-28). #48 landed a richer
+/// name resolver — `resolve_bundled_extension` (`extension_manager.rs:257`) →
+/// `BundledExtensionTarget` (`:183`) with `key()` (`:199`) — and deleted
+/// `canonical_builtin_extension_name`. It is the right tool for *resolving a
+/// `/ext:` marker to a registry entry*, and `key()` is
+/// `normalize(name_to_key(name))`, i.e. a strictly different function. This
+/// helper's entire job is to compare names **the way the executor does**, and
+/// the executor is `ExtensionManager::remove_extension`, whose first line is
+/// still literally `let sanitized_name = normalize(name);` (`:977`). Swapping in
+/// `key()` would re-open reconciliation #19's hole from the other side: a name
+/// this check normalizes differently from the code that acts on it is a name
+/// that can be removed without confirming. If `remove_extension` ever changes
+/// resolver, change this in the same commit — and only then.
+fn norm(name: &str) -> String {
+    crate::agents::extension_manager::normalize(name)
+}
+
+/// Extensions whose REMOVAL narrows what a human or a later check can *see*,
+/// rather than what the agent can do. That is the asymmetry §5 is about: an
+/// agent quietly removing the machinery that would reveal its next action.
+/// Both keys below are real `PLATFORM_EXTENSIONS` registry keys
+/// (`agents/extension.rs:43-106`: `todo`, `chatrecall`, `extensionmanager`,
+/// `skills`, `code_execution`), plus `workspace` once Task 12 adds it.
+const SECURITY_RELEVANT_EXTENSIONS: &[&str] = &[
+    // Every cross-session action the workspace surface performs is recorded as
+    // a tool call in the acting session and toasted on the target tab. Removing
+    // it from a session removes that audit trail.
+    "workspace",
+    // How a session enumerates and re-enables what it is allowed to use; without
+    // it, a `workspace_set_tools` change becomes invisible from inside the
+    // target session.
+    "extensionmanager",
+];
+
+/// Both name forms reach dispatch: extension-advertised tools are prefixed
+/// `{extension}__{tool}` (`extension_manager.rs:1121`, inside the
+/// `is_tool_available` advertisement filter at `:1119`), and the code already
+/// tolerates models that strip the prefix (`dispatch_tool_call` `:1438`, the
+/// prefix-repair block `:1444-1457`).
+pub(crate) fn is_set_tools_call(tool_name: &str) -> bool {
+    tool_name == "workspace_set_tools" || tool_name == "workspace__workspace_set_tools"
+}
+
+/// `workspace_open`'s `new.extensions` is a SECOND way to grant a
+/// process-spawning extension, and by an easier route than `workspace_set_tools`:
+/// `start_session` resolves any name the config knows with no policy check
+/// (Task 9), and `new.prompt` starts a turn on the result immediately (Task 24).
+/// Inspecting only `workspace_set_tools` would mean an Auto-mode agent that is
+/// stopped from calling
+/// `workspace_set_tools { add_extensions: ["developer"] }` can call
+/// `workspace_open { new: { extensions: ["developer"], prompt: "…" } }`
+/// and get a live process-spawning agent with no prompt at all — the design's
+/// "no self-escalation" bullet, defeated.
+pub(crate) fn is_workspace_open_call(tool_name: &str) -> bool {
+    tool_name == "workspace_open" || tool_name == "workspace__workspace_open"
+}
+
+fn string_list(args: &JsonObject, key: &str) -> Vec<String> {
+    args.get(key)
+        .and_then(serde_json::Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Why adding this extension must confirm, if it must. Shared by
+/// `workspace_set_tools`'s `add_extensions` and `workspace_open`'s
+/// `new.extensions`.
+///
+/// `risk` is passed in rather than looked up here so the caller owns the single
+/// global-config read (see `set_tools_confirmation_reason_with`).
+fn add_extension_reason(name: &str, risk: AddShapeRisk) -> Option<String> {
+    match risk {
+        AddShapeRisk::ProcessSpawning => {
+            Some(format!("adds the process-spawning extension '{name}'"))
+        }
+        AddShapeRisk::NetworkEgress => Some(format!(
+            "adds '{name}', which sends this conversation's traffic to a remote endpoint"
+        )),
+        AddShapeRisk::Opaque => {
+            // `developer` / `computercontroller` / `code_execution` are
+            // `Builtin` config entries, so only the name list catches them.
+            let n = norm(name);
+            PROCESS_SPAWNING_EXTENSIONS
+                .iter()
+                .any(|known| norm(known) == n)
+                .then(|| format!("adds the process-spawning extension '{name}'"))
+        }
+    }
+}
+
+/// The whole policy, as one pure function so it is testable without an agent.
+/// `Some(reason)` means "confirm, in every mode".
+pub(crate) fn set_tools_confirmation_reason(args: &JsonObject) -> Option<String> {
+    set_tools_confirmation_reason_with(
+        args,
+        add_shape_risk,
+        &crate::config::persisted_extension_names(),
+    )
+}
+
+/// The policy with its two config-derived inputs supplied by the caller.
+///
+/// Both `add_shape_risk` and `persisted_extension_names` read
+/// `Config::global()`, i.e. the developer's or the operator's real
+/// `config.yaml`. Left inline, which branch a test reaches becomes a property
+/// of the machine it runs on — the extensions the tests name resolve to
+/// [`AddShapeRisk::Opaque`] here and the operator-authored set is empty, so
+/// both the structural risk check and the operator-authored check were dead
+/// code under test. Measured, not assumed: collapsing `ProcessSpawning` and
+/// `NetworkEgress` into the name list AND deleting the operator-authored branch
+/// outright left all nine of this module's original tests green. Hoisting the
+/// two reads to the single production caller above lets the tests cover every
+/// branch on every machine, without a test ever reading — let alone writing —
+/// the user's config.
+///
+/// `operator_authored_raw` takes the names as the config file spells them;
+/// normalizing them is part of the behaviour under test.
+fn set_tools_confirmation_reason_with(
+    args: &JsonObject,
+    shape_risk: impl Fn(&str) -> AddShapeRisk,
+    operator_authored_raw: &std::collections::HashSet<String>,
+) -> Option<String> {
+    let mut reasons: Vec<String> = Vec::new();
+
+    for name in string_list(args, "add_extensions") {
+        if let Some(reason) = add_extension_reason(&name, shape_risk(&name)) {
+            reasons.push(reason);
+        }
+    }
+
+    // An operator-authored entry is a human decision the agent must not undo
+    // silently. `persisted_extension_names` is exactly "entries present in the
+    // config FILE", before platform defaults are injected
+    // (`config/extensions.rs`, added for #42) — so an injected default-off
+    // platform extension is NOT treated as operator-authored.
+    //
+    // Both sides of every comparison go through `norm`, because the executor
+    // does (see `norm`'s docs). The operator-authored set holds raw config-file
+    // names, so it is normalized here rather than at its source.
+    let operator_authored: std::collections::HashSet<String> =
+        operator_authored_raw.iter().map(|n| norm(n)).collect();
+    for name in string_list(args, "remove_extensions") {
+        let n = norm(&name);
+        if SECURITY_RELEVANT_EXTENSIONS.iter().any(|s| norm(s) == n) {
+            reasons.push(format!("removes the security-relevant extension '{name}'"));
+        } else if operator_authored.contains(&n) {
+            reasons.push(format!(
+                "removes '{name}', which the user configured explicitly"
+            ));
+        }
+    }
+
+    // Decision b added provider/model switching to this tool, and it is the
+    // single highest-consequence change it can make: the target's ENTIRE stored
+    // conversation is then sent to whatever endpoint that provider names, and a
+    // custom/declarative provider is a user-defined base URL whose
+    // `allows_unlisted_models` flag (`providers/base.rs:163`) waves the model
+    // check through. Decision 1's "regardless of mode" cannot be scoped to a
+    // subset of the tool that no longer matches what the tool does.
+    if let Some(provider) = args.get("provider").and_then(serde_json::Value::as_str) {
+        reasons.push(format!(
+            "switches this conversation to provider '{provider}', which sends its \
+             whole history to that provider's endpoint"
+        ));
+    }
+
+    // Decision c: a skill injects instructions into the target's prompt.
+    let added_skills = string_list(args, "add_skills");
+    if !added_skills.is_empty() {
+        reasons.push(format!(
+            "adds skills to this conversation's prompt ({})",
+            added_skills.join(", ")
+        ));
+    }
+
+    if reasons.is_empty() {
+        None
+    } else {
+        Some(reasons.join("; "))
+    }
+}
+
+/// The same policy for `workspace_open`'s `new.extensions`. A NEW session has
+/// nothing to remove and no provider to switch, so this reads only the grant.
+pub(crate) fn open_confirmation_reason(args: &JsonObject) -> Option<String> {
+    open_confirmation_reason_with(args, add_shape_risk)
+}
+
+/// The open path's half of the seam described on
+/// [`set_tools_confirmation_reason_with`]. There is no operator-authored set
+/// here because a new session has nothing to remove.
+fn open_confirmation_reason_with(
+    args: &JsonObject,
+    shape_risk: impl Fn(&str) -> AddShapeRisk,
+) -> Option<String> {
+    let names: Vec<String> = args
+        .get("new")
+        .and_then(serde_json::Value::as_object)
+        .map(|new| {
+            new.get("extensions")
+                .and_then(serde_json::Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|v| v.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default()
+        })
+        .unwrap_or_default();
+
+    let reasons: Vec<String> = names
+        .iter()
+        .filter_map(|name| add_extension_reason(name, shape_risk(name)))
+        .map(|r| r.replacen("adds", "starts a new conversation that has", 1))
+        .collect();
+
+    if reasons.is_empty() {
+        None
+    } else {
+        Some(reasons.join("; "))
+    }
+}
+
+pub struct WorkspaceMutationInspector;
+
+#[async_trait]
+impl ToolInspector for WorkspaceMutationInspector {
+    fn name(&self) -> &'static str {
+        "workspace_mutation"
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    async fn inspect(
+        &self,
+        tool_requests: &[ToolRequest],
+        _messages: &[Message],
+        _biorouter_mode: BioRouterMode,
+        _session: &Session,
+    ) -> Result<Vec<InspectionResult>> {
+        // NOTE: deliberately no mode gate. See the module docs.
+        let mut results = Vec::new();
+        for request in tool_requests {
+            let Ok(tool_call) = &request.tool_call else {
+                continue;
+            };
+            let Some(args) = tool_call.arguments.as_ref() else {
+                continue;
+            };
+            // TWO tool families grant capabilities to another conversation, and
+            // both must be inspected: `workspace_set_tools` changes an existing
+            // one, `workspace_open { new: { extensions } }` mints one with the
+            // grant baked in and (with `new.prompt`) starts it running. Scoping
+            // this to `set_tools` alone leaves the strictly larger capability
+            // reachable by the strictly easier route.
+            let reason = if is_set_tools_call(&tool_call.name) {
+                set_tools_confirmation_reason(args)
+            } else if is_workspace_open_call(&tool_call.name) {
+                open_confirmation_reason(args)
+            } else {
+                continue;
+            };
+            let Some(reason) = reason else {
+                continue;
+            };
+            let target = args
+                .get("session_id")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("<a new conversation>");
+            tracing::warn!(
+                counter.biorouter.workspace_mutation_escalated = 1,
+                tool_request_id = %request.id,
+                target_session = %target,
+                "Workspace tool-set change escalated to approval (BR-71 §5)"
+            );
+            results.push(InspectionResult {
+                tool_request_id: request.id.clone(),
+                action: InspectionAction::RequireApproval(Some(format!(
+                    "🔒 An agent is changing another conversation's capabilities.\n\
+                     Target conversation: {target}\n\
+                     This change {reason}.\n\
+                     This confirmation appears in every permission mode, including \
+                     Fully Automatic."
+                ))),
+                reason: format!("Workspace tool-set change ({reason})"),
+                confidence: 1.0,
+                inspector_name: self.name().to_string(),
+                finding_id: Some(format!("WSMUT-{}", Uuid::new_v4().simple())),
+            });
+        }
+        Ok(results)
+    }
+
+    // `is_enabled` uses the trait default (always registered): there is no mode
+    // gate to honour, and the tool-name filter above already makes it inert for
+    // every other call.
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(json: serde_json::Value) -> rmcp::model::JsonObject {
+        json.as_object().unwrap().clone()
+    }
+
+    #[test]
+    fn adding_a_process_spawning_extension_always_confirms() {
+        for name in ["developer", "computercontroller", "code_execution"] {
+            let reason = set_tools_confirmation_reason(&args(serde_json::json!({
+                "session_id": "s-target",
+                "add_extensions": [name],
+            })));
+            assert!(reason.is_some(), "adding {name} must confirm");
+            assert!(reason.unwrap().contains(name));
+        }
+    }
+
+    #[test]
+    fn removing_a_security_relevant_extension_always_confirms() {
+        let reason = set_tools_confirmation_reason(&args(serde_json::json!({
+            "session_id": "s-target",
+            "remove_extensions": ["workspace"],
+        })));
+        assert!(reason.unwrap().contains("workspace"));
+    }
+
+    #[test]
+    fn an_ordinary_change_does_not_confirm_through_this_inspector() {
+        // `todo` is neither process-spawning nor security-relevant and is not
+        // operator-persisted in a default config: the normal permission grading
+        // decides, exactly as for any other non-read tool.
+        assert!(set_tools_confirmation_reason(&args(serde_json::json!({
+            "session_id": "s-target",
+            "add_extensions": ["todo"],
+        })))
+        .is_none());
+        // A knowledge-base swap changes no capability.
+        assert!(set_tools_confirmation_reason(&args(serde_json::json!({
+            "session_id": "s-target",
+            "set_knowledge_bases": ["kb-a"],
+        })))
+        .is_none());
+    }
+
+    #[test]
+    fn only_set_tools_is_inspected_and_both_name_forms_match() {
+        assert!(is_set_tools_call("workspace__workspace_set_tools"));
+        assert!(is_set_tools_call("workspace_set_tools"));
+        assert!(!is_set_tools_call("workspace_list"));
+        assert!(!is_set_tools_call("workspace__workspace_send_prompt"));
+    }
+
+    #[tokio::test]
+    async fn the_inspector_requires_approval_in_every_mode() {
+        use crate::config::BioRouterMode;
+        use crate::conversation::message::ToolRequest;
+
+        let request = ToolRequest {
+            id: "call-1".to_string(),
+            tool_call: Ok(rmcp::model::CallToolRequestParams {
+                meta: None,
+                name: "workspace__workspace_set_tools".into(),
+                arguments: Some(args(serde_json::json!({
+                    "session_id": "s-target",
+                    "add_extensions": ["developer"],
+                }))),
+                task: None,
+            }),
+            // `ToolRequest` has FOUR fields (`conversation/message.rs:65-76`):
+            // `id`, `tool_call`, `metadata`, `tool_meta`. Omitting the last two
+            // is E0063. The precedents build all four —
+            // `tool_inspection.rs:352-353` and `security/sensitive_ops.rs:699+`.
+            metadata: None,
+            tool_meta: None,
+        };
+        let temp = tempfile::TempDir::new().unwrap();
+        let sm = crate::session::SessionManager::new(temp.path().to_path_buf());
+        let session = sm
+            .create_session(
+                temp.path().to_path_buf(),
+                "caller".into(),
+                crate::session::session_manager::SessionType::User,
+            )
+            .await
+            .unwrap();
+
+        // ALL FOUR real variants (`config/biorouter_mode.rs:7-12`). Auto is the
+        // one that matters most — it is where the permission inspector allows
+        // everything — but Approve and SmartApprove are the modes decision 1's
+        // guarantee is actually *about*, so they must be in the list, not
+        // implied by an "etc".
+        for mode in [
+            BioRouterMode::Auto,
+            BioRouterMode::Approve,
+            BioRouterMode::SmartApprove,
+            BioRouterMode::Chat,
+        ] {
+            let results = WorkspaceMutationInspector
+                .inspect(std::slice::from_ref(&request), &[], mode, &session)
+                .await
+                .unwrap();
+            assert_eq!(results.len(), 1, "mode {mode:?} produced no result");
+            assert!(matches!(
+                results[0].action,
+                crate::tool_inspection::InspectionAction::RequireApproval(Some(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn a_mis_cased_removal_still_confirms() {
+        // `Agent::remove_extension` normalizes before removing
+        // (extension_manager.rs:976-981), so "Workspace" really does strip the
+        // audit-trail extension. A raw-string check would see no match and
+        // return None — no confirmation, in any mode.
+        for spelling in ["Workspace", "WORKSPACE", "work space"] {
+            let reason = set_tools_confirmation_reason(&args(serde_json::json!({
+                "session_id": "s-target",
+                "remove_extensions": [spelling],
+            })));
+            assert!(
+                reason.is_some(),
+                "removal spelled {spelling:?} must confirm"
+            );
+        }
+    }
+
+    #[test]
+    fn a_provider_switch_always_confirms() {
+        // Decision b: the target's whole stored history goes to whatever
+        // endpoint the new provider names, and `allows_unlisted_models` waves
+        // the model check through for custom providers.
+        let reason = set_tools_confirmation_reason(&args(serde_json::json!({
+            "session_id": "s-target",
+            "provider": "my-custom-proxy",
+            "model": "anything",
+        })));
+        assert!(reason.unwrap().contains("my-custom-proxy"));
+    }
+
+    #[test]
+    fn a_skill_grant_confirms() {
+        let reason = set_tools_confirmation_reason(&args(serde_json::json!({
+            "session_id": "s-target",
+            "add_skills": ["ucsf-hpc"],
+        })));
+        assert!(reason.unwrap().contains("ucsf-hpc"));
+    }
+
+    /// The two config-derived branches — [`add_shape_risk`] and the
+    /// operator-authored set — are the ones a machine's real
+    /// `~/.config/biorouter/config.yaml` decides, so the tests above (which go
+    /// through the public wrappers) can only ever exercise whichever branch
+    /// this developer's config happens to select. On a default install that is
+    /// `Opaque` + an empty operator set, i.e. neither. The `_with` seam feeds
+    /// those two facts in directly, so every branch is covered on every machine
+    /// and no test ever reads — let alone writes — the user's real config.
+    ///
+    /// A raw (un-normalized) operator set is passed on purpose: normalizing it
+    /// is part of the behaviour under test.
+    fn no_operator_extensions() -> std::collections::HashSet<String> {
+        std::collections::HashSet::new()
+    }
+
+    fn operator_extensions(names: &[&str]) -> std::collections::HashSet<String> {
+        names.iter().map(|n| (*n).to_string()).collect()
+    }
+
+    #[test]
+    fn a_structurally_process_spawning_extension_confirms_by_shape() {
+        // `lab-mcp-server` is on NO name list. A `Stdio`/`InlinePython` entry
+        // spawns a child process on the target's machine, and that is visible
+        // in the config SHAPE alone — which is the whole reason
+        // `add_shape_risk` exists. If it were reduced to the name list, an
+        // arbitrary stdio MCP server could be granted to another conversation
+        // silently, in Auto mode.
+        let reason = set_tools_confirmation_reason_with(
+            &args(serde_json::json!({
+                "session_id": "s-target",
+                "add_extensions": ["lab-mcp-server"],
+            })),
+            |_| AddShapeRisk::ProcessSpawning,
+            &no_operator_extensions(),
+        )
+        .expect("a process-spawning shape must confirm even off the name list");
+        assert!(reason.contains("process-spawning"), "{reason}");
+        assert!(reason.contains("lab-mcp-server"), "{reason}");
+    }
+
+    #[test]
+    fn a_network_egress_extension_confirms_by_shape() {
+        // `Sse` / `StreamableHttp` carry a uri plus envs/headers: granting one
+        // points another conversation's traffic at an arbitrary remote MCP
+        // endpoint, with credentials. Distinct wording, because the risk is
+        // exfiltration rather than execution.
+        let reason = set_tools_confirmation_reason_with(
+            &args(serde_json::json!({
+                "session_id": "s-target",
+                "add_extensions": ["remote-notes"],
+            })),
+            |_| AddShapeRisk::NetworkEgress,
+            &no_operator_extensions(),
+        )
+        .expect("a network-egress shape must confirm");
+        assert!(reason.contains("remote endpoint"), "{reason}");
+        assert!(reason.contains("remote-notes"), "{reason}");
+        assert!(
+            !reason.contains("process-spawning"),
+            "egress must not be reported as execution: {reason}"
+        );
+    }
+
+    #[test]
+    fn an_opaque_shape_falls_through_to_the_name_list() {
+        // `Builtin` / `Platform` / `Frontend` and unknown names say nothing
+        // about capability, so the name list is the only thing left. Both
+        // outcomes are pinned: `developer` still confirms, an unknown in-process
+        // extension does not (or every ordinary tool change would prompt, and
+        // the confirmation would stop meaning anything).
+        let opaque = |_: &str| AddShapeRisk::Opaque;
+        assert!(
+            set_tools_confirmation_reason_with(
+                &args(serde_json::json!({
+                    "session_id": "s-target",
+                    "add_extensions": ["developer"],
+                })),
+                opaque,
+                &no_operator_extensions(),
+            )
+            .is_some(),
+            "the name list must still catch `developer` when the shape is opaque"
+        );
+        assert!(
+            set_tools_confirmation_reason_with(
+                &args(serde_json::json!({
+                    "session_id": "s-target",
+                    "add_extensions": ["lab-mcp-server"],
+                })),
+                opaque,
+                &no_operator_extensions(),
+            )
+            .is_none(),
+            "an opaque, unlisted extension must not confirm through this inspector"
+        );
+    }
+
+    #[test]
+    fn removing_an_operator_authored_extension_confirms() {
+        // An entry the operator wrote into the config file is a human decision;
+        // an agent undoing it from another conversation must surface. An
+        // extension that is merely *available* is not operator-authored and
+        // stays on the ordinary permission path.
+        let reason = set_tools_confirmation_reason_with(
+            &args(serde_json::json!({
+                "session_id": "s-target",
+                "remove_extensions": ["lab-mcp-server"],
+            })),
+            |_| AddShapeRisk::Opaque,
+            &operator_extensions(&["lab-mcp-server"]),
+        )
+        .expect("removing an operator-authored extension must confirm");
+        assert!(reason.contains("configured explicitly"), "{reason}");
+        assert!(reason.contains("lab-mcp-server"), "{reason}");
+
+        assert!(
+            set_tools_confirmation_reason_with(
+                &args(serde_json::json!({
+                    "session_id": "s-target",
+                    "remove_extensions": ["lab-mcp-server"],
+                })),
+                |_| AddShapeRisk::Opaque,
+                &no_operator_extensions(),
+            )
+            .is_none(),
+            "a removal of something the operator never wrote must not confirm here"
+        );
+    }
+
+    #[test]
+    fn a_mis_cased_operator_authored_removal_still_confirms() {
+        // BOTH sides go through `norm`, because the executor does. The config
+        // file holds whatever the operator typed; the model sends whatever it
+        // read back. `ExtensionManager::remove_extension` normalizes before
+        // removing, so these are the same extension and the check must agree —
+        // otherwise the removal happens with no confirmation, in any mode.
+        let reason = set_tools_confirmation_reason_with(
+            &args(serde_json::json!({
+                "session_id": "s-target",
+                "remove_extensions": ["lab-mcp-server"],
+            })),
+            |_| AddShapeRisk::Opaque,
+            &operator_extensions(&["Lab-MCP-Server"]),
+        );
+        assert!(
+            reason.is_some(),
+            "a differently-cased operator-authored name must still confirm"
+        );
+    }
+
+    #[test]
+    fn workspace_open_confirms_a_structurally_process_spawning_grant() {
+        // The open path shares `add_extension_reason`, so it must inherit the
+        // shape check too — otherwise the easier route (mint a session with the
+        // grant baked in) is the unguarded one.
+        let reason = open_confirmation_reason_with(
+            &args(serde_json::json!({
+                "new": { "working_dir": "/tmp", "extensions": ["lab-mcp-server"] },
+            })),
+            |_| AddShapeRisk::ProcessSpawning,
+        )
+        .expect("a process-spawning shape must confirm on the open path too");
+        assert!(
+            reason.starts_with("starts a new conversation that has"),
+            "{reason}"
+        );
+        assert!(reason.contains("lab-mcp-server"), "{reason}");
+    }
+
+    #[test]
+    fn workspace_open_granting_a_process_spawning_extension_confirms() {
+        assert!(is_workspace_open_call("workspace__workspace_open"));
+        let reason = open_confirmation_reason(&args(serde_json::json!({
+            "new": { "working_dir": "/tmp", "extensions": ["developer"], "prompt": "go" },
+        })));
+        assert!(reason.unwrap().contains("developer"));
+        // Opening an EXISTING conversation grants nothing and must not confirm.
+        assert!(open_confirmation_reason(&args(serde_json::json!({
+            "session_id": "s-existing",
+        })))
+        .is_none());
+    }
+}

@@ -106,3 +106,24 @@ fn test_adhoc_tool_schema_properties() {
     assert!(props.contains_key("settings"));
     assert!(props.contains_key("summary"));
 }
+
+/// BR-71 §4.5: the merged spawn tool carries the two visibility parameters
+/// Task 36 resolves. Asserted from an integration test (not just the unit one)
+/// because this is the schema an out-of-crate consumer sees.
+#[test]
+fn adhoc_tool_schema_carries_the_br71_visibility_params() {
+    let tool = create_subagent_tool(&[]);
+
+    let props = tool
+        .input_schema
+        .get("properties")
+        .unwrap()
+        .as_object()
+        .unwrap();
+    assert!(props.contains_key("visible"));
+    assert!(props.contains_key("placement"));
+    assert_eq!(
+        props["placement"]["enum"],
+        serde_json::json!(["tab", "split", "window"])
+    );
+}

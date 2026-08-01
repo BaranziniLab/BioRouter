@@ -25,8 +25,9 @@ use biorouter::config::declarative_providers::{
 };
 use biorouter::conversation::message::{
     ActionRequired, ActionRequiredData, FrontendToolRequest, Message, MessageContent,
-    MessageMetadata, RedactedThinkingContent, SystemNotificationContent, SystemNotificationType,
-    ThinkingContent, TokenState, ToolConfirmationRequest, ToolRequest, ToolResponse,
+    MessageMetadata, MessageProvenance, ProvenanceKind, RedactedThinkingContent,
+    SystemNotificationContent, SystemNotificationType, ThinkingContent, TokenState,
+    ToolConfirmationRequest, ToolRequest, ToolResponse,
 };
 use biorouter::conversation::tool_preview::{ToolPreview, ToolPreviewLine, ToolPreviewLineKind};
 use biorouter::permission::tool_risk::ToolRisk;
@@ -406,6 +407,7 @@ impl utoipa::Modify for ApiKeySecurity {
         super::routes::reply::reply,
         super::routes::reply::interrupt,
         super::routes::reply::cancel_turn,
+        super::routes::session_events::observe_session_events,
         super::routes::session::list_sessions,
         super::routes::session::list_sidebar_sessions,
         super::routes::session::get_session,
@@ -420,6 +422,7 @@ impl utoipa::Modify for ApiKeySecurity {
         super::routes::session::edit_message,
         super::routes::session::diverge_session,
         super::routes::session::get_session_extensions,
+        super::routes::session::running_sessions,
         super::routes::usage::get_usage_report,
         super::routes::usage::get_usage_summary,
         super::routes::reset::preview_reset,
@@ -511,6 +514,7 @@ impl utoipa::Modify for ApiKeySecurity {
         super::routes::action_required::ConfirmToolActionRequest,
         super::routes::reply::ChatRequest,
         super::routes::reply::InterruptRequest,
+        super::routes::reply::InterruptAccepted,
         super::routes::reply::CancelTurnRequest,
         super::routes::reply::CancelTurnResponse,
         super::routes::session::ImportSessionRequest,
@@ -526,6 +530,7 @@ impl utoipa::Modify for ApiKeySecurity {
         super::routes::session::DivergeSessionRequest,
         super::routes::session::DivergeSessionResponse,
         super::routes::session::SessionExtensionsResponse,
+        super::routes::session::RunningSessionsResponse,
         super::routes::reset::ResetCategory,
         super::routes::reset::ResetCounts,
         super::routes::reset::ResetPreviewResponse,
@@ -535,6 +540,14 @@ impl utoipa::Modify for ApiKeySecurity {
         Message,
         MessageContent,
         MessageMetadata,
+        // utoipa 4.x does NOT auto-collect nested schemas, so a type only ever
+        // reached through another type's field must be listed here too. Omitting
+        // these two leaves `MessageMetadata.provenance` pointing at a
+        // `#/components/schemas/MessageProvenance` that does not exist, and
+        // `just generate-openapi` aborts in `@hey-api/openapi-ts` with
+        // `MissingPointerError` rather than merely producing a stale client.
+        MessageProvenance,
+        ProvenanceKind,
         TokenState,
         ContentSchema,
         EmbeddedResourceSchema,

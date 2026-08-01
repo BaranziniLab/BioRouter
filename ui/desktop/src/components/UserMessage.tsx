@@ -5,6 +5,7 @@ import { extractImagePaths, removeImagePathsFromText } from '../utils/imageUtils
 import { getTextContent } from '../types/message';
 import { Message } from '../api';
 import MessageCopyLink from './MessageCopyLink';
+import { ProvenanceChip } from './ProvenanceChip';
 import { formatMessageTimestamp } from '../utils/timeUtils';
 import { Edit } from './icons/app-icons';
 import { Button } from './ui/button';
@@ -54,6 +55,10 @@ export default function UserMessage({ message, onMessageUpdate }: UserMessagePro
 
   // Memoize the timestamp
   const timestamp = useMemo(() => formatMessageTimestamp(message.created), [message.created]);
+
+  // `?? undefined` is load-bearing: the generated field is `MessageProvenance | null`
+  // and the chip's prop is optional (`?:`), which TypeScript does not unify.
+  const provenance = message.metadata?.provenance ?? undefined;
 
   // Effect to handle message content changes and ensure persistence
   useEffect(() => {
@@ -170,6 +175,16 @@ export default function UserMessage({ message, onMessageUpdate }: UserMessagePro
   return (
     <div className="w-full mt-[16px] opacity-0 animate-[appear_150ms_var(--ease-out)_forwards]">
       <div className="flex flex-col group">
+        {/* BR-71 §5: a message injected from another session is labeled in the
+            transcript for as long as it exists — including while it is being
+            edited, which is why this sits above the isEditing branch. Ordinary
+            same-session messages have no provenance and the chip renders null,
+            so the wrapper is only mounted when there is something to say. */}
+        {provenance && (
+          <div className="flex justify-end mb-1">
+            <ProvenanceChip provenance={provenance} />
+          </div>
+        )}
         {isEditing ? (
           // Truly wide, centered, in-place edit box replacing the bubble
           <div className="w-full max-w-4xl mx-auto bg-background-default text-text-default rounded-xl border border-border-subtle py-4 px-4 my-2 transition-all duration-200 ease-in-out">

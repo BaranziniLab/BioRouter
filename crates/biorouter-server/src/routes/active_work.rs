@@ -24,7 +24,7 @@ use biorouter::scheduler::ScheduledJob;
 use biorouter_mcp::active_work::{active_work, ActiveWorkItem};
 
 /// Cancel ids for scheduler runs are namespaced so the cancel route can tell a
-/// scheduled run apart from a registry entry (`bg-*` / `sub-*`).
+/// scheduled run apart from a registry entry (`bg-*` / `sub-*` / `dturn-*`).
 const SCHED_PREFIX: &str = "sched:";
 
 /// One active unit of work, kind-tagged so the GUI can render/route uniformly.
@@ -33,7 +33,7 @@ const SCHED_PREFIX: &str = "sched:";
 pub struct ActiveWorkItemDto {
     /// Unique id; also the handle for `POST /active_work/{id}/cancel`.
     pub id: String,
-    /// `background_job`, `subagent`, or `scheduled_run`.
+    /// `background_job`, `subagent`, `detached_turn`, or `scheduled_run`.
     pub kind: String,
     /// Short human-readable label (command, task prompt, or schedule id).
     pub title: String,
@@ -72,7 +72,7 @@ enum CancelTarget {
 }
 
 /// Route a cancel id: `sched:<schedule-id>` hits the scheduler; anything else
-/// (`bg-*` / `sub-*`) hits the registry.
+/// (`bg-*` / `sub-*` / `dturn-*`) hits the registry.
 fn classify_cancel_id(id: &str) -> CancelTarget {
     match id.strip_prefix(SCHED_PREFIX) {
         Some(sched_id) => CancelTarget::Scheduler(sched_id.to_string()),

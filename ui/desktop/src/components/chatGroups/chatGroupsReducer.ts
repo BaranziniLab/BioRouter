@@ -249,6 +249,16 @@ function findTabGroup(
   return null;
 }
 
+/** BR-71: locate a session's tab anywhere in the layout. Public wrapper over
+ * findTabGroup for the workspace command planner and tab annotations. */
+export function findTabBySession(
+  state: ChatGroupsState,
+  sessionId: string
+): { tabId: ChatTabId; groupId: ChatGroupId } | null {
+  const hit = findTabGroup(state, (tab) => tab.sessionId === sessionId);
+  return hit ? { tabId: hit.tab.tabId, groupId: hit.group.groupId } : null;
+}
+
 function withGroup(state: ChatGroupsState, groupId: ChatGroupId, next: ChatGroup): ChatGroupsState {
   return { ...state, groups: { ...state.groups, [groupId]: next } };
 }

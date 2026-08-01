@@ -8,6 +8,7 @@ import {
   listSessions,
   Message,
   MessageEvent,
+  observeSessionEvents,
   reply,
   resumeAgent,
   Session,
@@ -265,7 +266,21 @@ const EMPTY_TOKEN_STATE: TokenState = {
   accumulatedTotalTokens: 0,
 };
 
-function isRunningState(chatState: ChatState): boolean {
+/**
+ * The app's ONE answer to "is a turn live in this chat?".
+ *
+ * Exported because the answer is NOT the obvious `!== ChatState.Idle`:
+ * `LoadingConversation` is set at the top of every session load (see
+ * `ensureLoaded`), so the naive form reports a freshly opened, long-finished
+ * chat as running for the whole load. `isRunning()` and therefore the running
+ * registry — the set the sidebar and the tab strip's live dot both read — are
+ * defined by this function, so any surface that decides "running" for itself
+ * from a bare `!== Idle` is silently disagreeing with the rest of the app.
+ * Import this instead of re-deriving it. (BR-71: the subagent header's Stop
+ * button was that fourth ad-hoc copy, and it offered a kill switch for a turn
+ * that did not exist.)
+ */
+export function isRunningState(chatState: ChatState): boolean {
   return chatState !== ChatState.Idle && chatState !== ChatState.LoadingConversation;
 }
 
@@ -317,6 +332,41 @@ class ChatStreamController {
    * the session, and is what makes `expectedMessageIds` mandatory server-side.
    */
   private viewNamesEveryStoredRow = false;
+  /**
+   * BR-71 — true while this controller is an OBSERVER of a session another
+   * agent drives, rather than the driver of its own `/reply` turn. Set by
+   * `observeSession`, cleared by `stopObserving` (the tab closed, or the user
+   * took it over via `submitPreparedMessage`) and, unconditionally, by the
+   * observer loop's own `finally` — anything that can end the loop without
+   * going through `stopObserving`, `stopStreaming` above all, would otherwise
+   * leave this flag claiming an observer that no longer exists.
+   *
+   * PERMANENT CONSEQUENCE FOR `expectedMessageIds` — state it here rather than
+   * let the next reader discover it. `viewNamesEveryStoredRow` (above) is set
+   * in exactly the two places that read a conversation back from the server,
+   * and cleared by every streamed event. An observer-fed tab is a pure event
+   * consumer: it never performs that read, so the flag is ALWAYS false for it
+   * and `onMessageUpdate` therefore PERMANENTLY omits the `expectedMessageIds`
+   * guard on in-place edits, where an ordinary tab sends it after each read.
+   *
+   * That is safe — the guard is omitted, never falsified, and the server-side
+   * cut still runs under the turn lock, still bounded to the rows the handler
+   * itself read — but it is a real capability difference a user can hit.
+   *
+   * Do NOT "fix" it by setting `viewNamesEveryStoredRow` here: it would be a
+   * lie, because an observer tab genuinely does not know it holds every stored
+   * row. The thing that would let it is consuming #59's `MessagesPersisted`
+   * frame, which is the FOLLOW-UP recorded on `viewNamesEveryStoredRow` and is
+   * deliberately not done yet.
+   */
+  private observing = false;
+  /**
+   * Which observer loop `observing` belongs to. Bumped on every attach and on
+   * every detach, so a loop that is still unwinding — parked in a drain or a
+   * backoff when it was torn down — can tell that the flag it is about to clear
+   * is no longer its own.
+   */
+  private observerGeneration = 0;
   private abortController: AbortController | null = null;
   private activeStreamId = 0;
   private lastInteractionTime = Date.now();
@@ -768,7 +818,13 @@ class ChatStreamController {
               accumulatedOutputTokens: loadedSession?.accumulated_output_tokens ?? 0,
               accumulatedTotalTokens: loadedSession?.accumulated_total_tokens ?? 0,
             },
-            chatState: this.abortController ? prev.chatState : ChatState.Idle,
+            // BR-71: `hasLiveTurn()`, not a bare `abortController` — an
+            // observer holds one of those too, and reading its feed as a
+            // running turn leaves `prev.chatState` (LoadingConversation, set at
+            // the top of this load) pinned until some frame happens to move it.
+            // On a quiet observed session that is a tab stuck on the loading
+            // state forever.
+            chatState: this.hasLiveTurn() ? prev.chatState : ChatState.Idle,
             sessionLoadError: undefined,
             turnError: undefined,
           }));
@@ -910,7 +966,14 @@ class ChatStreamController {
   private async streamFromResponse(
     stream: AsyncIterable<MessageEvent>,
     initialMessages: Message[],
-    streamId: number
+    streamId: number,
+    /**
+     * Which kind of connection produced this stream. It changes exactly one
+     * thing — what the END of the stream means when no `Finish` arrived; see
+     * the branch below. Everything else about the pipeline is identical, which
+     * is the point of BR-71 reusing it.
+     */
+    source: 'driver' | 'observer' = 'driver'
   ): Promise<void> {
     let currentMessages = initialMessages;
 
@@ -968,7 +1031,30 @@ class ChatStreamController {
         }
       }
 
-      if (this.activeStreamId === streamId && !this.abortController?.signal.aborted) {
+      // The stream ended without a `Finish`. For a DRIVER that is a dead turn
+      // and the error card is the truth. For an OBSERVER it is the ordinary
+      // reconnect trigger the loop in `observeSession` is built on — the
+      // generated SSE client ends its generator rather than throwing once
+      // `sseMaxRetryAttempts` is spent, and the daemon replacing a broadcast
+      // receiver ends it too — so painting a turn failure here would put a red
+      // card in the tab on every dropped feed and then silently repair it a
+      // second later, for a session this window does not drive and the user
+      // cannot act on.
+      //
+      // Residual, deliberately not papered over: the observer does not learn
+      // that a turn ENDED while it was disconnected, so if the `Finish` falls
+      // inside the reconnect gap the activity indicator stays as the last frame
+      // left it until the next one arrives. The transcript itself is repaired
+      // by the fresh `UpdateConversation` snapshot on reconnect. Settling to
+      // Idle here instead would be the opposite lie — claiming a turn is over
+      // when all we know is that we stopped listening — and would fire the
+      // whole turn-boundary battery (notification, name poll, finish
+      // listeners) once per dropped connection.
+      if (
+        source === 'driver' &&
+        this.activeStreamId === streamId &&
+        !this.abortController?.signal.aborted
+      ) {
         await this.finishCurrentStream({
           message: 'The connection closed before Biorouter received a completion status.',
           code: 'stream_interrupted',
@@ -983,11 +1069,152 @@ class ChatStreamController {
     }
   }
 
+  /**
+   * BR-71: render a session this window is NOT driving. Subscribes to the
+   * read-only observer stream (GET /sessions/{id}/events, generated client
+   * `.sse.get`) and feeds it through the SAME event pipeline as a `/reply`
+   * stream — the observer emits identical `MessageEvent` frames, starting with
+   * an `UpdateConversation` snapshot. Used by tabs the daemon opened (subagent
+   * tabs, `workspace_open` from another agent).
+   *
+   * Owns its reconnects: the observer stream never "completes" from the
+   * client's point of view (the session outlives any one connection), so on
+   * stream end or transport error it re-subscribes with backoff until
+   * `stopObserving()`, a user-driven turn taking the controller over, or Stop
+   * (design §4.3; the daemon side is generation-safe — a re-subscribe is just
+   * a new broadcast receiver + fresh snapshot). A stream that ends without a
+   * `Finish` is this loop's ordinary trigger, not a dead turn — which is why
+   * `streamFromResponse` is told which kind of connection it is draining.
+   *
+   * ⚠ This relay MUST NOT reorder, filter or buffer the frames it forwards.
+   * The producer-side invariant "no `MessagesPersisted` may precede a
+   * `Message` frame carrying one of the ids it publishes" (`agent.rs`) is a
+   * property of the STREAM ORDER, and survives only if every relay preserves
+   * it. We get that for free by handing the whole `AsyncIterable` straight to
+   * `streamFromResponse` with no `Promise.all` and no per-variant skipping —
+   * keep it that way. Dropping the accounting frames here because this store
+   * ignores them today would be invisible now and would silently break the day
+   * `MessagesPersisted` is consumed (see `viewNamesEveryStoredRow`'s
+   * FOLLOW-UP). Forward every variant, in order, unconditionally.
+   *
+   * On the observer-tab consequence for `expectedMessageIds`, see `observing`.
+   */
+  async observeSession(): Promise<void> {
+    if (this.observing) return; // idempotent — tab re-mounts must not stack loops
+    // Never take the socket away from a turn the USER is driving. This is
+    // reached on daemon input — `ChatGroupsContext` attaches on every qualifying
+    // workspace frame, `annotate_tab` for a tab that already exists included —
+    // so without this check a tab the user has taken over has its live `/reply`
+    // stream torn down by a frame it never asked for, and silently reverts to
+    // being an observer while the user believes they are driving.
+    if (this.hasLiveTurn()) return;
+    // Generation guard, `UiBridge`-style: `stopObserving()` (or a takeover) can
+    // clear the flag and let a NEW loop start while this one is still parked in
+    // a drain or a backoff. Without the generation, the old loop's unwinding
+    // would clear the new loop's flag and a third attach would then run two
+    // loops against one controller.
+    const generation = ++this.observerGeneration;
+    this.observing = true;
+    let retryMs = 1000;
+    try {
+      while (this.observing && this.observerGeneration === generation) {
+        const streamId = ++this.activeStreamId;
+        this.abortController?.abort();
+        this.abortController = new AbortController();
+        try {
+          const { stream } = await observeSessionEvents({
+            path: { session_id: this.sessionId },
+            throwOnError: true,
+            signal: this.abortController.signal,
+            // NOT optional. Without it the generated SSE client retries forever
+            // on its own (`api/core/serverSentEvents.gen.ts` — `sseMaxRetryAttempts`
+            // has no default) and the loop below never regains control on a
+            // transport error. `/reply` passes the same value for the same reason.
+            sseMaxRetryAttempts: 1,
+          });
+          retryMs = 1000;
+          // `'observer'`: a stream that ends without a `Finish` is this loop's
+          // reconnect trigger, not a dead turn — see the branch it gates.
+          await this.streamFromResponse(stream, this.messagesRef, streamId, 'observer');
+        } catch (error) {
+          // Rarely reached: `serverSentEvents` returns `{ stream }` from a lazy
+          // async generator, so the await above resolves before a byte is
+          // fetched and transport errors surface inside `streamFromResponse`.
+          // Kept for the client-side throws that DO land here (a malformed URL).
+          if (error instanceof Error && error.name === 'AbortError') return;
+          // fall through to retry
+        }
+        if (this.observerIsStale(streamId, generation)) return;
+        await new Promise((resolve) => setTimeout(resolve, retryMs));
+        retryMs = Math.min(retryMs * 2, 15000);
+        // The backoff is a window in which anything can happen — Stop, a user
+        // submit, a detach — and each of those either clears the flag or bumps
+        // `activeStreamId`. Re-check BOTH before reconnecting: the loop
+        // condition alone tests only the flag, so a Stop pressed during backoff
+        // (which bumps the id and does not know about observing) would be undone
+        // by the very next tick, leaving Stop doing nothing except firing
+        // `cancelTurn` at a session another agent drives.
+        if (this.observerIsStale(streamId, generation)) return;
+      }
+    } finally {
+      // The flag must never outlive its loop. Every `return` above leaves this
+      // controller with no observer running, and a flag still claiming
+      // otherwise makes every later attach short-circuit on the idempotence
+      // guard — a tab dead for the life of the renderer, since `getController`
+      // retains controllers forever. `stopStreaming` is the ordinary way in: it
+      // bumps `activeStreamId` and knows nothing about observing.
+      if (this.observerGeneration === generation) this.observing = false;
+    }
+  }
+
+  /** This observer iteration has been torn down or taken over: something
+   * bumped the stream id, cleared the flag, or started a newer loop. */
+  private observerIsStale(streamId: number, generation: number): boolean {
+    return (
+      !this.observing || this.activeStreamId !== streamId || this.observerGeneration !== generation
+    );
+  }
+
+  /**
+   * A turn THIS controller drives is in flight. An observer holds an
+   * `abortController` too — its read-only feed's — and that is not a turn:
+   * anything that asks "is this controller busy?" to decide whether it may take
+   * the socket must exclude it, or the observer's own subscription looks exactly
+   * like a user's live `/reply`.
+   */
+  private hasLiveTurn(): boolean {
+    return !this.observing && !!this.abortController && !this.abortController.signal.aborted;
+  }
+
+  /** Detach from the observed session (tab closed / user takes over). */
+  stopObserving(): void {
+    // Only ever tears down a socket this controller is OBSERVING on. On a
+    // controller that is driving — the user took the tab over, or it was never
+    // an observer at all — the abort below would cancel their live turn, and
+    // "the tab closed" is not a reason to do that (BR-62b: the server keeps
+    // running either way).
+    if (!this.observing) return;
+    this.observing = false;
+    // Retires the parked loop's generation, so its unwinding cannot clear the
+    // flag of a loop started after this detach.
+    this.observerGeneration++;
+    this.abortController?.abort();
+  }
+
   private submitPreparedMessage = async (
     newMessage: Message,
     currentMessages: Message[],
     updateMessageList: boolean
   ): Promise<void> => {
+    // BR-71 — a user-driven turn converts an observer tab into a driver.
+    // Detach FIRST and properly: the observer holds this controller's
+    // `abortController` and a live socket, and the turn about to start replaces
+    // the field without aborting what was there, so a bare flag clear would
+    // leave the feed streaming into the transcript alongside the user's own
+    // reply. `stopObserving()` is a no-op on a controller that was already
+    // driving, which is every ordinary submit.
+    this.stopObserving();
+
     // #67 — launching a turn invalidates the completeness claim, whatever that
     // turn goes on to do. `updateMessages` drops it on every path that appends a
     // message, but `retryTurn` re-sends the row already at the tail
@@ -1075,7 +1302,12 @@ class ChatStreamController {
     return (
       !!this.snapshot.session &&
       this.snapshot.chatState !== ChatState.LoadingConversation &&
-      !(this.abortController && !this.abortController.signal.aborted)
+      // BR-71: an OBSERVER's subscription is not a turn in flight. Reading it
+      // as one silently drops every message typed into a daemon-opened tab —
+      // the takeover §4.3 promises ("until the tab detaches or the user takes
+      // the session over") would be unreachable, and `submitPreparedMessage`'s
+      // own conversion back to driver would be dead code.
+      !this.hasLiveTurn()
     );
   }
 
@@ -1165,7 +1397,10 @@ class ChatStreamController {
    *    load failure) the reload alone is the retry.
    */
   retryTurn = async (): Promise<void> => {
-    if (this.abortController && !this.abortController.signal.aborted) return;
+    // BR-71: same reading as `canSubmitMessage` — an observer's feed is not a
+    // turn this controller is running, and Retry in an observed tab is a
+    // takeover like any other submit.
+    if (this.hasLiveTurn()) return;
     this.updateSnapshot((prev) => ({ ...prev, turnError: undefined }));
 
     await this.loadSession();
@@ -1429,6 +1664,16 @@ export class ChatStreamRegistry {
       this.controllers.set(sessionId, controller);
     }
     return controller;
+  }
+
+  /**
+   * The controller for this session IF one already exists — a lookup, where
+   * `getController` is a create-or-get that retains what it makes for the life
+   * of the renderer. Use this for teardown ("the tab closed, detach"), where
+   * creating a controller for a session that has none is exactly backwards.
+   */
+  peekController(sessionId: string): ChatStreamController | undefined {
+    return this.controllers.get(sessionId);
   }
 
   isSessionRunning(sessionId: string): boolean {

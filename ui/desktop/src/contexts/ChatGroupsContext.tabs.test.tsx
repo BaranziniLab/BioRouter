@@ -5,7 +5,14 @@ import { ChatGroupsProvider, useChatGroups } from './ChatGroupsContext';
 import { requestNewTab, resetNewTabRegistry } from '../components/chatGroups/newTabRegistry';
 import { ARTIFACT_PANEL_ATTR } from '../utils/tabCycle';
 
-vi.mock('../hooks/chatStreamStore', () => ({ useRunningChats: () => [] }));
+// The provider reads BOTH the hook and the registry: closing a tab detaches
+// that session's observer stream (§4.3), which happens on any tab close, not
+// only on a daemon frame. Supplying only `useRunningChats` leaves the registry
+// undefined and the first close in this file throws.
+vi.mock('../hooks/chatStreamStore', () => ({
+  useRunningChats: () => [],
+  defaultChatStreamRegistry: { peekController: () => undefined },
+}));
 vi.mock('../utils/sessionNameSync', () => ({ subscribeSessionNameChanges: () => () => undefined }));
 
 /** Renders the strip's identity so a keystroke's effect is observable. */

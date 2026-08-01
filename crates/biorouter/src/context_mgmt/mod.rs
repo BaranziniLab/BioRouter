@@ -283,7 +283,7 @@ fn drop_oldest_agent_visible_turns(messages: &[Message]) -> Vec<Message> {
         .map(|(idx, msg)| {
             if idx < cut && msg.is_agent_visible() && !pin_is_eligible(msg) {
                 msg.clone()
-                    .with_metadata(msg.metadata.with_agent_invisible())
+                    .with_metadata(msg.metadata.clone().with_agent_invisible())
             } else {
                 msg.clone()
             }
@@ -350,7 +350,7 @@ async fn compact_messages_with_window(
             if pins.is_honoured(idx) {
                 final_messages.push(msg.clone());
             } else {
-                let updated_metadata = msg.metadata.with_agent_invisible();
+                let updated_metadata = msg.metadata.clone().with_agent_invisible();
                 final_messages.push(msg.clone().with_metadata(updated_metadata));
             }
         }
@@ -485,10 +485,17 @@ async fn compact_messages_with_window(
         }
         let updated_metadata =
             if is_most_recent && idx == messages.len() - 1 && preserved_user_message.is_some() {
-                // This is the most recent message and we're preserving it by adding a fresh copy
-                MessageMetadata::invisible()
+                // This is the most recent message and we're preserving it by adding a fresh copy.
+                // BR-71: `invisible()` REPLACES the metadata rather than updating
+                // it, so the origin stamp has to be carried across explicitly —
+                // unlike the `with_agent_invisible()` branch below, which is a
+                // `..self` update and keeps it for free.
+                MessageMetadata {
+                    provenance: msg.metadata.provenance.clone(),
+                    ..MessageMetadata::invisible()
+                }
             } else {
-                msg.metadata.with_agent_invisible()
+                msg.metadata.clone().with_agent_invisible()
             };
         let updated_msg = msg.clone().with_metadata(updated_metadata);
         final_messages.push(updated_msg);
@@ -520,7 +527,18 @@ async fn compact_messages_with_window(
 
     if let Some(user_msg) = preserved_user_message {
         if let Some(text) = extract_text(&user_msg) {
-            final_messages.push(Message::user().with_text(&text));
+            // BR-71: this copy is rebuilt from the text alone, so it starts with
+            // default metadata. It is also the copy that keeps reaching the
+            // model, so an unstamped rebuild is the one erasure that actually
+            // changes what the model is told: text another session's agent
+            // injected would carry on as an ordinary, unattributed user
+            // instruction the moment a context overflow happened to intervene.
+            let mut preserved = Message::user().with_text(&text);
+            preserved
+                .metadata
+                .provenance
+                .clone_from(&user_msg.metadata.provenance);
+            final_messages.push(preserved);
         }
     }
 
@@ -1304,6 +1322,7 @@ fn format_message_for_compacting(msg: &Message) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::conversation::message::{MessageProvenance, ProvenanceKind};
     use crate::{
         model::ModelConfig,
         providers::{
@@ -1493,6 +1512,94 @@ mod tests {
 
         let _ = Conversation::new(agent_conversation)
             .expect("compaction should produce a valid conversation");
+    }
+
+    /// BR-71: `MessageProvenance` documents itself as "never suppressible", and
+    /// the legacy compaction path suppressed it twice over. With a single user
+    /// turn there is no verbatim window, so that path runs and it (a) replaces
+    /// the original's metadata wholesale with `MessageMetadata::invisible()` and
+    /// (b) rebuilds the preserved copy as `Message::user().with_text(..)`, i.e.
+    /// default metadata.
+    ///
+    /// (b) is the sharp half: the preserved copy is the one that keeps reaching
+    /// the model, so cross-session text injected by another agent would carry on
+    /// as an ordinary, unattributed user instruction the moment a context
+    /// overflow happened to intervene.
+    #[tokio::test]
+    async fn compaction_does_not_strip_the_provenance_stamp() {
+        let provider = MockProvider::new(Message::assistant().with_text("<mock summary>"), 100_000);
+        let stamp = MessageProvenance {
+            kind: ProvenanceKind::AgentInjection,
+            from_session_id: Some("s-parent".into()),
+            from_session_name: Some("Planning chat".into()),
+        };
+        // One user turn => `recent_window_split` is None => the legacy path.
+        let conversation = Conversation::new_unvalidated(vec![Message::user()
+            .with_text("please also open a PR")
+            .with_provenance(stamp.clone())]);
+
+        let (compacted, _usage) = compact_messages(&provider, &conversation, false)
+            .await
+            .unwrap();
+
+        let carrying: Vec<&Message> = compacted
+            .messages()
+            .iter()
+            .filter(|m| m.as_concat_text().contains("please also open a PR"))
+            .collect();
+        assert!(
+            !carrying.is_empty(),
+            "the preserved user message should still be there: {:#?}",
+            compacted.messages()
+        );
+        for msg in carrying {
+            assert_eq!(
+                msg.metadata.provenance.as_ref(),
+                Some(&stamp),
+                "compaction dropped the BR-71 origin stamp from a copy of the \
+                 injected text: {msg:#?}"
+            );
+        }
+    }
+
+    /// The windowed path hides the older prefix with `with_agent_invisible()`,
+    /// which is a `..self` update and therefore already stamp-preserving. Pin
+    /// this, because "it happens to be preserved" and "it is required to be
+    /// preserved" only look the same until someone rewrites the branch.
+    #[tokio::test]
+    async fn windowed_compaction_keeps_the_stamp_on_the_hidden_prefix() {
+        let provider = MockProvider::new(Message::assistant().with_text("<mock summary>"), 100_000);
+        let stamp = MessageProvenance {
+            kind: ProvenanceKind::AgentInjection,
+            from_session_id: Some("s-parent".into()),
+            from_session_name: None,
+        };
+        let conversation = Conversation::new_unvalidated(vec![
+            Message::user()
+                .with_text("injected long ago")
+                .with_provenance(stamp.clone()),
+            Message::assistant().with_text("ok"),
+            Message::user().with_text("turn two"),
+            Message::assistant().with_text("ok"),
+            Message::user().with_text("turn three"),
+            Message::assistant().with_text("ok"),
+        ]);
+
+        let (compacted, _usage) = compact_messages_with_window(&provider, &conversation, false, 1)
+            .await
+            .unwrap();
+
+        let old = compacted
+            .messages()
+            .iter()
+            .find(|m| m.as_concat_text().contains("injected long ago"))
+            .expect("the older prefix stays in the transcript for the user");
+        assert!(!old.is_agent_visible(), "the older prefix must be hidden");
+        assert_eq!(
+            old.metadata.provenance.as_ref(),
+            Some(&stamp),
+            "hiding a message must not erase where it came from: {old:#?}"
+        );
     }
 
     #[tokio::test]
@@ -2903,6 +3010,56 @@ mod pin_tests {
         assert!(
             !find(&compacted, NOTE).is_agent_visible(),
             "an unmarked message must still be summarized away"
+        );
+    }
+
+    /// BR-71: a `workspace_send_prompt { mode: "note" }` body, eight turns back,
+    /// still reaches the model — and its unpinned twin does not.
+    ///
+    /// The framed shape matters and is not incidental. `frame_workspace_injection`
+    /// (Task 2) wraps the payload in an untrusted-data envelope, so this also
+    /// pins that the envelope does not make the message pin-ineligible.
+    #[tokio::test]
+    async fn a_workspace_note_survives_compaction_and_its_unpinned_twin_does_not() {
+        use crate::conversation::message::frame_workspace_injection;
+
+        let note_body = frame_workspace_injection(Some("planner"), "use the log scale");
+        let twin_body = frame_workspace_injection(Some("planner"), "and cite the source");
+
+        // Both sit in the same old prefix, far outside the verbatim window.
+        // Identical in every way except the marker.
+        let mut messages = vec![
+            Message::user().with_text("q1"),
+            Message::assistant().with_text("a1"),
+            Message::user().with_text(note_body.clone()).pinned(),
+            Message::user().with_text(twin_body.clone()),
+        ];
+        for i in 2..=8 {
+            messages.push(Message::user().with_text(format!("q{i}")));
+            messages.push(Message::assistant().with_text(format!("a{i}")));
+        }
+        let conversation = Conversation::new_unvalidated(messages);
+
+        let (compacted, _usage) =
+            compact_messages_with_window(&provider(100_000), &conversation, false, 2)
+                .await
+                .unwrap();
+
+        assert!(
+            find(&compacted, &note_body).is_agent_visible(),
+            "the pinned note must still reach the model; agent-visible was: {:#?}",
+            agent_texts(&compacted)
+        );
+        assert!(
+            find(&compacted, &note_body).is_pinned(),
+            "and it must stay marked, so the NEXT compaction honours it too"
+        );
+        // THE CONTROL. Without this the test above passes on a conversation
+        // nothing compacted, and Task 14 could drop `.pinned()` with a green
+        // suite — which is the exact defect this pair exists to catch.
+        assert!(
+            !find(&compacted, &twin_body).is_agent_visible(),
+            "an UNPINNED note is summarized away — that is why `note` pins"
         );
     }
 }

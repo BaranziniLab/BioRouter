@@ -64,6 +64,89 @@ describe('sessionListCache', () => {
     expect(getCachedSessionList()?.[0]).toMatchObject({ name: 'New name', user_set_name: true });
   });
 
+  it('a keyless refresh keeps the flagged identity instead of clobbering it', async () => {
+    mocks.listSessions.mockResolvedValue({ data: { sessions: [] } });
+    await refreshSessionList(true);
+    expect(mocks.listSessions).toHaveBeenLastCalledWith(
+      expect.objectContaining({ query: { include_subagents: true } })
+    );
+    mocks.listSessions.mockClear();
+    // Home's loader. It has no opinion, so it must not invalidate History's:
+    // whatever it re-reads, it re-reads with the identity History asked for.
+    // It re-reads (this function has no cache-hit short-circuit — a membership
+    // change depends on that), but it must re-read the flagged identity.
+    await refreshSessionList();
+    expect(mocks.listSessions).toHaveBeenLastCalledWith(
+      expect.objectContaining({ query: { include_subagents: true } })
+    );
+  });
+
+  // BR-71: a flag change orphans the request already in flight, but nothing
+  // cancels it. Two things go wrong if the orphan is not fenced off: its answer
+  // overwrites the cache (and emits, pushing the wrong-shaped list into every
+  // subscriber), and its `.finally` nulls the in-flight slot the *new* request
+  // now owns, destroying the dedupe.
+  it('a superseded request cannot clobber the list that replaced it', async () => {
+    let finishFirst: ((value: { data: { sessions: unknown[] } }) => void) | undefined;
+    let finishSecond: ((value: { data: { sessions: unknown[] } }) => void) | undefined;
+    mocks.listSessions
+      .mockReturnValueOnce(
+        new Promise((resolve) => {
+          finishFirst = resolve;
+        })
+      )
+      .mockReturnValueOnce(
+        new Promise((resolve) => {
+          finishSecond = resolve;
+        })
+      );
+
+    const first = refreshSessionList();
+    const second = refreshSessionList(true);
+    expect(mocks.listSessions).toHaveBeenCalledTimes(2);
+
+    finishSecond?.({ data: { sessions: [{ id: 'with-subagents' }] } });
+    await second;
+    // The orphan settles LAST — the ordering where the stale list is not a
+    // flicker but the terminal state.
+    finishFirst?.({ data: { sessions: [{ id: 'stale' }] } });
+    await first;
+
+    expect(getCachedSessionList()).toEqual([{ id: 'with-subagents' }]);
+  });
+
+  it('a superseded request does not free the dedupe slot the new request owns', async () => {
+    let finishFirst: ((value: { data: { sessions: unknown[] } }) => void) | undefined;
+    let finishSecond: ((value: { data: { sessions: unknown[] } }) => void) | undefined;
+    mocks.listSessions
+      .mockReturnValueOnce(
+        new Promise((resolve) => {
+          finishFirst = resolve;
+        })
+      )
+      .mockReturnValueOnce(
+        new Promise((resolve) => {
+          finishSecond = resolve;
+        })
+      );
+
+    const first = refreshSessionList();
+    const second = refreshSessionList(true);
+
+    finishFirst?.({ data: { sessions: [{ id: 'stale' }] } });
+    await first;
+
+    // Nothing of the orphan's reaches the cache.
+    expect(getCachedSessionList()).toBeNull();
+    // And a membership change joins the live request instead of starting a third.
+    notifySessionListChanged();
+    expect(mocks.listSessions).toHaveBeenCalledTimes(2);
+
+    finishSecond?.({ data: { sessions: [{ id: 'with-subagents' }] } });
+    await second;
+    expect(getCachedSessionList()).toEqual([{ id: 'with-subagents' }]);
+  });
+
   it('notifies list-change subscribers and re-reads on a membership change', async () => {
     mocks.listSessions.mockResolvedValue({ data: { sessions: [] } });
     await refreshSessionList();

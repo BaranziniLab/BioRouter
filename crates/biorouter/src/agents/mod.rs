@@ -1,4 +1,7 @@
 pub(crate) mod agent;
+// BR-71 Task 36b: approval routing for agent-created sessions — the relay, the
+// single policy point for the two delegation bounds, and the escalation walk.
+pub mod approval_relay;
 // BR-35: the per-reply wall-clock / token / dollar ceiling. Off unless
 // configured; the iteration caps (`max_turns`, `max_tool_calls`) bound how many
 // steps a reply takes, this bounds how long it runs and what it costs.
@@ -39,6 +42,9 @@ pub mod resource_refs;
 pub mod retry;
 mod schedule_tool;
 mod session_blob_tool;
+// BR-71 decision (c): per-session skill enablement, kept strictly out of the
+// machine-wide `skills-config.json`.
+pub mod session_skills;
 // Pub so the CLI (`biorouter skill …`) reuses the exact same skill discovery
 // roots and frontmatter parsing as this backend extension, instead of keeping
 // a drifting duplicate (Codex B2 findings 5+6).
@@ -53,7 +59,7 @@ pub mod stall;
 pub mod structured_output;
 pub mod subagent_execution_tool;
 // BR-40: the async half — a background `subagent` call returns a handle the
-// parent polls with `subagent_status`, instead of blocking the turn.
+// parent waits on with `workspace_watch`, instead of blocking the turn.
 pub mod subagent_handle;
 pub mod subagent_handler;
 pub mod subagent_result;
@@ -70,10 +76,22 @@ pub mod turn_abort;
 pub mod turn_guard;
 pub mod types;
 pub mod vault_refs;
+// BR-71: the `workspace` platform extension — the in-process sibling of
+// `chatrecall_extension`, whose tools operate the workspace itself (sessions,
+// and the GUI's tabs when one is attached).
+//
+// The plan asked for this beside `chatrecall_extension`; rustfmt's
+// `reorder_modules` sorts each contiguous `mod` group, so any such placement is
+// undone by `cargo fmt` — and the move strands the comment on whichever module
+// takes the vacated line. Sorted position, own comment.
+pub mod workspace_extension;
+// BR-71 §5: the always-confirm hook for cross-session capability changes.
+pub mod workspace_inspector;
 pub mod workspace_summary;
 
 pub use agent::{
-    Agent, AgentConfig, AgentEvent, ConfirmationOutcome, ExtensionLoadResult, PersistedMessage,
+    Agent, AgentConfig, AgentEvent, ConfirmationOutcome, Drained, ExtensionLoadResult,
+    InterruptRefused, PersistedMessage, TurnId,
 };
 pub use budget::ReplyBudget;
 pub use effort::ReasoningEffort;

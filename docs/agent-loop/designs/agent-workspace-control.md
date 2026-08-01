@@ -7,9 +7,79 @@
 > set at runtime — and, as its flagship embodiment, turns today's opaque subagents into
 > **glass-box subagents**: every spawned subagent appears as a live, ordinary chat tab
 > that a human can watch, talk to, and intervene in, exactly as the parent agent can.
-> **Status:** Current — **proposal only; nothing below is implemented.** BR-71 is a new
-> post-campaign proposal, numbered as the next free identifier after the campaign's
-> BR-1…BR-70; it does not appear in the campaign master list.
+> **Status:** Current — **all four slices are implemented.** The task-by-task record of
+> how, and the gates each one had to pass, is
+> [`br71-execution-plan.md`](br71-execution-plan.md); that plan is the change log, this
+> document stays the design of record. Slice 1 shipped the session model, the event
+> spine, the one turn runner and
+> the headless `workspace_*` tools; Slice 2 shipped the GUI bridge (`GET /ui/workspace`),
+> `workspace_open`, the observer-backed tab, provenance chips, the focus-etiquette
+> setting and the chatrecall suggestion — verified end to end against the **dev build**,
+> where `workspace_list` reports `gui_attached: true` and a background tab under `gui`.
+> The **packaged** app has not been run end to end; its one materially different input,
+> the renderer origin, was measured separately (see §4.3): a `file://` document in
+> Electron 39.8.10 / Chromium 142 sends `Origin: file://`, not `null`, which is exactly
+> what `check_workspace_ws_auth` admits. Slice 3 shipped the glass-box subagents
+> themselves — child sessions on the detached runner, the spawn-context record, the
+> auto-opened badged tab and its header, the human steer path, `human_intervened` in the
+> parent's result, the Stop control, History grouping by parent, and the CLI half
+> (`session list --subagents`, `session attach`, `session cancel`). Slice 4 shipped the
+> polish: the tuned instruction block and the tool-routing table, `consult` unified onto
+> this spine (§8.2), the CLI-parity gate that fails the build when a workspace capability
+> has no CLI counterpart, and the user docs —
+> [`docs/extensions/built-in/workspace.md`](../../extensions/built-in/workspace.md) and
+> the glass-box half of [`docs/agent-loop/subagents.md`](../subagents.md), which also
+> carries the `subagent_status` migration table (decision 23). §8's five open questions
+> are closed in place below.
+>
+> **Still outstanding, and not closed by the slice count:** Task 40b's undiagnosed daemon
+> abort (below), tracked in the plan doc. **Task 44's release gates were RUN on
+> 2026-08-01 and all pass** — 82 test binaries / 3976 passed with only the two recorded
+> environmental failure families, 202 desktop test files / 1837 tests, both harness tiers
+> at exit 0 including all 25 live assertions, and the CLI end-to-end chain against a
+> daemon with no desktop app attached; the per-gate numbers are in the plan doc under
+> Task 44. That is **not** a sign-off: Task 40b is still open, and Task 44's own text
+> forbids signing off while it is. §8.4's resync cost, which that task was to record here,
+> is **2-4 ms** to the first `UpdateConversation` frame for a 1-message session.
+>
+> **What Slice 3's gate actually measured** (read this before quoting the line above).
+> The flagship chain is verified end to end **headlessly**, against a running daemon, by
+> `scripts/workspace/glassbox-harness.mjs`: with `BIOROUTER_HARNESS_LIVE=1` a real parent
+> spawns a real child and all 25 assertions pass — `open_tab` + `annotate_tab` naming the
+> parent, the child observer stream, the spawn-context record, `POST /interrupt` into the
+> **running** child returning 202 (the turn lease, not a 409), the steer landing stamped
+> `user_direct`, `cancelled:true` **with** a turn id, the tab-composer `/reply` stamped
+> `user_direct`, `"human_intervened":true` in the parent's transcript, and decision 21's
+> two-tier surface on that same never-configured parent (`workspace__subagent` offered,
+> `workspace__workspace_list` withheld). The CLI half was
+> driven by hand against the same daemon with no desktop app attached: children nest
+> under their parent with distinct labels and a `● live` marker, `attach` renders the
+> conversation so far as a transcript before following it live, a typed line returns
+> `[steered turn …]` in the same turn, `cancel` reports the turn id and is idempotent,
+> and ctrl-C detaches without cancelling.
+>
+> **What it did NOT measure**, in full, so the paragraph above cannot be quoted as more
+> than it is: **the live GUI acceptance pass in the desktop app has not been run.** Four
+> of Task 40's bullets rest on unit and component tests only — the auto-opened tab with
+> its badge and header (decision 24), the four-tab fan-out cap (decision 26), the
+> refusal of nesting from inside a child's own tab (decision 25), and the
+> elicitation-in-a-child-tab check (reconciliation #8). Decision 21 used to be a fifth
+> and is not any more: it is asserted by the live tier above on every run.
+>
+> **One open defect found by that gate, not yet diagnosed — tracked as Task 40b** in
+> [`br71-execution-plan.md`](br71-execution-plan.md), where it blocks the release gate.
+> A subagent that calls an
+> Auto Visualiser tool aborts the daemon with `fatal runtime error: stack overflow` in a
+> `tokio-runtime-worker` — reproduced 3/3 on fresh daemons, with and without
+> `BIOROUTER_AUTOVIS_CDN=1`, and **not** reproducible for the same tool in an ordinary
+> session. It is not the cancel path (it reproduces with no cancel). The blocking
+> delegation path awaits the child's whole agent loop inside the parent's
+> `dispatch_tool_call`, so the child's frames sit on the parent's stack; that nesting
+> predates this campaign, so whether Slice 3 merely pushed an already-marginal stack over
+> the edge is unresolved and needs a baseline build to settle.
+>
+> BR-71 is a post-campaign proposal, numbered as the next free identifier after the
+> campaign's BR-1…BR-70; it does not appear in the campaign master list.
 > **Audience:** developers working on the agent loop, `biorouter-server`, and the desktop GUI.
 
 ---
@@ -251,8 +321,28 @@ Structured read of any conversation.
 - `spawn_context`: for subagent sessions — the exact rendered system prompt, task
   instructions, and granted extensions/KBs it was started with (§4.4).
 
-Implementation: one call to `get_session(id, true)` + projection. Oversized results go
-through the existing session-blob mechanism rather than truncating silently.
+Implementation: one call to `get_session(id, true)` + projection. Oversized results are
+retained in full by the existing large-result machinery rather than truncated silently.
+Which mechanism carries them depends on size, and it is **not** the session blob in the
+band a raised `max_chars` actually reaches:
+
+- Above BR-6's `DEFAULT_LARGE_RESPONSE_TOKENS` (~25k tokens; the 200k-char `max_chars`
+  ceiling is roughly 50k tokens of prose) the result is an ordinary extension-tool result,
+  so `Agent::dispatch_tool_call` hands it to `large_response_handler::process_tool_response`,
+  which writes the whole body to a handle under `<working_dir>/.biorouter/tool-output/` and
+  returns a head/tail preview naming that path. The full payload never reaches persistence,
+  so BR-7 never sees it.
+- Below that budget the result is persisted intact, and BR-7 applies: a tool-response text
+  item over `DEFAULT_BLOB_THRESHOLD_BYTES` (64 KB) moves to the `message_blobs` side table,
+  hydrated back byte-for-byte on read (or left as a stub readable with
+  `platform__read_session_blob` under `BIOROUTER_SESSION_BLOB_LAZY_LOAD`).
+
+This ordering is BR-7's own stated design — its threshold sits "comfortably above anything
+the BR-6 handler lets through". An earlier revision of this paragraph named only the session
+blob, and the Task 13 handler repeated that claim in a comment and in the model-facing clip
+marker; both were corrected. The binding requirement is the one that held throughout: the
+payload is never silently truncated, and the reply always says where the rest is. Pinned by
+`read_conversation_oversized_result_is_retained_in_full_on_the_production_path`.
 
 #### `workspace_send_prompt`
 Inject a prompt into another conversation.
@@ -309,6 +399,16 @@ The glass-box replacement surface for delegation (§4.5). Same parameter shape a
 is enabled, the server instructions steer the model to prefer this over bare `subagent`;
 bare `subagent` remains for headless/compat.
 
+> **As built (decisions 20 and 22): there is no `workspace_spawn_subagent`.** Two spawn
+> tools with the same parameters and different names is a routing problem handed to the
+> model, so the extension advertises **one** — `subagent`, keeping its existing name —
+> which gained `visible` and `placement` and became the glass-box path. That is also what
+> makes decision 21's two-tier surface possible: a session that may delegate is injected
+> with `available_tools: ["subagent"]` and gets delegation without the cross-session
+> control surface. The name survives below (and in §6's draft instruction block and §7's
+> slice list) as the record of what was proposed; `WorkspaceClient::get_tools()` is the
+> current truth.
+
 ### 4.2 Backend spine: detached turns and the session event broadcast
 
 Two additions to `biorouter-server`/`biorouter`, useful far beyond this feature:
@@ -344,6 +444,48 @@ ui/desktop && npm run generate-api`.)
 startup (from the renderer root, alongside `ChatGroupsProvider`), authenticating with the
 server secret and identifying itself with a stable `window_id`.
 
+**Two gates stand between the renderer and that route, and both were got wrong once.**
+Neither can fail loudly: a blocked or refused socket leaves `is_attached()` false, so
+`workspace_list` reports `gui_attached: false` and every tool degrades to its headless
+arm — correct-looking output describing a GUI that is running in front of the user.
+
+*The renderer's CSP must name the `ws` scheme, in both policies.* CSP relaxes a source
+expression's scheme onto a URL's only via CSP3 §6.6.2.6's short list — `http`→`https`,
+`ws`→`wss`/`http`/`https`, `wss`→`https` — so `http://127.0.0.1:*` does **not** cover
+`ws://127.0.0.1:<port>/ui/workspace`, and a blanket `https:` does **not** cover the
+`wss://` socket of an external TLS backend. Both `index.html`'s `<meta>` policy and the
+header `buildConnectSrc()` attaches in `main.ts` apply to the window and the stricter
+wins, so a source added to one and not the other still blocks the socket — which is
+precisely how each of these two shipped. Measured in Electron 39.8.10 / Chromium 142
+from a `file://` document: the first policy fires `securitypolicyviolation` with
+`effectiveDirective: "connect-src"`, the shipped policy admits both sockets.
+`ui/desktop/src/workspaceChannelCsp.test.ts` models the scheme rule and pins both files.
+
+*The origin gate admits `file://`, and that is what the packaged renderer sends.*
+`check_workspace_ws_auth` accepts a loopback origin (the dev renderer, served by vite) or
+the literal `file://`, and **refuses `"null"`** — the opaque origin of every sandboxed
+frame, including the agent-authored figures this same app renders through the
+unauthenticated `/mcp-ui-proxy`. That made the packaged path the one materially different
+input from the dev build, and it was unmeasured until Task 31's fixup measured it
+directly: a `file://` document in Electron 39.8.10 puts `Origin: file://` on the
+WebSocket handshake, not `null`, so the packaged renderer is admitted. Re-measure if the
+renderer ever moves to a custom protocol — a scheme the gate does not name reads as
+cross-origin and takes the GUI half offline silently.
+
+**Residual, recorded rather than fixed: this handshake is the one place the server
+secret rides in a URL.** Every other renderer→daemon call sends it as an `X-Secret-Key`
+header (`auth.rs`), which no access log records; `/ui/workspace` sends `?secret=…`
+because the browser `WebSocket` constructor cannot set request headers — the route's own
+module comment opens with that constraint. Loopback, where the URL never leaves the
+machine, this is uninteresting. It becomes interesting in exactly the deployment the
+`wss:` fix above first made reachable: an external TLS daemon, where the URL is encrypted
+on the wire but is plaintext at both ends — a reverse proxy's access log, the daemon's
+request logging — and the value logged is the master key `check_token` guards. The
+conventional fix is to carry the token in `Sec-WebSocket-Protocol`, which the browser API
+*can* set; that is a change to the route's auth shape and its renderer, not a fixup, so it
+is named here rather than done. Until then: prefer loopback, and do not put a logging
+proxy in front of a `biorouterd` you have pointed the desktop app at.
+
 **Bridge.** `WorkspaceBridge`, modeled line-for-line on `UiBridge`
 (`control.rs:557-663`): a registry keyed by `window_id`, generation-guarded
 `attach`/`detach`, a pending-request map for blocking round trips, `cancel_all` on
@@ -377,7 +519,47 @@ the split was possible). Tabs opened this way bind sessions through the **existi
 
 A tab opened for a session the renderer isn't driving subscribes its
 `ChatStreamController` to `GET /sessions/{id}/events` instead of owning a `/reply` stream
-— the one renderer-side change to `chatStreamStore.tsx` beyond the command applier.
+— the one renderer-side change to `chatStreamStore.tsx` beyond the command applier. The
+controller owns its own reconnects, because the observer stream never "completes" from
+the client's point of view: on stream end or transport error it re-subscribes with
+backoff (1 s, doubling, capped at 15 s) until the tab detaches or the user takes the
+session over. It must relay every frame in order and unchanged — the producer-side
+ordering invariant that no `MessagesPersisted` precedes the `Message` frame carrying an
+id it publishes is a property of the stream order, and only survives if each relay
+preserves it.
+
+Three things follow from the observer holding the controller's socket, and each of them
+was wrong before it was written down. **One, an observer's subscription is not a turn.**
+`canSubmitMessage`, `retryTurn` and the post-load chat-state settle all used a live
+`abortController` to mean "a turn is running", which an observer has; reading it that way
+swallowed everything typed into a daemon-opened tab and left a quiet observed session
+showing a loading tab forever. They ask `hasLiveTurn()`, which excludes the feed, so the
+takeover named above is reachable — and a takeover attempted while the observed agent is
+mid-turn is answered by `/reply`'s existing 409, which the user can see. **Two, a dropped
+observer connection is not a dead turn.** A stream ending without a `Finish` is this
+loop's reconnect trigger, so it does not raise the `stream_interrupted` card a driver
+would; the residual is that a `Finish` falling inside the reconnect gap leaves the
+activity indicator stale until the next frame, since the reconnect's snapshot repairs the
+transcript but says nothing about turn state. **Three, only the loop's owner may tear it
+down.** `observeSession` refuses to take the socket from a live user turn (it is called
+on daemon input, including `annotate_tab` for a tab that already exists), `stopObserving`
+is a no-op on a controller that is driving, and the flag is generation-guarded and
+cleared in a `finally` — a flag that outlives its loop makes every later attach
+short-circuit, which is a permanently dead tab, because controllers are retained for the
+life of the renderer. Closing the tab detaches, on any close and not only a daemon frame.
+
+**Known, permanent consequence — an observer tab omits `expectedMessageIds`.** The store
+sends that optimistic-concurrency guard on an in-place `edit_message` only while
+`viewNamesEveryStoredRow` is true, and that flag is set in exactly the two places that
+read a conversation back from the server, then cleared by any streamed event. An
+observer-fed tab is a pure event consumer and never performs that read, so the flag is
+always false for it and the guard is **permanently** omitted, where an ordinary tab sends
+it after each read. This is safe — the guard is omitted, never falsified, and the
+server-side cut still runs under the turn lock, bounded to the rows the handler itself
+read — but it is a real capability difference, stated here rather than left to be
+discovered. It must not be "fixed" by setting the flag for observers: an observer tab
+genuinely does not know it holds every stored row. Consuming issue #59's
+`MessagesPersisted` frame is what would earn the claim, and is a deliberate follow-up.
 
 ### 4.4 Session model additions
 
@@ -417,8 +599,8 @@ and a GUI is attached):
    start a new child turn or leave a `note`. Human interventions carry provenance
    `{ kind: "user_direct" }`; the parent, on resolving its tool call, is told whether the
    human intervened so it can weigh the summary accordingly.
-5. **Both sides can end it.** The parent aborts via `workspace_close { scope:"turn"|"agent" }`
-   or the existing `subagent_status` cancel; the human via a Stop control on the tab.
+5. **Both sides can end it.** The parent aborts via `workspace_close { scope:"turn"|"agent" }`;
+   the human via a Stop control on the tab.
    Closing the tab alone never kills the child (consistent with existing tab semantics);
    stopping the child resolves the parent's tool call with `SubagentStatus::Incomplete` +
    whatever partial summary exists.
@@ -542,30 +724,75 @@ Each slice ships independently and is verifiable on its own.
    `include_subagents` in History grouped by parent. E2E: a scripted parent spawns a
    child, the harness asserts the child tab streams tool frames and a human `steer`
    reaches it (pattern: `scripts/agent-drafter/ui-control-harness.mjs`).
-4. **Polish + docs.** `subagent_status`/active-work cross-links, instruction-text tuning
+4. **Polish + docs.** `workspace_list`/active-work cross-links, instruction-text tuning
    against real model behavior, user docs under `docs/agent-loop/subagents.md` +
    `docs/extensions/built-in/workspace.md`, and an update to
    [tool-routing](../tool-routing.md) for the chatrecall/workspace split.
 
 ---
 
-## 8. Open questions
+## 8. Open questions — all resolved
 
-1. **Focus etiquette.** Default is background-open; should the user be able to set
-   "never open tabs automatically" (announce-only mode where the toast offers to open)?
-   Proposed: yes, a single Workspace setting, honored by dropping `open_tab` to `notify`.
-2. **`workspace_send_prompt wait:"final_message"` vs. Agent Drafter `consult`.** These
-   converge on "ask another agent synchronously." Long-term, `consult` could be
-   re-expressed over workspace primitives; out of scope here, flagged for the apps
-   platform owners.
-3. **Cross-window targeting.** When two windows are open, which gets the new tab? Proposed
-   default (focused, else most-recent) is a heuristic; consider a `window_id` parameter on
-   `workspace_open` once `workspace_list` exposes ids.
-4. **Observer backpressure.** `broadcast` drops on lag; the observer endpoint must resync
-   with an `UpdateConversation` snapshot on `Lagged` — spec'd, but the resync cost on very
-   long transcripts needs measurement.
-5. **CLI surface.** The same spine trivially enables `biorouter sessions watch <id>` and
-   `biorouter sessions send <id>` — worth doing in Slice 1 as free verification tooling?
+Each question is kept in place with its answer and the decision that settled it, rather
+than deleted: the question is what makes the answer legible.
+
+1. **Focus etiquette.** *Should the user be able to set "never open tabs automatically"?*
+   **Yes — decision 7, built in Task 29.** One switch, `WORKSPACE_ANNOUNCE_ONLY`
+   (Settings → App → Workspace), **off** by default, so background-open remains the
+   design's default. When on, the daemon downgrades every focus-stealing frame —
+   `open_tab`, `open_window` *and* `activate_tab`, since yanking the view to an existing
+   tab is the same intrusion by another route — to a `notify`, and the tool result tells
+   the model no tab was opened so it cannot claim otherwise. Subagent spawns resolve the
+   setting before claiming a visible-tab slot, so announce-only children never consume
+   the decision-26 cap.
+2. **`workspace_send_prompt wait:"final_message"` vs. Agent Drafter `consult`.**
+   **Unified — decision 13, done in Task 41.** `consult` was not re-expressed as a
+   workspace *tool call*; it kept its own contract (name, params, depth-1, per-profile
+   timeout, blocking answer, error envelopes) and was moved onto this spine underneath:
+   a consulted worker's turn takes the server turn lock, registers in `AgentManager`, and
+   publishes to the session event bus, so it is observable via
+   `GET /sessions/{id}/events`, steerable via `POST /interrupt`, and cancellable via
+   `workspace_close scope:"turn"` — exactly like a glass-box subagent. The resolution
+   paragraph lives with the apps platform owners, in
+   [apps platform design](../../agent-drafter/apps-platform-design.md) (§ "`consult` runs
+   on the BR-71 workspace spine").
+3. **Cross-window targeting.** *Is the focused-else-most-recent default good enough, or
+   is a `window_id` parameter needed?* **The heuristic stands — decision 15.** Task 22
+   implements `focused_or_recent` as proposed; no `window_id` parameter was added, and
+   `workspace_open` gained `placement: tab|split|window` instead, which is what the
+   observed requests actually wanted.
+4. **Observer backpressure.** *The `Lagged` resync is spec'd, but what does it cost?*
+   **Implemented in Task 7 and measured — decision 16.** Both consumers (the observer
+   stream and `/reply`) answer `RecvError::Lagged` with a `bus_lag_resync_frame`
+   `UpdateConversation` read from storage rather than silently skipping frames.
+   Measured by `scripts/workspace/glassbox-harness.mjs`: a fresh observer's first
+   snapshot arrived in **3 ms for a 1-message session** (debug `biorouterd`, macOS arm64,
+   2026-07-31). Read that with its subject attached — it is the floor, not evidence that
+   resync is free at any transcript length, which is why the harness prints the message
+   count beside the latency and this bullet repeats it.
+
+   ⚠ **And read it as a proxy, not as the `Lagged` arm.** The harness opens a fresh
+   observer and times its first frame, which is the unconditional join-mid-turn snapshot
+   at the top of the stream task — not the `RecvError::Lagged` branch below it. The two
+   are timed because they do the same dominant work: `bus_lag_resync_frame` is a
+   `session_manager().get_session(id, true)` plus one `UpdateConversation`, which is the
+   same storage read the initial snapshot performs. What the harness therefore does
+   **not** cover is that the lag branch is reached at all — delete it and this
+   measurement stays green.
+
+   Coverage of the branch itself lives in unit tests, and only for one of the two
+   consumers. `reply::a_lagged_sse_loop_resyncs_the_client_from_storage` overruns the
+   real broadcast ring (`BUS_CAPACITY + 1` publishes with nothing reading) so the loop's
+   first `recv` deterministically returns `Lagged`, and asserts the client is sent the
+   stored conversation; replacing the resync with a bare `continue` makes it time out.
+   The **observer stream**'s identical arm in `session_events.rs` has no such test — that
+   is the real gap here, and it is a gap in tests, not in the implementation.
+5. **CLI surface.** *Worth building `session watch` / `session send` as free verification
+   tooling?* **Yes — decision 9, built in Task 20**, and it grew past the question:
+   `session watch`, `session send`, `session list --subagents`, `session attach`
+   (`--of`, `--read-only`) and `session cancel`. Task 42b then made it structural — a
+   compile-time parity gate in `biorouter-cli` fails the build when a workspace
+   capability has no CLI counterpart or a written, bounded exception.
 
 ## Related documentation
 

@@ -3,6 +3,16 @@ import { subscribeSessionNameChanges } from './sessionNameSync';
 
 let cachedSessions: Session[] | null = null;
 let inFlightRequest: Promise<Session[]> | null = null;
+// BR-71: the `include_subagents` query key is part of the cache identity, or a
+// toggle serves the stale list and never refetches.
+let cachedIncludeSubagents = false;
+// Bumped whenever a request in flight is orphaned (a flag change, a cache
+// clear). Nothing can cancel an in-flight fetch, so each request captures the
+// generation it was issued under and, on settling, checks it is still the
+// current one before touching any module state. Without this an orphan writes
+// its answer into the cache — emitting the wrong-shaped list to every
+// subscriber — and its `.finally` nulls the in-flight slot its successor owns.
+let requestGeneration = 0;
 const listeners = new Set<() => void>();
 
 function emitChange(): void {
@@ -88,17 +98,40 @@ export function subscribeSessionList(listener: () => void): () => void {
   return () => listeners.delete(listener);
 }
 
-export async function refreshSessionList(): Promise<Session[]> {
+// ⚠ `includeSubagents?: boolean`, NOT `= false`. This module has TWO consumers
+// (History and Home's `SessionsInsights`) and only one of them has an opinion;
+// a keyless call must mean "whatever is cached", not "false", or Home's every
+// render would invalidate History's toggle and silently drop the children.
+export async function refreshSessionList(includeSubagents?: boolean): Promise<Session[]> {
+  // A flag change invalidates both the in-flight request and the cache: the
+  // dedupe below is keyed only on "a request is running", so without this a
+  // toggle during an in-flight fetch would resolve to the OTHER flag's result.
+  if (includeSubagents !== undefined && includeSubagents !== cachedIncludeSubagents) {
+    cachedIncludeSubagents = includeSubagents;
+    cachedSessions = null;
+    inFlightRequest = null;
+    requestGeneration += 1;
+  }
   if (inFlightRequest) return inFlightRequest;
 
-  inFlightRequest = listSessions<true>({ throwOnError: true })
+  const generation = requestGeneration;
+  inFlightRequest = listSessions<true>({
+    throwOnError: true,
+    // `cachedIncludeSubagents`, not the parameter: a keyless call must send the
+    // identity the cache is holding, not `undefined`.
+    query: { include_subagents: cachedIncludeSubagents },
+  })
     .then((response) => {
+      // Superseded while in flight: hand the answer back to whoever awaited
+      // this exact call, but publish nothing — the cache and its subscribers
+      // belong to the request that replaced it.
+      if (generation !== requestGeneration) return response.data.sessions;
       cachedSessions = response.data.sessions;
       emitChange();
       return cachedSessions;
     })
     .finally(() => {
-      inFlightRequest = null;
+      if (generation === requestGeneration) inFlightRequest = null;
     });
 
   return inFlightRequest;
@@ -112,5 +145,9 @@ export function preloadSessionList(): void {
 export function clearSessionListCache(): void {
   cachedSessions = null;
   inFlightRequest = null;
+  cachedIncludeSubagents = false;
+  // Same orphaning as a flag change: a request issued before the clear must not
+  // repopulate the cache we just emptied.
+  requestGeneration += 1;
   emitChange();
 }

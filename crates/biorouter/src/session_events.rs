@@ -1,0 +1,637 @@
+//! Per-session event broadcast (BR-71 §4.2).
+//!
+//! Before BR-71, agent events flowed only inside the `POST /reply` response
+//! that started the turn — nothing could *observe* a session it didn't start.
+//! This bus is the missing publisher, and after Task 8 it is the ONLY path
+//! turn events take: the single turn runner
+//! (`biorouter-server/src/workspace/turn.rs`) publishes here, and both
+//! consumers — the `/reply` SSE response and the read-only observer route
+//! `GET /sessions/{id}/events` — subscribe. Lives in the `biorouter` crate,
+//! not the server, because subagent turns publish from `subagent_handler.rs`,
+//! which cannot depend on `biorouter-server`. The server maps these to its
+//! `MessageEvent` wire enum in exactly one place
+//! (`routes::session_events::map_bus_event`), so every consumer sees
+//! byte-identical frames.
+//!
+//! **The `Agent` variant's payload is a closed set of EIGHT, and downstream
+//! depends on that.** `AgentEvent` (`crate::agents::AgentEvent`,
+//! `agents/agent.rs:612-679`) is `Message`, `McpNotification`, `ModelChange`,
+//! `HistoryReplaced`, `ToolCallPending`, `TokenUsage`, `TurnAborted` and —
+//! since #59 — `MessagesPersisted(Vec<PersistedMessage>)`. The server's
+//! `map_bus_event` matches all eight with **no wildcard arm**, so adding a
+//! ninth is a deliberate, compiler-enforced conversation about how it reaches
+//! the wire, rather than a variant that silently vanishes at the adapter. Do
+//! not "simplify" that match, and do not add a `_` here either.
+//!
+//! **Senders are reclaimed, not retained for the life of the process.** A
+//! `tokio::sync::broadcast::Sender` is NOT cheap to hold: `broadcast::channel`
+//! allocates the entire ring up front, before any receiver exists —
+//! `Sender::new_with_receiver_count` does
+//! `let mut buffer = Vec::with_capacity(capacity); for i in 0..capacity {
+//! buffer.push(Mutex::new(Slot { … val: None })) }`. With `BUS_CAPACITY = 1024`
+//! and a `SessionBusEvent` slot (its `Agent` variant wraps `Message` /
+//! `Conversation` / `McpNotification`), that is on the order of 10^5 bytes per
+//! session id. A desktop daemon runs for days, and after Task 8 EVERY turn of
+//! EVERY session publishes here, so "insert and never remove" is an unbounded
+//! leak measured in hundreds of MB for a few thousand distinct sessions. Two
+//! rules keep the registry bounded by the number of *live observers* rather
+//! than by the number of session ids the process has ever seen:
+//!
+//! 1. [`subscribe`] is the only function that creates a ring — [`publish`] and
+//!    [`observer_count`] are pure lookups, because a session with no entry
+//!    provably has no receiver.
+//! 2. The [`Subscription`] it returns frees the ring when it is dropped, so
+//!    the reclaim belongs to the observer that caused the allocation rather
+//!    than to a turn that may never run. See [`release_if_idle`].
+
+use std::collections::HashMap;
+use std::sync::{LazyLock, Mutex};
+
+use tokio::sync::broadcast;
+
+use crate::agents::AgentEvent;
+use crate::conversation::message::TokenState;
+
+/// Ring capacity per session. Observers that fall further behind see
+/// `RecvError::Lagged` and must resync from storage (both consumers re-send an
+/// `UpdateConversation` snapshot).
+///
+/// 1024, not 256: after Task 8 the interactive `/reply` client is a bus
+/// consumer on the hot path, and a long tool-heavy turn streaming token deltas
+/// through a briefly-stalled renderer must not trip a resync for a hiccup.
+///
+/// It IS real memory, not "bounded work": the ring is allocated in full at
+/// channel creation, with no receivers. That cost is acceptable only because
+/// [`release_if_idle`] frees it when the session goes quiet — a per-session
+/// ring that lives for the process lifetime would not be.
+pub const BUS_CAPACITY: usize = 1024;
+
+/// What a turn publishes. `TurnStarted` / (`TurnError` |`TurnFinished`) bracket
+/// every turn so consumers can render lifecycle without parsing message
+/// content, and so `workspace_watch` and `wait:"final_message"` have an
+/// unambiguous completion signal.
+#[derive(Clone, Debug)]
+pub enum SessionBusEvent {
+    TurnStarted {
+        turn_id: String,
+    },
+    Agent(AgentEvent),
+    /// A terminal error, carried with enough fidelity to reproduce `/reply`'s
+    /// `MessageEvent::Error` envelope exactly (BR-71 reconciliation #9).
+    /// Strings, not the server's `TurnErrorScope` enum, because this crate
+    /// cannot depend on `biorouter-server`; the server maps them back.
+    TurnError {
+        message: String,
+        code: String,
+        /// `"provider" | "session" | "inference" | "internal"` — the wire values
+        /// of `biorouter_server::routes::reply::TurnErrorScope`, which has
+        /// exactly those FOUR variants. `provider` is the one that matters
+        /// most: it is what the desktop keys its rate-limit / retry /
+        /// compaction recovery off, together with `retryable` and
+        /// `provider_kind`.
+        scope: String,
+        retryable: bool,
+        provider_kind: Option<String>,
+    },
+    /// Normal closure. `token_state` is the authoritative end-of-turn read
+    /// (BR-52) when the runner performed one; `None` for brackets published
+    /// without a store read (subagent runs headless of the daemon).
+    ///
+    /// **`None` must never become `TokenState::default()` on the wire.** The
+    /// server's `MessageEvent::Finish` takes a non-optional `TokenState`
+    /// (`routes/reply.rs`, filled from `get_token_state`), so the mapper faces
+    /// an `Option` it has to resolve, and `unwrap_or_default()` is the obvious
+    /// wrong answer: every counter on `TokenState` is a number, so the default
+    /// is a *plausible-looking* all-zero reading rather than an absent one. The
+    /// desktop's only defence against a zeroed live reading —
+    /// `liveCountersAreAmbiguousZeros` in `ui/desktop/src/utils/billedTokens.ts`
+    /// — suppresses it **only when the persisted session counters are all
+    /// NULL**, so on any established session the invented zeros win over the
+    /// real persisted row and the user is shown 0 tokens and $0 for a turn that
+    /// cost both. Task 7/8 must either re-read the store (as `get_token_state`
+    /// already does for `/reply`'s own `Finish`) or omit the field — never
+    /// synthesise one.
+    TurnFinished {
+        reason: String,
+        token_state: Option<TokenState>,
+    },
+}
+
+static BUS: LazyLock<Mutex<HashMap<String, broadcast::Sender<SessionBusEvent>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Lock the registry, recovering from a poisoned mutex.
+///
+/// Poisoning cannot leave the map logically inconsistent — every mutation
+/// below is a single `HashMap` operation — so a panic elsewhere must not turn
+/// the bus into a process-wide outage.
+///
+/// **Nothing hands a `Sender` back out through this guard.** Every operation
+/// runs to completion *while the lock is held*; see [`subscribe`] for why.
+fn bus() -> std::sync::MutexGuard<'static, HashMap<String, broadcast::Sender<SessionBusEvent>>> {
+    BUS.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Subscribe to a session's live events. Safe for any session id, including one
+/// with no turn running — the receiver simply waits.
+///
+/// This is the ONLY function that inserts into `BUS`, and the `.subscribe()`
+/// runs **while the registry lock is held**. Both halves are load-bearing:
+///
+/// * Cloning the sender out and subscribing after the lock was released is a
+///   TOCTOU. A concurrent [`release_if_idle`] would see `receiver_count() == 0`
+///   — the subscribe has not landed yet — drop the entry, and leave this
+///   observer holding the last handle to an orphaned channel. Its very first
+///   `recv()` then returns `Err(RecvError::Closed)`, which a consumer reads as
+///   a clean end of stream: the observer silently stops following a live
+///   session instead of following it. `broadcast::Sender::subscribe` does not
+///   await, so holding the lock across it costs nothing.
+/// * Because the count is therefore incremented under the same lock that
+///   guards removal, an entry's absence provably means the session has no
+///   receiver — a fact the rest of the module relies on.
+///
+/// Returns a [`Subscription`], which exposes the receiver operations needed by
+/// consumers and reclaims the ring when it is dropped. See that type for why
+/// the reclaim is not left to the caller.
+#[must_use = "dropping the subscription immediately unsubscribes"]
+pub fn subscribe(session_id: &str) -> Subscription {
+    let rx = bus()
+        .entry(session_id.to_string())
+        .or_insert_with(|| broadcast::channel(BUS_CAPACITY).0)
+        .subscribe();
+    Subscription {
+        session_id: session_id.to_string(),
+        rx: Some(rx),
+    }
+}
+
+/// A live observer of one session: a `broadcast::Receiver` that reclaims its
+/// session's ring when it goes away.
+///
+/// **The reclaim is RAII because the observer side has no other owner.**
+/// [`publish`] never creates an entry, so every ring in the registry was
+/// created by a `subscribe`; [`release_if_idle`] is called by the turn runner,
+/// but a turn is exactly what an observer-only session does not have. An
+/// archived session someone opened to read, or — since [`subscribe`] is
+/// advertised as safe for *any* id — a client-supplied id on
+/// `GET /sessions/{id}/events` that names no session at all, would otherwise
+/// pin ~10^5 bytes for the life of the process. One unauthenticated request
+/// per made-up id is then an unbounded allocation reachable from a single HTTP
+/// route, so "the route remembers to call `release_if_idle` on stream drop" is
+/// not a good enough contract: the type enforces it.
+///
+/// The underlying receiver is deliberately not exposed: methods such as
+/// `broadcast::Receiver::resubscribe` return a bare receiver whose final drop
+/// cannot reclaim the registry entry. Every receiver derived from this one
+/// therefore stays wrapped in `Subscription`.
+#[derive(Debug)]
+pub struct Subscription {
+    session_id: String,
+    /// `Some` for the whole lifetime; `take`n in `Drop` so the receiver is
+    /// destroyed — and the count decremented — *before* `release_if_idle` reads
+    /// it. Field-order drop would run after our `Drop::drop`, so the count
+    /// would still include this receiver and nothing would ever be reclaimed.
+    rx: Option<broadcast::Receiver<SessionBusEvent>>,
+}
+
+impl Subscription {
+    /// The session this subscription follows.
+    #[must_use]
+    pub fn session_id(&self) -> &str {
+        &self.session_id
+    }
+
+    pub async fn recv(&mut self) -> Result<SessionBusEvent, broadcast::error::RecvError> {
+        self.rx
+            .as_mut()
+            .expect("receiver is only taken in Drop")
+            .recv()
+            .await
+    }
+
+    pub fn try_recv(&mut self) -> Result<SessionBusEvent, broadcast::error::TryRecvError> {
+        self.rx
+            .as_mut()
+            .expect("receiver is only taken in Drop")
+            .try_recv()
+    }
+
+    #[must_use = "dropping the resubscribed receiver immediately unsubscribes"]
+    pub fn resubscribe(&self) -> Self {
+        Self {
+            session_id: self.session_id.clone(),
+            rx: Some(
+                self.rx
+                    .as_ref()
+                    .expect("receiver is only taken in Drop")
+                    .resubscribe(),
+            ),
+        }
+    }
+}
+
+impl Drop for Subscription {
+    fn drop(&mut self) {
+        drop(self.rx.take());
+        release_if_idle(&self.session_id);
+    }
+}
+
+/// Publish, best-effort. A send with no receivers is a no-op, never an error —
+/// publishing must cost nothing when nobody is watching, **not even an
+/// allocation**.
+///
+/// A pure lookup, never an insert. [`subscribe`] is the only function that
+/// creates a ring, and it increments the receiver count under the same lock
+/// [`release_if_idle`] removes under, so a session with no entry provably has
+/// no receiver: inserting on a miss would build a 1024-slot ring (~10^5 bytes)
+/// that nothing could ever read from, and hold it until a `release_if_idle`
+/// that only the turn runner performs. After Task 8 every turn of every session
+/// publishes here, so that insert is the difference between a registry bounded
+/// by live observers and one that grows with every session id the daemon has
+/// ever seen.
+///
+/// `send` does not await, so it runs under the registry lock rather than
+/// through a sender cloned out of it (see [`subscribe`]).
+pub fn publish(session_id: &str, event: SessionBusEvent) {
+    if let Some(sender) = bus().get(session_id) {
+        let _ = sender.send(event);
+    }
+}
+
+/// Drop a session's sender — and its 1024-slot ring — once nothing is listening.
+///
+/// The primary caller is [`Subscription`]'s `Drop`, which is what makes the
+/// reclaim unforgettable: since [`publish`] never creates an entry, every ring
+/// belongs to some observer, and the last observer to leave frees it. A live
+/// observer keeps `receiver_count() > 0` and the entry survives.
+///
+/// Still public because the turn runner also calls it on its exit path (Task 6)
+/// as a belt-and-braces sweep — harmless and idempotent — and because a caller
+/// that has torn down its receivers by some other route needs a way to say so.
+///
+/// NOT idempotency-sensitive: `subscribe` re-inserts on demand, and a receiver
+/// created from a sender that has since been removed from the map keeps working
+/// (it holds its own `Arc` to the shared state) — it simply stops seeing events
+/// published through a *new* sender. That is why this only fires at `0`.
+pub fn release_if_idle(session_id: &str) {
+    let mut map = bus();
+    if let Some(sender) = map.get(session_id) {
+        if sender.receiver_count() == 0 {
+            map.remove(session_id);
+        }
+    }
+}
+
+/// How many live observers a session currently has (introspection/tests).
+///
+/// Read-only, like every predicate should be: asking about an id the bus has
+/// never seen answers `0` without creating the entry the question was about.
+pub fn observer_count(session_id: &str) -> usize {
+    bus().get(session_id).map_or(0, |s| s.receiver_count())
+}
+
+/// Whether a session currently holds a ring (tests only).
+///
+/// Deliberately a per-key predicate and **not** a `tracked_session_count()`.
+/// `BUS` is process-global and libtest runs this module's tests as parallel
+/// threads on one process, each subscribing and releasing on its own keys, so
+/// any `count == before + 1` assertion can observe `before + 2` depending on
+/// interleaving and fail for reasons that have nothing to do with the ring
+/// under test. A key its test owns outright cannot race, and it asserts the
+/// actual property (this entry was reclaimed) instead of a proxy for it.
+#[cfg(test)]
+pub(crate) fn is_tracked(session_id: &str) -> bool {
+    bus().contains_key(session_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn two_observers_both_receive_and_publish_without_observers_is_ok() {
+        publish(
+            "bus-t1",
+            SessionBusEvent::TurnFinished {
+                reason: "stop".into(),
+                token_state: None,
+            },
+        ); // no panic
+
+        let mut a = subscribe("bus-t2");
+        let mut b = subscribe("bus-t2");
+        publish(
+            "bus-t2",
+            SessionBusEvent::TurnStarted {
+                turn_id: "turn-9".into(),
+            },
+        );
+        assert!(matches!(
+            a.recv().await.unwrap(),
+            SessionBusEvent::TurnStarted { .. }
+        ));
+        assert!(matches!(
+            b.recv().await.unwrap(),
+            SessionBusEvent::TurnStarted { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn slow_observer_lags_rather_than_blocking() {
+        let mut rx = subscribe("bus-t3");
+        for i in 0..(BUS_CAPACITY + 8) {
+            publish(
+                "bus-t3",
+                SessionBusEvent::TurnFinished {
+                    reason: format!("r{i}"),
+                    token_state: None,
+                },
+            );
+        }
+        // The first recv reports the overflow instead of stalling the publisher.
+        assert!(matches!(
+            rx.recv().await,
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(_))
+        ));
+    }
+
+    /// Task 8 depends on this: `/reply`'s Error frame carries four fields beyond
+    /// the message, and `AgentEvent::TurnAborted` has none of them.
+    ///
+    /// Published and read back **through the real channel**, so the assertion
+    /// covers the bus rather than a struct literal. A literal round trip
+    /// (construct, destructure, compare) cannot fail at runtime — it is a
+    /// type-level pin dressed as a behavioural test, and this is the area where
+    /// false assurance is most expensive.
+    ///
+    /// The string→`TurnErrorScope` half of the contract is asserted in Task 7's
+    /// `turn_error_scopes_round_trip_through_their_wire_values`;
+    /// `TurnErrorScope` lives in `biorouter-server`, which this crate cannot
+    /// depend on.
+    #[tokio::test]
+    async fn turn_error_carries_the_full_wire_envelope_across_the_bus() {
+        let mut rx = subscribe("bus-t4");
+        publish(
+            "bus-t4",
+            SessionBusEvent::TurnError {
+                message: "provider refused".into(),
+                code: "provider_forbidden".into(),
+                scope: "inference".into(),
+                retryable: false,
+                provider_kind: Some("anthropic".into()),
+            },
+        );
+        let SessionBusEvent::TurnError {
+            message,
+            code,
+            scope,
+            retryable,
+            provider_kind,
+        } = rx.recv().await.unwrap()
+        else {
+            panic!("variant");
+        };
+        assert_eq!(message, "provider refused");
+        assert_eq!(code, "provider_forbidden");
+        assert_eq!(scope, "inference");
+        assert!(!retryable);
+        assert_eq!(provider_kind.as_deref(), Some("anthropic"));
+    }
+
+    /// `subscribe` must hand out a receiver on the channel the registry
+    /// **still** holds, even while another thread is reclaiming idle rings.
+    ///
+    /// If the sender is cloned out from under the lock and `.subscribe()`
+    /// happens after it is released, a concurrent [`release_if_idle`] sees
+    /// `receiver_count() == 0` — the subscribe has not landed yet — and removes
+    /// the entry. The observer then holds the only handle to an orphaned
+    /// channel whose last `Sender` has been dropped, so its very first
+    /// `recv()` returns `Err(RecvError::Closed)`; a consumer reads that as a
+    /// clean end of stream and silently stops following a live session.
+    ///
+    /// The observable invariant is registry-side and race-free to assert: once
+    /// `subscribe` has returned, the session is tracked. Nothing else touches
+    /// these keys, and the only other party is a releaser that must not be able
+    /// to win.
+    #[test]
+    fn subscribing_is_atomic_against_a_concurrent_release() {
+        const RELEASERS: usize = 24;
+        for round in 0..500 {
+            let key = format!("race-{round}");
+            let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let gate = std::sync::Arc::new(std::sync::Barrier::new(RELEASERS + 1));
+            let mut handles = Vec::new();
+            for _ in 0..RELEASERS {
+                let releaser_key = key.clone();
+                let releaser_stop = stop.clone();
+                let releaser_gate = gate.clone();
+                handles.push(std::thread::spawn(move || {
+                    releaser_gate.wait();
+                    while !releaser_stop.load(std::sync::atomic::Ordering::Relaxed) {
+                        release_if_idle(&releaser_key);
+                    }
+                }));
+            }
+            gate.wait();
+
+            let rx = subscribe(&key);
+            let tracked = is_tracked(&key);
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            for h in handles {
+                h.join().unwrap();
+            }
+            drop(rx);
+            release_if_idle(&key);
+
+            assert!(
+                tracked,
+                "round {round}: subscribe handed out a receiver on a channel the \
+                 registry no longer holds — that receiver is orphaned and closed"
+            );
+        }
+    }
+
+    /// The variant every consumer actually spends its time on had no coverage:
+    /// the three lifecycle brackets are a handful of events per turn, while
+    /// `Agent` carries the whole stream.
+    ///
+    /// It is also the one variant whose payload this module does not own —
+    /// `AgentEvent` is `#[derive(Clone, Debug)]` in `agents/agent.rs`, and
+    /// `broadcast` requires `Clone` to fan out. If someone adds a non-`Clone`
+    /// field to any of its eight variants, the bus stops compiling; this test
+    /// makes sure a payload is actually *sent* through the channel so that
+    /// breakage lands here rather than in a server route.
+    #[tokio::test]
+    async fn agent_events_cross_the_bus_unchanged() {
+        let mut rx = subscribe("bus-t5");
+        publish(
+            "bus-t5",
+            SessionBusEvent::Agent(AgentEvent::ModelChange {
+                model: "claude-opus-5".into(),
+                mode: "auto".into(),
+            }),
+        );
+        let SessionBusEvent::Agent(AgentEvent::ModelChange { model, mode }) =
+            rx.recv().await.unwrap()
+        else {
+            panic!("variant");
+        };
+        assert_eq!(model, "claude-opus-5");
+        assert_eq!(mode, "auto");
+    }
+
+    /// An observer-only session must reclaim itself, with no turn runner
+    /// involved and no explicit call from the observer.
+    ///
+    /// `release_if_idle` is documented as the turn runner's business, and after
+    /// the lookup-only fix a turn no longer creates entries at all — so every
+    /// entry in the registry is now created by an observer. `GET
+    /// /sessions/{id}/events` (Task 7) subscribes to a *client-supplied* id
+    /// before it has checked the session exists, and `subscribe` is advertised
+    /// as safe for any id. If the reclaim depended on a turn ever running, one
+    /// unauthenticated request per bogus id would pin ~10^5 bytes forever: an
+    /// unbounded allocation reachable from a single HTTP route.
+    ///
+    /// So the subscription itself owns the reclaim, and a consumer cannot
+    /// forget.
+    #[tokio::test]
+    async fn an_observer_only_session_is_reclaimed_when_the_observer_leaves() {
+        assert!(
+            !is_tracked("observer-only"),
+            "precondition: nothing else uses this key"
+        );
+        {
+            let _sub = subscribe("observer-only");
+            assert!(is_tracked("observer-only"), "subscribing creates the ring");
+            // No turn ever publishes on this session, so nothing else will ever
+            // call `release_if_idle` for it.
+        }
+        assert!(
+            !is_tracked("observer-only"),
+            "dropping the subscription must reclaim the ring on its own"
+        );
+    }
+
+    #[test]
+    fn a_resubscribed_receiver_cannot_escape_ring_reclamation() {
+        let key = "observer-resubscribe";
+        assert!(!is_tracked(key), "precondition: nothing else uses this key");
+
+        let first = subscribe(key);
+        let second = first.resubscribe();
+        drop(first);
+        assert!(
+            is_tracked(key),
+            "the second observer still needs the registry's sender"
+        );
+
+        drop(second);
+        assert!(
+            !is_tracked(key),
+            "the last derived receiver must reclaim the ring"
+        );
+    }
+
+    /// Publishing to a session nobody is watching must not allocate anything.
+    ///
+    /// `broadcast::channel` builds the whole 1024-slot ring at creation
+    /// (~10^5 bytes), so a `publish` that inserts on a miss buys a ring no one
+    /// can ever read from: after the atomicity fix, an absent entry provably
+    /// means the session has no receiver, because only `subscribe` inserts and
+    /// it increments the count under the same lock `release_if_idle` removes
+    /// under. On a daemon where every turn of every session publishes, that
+    /// insert is the difference between a bounded registry and one that grows
+    /// with the number of session ids ever seen.
+    ///
+    /// `observer_count` is worse than `publish` here: it is documented as
+    /// introspection, and a read-only predicate that allocates 10^5 bytes per
+    /// distinct id it is asked about is a footgun pointed at whatever debug
+    /// endpoint eventually calls it.
+    #[tokio::test]
+    async fn publishing_and_counting_never_allocate_a_ring_nobody_can_read() {
+        assert!(
+            !is_tracked("no-alloc-check"),
+            "precondition: nothing else uses this key"
+        );
+
+        publish(
+            "no-alloc-check",
+            SessionBusEvent::TurnStarted {
+                turn_id: "t".into(),
+            },
+        );
+        assert!(
+            !is_tracked("no-alloc-check"),
+            "publishing to an unwatched session must not allocate its ring"
+        );
+
+        assert_eq!(
+            observer_count("no-alloc-check"),
+            0,
+            "an unwatched session has no observers"
+        );
+        assert!(
+            !is_tracked("no-alloc-check"),
+            "observer_count is introspection and must not mutate the registry"
+        );
+
+        // …and it still reports the truth once there IS an observer.
+        let rx = subscribe("no-alloc-check");
+        assert_eq!(observer_count("no-alloc-check"), 1);
+        drop(rx);
+        release_if_idle("no-alloc-check");
+        assert!(!is_tracked("no-alloc-check"));
+    }
+
+    /// A finished turn with no observers must not leave a 1024-slot ring
+    /// behind. `broadcast::channel` allocates the whole ring at creation, so an
+    /// insert-and-never-remove map is a real leak on a daemon that runs for days
+    /// and publishes for every turn of every session.
+    ///
+    /// Asserts on ITS OWN KEY, never on a map size. `BUS` is process-global and
+    /// libtest runs this module's tests as parallel threads, so a
+    /// `count == before + 1` assertion is a race against its own module.
+    /// `leak-check` is touched by this test alone.
+    ///
+    /// Covers both branches of [`release_if_idle`] — a ring somebody is still
+    /// reading must survive both an explicit sweep (the turn runner's exit
+    /// path) and one of several observers leaving.
+    #[tokio::test]
+    async fn an_idle_session_releases_its_ring() {
+        assert!(
+            !is_tracked("leak-check"),
+            "precondition: nothing else uses this key"
+        );
+
+        // Two live observers create the ring and pin it …
+        let first = subscribe("leak-check");
+        let second = subscribe("leak-check");
+        assert!(is_tracked("leak-check"), "subscribing creates the ring");
+        publish(
+            "leak-check",
+            SessionBusEvent::TurnStarted {
+                turn_id: "t".into(),
+            },
+        );
+
+        // … an explicit sweep must not reclaim a ring somebody is reading …
+        release_if_idle("leak-check");
+        assert!(is_tracked("leak-check"), "an observer keeps the ring");
+
+        // … nor may one observer leaving take it from the other …
+        drop(first);
+        assert!(
+            is_tracked("leak-check"),
+            "a remaining observer keeps the ring"
+        );
+
+        // … and the last one leaving reclaims it.
+        drop(second);
+        assert!(
+            !is_tracked("leak-check"),
+            "the last observer leaving reclaims the ring"
+        );
+    }
+}

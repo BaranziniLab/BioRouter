@@ -18,6 +18,7 @@ Come here when you want to know what a specific built-in extension can do, or wh
 | [Skills](skills.md) | Where skills are discovered from on disk, how to get more of them, and a worked GWAS-pipeline example showing a skill steering the agent. |
 | [Todo](todo.md) | How BioRouter breaks multi-step work into a tracked checklist and reports progress as it goes. |
 | [Tutorial](tutorial.md) | Loading interactive, step-by-step walkthroughs of BioRouter features, and what each of the seven shipped tutorials covers. `crates/biorouter-mcp/src/tutorial/tutorials/` remains the authoritative list. |
+| [Workspace Control](workspace.md) | The tools BioRouter uses to operate the workspace itself — list, open, read, steer and reconfigure other conversations, and delegate to subagents you can watch in a live tab. Ships in two tiers: delegation is automatic, the cross-session tools are an explicit opt-in. |
 
 ## Related documentation
 

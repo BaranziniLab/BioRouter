@@ -48,6 +48,14 @@ struct Cli {
     command: Option<Command>,
 }
 
+/// The real clap command tree, for tests that must assert against the CLI's
+/// actual surface rather than a description of it (Task 42b).
+///
+/// `Cli` stays private; only the built `Command` escapes.
+pub fn command_tree() -> clap::Command {
+    <Cli as clap::CommandFactory>::command()
+}
+
 #[derive(Args, Debug, Clone)]
 #[group(required = false, multiple = false)]
 pub struct Identifier {
@@ -409,11 +417,13 @@ async fn lookup_session_id(identifier: Identifier) -> Result<String> {
         Ok(session_id)
     } else if let Some(name) = identifier.name {
         let session_manager = SessionManager::instance();
-        let sessions = session_manager.list_sessions().await?;
-        sessions
-            .into_iter()
-            .find(|s| s.name == name || s.id == name)
-            .map(|s| s.id)
+        // BR-71: subagent runs are addressable by name too — `list_sessions()`
+        // filters them out at the SQL level (User + Scheduled only). The widened
+        // lookup lives beside the listing that shows those names, so the two
+        // cannot disagree about what is addressable, and so it is testable
+        // without this function's `SessionManager::instance()` singleton.
+        crate::commands::session::resolve_session_by_name(&session_manager, &name)
+            .await?
             .ok_or_else(|| anyhow::anyhow!("No session found with name '{}'", name))
     } else if let Some(path) = identifier.path {
         path.file_stem()
@@ -461,6 +471,15 @@ enum SessionCommand {
 
         #[arg(short = 'l', long = "limit", help = "Limit the number of results")]
         limit: Option<usize>,
+
+        #[arg(
+            long = "subagents",
+            help = "Include subagent runs, nested under the session that spawned them. \
+                    With this flag --limit counts top-level sessions, not total rows, \
+                    and each run is marked live/done (or 'state unknown' when no daemon \
+                    can be reached to ask)"
+        )]
+        subagents: bool,
     },
     #[command(about = "Remove sessions. Runs interactively if no ID, name, or regex is provided.")]
     Remove {
@@ -493,6 +512,59 @@ enum SessionCommand {
             default_value = "markdown"
         )]
         format: String,
+    },
+    #[command(about = "Stream a session's live events (requires a running daemon)")]
+    Watch {
+        /// Session id to observe.
+        session_id: String,
+        #[arg(
+            long,
+            help = "Keep watching after the current turn ends (default: exit on Finish/Error)"
+        )]
+        follow: bool,
+    },
+    #[command(about = "Send a prompt into a session and stream its turn")]
+    Send {
+        /// Session id to send to.
+        session_id: String,
+        /// The prompt text.
+        text: String,
+        #[arg(
+            long,
+            help = "Return as soon as the turn starts instead of streaming it"
+        )]
+        no_wait: bool,
+    },
+    #[command(
+        about = "Attach to a running session: render where it is, follow it live, and steer it",
+        long_about = "Joins a session that is running RIGHT NOW. Prints the conversation \
+                      so far, then follows it live; anything you type is delivered to the \
+                      running turn (or starts one). Use `session --resume` instead for a \
+                      finished transcript — resuming a live session opens a second agent \
+                      on it and the two do not share the daemon's turn lock."
+    )]
+    Attach {
+        /// Session id to attach to.
+        session_id: Option<String>,
+        #[arg(
+            long,
+            value_name = "NAME",
+            help = "Attach by session name instead of id (refuses if several sessions share it)"
+        )]
+        name: Option<String>,
+        #[arg(
+            long = "of",
+            value_name = "PARENT_ID",
+            help = "Attach to the running subagent of this parent session"
+        )]
+        of: Option<String>,
+        #[arg(long, help = "Observe only; do not read stdin or send anything")]
+        read_only: bool,
+    },
+    #[command(about = "Stop the turn a session is running (idempotent)")]
+    Cancel {
+        /// Session id whose running turn should be stopped.
+        session_id: String,
     },
     #[command(name = "diagnostics")]
     Diagnostics {
@@ -1500,8 +1572,9 @@ async fn handle_session_subcommand(command: SessionCommand) -> Result<()> {
             ascending,
             working_dir,
             limit,
+            subagents,
         } => {
-            handle_session_list(format, ascending, working_dir, limit).await?;
+            handle_session_list(format, ascending, working_dir, limit, subagents).await?;
         }
         SessionCommand::Remove { identifier, regex } => {
             let (session_id, name) = if let Some(id) = identifier {
@@ -1534,6 +1607,29 @@ async fn handle_session_subcommand(command: SessionCommand) -> Result<()> {
             };
             crate::commands::session::handle_session_export(session_identifier, output, format)
                 .await?;
+        }
+        SessionCommand::Watch { session_id, follow } => {
+            crate::commands::session_watch::handle_session_watch(&session_id, follow).await?;
+        }
+        SessionCommand::Send {
+            session_id,
+            text,
+            no_wait,
+        } => {
+            crate::commands::session_watch::handle_session_send(&session_id, &text, !no_wait)
+                .await?;
+        }
+        SessionCommand::Attach {
+            session_id,
+            name,
+            of,
+            read_only,
+        } => {
+            crate::commands::session_watch::handle_session_attach(session_id, name, of, read_only)
+                .await?;
+        }
+        SessionCommand::Cancel { session_id } => {
+            crate::commands::session_watch::handle_session_cancel(&session_id).await?;
         }
         SessionCommand::Diagnostics { identifier, output } => {
             let session_manager = SessionManager::instance();

@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
@@ -30,12 +30,8 @@ use crate::agents::prompt_manager::PromptManager;
 use crate::agents::resource_refs::{extract_resource_refs, ResourceRefs};
 use crate::agents::retry::{RetryManager, RetryResult};
 use crate::agents::stall::{StallAction, StallCheckConfig, StallWatch};
-use crate::agents::subagent_handle;
 use crate::agents::subagent_task_config::TaskConfig;
-use crate::agents::subagent_tool::{
-    create_subagent_status_tool, create_subagent_tool, handle_subagent_status_tool,
-    handle_subagent_tool, SUBAGENT_STATUS_TOOL_NAME, SUBAGENT_TOOL_NAME,
-};
+use crate::agents::subagent_tool::{handle_subagent_tool, SUBAGENT_TOOL_NAME};
 use crate::agents::types::SessionConfig;
 use crate::agents::types::{FrontendTool, SharedProvider, ToolResultReceiver};
 use crate::checkpoint::{CheckpointConfig, CheckpointKind, CheckpointManager};
@@ -46,7 +42,7 @@ use crate::context_mgmt::{
     overflow_recovery_for_attempt, DEFAULT_COMPACTION_THRESHOLD,
 };
 use crate::conversation::message::{
-    new_message_id, ActionRequiredData, Message, MessageContent, ProviderMetadata,
+    new_message_id, ActionRequiredData, Message, MessageContent, ProvenanceKind, ProviderMetadata,
     SystemNotificationType, TokenState, ToolRequest,
 };
 use crate::conversation::tool_result_serde::call_tool_result;
@@ -460,6 +456,79 @@ fn normalize_each_turn() -> bool {
         .unwrap_or(true)
 }
 
+/// BR-71 decision 22: the merged spawn tool reaches dispatch under the
+/// workspace prefix, and bare for models that strip prefixes (the same
+/// tolerance `ExtensionManager::dispatch_tool_call` already applies to
+/// code_execution tools).
+pub(crate) fn is_spawn_tool_call(tool_name: &str) -> bool {
+    tool_name == crate::agents::subagent_tool::SUBAGENT_TOOL_PREFIXED
+        || tool_name == crate::agents::subagent_tool::SUBAGENT_TOOL_NAME
+}
+
+/// BR-71 §5 + decision 25: subagents never get workspace control — no
+/// delegation-tree fan-out of cross-session control, no child steering its
+/// parent, and (since the spawn tool is now a workspace tool) no nesting.
+///
+/// Name forms: extension-advertised tools reach dispatch PREFIXED
+/// (`workspace__workspace_list`; the `format!("{}__{}", name, tool.name)` that
+/// makes the name lives in `extension_manager.rs`, behind the
+/// `config.is_tool_available` filter), and the bare forms cover prefix-stripping
+/// models (the `if !tool_name_str.contains("__")` block in
+/// `extension_manager.rs` that re-prefixes the three known `code_execution`
+/// tools is the precedent). The spawn tool is covered separately because it is
+/// named `subagent`, not `workspace_*`.
+///
+/// The names are ENUMERATED rather than prefix-matched. A bare
+/// `tool_name.starts_with("workspace_")` also matches any third-party extension
+/// whose *name* begins with `workspace_` — its tools arrive as
+/// `workspace_foo__bar`, which starts with `workspace_` — and every one of them
+/// would be refused inside a subagent with the misleading message "Subagents
+/// cannot use workspace tools." An explicit list cannot do that, and it is a
+/// closed set we control: when a `workspace_*` tool is added, this list is where
+/// the compiler-free reminder lives. It is not left to a reminder, though:
+/// `the_refusal_list_mirrors_every_tool_the_workspace_extension_advertises`
+/// cross-checks it against `WorkspaceClient::get_tools()` in both directions, so
+/// an eighth tool added there fails this crate's suite instead of quietly
+/// becoming reachable inside a delegation tree.
+const WORKSPACE_TOOL_NAMES: [&str; 7] = [
+    "workspace_list",
+    "workspace_open",
+    "workspace_read_conversation",
+    "workspace_send_prompt",
+    "workspace_set_tools",
+    "workspace_close",
+    "workspace_watch",
+];
+
+pub(crate) fn is_workspace_tool_refused_for(
+    session_type: crate::session::session_manager::SessionType,
+    tool_name: &str,
+) -> bool {
+    if session_type != crate::session::session_manager::SessionType::SubAgent {
+        return false;
+    }
+    if is_spawn_tool_call(tool_name) {
+        return true;
+    }
+    // Bare, or prefixed by OUR extension — not by anything that merely starts
+    // with the same letters.
+    let bare = tool_name.strip_prefix("workspace__").unwrap_or(tool_name);
+    WORKSPACE_TOOL_NAMES.contains(&bare)
+}
+
+/// Workspace tools that block on work happening in ANOTHER session, and must
+/// therefore not hold a global tool-dispatch permit while they do. Both name
+/// forms, like `is_spawn_tool_call`.
+pub(crate) fn is_parking_workspace_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "workspace_watch"
+            | "workspace__workspace_watch"
+            | "workspace_send_prompt"
+            | "workspace__workspace_send_prompt"
+    )
+}
+
 pub struct ToolCategorizeResult {
     pub frontend_requests: Vec<ToolRequest>,
     pub remaining_requests: Vec<ToolRequest>,
@@ -508,6 +577,105 @@ pub enum ConfirmationOutcome {
     /// a prompt that already expired or was cancelled, or a stale client. The
     /// decision was dropped rather than applied to some other pending call.
     Unknown,
+}
+
+/// One queued mid-turn injection: the text plus who injected it (BR-71).
+#[derive(Debug, Clone)]
+pub struct QueuedInterrupt {
+    pub text: String,
+    pub provenance: Option<crate::conversation::message::MessageProvenance>,
+}
+
+/// Identity of one run of the agent's reply loop (#69).
+///
+/// Minted by the loop itself, **not** the server's `ActiveTurn.turn_id`: the two
+/// counters live in different processes-worth of state and are deliberately given
+/// different shapes (`agent-turn-N` here, `turn-N` there) so an id from one is
+/// never mistaken for an id of the other. It exists so an accepted soft interrupt
+/// can name the turn that took it — a 202 that cannot say *which* turn it landed
+/// in is the ambiguity #69 is about.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TurnId(String);
+
+impl TurnId {
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+
+    /// The next loop-run id in this process.
+    pub(super) fn mint() -> Self {
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        Self(format!(
+            "agent-turn-{}",
+            SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for TurnId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl From<TurnId> for String {
+    fn from(id: TurnId) -> String {
+        id.0
+    }
+}
+
+/// #69: the soft-interrupt queue owns whether it is accepting, so acceptance and
+/// enqueue happen in one critical section. A prior `is_turn_active` check cannot
+/// substitute: check-then-queue is two steps against state that changes underneath
+/// them, and adding more checks only narrows the window.
+pub(super) struct SoftInterrupts {
+    /// The turn currently accepting, if any.
+    turn: Option<TurnId>,
+    /// Cleared by `close_and_drain` once the loop has committed to exiting.
+    accepting: bool,
+    queued: Vec<QueuedInterrupt>,
+}
+
+impl SoftInterrupts {
+    fn new() -> Self {
+        Self {
+            turn: None,
+            accepting: false,
+            queued: Vec::new(),
+        }
+    }
+}
+
+/// Why [`Agent::try_queue_soft_interrupt`] would not take a steer (#69).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InterruptRefused {
+    /// No turn is accepting: either none is running, or the running one has closed.
+    TurnEnded,
+}
+
+impl std::fmt::Display for InterruptRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TurnEnded => f.write_str("no turn is accepting interrupts for this session"),
+        }
+    }
+}
+
+/// The outcome of the turn loop's take-and-close at its exit (#69).
+///
+/// `pub` for the same reason [`Agent::open_for_turn`] is: the route-level tests
+/// have to be able to drive an agent through the turn-lifecycle transitions the
+/// reply loop performs, without running a reply loop.
+#[derive(Debug)]
+pub enum Drained {
+    /// Items were taken; the turn stays open and must loop again to consume them.
+    Some(Vec<QueuedInterrupt>),
+    /// Nothing queued; the queue is now closed and the loop may exit.
+    Empty,
 }
 
 /// The main biorouter Agent
@@ -560,7 +728,11 @@ pub struct Agent {
     /// injected at the next safe loop boundary in `reply_internal` instead of
     /// cancelling the turn (no lost work, no full context re-send). A plain
     /// `std::Mutex` so callers can push without awaiting the agent's async locks.
-    pub(super) soft_interrupts: Arc<std::sync::Mutex<Vec<String>>>,
+    ///
+    /// #69: the guarded value also carries *which* turn is accepting and whether
+    /// it still is, so a steer's acceptance and its enqueue are one critical
+    /// section rather than a check the loop can invalidate in between.
+    pub(super) soft_interrupts: Arc<std::sync::Mutex<SoftInterrupts>>,
     /// BR-43 shadow-git checkpoints: captures the work-tree at turn boundaries so
     /// `/rewind` can restore files/conversation. `None` when disabled (the
     /// default) or on the subagent/test paths. Gated by `BIOROUTER_CHECKPOINTS`.
@@ -867,7 +1039,7 @@ impl Agent {
             goals: Default::default(),
             fallback_scheduler: tokio::sync::OnceCell::new(),
             vault: Mutex::new(None),
-            soft_interrupts: Arc::new(std::sync::Mutex::new(Vec::new())),
+            soft_interrupts: Arc::new(std::sync::Mutex::new(SoftInterrupts::new())),
             checkpoints,
             eager_compactions: Arc::new(std::sync::Mutex::new(HashSet::new())),
             injected_skills: Mutex::new(HashMap::new()),
@@ -901,32 +1073,133 @@ impl Agent {
         }
     }
 
-    /// Queue a user message to be injected into the running turn at the next safe
-    /// loop boundary (soft interrupt). Cheap + lock-light: callable from a server
-    /// route or the CLI while a turn is streaming, without cancelling it.
-    pub fn queue_soft_interrupt(&self, text: String) {
-        if let Ok(mut q) = self.soft_interrupts.lock() {
-            q.push(text);
+    /// The soft-interrupt queue's guard, recovered past a poisoning. The guarded
+    /// value is only ever pushed to, taken from, or re-flagged, so no invariant
+    /// can be mid-update when a panic poisons it — dropping an injection because
+    /// some unrelated task panicked would be strictly worse.
+    fn lock_interrupts(&self) -> std::sync::MutexGuard<'_, SoftInterrupts> {
+        self.soft_interrupts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Open the queue for a new turn (#69). Any straggler from a previous turn is
+    /// dropped and logged rather than silently injected — that is the #69 bug's
+    /// own shape.
+    ///
+    /// `pub` because the *route-level* tests have to be able to put an agent into
+    /// the accepting state without running a whole reply loop; the only production
+    /// caller is the reply loop itself.
+    pub fn open_for_turn(&self, turn: TurnId) {
+        let mut q = self.lock_interrupts();
+        if !q.queued.is_empty() {
+            warn!(
+                count = q.queued.len(),
+                "dropping interrupts left by a previous turn; they were never accepted"
+            );
+            q.queued.clear();
+        }
+        q.turn = Some(turn);
+        q.accepting = true;
+    }
+
+    /// Re-open the queue after the loop decided *not* to exit at a point where it
+    /// had already closed (a blocked Stop hook, a red done-gate, a self-critique
+    /// revision). Without this the queue would stay shut for the rest of a turn
+    /// that is demonstrably still running, and every steer would be refused.
+    /// Keeps the queue's contents — unlike [`Agent::open_for_turn`], nothing here
+    /// starts a new turn.
+    pub(super) fn reopen_for_more_work(&self) {
+        let mut q = self.lock_interrupts();
+        if q.turn.is_some() {
+            q.accepting = true;
         }
     }
 
-    /// Drain queued soft-interrupt messages (FIFO). Returns empty when none.
-    pub(super) fn drain_soft_interrupts(&self) -> Vec<String> {
-        self.soft_interrupts
-            .lock()
-            .map(|mut q| std::mem::take(&mut *q))
-            .unwrap_or_default()
+    /// Accept a steer if and only if a turn is still accepting (#69). Returns the
+    /// turn it landed in, so the caller can be told what its 202 actually promised.
+    pub fn try_queue_soft_interrupt(
+        &self,
+        text: String,
+        provenance: Option<crate::conversation::message::MessageProvenance>,
+    ) -> Result<TurnId, InterruptRefused> {
+        let mut q = self.lock_interrupts();
+        if !q.accepting {
+            return Err(InterruptRefused::TurnEnded);
+        }
+        let turn = q.turn.clone().ok_or(InterruptRefused::TurnEnded)?;
+        q.queued.push(QueuedInterrupt { text, provenance });
+        Ok(turn)
     }
 
-    /// Whether any soft interrupt is still waiting to be injected. Checked at the
-    /// turn's exit so a steer that landed while the *final* provider response was
-    /// streaming keeps the loop alive for one more step (BR-61) instead of being
-    /// stranded on the queue until some later turn.
+    /// Queue a user message to be injected into the running turn at the next safe
+    /// loop boundary (soft interrupt). Cheap + lock-light: callable from a server
+    /// route or the CLI while a turn is streaming, without cancelling it.
+    ///
+    /// **Unguarded** — see [`Agent::queue_soft_interrupt_with_provenance`]. New
+    /// callers that report success to anyone want
+    /// [`Agent::try_queue_soft_interrupt`] instead.
+    pub fn queue_soft_interrupt(&self, text: String) {
+        self.queue_soft_interrupt_with_provenance(text, None);
+    }
+
+    /// BR-71: queue a mid-turn injection stamped with its origin. Used by the
+    /// subagent-tab steer path.
+    ///
+    /// **Unguarded**: this pushes whether or not a turn is accepting, and returns
+    /// `()`, so a caller can never learn that its text will not be consumed. That
+    /// is why #69 added [`Agent::try_queue_soft_interrupt`], which is what the
+    /// `/interrupt` route and `workspace_send_prompt mode:"steer"` use. This entry
+    /// point survives for in-loop producers that already know a turn is running.
+    /// Anything it leaves behind is dropped (with a warning) by the next
+    /// [`Agent::open_for_turn`] rather than injected into an unrelated turn.
+    pub fn queue_soft_interrupt_with_provenance(
+        &self,
+        text: String,
+        provenance: Option<crate::conversation::message::MessageProvenance>,
+    ) {
+        let mut q = self.lock_interrupts();
+        q.queued.push(QueuedInterrupt { text, provenance });
+    }
+
+    /// Drain queued soft-interrupt messages (FIFO). Returns empty when none.
+    /// Leaves the queue *open*: this is the mid-turn drain at the top of a loop
+    /// step, not the turn's exit (which is [`Agent::close_and_drain`]).
+    pub(super) fn drain_soft_interrupts(&self) -> Vec<QueuedInterrupt> {
+        let mut q = self.lock_interrupts();
+        std::mem::take(&mut q.queued)
+    }
+
+    /// Take everything and, only if there was nothing, close in the same critical
+    /// section (#69). That is what makes the exit atomic: after `Drained::Empty`
+    /// no further interrupt can be accepted, so nothing can arrive between the
+    /// check and the exit.
+    pub fn close_and_drain(&self) -> Drained {
+        let mut q = self.lock_interrupts();
+        let taken = std::mem::take(&mut q.queued);
+        if taken.is_empty() {
+            q.accepting = false;
+            Drained::Empty
+        } else {
+            Drained::Some(taken)
+        }
+    }
+
+    /// Put items taken by [`Agent::close_and_drain`] back at the head of the
+    /// queue, for the same turn's next loop step to consume in order. Anything
+    /// accepted in between (the queue is still open) keeps its place behind them.
+    pub(super) fn requeue_for_this_turn(&self, pending: Vec<QueuedInterrupt>) {
+        let mut q = self.lock_interrupts();
+        let mut restored = pending;
+        restored.append(&mut q.queued);
+        q.queued = restored;
+    }
+
+    /// Whether any soft interrupt is still waiting to be injected. Observation
+    /// only — the turn's exit uses [`Agent::close_and_drain`], because a *check*
+    /// here followed by an exit there is the two-step #69 removed.
     pub fn has_soft_interrupts(&self) -> bool {
-        self.soft_interrupts
-            .lock()
-            .map(|q| !q.is_empty())
-            .unwrap_or(false)
+        !self.lock_interrupts().queued.is_empty()
     }
 
     /// The hooks manager driving user-configured lifecycle hooks.
@@ -1017,6 +1290,13 @@ impl Agent {
         // escalation-only, so its verdict wins from either position.
         tool_inspection_manager.add_inspector(Box::new(
             crate::security::global_memory::GlobalMemoryInspector,
+        ));
+
+        // BR-71 §5: cross-session capability changes always confirm, in every
+        // mode. Inert for every tool but `workspace_set_tools` and
+        // `workspace_open`.
+        tool_inspection_manager.add_inspector(Box::new(
+            crate::agents::workspace_inspector::WorkspaceMutationInspector,
         ));
 
         // Add permission inspector (medium-high priority). BR-18: it reads the
@@ -2652,13 +2932,19 @@ impl Agent {
         cancellation_token: Option<CancellationToken>,
         session: &Session,
     ) -> (String, Result<ToolCallResult, ErrorData>) {
-        // Prevent subagents from creating other subagents
-        if session.session_type == SessionType::SubAgent && tool_call.name == SUBAGENT_TOOL_NAME {
+        // BR-71 §5: no workspace control, and no nesting, inside a delegation tree.
+        if is_workspace_tool_refused_for(session.session_type, tool_call.name.as_ref()) {
+            let message = if is_spawn_tool_call(tool_call.name.as_ref()) {
+                "Subagents cannot create other subagents. Do the work yourself, or \
+                 report back to your parent so it can delegate."
+            } else {
+                "Subagents cannot use workspace tools."
+            };
             return (
                 request_id,
                 Err(ErrorData::new(
                     ErrorCode::INVALID_REQUEST,
-                    "Subagents cannot create other subagents".to_string(),
+                    message.to_string(),
                     None,
                 )),
             );
@@ -2731,7 +3017,43 @@ impl Agent {
         }
 
         debug!("WAITING_TOOL_START: {}", tool_call.name);
-        let result: ToolCallResult = if tool_call.name == SUBAGENT_TOOL_NAME {
+        let result: ToolCallResult = if is_spawn_tool_call(tool_call.name.as_ref()) {
+            // Same gate `subagents_enabled` applies when advertising. The
+            // extension advertises the tool; this is what stops a model that
+            // remembers the name from spawning in a session where delegation is
+            // off.
+            if !self.subagents_enabled(&session.id).await {
+                return (
+                    request_id,
+                    Err(ErrorData::new(
+                        ErrorCode::INVALID_REQUEST,
+                        "Subagent delegation is not available in this session".to_string(),
+                        None,
+                    )),
+                );
+            }
+            // …and the PER-SESSION grant, which the mode gate above does not
+            // cover. Intercepting before `ExtensionManager::dispatch_tool_call`
+            // means its `is_tool_available` check never runs for this name, so a
+            // session whose `workspace` entry was deliberately restricted — say
+            // `available_tools: ["workspace_list"]` — could still spawn through
+            // the BARE `subagent`. Re-checking here is what makes "enforced in
+            // both places" true for the spawn tool too, not just for
+            // `workspace_*`.
+            if !self
+                .extension_manager
+                .is_extension_tool_available(Self::SPAWN_EXTENSION, SUBAGENT_TOOL_NAME)
+                .await
+            {
+                return (
+                    request_id,
+                    Err(ErrorData::new(
+                        ErrorCode::RESOURCE_NOT_FOUND,
+                        "Tool 'subagent' is not available for extension 'workspace'".to_string(),
+                        None,
+                    )),
+                );
+            }
             let provider = match self.provider().await {
                 Ok(p) => p,
                 Err(_) => {
@@ -2765,15 +3087,6 @@ impl Agent {
                 session.working_dir.clone(),
                 cancellation_token,
             )
-        } else if tool_call.name == SUBAGENT_STATUS_TOOL_NAME {
-            // BR-40: poll / await / cancel a background subagent. Scoped to this
-            // session's own handles, so one chat can never reach into another's.
-            let arguments = tool_call
-                .arguments
-                .clone()
-                .map(Value::Object)
-                .unwrap_or(Value::Object(serde_json::Map::new()));
-            handle_subagent_status_tool(arguments, session.id.clone())
         } else if self.is_frontend_tool(&tool_call.name).await {
             // For frontend tools, return an error indicating we need frontend execution
             ToolCallResult::from(Err(ErrorData::new(
@@ -2833,7 +3146,27 @@ impl Agent {
         // their leaf tools are still bounded here (permit acquired before any
         // path lock, so a lock holder always makes progress — no deadlock).
         let dispatch_args = tool_call.arguments.clone();
-        let bound_dispatch = tool_call.name != SUBAGENT_TOOL_NAME;
+        // BR-71: the spawn exclusion above now has to cover BOTH name forms —
+        // the tool is advertised as `workspace__subagent`, and the bare name
+        // still arrives from prefix-stripping models.
+        //
+        // BR-71 also adds two more wrappers with exactly that shape. Both PARK on
+        // work performed elsewhere, for up to 600 s:
+        //
+        //   * `workspace_watch` — waits on other sessions' bus events (up to 32
+        //     ids, `timeout_s` clamped to 600). Eight concurrent watches take
+        //     all eight permits and stall every other tool call in the daemon,
+        //     including the user's own foreground conversation, for ten minutes.
+        //   * `workspace_send_prompt` with `mode:"turn", wait:"final_message"` —
+        //     the true deadlock: it holds a permit while waiting for the TARGET
+        //     session's detached turn to finish, and that turn's own tool calls
+        //     contend for the same eight permits. At saturation nothing can
+        //     complete until the timeout fires.
+        //
+        // A parking wrapper does no work of its own, so exempting it does not
+        // widen the concurrency this semaphore exists to bound.
+        let bound_dispatch = !is_spawn_tool_call(tool_call.name.as_ref())
+            && !is_parking_workspace_tool(tool_call.name.as_ref());
         // Stage 0 instrumentation: the existing WAITING_TOOL_START/END pair
         // above brackets only dispatch *setup* — the future below is returned
         // un-awaited and driven later by `select_all`, so those markers close
@@ -2932,49 +3265,76 @@ impl Agent {
         )
     }
 
+    /// Extension configs that may be recorded as the user's session
+    /// configuration.
+    ///
+    /// An extension this agent injected for ITSELF (`ensure_spawn_extension`)
+    /// is a derived per-turn consequence of `subagents_enabled`, not a user
+    /// decision, and must never reach the session row. That exclusion is not
+    /// applied here: it belongs to the extension entry itself
+    /// ([`ExtensionOrigin`]), so it is decided in the same critical section as
+    /// the load it describes and cannot be observed out of step with it. This
+    /// method survives as the name for the *intent* — both persist paths go
+    /// through it, because both snapshot every loaded extension rather than the
+    /// one being changed, and a future reader needs to see that they share one
+    /// definition of "persistable".
+    pub(super) async fn persistable_extension_configs(&self) -> Vec<ExtensionConfig> {
+        self.extension_manager.get_extension_configs().await
+    }
+
     /// Save current extension state to session metadata
     /// Should be called after any extension add/remove operation
     pub async fn save_extension_state(&self, session: &SessionConfig) -> Result<()> {
-        let extension_configs = self.extension_manager.get_extension_configs().await;
-
-        let extensions_state = EnabledExtensionsState::new(extension_configs);
-
-        let session_manager = self.config.session_manager.clone();
-        let mut session_data = session_manager.get_session(&session.id, false).await?;
-
-        if let Err(e) = extensions_state.to_extension_data(&mut session_data.extension_data) {
-            warn!("Failed to serialize extension state: {}", e);
-            return Err(anyhow!("Extension state serialization failed: {}", e));
-        }
-
-        session_manager
-            .update(&session.id)
-            .extension_data(session_data.extension_data)
-            .apply()
-            .await?;
-
-        Ok(())
+        self.write_enabled_extensions(&session.id).await
     }
 
     /// Save current extension state to session by session_id
     pub async fn persist_extension_state(&self, session_id: &str) -> Result<()> {
-        let extension_configs = self.extension_manager.get_extension_configs().await;
-        let extensions_state = EnabledExtensionsState::new(extension_configs);
+        self.write_enabled_extensions(session_id).await
+    }
 
-        let session_manager = self.config.session_manager.clone();
-        let session = session_manager.get_session(session_id, false).await?;
-        let mut extension_data = session.extension_data.clone();
+    /// Record the session's enabled extensions, touching NO other key of
+    /// `extension_data`.
+    ///
+    /// Both callers above used to read the session, mutate the whole
+    /// [`ExtensionData`] object in a local copy, and write that whole object
+    /// back — two statements, so a writer of a *different* key that committed
+    /// in between (`todo.v1`, `goal.v0`, `run_state.*`, `workspace_skills.v1`
+    /// all share this one JSON column) was silently erased by the second one.
+    /// `SessionManager::update_extension_state` exists for exactly this: it
+    /// does the read and the write inside one transaction that opens with a
+    /// write, so writers serialize and no merge basis can be stale.
+    ///
+    /// Both of these paths are tool-triggered — the GUI extension toggle and
+    /// `workspace_set_tools` on one, the reply loop's `manage_extensions` save
+    /// on the other — and tool calls overlap by construction, so the window was
+    /// reachable rather than theoretical.
+    async fn write_enabled_extensions(&self, session_id: &str) -> Result<()> {
+        let extensions_state =
+            EnabledExtensionsState::new(self.persistable_extension_configs().await);
+        let value = extensions_state
+            .to_value()
+            .map_err(|e| anyhow!("Extension state serialization failed: {}", e))?;
 
-        extensions_state
-            .to_extension_data(&mut extension_data)
-            .map_err(|e| anyhow!("Failed to serialize extension state: {}", e))?;
-
-        session_manager
-            .update(session_id)
-            .extension_data(extension_data)
-            .apply()
+        let written = self
+            .config
+            .session_manager
+            .update_extension_state(
+                session_id,
+                EnabledExtensionsState::EXTENSION_NAME,
+                EnabledExtensionsState::VERSION,
+                move |_| Ok(value),
+            )
             .await?;
 
+        // `update_extension_state` reports a missing session as `Ok(None)`
+        // rather than writing; the old `get_session` first line failed loudly
+        // in that case and callers log on `Err`, so keep it loud.
+        if written.is_none() {
+            return Err(anyhow!(
+                "cannot record extension state: no session {session_id}"
+            ));
+        }
         Ok(())
     }
 
@@ -3015,10 +3375,23 @@ impl Agent {
                     let name = config_clone.name().to_string();
                     let normalized_name = normalize(&name);
 
+                    // BR-71 decision 21: "already loaded" must not include a
+                    // copy THIS AGENT auto-injected. `ensure_spawn_extension`
+                    // loads `workspace` with `available_tools: ["subagent"]`,
+                    // and a turn can run before (or concurrently with) this
+                    // load — at which point skipping would leave the session's
+                    // own, explicitly configured full-surface entry
+                    // permanently shadowed by the spawn-only one. Falling
+                    // through instead is safe: an explicit config replaces an
+                    // auto-injected entry of the same key.
+                    //
+                    // Presence and provenance are read together, so this cannot
+                    // fall through on a stale "it was an injection a moment ago".
                     if agent_ref
                         .extension_manager
-                        .is_extension_enabled(&normalized_name)
+                        .extension_origin(&normalized_name)
                         .await
+                        == Some(crate::agents::extension_manager::ExtensionOrigin::Explicit)
                     {
                         tracing::debug!("Extension {} already loaded, skipping", name);
                         return ExtensionLoadResult {
@@ -3051,6 +3424,14 @@ impl Agent {
         futures::future::join_all(extension_futures).await
     }
 
+    /// Load an extension the user asked for.
+    ///
+    /// BR-71 decision 21: an explicit enable of a name the agent auto-injected
+    /// REPLACES the injection rather than being swallowed by it. That rule is
+    /// enforced by [`ExtensionManager::add_extension`], not here — the model's
+    /// own `manage_extensions` calls the manager directly and never passes
+    /// through this method, so a rule implemented at this level would simply
+    /// not be on that path.
     pub async fn add_extension(&self, extension: ExtensionConfig) -> ExtensionResult<()> {
         match &extension {
             ExtensionConfig::Frontend {
@@ -3126,22 +3507,138 @@ impl Agent {
         ) {
             return false;
         }
-        !self
+        // "Is anything loaded at all" — but NOT counting the extension this
+        // gate's own answer causes to be loaded. `ensure_spawn_extension` puts
+        // `workspace` in the map, so counting it would make one turn's `true`
+        // the reason for the next turn's `true`: an agent that removed its last
+        // real extension would keep delegating forever off a grant it derived
+        // from itself. See `ExtensionManager::has_non_injected_extensions`.
+        self.extension_manager.has_non_injected_extensions().await
+    }
+
+    /// Drop an injection this agent made, once the session state that justified
+    /// it is gone. Only ever removes an [`ExtensionOrigin::AutoInjected`] entry
+    /// — an explicitly enabled Workspace Control is the user's and stays.
+    ///
+    /// This is what makes the grant genuinely derived rather than sticky.
+    /// Merely skipping the next injection changes nothing: the extension is
+    /// already loaded and `get_prefixed_tools` reads the manager
+    /// unconditionally, so the tool would keep being advertised — and remain
+    /// dispatchable, since the spawn gate keys on `session_type`, never on
+    /// `subagents_enabled`.
+    ///
+    /// One `Agent` can serve sessions that disagree about this (ACP shares an
+    /// agent across all of its sessions), so an eligible and an ineligible
+    /// session interleaving will load and unload the extension in turn. That is
+    /// the price of a per-session answer from an agent-wide extension map, and
+    /// it is paid in the right direction: each `list_tools` returns a list
+    /// correct for the session that asked, and `workspace` is a cheap
+    /// in-process platform extension.
+    async fn revoke_spawn_extension(&self) {
+        self.extension_manager
+            .remove_if_auto_injected(Self::SPAWN_EXTENSION)
+            .await;
+    }
+
+    /// The extension key the spawn tool is advertised under. Already canonical:
+    /// `normalize(name_to_key("workspace")) == "workspace"`, so this is
+    /// simultaneously the `PLATFORM_EXTENSIONS` registry key, the
+    /// extension-manager map key, and the advertised tool prefix.
+    const SPAWN_EXTENSION: &'static str = "workspace";
+
+    /// Idempotently load the workspace extension for a session that may
+    /// delegate. Never downgrades a user-enabled entry, and never claims one:
+    /// both the "is it already there" decision and the provenance stamp are
+    /// taken inside [`ExtensionManager::add_extension_auto_injected`], under the
+    /// map's own lock, so an explicit enable racing this injection cannot end
+    /// up marked as derived (and silently unpersisted).
+    async fn ensure_spawn_extension(&self, session_id: &str) {
+        let config = ExtensionConfig::Platform {
+            name: Self::SPAWN_EXTENSION.to_string(),
+            description: "Delegate work to subagents".to_string(),
+            bundled: Some(true),
+            // The spawn-only surface. Enforced on BOTH the advertisement path
+            // (`filter`/`is_tool_available` in `fetch_all_tools`) and the
+            // dispatch path (the same predicate in `dispatch_tool_call`).
+            available_tools: vec![SUBAGENT_TOOL_NAME.to_string()],
+        };
+        // Never fatal: a session that cannot load the extension simply has no
+        // spawn tool this turn, which is a strictly smaller failure than
+        // refusing the turn.
+        if let Err(e) = self
             .extension_manager
-            .list_extensions()
+            .add_extension_auto_injected(config)
             .await
-            .map(|ext| ext.is_empty())
-            .unwrap_or(true)
+        {
+            tracing::warn!(
+                session_id,
+                "could not inject the workspace extension for subagents: {e}"
+            );
+        }
     }
 
     pub async fn list_tools(&self, session_id: &str, extension_name: Option<String>) -> Vec<Tool> {
+        // BR-71 decision 21: the workspace extension is the ONE spawn
+        // implementation, so a session that may delegate must have it LOADED
+        // before the tool list is read. When the user enabled `workspace`
+        // explicitly it is already present with the full surface and this is a
+        // no-op; otherwise it is injected with `available_tools: ["subagent"]`,
+        // so delegation rides along WITHOUT the cross-session control surface
+        // (§5 blast radius unchanged).
+        //
+        // This MUST run before `get_prefixed_tools`: that call is the only read
+        // of the extension manager in this function, and `ensure_spawn_extension`
+        // only *loads* the extension — it does not re-run the read. Injecting
+        // after it would produce a tool list with no spawn tool on that turn,
+        // i.e. "the first turn of every session cannot delegate", and for a
+        // one-shot `biorouter run` every turn is the first turn.
+        //
+        // The `else` is the same statement read backwards, and it is not
+        // optional: the injection is derived state, so when its cause is gone
+        // the grant must go with it. See `revoke_spawn_extension`.
+        let subagents_enabled = self.subagents_enabled(session_id).await;
+        if subagents_enabled {
+            self.ensure_spawn_extension(session_id).await;
+        } else {
+            self.revoke_spawn_extension().await;
+        }
+
         let mut prefixed_tools = self
             .extension_manager
             .get_prefixed_tools(extension_name.clone())
             .await
             .unwrap_or_default();
 
-        let subagents_enabled = self.subagents_enabled(session_id).await;
+        // Revoking the injection is necessary but not sufficient. `subagent` is
+        // one of the workspace extension's OWN tools now, so a user who enabled
+        // Workspace Control explicitly gets the spawn tool advertised whatever
+        // the gate says — and that entry is the user's, so it must not be
+        // revoked. The invariant is about the tool, not about how the extension
+        // arrived: no spawn tool, under any name, from any source, in a session
+        // whose gate says delegation is off.
+        if !subagents_enabled {
+            let prefixed_spawn_tool = format!("{}__{}", Self::SPAWN_EXTENSION, SUBAGENT_TOOL_NAME);
+            prefixed_tools.retain(|tool| tool.name != prefixed_spawn_tool);
+        }
+
+        // BR-71: the extension advertises the spawn tool with no sub-workflow
+        // knowledge; only the Agent has the map. Restore the enriched
+        // description here so a session that defines sub-workflows still tells
+        // the model their names — the pre-merge behaviour.
+        if subagents_enabled {
+            let sub_workflows: Vec<_> = self.sub_workflows.lock().await.values().cloned().collect();
+            if !sub_workflows.is_empty() {
+                if let Some(spawn) = prefixed_tools
+                    .iter_mut()
+                    .find(|t| t.name == crate::agents::subagent_tool::SUBAGENT_TOOL_PREFIXED)
+                {
+                    spawn.description = Some(
+                        crate::agents::subagent_tool::build_tool_description(&sub_workflows).into(),
+                    );
+                }
+            }
+        }
+
         if (extension_name.is_none() || extension_name.as_deref() == Some("platform"))
             && self.config.scheduler_service.is_some()
         {
@@ -3170,24 +3667,30 @@ impl Agent {
                 prefixed_tools.push(final_output_tool.tool());
             }
 
-            if subagents_enabled {
-                let sub_workflows = self.sub_workflows.lock().await;
-                let sub_workflows_vec: Vec<_> = sub_workflows.values().cloned().collect();
-                prefixed_tools.push(create_subagent_tool(&sub_workflows_vec));
-
-                // BR-40: the poll half of the spawn→poll model. Offered only
-                // when background subagents are enabled — without them there is
-                // never a handle to poll.
-                if subagent_handle::background_enabled() {
-                    prefixed_tools.push(create_subagent_status_tool());
-                }
-            }
+            // BR-71 decision 20: the standalone bare-`subagent` push that used
+            // to live here is GONE, and the Task 21 gate greps this file to
+            // prove it. The workspace extension is now the one and only
+            // advertisement of the spawn tool (Task 18 loads it above,
+            // `get_prefixed_tools` lists it as `workspace__subagent`); pushing
+            // a second bare copy here would advertise the same tool twice
+            // under two names.
+            //
+            // BR-71 decision 23: the poll half of BR-40's spawn→poll model used
+            // to be pushed here too, gated on `background_enabled()`. It is gone
+            // with the tool — a background child is now waited on with
+            // `workspace_watch`, read with `workspace_read_conversation` and
+            // stopped with `workspace_close`, all of which the workspace
+            // extension already advertises and all of which work for foreground
+            // children and for the human as well.
         }
 
         prefixed_tools
     }
 
     pub async fn remove_extension(&self, name: &str) -> Result<()> {
+        // Provenance goes with the entry, so removing it takes the
+        // auto-injection mark with it — a removed-then-re-injected extension is
+        // never left permanently exempt from persistence.
         self.extension_manager.remove_extension(name).await?;
         Ok(())
     }
@@ -3913,6 +4416,14 @@ impl Agent {
             // spend the budget twice over.
             let mut budget_deadline: Option<u32> = None;
 
+            // #69: this run of the loop is now the turn that soft interrupts are
+            // accepted *into*. Opening here — where the loop actually starts, not
+            // where the stream was built — means acceptance begins and ends with a
+            // real consumer, and anything a previous turn left behind is dropped
+            // with a warning instead of ambushing this one.
+            let this_turn = TurnId::mint();
+            self.open_for_turn(this_turn.clone());
+
             loop {
                 if is_token_cancelled(&cancel_token) {
                     // BR-67: a cancelled turn and a completed turn look identical
@@ -4016,8 +4527,45 @@ impl Agent {
                 // safe boundary (after the previous turn's tools completed, before
                 // the next provider call) so the model incorporates them without a
                 // cancel-and-resend round trip that discards in-flight work.
-                for text in self.drain_soft_interrupts() {
-                    let mut m = Message::user().with_text(text);
+                for queued in self.drain_soft_interrupts() {
+                    let QueuedInterrupt { text, provenance } = queued;
+                    // Frame ONLY agent-originated steers. This drain loop is
+                    // SHARED with the human's own typed soft interrupt, which
+                    // `queue_soft_interrupt` enqueues with `provenance: None` —
+                    // framing that unconditionally would wrap the user's own
+                    // words in an untrusted envelope and tell the model to
+                    // discount them.
+                    //
+                    // The inner match is EXHAUSTIVE over `ProvenanceKind` on
+                    // purpose, and must stay that way. `ProvenanceKind` is not
+                    // `#[non_exhaustive]`, so a `_` catch-all here would let a
+                    // variant added later fall silently into the *unframed* arm
+                    // — putting cross-session agent text into this session's
+                    // context without the untrusted envelope, which is the exact
+                    // prompt-injection vector `frame_workspace_injection` exists
+                    // to close. Exhaustiveness makes a new variant a compile
+                    // error and forces an explicit framing decision.
+                    let body = match &provenance {
+                        Some(p) => match p.kind {
+                            ProvenanceKind::AgentInjection => {
+                                crate::conversation::message::frame_workspace_injection(
+                                    p.from_session_name.as_deref(),
+                                    &text,
+                                )
+                            }
+                            // The human typed this into the subagent's own tab,
+                            // or it is a spawn-context record this session
+                            // authored — neither is another agent's text, so
+                            // neither is framed.
+                            ProvenanceKind::UserDirect | ProvenanceKind::SpawnContext => text,
+                        },
+                        // Unstamped: the human's own typed soft interrupt.
+                        None => text,
+                    };
+                    let mut m = Message::user().with_text(body);
+                    if let Some(p) = provenance {
+                        m = m.with_provenance(p);
+                    }
                     // #41: adopt the minted uid — the retained/yielded copy
                     // must carry the same id as the stored row, or its next
                     // persist duplicates it instead of replaying.
@@ -5362,15 +5910,27 @@ impl Agent {
                     break;
                 }
 
-                // BR-61: a soft interrupt queued while the final provider response
-                // was streaming arrives too late for this iteration's drain, and a
-                // turn that is about to exit would leave it parked until some later
-                // turn injected it out of context. Keep the loop alive for one more
-                // step so the steer is drained, answered, and seen now. Still bounded
-                // by max_turns / max_tool_calls, which are re-checked at the top.
-                if exit_chat && self.has_soft_interrupts() {
-                    info!("soft interrupt pending at turn exit; continuing the loop to consume it");
-                    exit_chat = false;
+                // BR-61 + #69: take-and-close atomically. A non-empty drain keeps
+                // the loop alive for one more step so the steer is answered in
+                // context (BR-61: it would otherwise sit parked until some later
+                // turn injected it out of nowhere); an empty drain closes the
+                // queue, so anything arriving afterwards is refused rather than
+                // stranded. The two must be one critical section — a separate
+                // `has_soft_interrupts` check followed by an exit is exactly the
+                // window #69 reports. Still bounded by max_turns / max_tool_calls,
+                // which are re-checked at the top.
+                if exit_chat {
+                    match self.close_and_drain() {
+                        Drained::Some(pending) => {
+                            info!(
+                                count = pending.len(),
+                                "soft interrupt pending at turn exit; continuing the loop to consume it"
+                            );
+                            self.requeue_for_this_turn(pending);
+                            exit_chat = false;
+                        }
+                        Drained::Empty => {}
+                    }
                 }
 
                 if exit_chat {
@@ -5446,6 +6006,12 @@ impl Agent {
                                 // skip this iteration's Stop hook. The counter does
                                 // not reset on the tool calls the fix requires, so
                                 // the loop is bounded by `max_iterations`.
+                                //
+                                // #69: the exit above already closed the queue on
+                                // the assumption the turn was over. It is not, so
+                                // re-open it — refusing steers for the rest of a
+                                // turn that is still working would be its own bug.
+                                self.reopen_for_more_work();
                                 tokio::task::yield_now().await;
                                 continue;
                             } else {
@@ -5511,6 +6077,10 @@ impl Agent {
                             // iteration's Stop hook. The next finish attempt runs
                             // Stop hooks normally, and the critique won't fire again
                             // once the pass budget is spent.
+                            //
+                            // #69: re-open the queue the exit check closed — the
+                            // turn is continuing after all.
+                            self.reopen_for_more_work();
                             tokio::task::yield_now().await;
                             continue;
                         }
@@ -5614,11 +6184,35 @@ impl Agent {
                             // Keep looping: the model sees the feedback next turn.
                             // After a give-up the goal is cleared, so the next stop
                             // proceeds once the agent delivers its wrap-up.
+                            //
+                            // #69: a blocked Stop reverses the exit the queue was
+                            // closed for, so re-open it for the extra work.
+                            self.reopen_for_more_work();
                         }
                     }
                 }
 
                 tokio::task::yield_now().await;
+            }
+
+            // #69: the loop is over on every path that reaches here — including
+            // the aborts that break out above `close_and_drain` (cancel, budget,
+            // stall, max_turns). Close the queue so a steer aimed at this turn is
+            // refused rather than accepted into a session with nothing running.
+            // A steer that got in first is reported (it is about to be dropped by
+            // the next `open_for_turn`); it cannot be answered, because there is
+            // no loop left to answer it. An early-cancelled consumer can drop this
+            // stream before this line, in which case the next turn's
+            // `open_for_turn` is what clears the queue.
+            if let Drained::Some(stranded) = self.close_and_drain() {
+                warn!(
+                    count = stranded.len(),
+                    turn = %this_turn,
+                    "turn ended before its queued soft interrupts could be injected"
+                );
+                // Closed for good: re-taking the (now empty) queue flips
+                // `accepting` off, which the non-empty branch above left on.
+                let _ = self.close_and_drain();
             }
 
             // BR-12: the turn is complete — the agent loop drained and control is
@@ -6525,8 +7119,1403 @@ mod tests {
             inspector_names.contains(&"sensitive_ops"),
             "Tool inspection manager should contain the sensitive-ops gate"
         );
+        // BR-71 §5: the always-confirm hook for cross-session capability
+        // changes. Its own unit tests all pass a `WorkspaceMutationInspector`
+        // directly, so without this assertion deleting the registration would
+        // leave every one of them green while the guarantee was gone.
+        assert!(
+            inspector_names.contains(&"workspace_mutation"),
+            "Tool inspection manager should contain workspace mutation inspector"
+        );
 
         Ok(())
+    }
+
+    /// BR-71 §5: registration ORDER, not merely presence.
+    ///
+    /// The confirmation card picks the text it shows with
+    /// `inspection_results.iter().find(|r| r.tool_request_id == request.id)`
+    /// and then reads the `RequireApproval(Some(msg))` payload off **that one
+    /// result** (`agents/tool_execution.rs`, the `security_message` binding) —
+    /// so the FIRST inspector to report on a request owns the explanation the
+    /// user reads. `PermissionInspector` reports on *every* request it is given
+    /// (`permission/permission_inspector.rs`, pass 1 pushes one result per
+    /// request), and in Auto mode that result is a payload-less `Allow`.
+    ///
+    /// Registered after it, this inspector would still force the prompt — the
+    /// merge in `apply_inspection_results_to_permissions` is escalation-only —
+    /// but the "🔒 An agent is changing another conversation's capabilities"
+    /// explanation would be silently dropped, leaving a bare, unexplained
+    /// confirmation. That is the whole deliverable of §5 reduced to a shrug.
+    ///
+    /// Nothing else can catch it: every test in `agents::workspace_inspector`
+    /// calls the inspector directly, and `security::sensitive_ops` never builds
+    /// a `ToolInspectionManager` at all.
+    #[tokio::test]
+    async fn test_workspace_mutation_inspector_precedes_the_permission_inspector() {
+        let agent = Agent::new();
+        let names = agent.tool_inspection_manager.inspector_names();
+
+        let workspace = names
+            .iter()
+            .position(|n| *n == "workspace_mutation")
+            .expect("workspace mutation inspector must be registered");
+        let permission = names
+            .iter()
+            .position(|n| *n == "permission")
+            .expect("permission inspector must be registered");
+
+        assert!(
+            workspace < permission,
+            "workspace_mutation must be registered BEFORE permission, or its \
+             approval message loses the first-result-wins selection in \
+             tool_execution.rs and the user sees an unexplained prompt; got {names:?}"
+        );
+    }
+
+    /// BR-71: the soft-interrupt queue carries each injection's origin from the
+    /// producer (a workspace steer, the subagent tab) through to the turn loop
+    /// that drains it. Exercises the REAL queue on a real `Agent` — the same
+    /// `drain_soft_interrupts` the reply loop consumes — not a stand-in `Mutex`.
+    #[tokio::test]
+    async fn soft_interrupt_queue_round_trips_provenance_through_the_real_agent() {
+        use crate::conversation::message::{MessageProvenance, ProvenanceKind};
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let sm = std::sync::Arc::new(crate::session::SessionManager::new(
+            temp.path().to_path_buf(),
+        ));
+        let agent = Agent::with_config(AgentConfig::new(
+            sm,
+            crate::config::permission::PermissionManager::instance(),
+            None,
+            crate::config::BioRouterMode::Auto,
+        ));
+
+        // Legacy entry point still works and stamps nothing.
+        agent.queue_soft_interrupt("plain".into());
+        // Stamped entry point (BR-71): used by workspace steer + the subagent tab.
+        agent.queue_soft_interrupt_with_provenance(
+            "steer".into(),
+            Some(MessageProvenance {
+                kind: ProvenanceKind::AgentInjection,
+                from_session_id: Some("s1".into()),
+                from_session_name: None,
+            }),
+        );
+        assert!(agent.has_soft_interrupts());
+
+        // drain_soft_interrupts is exactly what the turn loop consumes.
+        let drained = agent.drain_soft_interrupts();
+        assert_eq!(drained.len(), 2);
+        assert_eq!(drained[0].text, "plain");
+        assert!(drained[0].provenance.is_none());
+        assert_eq!(drained[1].text, "steer");
+        assert!(matches!(
+            drained[1].provenance.as_ref().unwrap().kind,
+            ProvenanceKind::AgentInjection
+        ));
+        assert_eq!(
+            drained[1]
+                .provenance
+                .as_ref()
+                .unwrap()
+                .from_session_id
+                .as_deref(),
+            Some("s1")
+        );
+        assert!(!agent.has_soft_interrupts(), "drain empties the queue");
+    }
+
+    /// BR-71: a poisoned soft-interrupt mutex must not silently swallow an
+    /// injection.
+    ///
+    /// `queue_soft_interrupt_with_provenance` returns `()`, so a caller can
+    /// never learn its text was dropped. That was survivable while the only
+    /// producer was `POST /interrupt` — a lost keystroke the human is watching
+    /// for and can retype. Once a *calling agent* gets a success back from
+    /// `workspace_send_prompt mode:"steer"`, a dropped injection is an
+    /// acknowledged-but-undelivered cross-session message with no observer at
+    /// all. The queue holds a `Vec` and is only ever pushed to or taken from,
+    /// so recovering the guard past a poison loses nothing.
+    #[tokio::test]
+    async fn a_poisoned_soft_interrupt_queue_still_accepts_and_drains() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let sm = std::sync::Arc::new(crate::session::SessionManager::new(
+            temp.path().to_path_buf(),
+        ));
+        let agent = Agent::with_config(AgentConfig::new(
+            sm,
+            crate::config::permission::PermissionManager::instance(),
+            None,
+            crate::config::BioRouterMode::Auto,
+        ));
+
+        // Poison the queue's mutex the only way it can be poisoned: panic while
+        // its guard is held.
+        let queue = agent.soft_interrupts.clone();
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = queue.lock().unwrap();
+            panic!("deliberately poisoning the soft-interrupt queue");
+        }));
+        assert!(
+            agent.soft_interrupts.lock().is_err(),
+            "precondition: the queue's mutex must actually be poisoned"
+        );
+
+        agent.queue_soft_interrupt("after the poison".into());
+        assert!(
+            agent.has_soft_interrupts(),
+            "a poisoned lock must not swallow a queued injection"
+        );
+
+        let drained = agent.drain_soft_interrupts();
+        assert_eq!(drained.len(), 1, "the injection must still be drainable");
+        assert_eq!(drained[0].text, "after the poison");
+        assert!(!agent.has_soft_interrupts(), "drain empties the queue");
+    }
+
+    /// A bare `Agent` on a throwaway session store — enough for the queue-level
+    /// tests below, which never touch the provider or the history.
+    async fn test_agent() -> Agent {
+        let temp = tempfile::TempDir::new().unwrap();
+        let sm = std::sync::Arc::new(crate::session::SessionManager::new(
+            temp.path().to_path_buf(),
+        ));
+        // The store is never read here, but the dir must outlive the agent.
+        std::mem::forget(temp);
+        Agent::with_config(AgentConfig::new(
+            sm,
+            crate::config::permission::PermissionManager::instance(),
+            None,
+            crate::config::BioRouterMode::Auto,
+        ))
+    }
+
+    /// #69: an interrupt that arrives after the loop has committed to exiting must be
+    /// REFUSED, not queued into whatever turn runs next.
+    ///
+    /// The old shape returned 202 unconditionally: the route observed an active turn,
+    /// awaited the agent lookup, and pushed — while the loop performed its final
+    /// empty-queue check and exited. The message then surfaced in an unrelated turn.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_interrupt_after_the_close_is_refused_not_deferred() {
+        let agent = test_agent().await;
+
+        agent.open_for_turn(TurnId::new("turn-a"));
+
+        // The loop reaches its exit with nothing queued: close and drain in one step.
+        assert!(matches!(agent.close_and_drain(), Drained::Empty));
+
+        // A steer arrives one instant too late.
+        let refused = agent.try_queue_soft_interrupt("too late".into(), None);
+        assert!(
+            matches!(refused, Err(InterruptRefused::TurnEnded)),
+            "an interrupt after the close must be refused; got {refused:?}"
+        );
+
+        // And it must not be sitting in the queue waiting to ambush the next turn.
+        agent.open_for_turn(TurnId::new("turn-b"));
+        assert!(
+            matches!(agent.close_and_drain(), Drained::Empty),
+            "the refused interrupt must not have been queued for a later turn"
+        );
+    }
+
+    /// The mirror: an interrupt that arrives while the turn is still accepting is
+    /// taken, and is consumed by THAT turn rather than a later one.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_interrupt_before_the_close_is_consumed_by_its_own_turn() {
+        let agent = test_agent().await;
+        agent.open_for_turn(TurnId::new("turn-a"));
+
+        let landed = agent
+            .try_queue_soft_interrupt("in time".into(), None)
+            .expect("an open turn must accept");
+        assert_eq!(
+            landed.as_str(),
+            "turn-a",
+            "the caller is told which turn took it"
+        );
+
+        match agent.close_and_drain() {
+            Drained::Some(items) => {
+                assert_eq!(items.len(), 1);
+                assert_eq!(items[0].text, "in time");
+            }
+            Drained::Empty => panic!("the queued steer must be drained by its own turn"),
+        }
+    }
+
+    /// An `Agent` over a throwaway session store with exactly ONE loaded
+    /// extension, in the requested mode.
+    ///
+    /// The single extension is not decoration: `subagents_enabled`'s final
+    /// expression refuses when the extension list is empty, so an agent with no
+    /// extensions can never satisfy the precondition these tests assert.
+    async fn agent_for_tests(mode: crate::config::BioRouterMode) -> (Agent, String) {
+        let temp = tempfile::TempDir::new().unwrap();
+        let sm = std::sync::Arc::new(crate::session::SessionManager::new(
+            temp.path().to_path_buf(),
+        ));
+        let session = sm
+            .create_session(
+                temp.path().to_path_buf(),
+                "tools".into(),
+                crate::session::session_manager::SessionType::User,
+            )
+            .await
+            .unwrap();
+        std::mem::forget(temp); // keep the sqlite file alive for the test
+        let agent = Agent::with_config(AgentConfig::new(
+            sm,
+            crate::config::permission::PermissionManager::instance(),
+            None,
+            mode,
+        ));
+        // One loaded extension, so the "no extensions ⇒ no subagents" gate passes.
+        agent
+            .add_extension(crate::agents::extension::ExtensionConfig::Platform {
+                name: "todo".into(),
+                description: "todo".into(),
+                bundled: Some(true),
+                available_tools: vec![],
+            })
+            .await
+            .unwrap();
+        (agent, session.id)
+    }
+
+    async fn agent_with_one_extension_for_tests() -> (Agent, String) {
+        agent_for_tests(crate::config::BioRouterMode::Auto).await
+    }
+
+    async fn agent_in_chat_mode_for_tests() -> (Agent, String) {
+        agent_for_tests(crate::config::BioRouterMode::Chat).await
+    }
+
+    /// Decision 21: a session with subagents enabled and NO explicit workspace
+    /// entry still gets a spawn tool. This is the regression that would
+    /// otherwise break every existing config when Task 19 lands.
+    #[tokio::test]
+    async fn subagents_enabled_injects_the_workspace_extension_with_the_spawn_tool_only() {
+        let (agent, session_id) = agent_with_one_extension_for_tests().await;
+        assert!(agent.subagents_enabled(&session_id).await, "precondition");
+
+        let names: Vec<String> = agent
+            .list_tools(&session_id, None)
+            .await
+            .iter()
+            .map(|t| t.name.to_string())
+            .collect();
+        assert!(
+            names.iter().any(|n| n == "workspace__subagent"),
+            "spawn tool must be advertised under the workspace prefix: {names:?}"
+        );
+        // …and none of the cross-session surface came with it.
+        assert!(
+            !names.iter().any(|n| n.starts_with("workspace__workspace_")),
+            "auto-injection must not grant cross-session control: {names:?}"
+        );
+
+        // THE 18 → 19 BOUNDARY, now crossed. Task 18 deliberately advertised
+        // BOTH the bare `subagent` (the standalone push, the only *callable*
+        // path while dispatch still matched on the bare name) and the prefixed
+        // `workspace__subagent`, for exactly one commit. Task 19 deleted the
+        // standalone push and taught dispatch both name forms
+        // (`is_spawn_tool_call`), so the duplicate advertisement is gone: the
+        // extension is the ONE place the spawn tool is advertised (decision 20).
+        // The bare name stays *dispatchable* for prefix-stripping models — it is
+        // simply no longer *listed* twice.
+        assert!(
+            !names.iter().any(|n| n == SUBAGENT_TOOL_NAME),
+            "after Task 19 the workspace extension is the only advertisement; \
+             the standalone bare `subagent` must be gone: {names:?}"
+        );
+    }
+
+    /// BR-71 decision 23: `subagent_status` is REMOVED, not renamed. Its three
+    /// jobs are workspace tools now (list → `workspace_list`, poll →
+    /// `workspace_read_conversation`, wait → `workspace_watch`, cancel →
+    /// `workspace_close`), all of which also work for foreground children and
+    /// for the human.
+    ///
+    /// The env guard is load-bearing. The tool was only ever offered when
+    /// `subagent_handle::background_enabled()` is true, and that reads
+    /// `BIOROUTER_SUBAGENT_BACKGROUND`, which defaults to FALSE. Without
+    /// opening the gate this test is green before the deletion too, and a
+    /// botched deletion would still show green.
+    #[tokio::test]
+    async fn no_session_advertises_subagent_status_any_more() {
+        let _guard = env_lock::lock_env([("BIOROUTER_SUBAGENT_BACKGROUND", Some("true"))]);
+
+        let (agent, session_id) = agent_with_one_extension_for_tests().await;
+        assert!(
+            crate::agents::subagent_handle::background_enabled(),
+            "precondition: the gate that used to offer the tool is OPEN"
+        );
+
+        let names: Vec<String> = agent
+            .list_tools(&session_id, None)
+            .await
+            .iter()
+            .map(|t| t.name.to_string())
+            .collect();
+        assert!(
+            !names.iter().any(|n| n.contains("subagent_status")),
+            "decision 23: the tool is removed, not renamed: {names:?}"
+        );
+        assert!(
+            names.iter().any(|n| n == "workspace__subagent"),
+            "…and delegation itself still works: {names:?}"
+        );
+    }
+
+    /// Both spellings reach the spawn interception. A model that strips
+    /// extension prefixes calls `subagent`; everything else calls
+    /// `workspace__subagent`. Neither may fall through to the extension
+    /// manager, which would land on the extension's "dispatched by the agent
+    /// loop" error arm.
+    #[test]
+    fn dispatch_recognizes_both_spawn_tool_name_forms() {
+        assert!(is_spawn_tool_call("workspace__subagent"));
+        assert!(is_spawn_tool_call("subagent"));
+        assert!(!is_spawn_tool_call("workspace__workspace_list"));
+        assert!(!is_spawn_tool_call("subagent_status")); // never a spawn call
+    }
+
+    #[test]
+    fn subagent_sessions_are_refused_workspace_tools() {
+        use crate::session::session_manager::SessionType;
+        // Decision 25 + §5: no delegation-tree fan-out of workspace control,
+        // and no child steering its parent.
+        for tool in [
+            "workspace__workspace_list",
+            "workspace_list",
+            "workspace__workspace_send_prompt",
+            "workspace__subagent",
+            "subagent",
+        ] {
+            assert!(
+                is_workspace_tool_refused_for(SessionType::SubAgent, tool),
+                "{tool} must be refused inside a subagent"
+            );
+        }
+        assert!(!is_workspace_tool_refused_for(
+            SessionType::User,
+            "workspace_list"
+        ));
+        assert!(!is_workspace_tool_refused_for(
+            SessionType::SubAgent,
+            "developer__shell"
+        ));
+    }
+
+    #[test]
+    fn the_workspace_guard_does_not_swallow_a_third_party_extension() {
+        use crate::session::session_manager::SessionType;
+        // A third-party extension NAMED `workspace_foo` advertises its tools as
+        // `workspace_foo__bar`, which starts with "workspace_". It has nothing
+        // to do with BR-71 and must run inside a subagent like any other tool.
+        assert!(!is_workspace_tool_refused_for(
+            SessionType::SubAgent,
+            "workspace_foo__bar"
+        ));
+        assert!(!is_workspace_tool_refused_for(
+            SessionType::SubAgent,
+            "workspace_analytics__query"
+        ));
+        // …while every real workspace tool, in both spellings, still is.
+        for name in WORKSPACE_TOOL_NAMES {
+            assert!(is_workspace_tool_refused_for(SessionType::SubAgent, name));
+            assert!(is_workspace_tool_refused_for(
+                SessionType::SubAgent,
+                &format!("workspace__{name}")
+            ));
+        }
+    }
+
+    /// The rot vector both the guard's own comment and its over-match test
+    /// share: `WORKSPACE_TOOL_NAMES` is a hand-maintained mirror of what the
+    /// workspace extension advertises, and
+    /// `the_workspace_guard_does_not_swallow_a_third_party_extension` iterates
+    /// that same list — so an eighth `workspace_*` tool added to `get_tools()`
+    /// later would be dispatchable inside a delegation tree with nothing
+    /// failing. Cross-check against the real advertisement, both directions:
+    /// a new tool that is not refused, and a refused name that no longer
+    /// exists, are both errors.
+    #[test]
+    fn the_refusal_list_mirrors_every_tool_the_workspace_extension_advertises() {
+        use crate::session::session_manager::SessionType;
+        let all: Vec<String> = crate::agents::workspace_extension::WorkspaceClient::get_tools()
+            .into_iter()
+            .map(|t| t.name.to_string())
+            .collect();
+
+        // The spawn tool rides in `get_tools()` too (decision 22 moved it into
+        // this extension), but it is named `subagent`, not `workspace_*`, and
+        // `is_spawn_tool_call` — not this list — is what refuses it. Assert that
+        // rather than assume it, then take it out of the mirror comparison.
+        assert!(
+            all.iter().any(|a| a == SUBAGENT_TOOL_NAME),
+            "the spawn tool is advertised by the workspace extension: {all:?}"
+        );
+        assert!(is_workspace_tool_refused_for(
+            SessionType::SubAgent,
+            SUBAGENT_TOOL_NAME
+        ));
+        let advertised: Vec<String> = all
+            .into_iter()
+            .filter(|n| n != SUBAGENT_TOOL_NAME)
+            .collect();
+
+        for name in &advertised {
+            assert!(
+                WORKSPACE_TOOL_NAMES.contains(&name.as_str()),
+                "{name} is advertised by the workspace extension but is not in \
+                 WORKSPACE_TOOL_NAMES — a subagent could call it"
+            );
+        }
+        for name in WORKSPACE_TOOL_NAMES {
+            assert!(
+                advertised.iter().any(|a| a == name),
+                "{name} is refused for subagents but is no longer advertised — \
+                 the list is stale"
+            );
+        }
+        // …and the spawn tool stays out of the name list itself, so the two
+        // mechanisms cannot both claim it and the refusal message stays
+        // specific ("cannot create other subagents", not "workspace tools").
+        assert!(!WORKSPACE_TOOL_NAMES.contains(&SUBAGENT_TOOL_NAME));
+    }
+
+    /// The CALL SITE, not the predicate. `is_workspace_tool_refused_for` is a
+    /// pure function; deleting its one invocation at the top of
+    /// `dispatch_tool_call` leaves every other test in this file green while a
+    /// subagent regains the entire workspace surface. This drives the real
+    /// dispatcher with a real `SessionType::SubAgent` session and pins both
+    /// branches of the two-message refusal.
+    #[tokio::test]
+    async fn dispatch_refuses_workspace_tools_and_nesting_inside_a_subagent() {
+        use crate::session::session_manager::SessionType;
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let sm = std::sync::Arc::new(crate::session::SessionManager::new(
+            temp.path().to_path_buf(),
+        ));
+        let child = sm
+            .create_session(
+                temp.path().to_path_buf(),
+                "child".into(),
+                SessionType::SubAgent,
+            )
+            .await
+            .unwrap();
+        let parent = sm
+            .create_session(
+                temp.path().to_path_buf(),
+                "parent".into(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        std::mem::forget(temp);
+        let agent = Agent::with_config(AgentConfig::new(
+            sm,
+            crate::config::permission::PermissionManager::instance(),
+            None,
+            crate::config::BioRouterMode::Auto,
+        ));
+
+        let call = |name: &str| CallToolRequestParams {
+            meta: None,
+            name: name.to_string().into(),
+            arguments: Some(serde_json::Map::new()),
+            task: None,
+        };
+        let refusal = |result: Result<ToolCallResult, ErrorData>| match result {
+            // `ToolCallResult` is not `Debug`, so match rather than unwrap_err.
+            Ok(_) => panic!("the guard must refuse before anything dispatches"),
+            Err(e) => e,
+        };
+
+        // Cross-session control, prefixed and bare.
+        for name in ["workspace__workspace_send_prompt", "workspace_close"] {
+            let (_id, result) = agent
+                .dispatch_tool_call(call(name), "req".into(), None, &child)
+                .await;
+            let err = refusal(result);
+            assert_eq!(err.code, ErrorCode::INVALID_REQUEST, "{name}");
+            assert!(
+                err.message.contains("cannot use workspace tools"),
+                "{name}: {}",
+                err.message
+            );
+        }
+
+        // Nesting gets its OWN message, so the model learns the actual rule
+        // rather than a generic "workspace tools" it did not think it used.
+        for name in ["subagent", "workspace__subagent"] {
+            let (_id, result) = agent
+                .dispatch_tool_call(call(name), "req".into(), None, &child)
+                .await;
+            let err = refusal(result);
+            assert_eq!(err.code, ErrorCode::INVALID_REQUEST, "{name}");
+            assert!(
+                err.message.contains("cannot create other subagents"),
+                "{name}: {}",
+                err.message
+            );
+        }
+
+        // …and a USER session is untouched by the guard. It still fails (no
+        // such extension is loaded), but not with the subagent refusal — which
+        // is what a blanket "refuse workspace tools" implementation would give.
+        let (_id, result) = agent
+            .dispatch_tool_call(
+                call("workspace__workspace_list"),
+                "req".into(),
+                None,
+                &parent,
+            )
+            .await;
+        if let Err(e) = result {
+            assert!(
+                !e.message.contains("Subagents cannot"),
+                "a user session must not hit the subagent guard: {}",
+                e.message
+            );
+        }
+    }
+
+    #[test]
+    fn parking_workspace_tools_are_exempt_from_the_dispatch_semaphore() {
+        for name in [
+            "workspace_watch",
+            "workspace__workspace_watch",
+            "workspace_send_prompt",
+            "workspace__workspace_send_prompt",
+        ] {
+            assert!(
+                is_parking_workspace_tool(name),
+                "{name} parks on another session and must not hold a permit"
+            );
+        }
+        // Non-parking workspace tools stay bounded — they do their own work.
+        for name in ["workspace_list", "workspace__workspace_set_tools"] {
+            assert!(!is_parking_workspace_tool(name));
+        }
+    }
+
+    /// The sub-workflow-enriched description survives the move. The extension
+    /// advertises with `&[]` (it has no access to the agent's `sub_workflows`
+    /// map), so `list_tools` must restore the enriched text — otherwise a
+    /// session that defines sub-workflows silently stops telling the model they
+    /// exist, which is invisible until someone notices the model never uses one.
+    #[tokio::test]
+    async fn sub_workflow_names_still_reach_the_spawn_tool_description() {
+        let (agent, session_id) = agent_with_one_extension_for_tests().await;
+        agent
+            .add_sub_workflows(vec![crate::workflow::SubWorkflow {
+                name: "test_workflow".to_string(),
+                path: "test.yaml".to_string(),
+                values: None,
+                sequential_when_repeated: false,
+                description: Some("A test workflow".to_string()),
+            }])
+            .await;
+
+        let tools = agent.list_tools(&session_id, None).await;
+        let spawn = tools
+            .iter()
+            .find(|t| t.name == "workspace__subagent")
+            .expect("the spawn tool is advertised");
+        let description = spawn.description.as_ref().unwrap();
+        assert!(
+            description.contains("Available subworkflows"),
+            "got: {description}"
+        );
+        assert!(description.contains("test_workflow"), "got: {description}");
+    }
+
+    /// F-class regression: a restricted grant must bind the bare name too.
+    #[tokio::test]
+    async fn a_restricted_workspace_grant_refuses_the_bare_spawn_name() {
+        let (agent, session_id) = agent_with_one_extension_for_tests().await;
+        agent
+            .add_extension(crate::agents::extension::ExtensionConfig::Platform {
+                name: "workspace".into(),
+                description: "Workspace Control".into(),
+                bundled: Some(true),
+                // Read-only grant: no spawning from this session.
+                available_tools: vec!["workspace_list".to_string()],
+            })
+            .await
+            .unwrap();
+        assert!(
+            !agent
+                .extension_manager
+                .is_extension_tool_available("workspace", "subagent")
+                .await
+        );
+        let _ = session_id;
+    }
+
+    /// The dispatch half of the same guarantee: `available_tools` is enforced
+    /// on the call path too (`extension_manager.rs`, the
+    /// `config.is_tool_available` re-check in `dispatch_tool_call`), so a
+    /// remembered tool name cannot reach the handler.
+    #[tokio::test]
+    async fn an_auto_injected_session_cannot_dispatch_a_cross_session_tool() {
+        let (agent, session_id) = agent_with_one_extension_for_tests().await;
+        let _ = agent.list_tools(&session_id, None).await; // triggers the injection
+        let dispatched = agent
+            .extension_manager
+            .dispatch_tool_call(
+                &session_id,
+                rmcp::model::CallToolRequestParams {
+                    meta: None,
+                    name: "workspace__workspace_send_prompt".into(),
+                    arguments: Some(
+                        serde_json::json!({ "session_id": "other", "text": "hi", "mode": "note" })
+                            .as_object()
+                            .unwrap()
+                            .clone(),
+                    ),
+                    task: None,
+                },
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await;
+        // `ToolCallResult` is not `Debug`, so `unwrap_err()` (which formats the
+        // Ok payload) does not compile — match instead.
+        let err = match dispatched {
+            Ok(_) => panic!(
+                "workspace_send_prompt is outside the auto-injection's \
+                 available_tools and must not reach a handler"
+            ),
+            Err(e) => e,
+        };
+        assert!(err.to_string().contains("not available"), "got: {err}");
+    }
+
+    /// A user-enabled workspace entry keeps the full surface — the injection
+    /// must never downgrade it.
+    #[tokio::test]
+    async fn an_explicit_workspace_entry_keeps_every_tool() {
+        let (agent, session_id) = agent_with_one_extension_for_tests().await;
+        agent
+            .add_extension(crate::agents::extension::ExtensionConfig::Platform {
+                name: "workspace".into(),
+                description: "Workspace Control".into(),
+                bundled: Some(true),
+                available_tools: vec![], // empty = all
+            })
+            .await
+            .unwrap();
+
+        let names: Vec<String> = agent
+            .list_tools(&session_id, None)
+            .await
+            .iter()
+            .map(|t| t.name.to_string())
+            .collect();
+        assert!(
+            names
+                .iter()
+                .any(|n| n == "workspace__workspace_send_prompt"),
+            "{names:?}"
+        );
+        assert!(
+            names.iter().any(|n| n == "workspace__subagent"),
+            "{names:?}"
+        );
+    }
+
+    /// The other order, and the one the plan's two-tier table is really about:
+    /// the user turns Workspace Control on **after** a turn has already
+    /// auto-injected the spawn-only entry.
+    ///
+    /// `ExtensionManager::add_extension` returns `Ok(())` without touching
+    /// anything when the key is already loaded, so the explicit enable is a
+    /// silent no-op unless `Agent::add_extension` evicts the injection first.
+    /// The failure is doubly bad: the model keeps only `subagent`, and the
+    /// spawn-only config is then persisted into the session row as the user's
+    /// own decision, so the downgrade survives every reload.
+    #[tokio::test]
+    async fn an_explicit_enable_upgrades_an_auto_injected_entry() {
+        let (agent, session_id) = agent_with_one_extension_for_tests().await;
+
+        // A turn happens first: the spawn-only surface is injected.
+        let names: Vec<String> = agent
+            .list_tools(&session_id, None)
+            .await
+            .iter()
+            .map(|t| t.name.to_string())
+            .collect();
+        assert!(
+            !names
+                .iter()
+                .any(|n| n == "workspace__workspace_send_prompt"),
+            "precondition: only the spawn tool was injected: {names:?}"
+        );
+
+        // Now the user enables Workspace Control in Settings.
+        agent
+            .add_extension(crate::agents::extension::ExtensionConfig::Platform {
+                name: "workspace".into(),
+                description: "Workspace Control".into(),
+                bundled: Some(true),
+                available_tools: vec![], // empty = all
+            })
+            .await
+            .unwrap();
+
+        let names: Vec<String> = agent
+            .list_tools(&session_id, None)
+            .await
+            .iter()
+            .map(|t| t.name.to_string())
+            .collect();
+        assert!(
+            names
+                .iter()
+                .any(|n| n == "workspace__workspace_send_prompt"),
+            "an explicit enable must REPLACE the auto-injection, not be \
+             swallowed by it: {names:?}"
+        );
+        assert!(
+            names.iter().any(|n| n == "workspace__subagent"),
+            "{names:?}"
+        );
+
+        // …and what persists is the user's full-surface config, not ours.
+        let persisted: Vec<Vec<String>> = agent
+            .persistable_extension_configs()
+            .await
+            .into_iter()
+            .filter(|c| c.name() == "workspace")
+            .map(|c| match c {
+                crate::agents::extension::ExtensionConfig::Platform {
+                    available_tools, ..
+                } => available_tools,
+                other => panic!("unexpected variant: {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            persisted,
+            vec![Vec::<String>::new()],
+            "the persisted entry must be the user's (empty = all), not the \
+             injection's [\"subagent\"]"
+        );
+    }
+
+    /// The session-load mirror of the same guarantee.
+    ///
+    /// `load_extensions_from_session` skips any name already loaded, so an
+    /// injection that landed first (a turn ran before the load, or concurrently
+    /// with it) would permanently shadow the session's OWN explicitly
+    /// configured `workspace` entry with the spawn-only one — and, once
+    /// `add_extension` clears the mark, persist that downgrade back to the row.
+    #[tokio::test]
+    async fn a_session_load_replaces_an_auto_injected_entry_it_would_otherwise_skip() {
+        let (agent, session_id) = agent_with_one_extension_for_tests().await;
+        let _ = agent.list_tools(&session_id, None).await; // injects spawn-only
+
+        // The session's own configuration names workspace with the full surface.
+        let state = crate::session::EnabledExtensionsState::new(vec![
+            crate::agents::extension::ExtensionConfig::Platform {
+                name: "workspace".into(),
+                description: "Workspace Control".into(),
+                bundled: Some(true),
+                available_tools: vec![],
+            },
+        ]);
+        let mut session = agent
+            .config
+            .session_manager
+            .get_session(&session_id, false)
+            .await
+            .unwrap();
+        state
+            .to_extension_data(&mut session.extension_data)
+            .unwrap();
+
+        let agent = std::sync::Arc::new(agent);
+        let results = agent.load_extensions_from_session(&session).await;
+        assert!(
+            results.iter().all(|r| r.success),
+            "load must succeed: {results:?}"
+        );
+
+        let names: Vec<String> = agent
+            .list_tools(&session_id, None)
+            .await
+            .iter()
+            .map(|t| t.name.to_string())
+            .collect();
+        assert!(
+            names
+                .iter()
+                .any(|n| n == "workspace__workspace_send_prompt"),
+            "the session's own entry must win over the injection: {names:?}"
+        );
+    }
+
+    /// The auto-injection must never reach the SESSION ROW. `persist_extension_state`
+    /// snapshots every loaded extension, so without the exclusion this test's
+    /// second half fails and Settings shows Workspace Control enabled on a
+    /// session the user never touched.
+    #[tokio::test]
+    async fn an_auto_injected_extension_is_never_persisted_to_the_session() {
+        let (agent, session_id) = agent_with_one_extension_for_tests().await;
+        let _ = agent.list_tools(&session_id, None).await; // triggers the injection
+        assert!(
+            agent
+                .extension_manager
+                .is_extension_enabled("workspace")
+                .await,
+            "precondition: the injection happened"
+        );
+
+        // BOTH persist paths must filter, so assert on the SHARED helper first —
+        // that is the one thing covering `save_extension_state` too. That method
+        // is the reply loop's own path (fired whenever the model enables an
+        // extension mid-turn through `manage_extensions`); it snapshots the same
+        // set and, without the shared helper, is unfiltered.
+        let persistable: Vec<String> = agent
+            .persistable_extension_configs()
+            .await
+            .iter()
+            .map(|c| c.name().to_string())
+            .collect();
+        assert!(
+            !persistable.contains(&"workspace".to_string()),
+            "the filter both persist paths share must exclude the injection: {persistable:?}"
+        );
+
+        // The GUI toggling ANY extension, and workspace_set_tools, both land here.
+        agent.persist_extension_state(&session_id).await.unwrap();
+
+        let session = agent
+            .config
+            .session_manager
+            .get_session(&session_id, false)
+            .await
+            .unwrap();
+        let persisted =
+            crate::session::EnabledExtensionsState::from_extension_data(&session.extension_data)
+                .expect("a state was written");
+        assert!(
+            !persisted.extensions.iter().any(|e| e.name() == "workspace"),
+            "the auto-injection must not be recorded as a user decision: {:?}",
+            persisted
+                .extensions
+                .iter()
+                .map(|e| e.name().to_string())
+                .collect::<Vec<_>>()
+        );
+
+        // …but an EXPLICIT add of the same extension does persist.
+        agent
+            .add_extension(crate::agents::extension::ExtensionConfig::Platform {
+                name: "workspace".into(),
+                description: "Workspace Control".into(),
+                bundled: Some(true),
+                available_tools: vec![],
+            })
+            .await
+            .unwrap();
+        agent.persist_extension_state(&session_id).await.unwrap();
+        let session = agent
+            .config
+            .session_manager
+            .get_session(&session_id, false)
+            .await
+            .unwrap();
+        let persisted =
+            crate::session::EnabledExtensionsState::from_extension_data(&session.extension_data)
+                .expect("a state was written");
+        assert!(
+            persisted.extensions.iter().any(|e| e.name() == "workspace"),
+            "an explicit enable is a user decision and must be recorded"
+        );
+    }
+
+    /// The SECOND persist path, driven end-to-end rather than through the shared
+    /// helper.
+    ///
+    /// `save_extension_state` is the reply loop's own path — it fires on any
+    /// turn where the model successfully enables an extension through
+    /// `manage_extensions`, i.e. on exactly the population that gets the
+    /// auto-injection (Auto mode, at least one extension). Asserting only on
+    /// `persistable_extension_configs` would leave that path free to regress to
+    /// its old unfiltered `get_extension_configs()` snapshot with every other
+    /// test still green, so this one goes through the method itself and reads
+    /// the SESSION ROW back.
+    #[tokio::test]
+    async fn the_reply_loop_save_path_also_excludes_the_auto_injection() {
+        let (agent, session_id) = agent_with_one_extension_for_tests().await;
+        let _ = agent.list_tools(&session_id, None).await; // triggers the injection
+        assert!(
+            agent
+                .extension_manager
+                .is_extension_enabled("workspace")
+                .await,
+            "precondition: the injection happened"
+        );
+
+        agent
+            .save_extension_state(&SessionConfig {
+                id: session_id.clone(),
+                schedule_id: None,
+                max_turns: None,
+                max_tool_calls: None,
+                budget: None,
+                retry_config: None,
+                reasoning_effort: None,
+            })
+            .await
+            .unwrap();
+
+        let session = agent
+            .config
+            .session_manager
+            .get_session(&session_id, false)
+            .await
+            .unwrap();
+        let persisted =
+            crate::session::EnabledExtensionsState::from_extension_data(&session.extension_data)
+                .expect("a state was written");
+        assert!(
+            !persisted.extensions.iter().any(|e| e.name() == "workspace"),
+            "the reply loop's own persist path must exclude the injection too: {:?}",
+            persisted
+                .extensions
+                .iter()
+                .map(|e| e.name().to_string())
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            persisted.extensions.iter().any(|e| e.name() == "todo"),
+            "…while still recording the extensions the user really has: {:?}",
+            persisted
+                .extensions
+                .iter()
+                .map(|e| e.name().to_string())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// The MODEL's path to enabling an extension, which is not the user's.
+    ///
+    /// `manage_extensions` calls `ExtensionManager::add_extension` directly
+    /// (see `extension_manager_extension.rs`) and never touches
+    /// `Agent::add_extension`, so any "an explicit enable replaces the
+    /// injection" logic that lives on the `Agent` is simply not on this path.
+    /// The manager treats an already-loaded key as a no-op, so the model is
+    /// told "installed successfully" while the spawn-only surface, and the
+    /// injection's exemption from persistence, both survive untouched — a
+    /// permanent silent no-op for `manage_extensions enable workspace`.
+    #[tokio::test]
+    async fn a_model_driven_enable_upgrades_an_auto_injected_entry() {
+        let (agent, session_id) = agent_with_one_extension_for_tests().await;
+        let _ = agent.list_tools(&session_id, None).await; // injects spawn-only
+
+        // Byte-for-byte what `manage_extensions` does with the registry entry.
+        agent
+            .extension_manager
+            .add_extension(crate::agents::extension::ExtensionConfig::Platform {
+                name: "workspace".into(),
+                description: "Workspace Control".into(),
+                bundled: Some(true),
+                available_tools: vec![],
+            })
+            .await
+            .unwrap();
+
+        let names: Vec<String> = agent
+            .list_tools(&session_id, None)
+            .await
+            .iter()
+            .map(|t| t.name.to_string())
+            .collect();
+        assert!(
+            names
+                .iter()
+                .any(|n| n == "workspace__workspace_send_prompt"),
+            "the model's enable must replace the injection, not be swallowed \
+             by it: {names:?}"
+        );
+
+        // …and the reply loop's save, which fires on that very turn, must now
+        // record it as the user-visible decision it has become.
+        let persistable: Vec<String> = agent
+            .persistable_extension_configs()
+            .await
+            .iter()
+            .map(|c| c.name().to_string())
+            .collect();
+        assert!(
+            persistable.contains(&"workspace".to_string()),
+            "an enable that really happened must persist: {persistable:?}"
+        );
+    }
+
+    /// The reverse order, and the half no Agent-level bookkeeping can get
+    /// right: the injection arrives when an explicit entry is ALREADY loaded.
+    ///
+    /// This is the tail of the real race — `ensure_spawn_extension` finds the
+    /// key absent, an explicit enable lands, and only then does the injection's
+    /// own add run. The manager answers `Ok(())` for the already-loaded key, so
+    /// provenance recorded by the CALLER after that `Ok(())` marks the *user's*
+    /// full-surface entry as auto-injected, and it silently stops persisting.
+    /// Deciding provenance inside the same lock as the insert is what makes the
+    /// interleaving unrepresentable; this pins the sequential shadow of it.
+    #[tokio::test]
+    async fn an_auto_injection_never_claims_an_existing_explicit_entry() {
+        let (agent, session_id) = agent_with_one_extension_for_tests().await;
+        agent
+            .add_extension(crate::agents::extension::ExtensionConfig::Platform {
+                name: "workspace".into(),
+                description: "Workspace Control".into(),
+                bundled: Some(true),
+                available_tools: vec![],
+            })
+            .await
+            .unwrap();
+
+        // The late half of the racing injection.
+        agent
+            .extension_manager
+            .add_extension_auto_injected(crate::agents::extension::ExtensionConfig::Platform {
+                name: "workspace".into(),
+                description: "Delegate work to subagents".into(),
+                bundled: Some(true),
+                available_tools: vec![SUBAGENT_TOOL_NAME.to_string()],
+            })
+            .await
+            .unwrap();
+
+        let persistable: Vec<String> = agent
+            .persistable_extension_configs()
+            .await
+            .iter()
+            .map(|c| c.name().to_string())
+            .collect();
+        assert!(
+            persistable.contains(&"workspace".to_string()),
+            "an injection must never claim provenance for an entry the user \
+             enabled: {persistable:?}"
+        );
+
+        let names: Vec<String> = agent
+            .list_tools(&session_id, None)
+            .await
+            .iter()
+            .map(|t| t.name.to_string())
+            .collect();
+        assert!(
+            names
+                .iter()
+                .any(|n| n == "workspace__workspace_send_prompt"),
+            "…nor downgrade its surface: {names:?}"
+        );
+    }
+
+    /// The session row is not the only place a derived grant can escape into
+    /// something durable. `Agent::get_extension_configs` is the snapshot handed
+    /// to a child agent's `TaskConfig` at the `subagent` dispatch, and the same
+    /// snapshot is written into a generated workflow's `extensions` list — a
+    /// file that outlives the session and is re-run later, on a machine where
+    /// nothing re-derives `subagents_enabled`.
+    #[tokio::test]
+    async fn the_auto_injection_does_not_propagate_to_child_agents_or_workflows() {
+        let (agent, session_id) = agent_with_one_extension_for_tests().await;
+        let _ = agent.list_tools(&session_id, None).await; // triggers the injection
+        assert!(
+            agent
+                .extension_manager
+                .is_extension_enabled("workspace")
+                .await,
+            "precondition: the injection happened"
+        );
+
+        let inherited: Vec<String> = agent
+            .get_extension_configs()
+            .await
+            .iter()
+            .map(|c| c.name().to_string())
+            .collect();
+        assert!(
+            !inherited.contains(&"workspace".to_string()),
+            "a derived per-turn grant must not be captured into a child agent \
+             or a workflow file: {inherited:?}"
+        );
+        assert!(
+            inherited.contains(&"todo".to_string()),
+            "…while the extensions the user really has still propagate: \
+             {inherited:?}"
+        );
+    }
+
+    /// The injection is DERIVED state, so it has to go when its cause goes.
+    ///
+    /// Skipping the injection on a later turn is not enough: the extension is
+    /// already loaded, and `get_prefixed_tools` reads the manager
+    /// unconditionally. Without a revocation the grant is permanent — an
+    /// Agent-Drafter app that turns delegation off (so `consult` is the one
+    /// delegation mechanism, the whole point of `set_subagent_tool_enabled`),
+    /// a switch to a Gemini model, or a mode change to Chat all leave
+    /// `workspace__subagent` advertised, and the dispatch gate keys on
+    /// `session_type`, not on `subagents_enabled`.
+    #[tokio::test]
+    async fn the_injection_is_revoked_when_delegation_stops_being_enabled() {
+        let (agent, session_id) = agent_with_one_extension_for_tests().await;
+        let names: Vec<String> = agent
+            .list_tools(&session_id, None)
+            .await
+            .iter()
+            .map(|t| t.name.to_string())
+            .collect();
+        assert!(
+            names.iter().any(|n| n == "workspace__subagent"),
+            "precondition: the injection happened: {names:?}"
+        );
+
+        // An app with declared worker profiles takes the generic spawn tool away.
+        agent.set_subagent_tool_enabled(false);
+        assert!(
+            !agent.subagents_enabled(&session_id).await,
+            "precondition: delegation is off"
+        );
+
+        let names: Vec<String> = agent
+            .list_tools(&session_id, None)
+            .await
+            .iter()
+            .map(|t| t.name.to_string())
+            .collect();
+        assert!(
+            !names.iter().any(|n| n.contains("subagent")),
+            "no spawn tool may survive its own precondition: {names:?}"
+        );
+        assert!(
+            !agent
+                .extension_manager
+                .is_extension_enabled("workspace")
+                .await,
+            "…and the derived grant itself is gone, not merely unadvertised"
+        );
+    }
+
+    /// The gate must not hold itself open.
+    ///
+    /// `subagents_enabled` refuses when no extension is loaded — and the
+    /// extension it causes to be loaded is an extension. Counted naively, one
+    /// turn's injection satisfies the precondition for every later turn, so a
+    /// session that removed its last real extension would keep delegating
+    /// forever off the back of a grant it derived from itself.
+    #[tokio::test]
+    async fn the_injection_does_not_keep_the_subagent_gate_open_by_itself() {
+        let (agent, session_id) = agent_with_one_extension_for_tests().await;
+        let _ = agent.list_tools(&session_id, None).await; // injects
+
+        agent.remove_extension("todo").await.unwrap(); // the last real one
+        assert!(
+            !agent.subagents_enabled(&session_id).await,
+            "an agent whose only remaining extension is its own injection has \
+             no extensions in the sense the gate means"
+        );
+
+        let names: Vec<String> = agent
+            .list_tools(&session_id, None)
+            .await
+            .iter()
+            .map(|t| t.name.to_string())
+            .collect();
+        assert!(!names.iter().any(|n| n.contains("subagent")), "{names:?}");
+    }
+
+    /// ACP loads the user's extensions onto ONE `Agent` and serves every
+    /// session from it, so a grant recorded per extension name rather than per
+    /// session is visible to sessions that were never eligible for it. The
+    /// session type is the only axis of `subagents_enabled` that varies between
+    /// two sessions of one agent, and it is the axis that says "subagents
+    /// cannot create other subagents".
+    #[tokio::test]
+    async fn an_ineligible_session_on_a_shared_agent_is_not_offered_the_injection() {
+        let (agent, eligible) = agent_with_one_extension_for_tests().await;
+        let _ = agent.list_tools(&eligible, None).await; // the eligible session injects
+
+        let working_dir = agent
+            .config
+            .session_manager
+            .get_session(&eligible, false)
+            .await
+            .unwrap()
+            .working_dir;
+        let other = agent
+            .config
+            .session_manager
+            .create_session(
+                working_dir,
+                "child".into(),
+                crate::session::session_manager::SessionType::SubAgent,
+            )
+            .await
+            .unwrap()
+            .id;
+        assert!(
+            !agent.subagents_enabled(&other).await,
+            "precondition: a subagent session may not delegate"
+        );
+
+        let names: Vec<String> = agent
+            .list_tools(&other, None)
+            .await
+            .iter()
+            .map(|t| t.name.to_string())
+            .collect();
+        assert!(
+            !names.iter().any(|n| n.contains("subagent")),
+            "a grant another session derived must not be offered here: {names:?}"
+        );
+    }
+
+    /// Revoking the injection is necessary but not sufficient: `subagent` is
+    /// one of the workspace extension's own tools now, so a user who enabled
+    /// Workspace Control explicitly is advertised the spawn tool whatever the
+    /// gate says. The rule has to be about the TOOL, not about how the
+    /// extension got loaded — no spawn tool, by any name, from any source,
+    /// when delegation is off.
+    #[tokio::test]
+    async fn an_explicit_workspace_entry_still_hides_the_spawn_tool_when_delegation_is_off() {
+        let (agent, session_id) = agent_in_chat_mode_for_tests().await;
+        agent
+            .add_extension(crate::agents::extension::ExtensionConfig::Platform {
+                name: "workspace".into(),
+                description: "Workspace Control".into(),
+                bundled: Some(true),
+                available_tools: vec![],
+            })
+            .await
+            .unwrap();
+        assert!(!agent.subagents_enabled(&session_id).await, "precondition");
+
+        let names: Vec<String> = agent
+            .list_tools(&session_id, None)
+            .await
+            .iter()
+            .map(|t| t.name.to_string())
+            .collect();
+        assert!(
+            names
+                .iter()
+                .any(|n| n == "workspace__workspace_send_prompt"),
+            "the user's own entry keeps its cross-session surface: {names:?}"
+        );
+        assert!(
+            !names.iter().any(|n| n.contains("subagent")),
+            "…but not a spawn tool the gate says this session may not have: \
+             {names:?}"
+        );
+    }
+
+    /// `extension_data` is ONE json column shared by every per-session
+    /// extension — `enabled_extensions.v0` next to `todo.v1`, `goal.v0`,
+    /// `run_state.*`, `workspace_skills.v1`. Both persist paths used to read
+    /// the whole object, mutate their key in a local copy, and write the whole
+    /// object back as two separate statements, so a writer of a DIFFERENT key
+    /// that committed in between was silently erased by the later whole-column
+    /// write. `SessionManager::update_extension_state` exists precisely for
+    /// this and documents the hazard; these two paths were not using it.
+    ///
+    /// Tool calls overlap by construction (the loop drives them through
+    /// `select_all`) and both of these paths are tool-triggered — the GUI
+    /// extension toggle and `workspace_set_tools` on one, the reply loop's
+    /// `manage_extensions` save on the other — so this is reachable, not
+    /// theoretical.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn persisting_extension_state_does_not_erase_another_key_of_the_column() {
+        let (agent, session_id) = agent_with_one_extension_for_tests().await;
+        let agent = std::sync::Arc::new(agent);
+
+        let session_manager = agent.config.session_manager.clone();
+        let todo_session = session_id.clone();
+        let todos = tokio::spawn(async move {
+            for i in 0..40 {
+                session_manager
+                    .update_extension_state(
+                        &todo_session,
+                        crate::session::extension_data::TodoState::EXTENSION_NAME,
+                        crate::session::extension_data::TodoState::VERSION,
+                        move |_| Ok(serde_json::json!({ "items": [], "plan": format!("p{i}") })),
+                    )
+                    .await
+                    .unwrap();
+            }
+        });
+
+        let extension_agent = agent.clone();
+        let extension_session = session_id.clone();
+        let extensions = tokio::spawn(async move {
+            for _ in 0..40 {
+                extension_agent
+                    .persist_extension_state(&extension_session)
+                    .await
+                    .unwrap();
+            }
+        });
+
+        todos.await.unwrap();
+        extensions.await.unwrap();
+
+        let session = agent
+            .config
+            .session_manager
+            .get_session(&session_id, false)
+            .await
+            .unwrap();
+        assert!(
+            crate::session::EnabledExtensionsState::from_extension_data(&session.extension_data)
+                .is_some(),
+            "the extension state this test drives must be there"
+        );
+        assert!(
+            session
+                .extension_data
+                .get_extension_state(
+                    crate::session::extension_data::TodoState::EXTENSION_NAME,
+                    crate::session::extension_data::TodoState::VERSION
+                )
+                .is_some(),
+            "…and so must the unrelated key a concurrent writer owns: {:?}",
+            session
+                .extension_data
+                .extension_states
+                .keys()
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// The inverse: subagents disabled (here: a non-Auto mode) means no
+    /// injection and no spawn tool — today's behaviour, preserved.
+    #[tokio::test]
+    async fn subagents_disabled_injects_nothing() {
+        let (agent, session_id) = agent_in_chat_mode_for_tests().await;
+        assert!(!agent.subagents_enabled(&session_id).await, "precondition");
+        let names: Vec<String> = agent
+            .list_tools(&session_id, None)
+            .await
+            .iter()
+            .map(|t| t.name.to_string())
+            .collect();
+        assert!(!names.iter().any(|n| n.contains("subagent")), "{names:?}");
+        assert!(
+            !names.iter().any(|n| n.starts_with("workspace__")),
+            "{names:?}"
+        );
     }
 }
 

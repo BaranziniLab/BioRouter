@@ -61,7 +61,7 @@ export type ActiveWorkItemDto = {
      */
     id: string;
     /**
-     * `background_job`, `subagent`, or `scheduled_run`.
+     * `background_job`, `subagent`, `detached_turn`, or `scheduled_run`.
      */
     kind: string;
     /**
@@ -750,6 +750,19 @@ export type InspectJobResponse = {
 };
 
 /**
+ * Response body for an accepted soft interrupt (#69).
+ */
+export type InterruptAccepted = {
+    /**
+     * The agent-loop turn that took the message and will inject it. Identifies
+     * the reply loop, and is deliberately *not* the `turn_id` `/agent/cancel`
+     * reports (that one names the server's turn lock); the two id spaces are
+     * shaped differently so they cannot be confused.
+     */
+    turn_id: string;
+};
+
+/**
  * Request body for the soft-interrupt route.
  */
 export type InterruptRequest = {
@@ -1209,10 +1222,50 @@ export type MessageMetadata = {
      * and reports it. Defaults to false.
      */
     pinned?: boolean;
+    provenance?: MessageProvenance | null;
     /**
      * Whether the message should be visible to the user in the UI
      */
     userVisible: boolean;
+};
+
+/**
+ * Where a message came from, when it did not originate with this session's own
+ * user↔agent pair. Cross-session control without provenance is
+ * indistinguishable from prompt injection (BR-71 §2.4) — stamped in storage,
+ * not just in the UI.
+ *
+ * **The guarantee, stated as what is actually enforced.** A stamp is not
+ * suppressible by anything on the normalize → compact → write-back path, which
+ * is the path that decides what the model sees and what the store keeps. Three
+ * sites across two stages had to be taught it, because each rebuilds or
+ * replaces metadata rather than updating it — the `..self` builders inherited
+ * the field for free, which is exactly why these stood out:
+ *
+ * - [`crate::conversation::merge_consecutive_messages`] keeps only the first
+ * message's metadata, so a change of origin is a merge boundary
+ * (`is_provenance_boundary`), exactly as `pinned` is.
+ * - the legacy compaction path replaces the archived original's metadata with
+ * `MessageMetadata::invisible()`, and rebuilds the preserved copy from its
+ * text alone; both carry the stamp across explicitly
+ * (`crate::context_mgmt`).
+ *
+ * It is deliberately NOT a claim about anything outside that path. A caller
+ * holding a `Message` can always construct an unstamped one, and a stamp whose
+ * `kind` a reader does not recognise degrades to `None` rather than taking the
+ * rest of the metadata down with it (see `MessageMetadata::provenance`). The
+ * defence a stamp *enables* — [`frame_workspace_injection`] — is baked into
+ * message content, not metadata, precisely so it cannot be undone by a metadata
+ * edit.
+ *
+ * `Hash` is derived deliberately: this value is part of
+ * [`crate::conversation::normalize`]'s per-message cache validator. See
+ * `message_fingerprint` there.
+ */
+export type MessageProvenance = {
+    fromSessionId?: string | null;
+    fromSessionName?: string | null;
+    kind: ProvenanceKind;
 };
 
 export type ModelCacheStatus = 'downloaded' | 'partial' | 'not_downloaded';
@@ -1409,6 +1462,8 @@ export type PricingResponse = {
 };
 
 export type PrincipalType = 'Extension' | 'Tool';
+
+export type ProvenanceKind = 'agent_injection' | 'user_direct' | 'spawn_context';
 
 export type ProviderDetails = {
     is_configured: boolean;
@@ -1666,6 +1721,13 @@ export type RunNowResponse = {
     session_id: string;
 };
 
+/**
+ * BR-71: the sessions holding a turn right now.
+ */
+export type RunningSessionsResponse = {
+    session_ids: Array<string>;
+};
+
 export type SaveWorkflowRequest = {
     id?: string | null;
     workflow: Workflow;
@@ -1742,6 +1804,12 @@ export type Session = {
     model_config?: ModelConfig | null;
     name: string;
     output_tokens?: number | null;
+    /**
+     * Id of the parent session that spawned this one as a subagent (BR-71).
+     * Sibling of `diverged_from` (branch lineage): `diverged_from` records a
+     * user fork; this records a delegation. `None` for non-subagent sessions.
+     */
+    parent_session_id?: string | null;
     provider_name?: string | null;
     schedule_id?: string | null;
     session_type?: SessionType;
@@ -1811,6 +1879,14 @@ export type SessionSummary = {
     id: string;
     message_count: number;
     name: string;
+    /**
+     * BR-71: `sub_agent` rows are grouped under this parent in History.
+     */
+    parent_session_id?: string | null;
+    /**
+     * BR-71: the session's type as stored (`user`/`scheduled`/`sub_agent`).
+     */
+    session_type?: string | null;
     updated_at: string;
     working_dir: string;
 };
@@ -3600,7 +3676,7 @@ export type InterruptErrors = {
      */
     400: unknown;
     /**
-     * No turn is in flight for this session
+     * No turn is accepting interrupts for this session
      */
     409: unknown;
     /**
@@ -3613,8 +3689,10 @@ export type InterruptResponses = {
     /**
      * Message queued for injection into the running turn
      */
-    202: unknown;
+    202: InterruptAccepted;
 };
+
+export type InterruptResponse = InterruptResponses[keyof InterruptResponses];
 
 export type GetActiveData = {
     body?: never;
@@ -4946,7 +5024,12 @@ export type UnpauseScheduleResponse = UnpauseScheduleResponses[keyof UnpauseSche
 export type ListSessionsData = {
     body?: never;
     path?: never;
-    query?: never;
+    query?: {
+        /**
+         * Include sub_agent sessions (grouped under parent_session_id); default false
+         */
+        include_subagents?: boolean | null;
+    };
     url: '/sessions';
 };
 
@@ -5060,6 +5143,29 @@ export type GetSessionInsightsResponses = {
 
 export type GetSessionInsightsResponse = GetSessionInsightsResponses[keyof GetSessionInsightsResponses];
 
+export type RunningSessionsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/sessions/running';
+};
+
+export type RunningSessionsErrors = {
+    /**
+     * Unauthorized - invalid secret key
+     */
+    401: unknown;
+};
+
+export type RunningSessionsResponses = {
+    /**
+     * Sessions with a turn in flight
+     */
+    200: RunningSessionsResponse;
+};
+
+export type RunningSessionsResponse2 = RunningSessionsResponses[keyof RunningSessionsResponses];
+
 export type ListSidebarSessionsData = {
     body?: never;
     path?: never;
@@ -5072,6 +5178,10 @@ export type ListSidebarSessionsData = {
          * Number of session summaries to skip
          */
         offset?: number | null;
+        /**
+         * Include sub_agent sessions (grouped under parent_session_id); default false
+         */
+        include_subagents?: boolean | null;
     };
     url: '/sessions/sidebar';
 };
@@ -5249,6 +5359,38 @@ export type EditMessageResponses = {
 };
 
 export type EditMessageResponse2 = EditMessageResponses[keyof EditMessageResponses];
+
+export type ObserveSessionEventsData = {
+    body?: never;
+    path: {
+        /**
+         * Session to observe
+         */
+        session_id: string;
+    };
+    query?: never;
+    url: '/sessions/{session_id}/events';
+};
+
+export type ObserveSessionEventsErrors = {
+    /**
+     * Unauthorized - invalid secret key
+     */
+    401: unknown;
+    /**
+     * No such session
+     */
+    404: unknown;
+};
+
+export type ObserveSessionEventsResponses = {
+    /**
+     * Read-only observer stream of the session's live events
+     */
+    200: MessageEvent;
+};
+
+export type ObserveSessionEventsResponse = ObserveSessionEventsResponses[keyof ObserveSessionEventsResponses];
 
 export type ExportSessionData = {
     body?: never;

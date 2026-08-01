@@ -18,7 +18,7 @@ use biorouter::session::extension_data::ExtensionState;
 use biorouter::session::session_manager::{
     ActivityWindow, ModelUsageRow, SessionInsights, TruncateOutcome,
 };
-use biorouter::session::{EnabledExtensionsState, Session, SessionSummary};
+use biorouter::session::{EnabledExtensionsState, Session, SessionSummary, SessionType};
 use biorouter::workflow::Workflow;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -42,10 +42,36 @@ pub struct SidebarSessionsQuery {
     limit: u32,
     #[serde(default)]
     offset: u32,
+    /// BR-71: include `sub_agent` sessions (grouped under `parent_session_id`).
+    #[serde(default)]
+    include_subagents: bool,
+}
+
+/// Query parameters for `GET /sessions`.
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+pub struct ListSessionsQuery {
+    /// BR-71: include `sub_agent` sessions (grouped under `parent_session_id`).
+    #[serde(default)]
+    pub include_subagents: bool,
 }
 
 fn default_sidebar_session_limit() -> u32 {
     DEFAULT_SIDEBAR_SESSION_LIMIT
+}
+
+/// The session types `GET /sessions` lists. BR-71: `sub_agent` is opt-in; the
+/// default arm is exactly `list_sessions()`'s own filter, so the default path is
+/// behaviour-identical to what the route did before the flag existed.
+fn listed_session_types(include_subagents: bool) -> &'static [SessionType] {
+    if include_subagents {
+        &[
+            SessionType::User,
+            SessionType::Scheduled,
+            SessionType::SubAgent,
+        ]
+    } else {
+        &[SessionType::User, SessionType::Scheduled]
+    }
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -227,6 +253,9 @@ fn is_valid_session_id(id: &str) -> bool {
 #[utoipa::path(
     get,
     path = "/sessions",
+    params(
+        ("include_subagents" = Option<bool>, Query, description = "Include sub_agent sessions (grouped under parent_session_id); default false")
+    ),
     responses(
         (status = 200, description = "List of available sessions retrieved successfully", body = SessionListResponse),
         (status = 401, description = "Unauthorized - Invalid or missing API key"),
@@ -239,10 +268,11 @@ fn is_valid_session_id(id: &str) -> bool {
 )]
 async fn list_sessions(
     State(state): State<Arc<AppState>>,
+    Query(query): Query<ListSessionsQuery>,
 ) -> Result<Json<SessionListResponse>, StatusCode> {
     let sessions = state
         .session_manager()
-        .list_sessions()
+        .list_sessions_by_types(listed_session_types(query.include_subagents))
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
@@ -254,7 +284,8 @@ async fn list_sessions(
     path = "/sessions/sidebar",
     params(
         ("limit" = Option<u32>, Query, description = "Session summaries per page (default 10, clamped to 1..=50)"),
-        ("offset" = Option<u32>, Query, description = "Number of session summaries to skip")
+        ("offset" = Option<u32>, Query, description = "Number of session summaries to skip"),
+        ("include_subagents" = Option<bool>, Query, description = "Include sub_agent sessions (grouped under parent_session_id); default false")
     ),
     responses(
         (status = 200, description = "Paginated lightweight session summaries for the sidebar", body = SidebarSessionListResponse),
@@ -273,7 +304,12 @@ async fn list_sidebar_sessions(
     let limit = query.limit.clamp(1, MAX_SIDEBAR_SESSION_LIMIT);
     let mut sessions = state
         .session_manager()
-        .list_session_summaries(limit.saturating_add(1), query.offset)
+        .list_session_summaries(
+            limit.saturating_add(1),
+            query.offset,
+            query.include_subagents,
+            false,
+        )
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
@@ -1007,10 +1043,36 @@ async fn get_session_extensions(
     Ok(Json(SessionExtensionsResponse { extensions }))
 }
 
+/// BR-71: the sessions holding a turn right now.
+#[derive(Debug, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct RunningSessionsResponse {
+    pub session_ids: Vec<String>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/sessions/running",
+    // EXPLICIT tag, not utoipa's default module path. Task 42b's parity gate
+    // selects the workspace-control route surface by this tag; a BR-71 route
+    // that lands under "Session Management" with the other fifteen operations
+    // is invisible to it.
+    tag = "workspace",
+    responses(
+        (status = 200, description = "Sessions with a turn in flight", body = RunningSessionsResponse),
+        (status = 401, description = "Unauthorized - invalid secret key")
+    )
+)]
+async fn running_sessions(State(state): State<Arc<AppState>>) -> Json<RunningSessionsResponse> {
+    Json(RunningSessionsResponse {
+        session_ids: state.active_turn_session_ids(),
+    })
+}
+
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/sessions", get(list_sessions))
         .route("/sessions/sidebar", get(list_sidebar_sessions))
+        .route("/sessions/running", get(running_sessions))
         .route("/sessions/{session_id}", get(get_session))
         .route("/sessions/{session_id}", delete(delete_session))
         .route("/sessions/{session_id}/export", get(export_session))
@@ -1166,6 +1228,117 @@ mod diverge_tests {
             assert!(!session.contains_key("conversation"));
             assert!(!session.contains_key("extension_data"));
             assert!(!session.contains_key("workflow"));
+        }
+    }
+
+    /// BR-71: the two type slices `GET /sessions` chooses between. A wrong slice
+    /// — a dropped `Scheduled`, say, which would silently empty History of every
+    /// scheduled run — compiles and passes every route test in this file, because
+    /// those run read-only against whatever the real database happens to hold.
+    /// This pins both arms exactly.
+    #[test]
+    fn listed_session_types_make_subagents_opt_in() {
+        assert_eq!(
+            listed_session_types(false),
+            [SessionType::User, SessionType::Scheduled]
+        );
+        assert_eq!(
+            listed_session_types(true),
+            [
+                SessionType::User,
+                SessionType::Scheduled,
+                SessionType::SubAgent
+            ]
+        );
+    }
+
+    async fn get_sessions(
+        state: Arc<AppState>,
+        query: &str,
+    ) -> (axum::http::StatusCode, serde_json::Value) {
+        let app = routes(state);
+        let req = Request::builder()
+            .method("GET")
+            .uri(format!("/sessions{query}"))
+            .body(Body::empty())
+            .unwrap();
+        let res = app.oneshot(req).await.unwrap();
+        let status = res.status();
+        let bytes = to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+        (status, json)
+    }
+
+    /// BR-71 gave `GET /sessions` a `Query` extractor where it previously had
+    /// none. serde ignores unknown fields, so no caller that was already sending
+    /// a query string can start getting a 400 — only a malformed value of the
+    /// brand-new `include_subagents` parameter can, and that parameter did not
+    /// exist before. This pins that distinction.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn list_sessions_route_still_accepts_unknown_query_params() {
+        let state = AppState::new().await.unwrap();
+        for query in ["", "?foo=bar"] {
+            let (status, _) = get_sessions(state.clone(), query).await;
+            assert_eq!(status, axum::http::StatusCode::OK, "query {query:?}");
+        }
+    }
+
+    /// BR-71: neither listing route may surface a `sub_agent` row unless asked,
+    /// and neither may ever surface `hidden`/`terminal`. Read-only against the
+    /// real database, so every assertion is a one-directional membership check
+    /// that cannot flake on an empty or unusual database.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn listing_routes_hide_subagents_unless_asked() {
+        let state = AppState::new().await.unwrap();
+        let cases = [
+            ("default", "", ["user", "scheduled"].as_slice()),
+            (
+                "opt-in",
+                "include_subagents=true",
+                ["user", "scheduled", "sub_agent"].as_slice(),
+            ),
+        ];
+
+        for (label, param, allowed) in cases {
+            let (status, body) = get_sessions(state.clone(), &format!("?{param}")).await;
+            assert_eq!(status, axum::http::StatusCode::OK, "/sessions {label}");
+            for session in body["sessions"].as_array().expect("sessions array") {
+                let session_type = session["session_type"]
+                    .as_str()
+                    .unwrap_or_else(|| panic!("no session_type in {session:?}"));
+                assert!(
+                    allowed.contains(&session_type),
+                    "/sessions {label} leaked a {session_type} session"
+                );
+            }
+
+            let (status, body) =
+                get_sidebar_sessions(state.clone(), &format!("?limit=50&{param}")).await;
+            assert_eq!(
+                status,
+                axum::http::StatusCode::OK,
+                "/sessions/sidebar {label}"
+            );
+            for session in body["sessions"].as_array().expect("sessions array") {
+                let session_type = session["session_type"]
+                    .as_str()
+                    .unwrap_or_else(|| panic!("no session_type in {session:?}"));
+                assert!(
+                    allowed.contains(&session_type),
+                    "/sessions/sidebar {label} leaked a {session_type} session"
+                );
+                // The sidebar must keep passing `include_empty: false`. Flipping
+                // it would start showing message-less "Untitled chat" rows in
+                // every user's sidebar — a visible regression no test would
+                // otherwise catch, since `include_empty` has no other caller
+                // until `workspace_list`.
+                assert!(
+                    session["message_count"].as_i64().unwrap_or_default() >= 1,
+                    "/sessions/sidebar {label} listed an empty session: {session:?}"
+                );
+            }
         }
     }
 
@@ -1404,6 +1577,85 @@ mod diverge_tests {
 
         manager.delete_session(&new_id).await.unwrap();
         manager.delete_session(&original.id).await.unwrap();
+    }
+
+    async fn get_running(state: Arc<AppState>) -> Vec<String> {
+        let app = routes(state);
+        let req = Request::builder()
+            .method("GET")
+            .uri("/sessions/running")
+            .body(Body::empty())
+            .unwrap();
+        let res = app.oneshot(req).await.unwrap();
+        let bytes = to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value =
+            serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+        json["session_ids"]
+            .as_array()
+            .map(|ids| {
+                ids.iter()
+                    .filter_map(|id| id.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// BR-71 / CLI parity: the daemon is the ONLY authority on liveness
+    /// (`AppState::active_turns` is an in-process map), so it has to publish it.
+    ///
+    /// ⚠ **No session is created and none is deleted.** `try_begin_turn_idempotent`
+    /// inserts into the in-memory `active_turns` map and never consults the store,
+    /// so fabricated ids exercise the whole path — which keeps this test inside
+    /// this module's READ-ONLY rule (`AppState::new()` opens the real user DB).
+    ///
+    /// `#[serial]` matches the rest of this module, whose tests share that real
+    /// database — NOT because `active_turns` is shared. It is not:
+    /// `AppState::new` allocates a fresh `Arc<StdMutex<HashMap<…>>>` per call
+    /// (`state.rs`), so this test's map is its own. The ids are still stamped
+    /// unique and the assertions still speak only about this test's own ids,
+    /// because both are free and neither depends on that reading of the code
+    /// being right.
+    ///
+    /// The load-bearing assertion is the LAST one. Everything before it is also
+    /// satisfied by a route that snapshots the running set once at construction;
+    /// only the post-`drop(guard)` check separates a live read from a snapshot.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn running_sessions_reports_exactly_the_sessions_holding_a_turn() {
+        let state = AppState::new().await.unwrap();
+        // ⚠ NOT `uuid::Uuid::new_v4()`: `uuid` is not a dependency of
+        // `biorouter-server`, so that would be an unresolved-crate error. A
+        // nanosecond stamp is unique enough for two ids in one test.
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let busy = format!("parity-busy-{stamp}");
+        let idle = format!("parity-idle-{stamp}");
+
+        // A cheap precondition, not a strong one — this map starts empty. Kept
+        // so the failure message names the offender if that ever stops holding.
+        let before = get_running(state.clone()).await;
+        assert!(!before.contains(&busy), "precondition: {before:?}");
+
+        let guard = state
+            .try_begin_turn_idempotent(&busy, CancellationToken::new(), None)
+            .expect("nothing holds this fabricated session");
+
+        let during = get_running(state.clone()).await;
+        assert!(during.contains(&busy), "a held turn must be reported");
+        assert!(
+            !during.contains(&idle),
+            "a session with no turn must not be reported running"
+        );
+
+        drop(guard);
+        assert!(
+            !get_running(state.clone()).await.contains(&busy),
+            "TurnGuard::drop clears the slot, so the route must read LIVE state — \
+             a snapshot taken at construction passes every assertion above and \
+             fails this one"
+        );
     }
 }
 

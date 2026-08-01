@@ -43,6 +43,12 @@ pub async fn run() -> Result<()> {
 
     let app_state = state::AppState::new().await?;
 
+    // BR-71: publish the daemon's platform services to the `biorouter` crate so
+    // the workspace extension's tools can reach the turn lock, the detached turn
+    // runner and (Slice 2) the GUI bridge. Without this the tools degrade to
+    // their headless behaviour even inside the daemon.
+    crate::workspace::services::install_workspace_services(app_state.clone());
+
     let cors = CorsLayer::new()
         .allow_origin(AllowOrigin::predicate(|origin: &HeaderValue, _| {
             biorouter_server::routes::is_local_origin(origin.to_str().unwrap_or(""))

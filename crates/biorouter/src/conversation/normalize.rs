@@ -275,6 +275,14 @@ fn clean_cut(messages: &[Message], limit: usize) -> usize {
 /// serving a stale marker from the frozen prefix silently reverses a pin — or an
 /// unpin. A flip is also the ONLY edit a pin makes to a message, so a fingerprint
 /// blind to it cannot see the change at all.
+///
+/// `metadata.provenance` (BR-71) is the second durable metadata field this
+/// validates, and it is here for that same second reason. Nothing in the pipeline
+/// branches on a provenance stamp, but it is durable state of exactly the same
+/// kind, on exactly the same struct, travelling exactly the same path back to
+/// storage — so a frozen prefix blind to it could write a stale stamp over a
+/// fresh one. It is hashed in full (not as `is_some()`), because an in-place
+/// re-stamp changes the *kind*, which a presence check cannot see.
 fn message_fingerprint(message: &Message) -> u64 {
     let mut hasher = AHasher::default();
     matches!(message.role, Role::Assistant).hash(&mut hasher);
@@ -283,6 +291,7 @@ fn message_fingerprint(message: &Message) -> u64 {
     message.metadata.agent_visible.hash(&mut hasher);
     message.metadata.user_visible.hash(&mut hasher);
     message.metadata.pinned.hash(&mut hasher);
+    message.metadata.provenance.hash(&mut hasher);
     message.content.len().hash(&mut hasher);
 
     for content in &message.content {
@@ -622,7 +631,7 @@ mod tests {
 
         // Compaction-style rewrite: hide the older prefix from the agent.
         for message in messages.iter_mut().take(6) {
-            let metadata = message.metadata.with_agent_invisible();
+            let metadata = message.metadata.clone().with_agent_invisible();
             *message = message.clone().with_metadata(metadata);
         }
         messages.push(user("after compaction"));
@@ -710,7 +719,7 @@ mod tests {
         let visible = user("hello");
         let hidden = visible
             .clone()
-            .with_metadata(visible.metadata.with_agent_invisible());
+            .with_metadata(visible.metadata.clone().with_agent_invisible());
         assert_ne!(message_fingerprint(&visible), message_fingerprint(&hidden));
     }
 
@@ -726,6 +735,45 @@ mod tests {
             message_fingerprint(&plain),
             message_fingerprint(&marked),
             "flipping the #51 preservation marker must invalidate the cached prefix"
+        );
+    }
+
+    /// The incremental normalizer reuses a frozen prefix whenever every
+    /// fingerprint in it matches, and the normalized transcript is what the
+    /// overflow path writes back to storage. So a metadata field the fingerprint
+    /// cannot see is a field an in-place edit can silently revert — which is
+    /// exactly the bug `32f2e1bc` fixed for `pinned`, one field over.
+    #[test]
+    fn fingerprint_changes_when_only_the_provenance_stamp_changes() {
+        use crate::conversation::message::{MessageProvenance, ProvenanceKind};
+
+        let stamp = |kind| MessageProvenance {
+            kind,
+            from_session_id: Some("s-parent".into()),
+            from_session_name: None,
+        };
+
+        // `user(..)` is this module's existing helper.
+        let plain = user("same body");
+        let injected = plain
+            .clone()
+            .with_provenance(stamp(ProvenanceKind::AgentInjection));
+        let direct = plain
+            .clone()
+            .with_provenance(stamp(ProvenanceKind::UserDirect));
+
+        // Stamped vs unstamped.
+        assert_ne!(
+            message_fingerprint(&plain),
+            message_fingerprint(&injected),
+            "stamping provenance must invalidate the cached prefix"
+        );
+        // And the KIND must be visible on its own — two stamps that differ only
+        // in kind are exactly what a `provenance.is_some()` shortcut would miss.
+        assert_ne!(
+            message_fingerprint(&injected),
+            message_fingerprint(&direct),
+            "a provenance kind change must invalidate the cached prefix"
         );
     }
 
@@ -777,7 +825,7 @@ mod tests {
         normalizer.normalize(Conversation::new_unvalidated(messages.clone()));
 
         const TARGET: usize = 4;
-        let released = messages[TARGET].metadata.with_unpinned();
+        let released = messages[TARGET].metadata.clone().with_unpinned();
         messages[TARGET] = messages[TARGET].clone().with_metadata(released);
 
         let conversation = Conversation::new_unvalidated(messages.clone());
