@@ -60,9 +60,21 @@ describe('getOrderedProviderGroups', () => {
   });
 
   it('demotes a private provider to commercial when the daemon says it is public', () => {
-    // An ollama pointed off this machine resolves Public. The renderer must
-    // follow the backend rather than recognising the name, or a demoted
-    // provider keeps a "Local Models" badge it no longer earns.
+    // The real shape this covers: a custom_providers/*.json named `ollama`
+    // shadows the built-in registry entry (registration is a plain insert by
+    // config.name, after the built-ins), and the declarative path defaults the
+    // tier to public rather than inheriting the engine's. The renderer must
+    // follow the backend rather than recognising the name, or a provider that
+    // is not the real ollama keeps a "Local Models" badge it never earned.
+    //
+    // What this does NOT yet cover, deliberately: GET /config/providers serves
+    // the *type-level* metadata, so a genuine built-in ollama re-pointed off
+    // this machine by OLLAMA_HOST still ships tier: 'private' here even though
+    // its instance Provider::tier() resolves public. Enforcement reads the
+    // instance method and is unaffected; this grid does not. Feeding the
+    // instance tier to the UI is follow-up work, and it must land before any
+    // user-facing privacy badge is hung on metadata.tier — that badge would be
+    // wrong in exactly the demotion case the tier exists to catch.
     const groups = getOrderedProviderGroups([provider('ollama', { tier: 'public' })]);
     expect(groups[0]?.providers).toEqual([]);
     expect(groups[2]?.providers.map((item) => item.name)).toEqual(['ollama']);

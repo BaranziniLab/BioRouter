@@ -170,6 +170,17 @@ pub struct ProviderMetadata {
     /// ships with; an instance that resolved somewhere else reports its own
     /// tier from [`Provider::tier`], which is the only value the enforcement
     /// path reads.
+    ///
+    /// ⚠ The two can disagree, and this one can only ever be the *more*
+    /// generous of the pair. `GET /config/providers` serves this field
+    /// verbatim, so an `ollama` re-pointed off the machine by `OLLAMA_HOST`
+    /// still ships `Private` here while its instance resolves `Public`. That is
+    /// harmless for the settings grid, which is only choosing a section
+    /// heading, and it is **not** harmless for a privacy badge: do not hang one
+    /// on this field. A badge has to read the tier of the instance actually
+    /// bound to the session, which means plumbing [`Provider::tier`] out to the
+    /// UI first — it would otherwise read Private in exactly the demotion case
+    /// the tier exists to catch.
     #[serde(default)]
     pub tier: ProviderTier,
     /// Whether this provider's inference runs on the user's own machine — a
