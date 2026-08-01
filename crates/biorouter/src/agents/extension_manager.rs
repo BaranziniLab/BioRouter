@@ -99,26 +99,23 @@ struct Extension {
     /// pool's `Weak` dies and the child process is reaped. `None` for unpooled and
     /// in-process servers, which own their client directly via `_temp_dir`/`client`.
     _pooled: Option<Arc<PooledEntry>>,
+    /// Issue #56. Stamped once at admission from `classify_extension`.
+    ///
+    /// On the RECORD, never on `ExtensionConfig`: the config round-trips
+    /// through user-writable `config.yaml`, which would make the badge locally
+    /// forgeable and contradict R11(i); a new config field costs seven match
+    /// arms plus an OpenAPI cycle; and `pool_key` carries no session id, so one
+    /// `ucsfomopagent` child process is shared across sessions and the badge
+    /// cannot live on the process.
+    // No production reader yet: Gates C and E land later in this series, and
+    // until they do the plain (non-`cfg(test)`) lib build warns `never read` —
+    // which `scripts/clippy-lint.sh` promotes to an error with `-D warnings`.
+    // Remove this line once a gate reads it.
+    #[allow(dead_code)]
+    tier: crate::privacy::ProviderTier,
 }
 
 impl Extension {
-    fn new(
-        config: ExtensionConfig,
-        client: McpClientBox,
-        server_info: Option<ServerInfo>,
-        temp_dir: Option<tempfile::TempDir>,
-    ) -> Self {
-        Self {
-            client,
-            config,
-            server_info,
-            _temp_dir: temp_dir,
-            inprocess: false,
-            _pooled: None,
-            origin: ExtensionOrigin::Explicit,
-        }
-    }
-
     fn supports_resources(&self) -> bool {
         self.server_info
             .as_ref()
@@ -964,6 +961,10 @@ impl ExtensionManager {
         if !Self::should_load_over(extensions.get(&final_name), origin) {
             return Ok(());
         }
+        // Issue #56: stamped on the key this entry is actually stored under,
+        // which is not always `sanitized_name` — a config with no name takes it
+        // from the server's own info.
+        let tier = crate::privacy::classify_extension(&final_name);
         extensions.insert(
             final_name,
             Extension {
@@ -974,6 +975,7 @@ impl ExtensionManager {
                 inprocess: false,
                 _pooled: Some(entry),
                 origin,
+                tier,
             },
         );
         drop(extensions);
@@ -1055,10 +1057,21 @@ impl ExtensionManager {
         info: Option<ServerInfo>,
         temp_dir: Option<TempDir>,
     ) {
-        self.extensions
-            .lock()
-            .await
-            .insert(name, Extension::new(config, client, info, temp_dir));
+        // Issue #56: stamped on the key this entry is actually stored under.
+        let tier = crate::privacy::classify_extension(&name);
+        self.extensions.lock().await.insert(
+            name,
+            Extension {
+                config,
+                client,
+                server_info: info,
+                _temp_dir: temp_dir,
+                inprocess: false,
+                _pooled: None,
+                origin: ExtensionOrigin::Explicit,
+                tier,
+            },
+        );
         self.invalidate_tools_cache_and_bump_version().await;
     }
 
@@ -1126,6 +1139,8 @@ impl ExtensionManager {
                 // withheld from `get_extension_configs` by `inprocess`, on its
                 // own unrelated grounds.
                 origin: ExtensionOrigin::Explicit,
+                // Issue #56: stamped on the key this entry is stored under.
+                tier: crate::privacy::classify_extension(name),
             },
         );
         self.invalidate_tools_cache_and_bump_version().await;
@@ -2093,12 +2108,11 @@ mod tests {
                 bundled: None,
                 available_tools,
             };
-            let extension = Extension::new(config, client, None, None);
-            self.extensions
-                .lock()
-                .await
-                .insert(sanitized_name, extension);
-            self.invalidate_tools_cache_and_bump_version().await;
+            // Through the real admission point, so a mock is stamped by the same
+            // rule a real extension is (issue #56) instead of carrying a tier
+            // hardcoded here.
+            self.add_client(sanitized_name, config, client, None, None)
+                .await;
         }
     }
 
@@ -3725,6 +3739,94 @@ mod tests {
         assert!(
             dir.join("marker").exists(),
             "the child's relative write landed outside its session directory"
+        );
+    }
+
+    /// The tier the manager stamped on the entry stored under `key`.
+    async fn stamped_tier(em: &ExtensionManager, key: &str) -> crate::privacy::ProviderTier {
+        em.extensions
+            .lock()
+            .await
+            .get(key)
+            .unwrap_or_else(|| panic!("nothing was admitted under `{key}`"))
+            .tier
+    }
+
+    async fn admit_via_add_extension(name: &str) -> crate::privacy::ProviderTier {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let em = Arc::new(ExtensionManager::new_without_provider(
+            temp_dir.path().to_path_buf(),
+        ));
+        let target = resolve_bundled_extension(name).expect("a bundled extension");
+        em.add_extension(target.into_config("privacy tier stamping".to_string()))
+            .await
+            .expect("admit the extension");
+        stamped_tier(&em, name).await
+    }
+
+    async fn admit_via_add_client(name: &str) -> crate::privacy::ProviderTier {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let em = ExtensionManager::new_without_provider(temp_dir.path().to_path_buf());
+        let config = ExtensionConfig::Builtin {
+            name: name.to_string(),
+            description: name.to_string(),
+            display_name: None,
+            timeout: None,
+            bundled: None,
+            available_tools: Vec::new(),
+        };
+        em.add_client(
+            name.to_string(),
+            config,
+            Arc::new(MockClient {}),
+            None,
+            None,
+        )
+        .await;
+        stamped_tier(&em, name).await
+    }
+
+    async fn admit_via_add_inprocess_server(name: &str) -> crate::privacy::ProviderTier {
+        use biorouter_mcp::datasql::server::DataSqlServer;
+        let temp_dir = tempfile::tempdir().unwrap();
+        let em = ExtensionManager::new_without_provider(temp_dir.path().to_path_buf());
+        em.add_inprocess_server(name, DataSqlServer::new(std::collections::HashMap::new()))
+            .await
+            .expect("inject the per-app server");
+        stamped_tier(&em, name).await
+    }
+
+    /// Issue #56. `add_extension`, `add_client` and `add_inprocess_server` each
+    /// stamp `Extension.tier` at admission, because that field is what Gates C
+    /// and E read.
+    ///
+    /// Two of the three admit an arbitrary NAME and are driven with a private
+    /// one directly. `add_extension` cannot be: for every variant it can
+    /// actually spawn in a hermetic test the name is also the SPAWN key
+    /// (`Builtin` looks it up in `BUILTIN_EXTENSIONS`, `Platform` in
+    /// `PLATFORM_EXTENSIONS`), and no private name names a bundled server — so
+    /// only its public direction is reachable here. Its private direction is
+    /// held by the Step 5 gate, which requires exactly one call to
+    /// `classify_extension` inside that function.
+    #[tokio::test]
+    async fn all_three_admission_points_stamp_the_tier() {
+        use crate::privacy::ProviderTier;
+
+        assert_eq!(
+            admit_via_add_client("ucsfomopagent").await,
+            ProviderTier::Private
+        );
+        assert_eq!(
+            admit_via_add_inprocess_server("ucsfomopagent").await,
+            ProviderTier::Private
+        );
+        assert_eq!(
+            admit_via_add_inprocess_server("appcontrol").await,
+            ProviderTier::Public
+        );
+        assert_eq!(
+            admit_via_add_extension("developer").await,
+            ProviderTier::Public
         );
     }
 }

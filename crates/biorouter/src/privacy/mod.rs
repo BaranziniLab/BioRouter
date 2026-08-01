@@ -17,6 +17,11 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod extensions;
+mod registry_private;
+
+pub use extensions::classify_extension;
+
 /// CAPABILITY — the least-privileged model currently bound to a session.
 ///
 /// Deliberately **not** `Ord`: `max` over this type is always a bug. A mixed
