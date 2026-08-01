@@ -329,10 +329,12 @@ mod tests {
                     // Every `floor(` that is not a `.floor()`: covers `privacy::floor(`,
                     // `super::floor(`, `self::floor(` and the bare glob-imported name.
                     count_calls_not_method(code, "floor(")
-                } else if code.contains("privacy::floor(") {
-                    1
                 } else {
-                    0
+                    // Occurrences, not lines. EXPECTED asserts exact COUNTS, so two
+                    // crossings written on one line have to read as two; a
+                    // `contains` scored them as one and under-counted the set it is
+                    // the whole job of this test to pin.
+                    code.matches("privacy::floor(").count()
                 };
                 if crossings > 0 {
                     *calls.entry(rel.clone()).or_default() += crossings;
