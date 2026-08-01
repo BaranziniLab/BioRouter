@@ -285,8 +285,10 @@ where
 ///    `MessagesPersisted` may precede a `Message` frame carrying one of the ids
 ///    it publishes* (`agent.rs`;
 ///    `docs/agent-loop/conversation-writeback-freshness.md`) — is a
-///    producer-side property that the agent already satisfies
-///    (`messages_then_persisted`). Re-ordering here would make it false **at the
+///    producer-side property that the agent already satisfies, and since #66
+///    satisfies BY CONSTRUCTION (the `persisted_ordering` seam: the frame cannot
+///    be built except through one of three named shapes, and the yield-then-name
+///    shape produces the ordering itself). Re-ordering here would make it false **at the
 ///    bus**, where no consumer-side flush can repair it, and the failure is
 ///    silent: a client that reads an id and then loses the stream claims every
 ///    stored row while holding none of the bodies, and the `expectedMessageIds`

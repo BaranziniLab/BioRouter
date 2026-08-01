@@ -72,7 +72,6 @@ use rmcp::model::{
     ServerNotification, Tool,
 };
 use rmcp::object;
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio_util::sync::CancellationToken;
@@ -198,66 +197,10 @@ fn named(message: Message) -> Message {
     }
 }
 
-/// One row a turn persisted, as published by [`AgentEvent::MessagesPersisted`].
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct PersistedMessage {
-    /// The `msg_uid` the row was actually stored under — the id
-    /// `POST /sessions/{id}/edit_message` compares `expectedMessageIds`
-    /// against.
-    pub id: String,
-    /// Whether this row is HIDDEN from the transcript. It is not a rendering
-    /// instruction, and reading it as one double-draws.
-    ///
-    /// `false` is the model-only plumbing a turn stores but deliberately keeps
-    /// out of the transcript (the BR-47 post-edit diagnostics, the loop-guard /
-    /// stall / budget nudges, hook context). Publishing it *with* the flag is
-    /// what separates "you are deliberately not being shown this row" from "you
-    /// were never told it exists" — the client can name the id without drawing
-    /// anything for it. That direction is exact: `false` means the row must not
-    /// appear in the transcript.
-    ///
-    /// `true` means only "not hidden" — NOT "draw this". The content may
-    /// already have been delivered inside a `Message` frame, and on a
-    /// tool-bearing turn it has been: one streamed reply is stored as a rebuilt
-    /// thinking row plus one `tool_use` row per request, each built from
-    /// `Message::assistant()` / `Message::new` and so carrying the default
-    /// `user_visible: true`, while the client was shown that same content once
-    /// already as the reply itself. A client that drew every `true` row would
-    /// render the same tool request twice.
-    ///
-    /// This frame is for ACCOUNTING — naming rows so `expectedMessageIds` can
-    /// be complete. The transcript still comes from `Message` frames alone.
-    pub user_visible: bool,
-}
-
-impl PersistedMessage {
-    /// The published form of a message that has already adopted its effective
-    /// uid. `None` for a message that still carries no id, which cannot be
-    /// named and must not be claimed as published.
-    fn of(message: &Message) -> Option<Self> {
-        message.id.clone().map(|id| Self {
-            id,
-            user_visible: message.is_user_visible(),
-        })
-    }
-}
-
-/// The [`AgentEvent::MessagesPersisted`] for a batch of rows that have already
-/// adopted their effective uids, or `None` when there is nothing to publish.
-fn persisted_event<'a, I>(messages: I) -> Option<AgentEvent>
-where
-    I: IntoIterator<Item = &'a Message>,
-{
-    let published: Vec<PersistedMessage> = messages
-        .into_iter()
-        .filter_map(PersistedMessage::of)
-        .collect();
-    (!published.is_empty()).then_some(AgentEvent::MessagesPersisted(published))
-}
-
-/// #59 ORDERING: the events for a batch that both yields messages and names
-/// them — content first, accounting second.
+// #66 PERSISTED-ORDERING-SEAM:BEGIN
+/// The only place an [`AgentEvent::MessagesPersisted`] can be built.
+///
+/// # The invariant
 ///
 /// `MessagesPersisted` is an accounting frame: a client unions its ids into the
 /// `expectedMessageIds` it hands `POST /sessions/{id}/edit_message`. Publishing
@@ -275,21 +218,308 @@ where
 ///
 /// The invariant, stated so it can be checked at every publication site: **no
 /// `MessagesPersisted` may precede a `Message` frame carrying one of the ids it
-/// publishes.** The reply loop's own publications satisfy it without needing
-/// this helper — each either names rows that are never yielded at all (the
-/// model-only nudges, the hook context, the post-edit diagnostics) or is emitted
-/// after the rows it names were yielded (the end-of-iteration persist). It is
-/// the three batches that `reply()` returns *instead of* running the loop which
-/// have to order themselves, so they order themselves here, together.
-fn messages_then_persisted(
-    messages: impl IntoIterator<Item = Message>,
-    published: Option<AgentEvent>,
-) -> impl Iterator<Item = AgentEvent> {
-    messages
-        .into_iter()
-        .map(AgentEvent::Message)
-        .chain(published)
+/// publishes.**
+///
+/// # Why this is a module and not a helper (#66)
+///
+/// Until #66 the invariant was held by convention plus a test net: any site
+/// could build the frame itself, and ordering it was opt-in. A new site got no
+/// compile-time help and could violate it silently — which is not hypothetical.
+/// Review found the inline slash-command path publishing before yielding, and
+/// fixing it turned up two more nobody had reported: the hook-blocked prompt and
+/// the elicitation seam.
+///
+/// So the builder is private to this module and the module's whole public
+/// surface is three named constructors, one per legitimate shape. A site cannot
+/// obtain the frame without saying which case it is, and "build it now, emit it
+/// wherever" has no spelling. The audit is now a matter of reading the
+/// constructor at each site rather than tracing control flow out from it.
+///
+/// # The three legitimate shapes
+///
+/// A blanket "always order it" rule would be wrong, because several sites
+/// publish without yielding, for good reasons. The three shapes, and the
+/// constructor that spells each:
+///
+///  1. [`yielded_then_named`] — **yield, then name.** The batch hands its
+///     `Message` frames over and names rows in one breath, and the constructor
+///     puts the content first. This is the unconditionally safe shape, and it
+///     does not care whether the named rows are among the yielded ones — so a
+///     site that merely *might* be case 1 should be case 1.
+///  2. [`named_but_never_yielded`] — **names rows that no `Message` frame will
+///     ever carry.** There is nothing for the accounting to arrive ahead of, so
+///     ordering is vacuous; the rows are named only so `expectedMessageIds` can
+///     be complete, and over-reporting is the safe direction. The caller must
+///     state which audited reason applies ([`NeverYielded`]).
+///  3. [`named_after_earlier_yield`] — **names rows already handed over earlier
+///     in the same stream.** The `Message` frames went out before control
+///     reached the call, so the obligation is discharged by then.
+mod persisted_ordering {
+    use super::{AgentEvent, Message};
+    use serde::{Deserialize, Serialize};
+
+    /// One row a turn persisted, as published by [`AgentEvent::MessagesPersisted`].
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+    #[serde(rename_all = "camelCase")]
+    pub struct PersistedMessage {
+        /// The `msg_uid` the row was actually stored under — the id
+        /// `POST /sessions/{id}/edit_message` compares `expectedMessageIds`
+        /// against.
+        pub id: String,
+        /// Whether this row is HIDDEN from the transcript. It is not a rendering
+        /// instruction, and reading it as one double-draws.
+        ///
+        /// `false` is the model-only plumbing a turn stores but deliberately
+        /// keeps out of the transcript (the BR-47 post-edit diagnostics, the
+        /// loop-guard / stall / budget nudges, hook context). Publishing it
+        /// *with* the flag is what separates "you are deliberately not being
+        /// shown this row" from "you were never told it exists" — the client can
+        /// name the id without drawing anything for it. That direction is exact:
+        /// `false` means the row must not appear in the transcript.
+        ///
+        /// `true` means only "not hidden" — NOT "draw this". The content may
+        /// already have been delivered inside a `Message` frame, and on a
+        /// tool-bearing turn it has been: one streamed reply is stored as a
+        /// rebuilt thinking row plus one `tool_use` row per request, each built
+        /// from `Message::assistant()` / `Message::new` and so carrying the
+        /// default `user_visible: true`, while the client was shown that same
+        /// content once already as the reply itself. A client that drew every
+        /// `true` row would render the same tool request twice.
+        ///
+        /// This frame is for ACCOUNTING — naming rows so `expectedMessageIds`
+        /// can be complete. The transcript still comes from `Message` frames
+        /// alone.
+        pub user_visible: bool,
+    }
+
+    impl PersistedMessage {
+        /// The published form of a message that has already adopted its
+        /// effective uid. `None` for a message that still carries no id, which
+        /// cannot be named and must not be claimed as published.
+        ///
+        /// Private to the seam: turning a `Message` into a published row is the
+        /// step that has to be paired with an ordering decision, so it is not
+        /// reachable from the publication sites. The struct's fields stay public
+        /// because the server's SSE and relay tests build fixtures from them.
+        fn of(message: &Message) -> Option<Self> {
+            message.id.clone().map(|id| Self {
+                id,
+                user_visible: message.is_user_visible(),
+            })
+        }
+    }
+
+    /// The [`AgentEvent::MessagesPersisted`] for a batch of rows that have
+    /// already adopted their effective uids, or `None` when there is nothing to
+    /// publish.
+    ///
+    /// PRIVATE ON PURPOSE (#66). This is the step that must not be expressible
+    /// on its own: with it in hand a site can emit the frame anywhere, including
+    /// ahead of the content it names. Reach it through one of the three shapes.
+    fn persisted_event<'a, I>(messages: I) -> Option<AgentEvent>
+    where
+        I: IntoIterator<Item = &'a Message>,
+    {
+        let published: Vec<PersistedMessage> = messages
+            .into_iter()
+            .filter_map(PersistedMessage::of)
+            .collect();
+        (!published.is_empty()).then_some(AgentEvent::MessagesPersisted(published))
+    }
+
+    /// Why a batch names rows that no `Message` frame will ever carry.
+    ///
+    /// A closed set, so shape 2 cannot be reached with a fresh excuse: a new
+    /// reason costs a variant with a doc comment, which is where a reviewer gets
+    /// to ask whether it is really a reason.
+    #[derive(Clone, Copy, Debug)]
+    pub(super) enum NeverYielded {
+        /// The client's own prompt. It authored the row, so it already holds the
+        /// body; the id is published because the *store* is what mints (or
+        /// re-mints) it, and a client that never learns it under-reports.
+        ClientAuthoredPrompt,
+        /// Model-only plumbing: stored so the model sees it on the next provider
+        /// call, deliberately kept out of the transcript. Loop-guard and stall
+        /// nudges, wrap-up instructions, done-gate / self-critique / Stop-hook
+        /// feedback.
+        ModelOnly,
+        /// A pre-stream batch mixing the two: the client's own prompt together
+        /// with the model-only rows the same turn wrote before its stream
+        /// existed (a slash command's resolution, injected hook context).
+        ClientPromptAndModelOnly,
+    }
+
+    /// Shape 1 — **yield, then name.** The `Message` frames for `yielded`,
+    /// followed by the one frame naming `named`.
+    ///
+    /// The ordering is the point: it is produced here, in a single call, so a
+    /// site cannot come by the accounting frame without the content already
+    /// sitting ahead of it.
+    ///
+    /// `yielded` and `named` are separate arguments because they are separate
+    /// values even when they are the same rows: the stored copy carries the
+    /// visibility it was written with, and the published `user_visible` flag has
+    /// to describe the STORED row, not the copy handed to the client.
+    ///
+    /// Nothing to yield means this is really shape 2 or 3 — say which.
+    pub(super) fn yielded_then_named<'a>(
+        yielded: impl IntoIterator<Item = Message>,
+        named: impl IntoIterator<Item = &'a Message>,
+    ) -> Vec<AgentEvent> {
+        let mut events: Vec<AgentEvent> = yielded.into_iter().map(AgentEvent::Message).collect();
+        debug_assert!(
+            !events.is_empty(),
+            "`yielded_then_named` with nothing to yield is `named_but_never_yielded` \
+             or `named_after_earlier_yield` — the shape has to be stated, not \
+             defaulted to whichever one looks safest"
+        );
+        events.extend(persisted_event(named));
+        events
+    }
+
+    /// Shape 2 — **names rows no `Message` frame will ever carry.**
+    ///
+    /// Ordering is vacuous here: there is no frame for the accounting to arrive
+    /// ahead of. The rows are named anyway so `expectedMessageIds` can be
+    /// complete — over-reporting is safe, under-reporting is what deletes.
+    ///
+    /// `why` is the audited reason. It is not read on the hot path; it exists so
+    /// that a new site has to name its case, and so the claim is reviewable at
+    /// the call site instead of being reconstructible only by tracing the
+    /// stream.
+    pub(super) fn named_but_never_yielded<'a>(
+        named: impl IntoIterator<Item = &'a Message>,
+        why: NeverYielded,
+    ) -> Option<AgentEvent> {
+        let event = persisted_event(named);
+        if let Some(AgentEvent::MessagesPersisted(rows)) = &event {
+            tracing::trace!(
+                rows = rows.len(),
+                reason = ?why,
+                "naming rows no `Message` frame will carry"
+            );
+        }
+        event
+    }
+
+    /// Shape 3 — **names rows already handed over earlier in this stream.**
+    ///
+    /// The `Message` frames went out before control reached here, so the
+    /// obligation is discharged by the time this is called. Use it only where
+    /// the yields provably precede the call in the same stream; where the yields
+    /// happen in the same breath, that is shape 1 and the ordering should be
+    /// mechanical rather than argued.
+    pub(super) fn named_after_earlier_yield<'a>(
+        named: impl IntoIterator<Item = &'a Message>,
+    ) -> Option<AgentEvent> {
+        persisted_event(named)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// Every id named by a `MessagesPersisted` that a **later** `Message`
+        /// frame turns out to carry — i.e. every id handed over before its body.
+        /// The invariant is exactly "this is empty".
+        fn ids_named_before_their_message(events: &[AgentEvent]) -> Vec<String> {
+            let mut named: std::collections::HashSet<String> = std::collections::HashSet::new();
+            let mut early = Vec::new();
+            for event in events {
+                match event {
+                    AgentEvent::MessagesPersisted(rows) => {
+                        named.extend(rows.iter().map(|row| row.id.clone()));
+                    }
+                    AgentEvent::Message(message) => {
+                        if let Some(id) = message.id.as_ref().filter(|id| named.contains(*id)) {
+                            early.push(id.clone());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            early
+        }
+
+        fn row(text: &str, id: &str) -> Message {
+            Message::user().with_text(text).with_id(id)
+        }
+
+        #[test]
+        fn shape_one_puts_every_body_ahead_of_the_frame_that_names_it() {
+            let first = row("first", "id-1");
+            let second = row("second", "id-2");
+
+            let events = yielded_then_named([first.clone(), second.clone()], [&first, &second]);
+
+            assert!(
+                matches!(events.as_slice(), [_, _, AgentEvent::MessagesPersisted(_)]),
+                "content first, accounting last: {events:#?}"
+            );
+            assert!(
+                ids_named_before_their_message(&events).is_empty(),
+                "shape 1 must never name an id ahead of its body: {events:#?}"
+            );
+        }
+
+        /// The check above is worthless if it cannot fail. Reversing the same
+        /// batch is the defect #66 exists to make inexpressible, so the checker
+        /// has to catch it.
+        #[test]
+        fn the_ordering_check_catches_the_reversed_batch() {
+            let only = row("only", "id-1");
+            let mut events = yielded_then_named([only.clone()], std::slice::from_ref(&only));
+            events.reverse();
+
+            assert_eq!(
+                ids_named_before_their_message(&events),
+                vec!["id-1".to_string()],
+                "a batch that names before it yields must be flagged"
+            );
+        }
+
+        /// A row that never adopted a uid cannot be named — claiming it would
+        /// hand the client an id no row answers to.
+        #[test]
+        fn an_id_less_row_is_not_claimed() {
+            let anonymous = Message::user().with_text("no id yet");
+
+            assert!(
+                named_after_earlier_yield(std::slice::from_ref(&anonymous)).is_none(),
+                "nothing to publish means no frame at all"
+            );
+            assert_eq!(
+                yielded_then_named([anonymous.clone()], std::slice::from_ref(&anonymous)).len(),
+                1,
+                "the body still goes over the wire; only the accounting is skipped"
+            );
+        }
+
+        /// Shapes 2 and 3 publish the same frame — they differ only in the claim
+        /// the caller is making about the stream around them.
+        #[test]
+        fn shape_two_and_three_name_the_rows_they_are_given() {
+            let hidden = row("model-only", "id-h");
+
+            for event in [
+                named_but_never_yielded(std::slice::from_ref(&hidden), NeverYielded::ModelOnly),
+                named_after_earlier_yield(std::slice::from_ref(&hidden)),
+            ] {
+                let Some(AgentEvent::MessagesPersisted(rows)) = event else {
+                    panic!("a row with an id must be named");
+                };
+                assert_eq!(rows.len(), 1);
+                assert_eq!(rows[0].id, "id-h");
+            }
+        }
+    }
 }
+
+pub use persisted_ordering::PersistedMessage;
+use persisted_ordering::{
+    named_after_earlier_yield, named_but_never_yielded, yielded_then_named, NeverYielded,
+};
+// #66 PERSISTED-ORDERING-SEAM:END
 
 /// Injected in place of a selected skill's full body on any turn after the first
 /// it was loaded (BR-8), so a skill-heavy session doesn't re-inline the whole
@@ -3835,15 +4065,29 @@ impl Agent {
                                  delivered. Please re-send your request to continue.",
                     )
                     .user_only();
-                let published = persisted_event(std::slice::from_ref(&user_message));
+                // #66 SHAPE 1 (yield, then name). Traced: the row named here is
+                // the prompt, and the message yielded here is the notice — a
+                // different row, which is never persisted — so nothing could
+                // arrive ahead of its own body either way. Ordered regardless: a
+                // rule carrying per-site exemptions ("this one's trailing frame
+                // happens not to be persisted") is the reasoning that produced
+                // the defect #66 closes.
                 return Ok(Box::pin(stream::iter(
-                    messages_then_persisted([notice], published).map(Ok),
+                    yielded_then_named([notice], std::slice::from_ref(&user_message))
+                        .into_iter()
+                        .map(Ok),
                 )));
             }
             session_manager
                 .add_message_adopting_uid(&session_config.id, &mut user_message)
                 .await?;
-            let published = persisted_event(std::slice::from_ref(&user_message));
+            // #66 SHAPE 2: this batch yields nothing at all — the answer goes to
+            // the parked tool call and the turn resumes there. The only row it
+            // names is the client's own prompt.
+            let published = named_but_never_yielded(
+                std::slice::from_ref(&user_message),
+                NeverYielded::ClientAuthoredPrompt,
+            );
             return Ok(Box::pin(stream::iter(published.into_iter().map(Ok))));
         }
 
@@ -3905,12 +4149,13 @@ impl Agent {
                             format!("Prompt blocked by hook: {reason}"),
                         )
                         .user_only();
-                    let published = persisted_event(std::slice::from_ref(&stored));
-                    // #59 ORDERING: `user_message` carries `stored`'s id, so
-                    // publishing first would hand the client that id before the
-                    // message it names.
+                    // #66 SHAPE 1 / #59 ORDERING: `user_message` carries
+                    // `stored`'s id, so publishing first would hand the client
+                    // that id before the message it names.
                     return Ok(Box::pin(stream::iter(
-                        messages_then_persisted([user_message, notice], published).map(Ok),
+                        yielded_then_named([user_message, notice], std::slice::from_ref(&stored))
+                            .into_iter()
+                            .map(Ok),
                     )));
                 }
 
@@ -3964,7 +4209,14 @@ impl Agent {
                 let mut response = response;
                 user_message.id = stored_user.id.clone();
                 response.id = stored_response.id.clone();
-                let published = persisted_event([&stored_user, &stored_response]);
+                // #66 SHAPE 1 / #59 ORDERING: both messages carry the ids named
+                // here, so they go over the wire first — a client that is cut
+                // off after the accounting frame must never be left claiming
+                // rows whose bodies it never received. Ordered out here rather
+                // than inside the stream block below because the rows being
+                // named are the stored copies, which the block does not own.
+                let ordered =
+                    yielded_then_named([user_message, response], [&stored_user, &stored_response]);
 
                 // Check if this was a command that modifies conversation history
                 let modifies_history = crate::agents::execute_commands::COMPACT_TRIGGERS
@@ -3972,11 +4224,7 @@ impl Agent {
                     || message_text.trim() == "/clear";
 
                 return Ok(Box::pin(async_stream::try_stream! {
-                    // #59 ORDERING: both messages carry the ids `published`
-                    // names, so they go over the wire first — a client that is
-                    // cut off after the accounting frame must never be left
-                    // claiming rows whose bodies it never received.
-                    for event in messages_then_persisted([user_message, response], published) {
+                    for event in ordered {
                         yield event;
                     }
 
@@ -4028,13 +4276,16 @@ impl Agent {
         // be appended to the session, so the client's view of the stored set
         // starts complete.
         //
-        // Being first is not a breach of the ordering rule stated on
-        // [`messages_then_persisted`]: NONE of these rows is ever yielded as a
+        // #66 SHAPE 2. Being first is not a breach of the ordering rule stated
+        // on [`persisted_ordering`]: NONE of these rows is ever yielded as a
         // `Message`. The user's own prompt is content the client authored and
         // already holds, and the slash-command resolution and hook context are
         // model-only. So no id here can arrive ahead of its message — there is
         // no message frame for it to arrive ahead of.
-        let prestream_published = persisted_event(prestream_persisted.iter());
+        let prestream_published = named_but_never_yielded(
+            prestream_persisted.iter(),
+            NeverYielded::ClientPromptAndModelOnly,
+        );
 
         // Snapshot with the revision this view is based on, so every rewrite in
         // this turn — the auto-compaction below AND the reply loop's overflow
@@ -4601,9 +4852,12 @@ impl Agent {
                         session_manager
                             .add_message_adopting_uid(&session_config.id, &mut nudge)
                             .await?;
-                        // #59: a row the user is deliberately not shown, named
-                        // so a client can still account for it.
-                        if let Some(published) = persisted_event(std::slice::from_ref(&nudge)) {
+                        // #59 / #66 SHAPE 2: a row the user is deliberately not
+                        // shown, named so a client can still account for it.
+                        if let Some(published) = named_but_never_yielded(
+                            std::slice::from_ref(&nudge),
+                            NeverYielded::ModelOnly,
+                        ) {
                             yield published;
                         }
                         conversation.push(nudge);
@@ -4645,7 +4899,11 @@ impl Agent {
                         session_manager
                             .add_message_adopting_uid(&session_config.id, &mut wrapup)
                             .await?;
-                        if let Some(published) = persisted_event(std::slice::from_ref(&wrapup)) {
+                        // #66 SHAPE 2: model-only, like the nudge above.
+                        if let Some(published) = named_but_never_yielded(
+                            std::slice::from_ref(&wrapup),
+                            NeverYielded::ModelOnly,
+                        ) {
                             yield published;
                         }
                         conversation.push(wrapup);
@@ -4723,7 +4981,11 @@ impl Agent {
                         session_manager
                             .add_message_adopting_uid(&session_config.id, &mut wrapup)
                             .await?;
-                        if let Some(published) = persisted_event(std::slice::from_ref(&wrapup)) {
+                        // #66 SHAPE 2: model-only, like the stall wrap-up above.
+                        if let Some(published) = named_but_never_yielded(
+                            std::slice::from_ref(&wrapup),
+                            NeverYielded::ModelOnly,
+                        ) {
                             yield published;
                         }
                         conversation.push(wrapup);
@@ -5873,7 +6135,14 @@ impl Agent {
                 // split into (only the first keeps the reply's id), and the
                 // model-only rows the user is deliberately never shown (BR-47
                 // post-edit diagnostics, loop-guard nudges, hook context).
-                if let Some(published) = persisted_event(messages_to_add.iter()) {
+                //
+                // #66 SHAPE 3: the batch is mixed — the streamed reply and its
+                // tool requests were yielded earlier in this same iteration,
+                // the model-only rows never will be. Shape 3 is the honest
+                // label for the batch as a whole, because it is the one that
+                // carries an ordering obligation, and it is already discharged:
+                // every yield above precedes this line.
+                if let Some(published) = named_after_earlier_yield(messages_to_add.iter()) {
                     yield published;
                 }
                 conversation.extend(messages_to_add);
@@ -5997,8 +6266,12 @@ impl Agent {
                                 session_manager
                                     .add_message_adopting_uid(&session_config.id, &mut feedback)
                                     .await?;
-                                // #59: hidden from the user, named for the client.
-                                if let Some(published) = persisted_event(std::slice::from_ref(&feedback)) {
+                                // #59 / #66 SHAPE 2: hidden from the user, named
+                                // for the client.
+                                if let Some(published) = named_but_never_yielded(
+                                    std::slice::from_ref(&feedback),
+                                    NeverYielded::ModelOnly,
+                                ) {
                                     yield published;
                                 }
                                 conversation.push(feedback);
@@ -6068,8 +6341,12 @@ impl Agent {
                             session_manager
                                 .add_message_adopting_uid(&session_config.id, &mut feedback)
                                 .await?;
-                            // #59: hidden from the user, named for the client.
-                            if let Some(published) = persisted_event(std::slice::from_ref(&feedback)) {
+                            // #59 / #66 SHAPE 2: hidden from the user, named for
+                            // the client.
+                            if let Some(published) = named_but_never_yielded(
+                                std::slice::from_ref(&feedback),
+                                NeverYielded::ModelOnly,
+                            ) {
                                 yield published;
                             }
                             conversation.push(feedback);
@@ -6168,8 +6445,12 @@ impl Agent {
                             session_manager
                                 .add_message_adopting_uid(&session_config.id, &mut feedback)
                                 .await?;
-                            // #59: hidden from the user, named for the client.
-                            if let Some(published) = persisted_event(std::slice::from_ref(&feedback)) {
+                            // #59 / #66 SHAPE 2: hidden from the user, named for
+                            // the client.
+                            if let Some(published) = named_but_never_yielded(
+                                std::slice::from_ref(&feedback),
+                                NeverYielded::ModelOnly,
+                            ) {
                                 yield published;
                             }
                             conversation.push(feedback);
@@ -8838,5 +9119,134 @@ mod stall_seam_tests {
             )
             .await;
         assert_eq!(action, StallAction::Proceed, "no provider → no verdict");
+    }
+}
+
+/// #66: the guard that keeps the `MessagesPersisted` ordering invariant a
+/// MECHANISM instead of an audited convention.
+///
+/// The invariant itself, and why it exists, is stated on the `persisted_ordering`
+/// seam above. What *this* module gates is the only remaining way to break it:
+/// reaching around the seam. Rust's module privacy already makes the frame
+/// builder uncallable from out here — that is the real gate, and it is a compile
+/// error, not an assertion. These tests cover the two things privacy alone
+/// cannot say:
+///
+///  1. that no site outside the seam so much as names the builder, so the
+///     compile error is a fact about the file rather than a fact about what
+///     nobody has tried yet; and
+///  2. that nobody hand-rolls a [`PersistedMessage`] out here and hands it
+///     straight to the frame, which would reproduce the pre-#66 state under a
+///     different spelling — privacy on the builder cannot stop that, because the
+///     row type has to stay publicly constructible for the server's fixtures.
+#[cfg(test)]
+mod persisted_ordering_guard {
+    /// This file, read as text. Resolved at compile time, so the check cannot
+    /// silently start scanning something else.
+    const SOURCE: &str = include_str!("agent.rs");
+
+    /// The sentinel comments that bracket the seam. Assembled at runtime for the
+    /// same reason the needles below are: spelling either marker literally out
+    /// here would move the split and make the whole guard vacuous.
+    fn markers() -> (String, String) {
+        let stem = concat!("#66 PERSISTED", "-ORDERING-SEAM");
+        (format!("// {stem}:BEGIN"), format!("// {stem}:END"))
+    }
+
+    /// `(inside the seam, everything else)`.
+    ///
+    /// With the markers absent the whole file is "everything else", which is the
+    /// honest answer when there is no seam — and makes this guard fail loudly on
+    /// a tree where the seam was deleted, rather than pass on an empty scan.
+    fn split_on_seam(src: &str) -> (String, String) {
+        let (begin, end) = markers();
+        let Some((before, rest)) = src.split_once(begin.as_str()) else {
+            return (String::new(), src.to_string());
+        };
+        let Some((inside, after)) = rest.split_once(end.as_str()) else {
+            return (String::new(), src.to_string());
+        };
+        (format!("{begin}{inside}{end}"), format!("{before}{after}"))
+    }
+
+    /// The private frame builder must have no callers outside the seam.
+    ///
+    /// The compile error is the gate; this is the statement that the gate is
+    /// load-bearing today. A new publication site that reaches for the builder
+    /// directly cannot compile, and one that reaches for it *and* moves itself
+    /// inside the seam to make it compile trips the surface check below.
+    #[test]
+    fn nothing_outside_the_seam_calls_the_private_frame_builder() {
+        let (seam, outside) = split_on_seam(SOURCE);
+        // Assembled at runtime: spelling the identifier literally anywhere in
+        // this file — including here — would make the guard pass vacuously.
+        let builder = concat!("persisted", "_event(");
+        let calls = outside.matches(builder).count();
+        assert_eq!(
+            calls, 0,
+            "{calls} call(s) to the private frame builder live outside the \
+             ordering seam. Every publication site must name which of the three \
+             legitimate shapes it is — `yielded_then_named`, \
+             `named_but_never_yielded` or `named_after_earlier_yield` — so the \
+             invariant can be audited by reading the constructor instead of \
+             tracing control flow out from it."
+        );
+        assert!(
+            !seam.is_empty(),
+            "the ordering seam's sentinel comments are gone; without them this \
+             guard scans nothing and passes for the wrong reason"
+        );
+    }
+
+    /// Nobody builds a published row by hand out here.
+    ///
+    /// `PersistedMessage`'s fields stay public because the server's SSE and relay
+    /// tests construct fixtures from them, so privacy cannot close this door. A
+    /// struct literal outside the seam is the one way left to assemble a
+    /// `MessagesPersisted` payload without going through a named shape.
+    #[test]
+    fn nothing_outside_the_seam_hand_rolls_a_published_row() {
+        let (_seam, outside) = split_on_seam(SOURCE);
+        let literal = concat!("PersistedMessage", " {");
+        let hand_rolled = outside.matches(literal).count();
+        assert_eq!(
+            hand_rolled, 0,
+            "{hand_rolled} hand-rolled published row(s) outside the ordering \
+             seam. Deriving a row from a `Message` is the seam's job; doing it \
+             out here re-opens the exact hole the seam closes."
+        );
+    }
+
+    /// The seam's public surface is exactly the three shapes.
+    ///
+    /// Deliberately hard-coded. A fourth escape hatch is not necessarily wrong —
+    /// but it is a new claim about when publishing early is safe, and it should
+    /// cost an edit here and a reviewer's attention, not slip in as one more
+    /// exported function.
+    #[test]
+    fn the_seam_exposes_only_the_three_named_shapes() {
+        let (seam, _outside) = split_on_seam(SOURCE);
+        let exported_fn = concat!("pub", "(super) fn ");
+        let mut exported: Vec<&str> = seam
+            .lines()
+            .filter_map(|line| line.trim_start().strip_prefix(exported_fn))
+            .map(|rest| {
+                rest.split(|c: char| !c.is_alphanumeric() && c != '_')
+                    .next()
+                    .unwrap_or("")
+            })
+            .collect();
+        exported.sort_unstable();
+        assert_eq!(
+            exported,
+            [
+                "named_after_earlier_yield",
+                "named_but_never_yielded",
+                "yielded_then_named",
+            ],
+            "the ordering seam grew (or lost) a shape. Each name is a claim \
+             about when a `MessagesPersisted` may be emitted; adding one means \
+             adding a case to the audit."
+        );
     }
 }

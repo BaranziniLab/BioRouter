@@ -395,15 +395,31 @@ screen. The invariant, stated so it can be checked by reading rather than re-der
 site: **no `MessagesPersisted` may precede a `Message` frame carrying one of the ids it
 publishes.** Three batches `reply()` returns *instead of* running the loop had it backwards
 — the inline slash-command answer, the hook-blocked prompt, the undeliverable elicitation
-answer — and now order themselves through one seam, `messages_then_persisted` in `agent.rs`.
-Every other publication site satisfies it already, either by naming rows that are never
-yielded at all (the model-only nudges, the hook context, the pre-stream batch) or by coming
-after the rows it names (the end-of-iteration persist). The SSE adapter flushes buffered
-text before forwarding the frame for the same reason, but it can only flush what it is
-holding: an order emitted backwards upstream travels through it untouched.
+answer. Every other publication site satisfied it already, either by naming rows that are
+never yielded at all (the model-only nudges, the hook context, the pre-stream batch) or by
+coming after the rows it names (the end-of-iteration persist). The SSE adapter flushes
+buffered text before forwarding the frame for the same reason, but it can only flush what
+it is holding: an order emitted backwards upstream travels through it untouched.
 `a_slash_command_hands_over_its_messages_before_it_names_them` is the gate;
 `no_turn_shape_names_a_row_before_it_hands_it_over` is the regression net across the other
 turn shapes.
+
+**Issue #66 made that ordering a mechanism rather than a convention.** Building the frame
+and ordering it used to be separate steps, so a new site could take the first without the
+second and still compile — which is how the last two of those three defects were found,
+unreported, while fixing the first. The builder is now private to the `persisted_ordering`
+module in `agent.rs`, whose whole public surface is three constructors, one per legitimate
+shape: `yielded_then_named` (yield, then name — the ordering is produced inside the one
+call, so it is not a thing a site can get wrong), `named_but_never_yielded` (names rows no
+`Message` frame will ever carry, so ordering is vacuous and only completeness matters — the
+caller states which of a closed set of reasons applies), and `named_after_earlier_yield`
+(names rows already handed over earlier in the same stream). A site cannot obtain the frame
+without declaring its case, a bare call to the builder is an `E0603`, and the audit is now
+a matter of reading the constructor at each site instead of tracing control flow out from
+it. A blanket "always order it" rule would have been wrong, which is why all three shapes
+stay expressible. The one bypass privacy cannot close — hand-rolling a `PersistedMessage`,
+whose fields stay public for the server's fixtures — is covered by a source-level guard,
+`persisted_ordering_guard` in the same file.
 
 **It does not follow that the desktop can now claim completeness, and assuming it did was a
 bug.** "Every message I hold names itself" and "I name every row the store holds" are
