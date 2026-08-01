@@ -9160,16 +9160,13 @@ mod persisted_ordering_guard {
     /// a tree where the seam was deleted, rather than pass on an empty scan.
     fn split_on_seam(src: &str) -> (String, String) {
         let (begin, end) = markers();
-        let Some(start) = src.find(&begin) else {
+        let Some((before, rest)) = src.split_once(begin.as_str()) else {
             return (String::new(), src.to_string());
         };
-        let Some(stop) = src[start..].find(&end).map(|off| start + off + end.len()) else {
+        let Some((inside, after)) = rest.split_once(end.as_str()) else {
             return (String::new(), src.to_string());
         };
-        (
-            src[start..stop].to_string(),
-            format!("{}{}", &src[..start], &src[stop..]),
-        )
+        (format!("{begin}{inside}{end}"), format!("{before}{after}"))
     }
 
     /// The private frame builder must have no callers outside the seam.
