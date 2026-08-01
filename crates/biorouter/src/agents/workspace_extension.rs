@@ -451,6 +451,13 @@ const PENDING_TOOLS: &[(&str, &str)] = &[];
 ///
 /// Add a row whenever a tool is renamed or removed. Removing one is only
 /// correct if the name is genuinely live again.
+///
+/// `#[cfg(test)]` because the only consumer is the instruction-scanning test
+/// below; ungated, it is dead code in every shipped build and `-D warnings`
+/// (which `scripts/clippy-lint.sh` uses) turns that into a hard error. It stays
+/// declared *here*, beside the tool table, so the reader who renames a tool
+/// meets the rule at the moment it applies.
+#[cfg(test)]
 const RETIRED_TOOL_NAMES: &[&str] = &["subagent_status", "workspace_spawn_subagent"];
 
 pub struct WorkspaceClient {
