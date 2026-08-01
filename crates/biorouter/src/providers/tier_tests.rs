@@ -196,6 +196,48 @@ fn a_self_hosted_provider_pointed_off_the_machine_is_not_private() {
 }
 
 #[test]
+fn only_a_loopback_host_reads_as_this_machine() {
+    use super::is_loopback_host;
+    // The predicate behind both self-hosted providers, at its edges. Every case
+    // below is one config field away from the one above it, and the direction
+    // each one errs in is the whole argument for the rule.
+    assert!(is_loopback_host("http://localhost:11434"));
+    assert!(is_loopback_host("http://127.0.0.1:11434"));
+    assert!(is_loopback_host("http://[::1]:11434"));
+    // Hosts are case-insensitive; `host_of` lower-cases before comparing.
+    assert!(is_loopback_host("http://LOCALHOST:11434"));
+
+    // RFC 6761 §6.3 reserves the `.localhost` TLD for loopback, and both macOS
+    // and systemd-resolved honour it. Accepting it is a deliberate ergonomic
+    // concession with a residual assumption attached: unlike `localhost`, which
+    // is in every /etc/hosts, a `*.localhost` name is only loopback because a
+    // resolver says so, and an attacker who controls DNS but not /etc/hosts
+    // could answer for it. That is a strictly harder position than the one this
+    // rule defends against (a single writable JSON file), so the arm stays —
+    // but it is the first thing to remove if that ever stops being true.
+    assert!(is_loopback_host("http://sidecar.localhost:11434"));
+    // ...and only as a TLD. These are what an attacker actually writes:
+    assert!(!is_loopback_host("http://localhost.evil.example/"));
+    assert!(!is_loopback_host("http://notlocalhost/"));
+    assert!(!is_loopback_host("http://127.0.0.1.evil.example/"));
+    assert!(!is_loopback_host("http://gpu.lab.ucsf.edu:11434"));
+
+    // Fail-SAFE, not fail-open. These three genuinely are this machine and
+    // still read Public, which costs a user with an unusual setup a private
+    // badge and costs nobody a transcript. Do not "fix" them by broadening the
+    // predicate without re-reading the paragraph above: every spelling added
+    // here is a spelling an attacker may also write.
+    assert!(!is_loopback_host("http://127.0.0.2:11434"));
+    assert!(!is_loopback_host("http://[::ffff:127.0.0.1]:11434"));
+    // A bare host:port parses as a scheme with an opaque path and has no host
+    // at all. `OllamaProvider` normalises one to `http://…` before storing it,
+    // so this shape cannot reach `tier()` from that path — but the predicate
+    // is the thing under test, and it answers Public for anything hostless.
+    assert!(!is_loopback_host("localhost:11434"));
+    assert!(!is_loopback_host(""));
+}
+
+#[test]
 fn versa_demotes_when_its_endpoint_is_not_the_ucsf_gateway() {
     use crate::privacy::ProviderTier::{Private, Public};
     // versa_azure reads AZURE_OPENAI_ENDPOINT, the same key the public

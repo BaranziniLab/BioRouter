@@ -67,6 +67,13 @@ pub(crate) fn host_of(url: &str) -> Option<String> {
 /// True only for a loopback host. R1 makes "self-hosted" private; a
 /// non-loopback host is not evidence of self-hosting, and treating it as such
 /// turns one writable config key into a forged private badge.
+///
+/// Purely lexical, and deliberately narrow: `127.0.0.2`, `::ffff:127.0.0.1` and
+/// a scheme-less `localhost:11434` all answer **false** despite being this
+/// machine. That direction is fail-safe — it costs an unusual setup a badge and
+/// costs nobody a transcript — and every spelling added here is a spelling an
+/// attacker may also write. The edges, and the residual assumption behind the
+/// `.localhost` arm, are pinned in `tier_tests::only_a_loopback_host_reads_as_this_machine`.
 pub(crate) fn is_loopback_host(url: &str) -> bool {
     match host_of(url).as_deref() {
         Some("localhost") | Some("127.0.0.1") | Some("::1") | Some("[::1]") => true,
