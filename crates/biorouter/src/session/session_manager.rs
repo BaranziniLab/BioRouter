@@ -2295,6 +2295,11 @@ impl SessionStorage {
         // BR-7 externalized tool-result payloads (migration 16).
         Self::create_message_blobs_table(pool).await?;
 
+        // #56 declassification ledger (migration 18), created inline for fresh
+        // DBs. The privacy columns are already in the `sessions` DDL above; this
+        // is the other half of the same migration's shape.
+        Self::create_classification_audit_table(pool).await?;
+
         sqlx::query("CREATE INDEX idx_messages_session ON messages(session_id)")
             .execute(pool)
             .await?;
@@ -3016,6 +3021,20 @@ impl SessionStorage {
                 .execute(pool)
                 .await?;
         }
+        Self::create_classification_audit_table(pool).await?;
+        Ok(())
+    }
+
+    /// The append-only declassification ledger (§12.5).
+    ///
+    /// Shared by `create_schema` and [`Self::ensure_privacy_schema`] rather than
+    /// living only in the reconcile, because the two schema paths are mutually
+    /// exclusive: a database with no `schema_version` table takes `create_schema`
+    /// and never reaches `run_migrations` in that process. Creating the table
+    /// only in the reconcile would leave a first-run install without it until
+    /// the *second* launch — and a declassification in between fails with
+    /// `no such table`.
+    async fn create_classification_audit_table(pool: &Pool<Sqlite>) -> Result<()> {
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS classification_audit (
@@ -11580,6 +11599,20 @@ mod tests {
         assert_eq!(s.privacy_tier, SessionClassification::Public);
         assert_eq!(s.privacy_reason, None);
         assert_eq!(s.parent_session_id, None);
+
+        // The audit table belongs to the fresh path too, and it has to be there
+        // in THIS process. `create_schema` runs once, on a database that has no
+        // `schema_version` table; the reconcile that also creates the table only
+        // runs on a database that already has one, i.e. from the *second* launch
+        // onwards. A first-run declassification would otherwise fail with
+        // `no such table: classification_audit`. Asserted without reopening
+        // through `SessionManager`, since reopening is exactly what would hide
+        // the bug.
+        let db = temp.path().join(SESSIONS_FOLDER).join(DB_NAME);
+        assert!(
+            table_exists(&db, "classification_audit").await,
+            "a freshly created database is missing classification_audit"
+        );
     }
 
     #[tokio::test]
