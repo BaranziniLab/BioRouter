@@ -135,7 +135,9 @@ By default, tabs the agent opens — including subagent tabs — open **in the b
 
 If you would rather not have tabs appear at all, turn on **Settings → App → Workspace → "Never open tabs automatically"**. With it on, the daemon downgrades every focus-stealing frame (`open_tab`, `open_window`, `activate_tab`) to a notification naming the conversation, and tells the model no tab was opened so it cannot claim otherwise. The work still runs; open it from History when you want it. The setting is stored as `WORKSPACE_ANNOUNCE_ONLY` and is **off** by default.
 
-Subagent tabs have a second limit: at most **4** visible child tabs per parent (`BIOROUTER_WORKSPACE_MAX_VISIBLE_CHILD_TABS` to change it). A fan-out of ten spawns is not a tab storm — the fifth child onward runs in the background, is listed in History under its parent, and is readable with `workspace_read_conversation`. A spawn is never refused for this reason, and the parent is told which children did not get a tab.
+Subagent tabs have a second limit: at most **4** children *running at once* get a tab from the same parent (`BIOROUTER_WORKSPACE_MAX_VISIBLE_CHILD_TABS` to change it). A fan-out of ten spawns is not a tab storm — the fifth child onward runs in the background, is listed in History under its parent, and is readable with `workspace_read_conversation`. A spawn is never refused for this reason, and the parent is told which children did not get a tab.
+
+The cap counts live children, not open tabs: a slot is released when its child finishes, so a parent that spawns four, waits, and spawns four more gets tabs both times. It bounds the burst, not how many subagent tabs you can end up with in a long conversation — closing them is yours to do.
 
 ## Without the desktop app
 

@@ -64,7 +64,9 @@ Two things also suppress the tab without changing what runs: no GUI attached (a 
 
 ### The fan-out cap
 
-At most **4** subagent tabs open per parent conversation. Ask for ten subagents in parallel and you get four tabs, not a tab storm; children five through ten run in the background, appear in History nested under their parent, and can be read with `workspace_read_conversation`. A spawn is **never refused** because of this cap, and the parent is told which children did not get a tab so it does not claim one exists. Raise or lower it with `BIOROUTER_WORKSPACE_MAX_VISIBLE_CHILD_TABS`.
+At most **4** children *running at the same time* get a tab from one parent. Ask for ten subagents in parallel and you get four tabs, not a tab storm; children five through ten run in the background, appear in History nested under their parent, and can be read with `workspace_read_conversation`. A spawn is **never refused** because of this cap, and the parent is told which children did not get a tab so it does not claim one exists. Raise or lower it with `BIOROUTER_WORKSPACE_MAX_VISIBLE_CHILD_TABS`.
+
+It is a cap on the burst, not a running total of open tabs. Each slot is released when that child's run ends, so a parent that spawns four, waits for them, and spawns four more gets tabs for all eight — you can finish a long conversation with more than four subagent tabs open, and closing them is up to you. That is the intended behaviour: the cap exists to stop a single parallel fan-out from burying the workspace, and a batch you have already read is not a fan-out.
 
 ### Finding subagent runs later
 
