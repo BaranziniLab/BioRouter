@@ -759,8 +759,11 @@ impl KnowledgeServer {
         // be aimed anywhere it asks: a `.brkb` is a zip, so an archive dropped
         // outside the knowledge tree is readable by the same session's shell
         // with `unzip -p`, no import and no marker-stripping required. Forcing
-        // it into `<knowledge-root>/exports/` puts it inside DR-14 deny root #2,
-        // where the same kernel deny that hides the base hides the artifact.
+        // it into `<knowledge-root>/.exports/` keeps the artifact beside the base
+        // it came from. The directory name is a DOTFILE on purpose: see
+        // `paths::MODEL_EXPORT_DIR` — a plain `exports/` is a legal kb id, so a
+        // session could create the base `exports` and collect every private
+        // archive inside a public base's own tree.
         //
         // Scoped to PRIVATE bases on purpose: relocating every model export
         // would break `kb_export` as a feature. And it lives HERE rather than in
@@ -772,9 +775,7 @@ impl KnowledgeServer {
         // would leave a complete copy of a private knowledge base at a
         // public-readable path for the length of the copy.
         let dest = if crate::knowledge::tier::is_private(self.service.root(), &p.kb_id) {
-            self.service
-                .root()
-                .join("exports")
+            crate::knowledge::paths::model_export_dir(self.service.root())
                 .join(format!("{}.brkb", p.kb_id))
         } else {
             match p.dest_path {
@@ -1292,10 +1293,10 @@ mod tests {
                 .unwrap();
         }
         assert_eq!(std::fs::read_dir(elsewhere.path()).unwrap().count(), 0);
-        // (b) the tool REPORTED the real location, and it is under <root>/exports/.
+        // (b) the tool REPORTED the real location, and it is under <root>/.exports/.
         let written = reported_export_path(&out);
         assert!(
-            written.starts_with(root.join("exports")),
+            written.starts_with(crate::knowledge::paths::model_export_dir(&root)),
             "reported {}, which is not inside the knowledge root",
             written.display()
         );
@@ -1321,6 +1322,46 @@ mod tests {
             .unwrap();
         assert!(asked.exists(), "a public base's export was relocated");
         assert_eq!(reported_export_path(&out), asked);
-        assert!(!root.join("exports").join("notes.brkb").exists());
+        assert!(!crate::knowledge::paths::model_export_dir(&root)
+            .join("notes.brkb")
+            .exists());
+    }
+
+    #[tokio::test]
+    async fn a_private_export_cannot_be_collected_inside_a_public_base() {
+        // Issue #56. The export directory is a sibling of the bases, never one
+        // of them. If its name validated as a kb id, a session could create that
+        // base first and every private archive would land inside a PUBLIC base's
+        // own tree — `brkb::walk` packs whatever it finds — so exporting that
+        // base would hand out every private one. The name is `.exports`, which
+        // `validate_kb_id` rejects, so `create_base` cannot reach it at all.
+        let (srv, _tmp, root) = migrated_server_with_base("omop");
+        crate::knowledge::tier::raise_unlocked(&root, "omop", true).unwrap();
+        seed_page(&root, "omop", "knowledge/x.md", "SENTINEL-COHORT-N-412");
+
+        let dir = crate::knowledge::paths::MODEL_EXPORT_DIR;
+        assert!(
+            crate::knowledge::paths::validate_kb_id(dir).is_err(),
+            "the export directory {dir} is a legal kb id, so a base can be created over it"
+        );
+        assert!(srv.service.create_base(dir, "collector", None).is_err());
+
+        let written =
+            reported_export_path(&kb_export_via_tool(&srv, "omop", None).await.unwrap());
+        assert_eq!(
+            written.parent().unwrap(),
+            crate::knowledge::paths::model_export_dir(&root)
+        );
+        // …and the archive is not inside any knowledge base's directory.
+        for entry in std::fs::read_dir(&root).unwrap() {
+            let e = entry.unwrap();
+            let name = e.file_name().to_string_lossy().to_string();
+            if crate::knowledge::paths::validate_kb_id(&name).is_ok() {
+                assert!(
+                    !written.starts_with(e.path()),
+                    "the export landed inside the knowledge base {name}"
+                );
+            }
+        }
     }
 }

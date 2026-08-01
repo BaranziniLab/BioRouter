@@ -2261,6 +2261,6 @@ async fn the_users_own_export_route_is_not_subject_to_the_models_location_rule()
         body.len()
     );
     // …and nothing was relocated into the knowledge root as a side effect: the
-    // model's rule writes `<root>/exports/`, and the user's route writes nothing.
-    assert!(!root.join("exports").exists());
+    // model's rule writes `<root>/.exports/`, and the user's route writes nothing.
+    assert!(!biorouter_mcp::knowledge::paths::model_export_dir(&root).exists());
 }
