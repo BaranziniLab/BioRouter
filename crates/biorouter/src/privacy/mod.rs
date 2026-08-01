@@ -361,10 +361,16 @@ mod tests {
              audit can see it — do not import the bare name: {imports:#?}"
         );
         let found: Vec<(String, usize)> = calls.into_iter().collect();
-        let want: Vec<(String, usize)> = EXPECTED
+        // `found` comes out of a BTreeMap, so it is path-sorted; `want` would
+        // otherwise keep EXPECTED's declaration order. The two entries Tasks 13 and
+        // 23 uncomment happen to be declared in sorted order, but relying on that
+        // makes the NEXT entry fail for a reason that has nothing to do with the
+        // invariant, behind a message that blames the invariant. Sort both.
+        let mut want: Vec<(String, usize)> = EXPECTED
             .iter()
             .map(|(f, n)| ((*f).to_string(), *n))
             .collect();
+        want.sort();
         assert_eq!(
             found, want,
             "the set of `floor` callers changed. A new crossing between the capability and \
