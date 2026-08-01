@@ -24000,6 +24000,45 @@ will be inherited in the CLI"), and a property needs a mechanism, not a promise.
 here because the capability table cannot be complete until Phase 3 is, and because a gate
 that lands red blocks the phase that introduced it.
 
+### Task 40b: Diagnose the subagent Auto Visualiser daemon abort
+
+**Carried over from the Phase 3 gate (2026-07-31).** The gate turned up a reproducible
+crash and Task 40 could only write it into a status header. A defect that kills
+`biorouterd`, reachable from the slice that gate just marked implemented, needs a work
+item — a paragraph in a header is not one, and Phase 4 rewrites that header.
+
+**The observation.** A subagent that calls an Auto Visualiser tool aborts the daemon with
+`fatal runtime error: stack overflow` in a `tokio-runtime-worker`. Reproduced **3/3** on
+fresh daemons, with and without `BIOROUTER_AUTOVIS_CDN=1`. **Not** reproducible for the
+same tool in an ordinary (non-subagent) session, and **not** the cancel path — it
+reproduces with no cancel involved.
+
+**The standing hypothesis, and why it is not yet an answer.** The blocking delegation
+awaits the child's whole agent loop inside the parent's `dispatch_tool_call`, so the
+child's frames sit on the parent's stack. That nesting predates this campaign. No custom
+worker stack size is set anywhere in `biorouter-server` or `biorouter` — the only
+`stack_size` in the tree is in `code_execution_extension.rs`, a different sandbox — so
+the workers run tokio's default ~2 MiB. Whether Slice 3 merely pushed an already-marginal
+stack over the edge is **unresolved**, and the difference matters: "pre-existing,
+exposed" and "introduced here" have different owners and different fixes.
+
+- [ ] Reproduce on a **build** of `ea15a4de` (the pre-Phase-2 baseline). That single
+  measurement decides the ownership question and nothing cheaper does. ⚠ A baseline
+  *checkout* is not enough — the crash is in the running daemon, so the binary has to be
+  the baseline one.
+- [ ] Capture the overflowing frames: `RUST_BACKTRACE=full` on the abort, or the daemon
+  under a debugger. The repeating frame group is the answer.
+- [ ] If it is the nesting, the fix is to stop awaiting the child's loop on the parent's
+  stack (spawn the child's turn, await a channel) — **not** to raise the worker stack
+  size, which only moves the depth at which it aborts and hides the next regression.
+  Raising it is acceptable solely as an explicitly-labelled stopgap with this task open.
+- [ ] Regression test covering a subagent whose tool call nests deeply, so the depth is
+  asserted rather than remembered.
+
+⚠ **This blocks the release gate, not Phase 4's docs.** `autovisualiser` is enabled in a
+normal config and delegation is auto-enabled by decision 21, so the two meet without the
+user opting into anything. Task 44 must not sign off with this open.
+
 ### Task 41: Unify Agent Drafter `consult` onto the workspace spine
 
 **Decision 13 changed this from "flag it to the apps-platform owners" to "do it."** The
