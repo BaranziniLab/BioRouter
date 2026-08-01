@@ -311,8 +311,9 @@
 > docs-only task placed immediately after Task 4, and it has now been **run for real** — all five
 > packages listed clean at `fd14ef9a` on 2026-08-01, 58 `(package, filter)` pairs audited, 46
 > measured and 12 deferred, gate exit 0. A first run against `main` at `89c1f026` three days earlier
-> is superseded: `main` advanced past that commit and **eighteen** of its figures are already wrong
-> here (`agents::agent` 21 → 58, `memory` 12 → 53, `routes::session` 20 → 29), which is the
+> is superseded: `main` advanced past that commit and **twenty-one of its 41 figures** — half the
+> table — are already wrong here (`agents::agent` 21 → 58, `memory` 12 → 53, `routes::session`
+> 20 → 29, and four that moved by a single test), which is the
 > arithmetic-on-a-stale-base defect the task exists to catch, caught on the task's own numbers.
 > `agents::chatrecall_extension` and `session::chat_history_search` really are **0**, as claimed, and
 > `routes::agent` = 8 is confirmed exactly. What remains unrun is stated in the task rather than
@@ -2432,9 +2433,10 @@ deferred set into the resolved table below. The five listings behind every numbe
 ⚠ **Step 3 is a FIRST measurement, not a re-run to confirm, and that is the finding.** An earlier
 draft of this task carried figures measured against `main` at `89c1f026` on 2026-07-29 and said
 everything below was "already measured". Re-running Step 1 verbatim on 2026-08-01 against this
-worktree — `main` at `e89d3742` plus Phase 0 and Task 4 — contradicted **eighteen** of them, several
-by more than a factor of two (`agents::agent` 21 → **58**, `memory` 12 → **53**, `routes::session`
-20 → **29**). `89c1f026` *is* an ancestor of this tree, but `main` advanced past it: the Workspace
+worktree — `main` at `e89d3742` plus Phase 0 and Task 4 — contradicted **twenty-one** of them (half
+the table), several by more than a factor of two (`agents::agent` 21 → **58**, `memory` 12 → **53**,
+`routes::session` 20 → **29**), and others by the single test that is hardest to notice
+(`providers` 359 → **360**). All twenty-one are enumerated in Step 3's item 1. `89c1f026` *is* an ancestor of this tree, but `main` advanced past it: the Workspace
 Control merge (#30), the `MessagesPersisted` ordering work (#66) and the developer file-tool jail
 (#68) all add lib tests to modules this plan filters on. **A pre-count is only true of the commit it
 was measured at**, which is precisely the arithmetic-on-the-wrong-base error this task exists to
@@ -2574,14 +2576,35 @@ built on the wrong one of that pair is off by three.
    normalises it away measures a different command from the one written down. The same trap in
    `biorouter-server`: `auth::` is **3** and `auth` is **6**, and only 3 of the 6 are in `auth.rs`.
 
-1. **A pre-count is only true of the commit it was measured at.** Eighteen of the 41 figures an
-   earlier draft carried — measured at `89c1f026`, three days before this run — no longer hold on
-   this tree, because `main` advanced past that commit before the worktree was cut. The largest:
-   `agents::agent` 21 → **58**, `memory` 12 → **53**, `agents::agent::tests` 14 → **44**,
-   `session::session_manager` 139 → **145**, `routes::session` 20 → **29**, `agents::subagent_tool`
-   16 → **27**, `developer::shell` 16 → **24**, `knowledge::macros` 10 → **18**. Every one of them
-   is a `pre + N` assertion that would have reported a shortfall as a pass, and no reader could have
-   spotted a single one. The whole table is re-measured at `fd14ef9a` and dated.
+1. **A pre-count is only true of the commit it was measured at.** **Twenty-one** of the 41 figures
+   an earlier draft carried — measured at `89c1f026`, three days before this run — no longer hold on
+   this tree, because `main` advanced past that commit before the worktree was cut. That is
+   **half the table**, and the count itself is stated exactly rather than approximately, because
+   this task's own standard is that *a difference you cannot NAME is the defect* — an earlier
+   revision of this very item said "eighteen" and was three short. All twenty-one, verified by
+   diffing the old heredoc against the new one on the 41 shared `(package, filter)` keys:
+
+   | Filter | Was → is | | Filter | Was → is |
+   |---|---|---|---|---|
+   | `memory` | 12 → **53** | | `agents::extension_manager` | 37 → **40** |
+   | `memory::` | 10 → **51** | | `knowledge::conversation_ingest` | 2 → **3** |
+   | `agents::agent::tests` | 14 → **44** | | `agents::reply_parts` | 2 → **3** |
+   | `agents::agent` | 21 → **58** | | `knowledge::provider_completer` | 4 → **6** |
+   | `routes::session` | 20 → **29** | | `auth` | 4 → **6** |
+   | `agents::subagent_tool` | 16 → **27** | | `agents::code_execution_extension` | 69 → **71** |
+   | `developer::shell` | 16 → **24** | | `developer::rmcp_developer::tests` | 64 → **68** |
+   | `knowledge::macros` | 10 → **18** | | `routes::apps` | 90 → **94** |
+   | `knowledge::macros::ingest` | 3 → **9** | | `session::session_manager` | 139 → **145** |
+   | `biorouter-cli session` | 166 → **195** | | `providers` | 359 → **360** |
+   | `knowledge::` | 190 → **198** | | | |
+
+   Every one of them is a `pre + N` assertion that would have reported a shortfall as a pass, and no
+   reader could have spotted a single one. Note the tail of that list as much as the head: four rows
+   moved by **one or two tests**, which is exactly the size of delta a task's own `+ N` is trying to
+   detect — a stale base of 359 against a real 360 turns "my one test landed" into "it did not" or
+   the reverse, and it is far less likely to be noticed than `agents::agent` 21 → 58. The whole
+   table is re-measured at `fd14ef9a` and dated. Items 2-4 below expand the four of these twenty-one
+   that were wrong for a *reason* rather than merely stale.
 2. `knowledge::` is **198**, not "~122" (the stale figure inherited from `CLAUDE.md`) and not the
    190 an earlier draft of this task recorded. Task 10A's `pre + 16` assertion built on 122 would
    have read a 76-test shortfall as a pass. Corrected in Task 10A Step 4.
@@ -2677,10 +2700,13 @@ want "deferred rows" 12 "$(wc -l < /tmp/56-filters/deferred.txt | tr -d ' ')"
 # and nothing failed — which is the `knowledge::` error this task itself found,
 # reintroduced as a hole in the gate that found it. Same shape as Task 10D's
 # metadata baseline, same rule: a difference you cannot NAME is the defect.
-# ⚠ These 46 numbers are dated: measured 2026-08-01 at fd14ef9a. Eighteen of the
-# figures measured at 89c1f026 three days earlier are already wrong here, so a
-# DRIFT line usually means main moved, not that you broke something — RE-MEASURE
-# and re-baseline the row in the commit that noticed, never guess the delta.
+# ⚠ These 46 numbers are dated: measured 2026-08-01 at fd14ef9a. TWENTY-ONE of
+# the 41 figures measured at 89c1f026 three days earlier are already wrong here
+# — half the table, in three days — so a DRIFT line usually means main moved,
+# not that you broke something: RE-MEASURE and re-baseline the row in the commit
+# that noticed, never guess the delta. Four of the twenty-one moved by one or
+# two tests, which is the same size as most `+ N` in this plan; do not skim a
+# DRIFT line because its numbers look close.
 cat > /tmp/56-filters/resolved.txt <<'ROWS'
 biorouter|agents::agent|58
 biorouter|agents::agent::tests|44
@@ -2935,7 +2961,7 @@ task exists to prevent.
 test name that do not exist yet and cannot be listed. It converts "unruled-out for all 58" into
 "unruled-out for 12, each owned by a named task", which is a different order of risk: **46 of 58
 pairs are now measured**, every "0 today" claim in this plan is confirmed, and the wrong figures were
-found and corrected — eighteen counts that `main` had moved past since 2026-07-29 (`agents::agent`
+found and corrected — twenty-one counts that `main` had moved past since 2026-07-29 (`agents::agent`
 58-not-21, `memory` 53-not-12, `routes::session` 29-not-20 among them), `knowledge::` 198-not-122,
 `agents::extension_manager` 40-not-27, `secret_guard::` 19-not-20, `memory::` 51-not-53, `auth::`
 3-not-6 — plus one filter (Task 14C's `routes::agent::tests::…`) that can never resolve at all, and
