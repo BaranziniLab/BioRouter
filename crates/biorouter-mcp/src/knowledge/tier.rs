@@ -21,14 +21,30 @@
 //! `forget_tier`, which take the lock and delegate here. This is the tree's own
 //! `_unlocked` convention — twenty helpers in `service.rs` already follow it.
 //!
-//! ## Known residual
+//! ## Known residuals
 //!
-//! `lock_root()` is in-process. Two Biorouter processes (the desktop app and a
-//! terminal `biorouter`) raising two different bases at the same instant can
-//! still lose one edit, and the lost edit could be a *raise*. This is the same
-//! read-modify-write hazard `set_hidden_persisted`'s own doc comment already
-//! documents for `.hidden-kbs`, it predates this work, and closing it needs an
-//! OS advisory lock the tree does not have anywhere.
+//! ⚠ An earlier version of this block said `lock_root()` was in-process, that
+//! two Biorouter processes could therefore lose a raise, and that closing it
+//! "needs an OS advisory lock the tree does not have anywhere". All three are
+//! false: `FileLockGuard::acquire` calls `file.lock_exclusive()` through
+//! `fs2::FileExt` (`service.rs`), which IS flock/`LockFileEx` — cross-process,
+//! and the same mechanism the paragraph above correctly relies on when it
+//! explains why a second acquire in one process blocks. It is corrected rather
+//! than deleted because inviting someone to "fix" a race the tree already closes
+//! is worse than saying nothing, and because it obscured the two that are real:
+//!
+//! 1. **Readers take no lock, by design.** `is_private` and `has_entry_unlocked`
+//!    never `flock`; they rely on the store being replaced only by `rename`, so
+//!    a read sees the old file or the new one and never a torn one. What that
+//!    does not give is freshness: a permit decided microseconds before a raise
+//!    lands is still acted on. That is check-then-use, it is the same window
+//!    Task 10A's own coverage note records for `primary_kb_for_context`, and
+//!    closing it would mean holding the root lock across every knowledge read.
+//! 2. **The lock is advisory and file-scoped.** Anything that edits `.kb-tiers`
+//!    without going through `KnowledgeService` — a text editor, another tool —
+//!    bypasses it entirely. The task accepts that: the file is machine-local and
+//!    user-writable, and the threat model is "a public model reads private
+//!    notes", not "a local attacker with a shell".
 
 use anyhow::Result;
 use std::collections::BTreeMap;
