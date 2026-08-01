@@ -909,9 +909,24 @@ therefore bypass the visible-set logic — `kb_search` (`knowledge/server.rs:590
 `kb_search_raw_sources` (`:618-619`), `kb_export` (`:743`), and the four that route through
 `kb_id_or_primary`, whose doc comment states the bypass outright ("An explicit `kb_id` always wins
 and is never filtered against the session's set", `:308-311`): `kb_list_pages` (`:379`),
-`kb_read_page` (`:396`), `kb_get_graph` (`:482`) and `kb_list_history` (`:497`). The tier lives in a
-machine-local sidecar beside `.active-kb` and `.hidden-kbs`, not in `manifest.yaml`, because the
-manifest travels inside the `.brkb` archive and an imported tier would be attacker-supplied.
+`kb_read_page` (`:396`), `kb_get_graph` (`:482`) and `kb_list_history` (`:497`).
+
+⚠ **Those seven are the *model-facing* read surface, not the whole read surface.** The daemon's HTTP
+routes read a base by a caller-supplied path id with no visible-set filtering either — `GET
+/knowledge/bases/{id}/` `graph` (`routes/knowledge.rs:38` → `get_graph`), `location` (`:39` →
+`:496`), `page` (`:40` → `:822`), `pages` (`:41` → `:522`, and `pages/{*page_path}` at `:42-45` →
+`:543`), `history` (`:46`), `preview` (`:47`) and `export` (`:55` → `:1522`), plus the two raw-source
+handlers at `:1604`/`:1636`. Those are the GUI's own path and are user-driven rather than
+model-driven, so scoping the *tool* ratchet to the seven MCP entry points is the right call — but
+§9.3 A1 establishes that the daemon secret reaches the model today, and AR-15 that a secret-holder
+can raise its own session's capability, so a shell-capable private model can reach a KB through the
+HTTP side without touching any of the seven. The implementing task must decide deliberately whether
+the HTTP routes carry the check too, and record the answer; it must not conclude from this paragraph
+that seven checks are the whole job.
+
+The tier lives in a machine-local sidecar beside `.active-kb` and `.hidden-kbs`, not in
+`manifest.yaml`, because the manifest travels inside the `.brkb` archive and an imported tier would
+be attacker-supplied.
 Existing knowledge bases migrate **public** (fail-open, DR-10) even if a private session fed them —
 an accepted cost, recorded as
 [AR-2](privacy-tiers-execution-plan.md#ar-2--every-knowledge-base-that-exists-today-starts-public-at-migration-even-if-a-private-session-fed-it). The way back out of the ratchet is
