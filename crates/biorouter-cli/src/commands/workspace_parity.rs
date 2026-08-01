@@ -272,9 +272,16 @@ pub fn cli_counterpart(capability: WorkspaceCapability) -> Counterpart {
             path: &["session", "cancel"],
             args: &[],
         },
+        // Both flags, because `--of` alone is the wrong half of the claim: it
+        // SELECTS the subagent of a parent, while `--read_only` is what makes
+        // the attach an observation rather than a steer. A row that named only
+        // the selector would go green on a binary that had lost the ability to
+        // observe without participating — which is the capability this route is.
+        // (Ids, not flags: clap derives the id from the field name, so the
+        // `--read-only` flag answers to `read_only` here.)
         C::RouteObserve => Counterpart::Cli {
             path: &["session", "attach"],
-            args: &["of"],
+            args: &["of", "read_only"],
         },
         C::RouteRunning => Counterpart::Cli {
             path: &["session", "list"],
