@@ -113,6 +113,19 @@ impl ChatRecallClient {
                     // the driven future, on the far side of
                     // `tool_dispatch_limits::acquire`, where the provider may
                     // already be a different one.
+                    //
+                    // The `cap.enforced()` conjunct is DR-15's master opt-out,
+                    // and it is deliberately part of this predicate — the plan's
+                    // snippet for this guard omitted it. Every gate reads the
+                    // toggle, and reading it from the same sample that carried
+                    // the tier is what keeps the two halves of one decision at
+                    // one instant. It is a no-op while the toggle is still the
+                    // `const fn … { true }` stub, and is the whole guard once
+                    // Task 30 makes it settable. Do not "simplify" it away.
+                    //
+                    // The toggle's function name is deliberately not spelled
+                    // here: a Step 5 gate counts that token tree-wide and must
+                    // see exactly one — the read inside `CallCapability`.
                     if cap.enforced()
                         && !crate::privacy::visible_to(cap.tier(), loaded_session.privacy_tier)
                     {
