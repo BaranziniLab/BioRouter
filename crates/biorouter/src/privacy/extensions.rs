@@ -3,10 +3,12 @@ use super::ProviderTier;
 /// The single function implementing R11, both halves.
 ///
 /// (i) **Nothing local can grant private.** The tier is resolved from the
-///     generated registry set, never from `config.yaml` and never from the
-///     `.brxt` bundle — which self-declares nothing the resolver reads, and
-///     whose install records no provenance at all (`BrxtInstallModal.tsx`
-///     writes name/cmd/args/envs and no registry id, source URL or hash).
+///     compiled-in `registry_private::PRIVATE_EXTENSIONS` baseline, never from
+///     `config.yaml` and never from the `.brxt` bundle — which self-declares
+///     nothing the resolver reads, and whose install records no provenance at
+///     all (`BrxtInstallModal.tsx` writes name/cmd/args/envs and no registry
+///     id, source URL or hash). That baseline is hand-maintained, **not**
+///     generated; see that module's header for the drift hazard it creates.
 /// (ii) **Anything not on BAAM is PUBLIC.** Fail-open, operator ruling. This is
 ///     the opposite fail direction from `Provider::tier`'s default and the
 ///     asymmetry is deliberate: an unknown model is a place data might *go*
