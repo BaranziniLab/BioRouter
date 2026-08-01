@@ -2087,8 +2087,9 @@ network. Nothing is uninstalled or disabled.
 **Sessions outside History:** `list_sessions` filters to `session_type IN ('user','scheduled')`
 (`session_manager.rs:3537`), so a private Hidden or Terminal session would be enforced forever with
 no GUI declassification surface. **Do not add a "System sessions" filter to History** — on this
-machine that would surface 511 hidden sessions (459 public, 52 private) into a user-facing list, a
-regression traded for an edge case. Use the CLI escape hatch instead (`biorouter session declassify
+machine that would surface **720** hidden sessions (668 public, 52 private) into a user-facing list,
+a regression traded for an edge case. (Re-measured 2026-08-01 alongside §16; the figure was 511 when
+this section was first written, and the bucket grows continuously — the argument only gets stronger.) Use the CLI escape hatch instead (`biorouter session declassify
 <id>`, §14.7), which works by id regardless of `session_type`.
 
 **Rollback:** downgrading the app leaves the columns in place and ignored, and
@@ -2439,7 +2440,7 @@ counts (**re-measured 2026-08-01 — see §16**).
 | The public `azure` provider shares three config keys with `versa_azure` | The registry name is `azure_openai`, and its shipped `AZURE_OPENAI_ENDPOINT` **default is the UCSF gateway itself** (`azure.rs:204`). The demotion rule is unchanged, but the proposed UX copy ("a direct cloud account, even if your institution pays for it") would be inaccurate. Corrected in §14.5. |
 | The knowledge active-KB is a global file, so a public session inherits a private session's KB by default | `paths.rs:66-71` adds `.active-kb-sessions`, one file per session, with `.active-kb` as the primary fallback. The KB-as-shared-sink attack stands (any session may name any KB); the "inherits by default" framing does not. Corrected in §9.3 B4. |
 | The design's fix list covers `copy_session` | `diverge_session` (`:4204`) is the primary GUI diverge path and does **not** call `copy_session`; `import_session` (`:4096`) is a third. Corrected in §9.3 B1, and the fix moved onto `create_session`. |
-| History would gain a "System sessions" filter so Hidden sessions have a declassification path | That surfaces 511 hidden sessions on this machine into a user-facing list. Replaced with the CLI `declassify <id>` escape hatch. §15.4. |
+| History would gain a "System sessions" filter so Hidden sessions have a declassification path | That surfaces every Hidden session on this machine into a user-facing list — 511 when the objection was raised, 720 as of 2026-08-01 (see the row below). Replaced with the CLI `declassify <id>` escape hatch. §15.4. |
 | Hidden sessions: 435 public / 52 private (487 total) | Re-measured: 459 public / 52 private (511 total). Re-measured again 2026-08-01: 668 public / 52 private (720 total) — the point is that this bucket grows continuously, not that any one figure is right. §16. |
 | `provider_class` at `routes/apps.rs:2061-2098` | The function is at `:2089`; `:2061` is the start of its doc comment. |
 | `filterExtensions` at `baam.html:3906` | `:3909`. |
