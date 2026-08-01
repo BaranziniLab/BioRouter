@@ -3349,51 +3349,120 @@ mod tests {
 
     // ---- issue #57: the daemon's auth secret must not reach an extension ------
 
+    /// The daemon-private name the hostile manifest declares to pin
+    /// `doomed_env_keys`' `.chain(explicit)`. It is named once because the
+    /// probe both declares it and asserts it is *absent* from the ambient
+    /// environment — see `leak_probe_prints_extension_child_env`.
+    #[cfg(unix)]
+    const PROBE_DECLARED_ACP_KEY: &str = "BIOROUTER_ACP_WS_TOKEN";
+
     /// Child half of the stdio-extension leak probe.
     ///
     /// The leak is in the *inherited* environment, so exercising it means
     /// controlling this process's environment — and `set_var` is unsound in a
     /// threaded test binary. So the parent re-invokes this test binary with the
-    /// canary exported, and this half spawns a real child through the real
+    /// canary exported, and this half spawns real children through the real
     /// [`prepare_child_environment`] — exactly what every stdio / inline-python
-    /// extension is spawned with — and prints the environment it received.
+    /// extension is spawned with — and prints the environments they received.
+    ///
+    /// **Four children, not one.** Two independent axes, each of which a
+    /// plausible wrong implementation could pass on one arm and leak on the
+    /// other:
+    ///
+    /// - *what the manifest declares* — a **clean** manifest (so the inherited
+    ///   `BIOROUTER_SERVER__SECRET_KEY` is the only copy on the command and the
+    ///   inherited path is really under test) and a **hostile** one that names
+    ///   daemon-private keys in its own `env_keys`. With only the hostile arm,
+    ///   the declared copy shadows the inherited one on the `Command` and a
+    ///   strip that handled explicit keys but not inherited ones would pass.
+    /// - *the `working_dir` argument* — `None` and `Some(..)`. **Both production
+    ///   spawns pass `Some(&working_dir)`** (`:850` stdio, `:920` inline-python);
+    ///   a strip conditioned on `working_dir.is_none()` would leak on every real
+    ///   extension while a `None`-only probe stayed green.
     #[cfg(unix)]
     #[tokio::test]
     #[ignore]
     async fn leak_probe_prints_extension_child_env() {
-        // What `merge_environments` hands the spawn path for an extension that
-        // declares its own credentials — including, since #56, one it is not
-        // entitled to. A manifest may name any key in `env_keys`, and
-        // merge_environments will resolve it out of the config or the OS
-        // keyring and set it on the Command. `strip_daemon_private_env` covers
-        // the explicitly-set case as well as the inherited one
-        // (`doomed_env_keys` chains `env::vars_os()` with the command's own
-        // envs); this is the assertion that says so at THIS layer rather than
-        // only at developer/shell.rs.
-        let declared = HashMap::from([
-            (
-                "CLINICAL_RECORDS_TOKEN".to_string(),
-                "declared-credential-ok".to_string(),
-            ),
-            (
-                "EXTENSION_MODE".to_string(),
-                "declared-plain-ok".to_string(),
-            ),
-            (
-                "BIOROUTER_SERVER__SECRET_KEY".to_string(),
-                "declared-daemon-secret-9f2c".to_string(),
-            ),
-            (
-                "BIOROUTER_ACP_WS_TOKEN".to_string(),
-                "declared-acp-token-9f2c".to_string(),
-            ),
-        ]);
-        let mut command = Command::new("printenv");
-        command.envs(declared);
-        prepare_child_environment(&mut command, None);
-        let out = command.output().await.expect("extension child must spawn");
+        // A precondition of the probe, not a behaviour of the product. The
+        // explicit half below pins `doomed_env_keys`' `.chain(explicit)` by
+        // declaring PROBE_DECLARED_ACP_KEY on the Command *only*. If the
+        // surrounding environment already exports that name, the key is doomed
+        // by the INHERITED half instead, and the explicit pin silently stops
+        // discriminating — the same hollowing-out this probe exists to catch,
+        // one level down. Fail loudly rather than degrade quietly.
+        assert!(
+            std::env::var_os(PROBE_DECLARED_ACP_KEY).is_none(),
+            "{PROBE_DECLARED_ACP_KEY} is exported in this environment, which would let \
+             the explicit-declaration half of this probe pass via the inherited path \
+             instead of pinning what it claims to pin. Unset it and re-run."
+        );
+
+        let scratch = tempdir().expect("temp dir");
+        let session_dir = scratch.path().to_path_buf();
+
         println!("BEGIN_CHILD_ENV");
-        println!("{}", probe_report(&String::from_utf8_lossy(&out.stdout)));
+        for (hostile_manifest, working_dir) in [
+            (false, None),
+            (false, Some(&session_dir)),
+            (true, None),
+            (true, Some(&session_dir)),
+        ] {
+            // What `merge_environments` hands the spawn path for an extension
+            // that declares its own credentials — including, since #56, ones it
+            // is not entitled to. A manifest may name any key in `env_keys`,
+            // and merge_environments will resolve it out of the config or the
+            // OS keyring and set it on the Command. `strip_daemon_private_env`
+            // covers the explicitly-set case as well as the inherited one
+            // (`doomed_env_keys` chains `env::vars_os()` with the command's own
+            // envs); this is what says so at THIS layer rather than only at
+            // developer/shell.rs.
+            let mut declared = HashMap::from([
+                (
+                    "CLINICAL_RECORDS_TOKEN".to_string(),
+                    "declared-credential-ok".to_string(),
+                ),
+                (
+                    "EXTENSION_MODE".to_string(),
+                    "declared-plain-ok".to_string(),
+                ),
+            ]);
+            if hostile_manifest {
+                // One key per branch of `is_daemon_private_env_key`, because
+                // only the explicit path can reach both here: the real
+                // `BIOROUTER_SERVER__SECRET_KEY` is also exported by the parent,
+                // so its prefix branch would be satisfied by the inherited half
+                // even if `.chain(explicit)` were dropped. `..__PROBE_DECLARED`
+                // is set on the Command alone, so it pins the prefix branch of
+                // the explicit path, and PROBE_DECLARED_ACP_KEY the
+                // marker branch.
+                declared.insert(
+                    "BIOROUTER_SERVER__SECRET_KEY".to_string(),
+                    "declared-daemon-secret-9f2c".to_string(),
+                );
+                declared.insert(
+                    "BIOROUTER_SERVER__PROBE_DECLARED".to_string(),
+                    "declared-server-prefix-9f2c".to_string(),
+                );
+                declared.insert(
+                    PROBE_DECLARED_ACP_KEY.to_string(),
+                    "declared-acp-token-9f2c".to_string(),
+                );
+            }
+            let mut command = Command::new("printenv");
+            command.envs(declared);
+            prepare_child_environment(&mut command, working_dir);
+            let out = command.output().await.expect("extension child must spawn");
+            println!(
+                "# probe arm: manifest={} working_dir={}",
+                if hostile_manifest { "hostile" } else { "clean" },
+                if working_dir.is_some() {
+                    "some"
+                } else {
+                    "none"
+                },
+            );
+            println!("{}", probe_report(&String::from_utf8_lossy(&out.stdout)));
+        }
         println!("END_CHILD_ENV");
     }
 
@@ -3444,14 +3513,10 @@ mod tests {
             ])
             .env("BIOROUTER_SERVER__SECRET_KEY", canary)
             // A second inherited daemon-private key carrying the same canary,
-            // under a name the probe's `declared` map deliberately does NOT
-            // set. Without it the inherited half of this probe would be blind:
-            // the declared copy of the key on the line above overrides this
-            // inherited one on the Command, so a broken strip would hand the
-            // child the *declared* value and the canary would never appear —
-            // the CANARY assertion below would pass while the inherited leak
-            // was wide open. Anything matching `is_daemon_private_env_key`
-            // works; this one is caught by the `AUTH`/`TOKEN` markers.
+            // under a name no `declared` map in the probe sets. The line above
+            // covers the *prefix* branch of `is_daemon_private_env_key` on the
+            // inherited path; this covers the *marker* branch (`AUTH`/`TOKEN`),
+            // which nothing else exercises from the inherited side.
             .env("BIOROUTER_INHERITED_AUTH_TOKEN", canary)
             .env("BR_TEST_CANARY", canary)
             .env("BIOROUTER_PORT", "54321")
@@ -3488,11 +3553,23 @@ mod tests {
         // A manifest that ASKS for the daemon's key does not get it either. The
         // inherited path is covered by CANARY above; this is the explicit path,
         // and it is the one a malicious extension author controls.
-        assert!(
-            !child_env.contains("declared-daemon-secret-9f2c")
-                && !child_env.contains("declared-acp-token-9f2c"),
-            "an extension declared a daemon-private key in its own envs and received it:\n{child_env}"
-        );
+        //
+        // ⚠ These are negative assertions, so they are only meaningful while
+        // `command.envs(declared)` is actually applied. What keeps them honest
+        // is `extension_child_still_receives_declared_and_user_environment`
+        // below, which asserts the two *permitted* declared keys arrive.
+        // Deleting that test would make these three values vacuously absent.
+        for leaked in [
+            "declared-daemon-secret-9f2c",
+            "declared-server-prefix-9f2c",
+            "declared-acp-token-9f2c",
+        ] {
+            assert!(
+                !child_env.contains(leaked),
+                "an extension declared a daemon-private key in its own envs and \
+                 received it ({leaked}):\n{child_env}"
+            );
+        }
     }
 
     /// The other direction: an extension's own declared credentials, and the
