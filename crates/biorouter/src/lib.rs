@@ -18,6 +18,7 @@ pub mod model;
 pub mod oauth;
 pub mod observability;
 pub mod permission;
+pub mod privacy;
 pub mod prompt_template;
 pub mod providers;
 pub mod scheduler;
