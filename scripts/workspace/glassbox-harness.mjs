@@ -434,6 +434,22 @@ async function main() {
   // Positive control for the probe itself: without it a 403 above could just as
   // well mean the hand-rolled handshake is malformed, and the negative control
   // would be asserting nothing about origins at all.
+  //
+  // ⚠ This one MUTATES, unlike its cross-origin sibling. A 403 is refused before
+  // the upgrade; a 101 is a *completed* upgrade, so `handle_workspace_socket`
+  // runs `bridge_for("harness-loopback").attach()` and a second window is
+  // registered on this daemon. `handshake` destroys the socket immediately, the
+  // server's read loop breaks and calls `bridge.detach(token)` — but the entry
+  // itself stays in `BRIDGES` forever (nothing removes it), and for the round
+  // trip before the detach lands it is the MOST RECENTLY ATTACHED bridge. That
+  // matters: `focused_or_recent()` prefers a window whose echo names a focused
+  // session and neither of ours does, so it falls through to
+  // `max_by_key(last_attach)` — i.e. while the loopback window is attached,
+  // every workspace command would be written into a socket that no longer
+  // exists, and the live tier's open_tab/annotate_tab assertion would fail
+  // against blameless code. It is safe here only because the detach is one
+  // round trip away and the live tier is many seconds later. Do not copy this
+  // as a read-only probe, and do not move it closer to the live tier.
   const loopbackOrigin = await handshake(
     `/ui/workspace?secret=${encodeURIComponent(SECRET)}&window_id=harness-loopback`,
     { Origin: 'http://127.0.0.1:5173' }
@@ -872,6 +888,24 @@ async function main() {
       // contain that word for reasons having nothing to do with the flag.
       // `human_intervened` is `skip_serializing_if = "std::ops::Not::not"`, so
       // the key appears only when it is true.
+      //
+      // ⚠ Read this assertion for exactly what it proves, which is NARROWER
+      // than its name. `conversation_has_user_direct` (`subagent_result.rs`) is
+      // true if ANY message in the child's conversation carries `user_direct`,
+      // and this script writes up to four of them itself: the steer, the
+      // liveness probe ("keep going."), the TOCTOU re-probe ("still there?")
+      // and the tab-composer message. So this proves that the flag is derived
+      // from the child's stored conversation and SURVIVES the trip into the
+      // parent's tool result and out through the parent's stream — a boundary
+      // nothing else here crosses. It does NOT prove that the *steer* is what
+      // set it; the harness's own probe would have.
+      //
+      // The two halves that do carry that weight are elsewhere and must stay:
+      // the steer assertion above matches STEER_TEXT verbatim and exits 1
+      // before this line is ever reached in a broken build, and the
+      // false-positive direction (a hardcoded flag) is covered in Rust by
+      // `human_intervened_reaches_the_parent_through_the_tool_result`, which
+      // asserts the key is ABSENT for a clean run.
       const parentReply = await replyDone;
       // Asserted for the same reason as the probe's and the composer's: a
       // non-200 parent `/reply` (a rejected body, a 409) means no parent turn
