@@ -755,12 +755,31 @@ impl KnowledgeServer {
         let p = p.0;
         let _lock = self.service.lock_kb(&p.kb_id).await.map_err(into_err)?;
         let bytes = self.service.export_brkb(&p.kb_id).map_err(into_err)?;
-        // Issue #56, decision (2b). A MODEL's export of a PRIVATE base may not
-        // be aimed anywhere it asks: a `.brkb` is a zip, so an archive dropped
-        // outside the knowledge tree is readable by the same session's shell
-        // with `unzip -p`, no import and no marker-stripping required. Forcing
-        // it into `<knowledge-root>/.exports/` keeps the artifact beside the base
-        // it came from. The directory name is a DOTFILE on purpose: see
+        // Issue #56, decision (2b). A MODEL's export of a PRIVATE base is not
+        // written where the model asked; it goes to `<knowledge-root>/.exports/`.
+        //
+        // ⚠ WHAT THIS IS AND IS NOT, because the plan's own wording has been
+        // amended and the stale half is the appealing one. It is NOT a barrier.
+        // The original argument — "`.exports/` is inside DR-14 deny root #2, so
+        // the same kernel deny that hides the base hides the artifact" — depends
+        // on a read-deny that DR-17 **descoped for v1**; AR-8 says so in as many
+        // words ("Withdrawn: the claim that a model's export of a private base
+        // lands somewhere a public session cannot read... Task 10A still forces
+        // the export location, and it is now a provenance control rather than a
+        // barrier"), and DR-17's accepted risk 4 names exports specifically. In
+        // v1 nothing stops a public session's shell from reading this file, and
+        // the tool reports the path it wrote.
+        //
+        // What it DOES buy, and why the rule stays: every model-made archive of
+        // a private base lands in one known place, beside the base it came from
+        // and inside the tree the user already treats as their knowledge store,
+        // instead of scattered wherever a model chose. That is what makes the
+        // whole set of them findable — by the user today, and by the read-deny
+        // if DR-14 is ever un-descoped, with no change here. Keeping it also
+        // keeps `.brkb` archives from being the one artifact whose location a
+        // model picks, which is the shape the laundering path used.
+        //
+        // The directory name is a DOTFILE on purpose: see
         // `paths::MODEL_EXPORT_DIR` — a plain `exports/` is a legal kb id, so a
         // session could create the base `exports` and collect every private
         // archive inside a public base's own tree.
@@ -772,8 +791,8 @@ impl KnowledgeServer {
         // touch.
         //
         // The tier is read BEFORE `dest_path` is honoured — a write-then-move
-        // would leave a complete copy of a private knowledge base at a
-        // public-readable path for the length of the copy.
+        // would leave a complete copy of a private knowledge base at the path
+        // the model chose for however long the copy takes.
         let dest = if crate::knowledge::tier::is_private(self.service.root(), &p.kb_id) {
             crate::knowledge::paths::model_export_dir(self.service.root())
                 .join(format!("{}.brkb", p.kb_id))

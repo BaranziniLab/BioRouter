@@ -1192,8 +1192,14 @@ user who accepts that sentence has accepted AR-7.
 
 Task 10A decision (2) closes the archive-laundering path in the two directions that matter: an
 imported base takes `max(archive marker, importer)` so a `.brkb` can only ever over-classify itself,
-and a **model's** export of a private base is written into `<knowledge-root>/exports/`, inside DR-14
-deny root #2, where a public-capability session cannot read it.
+and a **model's** export of a private base is written into `<knowledge-root>/.exports/` rather than
+wherever the model asked. ⚠ The second half is a **provenance control, not a barrier** — this
+paragraph used to end "inside DR-14 deny root #2, where a public-capability session cannot read it",
+which is precisely the claim this section's own amendment banner withdraws, since DR-17 descopes the
+read-deny for v1. In v1 a public session's shell can read that file; what the rule buys is that every
+model-made archive of a private base lands in one known place instead of wherever a model chose.
+(The directory is a dotfile because a plain `exports/` is a legal kb id — see
+`paths::MODEL_EXPORT_DIR`.)
 
 What is left is the *private* side. A private-capability model holds the shell (DR-14 denies reads
 to public capability only), so it can `cp` its own base's archive — or the base's markdown, or
