@@ -25115,6 +25115,81 @@ git commit -m "docs(br71): workspace extension user docs + subagents glass-box u
 
 ### Task 44: Final release gates
 
+**RUN 2026-08-01, at `8cc8f0d0`. Every gate below was executed. All pass. The task does
+NOT sign off**, because Task 40b is still open and its own text forbids it ("Task 44 must
+not sign off with this open"), and because the PR was not opened — the operator's standing
+instruction for this run was "do NOT push", which an `open the PR` step cannot honour.
+
+One gate failed on first run and was fixed rather than rebaselined:
+`./scripts/clippy-lint.sh` reported three NEW `clippy::too_many_lines` violations, all of
+them this campaign's (`handle_session_list` 117/100, `handle_session_attach` 104/100,
+`run_bounded_turn` 110/100), none of them in `clippy-baselines/too_many_lines.txt`. Split
+at seams each function already had, in `8cc8f0d0`.
+
+Measured results, all sums taken from the real output rather than from this plan:
+
+| Gate | Result |
+|---|---|
+| `cargo fmt --all -- --check` | clean |
+| `./scripts/clippy-lint.sh` | exit 0 (after `8cc8f0d0`) |
+| `just check-everything` | exit 0 — themes 3, contrast 252, OpenAPI current, versions agree on 1.88.6 |
+| `cargo test --workspace --no-fail-fast` | **82 binaries, 3976 passed, 6 failed, 25 ignored** |
+| `biorouter --lib -- agents:: session:: session_events conversation::message` | 859 passed |
+| `biorouter-server --lib -- routes:: workspace:: state::` | 237 passed |
+| `biorouter-mcp --lib knowledge::` | 190 passed |
+| `biorouter-server --lib routes::apps` | 94 passed |
+| `conversation_writeback_freshness` / `_stress` | **32** / 9 |
+| `routes::reply::tests::writeback_tests` | **6** (the `::tests::` segment resolves) |
+| `biorouter --lib context_mgmt` | 50 passed |
+| subagent targets (delegation / cancellation / tool / abort / soft-interrupt) | **7 / 1 / 4 / 4 / 5** |
+| CLI parity (`workspace_parity` + `session_grouping` + `session_watch`) | **30 passed** |
+| `just generate-openapi` then `git diff --exit-code` | exit 0, whole worktree clean |
+| `npm run test:run` | **202 files / 1837 tests** |
+| `npm run lint:check` | pass |
+| glass-box harness, baseline tier | exit 0 |
+| glass-box harness, `BIOROUTER_HARNESS_LIVE=1` | exit 0, all 25 assertions |
+| `ui-control-harness.mjs` | `ALL PASS` |
+
+Three expectations in the text below were **low**, and the direction matters — the plan
+warns only about counts coming back *under* expectation, which is the signal that a suite
+stopped being collected. Desktop test files: expected 198 (186 + 12), actual **202**
+(186 + **16**); the enumeration under *New files* missed four. Subagent targets: expected
+`7/1/3/4/4`, actual `7/1/4/4/5`. CLI parity: expected 16, actual **30**.
+
+The workspace run's 6 failures are **exactly** the two recorded environmental families,
+with no third: `test_anthropic_provider` (400, credit balance), the
+`generated_serve_and_launchers_are_syntactically_valid` transient (`bin/node: line 21:
+basename: No such file or directory` — the hermit shim, verbatim as recorded), and
+`tunnel::lapstone_test::{test_tunnel_end_to_end, test_tunnel_post_request}` (503 from the
+live Cloudflare worker) in **both** binaries. The baseline's table counted
+`test_tunnel_post_request` once where it in fact fails twice, so 6 rather than 5 is that
+row being completed, not a new failure — this is the ±1 the baseline note anticipates.
+Binary count (82) and ignored count (25) match the baseline exactly, so no crate failed
+to build.
+
+§8.4 resync-cost measurement, for the design doc: **2-4 ms** to the first
+`UpdateConversation` frame for a 1-message session (4 ms baseline run, 2 ms live run).
+
+The **end-to-end CLI run** was driven against that same daemon with no desktop app
+attached, and all four steps exit 0: `session list --subagents` nests the child under its
+parent with a distinct task-derived name and a `[○ done]` marker; `session attach` renders
+the transcript so far, prints `── live from here ──`, and a typed line comes back
+`[assistant] ACK` in the same turn — **no 409**, so the Task 33 control plane is intact;
+`session cancel` reports `cancelled turn turn-9` against a running turn and
+`nothing to cancel: this session had no turn in flight` against an idle one, which
+`render_cancel`'s own doc calls a success; and ctrl-c detaches with exit 0 while the
+session keeps running.
+
+⚠ **Two measurement traps, both hit and both worth recording** so the next runner does not
+mistake either for a defect. (1) `pkill -INT -f "session attach"` matches the *wrapping
+shell* as well as the CLI — `pgrep -fl` shows two pids — so the job reports exit 1 while
+the CLI itself detached cleanly. `pkill -INT -x biorouter` gives the true reading, exit 0.
+(2) A steer into a subagent session that the daemon has never bound a provider to fails
+`[error:inference_start_failed] Provider not set`. That is **not** BR-71's: a daemon
+session has no provider until one is attached, which is why the harness's own live tier
+POSTs `/agent/update_provider` to its parent before spawning. Doing the same for the child
+makes the steer succeed.
+
 ⚠ **This task re-runs the sweeps and counts corrected in Tasks 19, 19b and 21, and
 inherits every one of them** (amended 2026-07-28). Nothing here re-derives a number: the
 authoritative expectations are Task 19 Step 1 (**13** spawn-tool sites in 3 files), Task

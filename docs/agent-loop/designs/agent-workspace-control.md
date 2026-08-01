@@ -33,7 +33,14 @@
 > are closed in place below.
 >
 > **Still outstanding, and not closed by the slice count:** Task 40b's undiagnosed daemon
-> abort (below) and Task 44's final release gates, both tracked in the plan doc.
+> abort (below), tracked in the plan doc. **Task 44's release gates were RUN on
+> 2026-08-01 and all pass** — 82 test binaries / 3976 passed with only the two recorded
+> environmental failure families, 202 desktop test files / 1837 tests, both harness tiers
+> at exit 0 including all 25 live assertions, and the CLI end-to-end chain against a
+> daemon with no desktop app attached; the per-gate numbers are in the plan doc under
+> Task 44. That is **not** a sign-off: Task 40b is still open, and Task 44's own text
+> forbids signing off while it is. §8.4's resync cost, which that task was to record here,
+> is **2-4 ms** to the first `UpdateConversation` frame for a 1-message session.
 >
 > **What Slice 3's gate actually measured** (read this before quoting the line above).
 > The flagship chain is verified end to end **headlessly**, against a running daemon, by
