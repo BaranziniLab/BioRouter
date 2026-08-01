@@ -414,7 +414,7 @@ async function main() {
             'write a haiku about each of the numbers 1 through 20, one at a time.'
         ),
       }),
-    }).then((r) => r.text());
+    }).then(async (r) => ({ status: r.status, text: await r.text() }));
 
     // Frames must arrive for SOME child within 60 s.
     //
@@ -553,12 +553,31 @@ async function main() {
       // doubles as the liveness probe. A finished child yields exit 3
       // (inconclusive), never a green tick.
       //
-      // Verified against the real handler at `03ad602c` (`pub async fn
-      // interrupt(`, routes/reply.rs:1042-1055; the `:1004-1017` this comment
-      // used to give was measured at `ea15a4de`, which is no longer on this
-      // branch): empty text → 400,
-      // `!state.is_turn_active(&req.session_id)` → 409, otherwise 202. There is
-      // no third outcome, so "202" and "the lease is held" are the same fact.
+      // Verified against the real handler (`pub async fn interrupt`,
+      // routes/reply.rs — the SYMBOL, because the line numbers this comment
+      // used to quote were already stale by the time it was read):
+      //
+      //   empty text                                  → 400
+      //   `!state.is_turn_active(&req.session_id)`    → 409
+      //   `get_agent_for_route` fails                 → 500
+      //   `Err(InterruptRefused::TurnEnded)`          → 409
+      //   otherwise                                   → 202
+      //
+      // ⚠ FOUR non-202 outcomes, not one. An earlier revision of this comment
+      // claimed "there is no third outcome" — in a file whose stated standard
+      // is that its comments are the operator's evidence. The classification
+      // below is still safe, because it only ever reads a non-202 as "stop,
+      // this is inconclusive" and never as a pass: a 500 (an agent that cannot
+      // be constructed) is a real problem, but reporting it as a lease failure
+      // would be a worse answer than reporting it as inconclusive, and the
+      // status is printed either way.
+      //
+      // ⚠ This probe MUTATES. It queues a real steer into the child — it is
+      // not the read-only liveness check the shape suggests — and the daemon
+      // exposes no read-only "is a turn running" route (`is_turn_active` is
+      // internal; no handler surfaces it). The queued text is harmless here
+      // because the child is cancelled immediately afterwards, but a future
+      // reader must not copy this as a general-purpose probe.
       const stillRunning = await api('/interrupt', {
         method: 'POST',
         body: JSON.stringify({ session_id: childId, text: 'keep going.' }),
@@ -669,10 +688,19 @@ async function main() {
       // contain that word for reasons having nothing to do with the flag.
       // `human_intervened` is `skip_serializing_if = "std::ops::Not::not"`, so
       // the key appears only when it is true.
-      const parentText = await replyDone;
+      const parentReply = await replyDone;
+      // Asserted for the same reason as the probe's and the composer's: a
+      // non-200 parent `/reply` (a rejected body, a 409) means no parent turn
+      // ever ran, and without this line that surfaces only as the flag being
+      // missing — the wrong diagnosis, for the third time in this file.
+      assert(
+        'the parent /reply is accepted (the delegating turn actually starts)',
+        parentReply.status === 200,
+        `got ${parentReply.status} — no parent turn ran, so nothing was delegated`
+      );
       assert(
         'parent transcript reports "human_intervened":true',
-        parentText.includes('"human_intervened":true'),
+        parentReply.text.includes('"human_intervened":true'),
         'not found in the parent /reply stream — the child ran, was steered, and the ' +
           'parent was never told'
       );
