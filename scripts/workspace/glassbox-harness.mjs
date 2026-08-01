@@ -5,13 +5,14 @@
  *
  *  BASELINE (always runs): connects a fake "window" to /ui/workspace, then
  *  exercises the observation plane on an ORDINARY session it creates through
- *  POST /agent/start. Validates: the workspace socket's auth gate in BOTH
- *  directions (a good secret connects, a wrong one is refused — the only
+ *  POST /agent/start. Validates: BOTH halves of the workspace socket's auth
+ *  gate — the secret (a good one connects, a wrong one is refused: the only
  *  end-to-end check that `check_token`'s /ui/workspace exemption did not just
- *  disable authentication for that path); that a /reply is accepted and its
- *  turn actually closes; observer snapshot-then-live ordering; and the §8.4
- *  resync-cost measurement. It does NOT touch the spawn bridge, so it can never
- *  mask the live tier.
+ *  disable authentication for that path) and the origin (a cross-origin
+ *  handshake carrying the RIGHT secret is refused, a loopback one is not);
+ *  that a /reply is accepted and its turn actually closes; observer
+ *  snapshot-then-live ordering; and the §8.4 resync-cost measurement. It does
+ *  NOT touch the spawn bridge, so it can never mask the live tier.
  *
  *  ⚠ The baseline SENDS a `workspace_echo` but does not assert anything about
  *  it, and an earlier revision of this header listed "the echo round trip"
@@ -47,6 +48,9 @@
  *             ⚠ 3 is NOT a pass — Task 40's gate requires 0. Re-run it; if it
  *             recurs, lengthen the child's task rather than relaxing a check.
  */
+import http from 'node:http';
+import crypto from 'node:crypto';
+
 const BASE = process.env.BIOROUTER_HARNESS_BASE ?? 'http://127.0.0.1:3000';
 const SECRET = process.env.BIOROUTER_SERVER__SECRET_KEY ?? 'test';
 const LIVE = process.env.BIOROUTER_HARNESS_LIVE === '1';
@@ -116,6 +120,50 @@ function userMessage(text) {
     content: [{ type: 'text', text }],
     metadata: { userVisible: true, agentVisible: true },
   };
+}
+
+/**
+ * Perform a raw WebSocket handshake and return its HTTP status (101 on upgrade).
+ *
+ * ⚠ Node's global `WebSocket` sends NO `Origin` header — every socket this
+ * script opened took `check_workspace_ws_auth`'s `origin == None` branch, so
+ * the CSWSH half of that gate was never executed and a cross-origin regression
+ * would have passed the harness in silence, while the header claimed this file
+ * asserts "the predicate is what the server actually runs". The standard
+ * WebSocket API cannot set `Origin`, so the handshake is issued by hand over
+ * `node:http`; the socket is destroyed immediately because only the status
+ * matters.
+ */
+function handshake(pathWithQuery, headers) {
+  return new Promise((resolve) => {
+    const url = new URL(`${BASE}${pathWithQuery}`);
+    const req = http.request({
+      hostname: url.hostname,
+      port: url.port || 80,
+      path: `${url.pathname}${url.search}`,
+      headers: {
+        Connection: 'Upgrade',
+        Upgrade: 'websocket',
+        'Sec-WebSocket-Version': '13',
+        'Sec-WebSocket-Key': crypto.randomBytes(16).toString('base64'),
+        ...headers,
+      },
+    });
+    req.on('upgrade', (res, socket) => {
+      socket.destroy();
+      resolve(res.statusCode ?? 101);
+    });
+    req.on('response', (res) => {
+      res.resume();
+      resolve(res.statusCode);
+    });
+    req.on('error', (error) => resolve(`error: ${error.message}`));
+    req.setTimeout(5000, () => {
+      req.destroy();
+      resolve('timeout');
+    });
+    req.end();
+  });
 }
 
 /** The stored conversation rows of a `GET /sessions/{id}` body, in either shape. */
@@ -276,6 +324,33 @@ async function main() {
     setTimeout(() => done(false), 5000);
   });
   assert('workspace WS REFUSES a wrong secret', refused);
+
+  // The OTHER half of the same gate, and the half no `WebSocket` client of this
+  // script can reach: `check_workspace_ws_auth` rejects a browser-set origin
+  // that is neither `file://` nor loopback. The secret here is the RIGHT one —
+  // the point is that a correct secret presented cross-origin is still refused,
+  // which is what stops a page on the open web from driving this daemon.
+  const crossOrigin = await handshake(
+    `/ui/workspace?secret=${encodeURIComponent(SECRET)}&window_id=harness-xorigin`,
+    { Origin: 'https://evil.example' }
+  );
+  assert(
+    'workspace WS REFUSES a cross-origin handshake carrying the RIGHT secret',
+    crossOrigin === 403,
+    `got ${crossOrigin} (101 = the CSWSH gate is gone)`
+  );
+  // Positive control for the probe itself: without it a 403 above could just as
+  // well mean the hand-rolled handshake is malformed, and the negative control
+  // would be asserting nothing about origins at all.
+  const loopbackOrigin = await handshake(
+    `/ui/workspace?secret=${encodeURIComponent(SECRET)}&window_id=harness-loopback`,
+    { Origin: 'http://127.0.0.1:5173' }
+  );
+  assert(
+    'workspace WS ACCEPTS a loopback origin (the probe discriminates)',
+    loopbackOrigin === 101,
+    `got ${loopbackOrigin}`
+  );
 
   ws.send(JSON.stringify({
     type: 'workspace_echo', window_id: 'harness', focused_session: null, layout: [],
