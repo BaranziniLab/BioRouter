@@ -3524,7 +3524,7 @@ mod tests {
             .output()
             .expect("re-invoking the test binary must work");
         let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
-        stdout
+        let child_env = stdout
             .split_once("BEGIN_CHILD_ENV\n")
             .and_then(|(_, rest)| rest.split_once("END_CHILD_ENV"))
             .map(|(body, _)| body.to_string())
@@ -3533,7 +3533,44 @@ mod tests {
                     "probe produced no child environment.\nstdout:\n{stdout}\nstderr:\n{}",
                     String::from_utf8_lossy(&out.stderr)
                 )
-            })
+            });
+
+        // Everything the callers assert about a leak is `!contains`, which an
+        // arm that never ran satisfies for free. Shrinking the child's loop to
+        // its first entry — one *clean* manifest, no working dir — leaves every
+        // assertion in both tests green while the hostile arms, the only place
+        // the explicit-path negatives have anything to negate, silently stop
+        // running. So the shape of the report is pinned here, once, where
+        // neither test can be hollowed out without this failing first.
+        let arms = child_env
+            .lines()
+            .filter(|line| line.starts_with("# probe arm: "))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            arms,
+            [
+                "# probe arm: manifest=clean working_dir=none",
+                "# probe arm: manifest=clean working_dir=some",
+                "# probe arm: manifest=hostile working_dir=none",
+                "# probe arm: manifest=hostile working_dir=some",
+            ],
+            "the probe must run all four (manifest x working_dir) arms, once each; \
+             a missing arm makes this run's negative assertions vacuous.\nchild env:\n{child_env}"
+        );
+        // And each of those arms must have had `command.envs(declared)` really
+        // applied to it — otherwise the daemon-private names the hostile arms
+        // declare were never on the Command in the first place, and their
+        // absence from the child proves nothing. `EXTENSION_MODE` is the one
+        // declared entry every arm sets and nothing strips.
+        assert_eq!(
+            child_env
+                .matches("EXTENSION_MODE=declared-plain-ok")
+                .count(),
+            4,
+            "every arm must reach its child with the manifest's declared \
+             environment applied.\nchild env:\n{child_env}"
+        );
+        child_env
     }
 
     #[cfg(unix)]
@@ -3555,10 +3592,11 @@ mod tests {
         // and it is the one a malicious extension author controls.
         //
         // ⚠ These are negative assertions, so they are only meaningful while
-        // `command.envs(declared)` is actually applied. What keeps them honest
-        // is `extension_child_still_receives_declared_and_user_environment`
-        // below, which asserts the two *permitted* declared keys arrive.
-        // Deleting that test would make these three values vacuously absent.
+        // the hostile arms ran *and* `command.envs(declared)` was applied to
+        // them. Both are pinned inside `run_extension_leak_probe`, which
+        // refuses a report that does not carry all four arms with the declared
+        // environment on each; without that, dropping the hostile arms would
+        // make these three values vacuously absent and nothing would fail.
         for leaked in [
             "declared-daemon-secret-9f2c",
             "declared-server-prefix-9f2c",
