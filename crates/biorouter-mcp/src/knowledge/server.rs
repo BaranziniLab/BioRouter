@@ -1365,8 +1365,7 @@ mod tests {
         );
         assert!(srv.service.create_base(dir, "collector", None).is_err());
 
-        let written =
-            reported_export_path(&kb_export_via_tool(&srv, "omop", None).await.unwrap());
+        let written = reported_export_path(&kb_export_via_tool(&srv, "omop", None).await.unwrap());
         assert_eq!(
             written.parent().unwrap(),
             crate::knowledge::paths::model_export_dir(&root)
