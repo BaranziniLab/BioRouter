@@ -267,6 +267,16 @@ mod tests {
         // beside this one would use. Inside `src/privacy/` the audit does not rely
         // on the import assertion at all; see `beside_the_definition` below.
         //
+        // SCOPE, written down because the plan claims more than this delivers. The
+        // plan says this test catches "a refactor that adds
+        // `From<ProviderTier> for SessionClassification` and sprinkles `.into()` at
+        // four sites". It does not, and no wording of it could: that refactor adds
+        // no `floor` call to count, and the `From` impl itself would land in this
+        // file, which the audit skips. What this test pins is the set of `floor`
+        // CALLERS — narrower than advertised, still the thing that keeps the two
+        // lattices from merging, and not to be cited in a later review as though
+        // the broader claim had been established here.
+        //
         // EXPECTED grows twice, and each growth is one uncommented line in the diff
         // that causes it — Task 13 (Gate B's ratchet) and Task 23 (the spawn stamp).
         // A test written to accept `<= 2` would let a third crossing appear
@@ -412,6 +422,14 @@ mod tests {
         use ProviderTier::{Private, Public};
         // The design's induction (§4), made executable. Every legal bind followed
         // by its ratchet must preserve capability >= classification.
+        //
+        // SCOPE. `visible_to` delegates to `bind_allowed`, and `bind_allowed` is
+        // also this loop's admission gate — so the assertion and the gate move
+        // together. This pins `floor` for consistency WITH Gate A's predicate; it
+        // cannot see a relaxation OF that predicate. Nor is the predicate pinned
+        // anywhere else yet: `bind_allowed` currently has no truth-table test and
+        // no production caller in this tree. Whichever task first wires Gate A owes
+        // it one, and must not read this test as already covering it.
         for binds in all_sequences_of_length(6, &[Private, Public]) {
             let mut classification = SessionClassification::Public;
             let mut capability = Public;
