@@ -125,7 +125,9 @@ Cross-session writes are labelled in storage, not just in the UI. Every message 
 - **direct user message** — you typed it, including into a subagent's tab;
 - **spawn context** — the instructions a subagent was started with.
 
-Ordinary same-session messages have no chip. Because the label is stored, it survives reload, export and History — you can always tell later which words in a conversation were yours.
+Ordinary same-session messages have no chip. Because the label is stored rather than drawn, it survives reload and History — you can always tell later which words in a conversation were yours.
+
+One caveat for exports: `biorouter session export` keeps provenance in `--format json` and `--format yaml`, which serialise the stored messages whole. The default `--format markdown` renders content for reading and does not carry it, so export as JSON or YAML if the labels are what you need.
 
 Mutations are also announced live: the target tab gets a toast when another agent injects a prompt, changes its tools, or closes it. Silent cross-session action is not a supported configuration.
 
