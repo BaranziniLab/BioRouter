@@ -154,7 +154,7 @@ The CLI covers the same ground from the other side:
 | List conversations, including subagent runs | `biorouter session list --subagents` |
 | Read a conversation | `biorouter session export --format …` |
 | Inject a prompt | `biorouter session send` |
-| Wait for a turn to finish | `biorouter session watch --follow` |
+| Wait for a turn to finish | `biorouter session watch` (exits on Finish/Error; add `--follow` to keep watching past it) |
 | Cancel a turn | `biorouter session cancel` |
 | Watch or steer a live session | `biorouter session attach` (`--of` to pick a subagent, `--read-only` to observe without participating) |
 
