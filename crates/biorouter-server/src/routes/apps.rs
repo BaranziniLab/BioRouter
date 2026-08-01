@@ -1694,6 +1694,9 @@ async fn build_worker(
 /// subagent — the "same gap in miniature" §3.3 named. The collected-text
 /// contract is unchanged: callers still get the assistant text, or an error.
 ///
+/// The bus bracket is closed on every exit, including the one where this future
+/// is DROPPED mid-turn by the consult deadline — see [`TerminalOnDrop`].
+///
 /// It cannot simply delegate to `workspace::turn::run_turn`: that spawns a
 /// detached task, and this caller needs the collected text BACK, with the
 /// worker's profile-specific `max_turns`. So it composes the same three
@@ -1737,6 +1740,14 @@ async fn run_bounded_turn(
 
     session_events::publish(session_id, SessionBusEvent::TurnStarted { turn_id });
 
+    // The bracket is now OPEN, and something must close it on EVERY path —
+    // including the one that runs no code at all. Declared AFTER the guard and
+    // the registration so it drops FIRST: the terminal goes out while this turn
+    // still owns the session, and no successor's `TurnStarted` can slip in
+    // front of it (the ordering `workspace::turn::supervise_turn` documents for
+    // the same reason).
+    let mut terminal = TerminalOnDrop::armed(session_id);
+
     let user = Message::user().with_text(prompt.to_string());
     let session_config = SessionConfig {
         id: session_id.to_string(),
@@ -1763,6 +1774,7 @@ async fn run_bounded_turn(
                     provider_kind: None,
                 },
             );
+            terminal.disarm();
             drop(registration);
             drop(turn_guard);
             return Err(e.to_string());
@@ -1825,6 +1837,7 @@ async fn run_bounded_turn(
             },
         ),
     }
+    terminal.disarm();
 
     drop(registration);
     drop(turn_guard);
@@ -1880,6 +1893,78 @@ impl Drop for ConsultRegistration {
                  the pin is left to the process exit"
             ),
         }
+    }
+}
+
+/// One terminal frame per turn, **always** — including when the turn's future is
+/// dropped instead of finishing.
+///
+/// `run_consult` wraps the worker's turn in `tokio::time::timeout`, and expiry
+/// DROPS that future rather than unwinding it: no code after the current await
+/// point runs, so `run_bounded_turn`'s closing publish was skipped while its
+/// `TurnStarted` had already gone out. An SSE observer on
+/// `GET /sessions/{worker}/events` — the `workspace_open` tab this whole task
+/// exists for — then watched the worker turn begin and never end, on the single
+/// most common consult failure path. `wait:"final_message"` degrades to its own
+/// timeout; a watching human just sees a turn that never stops.
+///
+/// This is the hole [`crate::workspace::turn::run_turn`]'s supervisor closes for
+/// browser-driven turns (*"a turn that publishes a start and then nothing,
+/// forever — 'one terminal event per turn, always' becomes zero, and every
+/// observer blocks on a frame that never comes"*). A `catch_unwind` cannot help
+/// here because there is no unwind, so the guarantee is a destructor instead.
+///
+/// Armed only once `TurnStarted` is out, and disarmed by every path that
+/// publishes its own terminal, so it can never produce a second one.
+///
+/// The consult deadline is the reachable cause; a dropped app socket (client
+/// gone, daemon shutting down) produces the same frame, deliberately — the only
+/// alternative on that path is the silence this guard exists to prevent.
+struct TerminalOnDrop {
+    session_id: String,
+    armed: bool,
+}
+
+impl TerminalOnDrop {
+    fn armed(session_id: &str) -> Self {
+        Self {
+            session_id: session_id.to_string(),
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for TerminalOnDrop {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        // `session_events::publish` is a synchronous map lookup plus a
+        // non-awaiting `send`, so it is safe from a destructor with no runtime —
+        // unlike the registration release next door, which needs a `spawn`.
+        //
+        // `worker_timeout` is not invented here: it is
+        // `TurnAbortCode::WorkerTimeout`'s wire code, and
+        // `workspace::turn::classify_abort` already maps that abort to exactly
+        // this envelope — scope `inference`, retryable. A consult timeout
+        // reaching an observer through the bus and through the CLI's abort
+        // classifier therefore reads identically.
+        biorouter::session_events::publish(
+            &self.session_id,
+            biorouter::session_events::SessionBusEvent::TurnError {
+                message: "The consulted worker's turn was abandoned before it answered \
+                          (its deadline expired, or the app disconnected)."
+                    .to_string(),
+                code: "worker_timeout".into(),
+                scope: "inference".into(),
+                retryable: true,
+                provider_kind: None,
+            },
+        );
     }
 }
 
@@ -4933,6 +5018,136 @@ mod tests {
         // …and the turn released its lock, so the next consult on this durable
         // worker is not refused by the lease it just took.
         assert!(!state.is_turn_active(&worker.id));
+    }
+
+    /// The consult deadline **drops** the worker's future rather than unwinding
+    /// it (`run_consult` wraps it in `tokio::time::timeout`), and a dropped
+    /// future runs no code after its current await point — so the terminal
+    /// publish at the end of `run_bounded_turn` was skipped and an observer on
+    /// `GET /sessions/{worker}/events` watched the turn start and never end.
+    /// That is the single most common consult failure path, and it is exactly
+    /// the hole `workspace::turn::supervise_turn` exists to close for
+    /// browser-driven turns: *"a turn that publishes a start and then nothing,
+    /// forever — one terminal event per turn, always becomes zero."*
+    ///
+    /// The test reproduces the drop precisely, and on the way through it pins
+    /// the one property no other assertion covers: the turn lock is held
+    /// **while** the turn runs, not merely absent after it.
+    #[tokio::test]
+    async fn an_abandoned_worker_turn_still_closes_its_bracket() {
+        use async_trait::async_trait;
+        use biorouter::conversation::message::Message;
+        use biorouter::model::ModelConfig;
+        use biorouter::providers::base::{Provider, ProviderMetadata, ProviderUsage};
+        use biorouter::providers::errors::ProviderError;
+        use biorouter::session_events::{self, SessionBusEvent};
+        use rmcp::model::Tool;
+        use std::sync::Arc;
+
+        /// Announces that it was reached, then never answers — so the turn is
+        /// provably mid-flight, and provably still holding its lease, at the
+        /// moment the test drops it.
+        #[derive(Clone)]
+        struct HangingProvider {
+            entered: Arc<tokio::sync::Notify>,
+        }
+
+        #[async_trait]
+        impl Provider for HangingProvider {
+            fn metadata() -> ProviderMetadata {
+                ProviderMetadata::empty()
+            }
+            fn get_name(&self) -> &str {
+                "hanging"
+            }
+            fn get_model_config(&self) -> ModelConfig {
+                ModelConfig::new("test-model").unwrap()
+            }
+            async fn complete_with_model(
+                &self,
+                _model_config: &ModelConfig,
+                _system: &str,
+                _messages: &[Message],
+                _tools: &[Tool],
+            ) -> anyhow::Result<(Message, ProviderUsage), ProviderError> {
+                self.entered.notify_one();
+                std::future::pending::<()>().await;
+                unreachable!("the hanging provider never answers")
+            }
+        }
+
+        let state = crate::state::AppState::new().await.unwrap();
+        let temp = tempfile::TempDir::new().unwrap();
+        let worker = state
+            .session_manager()
+            .create_session(
+                temp.path().to_path_buf(),
+                "worker-abandoned".to_string(),
+                biorouter::session::session_manager::SessionType::User,
+            )
+            .await
+            .unwrap();
+        let agent = state.get_agent(worker.id.clone()).await.unwrap();
+        let entered = Arc::new(tokio::sync::Notify::new());
+        agent
+            .update_provider(
+                Arc::new(HangingProvider {
+                    entered: entered.clone(),
+                }),
+                &worker.id,
+            )
+            .await
+            .unwrap();
+
+        let mut rx = session_events::subscribe(&worker.id);
+
+        // Boxed, not `tokio::pin!`ed: this test has to DROP the future, and
+        // `tokio::pin!` would rebind the name to a `Pin<&mut _>` whose drop
+        // releases a borrow and leaves the future itself alive on the stack.
+        let mut turn = Box::pin(run_bounded_turn(
+            state.clone(),
+            &agent,
+            &worker.id,
+            "what do you think?",
+            3,
+            tokio_util::sync::CancellationToken::new(),
+        ));
+        tokio::select! {
+            _ = &mut turn => panic!("the hanging worker cannot finish a turn"),
+            _ = entered.notified() => {}
+        }
+
+        assert!(
+            state.is_turn_active(&worker.id),
+            "a consulted worker's turn must HOLD the session turn lock while it runs"
+        );
+
+        // Exactly what the consult deadline does. No unwind, so no
+        // `catch_unwind` can help here — only a destructor.
+        drop(turn);
+
+        assert!(
+            !state.is_turn_active(&worker.id),
+            "an abandoned turn must release the session turn lock"
+        );
+
+        let mut saw_started = false;
+        let mut saw_terminal = false;
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                SessionBusEvent::TurnStarted { .. } => saw_started = true,
+                SessionBusEvent::TurnFinished { .. } | SessionBusEvent::TurnError { .. } => {
+                    saw_terminal = true
+                }
+                _ => {}
+            }
+        }
+        assert!(saw_started, "the abandoned turn still opened its bracket");
+        assert!(
+            saw_terminal,
+            "an abandoned consult must still publish ONE terminal frame — a \
+             `workspace_open` observer on the worker session blocks forever otherwise"
+        );
     }
 
     /// Production topology, which the previous version of this test did not
