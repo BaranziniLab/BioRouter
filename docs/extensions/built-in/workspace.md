@@ -1,0 +1,170 @@
+# Workspace Control extension
+
+> **What this is.** User guide to the built-in Workspace Control extension: the tool surface that lets BioRouter operate the workspace itself — list conversations, open them, read them, inject prompts into them, change what they are allowed to use, and delegate to subagents you can watch in a live tab.
+> **Status:** Current.
+> **Audience:** end users.
+
+Every BioRouter conversation is a session: its own agent, its own extensions, skills and knowledge bases, its own history, and — when the desktop app is running — its own tab. Workspace Control gives the agent tools over that layer. Instead of telling you "open Settings and enable the single-cell skill in that other chat", it can do it; instead of a subagent being an opaque spinner, the child runs in a tab you can read, talk to and stop.
+
+Nothing here reaches outside your machine. Every tool operates on sessions stored under `~/.config/biorouter/sessions/` and on the local daemon that runs them.
+
+## Two tiers, and why they differ
+
+Workspace Control ships in **two sizes**, and most people only ever meet the small one.
+
+| Tier | How you get it | What the agent can do |
+|------|----------------|-----------------------|
+| **Delegation only** (default) | Automatic. Any session that may delegate loads the extension with a tool list of exactly `subagent`. | Spawn subagents. Nothing cross-session. |
+| **Full workspace control** | You enable the `workspace` extension explicitly. | The seven `workspace_*` tools as well: read other conversations, inject prompts into them, change their tool sets. |
+
+The split exists because the two tiers have very different blast radii. Delegation creates a *new* conversation whose contents the agent already owns. The cross-session tools reach into conversations the agent did **not** create — so they are an explicit, informed opt-in, and the capability summary you are agreeing to is the same one the design records: **read other conversations, inject prompts into them, and change their tool sets.**
+
+Concretely, the extension is registered `default_enabled: false` (like Chat Recall). When a session has any ordinary extension loaded and delegation is permitted by your [permission mode](../../security/permission-modes.md), BioRouter auto-injects `workspace` for the spawn tool alone; that injection is derived state and is dropped again if the reason for it goes away. Enabling `workspace` yourself is what unlocks the rest, and an explicit enable is never downgraded to the injected one.
+
+### Turning on the full surface
+
+In the desktop app: **Settings → Chat → Extensions**, and turn on **Workspace Control**.
+
+From the CLI:
+
+```bash
+biorouter configure
+```
+
+Choose `Toggle Extensions`, then enable `workspace`.
+
+> **Note.** Subagents never get Workspace Control themselves, in either tier — a child cannot spawn grandchildren, and cannot steer its own parent.
+
+## The eight tools
+
+Seven `workspace_*` tools plus `subagent`. You do not call these; you ask in plain language and BioRouter picks. The examples show the request and the call it turns into.
+
+### `workspace_list`
+
+Lists conversations — id, name, type, whether a turn is running, parent, enabled extensions, active knowledge base, and GUI tab placement.
+
+> "What am I running right now?" → `workspace_list { scope: "running" }`
+
+Pass `parent_session_id` (your own id) to enumerate the subagents you delegated to; results are paged (`offset`/`limit`, default 50, max 200) rather than silently truncated.
+
+### `workspace_read_conversation`
+
+A structured read of any conversation, in one of four views: `summary` (head/tail digest), `transcript` (prose), `tool_calls` (exactly what its agent did), `spawn_context` (how a subagent was started).
+
+> "What did that other chat actually do to my repo?" → `workspace_read_conversation { session_id: "…", view: "tool_calls" }`
+
+Hidden sessions are refused. Reads are recorded as tool calls in the *reading* conversation, so there is always an audit trail of who read what.
+
+### `workspace_send_prompt`
+
+Injects text into another conversation. `mode: "turn"` starts its agent on your text (it must be idle), `mode: "steer"` redirects it mid-turn (it must be running), `mode: "note"` leaves context without running anything.
+
+> "Tell the QC chat to stop at step 3 and summarise." → `workspace_send_prompt { session_id: "…", text: "Stop at step 3 and summarize.", mode: "steer" }`
+
+Add `wait: "final_message"` to park until the target answers and get its reply back inline (default 120 s, max 600 s). Every injection is permanently labelled — see [provenance](#provenance-injected-messages-are-labelled-forever).
+
+### `workspace_set_tools`
+
+Changes what a conversation may use: add or remove extensions, add or remove skills **for that conversation only**, switch its provider and model, or set its knowledge bases.
+
+> "Give the transcriptomics chat the single-cell skill." → `workspace_set_tools { session_id: "…", add_skills: ["single-cell"] }`
+
+A model change takes effect on the target's next turn; a turn already running finishes on the provider it started with. Adding a skill here never edits your machine-wide skill preferences. Some of these changes always ask you first — see [the always-confirm rule](#the-always-confirm-rule).
+
+### `workspace_close`
+
+Closes a conversation down at one of three scopes. `tab` closes its GUI tab only — the session and any running turn survive. `turn` cancels the turn it is running (idempotent; not an error when it is already idle). `agent` cancels and evicts its agent, keeping the session record.
+
+> "Stop that runaway subagent." → `workspace_close { session_id: "…", scope: "turn" }`
+
+### `workspace_watch`
+
+Parks until one (or all) of the named conversations finishes its current turn, and reports why it ended. This is what the agent should use after starting background work — never a polling loop.
+
+> "Tell me as soon as any of those three background jobs is done." → `workspace_watch { session_ids: ["…", "…", "…"], mode: "any" }`
+
+Up to 32 sessions per call; default timeout 120 s, max 600 s. A timeout is not an error — the sessions keep running and the agent can watch again.
+
+### `workspace_open`
+
+Opens or focuses a conversation. Pass `session_id` to bring an existing one up, or `new` to start a fresh one (working directory defaults to the current conversation's; extensions, knowledge bases and a first prompt are optional).
+
+> "Start a separate chat for the figure work and give it the plotting extension." → `workspace_open { new: { extensions: ["developer"], prompt: "Draft the figure panel layout" } }`
+
+`placement` is `tab` (default), `split` or `window`; `focus` defaults to **false**, so a new tab never steals the composer you are typing in.
+
+### `subagent`
+
+The one spawn tool. Delegates to a fresh agent with its own context window, and — when the app is open — in its own visible tab you can watch and talk to.
+
+> "Delegate checking the test suite to a subagent I can watch." → `subagent { instructions: "Run the test suite and report failures" }`
+
+Children are **visible by default**; pass `visible: false` to run one silently, and `placement` to put it in a split or a window. The parent still receives only the child's final summary, which is why it will often follow up with `workspace_read_conversation view:"tool_calls"` to check what the child really did. Full detail in [Subagents](../../agent-loop/subagents.md).
+
+## The always-confirm rule
+
+Some capability changes ask you first **in every permission mode, including Fully Automatic**. This is deliberate: a background agent quietly handing another conversation a shell is exactly the case an approval mode would otherwise have already answered for.
+
+A confirmation card appears when a `workspace_set_tools` call:
+
+- **adds a process-spawning extension** (Developer, Computer Controller, Code Execution, and anything the config describes as running a command), or one that sends the conversation's traffic to a remote endpoint;
+- **removes a security-relevant extension** — today Workspace Control itself or the Extension Manager, both of which are how a change stays visible from inside the target;
+- **removes an extension you configured explicitly** in `config.yaml`;
+- **switches the conversation's provider**, which sends its whole stored history to that provider's endpoint;
+- **adds a skill**, which injects instructions into the target's prompt.
+
+The same rule covers `workspace_open { new: { extensions: […] } }`, because minting a new conversation with the grant baked in — and a `prompt` that starts it running immediately — is the easier route to the same capability.
+
+The card names the target conversation and the specific reason, and says outright that it appears in every mode.
+
+## Provenance: injected messages are labelled forever
+
+Cross-session writes are labelled in storage, not just in the UI. Every message carries its origin, and the transcript renders a small chip beside it:
+
+- **injected by *&lt;conversation&gt;*** — another agent wrote this through `workspace_send_prompt`;
+- **direct user message** — you typed it, including into a subagent's tab;
+- **spawn context** — the instructions a subagent was started with.
+
+Ordinary same-session messages have no chip. Because the label is stored, it survives reload, export and History — you can always tell later which words in a conversation were yours.
+
+Mutations are also announced live: the target tab gets a toast when another agent injects a prompt, changes its tools, or closes it. Silent cross-session action is not a supported configuration.
+
+## Focus etiquette
+
+By default, tabs the agent opens — including subagent tabs — open **in the background**. They never steal the composer you are typing into.
+
+If you would rather not have tabs appear at all, turn on **Settings → App → Workspace → "Never open tabs automatically"**. With it on, the daemon downgrades every focus-stealing frame (`open_tab`, `open_window`, `activate_tab`) to a notification naming the conversation, and tells the model no tab was opened so it cannot claim otherwise. The work still runs; open it from History when you want it. The setting is stored as `WORKSPACE_ANNOUNCE_ONLY` and is **off** by default.
+
+Subagent tabs have a second limit: at most **4** visible child tabs per parent (`BIOROUTER_WORKSPACE_MAX_VISIBLE_CHILD_TABS` to change it). A fan-out of ten spawns is not a tab storm — the fifth child onward runs in the background, is listed in History under its parent, and is readable with `workspace_read_conversation`. A spawn is never refused for this reason, and the parent is told which children did not get a tab.
+
+## Without the desktop app
+
+Every tool works headlessly. Under `biorouter` in a terminal or a bare `biorouterd`, there is no GUI to command: `workspace_list` reports `gui_attached: false`, sessions are still created and still run, and the tool result says plainly that no tab was opened rather than pretending one was. `workspace_close { scope: "tab" }` has nothing to close and says so.
+
+The CLI covers the same ground from the other side:
+
+| Capability | CLI |
+|------------|-----|
+| List conversations, including subagent runs | `biorouter session list --subagents` |
+| Read a conversation | `biorouter session export --format …` |
+| Inject a prompt | `biorouter session send` |
+| Wait for a turn to finish | `biorouter session watch --follow` |
+| Cancel a turn | `biorouter session cancel` |
+| Watch or steer a live session | `biorouter session attach` (`--of` to pick a subagent, `--read-only` to observe without participating) |
+
+Two capabilities deliberately have no CLI counterpart: spawning (it is a tool the model calls, and it already works inside `biorouter session`) and `workspace_set_tools` (reconfiguring another session from a terminal is out of scope; `biorouter extension` / `biorouter skill` are machine-wide, not session-scoped).
+
+## Pairs well with Chat Recall
+
+Workspace Control operates the **live** workspace; [Chat Recall](chat-recall.md) searches **past** conversations by content. The agent's routing instructions send "what did we conclude about X last week?" to Chat Recall — so with Workspace Control on and Chat Recall off, it is being told to reach for a tool it does not have.
+
+That is why enabling Workspace Control in the desktop app raises a one-time, dismissible suggestion to turn Chat Recall on as well. It only ever suggests; it never enables anything for you, and it does not come back.
+
+## Related documentation
+
+- [Subagents](../../agent-loop/subagents.md) — the glass-box tab, steering a child, the fan-out cap, and the `subagent_status` migration note.
+- [Chat Recall extension](chat-recall.md) — the complementary tool for searching past conversations by content.
+- [Tool routing](../../agent-loop/tool-routing.md) — the routing table that separates Workspace Control from Chat Recall, Memory and the knowledge base.
+- [Permission modes](../../security/permission-modes.md) — which modes allow autonomous delegation and how mutating tools are graded.
+- [Agent workspace control (BR-71 design)](../../agent-loop/designs/agent-workspace-control.md) — the design of record, including the §5 permissions and abuse-resistance analysis.
+- [Extensions, skills, and MCP agents](../extensions-and-skills-guide.md) — how extensions are enabled and configured generally.

@@ -29,6 +29,49 @@ You can run multiple subagents sequentially or in parallel.
 
 > **Note.** If a subagent fails or times out (5-minute default), you will receive no output from that subagent. For parallel execution, if any subagent fails, you get results only from the successful ones.
 
+## Watching a subagent work
+
+Subagents used to be opaque: you saw a spinner, then a summary. In the desktop app they now run as ordinary chat tabs you can read, talk to and stop — the same conversation the parent agent is delegating to, rendered live.
+
+### The subagent tab
+
+When a subagent starts, a tab opens **in the background** (it never steals the composer you are typing into) carrying a `subagent` badge and a header that shows:
+
+- **spawned by** — a link back to the conversation that delegated the work;
+- **the spawn context** — the exact instructions and system prompt the child was started with, expandable;
+- **the child's grants** — which extensions, skills and knowledge bases it was given;
+- **Stop** — the kill switch.
+
+Below the header is the child's live transcript, streaming its tool calls as they happen.
+
+### Watch, steer, stop
+
+Three things you can do from that tab:
+
+- **Watch.** Read the transcript as it streams. You are not interrupting anything.
+- **Steer.** Type into the tab's ordinary composer. While the child's turn is running your message is injected as a mid-turn correction ("stop at step 3 and summarise"); between turns it starts a new turn or leaves a note. Either way it is labelled in the transcript as a **direct user message**, permanently.
+- **Stop.** The header's Stop control cancels the child's turn. The parent's tool call then resolves as incomplete, with whatever partial summary exists — the parent is not left hanging.
+
+**Closing the tab never kills the child.** That is the same rule as every other tab in BioRouter: closing is a view operation. Stop is the only kill switch, and a child whose tab you closed is still reachable from History.
+
+If you did intervene, the parent is told. Its tool result carries `human_intervened` and gains a line — *"Note: the user intervened directly in this subagent's tab during the run."* — so it weighs the child's self-report accordingly instead of assuming an untouched run. Nothing is said when you did not intervene: silence there would read as a claim that someone checked.
+
+### Visible by default
+
+Children are **visible by default** whenever the desktop app is open. To run one silently, ask for it — the agent passes `visible: false` on the spawn — and the child runs exactly as subagents did before, reachable only from History and from the parent's summary.
+
+Two things also suppress the tab without changing what runs: no GUI attached (a terminal session or a bare daemon), and the **"Never open tabs automatically"** setting described in the [Workspace Control guide](../extensions/built-in/workspace.md#focus-etiquette).
+
+### The fan-out cap
+
+At most **4** subagent tabs open per parent conversation. Ask for ten subagents in parallel and you get four tabs, not a tab storm; children five through ten run in the background, appear in History nested under their parent, and can be read with `workspace_read_conversation`. A spawn is **never refused** because of this cap, and the parent is told which children did not get a tab so it does not claim one exists. Raise or lower it with `BIOROUTER_WORKSPACE_MAX_VISIBLE_CHILD_TABS`.
+
+### Finding subagent runs later
+
+History hides subagent runs by default, so your session list stays a list of *your* conversations. Turn on **Show subagent runs** in History and each child appears nested under the conversation that spawned it, with a live marker while it is still running.
+
+From the CLI, `biorouter session list --subagents` does the same, `biorouter session attach` joins a live child (`--of` to pick one by parent, `--read-only` to watch without steering), and `biorouter session cancel` stops it.
+
 ## Internal subagents
 
 Internal subagents spawn biorouter instances to handle tasks using your current session's context and extensions. There are two ways to configure and execute internal subagents:
@@ -288,6 +331,19 @@ Choose how much information biorouter provides from its subagents in your main s
 "Use a subagent to research this topic and summarize the key findings"
 ```
 
+## `subagent_status` was removed
+
+If a prompt, skill or workflow of yours names `subagent_status`, this section is for you. That tool no longer exists — its three jobs moved to the workspace tools, each of which also works for *foreground* children and for you, not just for background handles.
+
+| `subagent_status` mode | Replacement |
+|---|---|
+| list (no `handle`) | `workspace_list { scope: "all", include_subagents: true, parent_session_id: "<me>" }` |
+| poll one (`handle`) | `workspace_read_conversation { session_id, view: "summary" }` |
+| block (`wait: true`) | `workspace_watch { session_ids: [...], timeout_s }` |
+| cancel (`cancel: true`) | `workspace_close { session_id, scope: "turn" }` |
+
+The background *handle* mechanism itself is unchanged, and so is `BIOROUTER_SUBAGENT_BACKGROUND`: a subagent started with `background: true` still returns immediately instead of blocking the parent's turn. What changed is the identifier — the child's **session id** is now what every one of these tools takes, in place of the old handle id.
+
 ## Security constraints
 
 Subagents operate with restricted tool access to ensure safe execution and prevent interference with the main session.
@@ -312,6 +368,7 @@ The following operations are blocked to ensure subagents remain focused on their
 
 ## Related documentation
 
+- [Workspace Control extension](../extensions/built-in/workspace.md) — the extension that advertises the spawn tool, plus the cross-session tools this page's migration table points at.
 - [Subworkflows](../workflows/subworkflows.md) — the workflow-driven counterpart to subagents, registered via `sub_workflows` and exposed as tools.
 - [Workflows](../workflows/README.md) — how to author the workflow files a subagent can be configured from.
 - [Workflow schema reference](../workflows/workflow-schema-reference.md) — every field available in a workflow file, including where workflows are discovered.

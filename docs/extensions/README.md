@@ -13,7 +13,7 @@ Come here when you want to add a capability BioRouter does not have yet, when yo
 
 ## Built-in extension reference
 
-The [`built-in/`](built-in/README.md) subdirectory holds one user-facing reference page per built-in extension: Developer, Computer Controller, Memory, Auto Visualiser, Chat Recall, Code Execution, Extension Manager, Skills, Todo and Tutorial. It carries its own index describing each page, so read that index rather than a second copy of it kept here.
+The [`built-in/`](built-in/README.md) subdirectory holds one user-facing reference page per built-in extension: Developer, Computer Controller, Memory, Auto Visualiser, Chat Recall, Code Execution, Extension Manager, Skills, Todo, Tutorial and Workspace Control. It carries its own index describing each page, so read that index rather than a second copy of it kept here.
 
 Two of those pages are worth knowing about before you go. [Developer](built-in/developer.md) carries the most substantive security guidance of any extension page, and [Computer Controller](built-in/computer-controller.md) documents the highest-blast-radius built-in, because it acts on your real desktop.
 

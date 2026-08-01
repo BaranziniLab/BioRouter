@@ -7,8 +7,11 @@
 > set at runtime — and, as its flagship embodiment, turns today's opaque subagents into
 > **glass-box subagents**: every spawned subagent appears as a live, ordinary chat tab
 > that a human can watch, talk to, and intervene in, exactly as the parent agent can.
-> **Status:** Current — **Slices 1, 2 and 3 are implemented; Slice 4 (polish + docs) is
-> not.** Slice 1 shipped the session model, the event spine, the one turn runner and
+> **Status:** Current — **all four slices are implemented.** The task-by-task record of
+> how, and the gates each one had to pass, is
+> [`br71-execution-plan.md`](br71-execution-plan.md); that plan is the change log, this
+> document stays the design of record. Slice 1 shipped the session model, the event
+> spine, the one turn runner and
 > the headless `workspace_*` tools; Slice 2 shipped the GUI bridge (`GET /ui/workspace`),
 > `workspace_open`, the observer-backed tab, provenance chips, the focus-etiquette
 > setting and the chatrecall suggestion — verified end to end against the **dev build**,
@@ -20,7 +23,17 @@
 > themselves — child sessions on the detached runner, the spawn-context record, the
 > auto-opened badged tab and its header, the human steer path, `human_intervened` in the
 > parent's result, the Stop control, History grouping by parent, and the CLI half
-> (`session list --subagents`, `session attach`, `session cancel`).
+> (`session list --subagents`, `session attach`, `session cancel`). Slice 4 shipped the
+> polish: the tuned instruction block and the tool-routing table, `consult` unified onto
+> this spine (§8.2), the CLI-parity gate that fails the build when a workspace capability
+> has no CLI counterpart, and the user docs —
+> [`docs/extensions/built-in/workspace.md`](../../extensions/built-in/workspace.md) and
+> the glass-box half of [`docs/agent-loop/subagents.md`](../subagents.md), which also
+> carries the `subagent_status` migration table (decision 23). §8's five open questions
+> are closed in place below.
+>
+> **Still outstanding, and not closed by the slice count:** Task 40b's undiagnosed daemon
+> abort (below) and Task 44's final release gates, both tracked in the plan doc.
 >
 > **What Slice 3's gate actually measured** (read this before quoting the line above).
 > The flagship chain is verified end to end **headlessly**, against a running daemon, by
@@ -379,6 +392,16 @@ The glass-box replacement surface for delegation (§4.5). Same parameter shape a
 is enabled, the server instructions steer the model to prefer this over bare `subagent`;
 bare `subagent` remains for headless/compat.
 
+> **As built (decisions 20 and 22): there is no `workspace_spawn_subagent`.** Two spawn
+> tools with the same parameters and different names is a routing problem handed to the
+> model, so the extension advertises **one** — `subagent`, keeping its existing name —
+> which gained `visible` and `placement` and became the glass-box path. That is also what
+> makes decision 21's two-tier surface possible: a session that may delegate is injected
+> with `available_tools: ["subagent"]` and gets delegation without the cross-session
+> control surface. The name survives below (and in §6's draft instruction block and §7's
+> slice list) as the record of what was proposed; `WorkspaceClient::get_tools()` is the
+> current truth.
+
 ### 4.2 Backend spine: detached turns and the session event broadcast
 
 Two additions to `biorouter-server`/`biorouter`, useful far beyond this feature:
@@ -701,23 +724,51 @@ Each slice ships independently and is verifiable on its own.
 
 ---
 
-## 8. Open questions
+## 8. Open questions — all resolved
 
-1. **Focus etiquette.** Default is background-open; should the user be able to set
-   "never open tabs automatically" (announce-only mode where the toast offers to open)?
-   Proposed: yes, a single Workspace setting, honored by dropping `open_tab` to `notify`.
-2. **`workspace_send_prompt wait:"final_message"` vs. Agent Drafter `consult`.** These
-   converge on "ask another agent synchronously." Long-term, `consult` could be
-   re-expressed over workspace primitives; out of scope here, flagged for the apps
-   platform owners.
-3. **Cross-window targeting.** When two windows are open, which gets the new tab? Proposed
-   default (focused, else most-recent) is a heuristic; consider a `window_id` parameter on
-   `workspace_open` once `workspace_list` exposes ids.
-4. **Observer backpressure.** `broadcast` drops on lag; the observer endpoint must resync
-   with an `UpdateConversation` snapshot on `Lagged` — spec'd, but the resync cost on very
-   long transcripts needs measurement.
-5. **CLI surface.** The same spine trivially enables `biorouter session watch <id>` and
-   `biorouter session send <id>` — worth doing in Slice 1 as free verification tooling?
+Each question is kept in place with its answer and the decision that settled it, rather
+than deleted: the question is what makes the answer legible.
+
+1. **Focus etiquette.** *Should the user be able to set "never open tabs automatically"?*
+   **Yes — decision 7, built in Task 29.** One switch, `WORKSPACE_ANNOUNCE_ONLY`
+   (Settings → App → Workspace), **off** by default, so background-open remains the
+   design's default. When on, the daemon downgrades every focus-stealing frame —
+   `open_tab`, `open_window` *and* `activate_tab`, since yanking the view to an existing
+   tab is the same intrusion by another route — to a `notify`, and the tool result tells
+   the model no tab was opened so it cannot claim otherwise. Subagent spawns resolve the
+   setting before claiming a visible-tab slot, so announce-only children never consume
+   the decision-26 cap.
+2. **`workspace_send_prompt wait:"final_message"` vs. Agent Drafter `consult`.**
+   **Unified — decision 13, done in Task 41.** `consult` was not re-expressed as a
+   workspace *tool call*; it kept its own contract (name, params, depth-1, per-profile
+   timeout, blocking answer, error envelopes) and was moved onto this spine underneath:
+   a consulted worker's turn takes the server turn lock, registers in `AgentManager`, and
+   publishes to the session event bus, so it is observable via
+   `GET /sessions/{id}/events`, steerable via `POST /interrupt`, and cancellable via
+   `workspace_close scope:"turn"` — exactly like a glass-box subagent. The resolution
+   paragraph lives with the apps platform owners, in
+   [apps platform design](../../agent-drafter/apps-platform-design.md) (§ "`consult` runs
+   on the BR-71 workspace spine").
+3. **Cross-window targeting.** *Is the focused-else-most-recent default good enough, or
+   is a `window_id` parameter needed?* **The heuristic stands — decision 15.** Task 22
+   implements `focused_or_recent` as proposed; no `window_id` parameter was added, and
+   `workspace_open` gained `placement: tab|split|window` instead, which is what the
+   observed requests actually wanted.
+4. **Observer backpressure.** *The `Lagged` resync is spec'd, but what does it cost?*
+   **Implemented in Task 7 and measured — decision 16.** Both consumers (the observer
+   stream and `/reply`) answer `RecvError::Lagged` with a `bus_lag_resync_frame`
+   `UpdateConversation` read from storage rather than silently skipping frames.
+   Measured by `scripts/workspace/glassbox-harness.mjs`: a fresh observer's first
+   snapshot arrived in **3 ms for a 1-message session** (debug `biorouterd`, macOS arm64,
+   2026-07-31). Read that with its subject attached — it is the floor, not evidence that
+   resync is free at any transcript length, which is why the harness prints the message
+   count beside the latency and this bullet repeats it.
+5. **CLI surface.** *Worth building `session watch` / `session send` as free verification
+   tooling?* **Yes — decision 9, built in Task 20**, and it grew past the question:
+   `session watch`, `session send`, `session list --subagents`, `session attach`
+   (`--of`, `--read-only`) and `session cancel`. Task 42b then made it structural — a
+   compile-time parity gate in `biorouter-cli` fails the build when a workspace
+   capability has no CLI counterpart or a written, bounded exception.
 
 ## Related documentation
 
