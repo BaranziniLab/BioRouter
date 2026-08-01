@@ -9,7 +9,6 @@ use std::sync::Arc;
 
 use super::base::Provider;
 use super::lead_worker::LeadWorkerProvider;
-use super::llamacpp::LlamaCppProvider;
 use super::ollama::{OllamaProvider, OLLAMA_HOST};
 use super::versa_azure::VERSA_AZURE_ENDPOINT;
 use crate::config::declarative_providers::{DeclarativeProviderConfig, ProviderEngine};
@@ -148,15 +147,15 @@ async fn the_private_set_is_the_four_the_operator_named() {
     assert_eq!(private_names_in_the_registry().await, expected);
 
     // The registry above is the type-level claim every UI surface reads. Cross
-    // -check it against real instances, for the two whose construction needs no
-    // credential: at the shipped default host both agree with their metadata.
+    // -check it against a real instance at the shipped default host, where the
+    // two must agree.
     assert_eq!(tier_for_self_hosted_base(OLLAMA_HOST), Private);
-    let llamacpp = LlamaCppProvider::from_env(
-        ModelConfig::new_or_fail("qwen3.5-4b").with_context_limit(Some(4096)),
-    )
-    .await
-    .expect("llamacpp must construct at default config");
-    assert_eq!(llamacpp.tier(), Private);
+    // llamacpp's equivalent lives in `llamacpp.rs`, not here: `from_env` reads
+    // `LLAMACPP_EXTERNAL_HOST` from the developer's real config, so calling it
+    // would assert Private on a default machine and fail on one that
+    // legitimately points at a lab box. That test covers all three arms from a
+    // struct literal instead of the one the current environment happens to
+    // produce.
 }
 
 #[tokio::test]

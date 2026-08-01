@@ -653,6 +653,65 @@ impl Provider for LlamaCppProvider {
 mod tests {
     use super::*;
 
+    /// A provider wired the way `from_env` builds one, minus the global config
+    /// lookup — `from_env` reads `LLAMACPP_EXTERNAL_HOST` from the developer's
+    /// real config, so a test that went through it would assert Private on one
+    /// machine and fail on a colleague's that legitimately points at a lab box.
+    fn provider_with_external_base(external_base: Option<&str>) -> LlamaCppProvider {
+        LlamaCppProvider {
+            model: ModelConfig::new_or_fail(default_model_name()).with_context_limit(Some(4096)),
+            external_base: external_base.map(str::to_string),
+            client: tokio::sync::Mutex::new(None),
+            live_context_limit: AtomicUsize::new(0),
+            request_timeout: Duration::from_secs(LLAMACPP_TIMEOUT),
+            startup_timeout: Duration::from_secs(LLAMACPP_STARTUP_TIMEOUT),
+            name: "llamacpp".to_string(),
+        }
+    }
+
+    /// Task 5 rule 1, **wired** — all three arms, none of them environmental.
+    ///
+    /// `external_base: None` is the managed sidecar, which is spawned by this
+    /// process and bound to loopback, so it is the one case that is Private
+    /// without a URL to inspect. Every other case is a host `LLAMACPP_EXTERNAL_HOST`
+    /// supplied: setting it bypasses the sidecar and sends the full prompt to an
+    /// unmanaged endpoint with **no auth**, so anything but loopback is Public.
+    #[test]
+    fn tier_is_private_only_while_inference_stays_on_this_machine() {
+        assert_eq!(
+            provider_with_external_base(None).tier(),
+            ProviderTier::Private,
+            "the bundled sidecar is the default install and runs here"
+        );
+        assert_eq!(
+            LlamaCppProvider::metadata().tier,
+            ProviderTier::Private,
+            "so the type-level claim agrees with it"
+        );
+
+        for loopback in [
+            "http://localhost:11543/",
+            "http://127.0.0.1:11543/",
+            "http://[::1]:11543/",
+        ] {
+            assert_eq!(
+                provider_with_external_base(Some(loopback)).tier(),
+                ProviderTier::Private,
+                "{loopback}"
+            );
+        }
+        for remote in [
+            "http://gpu.lab.ucsf.edu:11543/",
+            "https://api.example-saas.com/",
+        ] {
+            assert_eq!(
+                provider_with_external_base(Some(remote)).tier(),
+                ProviderTier::Public,
+                "{remote}"
+            );
+        }
+    }
+
     #[test]
     fn default_model_is_memory_tiered_and_in_catalog() {
         assert_eq!(recommended_model_for_memory_gib(8), "gemma4");
