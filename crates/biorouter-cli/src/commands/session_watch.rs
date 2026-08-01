@@ -737,39 +737,62 @@ async fn post_reply_quiet(session_id: &str, text: &str, secret: &str) -> Result<
     }
 }
 
+/// The ladder itself, with the two routes supplied by the caller.
+///
+/// A `202` or a `200` ends it immediately, so no branch can send the text on two
+/// routes; a route that errors ends it too, rather than climbing on and possibly
+/// delivering after the user has been told it failed.
+///
+/// The routes are arguments purely so this can be driven over every refusal
+/// order in a test. A test that walks `next_attempt` itself instead proves only
+/// that the test's own loop breaks after one send.
+async fn run_ladder<Steer, NewTurn, SteerFut, NewTurnFut>(
+    mut steer: Steer,
+    mut new_turn: NewTurn,
+) -> Result<Delivered>
+where
+    Steer: FnMut() -> SteerFut,
+    NewTurn: FnMut() -> NewTurnFut,
+    SteerFut: std::future::Future<Output = Result<SteerOutcome>>,
+    NewTurnFut: std::future::Future<Output = Result<TurnOutcome>>,
+{
+    let mut attempts = 0u8;
+    while let Some(next) = next_attempt(attempts) {
+        match next {
+            Delivery::Steer => match steer().await? {
+                SteerOutcome::Queued { turn_id } => return Ok(Delivered::Steered { turn_id }),
+                SteerOutcome::Refused => attempts += 1,
+            },
+            Delivery::NewTurn => match new_turn().await? {
+                TurnOutcome::Started => return Ok(Delivered::NewTurn),
+                TurnOutcome::Refused => attempts += 1,
+            },
+        }
+    }
+    Ok(Delivered::Nothing)
+}
+
 /// Deliver `text` to `session_id`, letting the daemon decide which route is
 /// legal at this instant. Returns what actually happened, for printing.
-///
-/// A `202` or a `200` ends the ladder immediately, so no branch can send the
-/// text on two routes.
 async fn deliver(
     session_id: &str,
     text: &str,
     secret: &str,
     window: &ReplyWindow,
 ) -> Result<Delivered> {
-    let mut attempts = 0u8;
-    while let Some(next) = next_attempt(attempts) {
-        match next {
-            Delivery::Steer => match post_interrupt(session_id, text, secret).await? {
-                SteerOutcome::Queued { turn_id } => return Ok(Delivered::Steered { turn_id }),
-                SteerOutcome::Refused => attempts += 1,
-            },
-            Delivery::NewTurn => {
-                // Marked open from before the request rather than from the 200:
-                // erring towards warning about a turn that does not exist is
-                // harmless, erring the other way silently kills one.
-                window.open();
-                let outcome = post_reply_quiet(session_id, text, secret).await;
-                window.close();
-                match outcome? {
-                    TurnOutcome::Started => return Ok(Delivered::NewTurn),
-                    TurnOutcome::Refused => attempts += 1,
-                }
-            }
-        }
-    }
-    Ok(Delivered::Nothing)
+    run_ladder(
+        move || post_interrupt(session_id, text, secret),
+        move || async move {
+            // Marked open from before the request rather than from the 200:
+            // erring towards warning about a turn that does not exist is
+            // harmless, erring the other way silently kills one.
+            window.open();
+            let outcome = post_reply_quiet(session_id, text, secret).await;
+            window.close();
+            outcome
+        },
+    )
+    .await
 }
 
 /// Read whole lines from stdin on a dedicated OS thread.
@@ -1295,30 +1318,100 @@ mod tests {
     }
 
     /// The property the ladder exists for: exactly ONE delivering request,
-    /// whatever order the daemon refuses in. Driven through the pure planner so
-    /// no socket is needed.
-    #[test]
-    fn a_message_is_delivered_at_most_once_however_the_daemon_refuses() {
-        for accept_on in [0usize, 1, 2, 3] {
-            let mut delivered = Vec::new();
-            let mut attempts = 0u8;
-            while let Some(next) = next_attempt(attempts) {
-                if usize::from(attempts) == accept_on {
-                    delivered.push(next);
-                    break; // 202 or 200 ends the ladder
-                }
-                attempts += 1; // refused; try the other route
-            }
+    /// whatever order the daemon refuses in.
+    ///
+    /// Driven through `run_ladder` — the control flow `deliver` really uses —
+    /// with scripted route answers, so "at most once" is a claim about the
+    /// production code. Re-implementing the ladder over `next_attempt` inside
+    /// the test instead (`push` then `break`) makes the property true by
+    /// construction of the test's own loop, and would not catch a ladder that
+    /// kept going after a `202`.
+    #[tokio::test]
+    async fn a_message_is_delivered_at_most_once_however_the_daemon_refuses() {
+        // `accept_on == 3` is "the daemon refused every attempt".
+        for accept_on in 0usize..=3 {
+            let attempted = std::cell::RefCell::new(Vec::<Delivery>::new());
+            let delivered = std::cell::RefCell::new(Vec::<Delivery>::new());
+            let (tried, sent) = (&attempted, &delivered);
+
+            let outcome = run_ladder(
+                move || async move {
+                    let attempt = tried.borrow().len();
+                    tried.borrow_mut().push(Delivery::Steer);
+                    if attempt == accept_on {
+                        sent.borrow_mut().push(Delivery::Steer);
+                        Ok(SteerOutcome::Queued {
+                            turn_id: "t-7".to_string(),
+                        })
+                    } else {
+                        Ok(SteerOutcome::Refused)
+                    }
+                },
+                move || async move {
+                    let attempt = tried.borrow().len();
+                    tried.borrow_mut().push(Delivery::NewTurn);
+                    if attempt == accept_on {
+                        sent.borrow_mut().push(Delivery::NewTurn);
+                        Ok(TurnOutcome::Started)
+                    } else {
+                        Ok(TurnOutcome::Refused)
+                    }
+                },
+            )
+            .await
+            .unwrap();
+
             assert!(
-                delivered.len() <= 1,
-                "accept_on={accept_on} delivered {delivered:?}"
+                delivered.borrow().len() <= 1,
+                "accept_on={accept_on} delivered {:?}",
+                delivered.borrow()
             );
-            if accept_on < 3 {
-                assert_eq!(delivered.len(), 1, "accept_on={accept_on} must deliver");
-            } else {
-                assert!(delivered.is_empty(), "a fourth flip must report, not send");
+            // The routes tried, in order — a ladder that retried the same route
+            // twice, or ran on past an acceptance, shows up here.
+            let expected_attempts = match accept_on {
+                0 => vec![Delivery::Steer],
+                1 => vec![Delivery::Steer, Delivery::NewTurn],
+                _ => vec![Delivery::Steer, Delivery::NewTurn, Delivery::Steer],
+            };
+            assert_eq!(*attempted.borrow(), expected_attempts, "accept_on={accept_on}");
+            match accept_on {
+                0 | 2 => assert_eq!(
+                    outcome,
+                    Delivered::Steered {
+                        turn_id: "t-7".to_string()
+                    }
+                ),
+                1 => assert_eq!(outcome, Delivered::NewTurn),
+                _ => assert_eq!(
+                    outcome,
+                    Delivered::Nothing,
+                    "a fourth flip must report, not send"
+                ),
             }
         }
+    }
+
+    /// A route that errors stops the ladder there. Climbing on would turn one
+    /// unreachable daemon into three requests, and could deliver the text after
+    /// the user has already been told something went wrong.
+    #[tokio::test]
+    async fn a_failing_route_stops_the_ladder_instead_of_climbing_it() {
+        let attempted = std::cell::RefCell::new(0usize);
+        let tried = &attempted;
+        let err = run_ladder(
+            move || async move {
+                *tried.borrow_mut() += 1;
+                Err(anyhow!("connection reset"))
+            },
+            move || async move {
+                *tried.borrow_mut() += 1;
+                Ok(TurnOutcome::Started)
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("connection reset"));
+        assert_eq!(*attempted.borrow(), 1, "the ladder stopped at the failure");
     }
 
     #[test]
