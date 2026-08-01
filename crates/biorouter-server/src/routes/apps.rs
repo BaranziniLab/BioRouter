@@ -1682,6 +1682,52 @@ async fn build_worker(
     })
 }
 
+/// Publish a `TurnError` terminal frame for a worker turn.
+///
+/// Split out of [`run_bounded_turn`] so that function stays under the
+/// `clippy::too_many_lines` baseline. The four other fields are identical on
+/// both call sites — only the message and the code differ — so this factors out
+/// the whole of what they share, not an arbitrary slice of it.
+fn publish_worker_turn_error(session_id: &str, message: String, code: &str) {
+    use biorouter::session_events::{self, SessionBusEvent};
+
+    session_events::publish(
+        session_id,
+        SessionBusEvent::TurnError {
+            message,
+            code: code.into(),
+            scope: "inference".into(),
+            retryable: false,
+            provider_kind: None,
+        },
+    );
+}
+
+/// Close a worker turn's bus bracket: `TurnError` when the stream failed,
+/// `TurnFinished` otherwise.
+///
+/// The caller must still `disarm()` its [`TerminalOnDrop`] after this returns —
+/// this publishes the terminal frame, it does not own the guard that would
+/// publish one on drop.
+fn publish_worker_terminal(session_id: &str, failure: Option<&str>, cancelled: bool) {
+    use biorouter::session_events::{self, SessionBusEvent};
+
+    match failure {
+        Some(message) => publish_worker_turn_error(session_id, message.to_string(), "stream_error"),
+        None => session_events::publish(
+            session_id,
+            SessionBusEvent::TurnFinished {
+                reason: if cancelled {
+                    "cancelled".into()
+                } else {
+                    "stop".into()
+                },
+                token_state: None,
+            },
+        ),
+    }
+}
+
 /// Run a single bounded turn on a worker agent, collecting its assistant text.
 /// Used by `consult` (which needs a plain answer, not a streamed one). The turn
 /// is bounded by `max_turns` and the outer `consult` timeout, and honors
@@ -1764,16 +1810,7 @@ async fn run_bounded_turn(
     {
         Ok(stream) => stream,
         Err(e) => {
-            session_events::publish(
-                session_id,
-                SessionBusEvent::TurnError {
-                    message: e.to_string(),
-                    code: "inference_start_failed".into(),
-                    scope: "inference".into(),
-                    retryable: false,
-                    provider_kind: None,
-                },
-            );
+            publish_worker_turn_error(session_id, e.to_string(), "inference_start_failed");
             terminal.disarm();
             drop(registration);
             drop(turn_guard);
@@ -1814,29 +1851,7 @@ async fn run_bounded_turn(
         }
     }
 
-    match &failure {
-        Some(message) => session_events::publish(
-            session_id,
-            SessionBusEvent::TurnError {
-                message: message.clone(),
-                code: "stream_error".into(),
-                scope: "inference".into(),
-                retryable: false,
-                provider_kind: None,
-            },
-        ),
-        None => session_events::publish(
-            session_id,
-            SessionBusEvent::TurnFinished {
-                reason: if cancel.is_cancelled() {
-                    "cancelled".into()
-                } else {
-                    "stop".into()
-                },
-                token_state: None,
-            },
-        ),
-    }
+    publish_worker_terminal(session_id, failure.as_deref(), cancel.is_cancelled());
     terminal.disarm();
 
     drop(registration);

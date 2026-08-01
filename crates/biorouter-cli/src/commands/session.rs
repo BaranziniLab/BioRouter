@@ -218,6 +218,22 @@ pub async fn handle_session_list(
         return Ok(());
     }
 
+    print_grouped_sessions(&format, limit, &sessions).await
+}
+
+/// The `--subagents` half of [`handle_session_list`]: resolve liveness, nest
+/// children under their parent, and print.
+///
+/// Split out so `handle_session_list` stays under the
+/// `clippy::too_many_lines` baseline. The cut is the function's own
+/// `if !subagents` fork, so each half is one whole output mode rather than an
+/// arbitrary slice — and `sessions` arrives already filtered and sorted,
+/// because both modes share that work.
+async fn print_grouped_sessions(
+    format: &str,
+    limit: Option<usize>,
+    sessions: &[Session],
+) -> Result<()> {
     // The daemon owns liveness. With none reachable, say "unknown" rather than
     // printing "done" over a run that is still going.
     //
@@ -282,7 +298,7 @@ pub async fn handle_session_list(
         })
     };
 
-    match format.as_str() {
+    match format {
         "json" => {
             let payload: Vec<serde_json::Value> = groups
                 .iter()

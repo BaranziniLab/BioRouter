@@ -1124,6 +1124,41 @@ async fn resolve_attach_target(
     pick_running_child(&rows, &parent, &running)
 }
 
+/// The outbound half of [`handle_session_attach`]: one task that delivers typed
+/// lines to the daemon **one at a time**, so a slow round trip never freezes the
+/// live rendering — the one thing attach exists to show.
+///
+/// Split out so `handle_session_attach` stays under the
+/// `clippy::too_many_lines` baseline. Serialisation is the contract, not an
+/// implementation detail: a second task here would let two steers race for the
+/// same turn.
+fn spawn_delivery_worker(
+    session_id: String,
+    secret: String,
+    window: Arc<ReplyWindow>,
+) -> tokio::sync::mpsc::Sender<String> {
+    let (send_tx, mut send_rx) = tokio::sync::mpsc::channel::<String>(SEND_QUEUE);
+    tokio::spawn(async move {
+        while let Some(text) = send_rx.recv().await {
+            match deliver(&session_id, &text, &secret, &window).await {
+                Ok(Delivered::Steered { turn_id }) => println!("[steered turn {turn_id}]"),
+                // Both halves are announced from the socket itself — the start
+                // at the 200 in `post_reply_quiet`, the end when its holder
+                // reaches the terminal frame. `deliver` now returns at the 200,
+                // so anything said here would be a third copy, and at the wrong
+                // moment.
+                Ok(Delivered::NewTurn) => {}
+                Ok(Delivered::Nothing) => println!(
+                    "[not sent] the session's turn state changed three times while this \
+                     message was in flight, so it was not sent. Send it again:\n  {text}"
+                ),
+                Err(err) => println!("[not sent] {err}\n  {text}"),
+            }
+        }
+    });
+    send_tx
+}
+
 /// `biorouter session attach <id>` — render where the session is, follow it
 /// live, and steer it from stdin.
 ///
@@ -1162,33 +1197,7 @@ pub async fn handle_session_attach(
     // spinning on a closed channel.
     let _line_tx = line_tx;
 
-    // Deliveries run on their own task, one at a time, so that a slow round trip
-    // to the daemon never freezes the live rendering — the one thing attach
-    // exists to show.
-    let (send_tx, mut send_rx) = tokio::sync::mpsc::channel::<String>(SEND_QUEUE);
-    {
-        let session_id = session_id.clone();
-        let secret = secret.clone();
-        let window = window.clone();
-        tokio::spawn(async move {
-            while let Some(text) = send_rx.recv().await {
-                match deliver(&session_id, &text, &secret, &window).await {
-                    Ok(Delivered::Steered { turn_id }) => println!("[steered turn {turn_id}]"),
-                    // Both halves are announced from the socket itself — the
-                    // start at the 200 in `post_reply_quiet`, the end when its
-                    // holder reaches the terminal frame. `deliver` now returns
-                    // at the 200, so anything said here would be a third copy,
-                    // and at the wrong moment.
-                    Ok(Delivered::NewTurn) => {}
-                    Ok(Delivered::Nothing) => println!(
-                        "[not sent] the session's turn state changed three times while this \
-                         message was in flight, so it was not sent. Send it again:\n  {text}"
-                    ),
-                    Err(err) => println!("[not sent] {err}\n  {text}"),
-                }
-            }
-        });
-    }
+    let send_tx = spawn_delivery_worker(session_id.clone(), secret.clone(), window.clone());
 
     // The observer stream, exactly as `watch --follow`, except that its first
     // frame is rendered as a transcript. It is READ-ONLY: its task in the daemon
