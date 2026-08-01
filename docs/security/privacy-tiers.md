@@ -914,7 +914,7 @@ machine-local sidecar beside `.active-kb` and `.hidden-kbs`, not in `manifest.ya
 manifest travels inside the `.brkb` archive and an imported tier would be attacker-supplied.
 Existing knowledge bases migrate **public** (fail-open, DR-10) even if a private session fed them —
 an accepted cost, recorded as
-[AR-2](privacy-tiers-execution-plan.md#accepted-risks). The way back out of the ratchet is
+[AR-2](privacy-tiers-execution-plan.md#ar-2--every-knowledge-base-that-exists-today-starts-public-at-migration-even-if-a-private-session-fed-it). The way back out of the ratchet is
 **user-only**: DR-18 gives the user a publicize/privatize control (Task 29A), which is what resolved
 the original AR-1 — a base ratcheted by one private page is *not* unreadable for ever. No model can
 invoke it, in either direction.
