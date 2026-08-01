@@ -280,12 +280,23 @@ mod tests {
             .parent()
             .unwrap()
             .to_path_buf();
+        // This audit is only as good as its walk, and while EXPECTED is empty a walk
+        // that reads NOTHING produces the identical green result as a walk that finds
+        // nothing. So every way it can silently do no work is made loud instead: a
+        // wrong root, an unreadable directory, an unreadable file, and a scan that
+        // comes back implausibly small each fail rather than passing vacuously.
+        let crates = root.join("crates");
+        assert!(
+            crates.is_dir(),
+            "the audit walks {} — if that path is wrong, every assertion below passes \
+             for the wrong reason",
+            crates.display()
+        );
         let mut calls: std::collections::BTreeMap<String, usize> = Default::default();
         let mut imports: Vec<String> = vec![];
-        for entry in walkdir::WalkDir::new(root.join("crates"))
-            .into_iter()
-            .filter_map(Result::ok)
-        {
+        let mut scanned = 0usize;
+        for entry in walkdir::WalkDir::new(&crates) {
+            let entry = entry.expect("the audit must not silently skip an unreadable directory");
             let p = entry.path();
             if p.extension().and_then(|e| e.to_str()) != Some("rs") {
                 continue;
@@ -298,7 +309,9 @@ mod tests {
             if rel.ends_with("privacy/mod.rs") {
                 continue; // the definition, and the induction test below, live here
             }
-            let src = std::fs::read_to_string(p).unwrap_or_default();
+            scanned += 1;
+            let src = std::fs::read_to_string(p)
+                .unwrap_or_else(|e| panic!("the audit could not read {rel}: {e}"));
             // A file that lives BESIDE the definition reaches `floor` through
             // `super`, not through `privacy::` — and Task 8 creates exactly such a
             // sibling (`privacy::extensions`). For those files the audit counts the
@@ -336,6 +349,12 @@ mod tests {
                 }
             }
         }
+        assert!(
+            scanned >= 400,
+            "only {scanned} .rs files were scanned (612 at Task 7). The walk is no longer \
+             covering the tree, and a broken walk reports the same empty caller set as a \
+             clean one."
+        );
         assert!(
             imports.is_empty(),
             "`floor` must be called through its qualified `privacy::floor(..)` path so this \
