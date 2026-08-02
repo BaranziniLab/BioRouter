@@ -3609,6 +3609,10 @@ export type RemoveConfigErrors = {
      */
     404: unknown;
     /**
+     * Refused by a privacy boundary (issue #56, DR-16): the key decides what privacy capability new chats start at, and a delete restores its default, so it requires proof the request came from the user
+     */
+    409: unknown;
+    /**
      * Internal server error
      */
     500: unknown;

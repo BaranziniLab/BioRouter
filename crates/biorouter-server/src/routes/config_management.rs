@@ -230,10 +230,46 @@ pub async fn upsert_config(
     responses(
         (status = 200, description = "Configuration value removed successfully", body = String),
         (status = 404, description = "Configuration key not found"),
+        (status = 409, description = "Refused by a privacy boundary (issue #56, DR-16): the key \
+                                      decides what privacy capability new chats start at, and a \
+                                      delete restores its default, so it requires proof the \
+                                      request came from the user"),
         (status = 500, description = "Internal server error")
     )
 )]
-pub async fn remove_config(Json(query): Json<ConfigKeyQuery>) -> Result<Json<String>, StatusCode> {
+pub async fn remove_config(
+    // Before `Json`, which consumes the body and must be last.
+    headers: http::HeaderMap,
+    Json(query): Json<ConfigKeyQuery>,
+) -> Result<Json<String>, (StatusCode, String)> {
+    // Issue #56 DR-16. The FIFTH channel to the capability keys, and the one the
+    // task's own four-channel enumeration missed.
+    //
+    // A delete is not the absence of a write, it is a write of the DEFAULT.
+    // `OLLAMA_HOST` falls back to `localhost` (`providers/ollama.rs`) and
+    // `self_hosted_tier` maps loopback to Private, so deleting it moves `ollama`
+    // from Public to Private by exactly the mechanism `upsert_config`'s guard
+    // exists to block. `LLAMACPP_EXTERNAL_HOST` is the same shape, and deleting
+    // `BIOROUTER_LEAD_MODEL` / `BIOROUTER_LEAD_PROVIDER` collapses the
+    // lead/worker pair whose tier is the `least()` of two halves — which can
+    // only move the result upward.
+    //
+    // Guarded with the SAME predicate as `upsert_config`, not with the subset
+    // that can demonstrably raise: the plan exempted this route on an argument
+    // about `BIOROUTER_PROVIDER` alone (delete it and
+    // `restore_provider_from_session` finds no provider at all, which is a
+    // failure rather than a raise), and an argument that holds for one key in
+    // five is not a rule. One predicate, both verbs.
+    if biorouter::privacy::is_capability_key(&query.key) && !is_user_action(&headers) {
+        return Err((
+            StatusCode::CONFLICT,
+            PrivacyRefusal::CapabilityConfigNeedsUser {
+                key: query.key.clone(),
+            }
+            .to_string(),
+        ));
+    }
+
     let config = Config::global();
 
     let result = if query.is_secret {
@@ -244,7 +280,10 @@ pub async fn remove_config(Json(query): Json<ConfigKeyQuery>) -> Result<Json<Str
 
     match result {
         Ok(_) => Ok(Json(format!("Removed key {}", query.key))),
-        Err(_) => Err(StatusCode::NOT_FOUND),
+        Err(_) => Err((
+            StatusCode::NOT_FOUND,
+            format!("Configuration key {} not found", query.key),
+        )),
     }
 }
 

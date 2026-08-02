@@ -199,6 +199,12 @@ export const ConfigProvider: React.FC<ConfigProviderProps> = ({ children }) => {
       const query: ConfigKeyQuery = { key: key, is_secret: is_secret };
       await removeConfig({
         body: query,
+        // Issue #56 DR-16: the same guard as `upsert`, because a DELETE of a
+        // capability key restores its default and `OLLAMA_HOST`'s default is
+        // loopback — i.e. Private. This is the GUI's only path to
+        // `/config/remove`, and clearing a provider's host from the provider
+        // form comes through here.
+        headers: await userActionHeaders(),
       });
       await reloadConfigAfterWrite();
     },

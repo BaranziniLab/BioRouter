@@ -6,8 +6,13 @@
 //! `BIOROUTER_PROVIDER` is a tier raise for every session opened afterwards —
 //! with no `/agent/update_provider` call at all. DR-14 already makes
 //! `config.yaml` a filesystem deny root because *"a master switch a public model
-//! can edit is not a switch"*; `/config/upsert` and `/config/set_provider` are
-//! the HTTP channels to the same file.
+//! can edit is not a switch"*; `/config/upsert`, `/config/remove` and
+//! `/config/set_provider` are the HTTP channels to the same file.
+//!
+//! **Both verbs.** Deleting one of these keys is not the absence of a write, it
+//! is a write of the key's default — and for `OLLAMA_HOST` that default is
+//! `localhost`, which `self_hosted_tier` maps to Private. So the guard is on the
+//! key, not on the operation.
 //!
 //! The requirement is deliberately scoped to tier-relevant keys. A blanket rule
 //! would make every programmatic config write a user act — the GUI writes config
@@ -15,7 +20,8 @@
 //! rule people route around.
 
 /// Keys whose value decides what privacy capability a session gets by default.
-/// Writing one of these over HTTP is a user act (DR-16, open question 24).
+/// Writing **or deleting** one of these over HTTP is a user act (DR-16, open
+/// question 24).
 pub const CAPABILITY_CONFIG_KEYS: &[&str] = &[
     // The default provider itself. Read through `config_value!` (base.rs), so
     // the literal never appears in a `get_param(` call — seeded, not scanned.
@@ -100,7 +106,7 @@ pub const TIER_INPUT_FILES: &[(&str, &str)] = &[
     ),
 ];
 
-/// Writing this key over HTTP requires the user-action proof.
+/// Writing **or deleting** this key over HTTP requires the user-action proof.
 pub fn is_capability_key(key: &str) -> bool {
     CAPABILITY_CONFIG_KEYS.contains(&key)
 }

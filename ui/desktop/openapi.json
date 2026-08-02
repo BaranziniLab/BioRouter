@@ -1297,6 +1297,9 @@
           "404": {
             "description": "Configuration key not found"
           },
+          "409": {
+            "description": "Refused by a privacy boundary (issue #56, DR-16): the key decides what privacy capability new chats start at, and a delete restores its default, so it requires proof the request came from the user"
+          },
           "500": {
             "description": "Internal server error"
           }

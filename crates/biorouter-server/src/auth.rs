@@ -256,8 +256,8 @@ mod tests {
     }
 
     #[test]
-    fn all_four_raise_channels_call_the_guard() {
-        // A source scan, because the alternative -- four HTTP tests -- has to
+    fn all_five_raise_channels_call_the_guard() {
+        // A source scan, because the alternative -- five HTTP tests -- has to
         // build `AppState`, which opens the user's real session DB
         // (routes/agent.rs's `working_dir_lock_tests` doc comment). This is the
         // test that fails a PARTIAL implementation: covering `update_provider`
@@ -267,6 +267,20 @@ mod tests {
         // (c) rather than an omission: attaching a private extension to a
         // public session is not a raise the USER can authorize either, so the
         // route refuses it outright and its guard is the refusal itself.
+        //
+        // `/config/remove` is the fifth, and the task's own enumeration said
+        // four: deleting a capability key restores its DEFAULT, and for
+        // `OLLAMA_HOST` that default is loopback, i.e. Private. See the comment
+        // on `remove_config`.
+        //
+        // ⚠ What this scan CANNOT see, stated so nobody reads it as more than
+        // it is: it proves each handler mentions its guard, not that the guard
+        // runs before the mutation, and not that its condition is right. A
+        // guard placed after `config.set`, or one reduced to `if
+        // is_user_action(..) {}`, passes here. Step 5's gate group 1 is what
+        // holds the shape of the condition; nothing in CI exercises these
+        // routes at the HTTP layer, because `AppState::new()` may not be built
+        // in a test.
         let agent_rs = include_str!("routes/agent.rs");
         let config_rs = include_str!("routes/config_management.rs");
         for (src, func, guard) in [
@@ -281,6 +295,7 @@ mod tests {
                 "PrivateExtensionOverHttp",
             ),
             (config_rs, "pub async fn upsert_config", "is_user_action("),
+            (config_rs, "pub async fn remove_config", "is_user_action("),
             (
                 config_rs,
                 "pub async fn set_config_provider",
@@ -292,6 +307,16 @@ mod tests {
                 "{func} does not consult the user-action guard (`{guard}`)"
             );
         }
+
+        // A negative control, so the scan is provably not vacuous. This handler
+        // sits in the same file, is not a raise channel, and must come back
+        // WITHOUT the guard — if it does not, `body_of` is over-reading past a
+        // function end and every assertion above is passing on someone else's
+        // body.
+        assert!(
+            !body_of(agent_rs, "async fn agent_remove_extension").contains("is_user_action("),
+            "the body scan is over-reading: a handler with no guard reported one"
+        );
     }
 
     #[test]
