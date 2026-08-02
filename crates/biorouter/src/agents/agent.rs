@@ -1390,7 +1390,9 @@ pub(crate) mod seams {
         /// the cross-seam test asserts, so only a real arrival counts — an arm
         /// still sitting unconsumed reads `false`.
         pub(crate) fn has_fired(&mut self) -> bool {
-            matches!(self.arrived.try_recv(), Ok(_))
+            // `is_ok()` and not "not Empty": a sender dropped without firing is
+            // `Err(Closed)`, and that is an arm nobody took.
+            self.arrived.try_recv().is_ok()
         }
     }
 
