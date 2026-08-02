@@ -133,6 +133,18 @@ impl Extension {
 }
 
 /// Manages biorouter extensions / MCP clients and their interactions
+/// Whether a `list_resources` fan-out failure is Gate C declining to reach an
+/// extension rather than a listing that actually broke (issue #56).
+///
+/// `privacy_refusal` is the ONE producer of `INVALID_REQUEST` on that path:
+/// `list_resources_from_extension`'s own two failures are `INVALID_PARAMS` (no
+/// such client) and `INTERNAL_ERROR` (the server refused to list). Pinned by
+/// `a_gate_c_refusal_is_told_apart_from_a_real_listing_failure`, which asks the
+/// real refusal and both real neighbours rather than asserting the code.
+fn is_privacy_refusal(err: &ErrorData) -> bool {
+    err.code == ErrorCode::INVALID_REQUEST
+}
+
 pub struct ExtensionManager {
     extensions: Mutex<HashMap<String, Extension>>,
     context: PlatformExtensionContext,
@@ -1872,6 +1884,23 @@ impl ExtensionManager {
                             errors.push(tool_error);
                         }
                     }
+                }
+
+                // Gate C declining a private extension is not a failure of this
+                // listing — it is the design, and under a public model with one
+                // private extension installed it happens on EVERY listing. At
+                // ERROR that would put a full refusal in the log each time;
+                // `list_prompts`' fan-out already uses `debug!` for the same
+                // thing. A server that genuinely could not be listed still
+                // reaches ERROR.
+                let (refusals, errors): (Vec<_>, Vec<_>) =
+                    errors.into_iter().partition(is_privacy_refusal);
+
+                if !refusals.is_empty() {
+                    tracing::debug!(
+                        skipped = refusals.len(),
+                        "skipped extensions this session's model may not reach"
+                    );
                 }
 
                 if !errors.is_empty() {
@@ -5084,6 +5113,37 @@ mod tests {
 
         assert_eq!(private.contacted(), 0);
         assert!(public.contacted() > 0);
+    }
+
+    /// `list_resources`' fan-out collects its per-extension failures into one
+    /// bucket, and that bucket now carries two very different things: a server
+    /// that could not be listed, which is an error, and Gate C declining to
+    /// reach a private extension, which is the design. Logging the second at
+    /// ERROR puts a full refusal in the log on every listing a public model
+    /// performs with one private extension installed — `list_prompts`' fan-out
+    /// already uses `debug!` for exactly this.
+    ///
+    /// The discriminator is the code, so this pins it against the REAL refusal
+    /// and against the only two other errors that path can produce, spelled the
+    /// way `list_resources_from_extension` spells them.
+    #[test]
+    fn a_gate_c_refusal_is_told_apart_from_a_real_listing_failure() {
+        use crate::privacy::ProviderTier::{Private, Public};
+
+        let refusal = crate::privacy::refusal::privacy_refusal("ucsfomopagent", Private, Public)
+            .expect("a private extension and a public caller is a refusal");
+        assert!(is_privacy_refusal(&refusal), "{refusal:?}");
+
+        assert!(!is_privacy_refusal(&ErrorData::new(
+            ErrorCode::INVALID_PARAMS,
+            "Extension ucsfomopagent is not valid".to_string(),
+            None,
+        )));
+        assert!(!is_privacy_refusal(&ErrorData::new(
+            ErrorCode::INTERNAL_ERROR,
+            "Unable to list resources for ucsfomopagent, TransportClosed".to_string(),
+            None,
+        )));
     }
 
     /// An MCP prompt body is server-authored text that lands in the transcript
