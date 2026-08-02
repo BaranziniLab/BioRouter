@@ -1893,6 +1893,10 @@ impl SessionManager {
         crate::utils::safe_truncate(&snippet, 60)
     }
 
+    /// Issue #56 Gate D. `caller_capability` is the reach the *reader* has, not
+    /// the classification of the session doing the searching: with
+    /// [`ProviderTier::Public`] the storage layer filters private sessions out
+    /// in SQL, before the `LIMIT` is applied.
     pub async fn search_chat_history(
         &self,
         query: &str,
@@ -1900,9 +1904,17 @@ impl SessionManager {
         after_date: Option<chrono::DateTime<chrono::Utc>>,
         before_date: Option<chrono::DateTime<chrono::Utc>>,
         exclude_session_id: Option<String>,
+        caller_capability: crate::privacy::ProviderTier,
     ) -> Result<crate::session::chat_history_search::ChatRecallResults> {
         self.storage
-            .search_chat_history(query, limit, after_date, before_date, exclude_session_id)
+            .search_chat_history(
+                query,
+                limit,
+                after_date,
+                before_date,
+                exclude_session_id,
+                caller_capability,
+            )
             .await
     }
 }
@@ -5735,6 +5747,7 @@ impl SessionStorage {
         after_date: Option<chrono::DateTime<chrono::Utc>>,
         before_date: Option<chrono::DateTime<chrono::Utc>>,
         exclude_session_id: Option<String>,
+        caller_capability: crate::privacy::ProviderTier,
     ) -> Result<crate::session::chat_history_search::ChatRecallResults> {
         use crate::session::chat_history_search::ChatHistorySearch;
 
@@ -5746,6 +5759,7 @@ impl SessionStorage {
             after_date,
             before_date,
             exclude_session_id,
+            caller_capability,
         )
         .execute()
         .await
@@ -10349,20 +10363,34 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            sm.search_chat_history("chemiosmosis", None, None, None, None)
-                .await
-                .unwrap()
-                .results
-                .len(),
+            sm.search_chat_history(
+                "chemiosmosis",
+                None,
+                None,
+                None,
+                None,
+                crate::privacy::ProviderTier::Private,
+            )
+            .await
+            .unwrap()
+            .results
+            .len(),
             1,
             "a recovered message must be indexed for recall"
         );
         assert!(
-            sm.search_chat_history("photosynthesis", None, None, None, None)
-                .await
-                .unwrap()
-                .results
-                .is_empty(),
+            sm.search_chat_history(
+                "photosynthesis",
+                None,
+                None,
+                None,
+                None,
+                crate::privacy::ProviderTier::Private,
+            )
+            .await
+            .unwrap()
+            .results
+            .is_empty(),
             "a compacted-away message must drop out of the index"
         );
     }
@@ -10370,11 +10398,18 @@ mod tests {
     // ── truncate_conversation ────────────────────────────────────────────────
 
     async fn fts_hits(sm: &SessionManager, term: &str) -> usize {
-        sm.search_chat_history(term, None, None, None, None)
-            .await
-            .unwrap()
-            .results
-            .len()
+        sm.search_chat_history(
+            term,
+            None,
+            None,
+            None,
+            None,
+            crate::privacy::ProviderTier::Private,
+        )
+        .await
+        .unwrap()
+        .results
+        .len()
     }
 
     /// Rows in the recall mirror with no message behind them.
@@ -11420,7 +11455,14 @@ mod tests {
         .unwrap();
 
         let res = sm
-            .search_chat_history("quantum entanglement experiment", None, None, None, None)
+            .search_chat_history(
+                "quantum entanglement experiment",
+                None,
+                None,
+                None,
+                None,
+                crate::privacy::ProviderTier::Private,
+            )
             .await
             .unwrap();
 
@@ -11447,7 +11489,14 @@ mod tests {
 
         // Would be a malformed MATCH expression if passed through unsanitized.
         let res = sm
-            .search_chat_history("CFTR AND (fibrosis*", None, None, None, None)
+            .search_chat_history(
+                "CFTR AND (fibrosis*",
+                None,
+                None,
+                None,
+                None,
+                crate::privacy::ProviderTier::Private,
+            )
             .await
             .unwrap();
         assert_eq!(res.results.len(), 1);
@@ -11469,11 +11518,18 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            sm.search_chat_history("photosynthesis", None, None, None, None)
-                .await
-                .unwrap()
-                .results
-                .len(),
+            sm.search_chat_history(
+                "photosynthesis",
+                None,
+                None,
+                None,
+                None,
+                crate::privacy::ProviderTier::Private,
+            )
+            .await
+            .unwrap()
+            .results
+            .len(),
             1
         );
 
@@ -11483,17 +11539,31 @@ mod tests {
 
         // Old term is gone, new term is present — index tracked the rewrite.
         assert!(sm
-            .search_chat_history("photosynthesis", None, None, None, None)
+            .search_chat_history(
+                "photosynthesis",
+                None,
+                None,
+                None,
+                None,
+                crate::privacy::ProviderTier::Private,
+            )
             .await
             .unwrap()
             .results
             .is_empty());
         assert_eq!(
-            sm.search_chat_history("glycolysis", None, None, None, None)
-                .await
-                .unwrap()
-                .results
-                .len(),
+            sm.search_chat_history(
+                "glycolysis",
+                None,
+                None,
+                None,
+                None,
+                crate::privacy::ProviderTier::Private,
+            )
+            .await
+            .unwrap()
+            .results
+            .len(),
             1
         );
     }
@@ -11560,7 +11630,14 @@ mod tests {
         // Opening the real manager migrates 8→16, including the FTS backfill.
         let sm = SessionManager::new(temp_dir.path().to_path_buf());
         let res = sm
-            .search_chat_history("mitochondria", None, None, None, None)
+            .search_chat_history(
+                "mitochondria",
+                None,
+                None,
+                None,
+                None,
+                crate::privacy::ProviderTier::Private,
+            )
             .await
             .unwrap();
         assert_eq!(res.results.len(), 1, "backfilled message is searchable");
@@ -11609,10 +11686,21 @@ mod tests {
             .await
             .unwrap();
 
-        let res = ChatHistorySearch::new(&pool, "ribosome", None, None, None, None)
-            .execute()
-            .await
-            .unwrap();
+        // Full reach: this fixture's hand-built schema predates `privacy_tier`
+        // entirely, which is the whole point — an un-migrated DB is what drives
+        // the `LIKE` fallback.
+        let res = ChatHistorySearch::new(
+            &pool,
+            "ribosome",
+            None,
+            None,
+            None,
+            None,
+            crate::privacy::ProviderTier::Private,
+        )
+        .execute()
+        .await
+        .unwrap();
         assert_eq!(
             res.results.len(),
             1,

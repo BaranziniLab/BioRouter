@@ -1,4 +1,5 @@
 use crate::conversation::message::MessageContent;
+use crate::privacy::ProviderTier;
 use crate::session::chat_fts;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
@@ -53,6 +54,16 @@ pub struct ChatHistorySearch<'a> {
     after_date: Option<DateTime<Utc>>,
     before_date: Option<DateTime<Utc>>,
     exclude_session_id: Option<String>,
+    /// Issue #56 Gate D. The reach this search runs with. `Public` filters
+    /// private sessions out **in SQL**; `Private` is full reach.
+    ///
+    /// Deliberately a bare [`ProviderTier`] and not a `CallCapability`: this
+    /// type sits in the session layer and is constructed from
+    /// `crates/biorouter/tests/`, where `CallCapability`'s test constructor is
+    /// not reachable. The one caller that holds a capability collapses it to a
+    /// reach — see `chatrecall_extension.rs`'s SEARCH arm, which is also where
+    /// DR-15's master opt-out is applied.
+    caller_capability: ProviderTier,
 }
 
 impl<'a> ChatHistorySearch<'a> {
@@ -63,6 +74,7 @@ impl<'a> ChatHistorySearch<'a> {
         after_date: Option<DateTime<Utc>>,
         before_date: Option<DateTime<Utc>>,
         exclude_session_id: Option<String>,
+        caller_capability: ProviderTier,
     ) -> Self {
         Self {
             pool,
@@ -71,6 +83,7 @@ impl<'a> ChatHistorySearch<'a> {
             after_date,
             before_date,
             exclude_session_id,
+            caller_capability,
         }
     }
 
@@ -145,6 +158,22 @@ impl<'a> ChatHistorySearch<'a> {
         }
         if self.before_date.is_some() {
             sql.push_str(" AND m.timestamp <= ?");
+        }
+
+        // Issue #56 Gate D. `sessions s` is already joined above, so this is one
+        // clause. A SQL LITERAL, never a `?`: both builders bind strictly
+        // positionally with the optional clauses in a fixed order, so an
+        // inserted placeholder shifts every later ordinal and mis-binds
+        // SILENTLY — no error, wrong results. The literal is a compile-time
+        // constant of the code path, not user input.
+        //
+        // It sits BEFORE the `LIMIT ?` on purpose: SQLite applies the limit to
+        // the filtered set, so a public caller gets its full quota of public
+        // rows even when private rows would have outranked them. A Rust-side
+        // post-filter after `execute()` returns is the same one-liner and is
+        // wrong for exactly that reason.
+        if self.caller_capability == ProviderTier::Public {
+            sql.push_str(" AND s.privacy_tier = 'public'");
         }
 
         sql.push_str(" ORDER BY bm25(messages_fts) ASC LIMIT ?");
@@ -239,6 +268,13 @@ impl<'a> ChatHistorySearch<'a> {
         }
         if self.before_date.is_some() {
             sql.push_str(" AND m.timestamp <= ?");
+        }
+
+        // Issue #56 Gate D — the same clause on the `LIKE` fallback. `execute`
+        // branches on a `sqlite_master` probe for `messages_fts`, so filtering
+        // only the FTS builder leaks on every un-migrated profile.
+        if self.caller_capability == ProviderTier::Public {
+            sql.push_str(" AND s.privacy_tier = 'public'");
         }
 
         sql.push_str(" ORDER BY m.timestamp DESC LIMIT ?");
@@ -366,6 +402,284 @@ impl<'a> ChatHistorySearch<'a> {
         ChatRecallResults {
             results,
             total_matches,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Issue #56 Gate D (SEARCH).
+    //!
+    //! This file had no `mod tests` before this task, so the pre-count of the
+    //! `session::chat_history_search` filter is zero — "0 passed, exits 0" is
+    //! the baseline, and the only meaningful number is the count of tests added
+    //! here.
+
+    use super::*;
+    use crate::privacy::ProviderTier;
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+
+    /// `execute` picks its builder by probing `sqlite_master` for
+    /// `messages_fts`, so the only honest way to exercise the `LIKE` fallback
+    /// is to seed a database that genuinely lacks the table.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum QueryPath {
+        Fts,
+        LikeFallback,
+    }
+
+    #[derive(Clone)]
+    struct Chat {
+        description: String,
+        working_dir: String,
+        private: bool,
+        text: String,
+    }
+
+    fn chat(private: bool, text: &str) -> Chat {
+        Chat {
+            description: if private {
+                "private chat".to_string()
+            } else {
+                "public chat".to_string()
+            },
+            working_dir: "/tmp/w".to_string(),
+            private,
+            text: text.to_string(),
+        }
+    }
+
+    fn private_chat_containing(term: &str) -> Chat {
+        chat(true, &format!("we discussed the {term} at length"))
+    }
+
+    fn public_chat_containing(term: &str) -> Chat {
+        chat(false, &format!("we discussed the {term} at length"))
+    }
+
+    /// A short document with one hit: best bm25 (`ORDER BY bm25 ASC`). These are
+    /// seeded first, and `seeded` gives earlier rows the newer timestamp, so the
+    /// `LIKE` fallback's `ORDER BY m.timestamp DESC` reproduces the same ranking.
+    fn private_chat_ranking_high(term: &str) -> Chat {
+        chat(true, term)
+    }
+
+    /// The same term buried in a long document: worst bm25, and seeded last so
+    /// it also has the oldest timestamp.
+    fn public_chat_ranking_low(term: &str) -> Chat {
+        let filler = "filler ".repeat(200);
+        chat(false, &format!("{filler}{term} {filler}"))
+    }
+
+    fn private_chat_titled(description: &str, working_dir: &str, term: &str) -> Chat {
+        Chat {
+            description: description.to_string(),
+            working_dir: working_dir.to_string(),
+            private: true,
+            text: format!("notes about the {term}"),
+        }
+    }
+
+    fn vec_of(n: usize, c: Chat) -> Vec<Chat> {
+        std::iter::repeat_n(c, n).collect()
+    }
+
+    /// The plan spelled this `vec_of(..).chain(vec_of(..))`; `Vec` is not an
+    /// `Iterator`, so the concatenation is a free function.
+    fn chain(a: Vec<Chat>, b: Vec<Chat>) -> Vec<Chat> {
+        a.into_iter().chain(b).collect()
+    }
+
+    struct Db {
+        _temp: tempfile::TempDir,
+        pool: Pool<Sqlite>,
+    }
+
+    async fn seeded(path: QueryPath, chats: &[Chat]) -> Db {
+        let _temp = tempfile::TempDir::new().unwrap();
+        let opts = SqliteConnectOptions::new()
+            .filename(_temp.path().join("recall.db"))
+            .create_if_missing(true);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(opts)
+            .await
+            .unwrap();
+
+        sqlx::query(
+            "CREATE TABLE sessions (id TEXT PRIMARY KEY, description TEXT NOT NULL DEFAULT '', \
+             working_dir TEXT NOT NULL DEFAULT '', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, \
+             privacy_tier TEXT NOT NULL DEFAULT 'public')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, \
+             role TEXT NOT NULL, content_json TEXT NOT NULL, created_timestamp INTEGER NOT NULL, \
+             timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        if path == QueryPath::Fts {
+            sqlx::query(
+                "CREATE VIRTUAL TABLE messages_fts USING fts5(text, session_id UNINDEXED, \
+                 message_id UNINDEXED, tokenize = 'porter unicode61')",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let base = chrono::Utc::now();
+        for (i, c) in chats.iter().enumerate() {
+            let sid = format!("s{i}");
+            let ts = base - chrono::Duration::seconds(i as i64);
+            sqlx::query(
+                "INSERT INTO sessions (id, description, working_dir, privacy_tier) \
+                 VALUES (?, ?, ?, ?)",
+            )
+            .bind(&sid)
+            .bind(&c.description)
+            .bind(&c.working_dir)
+            .bind(if c.private { "private" } else { "public" })
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            let content_json =
+                serde_json::to_string(&vec![MessageContent::text(c.text.clone())]).unwrap();
+            let inserted = sqlx::query(
+                "INSERT INTO messages (session_id, role, content_json, created_timestamp, timestamp) \
+                 VALUES (?, 'user', ?, ?, ?)",
+            )
+            .bind(&sid)
+            .bind(&content_json)
+            .bind(i as i64)
+            .bind(ts)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            if path == QueryPath::Fts {
+                sqlx::query(
+                    "INSERT INTO messages_fts (text, session_id, message_id) VALUES (?, ?, ?)",
+                )
+                .bind(&c.text)
+                .bind(&sid)
+                .bind(inserted.last_insert_rowid())
+                .execute(&pool)
+                .await
+                .unwrap();
+            }
+        }
+
+        Db { _temp, pool }
+    }
+
+    async fn search_with_limit(
+        tier: ProviderTier,
+        db: &Db,
+        query: &str,
+        limit: usize,
+    ) -> ChatRecallResults {
+        ChatHistorySearch::new(&db.pool, query, Some(limit), None, None, None, tier)
+            .execute()
+            .await
+            .unwrap()
+    }
+
+    async fn search_as(tier: ProviderTier, db: &Db, query: &str) -> ChatRecallResults {
+        ChatHistorySearch::new(&db.pool, query, None, None, None, None, tier)
+            .execute()
+            .await
+            .unwrap()
+    }
+
+    /// Everything that reaches the model. Stricter than chatrecall's prose
+    /// formatting: it covers every field of every result, not just the ones the
+    /// current renderer happens to print.
+    fn render_for_model(r: &ChatRecallResults) -> String {
+        serde_json::to_string(r).unwrap()
+    }
+
+    #[tokio::test]
+    async fn both_query_paths_filter_private_rows() {
+        for path in [QueryPath::Fts, QueryPath::LikeFallback] {
+            let db = seeded(
+                path,
+                &[
+                    private_chat_containing("cohort"),
+                    public_chat_containing("cohort"),
+                ],
+            )
+            .await;
+            assert_eq!(
+                search_as(ProviderTier::Public, &db, "cohort")
+                    .await
+                    .results
+                    .len(),
+                1,
+                "{path:?}"
+            );
+            assert_eq!(
+                search_as(ProviderTier::Private, &db, "cohort")
+                    .await
+                    .results
+                    .len(),
+                2,
+                "{path:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn the_limit_is_applied_after_the_filter_not_before() {
+        // THE test. 10 private rows ranking above 3 public ones with limit=5: a
+        // public caller must get all 3 public rows, not 0. A Rust-side post-filter
+        // — the obvious implementation, and the one that needs no SQL change —
+        // returns 0 here, silently and non-deterministically, with no error.
+        // SQLite applies the `LIMIT ?` at the end of each builder.
+        for path in [QueryPath::Fts, QueryPath::LikeFallback] {
+            let db = seeded(
+                path,
+                &chain(
+                    vec_of(10, private_chat_ranking_high("cohort")),
+                    vec_of(3, public_chat_ranking_low("cohort")),
+                ),
+            )
+            .await;
+            let r = search_with_limit(ProviderTier::Public, &db, "cohort", 5).await;
+            assert_eq!(
+                r.results.len(),
+                3,
+                "post-filtered in Rust instead of in SQL ({path:?})"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn no_content_field_of_a_private_row_survives() {
+        // §11.4: session_description is the LLM-generated title, produced FROM the
+        // conversation, and is the field most likely to be mislabelled as metadata.
+        let db = seeded(
+            QueryPath::Fts,
+            &[private_chat_titled(
+                "PHI cohort characterisation",
+                "/data/phi/x",
+                "cohort",
+            )],
+        )
+        .await;
+        let r = search_as(ProviderTier::Public, &db, "cohort").await;
+        let rendered = render_for_model(&r);
+        for leak in [
+            "PHI cohort characterisation",
+            "/data/phi",
+            "cohort characterisation",
+        ] {
+            assert!(!rendered.contains(leak), "{leak} survived: {rendered}");
         }
     }
 }

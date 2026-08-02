@@ -1,6 +1,6 @@
 use crate::agents::extension::PlatformExtensionContext;
 use crate::agents::mcp_client::{Error, McpClientTrait, McpMeta};
-use crate::privacy::CallCapability;
+use crate::privacy::{CallCapability, ProviderTier};
 use anyhow::Result;
 use async_trait::async_trait;
 use indoc::indoc;
@@ -224,6 +224,27 @@ impl ChatRecallClient {
             // Exclude current session from results to avoid self-referential loops
             let exclude_session_id = Some(current_session_id.to_string());
 
+            // Issue #56 Gate D (SEARCH). The filter is pushed into SQL, ahead of
+            // the `LIMIT`, rather than applied to the returned rows: a public
+            // caller must still get its full quota of public hits when private
+            // sessions outrank them.
+            //
+            // `cap` is the sample this call was ADMITTED on, exactly as in the
+            // LOAD arm above — never a fresh provider read from inside the
+            // driven future.
+            //
+            // The collapse to a bare tier is where DR-15's master opt-out is
+            // applied: `restricts_private_data()` is the conjunction of the
+            // toggle and the reach, so with the toggle off this searches with
+            // full reach. Passing `cap.tier()` straight through would keep
+            // filtering after the user opted out. Same correction the LOAD arm
+            // carries, for the same reason.
+            let reach = if cap.restricts_private_data() {
+                ProviderTier::Public
+            } else {
+                ProviderTier::Private
+            };
+
             match self
                 .context
                 .session_manager
@@ -233,6 +254,7 @@ impl ChatRecallClient {
                     after_date,
                     before_date,
                     exclude_session_id,
+                    reach,
                 )
                 .await
             {
@@ -448,6 +470,16 @@ mod tests {
         }
 
         async fn session_named(&self, name: &str, dir: &str, private: bool) -> Session {
+            self.session_containing(name, dir, private, "hello").await
+        }
+
+        async fn session_containing(
+            &self,
+            name: &str,
+            dir: &str,
+            private: bool,
+            text: &str,
+        ) -> Session {
             let s = self
                 .sm
                 .create_session(
@@ -458,7 +490,7 @@ mod tests {
                 .await
                 .unwrap();
             self.sm
-                .add_message(&s.id, &ConvMessage::user().with_text("hello"))
+                .add_message(&s.id, &ConvMessage::user().with_text(text))
                 .await
                 .unwrap();
             if private {
@@ -490,6 +522,18 @@ mod tests {
                 "session_id".into(),
                 serde_json::Value::String(target.into()),
             );
+            self.client
+                .handle_chatrecall("caller-session", cap, Some(args))
+                .await
+        }
+
+        async fn search_via(
+            &self,
+            cap: CallCapability,
+            query: &str,
+        ) -> Result<Vec<Content>, String> {
+            let mut args = JsonObject::new();
+            args.insert("query".into(), serde_json::Value::String(query.into()));
             self.client
                 .handle_chatrecall("caller-session", cap, Some(args))
                 .await
@@ -640,6 +684,73 @@ mod tests {
             .unwrap()
             .text
             .contains("weekly notes"));
+    }
+
+    /// Gate D's other half. LOAD names one session; SEARCH sweeps every session
+    /// in the store, so it is the wider hole of the two.
+    #[tokio::test]
+    async fn search_hides_a_private_session_from_a_public_caller() {
+        let h = Harness::new().await;
+        h.session_containing(
+            "OMOP diabetes cohort characterisation",
+            "/data/phi/cohort-2026-dm2",
+            true,
+            "the mitochondrion count is private",
+        )
+        .await;
+        h.session_containing(
+            "weekly notes",
+            "/tmp/notes",
+            false,
+            "the mitochondrion count is public",
+        )
+        .await;
+
+        let public = h
+            .search_via(
+                CallCapability::for_test(ProviderTier::Public, true),
+                "mitochondrion",
+            )
+            .await
+            .unwrap();
+        let text = public[0].as_text().unwrap().text.clone();
+        // The renderer prints `session_description` and `session_working_dir`;
+        // `create_session` fills `name`, not `description`, so the working dir
+        // is what identifies a session in this output. §11.4 classifies it as
+        // CONTENT — "/data/phi/cohort-2026-dm2" names a cohort on its own.
+        // `session_description` itself is covered from the SQL side, in
+        // `chat_history_search`'s `no_content_field_of_a_private_row_survives`.
+        assert!(
+            text.contains("/tmp/notes"),
+            "the public session must still be found: {text}"
+        );
+        assert!(
+            !text.contains("/data/phi"),
+            "leaked the working dir: {text}"
+        );
+        assert!(
+            !text.contains("cohort-2026-dm2"),
+            "leaked the working dir: {text}"
+        );
+        assert!(
+            !text.contains("is private"),
+            "leaked the message body: {text}"
+        );
+
+        let private = h
+            .search_via(
+                CallCapability::for_test(ProviderTier::Private, true),
+                "mitochondrion",
+            )
+            .await
+            .unwrap();
+        let text = private[0].as_text().unwrap().text.clone();
+        assert!(
+            text.contains("/data/phi/cohort-2026-dm2"),
+            "a private caller still sees it: {text}"
+        );
+        assert!(text.contains("is private"), "{text}");
+        assert!(text.contains("/tmp/notes"), "{text}");
     }
 
     /// The sample the call was ADMITTED on is the sample the gate reads — even

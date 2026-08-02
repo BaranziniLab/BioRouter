@@ -547,7 +547,16 @@ async fn compaction_shaped_rewrites_only_drop_what_they_meant_to() {
     for (uid, text) in &appended {
         let token = text.split_whitespace().next().unwrap();
         let hits = sm
-            .search_chat_history(token, Some(20), None, None, None)
+            .search_chat_history(
+                token,
+                Some(20),
+                None,
+                None,
+                None,
+                // Full reach: this asserts the FTS mirror's contents, not #56's
+                // visibility filter, and the fixture's sessions are public.
+                biorouter::privacy::ProviderTier::Private,
+            )
             .await
             .unwrap();
         let found = !hits.results.is_empty();
