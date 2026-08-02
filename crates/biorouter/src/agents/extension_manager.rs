@@ -1215,12 +1215,32 @@ impl ExtensionManager {
         Ok(())
     }
 
-    /// Get extensions info for building the system prompt
+    /// Get extensions info for building the system prompt.
+    ///
+    /// Issue #56 Gate F2. Gate E ([`Self::filter_tools`]) is a different
+    /// function on a different path, and it does not reach here: a server's
+    /// own `instructions` are PROSE, and `reply_parts::prepare_tools_and_prompt`
+    /// feeds them through `PromptManager::with_extensions` into the system
+    /// prompt of **every turn**. For a clinical connector that text describes
+    /// table names, cohort semantics and credential scope, so hiding the tools
+    /// while shipping the instructions leaks the more readable half.
+    ///
+    /// The filter is [`Self::allowed_extension_keys`] — Gate C's predicate,
+    /// verbatim, the same one Gate E uses — rather than a second spelling of
+    /// the rule. That function's own doc names this surface ("discovery for the
+    /// SYSTEM PROMPT has no admitted turn whose decision it could inherit, so
+    /// it samples"), which is why `None` is passed here, and sharing it is what
+    /// keeps a private server's prose and its tool schemas from being governed
+    /// by two predicates that can drift apart. It is also what keeps this
+    /// function from becoming a sixth reader of the provider mutex; the tier
+    /// and the master opt-out are read together, once, inside the sampler.
     pub async fn get_extensions_info(&self) -> Vec<ExtensionInfo> {
+        let allowed = self.allowed_extension_keys(None).await;
         self.extensions
             .lock()
             .await
             .iter()
+            .filter(|(name, _)| allowed.iter().any(|k| k == *name))
             .map(|(name, ext)| {
                 ExtensionInfo::new(
                     name,

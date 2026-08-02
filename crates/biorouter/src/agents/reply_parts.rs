@@ -647,6 +647,139 @@ mod tests {
         assert!(!survives_code_execution_filter("memory__remember", &prefix));
     }
 
+    // ------------------------------------------------------------------
+    // Issue #56 Gate F2: a private server's own INSTRUCTIONS.
+    //
+    // `get_extensions_info` hands every installed extension's instruction
+    // text to the prompt builder, and the result is the system prompt of
+    // EVERY turn. Gate E filters `filter_tools`, a different function on a
+    // different path, so a private connector's tool names could be hidden
+    // while its prose — table names, cohort semantics, credential scope —
+    // still shipped to a public model on every request.
+    // ------------------------------------------------------------------
+
+    /// One of the two extensions the compiled-in BAAM baseline calls private.
+    const PRIVATE_EXTENSION: &str = "ucsfomopagent";
+    const SENTINEL: &str = "SENTINEL-INSTRUCTIONS";
+
+    /// An in-process MCP server whose only distinguishing feature is the
+    /// instruction text the manager hands the prompt builder. Injected through
+    /// the real admission point, so the tier under test is the one
+    /// `classify_extension` stamps rather than one poked into the record.
+    struct InstructedServer;
+
+    impl rmcp::ServerHandler for InstructedServer {
+        fn get_info(&self) -> rmcp::model::ServerInfo {
+            rmcp::model::ServerInfo {
+                instructions: Some(SENTINEL.to_string()),
+                ..Default::default()
+            }
+        }
+    }
+
+    struct TieredProvider {
+        tier: crate::privacy::ProviderTier,
+    }
+
+    #[async_trait]
+    impl Provider for TieredProvider {
+        fn metadata() -> crate::providers::base::ProviderMetadata {
+            crate::providers::base::ProviderMetadata::empty()
+        }
+
+        fn get_name(&self) -> &str {
+            "plain"
+        }
+
+        fn tier(&self) -> crate::privacy::ProviderTier {
+            self.tier
+        }
+
+        fn get_model_config(&self) -> ModelConfig {
+            ModelConfig::new_or_fail("plain-model")
+        }
+
+        async fn complete_with_model(
+            &self,
+            _model_config: &ModelConfig,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[Tool],
+        ) -> anyhow::Result<(Message, ProviderUsage), ProviderError> {
+            Ok((
+                Message::assistant().with_text("ok"),
+                ProviderUsage::new("plain-model".to_string(), Usage::default()),
+            ))
+        }
+    }
+
+    /// Bind a model of `tier` and render the system prompt the way a turn
+    /// does. The assertion is on the RENDERED PROMPT, not on the tool list:
+    /// asserting on the tools is the wrong-implementation trap, because Gate E
+    /// already hides those and the instructions still ship.
+    async fn system_prompt_under(
+        agent: &crate::agents::Agent,
+        session_id: &str,
+        working_dir: &std::path::Path,
+        tier: crate::privacy::ProviderTier,
+    ) -> String {
+        agent
+            .update_provider(Arc::new(TieredProvider { tier }), session_id)
+            .await
+            .expect("binding a model of this tier is legal on a public session");
+        let (_tools, _toolshim_tools, system_prompt) = agent
+            .prepare_tools_and_prompt(session_id, working_dir)
+            .await
+            .expect("the real system-prompt path");
+        system_prompt
+    }
+
+    #[tokio::test]
+    async fn a_private_servers_instructions_do_not_reach_a_public_system_prompt() {
+        use crate::privacy::ProviderTier::{Private, Public};
+
+        let dir = tempfile::tempdir().unwrap();
+        let agent = crate::agents::Agent::with_config(crate::agents::AgentConfig::new(
+            Arc::new(crate::session::SessionManager::new(
+                dir.path().to_path_buf(),
+            )),
+            Arc::new(crate::config::permission::PermissionManager::new(
+                dir.path().to_path_buf(),
+            )),
+            None,
+            crate::config::BioRouterMode::Auto,
+        ));
+        let session = agent
+            .config
+            .session_manager
+            .create_session(
+                dir.path().to_path_buf(),
+                "gate-f".to_string(),
+                SessionType::Hidden,
+            )
+            .await
+            .unwrap();
+        agent
+            .extension_manager
+            .add_inprocess_server(PRIVATE_EXTENSION, InstructedServer)
+            .await
+            .expect("inject the private extension");
+
+        // Public first: the session is public, so both binds below are legal
+        // and the order cannot be reversed.
+        let public_prompt = system_prompt_under(&agent, &session.id, dir.path(), Public).await;
+        assert!(
+            !public_prompt.contains(SENTINEL),
+            "a private server's instructions reached a public model's system prompt"
+        );
+
+        let private_prompt = system_prompt_under(&agent, &session.id, dir.path(), Private).await;
+        assert!(
+            private_prompt.contains(SENTINEL),
+            "the model entitled to the extension must still get its instructions"
+        );
+    }
+
     #[tokio::test]
     async fn test_stream_error_propagation() {
         use futures::StreamExt;

@@ -2,6 +2,7 @@ use crate::agents::extension::ExtensionConfig;
 use crate::agents::extension::PlatformExtensionContext;
 use crate::agents::mcp_client::{Error, McpClientTrait, McpMeta};
 use crate::config::{extension_entry_is_persisted, get_extension_entry_by_name, ExtensionEntry};
+use crate::privacy::ProviderTier;
 use anyhow::Result;
 use async_trait::async_trait;
 use indoc::indoc;
@@ -94,10 +95,20 @@ pub struct ExtensionManagerClient {
 /// one (e.g. `chatrecall`) shows up as `enabled: false` without any operator
 /// ever writing that. Only an entry actually present in the on-disk config
 /// counts as operator-disabled; injected defaults stay agent-enableable.
+///
+/// `caller` is Gate F1 (issue #56), and it is a REQUIRED parameter rather than
+/// a check bolted onto the caller because this predicate is the only part of
+/// the enable path that is pure — testable with no global config, no registry
+/// and no live extension. Enabling `ucsfomopagent` is not a tool call into a
+/// private server, it is the call that SPAWNS one: it pulls that server's
+/// `CLINICAL_RECORDS_*` secrets out of the keychain and opens a session to the
+/// UCSF CDW. Gate C refusing the first tool call afterwards is already too
+/// late.
 fn check_enable_allowed(
     entry: Option<ExtensionEntry>,
     persisted: bool,
     extension_name: &str,
+    caller: ProviderTier,
 ) -> Result<ExtensionConfig, ErrorData> {
     match entry {
         None => Err(ErrorData::new(
@@ -120,6 +131,27 @@ fn check_enable_allowed(
             ),
             None,
         )),
+        // Gate F1. Before the permit arm below, and stated on the NAME the
+        // model asked for rather than on the config record: nothing local may
+        // grant private (R11(i)), so the tier comes from the compiled-in
+        // marketplace baseline the same way it does at every admission point.
+        Some(_)
+            if crate::privacy::classify_extension(extension_name).is_private()
+                && caller == ProviderTier::Public =>
+        {
+            Err(ErrorData::new(
+                ErrorCode::INVALID_REQUEST,
+                format!(
+                    "Extension '{extension_name}' is a private extension: the Biorouter \
+                     marketplace marks it as reaching data held inside the institution, so only \
+                     a private model may enable or call it. This session is running on a public \
+                     model, so do not enable it. If it is needed for this task, ask the user to \
+                     switch this chat to a private model first — in the desktop app under \
+                     Settings > Models, or with the model chip in the composer."
+                ),
+                None,
+            ))
+        }
         Some(entry) => Ok(entry.config),
     }
 }
@@ -187,9 +219,16 @@ impl ExtensionManagerClient {
         }
     }
 
+    /// `cap` is the capability THIS tool call was admitted on, taken straight
+    /// off its `McpMeta` — never re-sampled here, for the reason
+    /// [`crate::privacy::CallCapability`] exists: enabling an extension runs
+    /// inside the driven future, an unbounded wall-clock gap past admission,
+    /// and a fresh read there is what would let a Public-admitted call spawn a
+    /// private server after the user switched models mid-turn.
     async fn handle_manage_extensions(
         &self,
         arguments: Option<JsonObject>,
+        cap: crate::privacy::CallCapability,
     ) -> Result<Vec<Content>, ExtensionManagerToolError> {
         let arguments = arguments.ok_or(ExtensionManagerToolError::MissingParameter {
             param_name: "arguments".to_string(),
@@ -199,7 +238,7 @@ impl ExtensionManagerClient {
             serde_json::from_value(serde_json::Value::Object(arguments))?;
 
         match self
-            .manage_extensions_impl(params.action, params.extension_name)
+            .manage_extensions_impl(params.action, params.extension_name, cap)
             .await
         {
             Ok(content) => Ok(content),
@@ -213,6 +252,7 @@ impl ExtensionManagerClient {
         &self,
         action: ManageExtensionAction,
         extension_name: String,
+        cap: crate::privacy::CallCapability,
     ) -> Result<Vec<Content>, ErrorData> {
         let extension_manager = self
             .context
@@ -244,7 +284,17 @@ impl ExtensionManagerClient {
         let persisted = entry
             .as_ref()
             .is_some_and(|entry| extension_entry_is_persisted(&entry.config.name()));
-        let config = check_enable_allowed(entry, persisted, &extension_name)?;
+        // DR-15's master opt-out, read off the SAME sample as the tier so the
+        // two can never be observed at different instants. With tiers switched
+        // off the caller is handed to the gate as private, which silences Gate
+        // F1 and nothing else — the alternative, a second flag inside the pure
+        // predicate, is exactly the second read this type exists to prevent.
+        let caller = if cap.enforced() {
+            cap.tier()
+        } else {
+            ProviderTier::Private
+        };
+        let config = check_enable_allowed(entry, persisted, &extension_name, caller)?;
 
         extension_manager
             .add_extension(config)
@@ -483,7 +533,13 @@ impl McpClientTrait for ExtensionManagerClient {
             SEARCH_AVAILABLE_EXTENSIONS_TOOL_NAME => {
                 self.handle_search_available_extensions().await
             }
-            MANAGE_EXTENSIONS_TOOL_NAME => self.handle_manage_extensions(arguments).await,
+            // Issue #56 Gate F1: enabling an extension SPAWNS its server, so it
+            // carries the admitted capability for the same reason the two reads
+            // below do.
+            MANAGE_EXTENSIONS_TOOL_NAME => {
+                self.handle_manage_extensions(arguments, meta.capability)
+                    .await
+            }
             // Issue #56: these two reach an MCP server, so they carry the
             // capability this call was ADMITTED on into Gate C's sibling guard
             // rather than letting the manager sample a newer one.
@@ -559,7 +615,7 @@ mod tests {
 
     #[test]
     fn enable_of_unknown_extension_is_not_found() {
-        let err = check_enable_allowed(None, false, "ghost").unwrap_err();
+        let err = check_enable_allowed(None, false, "ghost", ProviderTier::Public).unwrap_err();
         assert_eq!(err.code, ErrorCode::RESOURCE_NOT_FOUND);
         assert!(err.message.contains("not found"), "{}", err.message);
     }
@@ -569,7 +625,8 @@ mod tests {
         // #42: `enabled: false` written into config.yaml must be a dependable
         // pin — the agent may not silently re-enable what the operator turned
         // off. `persisted: true` = the entry exists in the on-disk config.
-        let err = check_enable_allowed(Some(entry(false)), true, "developer").unwrap_err();
+        let err = check_enable_allowed(Some(entry(false)), true, "developer", ProviderTier::Public)
+            .unwrap_err();
         assert_eq!(err.code, ErrorCode::INVALID_REQUEST);
         assert!(err.message.contains("disabled"), "{}", err.message);
         assert!(
@@ -590,14 +647,68 @@ mod tests {
         // extensions map with its default — a default-off one (chatrecall)
         // carries `enabled: false` without any operator writing it. That is
         // not an operator pin, so the agent enable flow must stay open.
-        let config =
-            check_enable_allowed(Some(entry(false)), false, "chatrecall").expect("allowed");
+        let config = check_enable_allowed(
+            Some(entry(false)),
+            false,
+            "chatrecall",
+            ProviderTier::Public,
+        )
+        .expect("allowed");
         assert_eq!(config.name(), "developer");
     }
 
     #[test]
     fn enable_of_config_enabled_extension_passes_the_config_through() {
-        let config = check_enable_allowed(Some(entry(true)), true, "developer").expect("allowed");
+        let config =
+            check_enable_allowed(Some(entry(true)), true, "developer", ProviderTier::Public)
+                .expect("allowed");
         assert_eq!(config.name(), "developer");
+    }
+
+    /// The same entry shape as [`entry`], but under an arbitrary name and
+    /// always enabled — the tier is resolved from the NAME the model asked
+    /// for, never from the config record, so this fixture only has to carry a
+    /// name that is not itself a refusal for some other reason.
+    fn entry_for(name: &str) -> ExtensionEntry {
+        ExtensionEntry {
+            enabled: true,
+            config: ExtensionConfig::Builtin {
+                name: name.to_string(),
+                display_name: None,
+                description: "fixture".to_string(),
+                timeout: None,
+                bundled: Some(true),
+                available_tools: vec![],
+            },
+        }
+    }
+
+    /// Gate F1 (#56): `extensionmanager__manage_extensions` is not a tool call
+    /// into a private server — it is the call that SPAWNS one. Enabling
+    /// `ucsfomopagent` pulls its `CLINICAL_RECORDS_*` secrets out of the
+    /// keychain and opens a session to the UCSF CDW; being refused afterwards,
+    /// at the first tool call, is already too late.
+    #[test]
+    fn a_public_caller_may_not_enable_a_private_extension() {
+        use ProviderTier::{Private, Public};
+        // Pure, like its four siblings above, so it needs no global config.
+        let e = check_enable_allowed(
+            Some(entry_for("ucsfomopagent")),
+            false,
+            "ucsfomopagent",
+            Public,
+        )
+        .unwrap_err();
+        assert!(e.message.contains("marketplace"), "{}", e.message);
+        assert!(e.message.contains("private"), "{}", e.message);
+        check_enable_allowed(
+            Some(entry_for("ucsfomopagent")),
+            false,
+            "ucsfomopagent",
+            Private,
+        )
+        .expect("a private caller may enable it");
+        check_enable_allowed(Some(entry_for("developer")), false, "developer", Public)
+            .expect("public extensions are unaffected");
     }
 }
