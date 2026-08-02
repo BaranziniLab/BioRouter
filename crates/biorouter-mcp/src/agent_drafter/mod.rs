@@ -4914,21 +4914,48 @@ br.run("hello", "#missing");
             // tool may produce a base id it was not given. Universal over the
             // WHOLE router, not over a hand-picked list — the leak this task
             // exists to close was a tool nobody had enumerated. Arguments name
-            // only the public base, so a hit is volunteering and not echoing.
+            // only a base that does not exist here, so a hit is volunteering and
+            // not echoing, and every validator takes its ENUMERATING branch.
             let (srv, root, _apps, _kdir, _env) =
                 drafter_at_root_with_kbs(&["default", "omop-cohort-412"]);
             tier::raise_unlocked(&root, "omop-cohort-412", true).unwrap();
 
+            // REAL apps for the id-addressing tools to address. Review caught
+            // this fixture pointing every one of them at `no-such-app`, which
+            // made sixteen of the eighteen rows bail at `no app 'no-such-app'`
+            // before any catalog existed — a pass no implementation could fail.
+            // See `benign_args_for` for what each row now reaches.
+            seed_app(&srv, "probe", "Probe").await;
+            seed_app(&srv, "disposable", "Disposable").await;
+            let exports = TempDir::new().unwrap();
+            let probe_manifest = srv.store().read_file("probe", "manifest.json").unwrap();
+
             for tool in AgentDrafterServer::tool_router().list_all() {
-                let out =
-                    call_drafter_tool_as(&srv, &tool.name, benign_args_for(&tool.name), Public)
-                        .await;
+                let args = benign_args_for(&tool.name, exports.path(), &probe_manifest);
+                let out = call_drafter_tool_as(&srv, &tool.name, args, Public).await;
+                let said = rendered(&out);
                 assert!(
-                    !rendered(&out).contains("omop-cohort-412"),
+                    !said.contains("omop-cohort-412"),
                     "{} volunteered a private base id — add it to the metadata register \
-                     or scope it: {}",
+                     or scope it: {said}",
                     tool.name,
-                    rendered(&out)
+                );
+
+                // The fixture polices ITSELF, because the way this test failed
+                // review was not a wrong assertion but an inert one: pointed at
+                // `no-such-app`, sixteen of eighteen rows never reached a line
+                // that could leak, and the docstring still claimed the whole
+                // router. A row that stops at the "no app" guard proves nothing,
+                // so only the three that must not spawn a process may.
+                let held = said.contains("no app '");
+                assert_eq!(
+                    held,
+                    HELD_AT_THE_ID_GUARD.contains(&tool.name.as_ref()),
+                    "{} is in the wrong half of the fixture (held at the id guard: \
+                     {held}). Point it at the seeded `probe` app so its row asserts \
+                     something, or add it to HELD_AT_THE_ID_GUARD with the reason: \
+                     {said}",
+                    tool.name,
                 );
             }
 
@@ -4938,33 +4965,119 @@ br.run("hello", "#missing");
             assert!(rendered(&out).contains("omop-cohort-412"));
         }
 
-        /// Arguments that reach each tool's body without doing expensive work.
+        /// A real app for the register probe to address, so an id-addressing
+        /// tool reaches its body instead of its "no app" guard.
+        async fn seed_app(srv: &AgentDrafterServer, id: &str, title: &str) {
+            let mut p = create(title, None);
+            p.id = Some(id.to_string());
+            // Agentic, because `persist_created_app` returns before the catalog
+            // for any other kind (`:1088`) — a static seed would leave the very
+            // tools this fixture exists to reach unable to build one.
+            p.system_prompt = Some("help".into());
+            p.html = Some("<html><head></head><body>hi</body></html>".into());
+            srv.create_app_inner(p, None, false).await.unwrap();
+        }
+
+        /// An id no base on this machine has.
         ///
-        /// Every id-addressing tool is pointed at an app that does not exist, so
-        /// `build_app` does not run esbuild and `smoke_app` does not boot a
-        /// browser; `create_app` gets its own id so the loop's arbitrary order
-        /// cannot make a later row act on it. `knowledge_base` names the PUBLIC
-        /// base, so any private id in the output is volunteered rather than
-        /// echoed.
-        fn benign_args_for(tool: &str) -> serde_json::Value {
+        /// Naming the PUBLIC base — which this fixture did until review — routes
+        /// every row down its SUCCESS path, where no validator ever renders a
+        /// list. The drafter's leak lives in the rejection strings
+        /// (`validate.rs:33/:42/:52`), so the probe has to be rejected to reach
+        /// it. It is also not the private id, so a hit is still volunteering
+        /// rather than echoing. `br.kb` is the client API namespace the 100-app
+        /// test drive really configured, so this is the live mistake.
+        const ABSENT_KB: &str = "br.kb";
+
+        /// The only rows allowed to stop at their `no app '<id>'` guard, because
+        /// reaching their bodies means spawning a process this test must not
+        /// spawn. Asserted in both directions, so neither half can drift.
+        const HELD_AT_THE_ID_GUARD: [&str; 3] = ["build_app", "launch_app", "smoke_app"];
+
+        /// Arguments that drive each tool as deep into its body as it can go
+        /// without spawning a process or destroying the fixture.
+        ///
+        /// **Every id-addressing tool is pointed at a REAL app.** Each one's
+        /// first statement is `load_manifest` / `store.exists` / `artifact_dir`
+        /// and returns `no app '<id>'` on an unknown id — so the previous
+        /// `"no-such-app"` meant sixteen of eighteen rows asserted only that
+        /// `no app 'no-such-app'` does not contain a private base id. That is
+        /// precisely the leak shape this task closes: `configure_app` (`:2168`),
+        /// `update_app` (`:2310`) and `declare_profiles` (`:2623`) all build
+        /// their catalog AFTER the manifest loads.
+        ///
+        /// **Three rows stay at the id guard, named with the reason:**
+        /// `build_app` and `launch_app` run esbuild — and `find_esbuild` falls
+        /// back to `npx --yes esbuild`, which DOWNLOADS — and `smoke_app` boots
+        /// a browser. None of the three constructs a `Catalog` (the six
+        /// production `Catalog::discover` sites are `create_app`,
+        /// `configure_app`, `update_app`, `declare_profiles`,
+        /// `list_platform_catalog` and `routes/apps.rs`), so what the register
+        /// covers for them is the shallow row — stated here rather than implied
+        /// by a docstring that claims the whole router.
+        ///
+        /// `delete_app` gets its OWN app, so it cannot destroy the shared
+        /// fixture whatever order `list_all()` returns; `export_app` gets a real
+        /// temp `target_dir`, so it writes into the fixture instead of at `/`;
+        /// `create_app` gets its own id for the same ordering reason.
+        fn benign_args_for(
+            tool: &str,
+            export_root: &std::path::Path,
+            probe_manifest: &str,
+        ) -> serde_json::Value {
             match tool {
                 "list_platform_catalog" | "list_apps" => json!({}),
                 "create_app" => json!({
                     "title": "Register Probe",
                     "id": "register-probe",
-                    "knowledge_base": "default",
+                    "system_prompt": "help",
+                    "knowledge_base": ABSENT_KB,
+                }),
+                "build_app" | "launch_app" | "smoke_app" => json!({ "id": "no-such-app" }),
+                "delete_app" => json!({ "id": "disposable" }),
+                "export_app" => json!({
+                    "id": "probe",
+                    "target_dir": export_root.join("out").to_string_lossy(),
+                }),
+                // The `manifest.json` branch is the one that re-runs the
+                // write-boundary check, so this row carries a real manifest
+                // naming `ABSENT_KB` rather than the fallback's `"x"` — without
+                // it `update_app` writes a file and never reaches `:2310`.
+                "update_app" => json!({
+                    "id": "probe",
+                    "path": "manifest.json",
+                    "content": manifest_naming_kb(probe_manifest, ABSENT_KB),
                 }),
                 _ => json!({
-                    "id": "no-such-app",
-                    "knowledge_base": "default",
-                    "target_dir": "/nonexistent-register-probe",
-                    "agents": [],
+                    "id": "probe",
+                    "knowledge_base": ABSENT_KB,
+                    // A profile with an unresolvable skill, so `declare_profiles`
+                    // reaches `validate::check_all` and renders a list; an empty
+                    // `agents` skips the loop entirely.
+                    "agents": [{
+                        "key": "analyst",
+                        "system_prompt": "analyse",
+                        "skills": ["no-such-skill"],
+                    }],
                     "routes": [],
-                    "pack": "parchment",
+                    // `surface` and `theme` are REQUIRED fields, not defaulted —
+                    // without them `declare_surface` and `set_theme` fail at
+                    // param decode, which is shallower still than the id guard.
+                    "surface": {},
+                    "theme": { "pack": "parchment" },
                     "path": "index.html",
                     "content": "x",
                 }),
             }
+        }
+
+        /// The probe app's own manifest, re-pointed at `kb`, so `update_app`'s
+        /// manifest branch validates a knowledge base instead of failing to
+        /// parse.
+        fn manifest_naming_kb(manifest_json: &str, kb: &str) -> String {
+            let mut m: serde_json::Value = serde_json::from_str(manifest_json).unwrap();
+            m["agent"]["knowledge_base"] = json!(kb);
+            serde_json::to_string(&m).unwrap()
         }
     }
 }
