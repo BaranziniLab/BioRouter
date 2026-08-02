@@ -783,15 +783,24 @@ impl CliSession {
                     console::style(format!("Elapsed time: {}", elapsed_str)).dim()
                 );
             }
-            RunMode::Plan => {
-                let mut plan_messages = self.messages.clone();
-                plan_messages.push(Message::user().with_text(content));
-                let reasoner = get_reasoner(self.session_classification().await).await?;
-                self.plan_with_reasoner_model(plan_messages, reasoner)
-                    .await?;
-            }
+            RunMode::Plan => self.plan(content).await?,
         }
         Ok(())
+    }
+
+    /// Run one plan-mode turn: the whole message list plus `content`, handed to
+    /// the planner provider.
+    ///
+    /// Issue #56 Gate H. This exists so that the *two* entry points into plan
+    /// mode — this `RunMode::Plan` arm and `/plan <text>` — share ONE
+    /// `get_reasoner` call. They were byte-identical five-line blocks, which
+    /// meant the barrier had two call sites and a test could only ever cover
+    /// one of them; the other could be changed to pass `Public` and stay green.
+    async fn plan(&mut self, content: &str) -> Result<()> {
+        let mut plan_messages = self.messages.clone();
+        plan_messages.push(Message::user().with_text(content));
+        let reasoner = get_reasoner(self.session_classification().await).await?;
+        self.plan_with_reasoner_model(plan_messages, reasoner).await
     }
 
     fn handle_toggle_theme(&self) {
@@ -878,11 +887,7 @@ impl CliSession {
             return Ok(());
         }
 
-        let mut plan_messages = self.messages.clone();
-        plan_messages.push(Message::user().with_text(&options.message_text));
-
-        let reasoner = get_reasoner(self.session_classification().await).await?;
-        self.plan_with_reasoner_model(plan_messages, reasoner).await
+        self.plan(&options.message_text).await
     }
 
     /// Issue #56 Gate H. This chat's stored classification, read fresh from the
@@ -2328,9 +2333,10 @@ async fn get_reasoner(
     // Issue #56 Gate H. AFTER `create`, because the tier is a property of what
     // this instance actually resolved and not of the name that was asked for —
     // `create` can hand back a composite whose lead is somebody else entirely.
-    // Constructing a provider discloses nothing; the two call sites below
-    // (`handle_message_input`'s Plan arm and `handle_plan_mode`) are what would,
-    // and both are downstream of this `?`.
+    // Constructing a provider discloses nothing; `plan_with_reasoner_model`,
+    // which hands it the whole message list, is what would — and it is
+    // downstream of this `?` on the ONE path (`Session::plan`) that both plan
+    // entry points now share.
     biorouter::privacy::assert_alt_provider_allowed(
         "plan mode",
         reasoner.as_ref(),
@@ -2473,12 +2479,17 @@ mod tests {
     }
 
     /// Issue #56 Gate H. CLI plan mode is a documented first-class feature and
-    /// a complete private→public transcript leak: `handle_message_input` and
-    /// `handle_plan_mode` clone the WHOLE message list and hand it to a provider
-    /// built from `BIOROUTER_PLANNER_PROVIDER` (or, failing that, the global
-    /// default), which the session row never records. Neither
-    /// `Agent::update_provider` nor `Agent::reply` is on that path, so Gates A–F
-    /// are all blind to it.
+    /// a complete private→public transcript leak: `Session::plan` clones the
+    /// WHOLE message list and hands it to a provider built from
+    /// `BIOROUTER_PLANNER_PROVIDER` (or, failing that, the global default),
+    /// which the session row never records. Neither `Agent::update_provider`
+    /// nor `Agent::reply` is on that path, so Gates A–F are all blind to it.
+    ///
+    /// `handle_plan_mode` is driven here rather than `Session::plan` directly
+    /// because it is one of the two *entry points* a user reaches — and since
+    /// both of them (`/plan <text>` and a message typed while `RunMode::Plan`
+    /// is set) now funnel through the single `Session::plan`, driving either
+    /// one covers the barrier for both.
     ///
     /// The planner here is a REAL provider — an Ollama-engine instance pointed
     /// at a host that is not this machine, which is exactly how `tier()` decides
