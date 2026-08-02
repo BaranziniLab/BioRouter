@@ -41,8 +41,19 @@ impl Agent {
             .filter(|v: &Vec<String>| !v.is_empty())
             .unwrap_or_else(|| vec![session.id.clone()]);
 
+        // Issue #56. The capability of the model *in this chat* — the audience
+        // of every string this handler returns, including the candidate list
+        // `resolve_target_kb` may put in its no-target error. Fail-closed to
+        // Public when no provider is bound: less reach, never more.
+        let chat_capability = self
+            .provider()
+            .await
+            .map(|p| p.tier())
+            .unwrap_or(ProviderTier::Public);
+
         // Resolve target KB: explicit id → new-by-name → this session's primary.
-        let kb_id = resolve_target_kb(&svc, &arguments, &session.id).map_err(invalid_params)?;
+        let kb_id = resolve_target_kb(&svc, &arguments, &session.id, chat_capability)
+            .map_err(invalid_params)?;
 
         // Load the sessions (with messages).
         let mut sessions = Vec::new();
@@ -82,11 +93,12 @@ impl Agent {
         .map_err(internal)?;
 
         Ok(vec![Content::text(ingest_summary(
-            session_ids.len(),
+            session_ids.len().saturating_sub(result.refused),
+            result.refused,
             &kb_id,
-            &result.source_id,
-            &result.commit_sha,
-            result.steps,
+            &result.ingested.source_id,
+            &result.ingested.commit_sha,
+            result.ingested.steps,
         ))])
     }
 
@@ -126,10 +138,17 @@ impl Agent {
 /// It must be the session's primary, not the machine-wide pointer: every other
 /// surface writes session-scoped state, so reading the machine default here
 /// sent a workflow/Meditation session's transcript into an unrelated base.
+///
+/// `caller` is the capability of the model that will read the error text
+/// (issue #56). This function is `kb_id_or_primary`'s twin one crate over —
+/// Task 10C's fix lives in `biorouter-mcp`'s `KnowledgeServer` and cannot reach
+/// an `impl Agent` in `biorouter` — so it takes the same filter and the same
+/// degrade.
 pub(crate) fn resolve_target_kb(
     svc: &KnowledgeService,
     arguments: &Value,
     session_id: &str,
+    caller: ProviderTier,
 ) -> anyhow::Result<String> {
     if let Some(name) = arguments.get("new_kb_name").and_then(|v| v.as_str()) {
         let name = name.trim();
@@ -155,7 +174,17 @@ pub(crate) fn resolve_target_kb(
     if let Some(primary) = svc.primary_for_session(Some(session_id))? {
         return Ok(primary);
     }
-    let ids = svc.session_kb_ids(Some(session_id))?;
+    let ids: Vec<String> = svc
+        .session_kb_ids(Some(session_id))?
+        .into_iter()
+        // Issue #56. Per id, and BEFORE the `is_empty` check below, so a chat
+        // whose only base is private is told it has none rather than being
+        // handed `(one of: )` — which is both useless and a tell. A barrier that
+        // refuses a read and then hands over the identifier of the thing it
+        // refused is not a barrier, and that identifier is the one argument that
+        // makes the explicit-`kb_id` branch reachable.
+        .filter(|id| caller.is_private() || !crate::knowledge::tier::is_private(svc.root(), id))
+        .collect();
     if ids.is_empty() {
         anyhow::bail!(
             "no target knowledge base: this chat has none. Pass new_kb_name to create one, \
@@ -173,14 +202,26 @@ pub(crate) fn resolve_target_kb(
 /// target silently, so the result must name the base it landed in.
 fn ingest_summary(
     session_count: usize,
+    refused: usize,
     kb_id: &str,
     source_id: &str,
     commit_sha: &str,
     steps: usize,
 ) -> String {
+    // Issue #56. A COUNT and nothing else — §11.4 classifies a session's id,
+    // title and working directory as content, and this product's titles are
+    // LLM-generated from the conversation itself.
+    let refused_note = if refused == 0 {
+        String::new()
+    } else {
+        format!(
+            " {refused} private conversation(s) were skipped: this chat is running on a public \
+             model. Ask the user to switch this chat to a private model to include them."
+        )
+    };
     format!(
         "Ingested {session_count} conversation(s) into knowledge base '{kb_id}'. \
-         Source id: {source_id}, commit: {}, sub-agent steps: {steps}.",
+         Source id: {source_id}, commit: {}, sub-agent steps: {steps}.{refused_note}",
         commit_sha.chars().take(8).collect::<String>()
     )
 }
@@ -258,15 +299,19 @@ mod tests {
         svc.set_primary_for_session("chat-1", Some("session-kb"))?;
 
         let args = serde_json::json!({});
-        assert_eq!(resolve_target_kb(&svc, &args, "chat-1")?, "session-kb");
+        let public = crate::privacy::ProviderTier::Public;
         assert_eq!(
-            resolve_target_kb(&svc, &args, "chat-2")?,
+            resolve_target_kb(&svc, &args, "chat-1", public)?,
+            "session-kb"
+        );
+        assert_eq!(
+            resolve_target_kb(&svc, &args, "chat-2", public)?,
             "machine-kb",
             "a chat that never chose one still inherits the machine pointer"
         );
 
         svc.set_primary_persisted(None)?;
-        let err = resolve_target_kb(&svc, &args, "chat-9")
+        let err = resolve_target_kb(&svc, &args, "chat-9", public)
             .unwrap_err()
             .to_string();
         assert!(
@@ -280,9 +325,26 @@ mod tests {
     /// and the user both read.
     #[test]
     fn ingest_summary_names_the_target_base() {
-        let summary = ingest_summary(2, "my-kb", "src-1", "abcdef1234567890", 7);
+        let summary = ingest_summary(2, 0, "my-kb", "src-1", "abcdef1234567890", 7);
         assert!(summary.contains("'my-kb'"), "got: {summary}");
         assert!(summary.contains("abcdef12") && !summary.contains("abcdef123"));
+        assert!(
+            !summary.contains("skipped"),
+            "a clean run must not mention a refusal: {summary}"
+        );
+    }
+
+    /// Issue #56. When Gate G drops some of the requested chats, the model is
+    /// told a COUNT and the fix — never an id, a title or a working directory
+    /// (§11.4 classifies all three as content).
+    #[test]
+    fn ingest_summary_reports_refusals_as_a_count_and_names_nothing() {
+        let summary = ingest_summary(1, 2, "my-kb", "src-1", "abcdef1234567890", 7);
+        assert!(
+            summary.contains("2 private conversation(s) were skipped"),
+            "{summary}"
+        );
+        assert!(summary.contains("private model"), "{summary}");
     }
 
     #[test]
@@ -291,6 +353,70 @@ mod tests {
         assert_eq!(slugify_kb_name("  Soul  "), "soul");
         assert_eq!(slugify_kb_name("a / b -- c"), "a-b-c");
         assert!(slugify_kb_name("***").is_empty());
+    }
+
+    /// Issue #56. `resolve_target_kb` is `kb_id_or_primary`'s twin one crate
+    /// over, and Task 10C's fix cannot reach it: that one is in
+    /// `biorouter-mcp`'s `KnowledgeServer`, this one is in `biorouter`'s
+    /// `Agent`. Same rule — OMIT. A barrier that refuses a read and then hands
+    /// the model the identifier of the thing it refused is not a barrier.
+    #[test]
+    fn the_no_target_error_names_only_the_bases_the_caller_may_reach() -> anyhow::Result<()> {
+        use crate::privacy::ProviderTier;
+
+        let tmp = tempfile::TempDir::new()?;
+        let svc = KnowledgeService::new(tmp.path().to_path_buf());
+        svc.create_base("default", "Default", None)?;
+        svc.create_base("omop", "OMOP", None)?;
+        crate::knowledge::tier::raise_unlocked(tmp.path(), "omop", true)?;
+
+        let args = serde_json::json!({});
+        let public = resolve_target_kb(&svc, &args, "chat-9", ProviderTier::Public)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            public.contains("default"),
+            "the public base must still be offered: {public}"
+        );
+        assert!(
+            !public.contains("omop"),
+            "the no-target error enumerated a private base: {public}"
+        );
+
+        // Both directions: a private model still sees both, or the filter is
+        // just "refuse everyone" and the feature has quietly stopped working.
+        let private = resolve_target_kb(&svc, &args, "chat-9", ProviderTier::Private)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            private.contains("default") && private.contains("omop"),
+            "a private model was denied its own bases: {private}"
+        );
+        Ok(())
+    }
+
+    /// The filter runs per id and BEFORE the emptiness check, so a chat whose
+    /// only base is private is told it has none rather than handed
+    /// `(one of: )` — which is both useless and a tell.
+    #[test]
+    fn a_chat_whose_only_base_is_private_is_told_it_has_none() -> anyhow::Result<()> {
+        use crate::privacy::ProviderTier;
+
+        let tmp = tempfile::TempDir::new()?;
+        let svc = KnowledgeService::new(tmp.path().to_path_buf());
+        svc.create_base("omop", "OMOP", None)?;
+        crate::knowledge::tier::raise_unlocked(tmp.path(), "omop", true)?;
+
+        let err = resolve_target_kb(&svc, &serde_json::json!({}), "chat-9", ProviderTier::Public)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("this chat has none"),
+            "expected the no-bases branch, got: {err}"
+        );
+        assert!(!err.contains("omop"), "{err}");
+        assert!(!err.contains("one of"), "an empty candidate list: {err}");
+        Ok(())
     }
 
     #[test]

@@ -611,20 +611,30 @@ pub async fn handle_ingest_conversation(
             println!(
                 "  {} {} conversation(s) ingested into {} {}",
                 style("✓").green(),
-                session_ids.len(),
+                session_ids.len().saturating_sub(res.refused),
                 style(&kb_id).fg(ACCENT).bold(),
-                style(format!("({} steps)", res.steps)).dim()
+                style(format!("({} steps)", res.ingested.steps)).dim()
             );
             println!(
                 "    {} {}",
                 style("source:").dim(),
-                style(&res.source_id).dim()
+                style(&res.ingested.source_id).dim()
             );
             println!(
                 "    {} {}",
                 style("commit:").dim(),
-                style(short_sha(&res.commit_sha)).dim()
+                style(short_sha(&res.ingested.commit_sha)).dim()
             );
+            // Issue #56, Gate G. A COUNT and nothing else — a session's id,
+            // title and working directory are all content (§11.4).
+            if res.refused > 0 {
+                println!(
+                    "  {} {} private conversation(s) skipped: this model is public. \
+                     Re-run with a private --provider/--model to include them.",
+                    style("!").yellow(),
+                    res.refused
+                );
+            }
             Ok(())
         }
         Err(e) => Err(anyhow!("Conversation ingest failed: {}", e)),

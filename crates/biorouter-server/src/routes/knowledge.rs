@@ -963,6 +963,39 @@ fn assert_macro_target_reachable(
     .map_err(|e| (StatusCode::CONFLICT, e.to_string()))
 }
 
+/// Issue #56, Gate G. Refuse a conversation ingest whose model may not read the
+/// requested chats, **before** the SSE stream opens.
+///
+/// The barrier itself is inside `conversation_ingest::ingest_conversation` —
+/// that is the ONE guard, and it is what covers the CLI, the platform tool and
+/// this route alike even if this pre-check were deleted. Exactly as
+/// `assert_macro_target_reachable` does for Task 10C's barrier, this asks the
+/// same question one layer up so the GUI gets a real status code instead of a
+/// 200 whose stream opens and immediately dies — indistinguishable, to the
+/// fetch that started it, from a model that failed to connect.
+///
+/// 409 CONFLICT and not 500: a barrier that surfaces as an internal error
+/// teaches the caller to retry. Nothing about the *request* is malformed; what
+/// conflicts is the chats' classification with the model this call is on, and
+/// the recovery is to change the model.
+///
+/// ⚠ The message is `conversation_ingest`'s own, never a second spelling of it,
+/// and it names no session (§11.4 classifies id, title and working directory as
+/// content).
+fn assert_conversations_readable(
+    caller_capability: biorouter::privacy::ProviderTier,
+    sessions: &[biorouter::session::session_manager::Session],
+) -> Result<(), (StatusCode, String)> {
+    if biorouter::knowledge::conversation_ingest::refuses_every_session(caller_capability, sessions)
+    {
+        return Err((
+            StatusCode::CONFLICT,
+            biorouter::knowledge::conversation_ingest::REFUSED_ALL_PRIVATE.to_string(),
+        ));
+    }
+    Ok(())
+}
+
 /// Build a well-formed SSE error frame. Uses `serde_json` for proper escaping so
 /// that backslashes in Windows paths and newlines in multi-line `anyhow` chains do
 /// not break JSON or SSE line framing.
@@ -1267,6 +1300,11 @@ pub async fn ingest_conversation(
     }
 
     let (completer, caller_capability) = build_completer(&body.model).await?;
+    // Issue #56, Gate G. Before the stream opens, and before a single transcript
+    // is rendered: this route is the same private -> public laundering primitive
+    // as the platform tool, reachable with nothing but the secret key.
+    assert_conversations_readable(caller_capability, &sessions)?;
+
     let cancel = std::sync::Arc::new(tokio::sync::Notify::new());
 
     let (sse_tx, sse_rx) = mpsc::channel::<String>(64);
@@ -1719,4 +1757,108 @@ pub async fn override_credibility(
         .override_credibility(&id, &sid, cred)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(CredibilityResponse { credibility }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::assert_conversations_readable;
+    use axum::http::StatusCode;
+    use biorouter::privacy::{ProviderTier, SessionClassification};
+    use biorouter::session::session_manager::{Session, SessionType};
+
+    /// ⚠ DEVIATION, recorded rather than hidden. Task 11 writes this row as a
+    /// `POST /bases/{id}/ingest-conversation` against the router in
+    /// `tests/knowledge_routes.rs`. It cannot live there: that route loads its
+    /// sessions from the process-global `SessionManager`, i.e. **the
+    /// developer's real session database** — which is exactly why Task 10B's
+    /// own ratchet matrix in that file excludes `ingest-conversation` by name.
+    /// So the row is spelled here instead, against the production function the
+    /// route calls, with sessions built in memory.
+    fn session(id: &str, tier: SessionClassification) -> Session {
+        Session {
+            id: id.into(),
+            working_dir: std::path::PathBuf::from("/tmp/x"),
+            name: format!("chat {id}"),
+            user_set_name: false,
+            session_type: SessionType::User,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            extension_data: Default::default(),
+            total_tokens: None,
+            input_tokens: None,
+            output_tokens: None,
+            accumulated_total_tokens: None,
+            accumulated_input_tokens: None,
+            accumulated_output_tokens: None,
+            schedule_id: None,
+            workflow: None,
+            user_workflow_values: None,
+            conversation: None,
+            message_count: 0,
+            provider_name: None,
+            model_config: None,
+            diverged_from: None,
+            branch_point_msg_uid: None,
+            parent_session_id: None,
+            privacy_tier: tier,
+            privacy_reason: None,
+        }
+    }
+
+    /// D8: this route is the same one-call private -> public laundering
+    /// primitive as the platform tool, behind nothing but the secret key.
+    #[test]
+    fn a_public_model_is_refused_another_sessions_private_conversation_with_409() {
+        let err = assert_conversations_readable(
+            ProviderTier::Public,
+            &[session("phi", SessionClassification::Private)],
+        )
+        .expect_err("a public model was handed a private transcript over HTTP");
+
+        assert_eq!(err.0, StatusCode::CONFLICT, "409, never 500: {}", err.1);
+        assert!(err.1.contains("private"), "{}", err.1);
+        assert!(
+            !err.1.contains("phi") && !err.1.contains("chat phi"),
+            "the refusal named the session: {}",
+            err.1
+        );
+    }
+
+    /// BOTH directions. Without this row, "refuse the public caller" is
+    /// satisfied by "refuse everyone" — a hardcoded `ProviderTier::Public` at
+    /// the call site passes every refusal assertion above and quietly breaks
+    /// the feature for exactly the sessions it was built for.
+    #[test]
+    fn a_private_model_may_ingest_its_own_private_conversation_over_http() {
+        assert_conversations_readable(
+            ProviderTier::Private,
+            &[session("phi", SessionClassification::Private)],
+        )
+        .expect("a private model was refused its own private chat");
+    }
+
+    /// The ratchet is `max`, not `set`: a public chat ingesting itself is the
+    /// overwhelmingly common call and must not regress.
+    #[test]
+    fn a_public_model_may_still_ingest_a_public_conversation_over_http() {
+        assert_conversations_readable(
+            ProviderTier::Public,
+            &[session("mine", SessionClassification::Public)],
+        )
+        .expect("a public chat may always ingest itself");
+    }
+
+    /// Per session, not once. A mixed list keeps the public chats and lets the
+    /// shared barrier drop the rest, so the route must NOT 409 here.
+    #[test]
+    fn a_mixed_list_is_not_refused_wholesale_at_the_route() {
+        assert_conversations_readable(
+            ProviderTier::Public,
+            &[
+                session("mine", SessionClassification::Public),
+                session("phi", SessionClassification::Private),
+            ],
+        )
+        .expect("one private chat in the list must not refuse the public ones");
+    }
 }
