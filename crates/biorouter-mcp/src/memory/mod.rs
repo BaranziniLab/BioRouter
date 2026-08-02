@@ -1146,6 +1146,15 @@ impl MemoryServer {
                        Store locally unless the user has asked for something that should follow \
                        them across projects, and tell them which one you used."
     )]
+    ///
+    /// ⚠ `rmcp::model::Meta` is a **destructive** extractor: `from_context_part`
+    /// `mem::swap`s the meta out of the request context, leaving an empty one
+    /// behind. Adding a `RequestContext` parameter alongside it on this tool
+    /// would therefore hand that handler a `context.meta` with no capability
+    /// bit in it — and an absent bit reads as Public (`knowledge::tier`), which
+    /// is the permissive answer. If this tool ever needs the context too, read
+    /// the capability from `Meta` here and pass the bool down; do not extract
+    /// both and expect both to be populated.
     pub async fn remember_memory(
         &self,
         params: Parameters<RememberMemoryParams>,

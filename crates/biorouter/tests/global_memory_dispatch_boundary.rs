@@ -107,6 +107,24 @@ async fn dispatch(
     tool: &str,
     arguments: serde_json::Value,
 ) -> (bool, String) {
+    dispatch_as(
+        manager,
+        biorouter::privacy::CallCapability::public_enforced(),
+        tool,
+        arguments,
+    )
+    .await
+}
+
+/// [`dispatch`] with an explicit caller capability, so the *private* branch of
+/// the built-in `_meta` bit can be exercised through the real dispatcher rather
+/// than by hand-building an `rmcp::model::Meta` (issue #56 Gate H).
+async fn dispatch_as(
+    manager: &Arc<ExtensionManager>,
+    cap: biorouter::privacy::CallCapability,
+    tool: &str,
+    arguments: serde_json::Value,
+) -> (bool, String) {
     let call = CallToolRequestParams {
         task: None,
         meta: None,
@@ -114,12 +132,7 @@ async fn dispatch(
         arguments: arguments.as_object().cloned(),
     };
     match manager
-        .dispatch_tool_call(
-            SESSION,
-            call,
-            biorouter::privacy::CallCapability::public_enforced(),
-            CancellationToken::new(),
-        )
+        .dispatch_tool_call(SESSION, call, cap, CancellationToken::new())
         .await
     {
         Err(e) => (true, e.to_string()),
@@ -370,5 +383,140 @@ async fn local_memory_inside_execute_code_still_works() {
     assert!(
         out.contains("formats with black"),
         "the local store stopped answering inside execute_code: {out}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Issue #56 Gate H: the capability channel the memory refusal rides on.
+// ---------------------------------------------------------------------------
+
+/// A capability whose tier is Private, built the only way production builds one
+/// — [`CallCapability::sample`] over a real bound provider. `CallCapability`'s
+/// test constructor is `pub(crate)`, and deliberately so: a test that could
+/// fabricate a tier would not be testing the thing that produces it.
+///
+/// Ollama pointed at this machine is Private by `tier()`'s own rule (the same
+/// instance the crate's other Gate H tests use); nothing is sent to it here,
+/// only its tier is read.
+async fn private_capability() -> biorouter::privacy::CallCapability {
+    let provider = biorouter::config::with_config_overrides(
+        std::collections::HashMap::from([(
+            "OLLAMA_HOST".to_string(),
+            "http://localhost:11434".to_string(),
+        )]),
+        biorouter::providers::create(
+            "ollama",
+            biorouter::model::ModelConfig::new("qwen3").unwrap(),
+        ),
+    )
+    .await
+    .expect("build an ollama provider");
+    assert!(
+        provider.tier().is_private(),
+        "the fixture is only meaningful if this provider really is Private"
+    );
+    let shared = Arc::new(Mutex::new(Some(provider)));
+    biorouter::privacy::CallCapability::sample(&shared).await
+}
+
+/// Issue #56 Gate H. `remember_memory`'s global refusal reads the caller's
+/// capability out of `rmcp::model::Meta`, and the memory unit tests build that
+/// meta by hand. Nothing there asserts that the *daemon* actually labels the
+/// `memory` built-in — `dispatch_meta` only attaches the bit when
+/// `BUILTIN_EXTENSIONS` contains the derived client name, and an absent bit
+/// reads as **Public**, which is the permissive answer. Rename the extension
+/// key, drop the `with_capability_private` call, or stop deriving `memory` from
+/// the `memory__` prefix, and the gate silently stops existing.
+///
+/// So this pins the whole wire: a private capability in at
+/// `dispatch_tool_call`, a refusal out of `remember_memory`, and nothing on
+/// disk.
+#[tokio::test]
+#[serial_test::serial]
+async fn a_private_capability_may_not_write_a_global_memory_through_the_real_dispatcher() {
+    let root = tempfile::tempdir().unwrap();
+    let m = manager(root.path()).await;
+    let private = private_capability().await;
+
+    let (is_error, text) = dispatch_as(
+        &m,
+        private,
+        "memory__remember_memory",
+        serde_json::json!({
+            "category": "cohorts",
+            "data": "n=412 T2D patients",
+            "tags": [],
+            "is_global": true
+        }),
+    )
+    .await;
+    assert!(
+        is_error,
+        "a private chat wrote a machine-wide memory: the capability bit never \
+         reached the memory built-in. {text}"
+    );
+    assert!(
+        text.to_lowercase().contains("private"),
+        "the refusal has to say why, got: {text}"
+    );
+    assert!(
+        !text.contains("n=412"),
+        "a refusal that quotes what it refused is a disclosure with extra \
+         steps: {text}"
+    );
+
+    // The local write is allowed, and carries the disclosure — also through the
+    // real dispatcher, so the `else if caller_is_private` arm is reached by the
+    // same wire and not only by a hand-built meta.
+    let (is_error, text) = dispatch_as(
+        &m,
+        private,
+        "memory__remember_memory",
+        serde_json::json!({
+            "category": "cohorts",
+            "data": "n=412 T2D patients",
+            "tags": [],
+            "is_global": false
+        }),
+    )
+    .await;
+    assert!(!is_error, "the local write must still be allowed: {text}");
+    assert!(
+        text.contains("including one on a public model"),
+        "AR-3's disclosure did not reach the transcript: {text}"
+    );
+
+    // And the same two calls on a PUBLIC capability, or the assertions above
+    // would also pass a build that refused everybody / disclosed to everybody.
+    let (is_error, text) = dispatch(
+        &m,
+        "memory__remember_memory",
+        serde_json::json!({
+            "category": "notes",
+            "data": "x",
+            "tags": [],
+            "is_global": true
+        }),
+    )
+    .await;
+    assert!(
+        !is_error,
+        "a public chat's global write must still work: {text}"
+    );
+
+    let (_, text) = dispatch(
+        &m,
+        "memory__remember_memory",
+        serde_json::json!({
+            "category": "notes",
+            "data": "x",
+            "tags": [],
+            "is_global": false
+        }),
+    )
+    .await;
+    assert!(
+        !text.contains("including one on a public model"),
+        "the public-capability write must keep the shorter copy: {text}"
     );
 }
