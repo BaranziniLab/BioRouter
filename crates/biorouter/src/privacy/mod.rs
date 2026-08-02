@@ -149,11 +149,6 @@ impl SessionClassification {
 /// The ONE crossing between the two lattices: the classification floor a turn
 /// run under `tier` establishes. `pub(crate)` on purpose — a repo-grep test
 /// asserts the caller count, so a third crossing cannot appear unnoticed.
-// No production caller yet: the classification ratchet that crosses the lattices
-// lands later in this series, and until it does the plain (non-`cfg(test)`) lib
-// build warns `never used` — which `scripts/clippy-lint.sh` promotes to an error
-// with `-D warnings`. Remove this line once the ratchet is wired.
-#[allow(dead_code)]
 pub(crate) fn floor(tier: ProviderTier) -> SessionClassification {
     match tier {
         ProviderTier::Private => SessionClassification::Private,
@@ -319,7 +314,9 @@ mod tests {
         // A test written to accept `<= 2` would let a third crossing appear
         // unnoticed, which is the entire point of having this test.
         const EXPECTED: &[(&str, usize)] = &[
-            // ("crates/biorouter/src/agents/agent.rs", 1),          // uncomment in Task 13
+            // Task 13: Gate B's ratchet, in `Agent::reply`. The ONE place a
+            // capability establishes a classification.
+            ("crates/biorouter/src/agents/agent.rs", 1),
             // ("crates/biorouter/src/agents/subagent_tool.rs", 1),  // uncomment in Task 23
         ];
 

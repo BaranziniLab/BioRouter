@@ -17,6 +17,7 @@
 //! | 23 | the `PrivateChildOfPublicParent` variant and `PrivacyRefusal::spawn_upgrade` |
 
 use super::{ProviderTier, SessionClassification};
+use crate::session::session_manager::Session;
 
 /// A privacy boundary refused an operation.
 ///
@@ -70,6 +71,51 @@ impl PrivacyRefusal {
     }
 }
 
+/// The one sentence every turn refusal contains, and the reason it is a
+/// constant rather than a phrase inlined at the format site: two independent
+/// readers key on it — the desktop client, which must be able to tell a refusal
+/// from an ordinary assistant reply, and `agents::agent::gate_b_turn_tests`,
+/// whose whole discrimination between "refused" and "ran" is this substring. A
+/// reworded refusal that dropped it would leave both of them silently reading
+/// every refusal as a completed turn.
+pub const TURN_REFUSAL_MARKER: &str = "this turn was not sent";
+
+/// Gate B: the turn was refused because the session is classified private and
+/// the model it is bound to is public, with no private model recorded on the
+/// row to repair to.
+///
+/// §14.4: this string is rendered straight into the transcript, so it may name
+/// the tier and the provider and nothing else. It takes the whole [`Session`]
+/// rather than the two strings it uses so that a future variant needing the
+/// classification does not have to change every call site — but note that the
+/// row carries the session's *name* and *working directory*, which are CONTENT
+/// and must never reach the sentence. The unit test below is what holds that.
+pub fn turn_refusal(session: &Session) -> String {
+    format!(
+        "This chat is private, so only a private model — one hosted inside the institution — \
+         may run in it. The model this chat is set to (`{provider}`) is public, so \
+         {TURN_REFUSAL_MARKER}. Switch this chat to a private model (Settings → Models, or the \
+         model chip in the composer) and send it again. Nothing about the chat has been changed.",
+        provider = session.provider_name.as_deref().unwrap_or("no model"),
+    )
+}
+
+/// Gate D: the model asked to load a chat history more private than the model
+/// itself.
+///
+/// Moved here from `agents::chatrecall_extension`, which is where Task 10 put
+/// it before this module existed. Constant on purpose: a model that sees a
+/// different string on retry concludes the refusal is transient and loops. It
+/// names no target — not the session, not its working directory — because
+/// §11.4 classifies both as CONTENT.
+pub const fn chatrecall_load_refusal() -> &'static str {
+    "This chat history is private: it was created under a model hosted inside the institution, \
+     so only a private model may read it. This session is running on a public model. Ask the user \
+     to switch this chat to a private model — Settings → Models, or the model chip in the \
+     composer — and try again. Do not retry with a different session id or through another tool; \
+     the boundary is the same everywhere."
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -111,5 +157,55 @@ mod tests {
             "a refusal must not carry the session id into text the user or the model reads: \
              {message}"
         );
+    }
+
+    /// The same §14.4 rule for Gate B's turn refusal, which is the one refusal
+    /// built from a whole `Session` row — so it is the one with the session's
+    /// name and working directory within arm's reach of the format string.
+    #[test]
+    fn a_turn_refusal_names_the_model_and_no_session_content() {
+        let session = Session {
+            id: "20260801_7".into(),
+            name: "Patient MRN 4471 workup".into(),
+            working_dir: std::path::PathBuf::from("/Users/someone/phi/cohort-3"),
+            provider_name: Some("anthropic".into()),
+            privacy_tier: SessionClassification::Private,
+            ..Default::default()
+        };
+        let text = turn_refusal(&session);
+        assert!(text.contains("anthropic"), "{text}");
+        assert!(text.contains("private"), "{text}");
+        for content in ["20260801_7", "Patient MRN 4471 workup", "phi/cohort-3"] {
+            assert!(
+                !text.contains(content),
+                "a refusal carried session content ({content}) into text the user reads: {text}"
+            );
+        }
+    }
+
+    /// The marker is what the desktop client and `gate_b_turn_tests` key on to
+    /// tell a refusal from a completed turn. A reword that dropped it would
+    /// make both of them read every refusal as a turn that ran.
+    #[test]
+    fn every_turn_refusal_carries_the_marker() {
+        for provider in [Some("anthropic".to_string()), None] {
+            let session = Session {
+                provider_name: provider,
+                privacy_tier: SessionClassification::Private,
+                ..Default::default()
+            };
+            let text = turn_refusal(&session);
+            assert!(text.contains(TURN_REFUSAL_MARKER), "{text}");
+        }
+    }
+
+    /// Gate D's refusal is a constant for a reason (a model that sees a
+    /// different string on retry concludes the refusal is transient and loops),
+    /// and it is subject to the same content rule.
+    #[test]
+    fn the_chatrecall_refusal_is_stable_and_names_no_target() {
+        assert_eq!(chatrecall_load_refusal(), chatrecall_load_refusal());
+        assert!(chatrecall_load_refusal().contains("private"));
+        assert!(!chatrecall_load_refusal().contains("session id\": "));
     }
 }

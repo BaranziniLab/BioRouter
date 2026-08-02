@@ -14,17 +14,6 @@ use tokio_util::sync::CancellationToken;
 
 pub static EXTENSION_NAME: &str = "Chat Recall";
 
-/// Issue #56 Gate D. Moved into `crates/biorouter/src/privacy/refusal.rs` by
-/// Task 13, which is the first task that has that module. Constant on purpose:
-/// a model that sees a different string on retry concludes the refusal is
-/// transient and loops. It names no target — not the session, not its working
-/// directory — because §11.4 classifies both as CONTENT.
-const CHATRECALL_LOAD_REFUSAL: &str = "This chat history is private: it was created under a model \
-     hosted inside the institution, so only a private model may read it. This session is running \
-     on a public model. Ask the user to switch this chat to a private model — Settings → Models, \
-     or the model chip in the composer — and try again. Do not retry with a different session id \
-     or through another tool; the boundary is the same everywhere.";
-
 /// Parameters for the chatrecall tool
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct ChatRecallParams {
@@ -129,7 +118,14 @@ impl ChatRecallClient {
                     if cap.enforced()
                         && !crate::privacy::visible_to(cap.tier(), loaded_session.privacy_tier)
                     {
-                        return Ok(vec![Content::text(CHATRECALL_LOAD_REFUSAL)]);
+                        // Issue #56 Gate D. The string itself lives in
+                        // `privacy::refusal`, which owns every refusal in the
+                        // tree — so §14.4's "never leak content in a refusal"
+                        // rule can be checked by reading one file, and so no
+                        // second copy of this sentence can drift from it.
+                        return Ok(vec![Content::text(
+                            crate::privacy::refusal::chatrecall_load_refusal(),
+                        )]);
                     }
 
                     let conversation = loaded_session.conversation.as_ref();

@@ -56,6 +56,7 @@ use crate::permission::permission_judge::PermissionCheckResult;
 use crate::permission::tool_risk::ToolRiskRegistry;
 use crate::permission::PermissionConfirmation;
 use crate::privacy::refusal::PrivacyRefusal;
+use crate::privacy::{ProviderTier, SessionClassification};
 use crate::providers::base::Provider;
 use crate::providers::errors::ProviderError;
 use crate::scheduler_trait::SchedulerTrait;
@@ -910,6 +911,73 @@ pub enum Drained {
     Empty,
 }
 
+/// Issue #56 Gate B'. The classification of the session this agent is serving,
+/// as last observed, plus the id it was observed for.
+///
+/// It exists because the transcript leaves the machine on three paths that
+/// never enter [`Agent::reply`] and therefore never meet Gate B: session
+/// auto-naming (`maybe_rename_session` → `maybe_update_name` →
+/// `generate_session_name` → `complete_fast`), compaction summarisation
+/// (`context_mgmt::compact_messages`) and the stall judge (`agents::stall`).
+/// All three take their provider from [`Agent::provider`], so that accessor is
+/// where the assertion goes — and an assertion needs the classification without
+/// a session id to look it up by, because none of those three call sites has
+/// one to give.
+///
+/// The cache is sound because `AgentManager` holds one `Arc<Agent>` per session
+/// id, so "this agent" and "this session" are the same thing; it is re-synced
+/// from the row at every `reply` entry, and reconciled by a successful bind in
+/// between (see [`Agent::update_provider`]).
+///
+/// ⚠ It initialises to **`Private`**, not `Public`. It is read before the first
+/// `reply` on a rehydrated agent, and the restrictive value is the safe default
+/// there: a wrong `Private` costs one refused auto-naming, a wrong `Public`
+/// costs a private transcript sent to a public model.
+///
+/// A plain `Mutex` rather than an atomic: it carries a `String` as well, it is
+/// never held across an `await`, and every read is off the hot path.
+#[derive(Debug)]
+pub(super) struct CachedClassification {
+    inner: std::sync::Mutex<(SessionClassification, Option<String>)>,
+}
+
+impl Default for CachedClassification {
+    fn default() -> Self {
+        Self {
+            inner: std::sync::Mutex::new((SessionClassification::Private, None)),
+        }
+    }
+}
+
+impl CachedClassification {
+    fn load(&self) -> SessionClassification {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .0
+    }
+
+    fn store(&self, session_id: &str, classification: SessionClassification) {
+        let mut guard = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *guard = (classification, Some(session_id.to_string()));
+    }
+
+    /// The session the cached classification was read for. Diagnostics only —
+    /// it rides in the refusal so a handler can name the chat, and it is
+    /// deliberately absent from the refusal's own message text (§14.4).
+    fn session_id(&self) -> String {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .1
+            .clone()
+            .unwrap_or_default()
+    }
+}
+
 /// The main biorouter Agent
 pub struct Agent {
     pub(super) provider: SharedProvider,
@@ -1004,6 +1072,8 @@ pub struct Agent {
     /// a session reload, a different session on a shared agent) simply misses and
     /// falls back to a full normalization.
     pub(super) normalizer: crate::conversation::SharedNormalizer,
+    /// Issue #56 Gate B'. See [`CachedClassification`].
+    pub(super) cached_classification: CachedClassification,
 }
 
 #[derive(Clone, Debug)]
@@ -1229,6 +1299,7 @@ pub(super) fn fire_compaction_hook_on(
 /// means two tests can be armed at once without clobbering each other.
 #[cfg(test)]
 pub(crate) mod seams {
+    use crate::providers::base::Provider;
     use tokio::sync::oneshot;
 
     /// One armed rendezvous: the caller session id and tool name it is waiting
@@ -1462,6 +1533,52 @@ pub(crate) mod seams {
     pub(super) async fn after_bind_before_swap() {
         park(Seam::AfterBindBeforeSwap).await
     }
+
+    // ─── Issue #56, Gate B: the provider a repairing rebind constructs ───────
+    //
+    // Gate B's repair arm exists to build the provider the session ROW names,
+    // which in production means `providers::create` — a factory that reads the
+    // user's config file and their OS keyring, and whose products talk to real
+    // hosts. A unit test cannot go through it in either direction:
+    // `create("versa_azure", ..)` needs institutional credentials this machine
+    // may not have (and asking for them can raise a Keychain prompt), while
+    // `create("ollama", ..)` succeeds *offline* and then points the turn at
+    // whatever happens to be listening on localhost:11434.
+    //
+    // So the construction step — and only that step — is overridable in test
+    // builds. Keyed by `(session id, provider name)`, not by name alone: these
+    // tests are `#[tokio::test]`s in one binary on parallel threads, and a
+    // name-only key would let one test's rebind answer another's.
+    type RebindOverride = (String, String, std::sync::Arc<dyn Provider>);
+    static REBIND_OVERRIDES: std::sync::Mutex<Vec<RebindOverride>> =
+        std::sync::Mutex::new(Vec::new());
+
+    /// Register the provider `Agent::rebind_from_row` must hand back when the
+    /// row for `session_id` names `provider_name`.
+    pub(crate) fn override_rebind_provider(
+        session_id: &str,
+        provider_name: &str,
+        provider: std::sync::Arc<dyn Provider>,
+    ) {
+        REBIND_OVERRIDES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((session_id.to_string(), provider_name.to_string(), provider));
+    }
+
+    /// The registered override, if any. Not consumed: a session's rebind can
+    /// legitimately happen on more than one turn.
+    pub(super) fn rebind_override(
+        session_id: &str,
+        provider_name: &str,
+    ) -> Option<std::sync::Arc<dyn Provider>> {
+        REBIND_OVERRIDES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .find(|(s, p, _)| s == session_id && p == provider_name)
+            .map(|(_, _, provider)| std::sync::Arc::clone(provider))
+    }
 }
 
 impl Agent {
@@ -1536,6 +1653,7 @@ impl Agent {
             tool_risks,
             efforts: Default::default(),
             normalizer: Default::default(),
+            cached_classification: Default::default(),
         }
     }
 
@@ -3307,10 +3425,96 @@ impl Agent {
 
     /// Get a reference count clone to the provider
     pub async fn provider(&self) -> Result<Arc<dyn Provider>, anyhow::Error> {
-        match &*self.provider.lock().await {
-            Some(provider) => Ok(Arc::clone(provider)),
-            None => Err(anyhow!("Provider not set")),
+        let provider = self
+            .bound_provider_unchecked()
+            .await
+            .ok_or_else(|| anyhow!("Provider not set"))?;
+        // Issue #56 Gate B'. The non-`reply` completion paths — session
+        // auto-naming (`maybe_rename_session` -> `complete_fast`), compaction
+        // summarisation (`context_mgmt::compact_messages`) and the stall judge
+        // (`agents::stall`) — all read the entire transcript and none of them
+        // passes Gate B, because none of them goes through `reply`. They do all
+        // take their provider from here.
+        //
+        // The classification is the cached one rather than a fresh row read:
+        // this accessor is called several times per turn from inside the reply
+        // loop, and a database round-trip on each would be a real cost for a
+        // value `reply` has just read. See [`CachedClassification`] for why the
+        // cache is sound and why it fails closed.
+        let cached = self.cached_classification.load();
+        if !crate::privacy::bind_allowed(provider.tier(), cached) {
+            return Err(PrivacyRefusal::PublicModelOnPrivateSession {
+                session_id: self.cached_classification.session_id(),
+                provider: provider.get_name().to_string(),
+            }
+            .into());
         }
+        Ok(provider)
+    }
+
+    /// The bound provider WITHOUT Gate B'.
+    ///
+    /// Gate B itself must read the raw binding: asking [`Agent::provider`]
+    /// there would consult the very cached classification the gate is about to
+    /// replace, and would report "no provider" for the mismatch the gate exists
+    /// to repair. Deliberately not `pub` — this is the one seam past Gate B',
+    /// and it is inside the gate.
+    pub(super) async fn bound_provider_unchecked(&self) -> Option<Arc<dyn Provider>> {
+        self.provider.lock().await.clone()
+    }
+
+    /// Issue #56 Gate B, the repair arm: re-bind the provider the session ROW
+    /// records, when the live agent is holding one the row's classification
+    /// does not admit.
+    ///
+    /// Returns `Ok(true)` when the row's own provider was constructed, found to
+    /// satisfy the classification, and swapped in; `Ok(false)` when the row
+    /// names nothing usable, or names something still public. Errors from the
+    /// provider factory are `Err` and are treated by the caller exactly like
+    /// `Ok(false)` — a refusal — because a repair that did not happen must
+    /// never read as a repair that did.
+    ///
+    /// This is the COMMON case, not an exotic one: LRU rehydration,
+    /// `restore_provider_from_session`'s `Config::global()` fallback, a legacy
+    /// row written before #56, and every ratchet that commits after a legal
+    /// bind all leave exactly this state.
+    ///
+    /// ⚠ The swap is in-memory only and does NOT go through `update_provider`.
+    /// There is nothing to persist — the row already names this provider, byte
+    /// for byte — and re-entering Gate A to write a row's own value back to
+    /// itself would put a database write on the front of every turn of a
+    /// rehydrated session.
+    async fn rebind_from_row(&self, row: &Session) -> Result<bool> {
+        let Some(provider_name) = row.provider_name.clone() else {
+            return Ok(false);
+        };
+        // A row with a `provider_name` but no `model_config` is a legacy row:
+        // `update_provider` has always written both in one statement. Fall back
+        // the same way `restore_provider_from_session` does rather than
+        // refusing a session that is perfectly repairable.
+        let model_config = match row.model_config.clone() {
+            Some(model_config) => model_config,
+            None => {
+                let model_name = Config::global()
+                    .get_biorouter_model()
+                    .map_err(|e| anyhow!("no model recorded for this session: {e}"))?;
+                crate::model::ModelConfig::new(&model_name)?
+            }
+        };
+
+        #[cfg(test)]
+        let provider = match seams::rebind_override(&row.id, &provider_name) {
+            Some(provider) => provider,
+            None => crate::providers::create(&provider_name, model_config).await?,
+        };
+        #[cfg(not(test))]
+        let provider = crate::providers::create(&provider_name, model_config).await?;
+
+        if !crate::privacy::bind_allowed(provider.tier(), row.privacy_tier) {
+            return Ok(false);
+        }
+        *self.provider.lock().await = Some(provider);
+        Ok(true)
     }
 
     /// BR-63: set the session's sticky reasoning effort (`/effort <level>`).
@@ -4373,6 +4577,91 @@ impl Agent {
                 NeverYielded::ClientAuthoredPrompt,
             );
             return Ok(Box::pin(stream::iter(published.into_iter().map(Ok))));
+        }
+
+        // Issue #56 Gate B. Placed AFTER the elicitation early-returns above:
+        // an elicitation answer is a user action on a parked tool call, not a
+        // disclosure, and refusing it at the literal top of `reply` silently
+        // drops the answer and the daemon-restart notice. Placed BEFORE
+        // `restore_goal` so nothing runs on a session we are about to refuse.
+        //
+        // Repair-first, and the repair is the common case: LRU rehydration,
+        // `restore_provider_from_session`'s Config::global() fallback, a
+        // pre-fix diverge and every legacy row all land here.
+        let privacy_row = session_manager
+            .get_session(&session_config.id, false)
+            .await
+            .ok();
+        let mut privacy_refusal: Option<String> = None;
+        if let Some(row) = privacy_row.as_ref() {
+            let bound = self.bound_provider_unchecked().await;
+            // No provider bound at all reads as Public — the fail-SAFE side.
+            // Public is the less privileged tier, so an agent with nothing
+            // bound gets the repair attempt rather than a free pass.
+            let bound_tier = bound
+                .as_ref()
+                .map(|provider| provider.tier())
+                .unwrap_or(ProviderTier::Public);
+            if !crate::privacy::bind_allowed(bound_tier, row.privacy_tier) {
+                match self.rebind_from_row(row).await {
+                    // 2. The row still names a provider whose tier satisfies
+                    //    the classification: rebind and continue silently.
+                    Ok(true) => {}
+                    // 3. Otherwise refuse THIS TURN. The row is untouched, so
+                    //    the repair card can still offer the one-click fix.
+                    _ => privacy_refusal = Some(crate::privacy::refusal::turn_refusal(row)),
+                }
+            }
+            // 1. The ratchet. It fires HERE and on a permitted private-extension
+            //    dispatch (Gate C) — never on the bind (O5).
+            let mut classification = row.privacy_tier;
+            if privacy_refusal.is_none() {
+                if let Some(provider) = self.bound_provider_unchecked().await {
+                    let f = crate::privacy::floor(provider.tier());
+                    if f > row.privacy_tier {
+                        session_manager
+                            .update(&session_config.id)
+                            .raise_privacy(f, &format!("turn:{}", provider.get_name()))
+                            .apply()
+                            .await?;
+                        classification = f;
+                    }
+                }
+            }
+            // ⚠ The POST-ratchet classification, not the row's. A turn that
+            // has just raised the session to Private must not leave the cache
+            // saying Public, or the auto-naming call that runs the moment this
+            // stream ends is the first thing to walk through Gate B'.
+            self.cached_classification
+                .store(&session_config.id, classification);
+        } else {
+            // No row. There is no classification to honour and no content to
+            // protect, but there is also no way to tell "this id names nothing"
+            // from "the read failed" — so fail closed. It costs no liveness:
+            // `RewriteBasis::read_with_session` below reads the same row with a
+            // `?`, so a turn that gets here without one was already over.
+            self.cached_classification
+                .store(&session_config.id, SessionClassification::Private);
+        }
+        // ⚠ A refusal is a YIELD, never an `Err` out of `reply`: `reply`
+        // returns `Result<BoxStream<..>>`, and an `Err` here surfaces as a 500
+        // from `/reply` instead of a message the user can act on. The precedent
+        // is the compaction-failure arm further down, which yields its message
+        // and returns rather than failing the stream.
+        //
+        // It returns its own stream rather than setting a flag the main
+        // `try_stream!` reads, and that is a DEVIATION from the plan's sketch
+        // with a reason: between this seam and that stream the prologue fires
+        // SessionStart/UserPromptSubmit hooks, runs `execute_command`, persists
+        // the prompt, and calls `self.provider().await?` for the compaction
+        // check — which, with Gate B' live, is exactly the `Err` out of `reply`
+        // the paragraph above forbids. "Nothing runs on a session we are about
+        // to refuse" is only true if the refusal returns here.
+        if let Some(text) = privacy_refusal {
+            let refused: BoxStream<'_, Result<AgentEvent>> = Box::pin(async_stream::try_stream! {
+                yield AgentEvent::Message(Message::assistant().with_text(text));
+            });
+            return Ok(refused);
         }
 
         // A daemon restart drops the in-memory goal registry and its Stop-hook
@@ -6874,7 +7163,30 @@ impl Agent {
             .await
             .context("Failed to persist provider config to session")?
         {
-            BindOutcome::Bound => {}
+            BindOutcome::Bound => {
+                // Issue #56 Gate B'. A bind Gate A's `WHERE` clause ACCEPTED is
+                // an observation about the row, and until this agent's next
+                // `reply` it is the only one it has: `AND (privacy_tier =
+                // 'public' OR ? = 1)` admits a PUBLIC provider only when the
+                // row is public. So a successful public bind *reads* the
+                // classification off the gate's own outcome — it does not
+                // derive one from a tier, which is what `privacy::floor` is for
+                // and why this is not a second crossing between the lattices.
+                //
+                // Without it the cache stays at its fail-closed `Private`
+                // default and `provider()` refuses the very provider that was
+                // just legally bound — which is a startup failure on every
+                // fresh public session (the CLI asserts `provider()` before its
+                // first turn), not a privacy control.
+                //
+                // A successful PRIVATE bind teaches nothing: it is admitted
+                // against either classification. The cache is left alone, and a
+                // private provider satisfies Gate B' whatever it says.
+                if !tier.is_private() {
+                    self.cached_classification
+                        .store(session_id, SessionClassification::Public);
+                }
+            }
             BindOutcome::RefusedByPrivacy => {
                 return Err(PrivacyRefusal::PublicModelOnPrivateSession {
                     session_id: session_id.to_string(),
@@ -10072,6 +10384,382 @@ mod gate_a_bind_tests {
             bound > 0 && refused > 0,
             "{iterations} iterations produced {bound} bound / {refused} refused — one-sided, so \
              the loop raced nothing. That is the state this test used to report as a pass."
+        );
+    }
+}
+
+/// Issue #56 Gate B — the turn barrier, the ratchet, and Gate B' on the
+/// completions that never pass through `reply`.
+///
+/// The four wrong implementations these tests exist to reject, one each:
+///
+///  1. A refuse-only Gate B. The residual state (a private row whose live agent
+///     holds a public provider) is produced by LRU rehydration, by
+///     `restore_provider_from_session`'s `Config::global()` fallback, by a
+///     legacy row, and by any ratchet that commits after a legal bind. Refusing
+///     all of them bricks the majority of sessions on a private machine. The
+///     row still names a provider that satisfies the classification, so the
+///     repair is a silent rebind FROM THE ROW.
+///  2. A gate at the literal top of `reply`. The prologue has early returns
+///     before any provider contact, and one of them delivers a user's answer to
+///     a parked elicitation. Refusing there drops the answer.
+///  3. A ratchet on the BIND. Then a mis-click privatises a chat, and
+///     `POST /agent/call_tool` — which never binds — is missed entirely.
+///  4. A gate that lives only in `reply`. Session auto-naming, compaction
+///     summarisation and the stall judge each read the whole transcript through
+///     `complete_fast` without ever entering `reply`.
+#[cfg(test)]
+mod gate_b_turn_tests {
+    use super::*;
+    use crate::agents::AgentConfig;
+    use crate::config::permission::PermissionManager;
+    use crate::config::BioRouterMode;
+    use crate::model::ModelConfig;
+    use crate::privacy::{ProviderTier, SessionClassification};
+    use crate::providers::base::{ProviderMetadata, ProviderUsage, Usage};
+    use crate::providers::errors::ProviderError;
+    use crate::session::session_manager::{Session, SessionType};
+    use crate::session::SessionManager;
+    use async_trait::async_trait;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tempfile::TempDir;
+
+    /// The one sentence every turn refusal contains. Spelled here as a literal
+    /// rather than imported, so that a change to `turn_refusal`'s wording that
+    /// silently stopped refusing would still have to get past these tests;
+    /// `privacy::refusal`'s own unit test asserts the marker is present.
+    const REFUSAL_MARKER: &str = "this turn was not sent";
+
+    /// A provider whose interesting properties are its tier and how many
+    /// completions it has been asked for. The count is what test 5 reads: Gate
+    /// B' is only meaningful if the transcript never reaches the model, and
+    /// "no error was returned" does not establish that.
+    struct CountingProvider {
+        name: &'static str,
+        model: &'static str,
+        tier: ProviderTier,
+        completions: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl Provider for CountingProvider {
+        fn metadata() -> ProviderMetadata {
+            ProviderMetadata::new(
+                "counting",
+                "Counting",
+                "",
+                "counting-model",
+                vec![],
+                "",
+                vec![],
+            )
+        }
+
+        fn get_name(&self) -> &str {
+            self.name
+        }
+
+        fn tier(&self) -> ProviderTier {
+            self.tier
+        }
+
+        async fn complete_with_model(
+            &self,
+            _model_config: &ModelConfig,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[Tool],
+        ) -> Result<(Message, ProviderUsage), ProviderError> {
+            self.completions.fetch_add(1, Ordering::SeqCst);
+            Ok((
+                Message::assistant().with_text("ok"),
+                ProviderUsage::new(self.model.to_string(), Usage::default()),
+            ))
+        }
+
+        fn get_model_config(&self) -> ModelConfig {
+            ModelConfig::new_or_fail(self.model)
+        }
+    }
+
+    fn counted(
+        name: &'static str,
+        model: &'static str,
+        tier: ProviderTier,
+    ) -> (Arc<dyn Provider>, Arc<AtomicUsize>) {
+        let completions = Arc::new(AtomicUsize::new(0));
+        let provider = Arc::new(CountingProvider {
+            name,
+            model,
+            tier,
+            completions: Arc::clone(&completions),
+        });
+        (provider, completions)
+    }
+
+    fn private_provider() -> Arc<dyn Provider> {
+        counted("versa_azure", "gpt-5.5", ProviderTier::Private).0
+    }
+
+    fn public_provider() -> Arc<dyn Provider> {
+        counted("anthropic", "claude-opus-4", ProviderTier::Public).0
+    }
+
+    /// An agent over an isolated session store, already bound to `provider`.
+    /// The `TempDir` outlives the test because dropping it deletes the SQLite
+    /// file the agent still holds.
+    async fn agent_on(provider: Arc<dyn Provider>) -> (TempDir, Arc<Agent>, Session) {
+        let dir = TempDir::new().unwrap();
+        let session_manager = Arc::new(SessionManager::new(dir.path().to_path_buf()));
+        let permission_manager = Arc::new(PermissionManager::new(dir.path().to_path_buf()));
+        let agent = Arc::new(Agent::with_config(AgentConfig::new(
+            session_manager,
+            permission_manager,
+            None,
+            BioRouterMode::Auto,
+        )));
+        let session = agent
+            .config
+            .session_manager
+            .create_session(PathBuf::from("."), "gate-b".to_string(), SessionType::User)
+            .await
+            .unwrap();
+        agent.update_provider(provider, &session.id).await.unwrap();
+        (dir, agent, session)
+    }
+
+    fn manager(agent: &Agent) -> Arc<SessionManager> {
+        agent.config.session_manager.clone()
+    }
+
+    /// Point the ROW at `provider` without touching the live agent's binding —
+    /// which is exactly the residual state Gate B has to deal with, and which
+    /// no ordinary call can produce because `update_provider` does both halves.
+    /// Goes through Gate A's own statement, so the fixture cannot construct a
+    /// state the production bind path would have refused.
+    async fn point_row_at(sm: &SessionManager, id: &str, provider: &Arc<dyn Provider>) {
+        let model_config_json = serde_json::to_string(&provider.get_model_config()).unwrap();
+        let outcome = sm
+            .storage()
+            .bind_provider_if_allowed(
+                id,
+                provider.get_name(),
+                &model_config_json,
+                provider.tier().is_private(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            outcome,
+            BindOutcome::Bound,
+            "the fixture's own bind was refused"
+        );
+    }
+
+    async fn ratchet_to_private(sm: &SessionManager, id: &str) {
+        sm.update(id)
+            .raise_privacy(SessionClassification::Private, "turn:versa_azure")
+            .apply()
+            .await
+            .unwrap();
+    }
+
+    async fn reread(sm: &SessionManager, id: &str) -> Session {
+        sm.get_session(id, false).await.unwrap()
+    }
+
+    fn cfg(session: &Session) -> SessionConfig {
+        SessionConfig {
+            id: session.id.clone(),
+            schedule_id: None,
+            max_turns: Some(2),
+            max_tool_calls: None,
+            budget: None,
+            retry_config: None,
+            reasoning_effort: None,
+        }
+    }
+
+    async fn drain(mut stream: BoxStream<'_, Result<AgentEvent>>) -> Vec<Result<AgentEvent>> {
+        let mut events = Vec::new();
+        while let Some(event) = stream.next().await {
+            events.push(event);
+        }
+        events
+    }
+
+    fn is_refusal(event: &Result<AgentEvent>) -> bool {
+        match event {
+            Ok(AgentEvent::Message(message)) => message.as_concat_text().contains(REFUSAL_MARKER),
+            _ => false,
+        }
+    }
+
+    fn rendered(events: &[Result<AgentEvent>]) -> String {
+        events
+            .iter()
+            .map(|event| match event {
+                Ok(AgentEvent::Message(m)) => format!("Message({:?})", m.as_concat_text()),
+                Ok(other) => format!("{other:?}"),
+                Err(e) => format!("Err({e})"),
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[tokio::test]
+    async fn a_repairable_mismatch_rebinds_silently_and_the_turn_runs() {
+        // The residual state: privacy_tier=private, live agent holds a public
+        // provider (LRU rehydration, the Config::global() fallback, a legacy
+        // row). The row still names a private provider, so Gate B rebinds FROM
+        // THE ROW and continues — the user never sees it. An implementation
+        // that only refuses fails this, and it is the majority case on a real
+        // machine.
+        let (_dir, agent, s) = agent_on(public_provider()).await;
+        let sm = manager(&agent);
+        let row_provider = private_provider();
+        point_row_at(&sm, &s.id, &row_provider).await;
+        ratchet_to_private(&sm, &s.id).await;
+        seams::override_rebind_provider(&s.id, "versa_azure", Arc::clone(&row_provider));
+
+        let events = drain(
+            agent
+                .reply(Message::user().with_text("hi"), cfg(&s), None)
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert!(
+            !events.iter().any(is_refusal),
+            "a repairable mismatch must not be refused:\n{}",
+            rendered(&events)
+        );
+        assert_eq!(agent.provider().await.unwrap().get_name(), "versa_azure");
+    }
+
+    #[tokio::test]
+    async fn an_unrepairable_mismatch_refuses_this_turn_and_leaves_the_row_alone() {
+        let (_dir, agent, s) = agent_on(public_provider()).await;
+        let sm = manager(&agent);
+        // The row names a PUBLIC provider, so there is nothing to repair to.
+        // The override is registered anyway, so the construction step is still
+        // hermetic and the refusal comes from the tier check rather than from
+        // a factory that happened to fail for a credential reason.
+        let row_provider = public_provider();
+        point_row_at(&sm, &s.id, &row_provider).await;
+        ratchet_to_private(&sm, &s.id).await;
+        seams::override_rebind_provider(&s.id, "anthropic", Arc::clone(&row_provider));
+
+        let events = drain(
+            agent
+                .reply(Message::user().with_text("hi"), cfg(&s), None)
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert!(
+            events.iter().any(is_refusal),
+            "an unrepairable mismatch must be refused:\n{}",
+            rendered(&events)
+        );
+        // A refusal, not a 500: the stream yields and returns.
+        assert!(
+            events.iter().all(|e| e.is_ok()),
+            "the refusal must be a yielded message, never an Err out of `reply`:\n{}",
+            rendered(&events)
+        );
+        let row = reread(&sm, &s.id).await;
+        assert_eq!(row.privacy_tier, SessionClassification::Private);
+        assert_eq!(row.provider_name.as_deref(), Some("anthropic"));
+    }
+
+    #[tokio::test]
+    async fn an_elicitation_answer_is_still_delivered_on_a_private_session() {
+        // The seam matters: at the literal top of `reply` this refuses, and the
+        // user's answer to a parked tool call is silently dropped.
+        let (_dir, agent, s) = agent_on(public_provider()).await;
+        let sm = manager(&agent);
+        let row_provider = public_provider();
+        point_row_at(&sm, &s.id, &row_provider).await;
+        ratchet_to_private(&sm, &s.id).await;
+        seams::override_rebind_provider(&s.id, "anthropic", row_provider);
+
+        let answer =
+            Message::user().with_content(MessageContent::action_required_elicitation_response(
+                "elicit-1",
+                serde_json::json!({"answer": "yes"}),
+            ));
+        let events = drain(agent.reply(answer, cfg(&s), None).await.unwrap()).await;
+        assert!(
+            !events.iter().any(is_refusal),
+            "an elicitation answer is a user action on a parked tool call, not a \
+             disclosure — the gate sits after this early return:\n{}",
+            rendered(&events)
+        );
+    }
+
+    #[tokio::test]
+    async fn the_first_turn_ratchets_and_a_permitted_bind_afterwards_is_refused() {
+        let (_dir, agent, s) = agent_on(private_provider()).await;
+        let sm = manager(&agent);
+        // The bind did NOT ratchet (O5): a mis-clicked model switch must not
+        // privatise a chat, and a ratchet there would still miss every turn
+        // that arrives through `POST /agent/call_tool`.
+        assert_eq!(
+            reread(&sm, &s.id).await.privacy_tier,
+            SessionClassification::Public
+        );
+
+        let _ = drain(
+            agent
+                .reply(Message::user().with_text("hi"), cfg(&s), None)
+                .await
+                .unwrap(),
+        )
+        .await;
+
+        let row = reread(&sm, &s.id).await;
+        assert_eq!(row.privacy_tier, SessionClassification::Private);
+        assert_eq!(row.privacy_reason.as_deref(), Some("turn:versa_azure"));
+        assert!(agent
+            .update_provider(public_provider(), &s.id)
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn auto_naming_a_private_transcript_on_a_public_provider_is_refused() {
+        // Gate B'. `maybe_rename_session` -> `maybe_update_name` ->
+        // `generate_session_name` -> `complete_fast` reads the entire
+        // transcript and never passes `reply`. Same for compaction summarisation
+        // and the stall judge, which take the provider from the same accessor.
+        //
+        // The swap is done directly on the shared `Arc` rather than through
+        // `update_provider`, on purpose: `update_provider` is Gate A, and a
+        // test that went through it would be testing Gate A a third time.
+        let (_dir, agent, s) = agent_on(private_provider()).await;
+        let _ = drain(
+            agent
+                .reply(Message::user().with_text("hi"), cfg(&s), None)
+                .await
+                .unwrap(),
+        )
+        .await; // ratchets
+        assert_eq!(
+            reread(&manager(&agent), &s.id).await.privacy_tier,
+            SessionClassification::Private
+        );
+
+        let (public, public_completions) =
+            counted("anthropic", "claude-opus-4", ProviderTier::Public);
+        *agent.provider.lock().await = Some(public);
+
+        agent.maybe_rename_session(&s.id).await;
+        assert_eq!(
+            public_completions.load(Ordering::SeqCst),
+            0,
+            "the session's whole transcript was sent to a public model to be named"
         );
     }
 }
