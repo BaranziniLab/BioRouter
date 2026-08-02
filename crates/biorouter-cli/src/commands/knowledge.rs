@@ -516,6 +516,41 @@ pub async fn handle_ingest(
 // ingest-conversation
 // ──────────────────────────────────────────────────────────────────────────────
 
+/// The target base for `ingest-conversation`: `--new-kb` creates one (and says
+/// so), else `--kb`, else the session's primary.
+///
+/// Split out of [`handle_ingest_conversation`] only to keep that function under
+/// `clippy::too_many_lines`; it carries no decision of its own. ⚠ Not shared
+/// with the other commands: they all resolve through [`resolve_kb`] and must
+/// keep doing so — the `--new-kb` branch CREATES a base, which is a write, and
+/// no read path should be able to reach it.
+fn resolve_ingest_target_kb(
+    svc: &KnowledgeService,
+    kb: Option<String>,
+    new_kb: Option<String>,
+) -> Result<String> {
+    let Some(name) = new_kb else {
+        let (kb_id, notice) = resolve_kb(svc, kb)?;
+        if let Some(notice) = notice {
+            println!("{notice}");
+        }
+        return Ok(kb_id);
+    };
+    let id = biorouter::agents::knowledge_tool::slugify_kb_name(&name);
+    if id.is_empty() {
+        bail!("--new-kb must contain letters or numbers");
+    }
+    if !svc.list_bases()?.iter().any(|b| b.id == id) {
+        svc.create_base(&id, name.trim(), None)?;
+        println!(
+            "  {} created knowledge base {}",
+            style("✓").green(),
+            style(&id).fg(ACCENT).bold()
+        );
+    }
+    Ok(id)
+}
+
 /// Digest one or more chat sessions into a knowledge base.
 pub async fn handle_ingest_conversation(
     kb: Option<String>,
@@ -529,29 +564,7 @@ pub async fn handle_ingest_conversation(
     use biorouter::session::session_manager::SessionManager;
 
     let svc = service()?;
-
-    // Resolve the target KB: --new-kb creates one, else --kb, else active.
-    let kb_id = if let Some(name) = new_kb {
-        let id = biorouter::agents::knowledge_tool::slugify_kb_name(&name);
-        if id.is_empty() {
-            bail!("--new-kb must contain letters or numbers");
-        }
-        if !svc.list_bases()?.iter().any(|b| b.id == id) {
-            svc.create_base(&id, name.trim(), None)?;
-            println!(
-                "  {} created knowledge base {}",
-                style("✓").green(),
-                style(&id).fg(ACCENT).bold()
-            );
-        }
-        id
-    } else {
-        let (kb_id, notice) = resolve_kb(&svc, kb)?;
-        if let Some(notice) = notice {
-            println!("{notice}");
-        }
-        kb_id
-    };
+    let kb_id = resolve_ingest_target_kb(&svc, kb, new_kb)?;
 
     // Resolve which sessions to ingest. Default: the most recent session.
     let manager = SessionManager::instance();
