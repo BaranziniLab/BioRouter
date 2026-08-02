@@ -488,6 +488,78 @@ mod tests {
         .is_ok());
     }
 
+    /// Issue #56 Gate H, the *wiring*. The test above proves
+    /// `build_model_ref_completer` refuses; it says nothing about what the one
+    /// production caller passes it. Hardcoding `SessionClassification::Public`
+    /// at `conversation_ingest_completer`'s call to it would leave that test
+    /// green and the barrier dead, so this one drives the real caller and lets
+    /// the session row supply the classification.
+    #[tokio::test]
+    async fn the_production_ingest_caller_passes_this_session_s_own_classification() {
+        use crate::privacy::SessionClassification;
+        use biorouter_mcp::knowledge::types::ModelRef;
+        use std::collections::HashMap;
+
+        fn ollama_at(host: &str) -> HashMap<String, String> {
+            HashMap::from([("OLLAMA_HOST".to_string(), host.to_string())])
+        }
+        const OFF_MACHINE: &str = "https://api.example-saas.invalid";
+        const THIS_MACHINE: &str = "http://localhost:11434";
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let svc = KnowledgeService::new(tmp.path().to_path_buf());
+        svc.create_base("kb", "KB", None).unwrap();
+        svc.set_default_model(
+            "kb",
+            Some(ModelRef {
+                provider: "ollama".to_string(),
+                model: "qwen3".to_string(),
+            }),
+        )
+        .unwrap();
+
+        let agent = crate::agents::Agent::new();
+
+        // A SCHEDULED session, or `should_use_knowledge_default_model` is false
+        // and the KB's model is never consulted at all.
+        let mut session = test_session(SessionType::Scheduled, None);
+        session.privacy_tier = SessionClassification::Private;
+
+        let err = crate::config::with_config_overrides(
+            ollama_at(OFF_MACHINE),
+            agent.conversation_ingest_completer(&svc, "kb", &session),
+        )
+        .await
+        .err()
+        .expect("a private chat may not be digested on the KB's public default model")
+        .message
+        .to_string();
+        assert!(
+            err.to_lowercase().contains("private"),
+            "the refusal has to say why, got: {err}"
+        );
+
+        // Both directions, or the caller could simply be passing `Private` for
+        // everyone — which is not "the session's classification" either.
+        assert!(crate::config::with_config_overrides(
+            ollama_at(THIS_MACHINE),
+            agent.conversation_ingest_completer(&svc, "kb", &session),
+        )
+        .await
+        .is_ok());
+
+        session.privacy_tier = SessionClassification::Public;
+        assert!(
+            crate::config::with_config_overrides(
+                ollama_at(OFF_MACHINE),
+                agent.conversation_ingest_completer(&svc, "kb", &session),
+            )
+            .await
+            .is_ok(),
+            "a public chat is unaffected by the same public default model"
+        );
+    }
+
     #[test]
     fn knowledge_default_model_is_reserved_for_scheduled_contexts() {
         let user = test_session(SessionType::User, None);
