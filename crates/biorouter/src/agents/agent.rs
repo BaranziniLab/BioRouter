@@ -10922,3 +10922,251 @@ mod gate_b_turn_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod gate_c_dispatch_tests {
+    //! Issue #56 Gate C, the caller half: every production path that reaches
+    //! `ExtensionManager::dispatch_tool_call` must surface the refusal to
+    //! whoever asked, in the caller's own error surface.
+    //!
+    //! FOUR paths converge on that function and only ONE of them carries a
+    //! `ToolInspector` — which is why Gate C is a branch inside the manager
+    //! rather than an inspector, and why one agent-loop test would not have
+    //! caught an inspector-shaped implementation. Three are exercised here:
+    //!
+    //! | # | path | exercised by |
+    //! |---|---|---|
+    //! | 1 | the agent loop (`Agent::dispatch_tool_call`) | `call_private_tool_via_agent_loop` |
+    //! | 2 | `POST /agent/call_tool` | `call_private_tool_as_the_http_route_does` |
+    //! | 3 | the `execute_code` JS bridge | `code_execution_extension::gate_c_bridge_tests` |
+    //! | 4 | `Agent::call_prefetch_tool`, which runs BEFORE the turn | `call_private_tool_via_call_prefetch_tool` |
+    //!
+    //! Path 3 lives beside its own function because `dispatch_sub_call` is
+    //! private to `code_execution_extension` and Rust does not let a sibling
+    //! module call it. Path 2's route handler lives in another crate; what is
+    //! asserted here is the capability it hands the manager
+    //! (`Public` + enforced) and the refusal that comes back, and that the
+    //! handler renders it rather than swallowing it is asserted in
+    //! `biorouter-server`'s `routes::agent::gate_c_call_tool_tests`.
+
+    use super::*;
+    use crate::agents::AgentConfig;
+    use crate::config::permission::PermissionManager;
+    use crate::config::BioRouterMode;
+    use crate::model::ModelConfig;
+    use crate::privacy::ProviderTier;
+    use crate::providers::base::{ProviderMetadata, ProviderUsage, Usage};
+    use crate::providers::errors::ProviderError;
+    use crate::session::session_manager::{Session, SessionType};
+    use crate::session::SessionManager;
+    use async_trait::async_trait;
+    use std::path::PathBuf;
+    use tempfile::TempDir;
+
+    /// One of the two extensions the compiled-in BAAM baseline calls private.
+    const PRIVATE_EXTENSION: &str = "ucsfomopagent";
+    const PRIVATE_TOOL: &str = "ucsfomopagent__data_sources";
+
+    struct PlainProvider {
+        name: &'static str,
+        tier: ProviderTier,
+    }
+
+    #[async_trait]
+    impl Provider for PlainProvider {
+        fn metadata() -> ProviderMetadata {
+            ProviderMetadata::new("plain", "Plain", "", "plain-model", vec![], "", vec![])
+        }
+
+        fn get_name(&self) -> &str {
+            self.name
+        }
+
+        fn tier(&self) -> ProviderTier {
+            self.tier
+        }
+
+        async fn complete_with_model(
+            &self,
+            _model_config: &ModelConfig,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[Tool],
+        ) -> Result<(Message, ProviderUsage), ProviderError> {
+            Ok((
+                Message::assistant().with_text("ok"),
+                ProviderUsage::new("plain-model".to_string(), Usage::default()),
+            ))
+        }
+
+        fn get_model_config(&self) -> ModelConfig {
+            ModelConfig::new_or_fail("plain-model")
+        }
+    }
+
+    fn public_provider() -> Arc<dyn Provider> {
+        Arc::new(PlainProvider {
+            name: "anthropic",
+            tier: ProviderTier::Public,
+        })
+    }
+
+    /// An agent bound to `provider`, over an isolated session store, with the
+    /// private extension already loaded. The `TempDir` outlives the test
+    /// because dropping it deletes the SQLite file the agent still holds.
+    async fn agent_with_the_private_extension(
+        provider: Arc<dyn Provider>,
+    ) -> (TempDir, Arc<Agent>, Session) {
+        let dir = TempDir::new().unwrap();
+        let session_manager = Arc::new(SessionManager::new(dir.path().to_path_buf()));
+        let permission_manager = Arc::new(PermissionManager::new(dir.path().to_path_buf()));
+        let agent = Arc::new(Agent::with_config(AgentConfig::new(
+            session_manager,
+            permission_manager,
+            None,
+            BioRouterMode::Auto,
+        )));
+        let session = agent
+            .config
+            .session_manager
+            .create_session(PathBuf::from("."), "gate-c".to_string(), SessionType::User)
+            .await
+            .unwrap();
+        agent.update_provider(provider, &session.id).await.unwrap();
+        // A real in-process MCP server admitted under a private NAME, so the
+        // tier the gate reads is stamped by the production admission path
+        // rather than poked into the record by the fixture.
+        agent
+            .extension_manager
+            .add_inprocess_server(
+                PRIVATE_EXTENSION,
+                biorouter_mcp::datasql::server::DataSqlServer::new(std::collections::HashMap::new()),
+            )
+            .await
+            .expect("inject the private extension");
+        (dir, agent, session)
+    }
+
+    fn call(name: &str) -> CallToolRequestParams {
+        CallToolRequestParams {
+            task: None,
+            name: name.to_string().into(),
+            arguments: Some(rmcp::object!({})),
+            meta: None,
+        }
+    }
+
+    /// Path 1: the agent loop. `Agent::dispatch_tool_call` samples the
+    /// capability from the bound (public) provider and hands it down.
+    async fn call_private_tool_via_agent_loop() -> String {
+        let (_dir, agent, session) = agent_with_the_private_extension(public_provider()).await;
+        let (_id, result) = agent
+            .dispatch_tool_call(call(PRIVATE_TOOL), "req-1".to_string(), None, &session)
+            .await;
+        match result
+            .expect("the agent loop wraps a dispatch refusal as a tool result")
+            .result
+            .await
+        {
+            Ok(ok) => panic!("a public model reached a private extension: {ok:?}"),
+            Err(e) => e.message.to_string(),
+        }
+    }
+
+    /// Path 2: `POST /agent/call_tool`. It arrives with no caller identity, so
+    /// it hands the manager the most restrictive pair — the value
+    /// `CallCapability::public_enforced()` returns, built here with the test
+    /// constructor so Task 10's census of the two production spellings keeps
+    /// counting production entries only (`tests/privacy_capability.rs` pins
+    /// that the two agree).
+    async fn call_private_tool_as_the_http_route_does() -> String {
+        let (_dir, agent, session) = agent_with_the_private_extension(public_provider()).await;
+        // `ToolCallResult` is not `Debug`, so the outcome is matched rather
+        // than `expect_err`'d.
+        match agent
+            .extension_manager
+            .dispatch_tool_call(
+                &session.id,
+                call(PRIVATE_TOOL),
+                crate::privacy::CallCapability::for_test(ProviderTier::Public, true),
+                CancellationToken::default(),
+            )
+            .await
+        {
+            Ok(_) => panic!("an entry with no caller identity reached a private extension"),
+            Err(e) => e.to_string(),
+        }
+    }
+
+    /// Path 4: the pre-turn prefetch, which dispatches outside
+    /// `Agent::dispatch_tool_call` entirely and runs BEFORE the turn — so an
+    /// inspector-shaped gate would never see it.
+    async fn call_private_tool_via_call_prefetch_tool() -> String {
+        let (_dir, agent, session) = agent_with_the_private_extension(public_provider()).await;
+        let err = agent
+            .call_prefetch_tool(&session.id, PRIVATE_TOOL, serde_json::Map::new())
+            .await
+            .expect_err("the prefetch is a dispatch like any other");
+        err.to_string()
+    }
+
+    #[tokio::test]
+    async fn every_convergent_path_into_the_manager_is_refused() {
+        // Three separate assertions, one per production path reachable from
+        // this crate's `agents` module. A single agent-loop test passes an
+        // implementation written as a `ToolInspector`, which paths 2 and 4
+        // bypass entirely.
+        let text_from_agent_loop = call_private_tool_via_agent_loop().await;
+        let text_from_http_call_tool = call_private_tool_as_the_http_route_does().await;
+        let text_from_prefetch = call_private_tool_via_call_prefetch_tool().await;
+
+        // The WHOLE refusal, not merely the extension's name: `Tool
+        // 'ucsfomopagent__data_sources' not found` also contains the name, so a
+        // substring assertion on it alone would pass on a fixture that never
+        // loaded the extension — and would go on passing after Gate C was
+        // deleted.
+        let refusal = crate::privacy::refusal::privacy_refusal(
+            PRIVATE_EXTENSION,
+            ProviderTier::Private,
+            ProviderTier::Public,
+        )
+        .expect("the pure refusal")
+        .message
+        .to_string();
+
+        for t in [
+            text_from_agent_loop,
+            text_from_http_call_tool,
+            text_from_prefetch,
+        ] {
+            assert!(
+                t.contains(&refusal),
+                "refusal did not reach the caller intact: {t}"
+            );
+            assert!(
+                !t.contains("The user has declined"),
+                "laundered as a decline: {t}"
+            );
+        }
+    }
+
+    /// The other direction, so the three assertions above cannot be satisfied
+    /// by a gate that refuses everything: the same extension, the same tool,
+    /// the same agent loop, on a private model, runs.
+    #[tokio::test]
+    async fn a_private_model_still_reaches_the_private_extension() {
+        let private: Arc<dyn Provider> = Arc::new(PlainProvider {
+            name: "versa_azure",
+            tier: ProviderTier::Private,
+        });
+        let (_dir, agent, session) = agent_with_the_private_extension(private).await;
+        let (_id, result) = agent
+            .dispatch_tool_call(call(PRIVATE_TOOL), "req-2".to_string(), None, &session)
+            .await;
+        result
+            .expect("dispatch")
+            .result
+            .await
+            .expect("a private model may call a private extension");
+    }
+}

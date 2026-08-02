@@ -107,11 +107,9 @@ struct Extension {
     /// arms plus an OpenAPI cycle; and `pool_key` carries no session id, so one
     /// `ucsfomopagent` child process is shared across sessions and the badge
     /// cannot live on the process.
-    // No production reader yet: Gates C and E land later in this series, and
-    // until they do the plain (non-`cfg(test)`) lib build warns `never read` —
-    // which `scripts/clippy-lint.sh` promotes to an error with `-D warnings`.
-    // Remove this line once a gate reads it.
-    #[allow(dead_code)]
+    ///
+    /// Read by Gate C, in `dispatch_tool_call`, out of the same snapshot as the
+    /// client and the config (`get_client_for_tool`).
     tier: crate::privacy::ProviderTier,
 }
 
@@ -1432,7 +1430,7 @@ impl ExtensionManager {
 
     /// Resolve a prefixed tool name to the extension that owns it: its key, its
     /// client, and — from the SAME snapshot — the config that says whether the
-    /// tool may be called at all.
+    /// tool may be called at all and the privacy tier it was admitted under.
     ///
     /// The config is returned here rather than looked up again by the caller
     /// because the two lookups could disagree. `dispatch_tool_call` used to
@@ -1442,10 +1440,20 @@ impl ExtensionManager {
     /// had already been cloned. Resolving both together makes that window
     /// disappear: absence at this point is answered with "not found", presence
     /// carries its own authority.
+    ///
+    /// Issue #56 adds the tier for exactly that reason. Gate C must read the
+    /// tier of the record this call was actually routed to, and a second
+    /// `self.extensions.lock().await.get(&client_name)` would re-open the
+    /// window this function was written to close.
     async fn get_client_for_tool(
         &self,
         prefixed_name: &str,
-    ) -> Option<(String, McpClientBox, ExtensionConfig)> {
+    ) -> Option<(
+        String,
+        McpClientBox,
+        ExtensionConfig,
+        crate::privacy::ProviderTier,
+    )> {
         self.extensions
             .lock()
             .await
@@ -1456,8 +1464,65 @@ impl ExtensionManager {
                     name.clone(),
                     extension.get_client(),
                     extension.config.clone(),
+                    extension.tier,
                 )
             })
+    }
+
+    /// BR-23's central secret-redaction scan of one tool call's arguments.
+    ///
+    /// Extracted from `dispatch_tool_call` only because the repo's
+    /// `clippy::too_many_lines` baseline caps that function — the same reason
+    /// [`dispatch_meta`] is a free function, and the reason Gate C's own branch
+    /// could stay inline where the design says it is. Still called from exactly
+    /// one place, still from ABOVE `let fut = async move`, so nothing about the
+    /// choke point has moved.
+    ///
+    /// The `.biorouterignore`/secret deny set used to live only inside the
+    /// Developer MCP server, so any other extension (compute, files, a
+    /// third-party MCP, a different shell wrapper) could read a
+    /// `.env`/private-key/cloud-credential file that the deny set forbids.
+    /// Enforcing it at the single choke point every tool call flows through is
+    /// what stops an extension bypassing it. The scan is conservative: it only
+    /// blocks when an argument names a secret file that actually exists on disk
+    /// (see `SecretGuard::find_denied_path`).
+    async fn secret_guard_denial(&self, tool_call: &CallToolRequestParams) -> Option<ErrorData> {
+        let args = tool_call.arguments.as_ref()?;
+        let cwd = self.resolve_working_dir().await;
+        let secret_guard_phase =
+            crate::agents::phase_timing::Phase::start("mcp.secret_guard_for_dir");
+        // 6.2d: memoised per resolved cwd. Invalidated on the exact bytes of
+        // every `.biorouterignore` that backs the guard, so an edit is honoured
+        // on the very next dispatch (see `cached_for_dir`).
+        let guard = biorouter_mcp::secret_guard::SecretGuard::cached_for_dir(&cwd);
+        drop(secret_guard_phase);
+        let denied = guard.find_denied_path(args)?;
+        Some(ErrorData::new(
+            ErrorCode::INVALID_PARAMS,
+            format!(
+                "Access to '{denied}' is blocked: it matches a secret/credential deny pattern \
+                 (.env, private key, or cloud credentials). Add a negation to \
+                 .biorouterignore to allow it."
+            ),
+            None,
+        ))
+    }
+
+    /// Record on the session row that this chat reached a private extension
+    /// (issue #56, O5's second trigger).
+    ///
+    /// `self.context.session_manager` is the `Arc` `ExtensionManager::new`
+    /// takes and stores, so this needs no new plumbing. The storage layer owns
+    /// the monotonicity — `raise_privacy` emits a `CASE WHEN` that refuses to
+    /// lower a row — and the `mcp:` prefix is what §12.4 grades the
+    /// declassification confirmation on, so it must be spelled exactly.
+    async fn raise_session_privacy(&self, session_id: &str, reason: &str) -> Result<()> {
+        self.context
+            .session_manager
+            .update(session_id)
+            .raise_privacy(crate::privacy::SessionClassification::Private, reason)
+            .apply()
+            .await
     }
 
     // Function that gets executed for read_resource tool
@@ -1740,16 +1805,16 @@ impl ExtensionManager {
         // Dispatch tool call based on the prefix naming convention. The client
         // and the config that authorizes it come out of ONE snapshot — see
         // `get_client_for_tool`.
-        let (client_name, client, client_config) = self
+        let (client_name, client, client_config, ext_tier) = self
             .get_client_for_tool(&prefixed_name)
             .await
             .ok_or_else(|| {
-            ErrorData::new(
-                ErrorCode::RESOURCE_NOT_FOUND,
-                format!("Tool '{}' not found", tool_call.name),
-                None,
-            )
-        })?;
+                ErrorData::new(
+                    ErrorCode::RESOURCE_NOT_FOUND,
+                    format!("Tool '{}' not found", tool_call.name),
+                    None,
+                )
+            })?;
 
         let tool_name = prefixed_name
             .strip_prefix(client_name.as_str())
@@ -1778,36 +1843,73 @@ impl ExtensionManager {
             .into());
         }
 
-        // BR-23: central secret-redaction boundary. The `.biorouterignore`/secret
-        // deny set used to live only inside the Developer MCP server, so any other
-        // extension (compute, files, a third-party MCP, a different shell wrapper)
-        // could read a `.env`/private-key/cloud-credential file that the deny set
-        // forbids. Enforce it here — the single choke point every tool call flows
-        // through — so no extension can bypass it. The scan is conservative: it
-        // only blocks when an argument names a secret file that actually exists on
-        // disk (see `SecretGuard::find_denied_path`).
-        if let Some(args) = tool_call.arguments.as_ref() {
-            let cwd = self.resolve_working_dir().await;
-            let secret_guard_phase =
-                crate::agents::phase_timing::Phase::start("mcp.secret_guard_for_dir");
-            // 6.2d: memoised per resolved cwd. Invalidated on the exact bytes
-            // of every `.biorouterignore` that backs the guard, so an edit is
-            // honoured on the very next dispatch (see `cached_for_dir`).
-            let guard = biorouter_mcp::secret_guard::SecretGuard::cached_for_dir(&cwd);
-            drop(secret_guard_phase);
-            if let Some(denied) = guard.find_denied_path(args) {
-                return Err(ErrorData::new(
-                    ErrorCode::INVALID_PARAMS,
-                    format!(
-                        "Access to '{}' is blocked: it matches a secret/credential deny pattern \
-                         (.env, private key, or cloud credentials). Add a negation to \
-                         .biorouterignore to allow it.",
-                        denied
-                    ),
-                    None,
-                )
-                .into());
+        // Issue #56 Gate C, beside BR-23's SecretGuard block below for the
+        // reason that block's own comment states: this is the single choke
+        // point every tool call flows through. FOUR production paths converge
+        // here and only ONE of them carries a `ToolInspector` — the agent loop
+        // (`Agent::dispatch_tool_call`), `POST /agent/call_tool`, the
+        // `execute_code` JS bridge (`CodeExecutionClient::dispatch_sub_call`,
+        // which re-enters THIS function, not the Agent's) and
+        // `Agent::call_prefetch_tool`, which runs BEFORE the turn. A gate
+        // written as an inspector would be invisible to three of the four.
+        //
+        // `ext_tier` is read off the RESOLVED RECORD, never off the tool-name
+        // string: `get_client_for_tool` routes by `starts_with` over a HashMap
+        // in nondeterministic order and `normalize()` permits `_`, so
+        // extensions keyed `a` and `a__b` make `a__b__c` ambiguous. It comes
+        // out of the same snapshot as the client and the config, so there is no
+        // second lookup to disagree with the first.
+        //
+        // `cap` is a PARAMETER. Gate C does not sample and cannot:
+        // `dispatch_tool_call` has no way to read the provider any more. That
+        // is what makes this decision, the built-in `_meta` bit and the
+        // Platform extensions' capability provably the same decision.
+        //
+        // `cap.enforced()` is DR-15's master opt-out, read here inside the gate
+        // rather than through an `is_enabled()` wrapper — one auditable line
+        // rather than an absent gate. It is the SAME predicate in every gate;
+        // do not introduce a second, narrower flag for this one.
+        if cap.enforced() {
+            if let Some(err) =
+                crate::privacy::refusal::privacy_refusal(&client_name, ext_tier, cap.tier())
+            {
+                return Err(err.into());
             }
+        }
+
+        // BR-23: the central secret-redaction boundary — see
+        // [`Self::secret_guard_denial`], which is where the whole rationale
+        // lives.
+        if let Some(err) = self.secret_guard_denial(&tool_call).await {
+            return Err(err.into());
+        }
+
+        // Issue #56, O5's second trigger. At PERMIT time, not on the tool's
+        // result, and that is forced by the shape of this function rather than
+        // chosen: it returns its `ToolCallResult` BEFORE the tool has run, and
+        // the `async move` below captures owned values only — it cannot hold
+        // `&self`, so there is no `self` at the point the call succeeds.
+        //
+        // Permit-time is also the right direction. "The model was allowed to
+        // ask a private extension a question" is the disclosure; whether the
+        // extension answered is not the user's protection. Ratcheting on
+        // success would leave a failed OMOP query — which still carried the
+        // session's cohort definition to the connector — unrecorded.
+        //
+        // It is the LAST of the admission checks, below BR-23's scan rather
+        // than above it, because the classification is a permanent ratchet and
+        // that same rationale runs the other way for a call that never left the
+        // process: a SecretGuard denial carried nothing to the connector, so it
+        // has nothing to record.
+        //
+        // The `?` is deliberate and follows Gate B, which also fails its turn
+        // when the ratchet cannot be written: a disclosure this process cannot
+        // record is one it must not perform. A session id with no row is a
+        // silent no-op at the storage layer (0 rows updated), not an error, so
+        // this refuses only on a real store failure.
+        if ext_tier.is_private() {
+            self.raise_session_privacy(session_id, &format!("mcp:{client_name}"))
+                .await?;
         }
 
         let arguments = tool_call.arguments.clone();
@@ -2941,7 +3043,7 @@ mod tests {
             )
             .await;
 
-        let (name, _client, config) = extension_manager
+        let (name, _client, config, tier) = extension_manager
             .get_client_for_tool("guarded__forbidden")
             .await
             .expect("the extension resolves");
@@ -2951,6 +3053,9 @@ mod tests {
             "the resolved config is the one the dispatch must be judged by"
         );
         assert!(config.is_tool_available("allowed"));
+        // Issue #56: the privacy tier rides the SAME snapshot, for the same
+        // reason — Gate C must judge the record this call was routed to.
+        assert_eq!(tier, crate::privacy::classify_extension("guarded"));
 
         // And once it is gone, resolution itself fails — a removal can only
         // ever deny, never skip.
@@ -4069,5 +4174,212 @@ mod tests {
             meta_of(&builtin).0.get(KEY).and_then(|v| v.as_str()),
             Some("private")
         );
+    }
+
+    // ----------------------------------------------------------------------
+    // Issue #56 Gate C: the dispatch choke point.
+    // ----------------------------------------------------------------------
+
+    /// A manager over an isolated session store, plus that store and one real
+    /// session row in it. The `TempDir` is returned because dropping it deletes
+    /// the SQLite file the manager still holds.
+    async fn manager_with_a_session() -> (
+        TempDir,
+        ExtensionManager,
+        Arc<crate::session::SessionManager>,
+        String,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let em = ExtensionManager::new_without_provider(dir.path().to_path_buf());
+        let sm = em.get_context().session_manager.clone();
+        let session = sm
+            .create_session(
+                PathBuf::from("."),
+                "gate-c".to_string(),
+                crate::session::session_manager::SessionType::User,
+            )
+            .await
+            .unwrap();
+        (dir, em, sm, session.id)
+    }
+
+    fn call(name: &str) -> CallToolRequestParams {
+        CallToolRequestParams {
+            task: None,
+            name: name.to_string().into(),
+            arguments: Some(object!({})),
+            meta: None,
+        }
+    }
+
+    /// O5's second trigger. A PERMITTED private dispatch is a disclosure — the
+    /// model was allowed to ask an institutional connector a question — so the
+    /// session's classification ratchets at permit time, with `mcp:` provenance
+    /// so §12.4 can grade the declassification confirmation on it.
+    #[tokio::test]
+    async fn a_permitted_private_dispatch_ratchets_the_session() {
+        let (_dir, em, sm, id) = manager_with_a_session().await;
+        em.add_mock_extension("ucsfomopagent".to_string(), Arc::new(MockClient {}))
+            .await;
+
+        // No turn has run, so the row is still public.
+        assert_eq!(
+            sm.get_session(&id, false).await.unwrap().privacy_tier,
+            crate::privacy::SessionClassification::Public
+        );
+
+        let dispatched = em
+            .dispatch_tool_call(
+                &id,
+                call("ucsfomopagent__tool"),
+                crate::privacy::CallCapability::for_test(
+                    crate::privacy::ProviderTier::Private,
+                    true,
+                ),
+                CancellationToken::default(),
+            )
+            .await
+            .expect("a private caller may reach a private extension");
+        dispatched.result.await.expect("the mock client answers");
+
+        let row = sm.get_session(&id, false).await.unwrap();
+        assert_eq!(
+            row.privacy_tier,
+            crate::privacy::SessionClassification::Private
+        );
+        assert_eq!(row.privacy_reason.as_deref(), Some("mcp:ucsfomopagent"));
+    }
+
+    /// The capability `POST /agent/call_tool` hands the manager —
+    /// `Public` + enforced, the most restrictive pair, spelled here with the
+    /// test constructor so Task 10's census of the two production spellings
+    /// keeps counting production entries only.
+    ///
+    /// Two assertions in one, because they fail differently: the call is
+    /// refused with a message the caller can act on, AND nothing was recorded
+    /// against the session — a refused call reached no connector, so classifying
+    /// the chat private would be a lie that cannot be undone.
+    #[tokio::test]
+    async fn a_public_caller_is_refused_and_the_row_is_left_alone() {
+        let (_dir, em, sm, id) = manager_with_a_session().await;
+        em.add_mock_extension("ucsfomopagent".to_string(), Arc::new(MockClient {}))
+            .await;
+
+        // `ToolCallResult` is not `Debug`, so the outcome is matched rather
+        // than `expect_err`'d.
+        let text = match em
+            .dispatch_tool_call(
+                &id,
+                call("ucsfomopagent__tool"),
+                crate::privacy::CallCapability::for_test(
+                    crate::privacy::ProviderTier::Public,
+                    true,
+                ),
+                CancellationToken::default(),
+            )
+            .await
+        {
+            Ok(_) => panic!("a public caller must not reach a private extension"),
+            Err(e) => e.to_string(),
+        };
+        // The WHOLE refusal: `Tool '…' not found` also names the extension, so
+        // asserting on the name alone would pass on a fixture that never loaded
+        // it.
+        assert!(
+            text.contains(
+                &crate::privacy::refusal::privacy_refusal(
+                    "ucsfomopagent",
+                    crate::privacy::ProviderTier::Private,
+                    crate::privacy::ProviderTier::Public,
+                )
+                .expect("the pure refusal")
+                .message
+                .to_string()
+            ),
+            "{text}"
+        );
+
+        let row = sm.get_session(&id, false).await.unwrap();
+        assert_eq!(
+            row.privacy_tier,
+            crate::privacy::SessionClassification::Public,
+            "a refused call disclosed nothing, so it must not classify the chat"
+        );
+        assert_eq!(row.privacy_reason, None);
+    }
+
+    /// The gate reads the RESOLVED RECORD, never the tool-name string.
+    ///
+    /// `get_client_for_tool` routes by `starts_with` over a `HashMap`, and
+    /// `normalize()` permits `_`, so an extension may legitimately be keyed with
+    /// a `__` inside it. An implementation that split the tool name at its first
+    /// `__` would classify `ucsfomopagent__mirror__tool` off `ucsfomopagent`
+    /// and refuse a call to an extension the registry has never heard of.
+    ///
+    /// Only the strict direction is constructible against the real registry:
+    /// the divergence needs the resolved key to contain `__`, and neither of the
+    /// two private names does, so no fixture can make the naive parse read
+    /// *public* where the record says private. That leaky direction is Task 16's.
+    #[tokio::test]
+    async fn the_tier_comes_from_the_resolved_record_not_the_tool_name() {
+        let (_dir, em, _sm, id) = manager_with_a_session().await;
+        em.add_mock_extension("ucsfomopagent__mirror".to_string(), Arc::new(MockClient {}))
+            .await;
+        assert_eq!(
+            crate::privacy::classify_extension("ucsfomopagent__mirror"),
+            crate::privacy::ProviderTier::Public,
+            "the fixture only discriminates if the resolved key is public"
+        );
+
+        let dispatched = em
+            .dispatch_tool_call(
+                &id,
+                call("ucsfomopagent__mirror__tool"),
+                crate::privacy::CallCapability::for_test(
+                    crate::privacy::ProviderTier::Public,
+                    true,
+                ),
+                CancellationToken::default(),
+            )
+            .await
+            .expect("the resolved record is public, so a public caller may call it");
+        dispatched.result.await.expect("the mock client answers");
+    }
+
+    /// DR-15's master opt-out is read INSIDE the gate, through the capability
+    /// the call was admitted on. With enforcement off the same call goes
+    /// through — one auditable branch rather than an absent gate.
+    #[tokio::test]
+    async fn the_master_opt_out_is_the_only_thing_that_lets_it_through() {
+        let (_dir, em, sm, id) = manager_with_a_session().await;
+        em.add_mock_extension("ucsfomopagent".to_string(), Arc::new(MockClient {}))
+            .await;
+
+        let dispatched = em
+            .dispatch_tool_call(
+                &id,
+                call("ucsfomopagent__tool"),
+                crate::privacy::CallCapability::for_test(
+                    crate::privacy::ProviderTier::Public,
+                    false,
+                ),
+                CancellationToken::default(),
+            )
+            .await
+            .expect("with the feature off nothing is refused");
+        dispatched.result.await.expect("the mock client answers");
+
+        // …but the RATCHET is not gated on the opt-out, deliberately and in
+        // step with Gate B (and with Gates A/B', which do not consult the
+        // toggle at all): the toggle silences refusals, it does not stop a
+        // session recording what it reached. A session that queried OMOP with
+        // the feature off is still a session that queried OMOP, and that record
+        // is what makes turning the feature back on mean anything.
+        let row = sm.get_session(&id, false).await.unwrap();
+        assert_eq!(
+            row.privacy_tier,
+            crate::privacy::SessionClassification::Private
+        );
+        assert_eq!(row.privacy_reason.as_deref(), Some("mcp:ucsfomopagent"));
     }
 }

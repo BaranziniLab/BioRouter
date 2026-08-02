@@ -18,6 +18,7 @@
 
 use super::{ProviderTier, SessionClassification};
 use crate::session::session_manager::Session;
+use rmcp::model::{ErrorCode, ErrorData};
 
 /// A privacy boundary refused an operation.
 ///
@@ -116,9 +117,99 @@ pub const fn chatrecall_load_refusal() -> &'static str {
      the boundary is the same everywhere."
 }
 
+/// Gate C's refusal. Returns `None` when the call is permitted, so the caller
+/// reads as `if let Some(err) = privacy_refusal(..) { return Err(err.into()); }`.
+///
+/// Pure: no config, no session, no provider, no I/O. That is what lets the
+/// dispatch choke point ask it while holding nothing, and what lets its whole
+/// behaviour be pinned by a table-driven unit test.
+///
+/// `ErrorData` directly, **not** a `ToolInspector`. `Agent::handle_denied_tools`
+/// passes a real reason through for exactly three inspector names — the hook
+/// inspector, `"security"` and the repetition inspector — and everything else
+/// falls to `DECLINED_RESPONSE`, which the code itself calls "actively
+/// misleading": it tells the model *the user* refused. An inspector-shaped Gate
+/// C would also be invisible to `POST /agent/call_tool`, to the `execute_code`
+/// bridge and to `Agent::call_prefetch_tool`, none of which run inspectors.
+///
+/// §14.4: the string reaches the model's context, so it names the extension and
+/// the two tiers and nothing else — no session id, no title, no working
+/// directory.
+pub fn privacy_refusal(
+    extension: &str,
+    extension_tier: ProviderTier,
+    caller_tier: ProviderTier,
+) -> Option<ErrorData> {
+    if extension_tier != ProviderTier::Private || caller_tier == ProviderTier::Private {
+        return None;
+    }
+    Some(ErrorData::new(
+        ErrorCode::INVALID_REQUEST,
+        format!(
+            "`{extension}` is a private extension: it reaches data held inside the institution, \
+             so only a private model may call it. This session is running on a public model. \
+             Ask the user to switch this chat to a private model — Settings > Models, or the \
+             model chip in the composer — and then try again. This is a data-protection \
+             boundary set by the Biorouter marketplace, not something to work around: do not \
+             retry with a different tool name, through code execution, or through a resource \
+             read."
+        ),
+        None,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Gate C's refusal, exercised the way `check_enable_allowed`'s four tests
+    /// exercise it (`extension_manager_extension.rs`): no global config, no
+    /// session, no provider — because the function is pure. Same register, too:
+    /// name the state, name the reason, foreclose the workaround, name the
+    /// human action.
+    #[test]
+    fn the_refusal_is_pure_deterministic_and_forecloses_the_workaround() {
+        use ProviderTier::{Private, Public};
+
+        // The three permitted combinations. Only "private extension, public
+        // caller" is a boundary crossing.
+        assert!(privacy_refusal("ucsfomopagent", Private, Private).is_none());
+        assert!(privacy_refusal("developer", Public, Public).is_none());
+        assert!(privacy_refusal("developer", Public, Private).is_none());
+
+        let e = privacy_refusal("ucsfomopagent", Private, Public).unwrap();
+        let m = e.message.to_string();
+        assert!(m.contains("ucsfomopagent"), "{m}");
+        assert!(m.contains("private"), "{m}");
+        assert!(m.contains("marketplace"), "{m}"); // names the grantor (R11)
+        assert!(m.contains("Settings"), "{m}"); // names the human action
+        assert!(m.contains("do not"), "{m}"); // forecloses the workaround
+
+        // Deterministic: a model that sees a different string on retry
+        // concludes the refusal is transient and loops.
+        assert_eq!(
+            m,
+            privacy_refusal("ucsfomopagent", Private, Public)
+                .unwrap()
+                .message
+                .to_string()
+        );
+    }
+
+    /// §14.4 again, for the one refusal that reaches the MODEL's context: it may
+    /// name the extension and the tier and nothing else. There is no session in
+    /// the signature, so this is a statement about what the function *cannot*
+    /// say rather than about what it happens not to.
+    #[test]
+    fn gate_c_names_the_extension_and_carries_no_session_content() {
+        let m = privacy_refusal("ucsfomopagent", ProviderTier::Private, ProviderTier::Public)
+            .unwrap()
+            .message
+            .to_string();
+        for content in ["20260801_7", "Patient MRN 4471 workup", "phi/cohort-3"] {
+            assert!(!m.contains(content), "{m}");
+        }
+    }
 
     #[test]
     fn a_refusal_survives_a_round_trip_through_anyhow() {

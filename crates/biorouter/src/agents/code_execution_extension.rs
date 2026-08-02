@@ -3640,3 +3640,94 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod gate_c_bridge_tests {
+    //! Issue #56 Gate C, path 3 of the four that converge on
+    //! `ExtensionManager::dispatch_tool_call`.
+    //!
+    //! The `execute_code` bridge re-enters the **ExtensionManager's** dispatch
+    //! from inside a running tool — not the Agent's — so it carries no
+    //! `ToolInspector` and an inspector-shaped Gate C would be invisible to it.
+    //! It lives here rather than beside the other three paths
+    //! (`agents::agent::gate_c_dispatch_tests`) only because
+    //! `dispatch_sub_call` is private to this module.
+
+    use super::*;
+
+    async fn manager_with_the_private_extension(
+        dir: &std::path::Path,
+    ) -> Arc<crate::agents::ExtensionManager> {
+        let manager = Arc::new(crate::agents::ExtensionManager::new(
+            Arc::new(Mutex::new(None)),
+            Arc::new(crate::session::SessionManager::new(dir.to_path_buf())),
+        ));
+        manager
+            .add_inprocess_server(
+                "ucsfomopagent",
+                biorouter_mcp::datasql::server::DataSqlServer::new(std::collections::HashMap::new()),
+            )
+            .await
+            .expect("inject the private extension");
+        manager
+    }
+
+    #[tokio::test]
+    async fn the_execute_code_bridge_cannot_reach_a_private_extension() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = manager_with_the_private_extension(dir.path()).await;
+        let weak = Arc::downgrade(&manager);
+        let artifacts = Arc::new(Mutex::new(CollectedArtifacts::default()));
+
+        let (result, kind, _user) = CodeExecutionClient::dispatch_sub_call(
+            "gate-c",
+            crate::privacy::CallCapability::for_test(crate::privacy::ProviderTier::Public, true),
+            "ucsfomopagent__data_sources",
+            "{}",
+            Some(&weak),
+            &artifacts,
+            &CancellationToken::default(),
+        )
+        .await;
+
+        assert_eq!(kind, "dispatch_error");
+        let text =
+            result.expect_err("a script must not reach a private extension from a public model");
+        // The WHOLE refusal: `Tool '…' not found` also names the extension, so
+        // asserting on the name alone would pass on a fixture that never loaded
+        // it.
+        let refusal = crate::privacy::refusal::privacy_refusal(
+            "ucsfomopagent",
+            crate::privacy::ProviderTier::Private,
+            crate::privacy::ProviderTier::Public,
+        )
+        .expect("the pure refusal")
+        .message
+        .to_string();
+        assert!(text.contains(&refusal), "{text}");
+        assert!(!text.contains("The user has declined"), "{text}");
+    }
+
+    /// The other direction: the bridge is not simply broken for this extension.
+    #[tokio::test]
+    async fn a_private_script_still_reaches_it_through_the_bridge() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = manager_with_the_private_extension(dir.path()).await;
+        let weak = Arc::downgrade(&manager);
+        let artifacts = Arc::new(Mutex::new(CollectedArtifacts::default()));
+
+        let (result, kind, _user) = CodeExecutionClient::dispatch_sub_call(
+            "gate-c",
+            crate::privacy::CallCapability::for_test(crate::privacy::ProviderTier::Private, true),
+            "ucsfomopagent__data_sources",
+            "{}",
+            Some(&weak),
+            &artifacts,
+            &CancellationToken::default(),
+        )
+        .await;
+
+        assert_ne!(kind, "dispatch_error", "{result:?}");
+        result.expect("a private model may call a private extension from a script");
+    }
+}

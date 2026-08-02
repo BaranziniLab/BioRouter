@@ -1227,6 +1227,24 @@ async fn read_resource(
     }))
 }
 
+/// Render a dispatch failure as the tool's own error result.
+///
+/// Extracted so its mapping can be tested without `AppState`, which opens the
+/// REAL user session database. It mirrors the agent loop, which downcasts to
+/// `ErrorData` to avoid double-wrapping and hands the model the message.
+fn dispatch_failure_response(error: &anyhow::Error) -> CallToolResponse {
+    let message = error
+        .downcast_ref::<rmcp::model::ErrorData>()
+        .map(|data| data.message.to_string())
+        .unwrap_or_else(|| error.to_string());
+    CallToolResponse {
+        content: vec![Content::text(message)],
+        structured_content: None,
+        is_error: true,
+        _meta: None,
+    }
+}
+
 #[utoipa::path(
     post,
     path = "/agent/call_tool",
@@ -1289,7 +1307,7 @@ async fn call_tool(
     // would hand an HTTP client whatever reach the user's chat happens to have.
     // Public + enforced is the most restrictive pair, and it is a constant, so
     // there is nothing here to race with `update_provider`.
-    let tool_result = agent
+    let tool_result = match agent
         .extension_manager
         .dispatch_tool_call(
             &payload.session_id,
@@ -1298,7 +1316,15 @@ async fn call_tool(
             CancellationToken::default(),
         )
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    {
+        Ok(result) => result,
+        // Issue #56 Gate C: this used to be
+        // `.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)`, which threw the
+        // refusal away and told the caller that Biorouter had crashed. A tool
+        // that could not be dispatched is a tool error and the remedy is in the
+        // text, exactly as the agent loop treats it.
+        Err(error) => return Ok(Json(dispatch_failure_response(&error))),
+    };
 
     let result = tool_result
         .result
@@ -1496,6 +1522,55 @@ mod privacy_barrier_tests {
             !json.contains("20260801_3"),
             "the 409 body leaked the session id: {json}"
         );
+    }
+}
+
+#[cfg(test)]
+mod gate_c_call_tool_tests {
+    //! Issue #56 Gate C, route half. `POST /agent/call_tool` is one of the four
+    //! production paths into `ExtensionManager::dispatch_tool_call`, and the
+    //! only one whose caller is an HTTP client rather than a model — so the
+    //! refusal has to arrive as the tool's own result. It used to be thrown
+    //! away by `.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)`, which told the
+    //! caller nothing and told the model, when a client relayed it, that
+    //! Biorouter had crashed.
+    //!
+    //! Exercised through [`dispatch_failure_response`] — the exact mapping the
+    //! handler applies — rather than through `AppState`, which opens the REAL
+    //! user session database.
+
+    use super::dispatch_failure_response;
+    use biorouter::privacy::refusal::privacy_refusal;
+    use biorouter::privacy::ProviderTier;
+
+    fn text_of(response: &super::CallToolResponse) -> String {
+        response
+            .content
+            .iter()
+            .filter_map(|c| c.as_text().map(|t| t.text.clone()))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn a_gate_c_refusal_reaches_the_caller_rather_than_becoming_a_500() {
+        let refusal = privacy_refusal("ucsfomopagent", ProviderTier::Private, ProviderTier::Public)
+            .expect("a public caller on a private extension is refused");
+        let response = dispatch_failure_response(&anyhow::Error::from(refusal));
+        assert!(response.is_error);
+        let text = text_of(&response);
+        assert!(text.contains("ucsfomopagent"), "{text}");
+        assert!(text.contains("Settings"), "{text}");
+    }
+
+    /// The same mapping for every other dispatch failure, stated so the change
+    /// is deliberate: a tool that cannot be dispatched is a tool error, not a
+    /// server fault, and the caller gets the reason either way.
+    #[test]
+    fn any_other_dispatch_failure_still_carries_its_reason() {
+        let response = dispatch_failure_response(&anyhow::anyhow!("Tool 'nope__x' not found"));
+        assert!(response.is_error);
+        assert!(text_of(&response).contains("nope__x"));
     }
 }
 
