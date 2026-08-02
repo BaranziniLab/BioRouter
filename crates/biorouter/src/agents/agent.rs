@@ -6942,6 +6942,20 @@ impl Agent {
             .await
             .map_err(|e| anyhow!("Could not create provider: {}", e))?;
 
+        // ⚠ Issue #56, and this is Task 13's to finish. This re-binds the row's
+        // OWN recorded provider, and Gate A can refuse it: a row that is
+        // (private, public `provider_name`) makes this return `PrivacyRefusal`,
+        // which `?`-propagates into resume, restart and the injected-turn path.
+        // That row is not exotic — it is the residual a ratchet landing after a
+        // legal bind leaves, and it is what a legacy row or the
+        // `Config::global()` fallback above produces too.
+        //
+        // Unreachable today: nothing in production writes `privacy_tier =
+        // 'private'` yet. The moment Gate B's ratchet lands, such a chat is
+        // UNOPENABLE rather than repairable unless the repair card reaches THIS
+        // site and not only `reply`. Swallowing the refusal here is not the fix
+        // — it would run a public model against a private session, which is the
+        // one thing Gate A exists to stop.
         self.update_provider(provider, &session.id).await
     }
 
