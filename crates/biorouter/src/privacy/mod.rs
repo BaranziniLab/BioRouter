@@ -162,8 +162,19 @@ pub(crate) fn floor(tier: ProviderTier) -> SessionClassification {
 }
 
 /// A session may bind `incoming` only when the provider is at least as private
-/// as the session's contents. This is Gate A's predicate, extracted so it can
-/// be unit-tested without a database.
+/// as the session's contents.
+///
+/// ⚠ This is Gate A's predicate written in Rust, and **Gate A does not call
+/// it**: the live gate is the `WHERE` clause of
+/// `SessionStorage::bind_provider_if_allowed` — `AND (privacy_tier = 'public'
+/// OR ? = 1)` — because a predicate evaluated here would leave a window between
+/// the read and the write that a concurrent ratchet fits inside. What this
+/// function serves is `visible_to` (Gate D) and the induction below, so the two
+/// spellings must stay one predicate:
+/// `the_sql_predicate_and_bind_allowed_agree_on_every_combination`
+/// (`agents::agent::gate_a_bind_tests`) runs the real statement over all four
+/// (tier, classification) combinations and asserts the outcomes agree. Relax
+/// either one and that test fails.
 pub fn bind_allowed(incoming: ProviderTier, target: SessionClassification) -> bool {
     match target {
         SessionClassification::Public => true,
@@ -452,10 +463,13 @@ mod tests {
         // SCOPE. `visible_to` delegates to `bind_allowed`, and `bind_allowed` is
         // also this loop's admission gate — so the assertion and the gate move
         // together. This pins `floor` for consistency WITH Gate A's predicate; it
-        // cannot see a relaxation OF that predicate. Nor is the predicate pinned
-        // anywhere else yet: `bind_allowed` currently has no truth-table test and
-        // no production caller in this tree. Whichever task first wires Gate A owes
-        // it one, and must not read this test as already covering it.
+        // cannot see a relaxation OF that predicate, and must not be read as
+        // covering it. What covers it is
+        // `the_sql_predicate_and_bind_allowed_agree_on_every_combination`
+        // (`agents::agent::gate_a_bind_tests`), which runs Gate A's live `WHERE`
+        // clause over all four (tier, classification) combinations and asserts the
+        // outcome equals `bind_allowed` — the debt this comment used to record as
+        // owed by "whichever task first wires Gate A".
         for binds in all_sequences_of_length(6, &[Private, Public]) {
             let mut classification = SessionClassification::Public;
             let mut capability = Public;

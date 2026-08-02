@@ -9609,7 +9609,7 @@ mod gate_a_bind_tests {
     use crate::config::BioRouterMode;
     use crate::model::ModelConfig;
     use crate::privacy::refusal::PrivacyRefusal;
-    use crate::privacy::{ProviderTier, SessionClassification};
+    use crate::privacy::{bind_allowed, ProviderTier, SessionClassification};
     use crate::providers::base::{ProviderMetadata, ProviderUsage, Usage};
     use crate::providers::errors::ProviderError;
     use crate::session::session_manager::{Session, SessionType};
@@ -9781,6 +9781,49 @@ mod gate_a_bind_tests {
             .update_provider(private_provider2(), &s2.id)
             .await
             .unwrap(); // private->private
+    }
+
+    #[tokio::test]
+    async fn the_sql_predicate_and_bind_allowed_agree_on_every_combination() {
+        // `privacy::bind_allowed` reads as Gate A's predicate, but Gate A does
+        // not call it — the live gate is the `WHERE` clause, because a predicate
+        // evaluated in Rust leaves the window the tests above force a ratchet
+        // into. Two spellings of one rule, in two languages, with nothing making
+        // them agree: relaxing either alone is silent.
+        //
+        // It is not a cosmetic drift. `visible_to` (Gate D — which chats a
+        // caller may SEE, and which conversations may be ingested) delegates to
+        // `bind_allowed`, and the induction in `privacy::tests` uses it as its
+        // admission gate. That test says so itself: "whichever task first wires
+        // Gate A owes it one, and must not read this test as already covering
+        // it." This pays that debt, against the live statement rather than a
+        // second copy of the predicate.
+        for incoming in [ProviderTier::Public, ProviderTier::Private] {
+            for classification in [
+                SessionClassification::Public,
+                SessionClassification::Private,
+            ] {
+                let (_dir, agent, s) = agent_on(private_provider()).await;
+                let sm = manager(&agent);
+                if classification == SessionClassification::Private {
+                    ratchet_to_private(&sm, &s.id).await;
+                }
+
+                let outcome = sm
+                    .storage()
+                    .bind_provider_if_allowed(&s.id, "p", "{}", incoming.is_private())
+                    .await
+                    .unwrap();
+
+                assert_eq!(
+                    outcome == BindOutcome::Bound,
+                    bind_allowed(incoming, classification),
+                    "Gate A's WHERE clause and privacy::bind_allowed disagree for a \
+                     {incoming:?} provider on a {classification:?} session: the statement \
+                     said {outcome:?}"
+                );
+            }
+        }
     }
 
     #[tokio::test]
