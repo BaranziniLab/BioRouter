@@ -4229,8 +4229,18 @@ mod tests {
     /// session's classification ratchets at permit time, with `mcp:` provenance
     /// so §12.4 can grade the declassification confirmation on it.
     ///
+    /// ⚠ **The row is re-read BEFORE the returned future is awaited, and that
+    /// ordering is the whole test.** `dispatch_tool_call` hands back a
+    /// `ToolCallResult` whose `result` has not run yet; a version of this test
+    /// that awaited it first — which is how this was first written — passes
+    /// identically against an implementation that ratchets on the tool's
+    /// *success*, so it could not tell the two apart while its name claimed to.
+    /// Permit-time is the design's choice for a reason the test now enforces: a
+    /// failed OMOP query still carried the session's cohort definition to the
+    /// connector. Awaiting the future afterwards is kept only so the mock's
+    /// answer is not dropped on the floor.
     #[tokio::test]
-    async fn a_permitted_private_dispatch_ratchets_the_session() {
+    async fn a_permitted_private_dispatch_ratchets_the_session_at_permit_time() {
         let (_dir, em, sm, id) = manager_with_a_session().await;
         em.add_mock_extension("ucsfomopagent".to_string(), Arc::new(MockClient {}))
             .await;
@@ -4253,14 +4263,73 @@ mod tests {
             )
             .await
             .expect("a private caller may reach a private extension");
+
+        // Permit time: the tool has NOT been called yet.
+        let row = sm.get_session(&id, false).await.unwrap();
+        assert_eq!(
+            row.privacy_tier,
+            crate::privacy::SessionClassification::Private,
+            "the ratchet must land on the permit, not on the tool's answer"
+        );
+        assert_eq!(row.privacy_reason.as_deref(), Some("mcp:ucsfomopagent"));
+
         dispatched.result.await.expect("the mock client answers");
+    }
+
+    /// The ratchet sits BELOW BR-23's secret scan, which is a deviation from the
+    /// plan's stated ordering and therefore owes an assertion rather than a
+    /// comment.
+    ///
+    /// The premise is the same one that makes a Gate C refusal leave the row
+    /// alone: a classification is permanent, so it may only be written for
+    /// something that actually left the process. A SecretGuard denial is caught
+    /// in the daemon's own dispatch path — the connector never heard from us —
+    /// so there is nothing to record, and recording it would be an irreversible
+    /// claim about a call that never happened.
+    #[tokio::test]
+    async fn a_secret_guard_denial_leaves_the_row_alone() {
+        let (_dir, em, sm, id) = manager_with_a_session().await;
+        em.add_mock_extension("ucsfomopagent".to_string(), Arc::new(MockClient {}))
+            .await;
+
+        // The guard only blocks an argument that names a secret file which
+        // ACTUALLY EXISTS (`SecretGuard::find_denied_path`), so the fixture has
+        // to create one. Absolute, so it is independent of the manager's
+        // resolved working dir.
+        let secrets = tempfile::tempdir().unwrap();
+        let dotenv = secrets.path().join(".env");
+        std::fs::write(&dotenv, "SECRET=1").unwrap();
+
+        let denied = match em
+            .dispatch_tool_call(
+                &id,
+                CallToolRequestParams {
+                    task: None,
+                    name: "ucsfomopagent__tool".to_string().into(),
+                    arguments: Some(object!({ "path": dotenv.to_string_lossy() })),
+                    meta: None,
+                },
+                crate::privacy::CallCapability::for_test(
+                    crate::privacy::ProviderTier::Private,
+                    true,
+                ),
+                CancellationToken::default(),
+            )
+            .await
+        {
+            Ok(_) => panic!("BR-23 must block an argument naming an existing .env"),
+            Err(e) => e.to_string(),
+        };
+        assert!(denied.contains("secret/credential deny pattern"), "{denied}");
 
         let row = sm.get_session(&id, false).await.unwrap();
         assert_eq!(
             row.privacy_tier,
-            crate::privacy::SessionClassification::Private
+            crate::privacy::SessionClassification::Public,
+            "a call the daemon refused reached no connector, so it must not \
+             permanently classify the chat"
         );
-        assert_eq!(row.privacy_reason.as_deref(), Some("mcp:ucsfomopagent"));
+        assert_eq!(row.privacy_reason, None);
     }
 
     /// The capability `POST /agent/call_tool` hands the manager —
