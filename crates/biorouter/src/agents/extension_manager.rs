@@ -145,11 +145,38 @@ fn is_privacy_refusal(err: &ErrorData) -> bool {
     err.code == ErrorCode::INVALID_REQUEST
 }
 
+/// The prefixed tool list and the extension keys that named it, taken together.
+///
+/// Issue #56 Gate E resolves a prefixed tool name against the set of installed
+/// extension keys. Reading the tools and then reading the keys is two reads of
+/// shared mutable state at two program points — a race by construction, and one
+/// with a skew that is NOT fail-closed: remove a private `a__b` between the two
+/// while a public `a` remains, and the tools already in hand still carry
+/// `a__b__*`, which now re-resolve to `a` and are listed. Reversing the order
+/// only moves the hole, to a concurrent add: a freshly installed private `a__b`'s
+/// tools then resolve to `a` against a stale key set.
+///
+/// So the two are paired at the one place both are known — `fetch_all_tools`'
+/// single read of the extension map, which is also where the `key__tool` names
+/// are formed. A snapshot therefore cannot describe two different worlds, and
+/// the ambiguity `resolve_extension_key` exists to remove cannot be smuggled
+/// back in through the way its inputs are gathered.
+///
+/// The tier decision is deliberately NOT in here: it belongs to the currently
+/// bound model, and this is cached across model swaps. See
+/// [`ExtensionManager::allowed_extension_keys`].
+struct ToolsSnapshot {
+    /// Sorted by name, for the byte-stable tool-definitions block.
+    tools: Vec<Tool>,
+    /// Every installed extension key as of the read that produced `tools`.
+    keys: Vec<String>,
+}
+
 pub struct ExtensionManager {
     extensions: Mutex<HashMap<String, Extension>>,
     context: PlatformExtensionContext,
     provider: SharedProvider,
-    tools_cache: Mutex<Option<Arc<Vec<Tool>>>>,
+    tools_cache: Mutex<Option<Arc<ToolsSnapshot>>>,
     tools_cache_version: AtomicU64,
     /// The session's working directory, when known. Extensions loaded from a
     /// session (`Agent::load_extensions_from_session`) set this so the shell
@@ -1301,12 +1328,21 @@ impl ExtensionManager {
             .map(String::as_str)
     }
 
-    /// One snapshot of the extension map in the two forms Gate E needs: every
-    /// installed key, and the subset the currently-bound model may see.
+    /// The subset of installed extension keys the currently-bound model may see.
     ///
-    /// Both come from ONE lock because they are read together and compared
-    /// against each other; two reads could see two different extension sets and
-    /// classify a tool against a key that is no longer there.
+    /// This is the ONLY half of Gate E's input that depends on the model, which
+    /// is why it is read here and not stored in [`ToolsSnapshot`]: the tool list
+    /// is cached across model swaps (`update_provider` bumps no cache version),
+    /// so freezing a tier decision into that cache would serve one model's
+    /// allowed set to the next one.
+    ///
+    /// Skew against the snapshot it will be compared with is therefore possible
+    /// and is fail-closed in every direction: an extension removed after the
+    /// snapshot is missing from `allowed`, so its tools — which still resolve to
+    /// their real owner, because the snapshot carries the keys that named them —
+    /// are dropped; one added after the snapshot is in `allowed` but has no
+    /// tools in it. What is NOT possible is a tool resolving to the wrong
+    /// extension, which is the skew that would actually leak.
     ///
     /// The predicate is Gate C's, verbatim — `privacy_refusal(..).is_none()` —
     /// and NOT `visible_to(caller, floor(ext.tier))`. Two reasons, and the
@@ -1338,23 +1374,22 @@ impl ExtensionManager {
     async fn allowed_extension_keys(
         &self,
         admitted: Option<crate::privacy::CallCapability>,
-    ) -> (Vec<String>, Vec<String>) {
+    ) -> Vec<String> {
         let cap = match admitted {
             Some(cap) => cap,
             None => crate::privacy::CallCapability::sample(&self.provider).await,
         };
         let caller = cap.tier();
         let enforce = cap.enforced();
-        let extensions = self.extensions.lock().await;
-        let installed: Vec<String> = extensions.keys().cloned().collect();
-        let allowed: Vec<String> = extensions
+        self.extensions
+            .lock()
+            .await
             .iter()
             .filter(|(k, e)| {
                 !enforce || crate::privacy::refusal::privacy_refusal(k, e.tier, caller).is_none()
             })
             .map(|(k, _)| k.clone())
-            .collect();
-        (installed, allowed)
+            .collect()
     }
 
     /// Get all tools from all clients with proper prefixing
@@ -1362,17 +1397,19 @@ impl ExtensionManager {
         &self,
         extension_name: Option<String>,
     ) -> ExtensionResult<Vec<Tool>> {
-        let all_tools = self.get_all_tools_cached().await?;
+        let snapshot = self.get_all_tools_cached().await?;
         // Issue #56 Gate E. Precomputed here, in the async caller: `filter_tools`
         // is sync and must not become async (the cache above it is keyed on a
         // version counter `update_provider` never bumps, so a filter applied any
         // higher would freeze one model's allowed set and serve it to the next).
-        let (installed, allowed) = self.allowed_extension_keys(None).await;
+        // The keys the tools are RESOLVED against ride in the snapshot instead,
+        // because those two must agree exactly — see [`ToolsSnapshot`].
+        let allowed = self.allowed_extension_keys(None).await;
         Ok(self.filter_tools(
-            &all_tools,
+            &snapshot.tools,
             extension_name.as_deref(),
             None,
-            &installed,
+            &snapshot.keys,
             &allowed,
         ))
     }
@@ -1390,9 +1427,15 @@ impl ExtensionManager {
         exclude: &str,
         admitted: Option<crate::privacy::CallCapability>,
     ) -> ExtensionResult<Vec<Tool>> {
-        let all_tools = self.get_all_tools_cached().await?;
-        let (installed, allowed) = self.allowed_extension_keys(admitted).await;
-        Ok(self.filter_tools(&all_tools, None, Some(exclude), &installed, &allowed))
+        let snapshot = self.get_all_tools_cached().await?;
+        let allowed = self.allowed_extension_keys(admitted).await;
+        Ok(self.filter_tools(
+            &snapshot.tools,
+            None,
+            Some(exclude),
+            &snapshot.keys,
+            &allowed,
+        ))
     }
 
     /// The PERMISSION EDITORS' view of the tool list: every installed
@@ -1418,18 +1461,18 @@ impl ExtensionManager {
         &self,
         extension_name: Option<String>,
     ) -> ExtensionResult<Vec<Tool>> {
-        let all_tools = self.get_all_tools_cached().await?;
-        let installed: Vec<String> = self.extensions.lock().await.keys().cloned().collect();
-        // `allowed == installed`. Every tool still has to resolve to a real
-        // installed extension, through the same resolver and therefore with the
-        // same answer to the overlapping-key hazard as everywhere else — no tier
-        // drops it afterwards.
+        let snapshot = self.get_all_tools_cached().await?;
+        // `allowed == keys`. Every tool still has to resolve to a real installed
+        // extension, through the same resolver and therefore with the same
+        // answer to the overlapping-key hazard as everywhere else — no tier
+        // drops it afterwards. Taking both from the snapshot means this view
+        // cannot skew against itself at all.
         Ok(self.filter_tools(
-            &all_tools,
+            &snapshot.tools,
             extension_name.as_deref(),
             None,
-            &installed,
-            &installed,
+            &snapshot.keys,
+            &snapshot.keys,
         ))
     }
 
@@ -1481,11 +1524,11 @@ impl ExtensionManager {
             .collect()
     }
 
-    async fn get_all_tools_cached(&self) -> ExtensionResult<Arc<Vec<Tool>>> {
+    async fn get_all_tools_cached(&self) -> ExtensionResult<Arc<ToolsSnapshot>> {
         {
             let cache = self.tools_cache.lock().await;
-            if let Some(ref tools) = *cache {
-                return Ok(Arc::clone(tools));
+            if let Some(ref snapshot) = *cache {
+                return Ok(Arc::clone(snapshot));
             }
         }
 
@@ -1498,18 +1541,24 @@ impl ExtensionManager {
         // cache on its first turn. Tools are a named set — ordering is
         // semantically irrelevant to the model, so sorting is safe.
         let mut fetched = self.fetch_all_tools().await?;
-        fetched.sort_by(|a, b| a.name.cmp(&b.name));
-        let tools = Arc::new(fetched);
+        fetched.tools.sort_by(|a, b| a.name.cmp(&b.name));
+        // The keys are sorted for the same reason the tools are: they come out
+        // of a per-process-randomized `HashMap`, and a snapshot that differs
+        // between runs is a snapshot nobody can diff. Resolution does not depend
+        // on the order (two equal-length matching prefixes of one string are the
+        // same string, so the longest match is unique).
+        fetched.keys.sort();
+        let snapshot = Arc::new(fetched);
 
         {
             let mut cache = self.tools_cache.lock().await;
             let version_after = self.tools_cache_version.load(Ordering::SeqCst);
             if version_after == version_before && cache.is_none() {
-                *cache = Some(Arc::clone(&tools));
+                *cache = Some(Arc::clone(&snapshot));
             }
         }
 
-        Ok(tools)
+        Ok(snapshot)
     }
 
     async fn invalidate_tools_cache_and_bump_version(&self) {
@@ -1517,7 +1566,7 @@ impl ExtensionManager {
         *self.tools_cache.lock().await = None;
     }
 
-    async fn fetch_all_tools(&self) -> ExtensionResult<Vec<Tool>> {
+    async fn fetch_all_tools(&self) -> ExtensionResult<ToolsSnapshot> {
         let clients: Vec<_> = self
             .extensions
             .lock()
@@ -1525,6 +1574,10 @@ impl ExtensionManager {
             .iter()
             .map(|(name, ext)| (name.clone(), ext.config.clone(), ext.get_client()))
             .collect();
+        // Out of the SAME read that is about to form the `key__tool` names, so
+        // the two can never describe different extension sets. See
+        // [`ToolsSnapshot`].
+        let keys: Vec<String> = clients.iter().map(|(name, _, _)| name.clone()).collect();
 
         let client_futures = clients.into_iter().map(|(name, config, client)| {
             let ext_name = name.clone();
@@ -1598,7 +1651,7 @@ impl ExtensionManager {
             tools.extend(client_tools);
         }
 
-        Ok(tools)
+        Ok(ToolsSnapshot { tools, keys })
     }
 
     /// Get the extension prompt including client instructions
@@ -5650,6 +5703,60 @@ mod tests {
         assert!(
             scoped.iter().all(|n| n.starts_with("ucsfomopagent__")),
             "the scoped editor view leaked another extension: {scoped:?}"
+        );
+    }
+
+    /// The tool list and the key set Gate E resolves it against must come out of
+    /// ONE read of the extension map.
+    ///
+    /// `get_prefixed_tools` used to read the tools and then read the keys: two
+    /// reads of shared mutable state at two program points, which is a race by
+    /// construction. Its one non-fail-closed skew was a concurrent removal —
+    /// drop a private `a__b` between the reads while public `a` remains, and the
+    /// tools already in hand still carry `a__b__*`, which now re-resolve to `a`
+    /// and get listed. Reversing the order does not fix it, it moves the hole:
+    /// a concurrent ADD then leaves a freshly installed private `a__b`'s tools
+    /// resolving to `a` against a stale key set. Only pairing the two removes
+    /// it.
+    ///
+    /// The pairing is what makes the skew unrepresentable, so the pairing is
+    /// what is asserted: every tool in a snapshot resolves, against that same
+    /// snapshot's keys, to the extension that actually named it.
+    #[tokio::test]
+    async fn the_tool_snapshot_carries_the_keys_that_named_its_tools() {
+        let (_dir, em, _provider) = manager_bound_to(crate::privacy::ProviderTier::Public);
+        em.add_mock_extension("a".to_string(), Arc::new(MockClient {}))
+            .await;
+        em.add_mock_extension("a__b".to_string(), Arc::new(MockClient {}))
+            .await;
+
+        let snapshot = em.get_all_tools_cached().await.unwrap();
+        assert!(!snapshot.tools.is_empty(), "the fixture produced no tools");
+        for tool in &snapshot.tools {
+            let name = tool.name.as_ref();
+            let Some(resolved) = ExtensionManager::resolve_extension_key(&snapshot.keys, name)
+            else {
+                panic!(
+                    "{name} resolves to no key in its own snapshot: {:?}",
+                    snapshot.keys
+                );
+            };
+            assert!(
+                name.strip_prefix(resolved)
+                    .is_some_and(|rest| rest.starts_with("__")),
+                "{name} resolved to {resolved}, which does not name it"
+            );
+        }
+
+        // And specifically: the overlapping pair is in the snapshot, and the
+        // longer key wins for the tool it really owns.
+        assert_eq!(
+            ExtensionManager::resolve_extension_key(&snapshot.keys, "a__b__tool"),
+            Some("a__b")
+        );
+        assert_eq!(
+            ExtensionManager::resolve_extension_key(&snapshot.keys, "a__tool"),
+            Some("a")
         );
     }
 }
