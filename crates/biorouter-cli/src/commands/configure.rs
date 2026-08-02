@@ -1670,8 +1670,13 @@ pub async fn configure_tool_permissions_dialog() -> anyhow::Result<()> {
     }
 
     let permission_manager = PermissionManager::instance();
+    // Issue #56 Task 16: the permission editor's list, NOT the model's. The
+    // provider bound just above is whatever the user configured, so under Gate E
+    // this selector would be handed zero items for a private extension and the
+    // user could never set a tool permission on the extension they installed.
+    // Do not swap this for `list_tools`.
     let selected_tools = agent
-        .list_tools(&session.id, Some(selected_extension_name.clone()))
+        .list_tools_for_permission_settings(&session.id, Some(selected_extension_name.clone()))
         .await
         .into_iter()
         .map(|tool| {

@@ -1395,6 +1395,44 @@ impl ExtensionManager {
         Ok(self.filter_tools(&all_tools, None, Some(exclude), &installed, &allowed))
     }
 
+    /// The PERMISSION EDITORS' view of the tool list: every installed
+    /// extension's tools, with Gate E deliberately NOT applied.
+    ///
+    /// ⚠ This is the one discovery surface issue #56 leaves open on purpose, and
+    /// Task 16's own text is where the decision is recorded: a private extension
+    /// must stay **visible and badged** in Settings, and that branch must not be
+    /// tier-filtered. The reasoning is that Gate E keeps a private server's tool
+    /// names, descriptions and JSON schemas out of a public **model's** context —
+    /// Settings → Extensions → tool permissions and `biorouter configure`'s tool
+    /// selector are read by the HUMAN who installed that server, never by the
+    /// model. Filtering them would buy no confidentiality (Settings is nobody's
+    /// prompt) and would cost that human the ability to administer their own
+    /// extension, since a tool that is not listed cannot have a permission set.
+    ///
+    /// Every other caller keeps the filtered [`Self::get_prefixed_tools`]. The
+    /// exemption is deny-by-default with exactly two production callers, both
+    /// reached through `Agent::list_tools_for_permission_settings`:
+    /// `biorouter-server`'s `GET /agent/tools` and `biorouter-cli`'s
+    /// `configure`. Adding a third is a privacy decision, not a refactor.
+    pub async fn get_prefixed_tools_unfiltered(
+        &self,
+        extension_name: Option<String>,
+    ) -> ExtensionResult<Vec<Tool>> {
+        let all_tools = self.get_all_tools_cached().await?;
+        let installed: Vec<String> = self.extensions.lock().await.keys().cloned().collect();
+        // `allowed == installed`. Every tool still has to resolve to a real
+        // installed extension, through the same resolver and therefore with the
+        // same answer to the overlapping-key hazard as everywhere else — no tier
+        // drops it afterwards.
+        Ok(self.filter_tools(
+            &all_tools,
+            extension_name.as_deref(),
+            None,
+            &installed,
+            &installed,
+        ))
+    }
+
     /// Issue #56 Gate E: a public model never sees a private server's tool
     /// names, descriptions or JSON schemas. Schema text is content, and it is
     /// handed to the model before any tool call exists for Gate C to refuse.
@@ -5545,6 +5583,73 @@ mod tests {
         assert!(
             !names.contains(&"ucsfomopagent__tool"),
             "the private extension's own tools stay out of a public model's prompt: {names:?}"
+        );
+    }
+
+    /// Task 16's ⚠, as a test: the permission editors must NOT be tier-filtered.
+    ///
+    /// Gate E keeps a private server's tool names, descriptions and JSON schemas
+    /// out of a public MODEL's context. The human who installed that server is
+    /// not the model. Settings → Extensions → tool permissions and `biorouter
+    /// configure`'s tool selector both exist to let that human set a permission
+    /// per tool, and a tool that is not listed cannot be configured — so
+    /// filtering there buys nothing (Settings is nobody's prompt) and costs the
+    /// user the ability to administer the extension they installed.
+    ///
+    /// Both views are asserted in one test on purpose. Two tests could pass
+    /// while the two views were the same function, which is the whole bug.
+    #[tokio::test]
+    async fn the_permission_editor_view_is_not_tier_filtered() {
+        let (_dir, em, _provider) = manager_bound_to(crate::privacy::ProviderTier::Public);
+        em.add_mock_extension("ucsfomopagent".to_string(), Arc::new(MockClient {}))
+            .await;
+        em.add_mock_extension("developer".to_string(), Arc::new(MockClient {}))
+            .await;
+
+        let model_view: Vec<String> = em
+            .get_prefixed_tools(None)
+            .await
+            .unwrap()
+            .iter()
+            .map(|t| t.name.to_string())
+            .collect();
+        assert!(
+            !model_view
+                .iter()
+                .any(|n| n.starts_with("ucsfomopagent__")),
+            "the model's view is still Gate E filtered: {model_view:?}"
+        );
+
+        let editor_view: Vec<String> = em
+            .get_prefixed_tools_unfiltered(None)
+            .await
+            .unwrap()
+            .iter()
+            .map(|t| t.name.to_string())
+            .collect();
+        assert!(
+            editor_view.iter().any(|n| n.starts_with("ucsfomopagent__")),
+            "a private extension must stay visible and badged in Settings: {editor_view:?}"
+        );
+        assert!(
+            editor_view.iter().any(|n| n.starts_with("developer__")),
+            "the public extension is still there too: {editor_view:?}"
+        );
+
+        // Settings asks one extension at a time (`?extension_name=`), so the
+        // per-extension filter has to keep working on this path — and it is the
+        // private extension it is asked about that matters.
+        let scoped: Vec<String> = em
+            .get_prefixed_tools_unfiltered(Some("ucsfomopagent".to_string()))
+            .await
+            .unwrap()
+            .iter()
+            .map(|t| t.name.to_string())
+            .collect();
+        assert!(!scoped.is_empty(), "the scoped editor view is empty");
+        assert!(
+            scoped.iter().all(|n| n.starts_with("ucsfomopagent__")),
+            "the scoped editor view leaked another extension: {scoped:?}"
         );
     }
 }

@@ -898,6 +898,26 @@ impl std::fmt::Display for InterruptRefused {
     }
 }
 
+/// Who is going to read the tool list [`Agent::list_tools_for`] builds.
+///
+/// Issue #56 Gate E hides a private extension's tool names, descriptions and
+/// JSON schemas from a public MODEL, because schema text is content and it
+/// reaches the model before any tool call exists for Gate C to refuse. It must
+/// NOT hide them from the HUMAN who installed that extension: the permission
+/// editors exist so that human can set a permission per tool, and a tool that is
+/// not listed cannot be configured.
+///
+/// The two audiences are an enum rather than a `bool` so that the answer at each
+/// call site reads as the privacy decision it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ToolAudience {
+    /// The model's context. Gate E applies.
+    Model,
+    /// Settings → Extensions → tool permissions, and `biorouter configure`'s
+    /// tool selector. Gate E does not apply — see Task 16's ⚠.
+    PermissionEditor,
+}
+
 /// The outcome of the turn loop's take-and-close at its exit (#69).
 ///
 /// `pub` for the same reason [`Agent::open_for_turn`] is: the route-level tests
@@ -4372,7 +4392,37 @@ impl Agent {
         }
     }
 
+    /// The tool list as the MODEL will see it. Issue #56 Gate E applies: a
+    /// public model gets no private extension's tool names, descriptions or JSON
+    /// schemas. Every model-facing caller — the turn's tool list, a subagent's,
+    /// the prompt builders — uses this one.
     pub async fn list_tools(&self, session_id: &str, extension_name: Option<String>) -> Vec<Tool> {
+        self.list_tools_for(session_id, extension_name, ToolAudience::Model)
+            .await
+    }
+
+    /// The tool list as the PERMISSION EDITOR will show it — Settings →
+    /// Extensions → tool permissions, and `biorouter configure`'s tool selector.
+    ///
+    /// ⚠ Not tier-filtered, by decision. See
+    /// [`ExtensionManager::get_prefixed_tools_unfiltered`] for why: the reader
+    /// here is the human who installed the private extension, not the model, and
+    /// a tool that is not listed cannot have its permission set.
+    pub async fn list_tools_for_permission_settings(
+        &self,
+        session_id: &str,
+        extension_name: Option<String>,
+    ) -> Vec<Tool> {
+        self.list_tools_for(session_id, extension_name, ToolAudience::PermissionEditor)
+            .await
+    }
+
+    async fn list_tools_for(
+        &self,
+        session_id: &str,
+        extension_name: Option<String>,
+        audience: ToolAudience,
+    ) -> Vec<Tool> {
         // BR-71 decision 21: the workspace extension is the ONE spawn
         // implementation, so a session that may delegate must have it LOADED
         // before the tool list is read. When the user enabled `workspace`
@@ -4398,11 +4448,19 @@ impl Agent {
             self.revoke_spawn_extension().await;
         }
 
-        let mut prefixed_tools = self
-            .extension_manager
-            .get_prefixed_tools(extension_name.clone())
-            .await
-            .unwrap_or_default();
+        let mut prefixed_tools = match audience {
+            ToolAudience::Model => {
+                self.extension_manager
+                    .get_prefixed_tools(extension_name.clone())
+                    .await
+            }
+            ToolAudience::PermissionEditor => {
+                self.extension_manager
+                    .get_prefixed_tools_unfiltered(extension_name.clone())
+                    .await
+            }
+        }
+        .unwrap_or_default();
 
         // Revoking the injection is necessary but not sufficient. `subagent` is
         // one of the workspace extension's OWN tools now, so a user who enabled

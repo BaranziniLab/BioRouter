@@ -722,8 +722,15 @@ async fn get_tools(
     // inspector uses, so the two cannot disagree.
     let smart = SmartApproveConfig::from_config();
 
+    // Issue #56 Task 16: the permission editor's list, NOT the model's. This
+    // route is what Settings → Extensions → tool permissions renders, and a
+    // private extension has to stay visible and badged there whatever model
+    // happens to be bound — including on the empty-`session_id` branch above,
+    // which loads one globally enabled extension purely so its tools can be
+    // listed here. Gate E is about the model's context; this is the user's own
+    // administration surface. Do not swap this for `list_tools`.
     let mut tools: Vec<ToolInfo> = agent
-        .list_tools(&session_id, extension_name)
+        .list_tools_for_permission_settings(&session_id, extension_name)
         .await
         .into_iter()
         .map(|tool| {
