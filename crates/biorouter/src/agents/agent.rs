@@ -953,6 +953,39 @@ pub enum Drained {
 ///
 /// A plain `Mutex` rather than an atomic: it carries a `String` as well, it is
 /// never held across an `await`, and every read is off the hot path.
+///
+/// # Known skews between this cache and the row
+///
+/// Both are narrow, both close at the next `reply`, and both are recorded here
+/// because the repair-card task inherits them.
+///
+/// 1. **A cache reading `Public` against a `Private` row.**
+///    [`Agent::update_provider`] stores `Public` on a successful public bind,
+///    which is sound at the instant it runs (Gate A's `WHERE` admits a public
+///    provider only against a public row). A ratchet that commits between that
+///    `UPDATE` and the store then privatises the row without touching the
+///    cache — the exact state
+///    `a_ratchet_that_commits_after_a_legal_bind_lands_in_the_state_gate_b_owns`
+///    constructs, since `raise_privacy` writes SQL and knows nothing about any
+///    agent. Until the next `reply` re-syncs, Gate B' would admit a public
+///    provider for an out-of-`reply` completion — and `maybe_rename_session` is
+///    called from outside `reply` (`workspace/turn.rs`, `routes/apps.rs`). It
+///    needs the bind task to be descheduled between two adjacent statements, so
+///    it is genuinely narrow, but it is fail-OPEN and so is written down. The
+///    alternative — leaving the cache at its `Private` default after a legal
+///    public bind — is not a privacy control but a startup failure on every
+///    fresh public session, because the CLI asserts `provider()` before its
+///    first turn.
+///
+/// 2. **A cache reading `Private` for a session with no row.** The
+///    `BindOutcome::NoSuchSession` arm deliberately does not refuse — an id
+///    naming no row must never be reported to a user as "this chat is private"
+///    — but it also stores nothing, so the cache stays at its fail-closed
+///    default and a later `provider()` on that agent refuses. The two arms
+///    disagree about the same non-existent session. Fail-CLOSED, and no traced
+///    caller binds before its row exists (`subagent_tool` creates the child row
+///    first; the CLI and the routes bind after `create_session`), so it is left
+///    as the safer inconsistency rather than papered over.
 #[derive(Debug)]
 pub(super) struct CachedClassification {
     inner: std::sync::Mutex<(SessionClassification, Option<String>)>,
@@ -4658,6 +4691,17 @@ impl Agent {
             }
             // 1. The ratchet. It fires HERE and on a permitted private-extension
             //    dispatch (Gate C) — never on the bind (O5).
+            //
+            // ⚠ It samples the binding ONCE, at the seam. A `/model` switch to a
+            // private provider that lands mid-turn therefore runs that turn
+            // against a row still classified public, and the ratchet catches it
+            // on the NEXT turn. That is under-classification for one turn, never
+            // over-disclosure: Gate A independently refuses the dangerous
+            // direction (a public provider bound to a private row), so the only
+            // thing the window costs is that Gate D would let a public model
+            // read this turn's transcript before the ratchet lands. Inherent to
+            // "ratchet on the turn" rather than on the bind, which is O5's
+            // deliberate trade, and recorded here because it was not.
             let mut classification = row.privacy_tier;
             if privacy_refusal.is_none() {
                 if let Some(provider) = self.bound_provider_unchecked().await {

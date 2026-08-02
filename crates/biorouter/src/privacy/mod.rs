@@ -26,14 +26,25 @@ pub use capability::CallCapability;
 pub use extensions::classify_extension;
 pub use refusal::PrivacyRefusal;
 
-/// The master opt-out (DR-15), read **inside** every gate rather than through
-/// an `is_enabled()` wrapper, so a mid-session change is honoured and the
-/// opt-out is one auditable line rather than an absent gate.
+/// The master opt-out (DR-15), read **inside** a gate rather than through an
+/// `is_enabled()` wrapper, so a mid-session change is honoured and the opt-out
+/// is one auditable line rather than an absent gate.
 ///
 /// It is read exactly once per tool call, by [`CallCapability::sample`], and
 /// carried with the tier — the two are halves of one decision and reading them
 /// at two different instants is the same class of race the capability itself
 /// exists to close.
+///
+/// ⚠ **Not every gate consults it, and this doc used to say "every gate".**
+/// Gate D goes through [`CallCapability`] and so honours it; Gate A (the
+/// conditional bind in `Agent::update_provider`), Gate B (the turn barrier in
+/// `Agent::reply`) and Gate B' (the assertion in `Agent::provider`) do not —
+/// they call [`bind_allowed`] directly. There is no behavioural difference
+/// while this is a `const fn … { true }`, which is why it went unnoticed. The
+/// divergence becomes real the day Task 30 makes the toggle an atomic: the
+/// opt-out would silence tool-dispatch refusals while still refusing turns and
+/// completions. Whoever lands Task 30 has to route these three through it too,
+/// or state on purpose that the opt-out does not cover the bind lattice.
 ///
 /// A `const fn … { true }` stub until Task 30 turns it into a `pub use` of the
 /// `biorouter-mcp` atomic. Task 30's own file table calls it a stub "since
