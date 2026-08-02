@@ -1227,22 +1227,37 @@ async fn read_resource(
     }))
 }
 
-/// Render a dispatch failure as the tool's own error result.
+/// Classify a dispatch failure: a **tool** error the caller can act on, or a
+/// server fault that keeps its 500.
 ///
-/// Extracted so its mapping can be tested without `AppState`, which opens the
-/// REAL user session database. It mirrors the agent loop, which downcasts to
-/// `ErrorData` to avoid double-wrapping and hands the model the message.
-fn dispatch_failure_response(error: &anyhow::Error) -> CallToolResponse {
-    let message = error
-        .downcast_ref::<rmcp::model::ErrorData>()
-        .map(|data| data.message.to_string())
-        .unwrap_or_else(|| error.to_string());
-    CallToolResponse {
-        content: vec![Content::text(message)],
+/// Extracted so the mapping can be tested without `AppState`, which builds the
+/// process-global `AgentManager` and opens the REAL user session database. It
+/// mirrors the agent loop, which downcasts to `ErrorData` to avoid
+/// double-wrapping and hands the model the message.
+///
+/// ⚠ **The downcast is the whole classification, and it is not a formality.**
+/// Every refusal `dispatch_tool_call` itself produces — Gate C's, `Tool '…' not
+/// found`, `not available for extension`, BR-23's secret denial — is an
+/// `ErrorData`, so all of them reach the caller as a tool result, which is the
+/// fix this task owes: `.map_err(|_| INTERNAL_SERVER_ERROR)` threw Gate C's
+/// refusal away and told the caller Biorouter had crashed.
+///
+/// Anything that is *not* an `ErrorData` is a fault of this process rather than
+/// an answer about the tool, and Gate C introduced the first one: the O5 ratchet
+/// propagates a session-store failure with `?`. Rendering that as `200 +
+/// is_error` would tell an HTTP client the tool ran and disagreed, retire its
+/// retry, and hand it raw store text. It keeps the 500 it had before this task.
+fn dispatch_failure_response(error: &anyhow::Error) -> Result<CallToolResponse, StatusCode> {
+    let Some(data) = error.downcast_ref::<rmcp::model::ErrorData>() else {
+        tracing::error!(%error, "call_tool dispatch failed for a non-tool reason");
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    };
+    Ok(CallToolResponse {
+        content: vec![Content::text(data.message.to_string())],
         structured_content: None,
         is_error: true,
         _meta: None,
-    }
+    })
 }
 
 #[utoipa::path(
@@ -1322,8 +1337,9 @@ async fn call_tool(
         // `.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)`, which threw the
         // refusal away and told the caller that Biorouter had crashed. A tool
         // that could not be dispatched is a tool error and the remedy is in the
-        // text, exactly as the agent loop treats it.
-        Err(error) => return Ok(Json(dispatch_failure_response(&error))),
+        // text, exactly as the agent loop treats it — see
+        // [`dispatch_failure_response`] for the one class this does NOT cover.
+        Err(error) => return dispatch_failure_response(&error).map(Json),
     };
 
     let result = tool_result
@@ -1536,12 +1552,16 @@ mod gate_c_call_tool_tests {
     //! Biorouter had crashed.
     //!
     //! Exercised through [`dispatch_failure_response`] — the exact mapping the
-    //! handler applies — rather than through `AppState`, which opens the REAL
-    //! user session database.
+    //! handler applies — rather than through `AppState`, which builds the
+    //! process-global `AgentManager` and opens the REAL user session database.
+    //! That is the same shape `privacy_barrier_tests` above uses for Gate A's
+    //! route half, and the same reason.
 
     use super::dispatch_failure_response;
+    use axum::http::StatusCode;
     use biorouter::privacy::refusal::privacy_refusal;
     use biorouter::privacy::ProviderTier;
+    use rmcp::model::{ErrorCode, ErrorData};
 
     fn text_of(response: &super::CallToolResponse) -> String {
         response
@@ -1556,21 +1576,49 @@ mod gate_c_call_tool_tests {
     fn a_gate_c_refusal_reaches_the_caller_rather_than_becoming_a_500() {
         let refusal = privacy_refusal("ucsfomopagent", ProviderTier::Private, ProviderTier::Public)
             .expect("a public caller on a private extension is refused");
-        let response = dispatch_failure_response(&anyhow::Error::from(refusal));
+        let response = dispatch_failure_response(&anyhow::Error::from(refusal))
+            .expect("a refusal is an answer about the tool, not a server fault");
         assert!(response.is_error);
         let text = text_of(&response);
         assert!(text.contains("ucsfomopagent"), "{text}");
         assert!(text.contains("Settings"), "{text}");
     }
 
-    /// The same mapping for every other dispatch failure, stated so the change
-    /// is deliberate: a tool that cannot be dispatched is a tool error, not a
-    /// server fault, and the caller gets the reason either way.
+    /// Every OTHER refusal `dispatch_tool_call` raises is an `ErrorData` too, so
+    /// the fix is not special-cased to Gate C: the pre-#56 500 was wrong for all
+    /// of them, and a caller that asks for a tool that does not exist now learns
+    /// which one.
     #[test]
-    fn any_other_dispatch_failure_still_carries_its_reason() {
-        let response = dispatch_failure_response(&anyhow::anyhow!("Tool 'nope__x' not found"));
+    fn any_other_tool_level_failure_also_carries_its_reason() {
+        let not_found = ErrorData::new(
+            ErrorCode::RESOURCE_NOT_FOUND,
+            "Tool 'nope__x' not found".to_string(),
+            None,
+        );
+        let response = dispatch_failure_response(&anyhow::Error::from(not_found))
+            .expect("a tool-level failure is a tool result");
         assert!(response.is_error);
         assert!(text_of(&response).contains("nope__x"));
+    }
+
+    /// …and the line the classification draws. Gate C's ratchet propagates a
+    /// session-store failure with `?`, which is the first non-`ErrorData` error
+    /// `dispatch_tool_call` can return. Rendering it as `200 + is_error` would
+    /// tell an HTTP client the tool ran and disagreed — retiring its retry — and
+    /// hand it raw store text. It keeps the 500 it had before this task.
+    #[test]
+    fn a_store_failure_is_not_laundered_into_a_tool_result() {
+        // `CallToolResponse` is not `Debug`, so the outcome is matched rather
+        // than `expect_err`'d.
+        match dispatch_failure_response(&anyhow::anyhow!(
+            "error returned from database: disk I/O error"
+        )) {
+            Ok(response) => panic!(
+                "a session-store failure was rendered as a tool result: {}",
+                text_of(&response)
+            ),
+            Err(status) => assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR),
+        }
     }
 }
 
