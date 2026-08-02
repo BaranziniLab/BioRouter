@@ -44,17 +44,28 @@ async fn read_user_action_digest() -> Option<[u8; 32]> {
     }
     // (2) And a pipe whose writer never closes would hang just as hard, so the
     //     read is bounded. 2s is far longer than a local `write` + `end`.
-    let line = tokio::time::timeout(
-        std::time::Duration::from_secs(2),
-        tokio::task::spawn_blocking(|| {
-            let mut s = String::new();
-            std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut s).ok()?;
-            Some(s)
-        }),
-    )
-    .await
-    .ok()?
-    .ok()??;
+    //
+    //     On a PLAIN OS THREAD rather than `spawn_blocking`, because a blocking
+    //     read cannot be cancelled: on the timeout path the reader stays parked
+    //     in `read_line`, holding `stdin().lock()`, for the life of the process.
+    //     A tokio runtime waits for started blocking tasks when it drops, so a
+    //     launcher that opens the pipe and never closes it would convert this
+    //     bound from a 2s delay at startup into a hang at SHUTDOWN — the exact
+    //     case this guard exists for. A detached thread is not the runtime's to
+    //     wait on.
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        let read = std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut line)
+            .ok()
+            .map(|_| line);
+        // The receiver is gone on the timeout path; nothing to report to.
+        let _ = tx.send(read);
+    });
+    let line = tokio::time::timeout(std::time::Duration::from_secs(2), rx)
+        .await
+        .ok()?
+        .ok()??;
     let bytes = hex::decode(line.trim()).ok()?;
     <[u8; 32]>::try_from(bytes.as_slice()).ok()
 }
