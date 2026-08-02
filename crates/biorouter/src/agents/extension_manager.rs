@@ -1271,30 +1271,161 @@ impl ExtensionManager {
             .collect()
     }
 
+    /// The single prefix→extension resolver. Gate C ([`Self::get_client_for_tool`])
+    /// and Gate E ([`Self::filter_tools`]) MUST agree, or a tool is hidden by one
+    /// and dispatched by the other.
+    ///
+    /// Longest-key-wins, so `a__b` beats `a` for `a__b__t` and `HashMap`
+    /// iteration order stops mattering. The `__` boundary check is what makes
+    /// "longest" safe to trust: without it a key would match a tool belonging to
+    /// an extension whose name merely starts with the same letters.
+    ///
+    /// ⚠ Both gates pass **every installed key**, never a filtered subset. The
+    /// plan for this task had Gate E resolve within the ALLOWED keys and drop
+    /// what did not resolve, which silently reproduces the bug it removes: with
+    /// `a` public and `a__b` private, removing `a__b` from the candidate set
+    /// makes `a__b__t` resolve to `a` and be listed. Resolve first, decide
+    /// second — that is also the only order under which the two gates can be
+    /// said to agree, since Gate C has no filtered set to resolve within.
+    fn resolve_extension_key<'k>(keys: &'k [String], prefixed_name: &str) -> Option<&'k str> {
+        keys.iter()
+            // `strip_prefix` rather than `starts_with` + a slice: the slice is
+            // safe (a matched prefix ends on a char boundary) but trips
+            // `clippy::string_slice`, which this tree denies.
+            .filter(|k| {
+                prefixed_name
+                    .strip_prefix(k.as_str())
+                    .is_some_and(|rest| rest.starts_with("__"))
+            })
+            .max_by_key(|k| k.len())
+            .map(String::as_str)
+    }
+
+    /// One snapshot of the extension map in the two forms Gate E needs: every
+    /// installed key, and the subset the currently-bound model may see.
+    ///
+    /// Both come from ONE lock because they are read together and compared
+    /// against each other; two reads could see two different extension sets and
+    /// classify a tool against a key that is no longer there.
+    ///
+    /// The predicate is Gate C's, verbatim — `privacy_refusal(..).is_none()` —
+    /// and NOT `visible_to(caller, floor(ext.tier))`. Two reasons, and the
+    /// second is the load-bearing one:
+    ///
+    ///  * Comparing a caller's capability with an extension's tier is a
+    ///    `ProviderTier`-to-`ProviderTier` question. `floor` crosses a CAPABILITY
+    ///    into a CLASSIFICATION, which is a different question, and a third and
+    ///    fourth caller of it is a design change Task 7's audit test is there to
+    ///    make someone argue for.
+    ///  * Gate C (dispatch) and Gate E (discovery) must agree on every input, or
+    ///    a tool is hidden by one and dispatched by the other. Sharing one
+    ///    function is the only way to guarantee that; sharing a *rule* is not.
+    ///
+    /// `admitted` follows [`Self::assert_extension_reachable`]'s rule exactly.
+    /// Discovery for the SYSTEM PROMPT has no admitted turn whose decision it
+    /// could inherit, so it samples. Discovery from INSIDE an admitted tool call
+    /// — the `execute_code` bridge's importable-module catalogue — inherits, for
+    /// the reason Task 15 gives: the user may switch models mid-turn, and a
+    /// fresh sample would hand a Public-admitted script a private module (or,
+    /// symmetrically, take a Private-admitted script's module away from it).
+    ///
+    /// Sampling is also the only spelling that reads the provider's tier and the
+    /// master opt-out at ONE instant; reading the provider mutex here and the
+    /// toggle again below is the two-reads race
+    /// [`crate::privacy::CallCapability`] exists to close — and it is why Task
+    /// 10's census of the sampler grows by this entry rather than this function
+    /// reaching for either of them directly.
+    async fn allowed_extension_keys(
+        &self,
+        admitted: Option<crate::privacy::CallCapability>,
+    ) -> (Vec<String>, Vec<String>) {
+        let cap = match admitted {
+            Some(cap) => cap,
+            None => crate::privacy::CallCapability::sample(&self.provider).await,
+        };
+        let caller = cap.tier();
+        let enforce = cap.enforced();
+        let extensions = self.extensions.lock().await;
+        let installed: Vec<String> = extensions.keys().cloned().collect();
+        let allowed: Vec<String> = extensions
+            .iter()
+            .filter(|(k, e)| {
+                !enforce || crate::privacy::refusal::privacy_refusal(k, e.tier, caller).is_none()
+            })
+            .map(|(k, _)| k.clone())
+            .collect();
+        (installed, allowed)
+    }
+
     /// Get all tools from all clients with proper prefixing
     pub async fn get_prefixed_tools(
         &self,
         extension_name: Option<String>,
     ) -> ExtensionResult<Vec<Tool>> {
         let all_tools = self.get_all_tools_cached().await?;
-        Ok(self.filter_tools(&all_tools, extension_name.as_deref(), None))
+        // Issue #56 Gate E. Precomputed here, in the async caller: `filter_tools`
+        // is sync and must not become async (the cache above it is keyed on a
+        // version counter `update_provider` never bumps, so a filter applied any
+        // higher would freeze one model's allowed set and serve it to the next).
+        let (installed, allowed) = self.allowed_extension_keys(None).await;
+        Ok(self.filter_tools(
+            &all_tools,
+            extension_name.as_deref(),
+            None,
+            &installed,
+            &allowed,
+        ))
     }
 
-    pub async fn get_prefixed_tools_excluding(&self, exclude: &str) -> ExtensionResult<Vec<Tool>> {
+    /// The `execute_code` bridge's importable-module catalogue, which is a
+    /// discovery surface in its own right: `search_modules` and `read_module`
+    /// serve tool names, signatures and descriptions out of it on demand, so
+    /// Gate E has to reach it as surely as it reaches the system prompt.
+    ///
+    /// `admitted` is the capability the `execute_code` (or `search_modules` /
+    /// `read_module`) call was admitted on — never a fresh sample. A script's
+    /// view of the world is the script's permission.
+    pub async fn get_prefixed_tools_excluding(
+        &self,
+        exclude: &str,
+        admitted: Option<crate::privacy::CallCapability>,
+    ) -> ExtensionResult<Vec<Tool>> {
         let all_tools = self.get_all_tools_cached().await?;
-        Ok(self.filter_tools(&all_tools, None, Some(exclude)))
+        let (installed, allowed) = self.allowed_extension_keys(admitted).await;
+        Ok(self.filter_tools(&all_tools, None, Some(exclude), &installed, &allowed))
     }
 
+    /// Issue #56 Gate E: a public model never sees a private server's tool
+    /// names, descriptions or JSON schemas. Schema text is content, and it is
+    /// handed to the model before any tool call exists for Gate C to refuse.
+    ///
+    /// ⚠ `Agent::list_tools` appends the platform tools AFTER this returns, so
+    /// this cannot hide `platform__manage_schedule`,
+    /// `platform__ingest_conversation` or `platform__read_session_blob`. That is
+    /// correct — they are public, and the one that reads across sessions is
+    /// gated by Gate D — but it is written down so nobody "fixes" it.
     fn filter_tools(
         &self,
         tools: &[Tool],
         extension_name: Option<&str>,
         exclude: Option<&str>,
+        installed: &[String],
+        allowed: &[String],
     ) -> Vec<Tool> {
         tools
             .iter()
             .filter(|tool| {
-                let tool_prefix = tool.name.as_ref().split("__").next().unwrap_or("");
+                // Resolve against every installed key — the same set Gate C
+                // resolves against — and only THEN ask whether that extension is
+                // one this model may see. A name owned by no installed extension
+                // is dropped too.
+                let Some(tool_prefix) = Self::resolve_extension_key(installed, tool.name.as_ref())
+                else {
+                    return false;
+                };
+                if !allowed.iter().any(|k| k == tool_prefix) {
+                    return false;
+                }
 
                 if let Some(excluded) = exclude {
                     if tool_prefix == excluded {
@@ -1466,19 +1597,20 @@ impl ExtensionManager {
         ExtensionConfig,
         crate::privacy::ProviderTier,
     )> {
-        self.extensions
-            .lock()
-            .await
-            .iter()
-            .find(|(key, _)| prefixed_name.starts_with(*key))
-            .map(|(name, extension)| {
-                (
-                    name.clone(),
-                    extension.get_client(),
-                    extension.config.clone(),
-                    extension.tier,
-                )
-            })
+        // Issue #56 Task 16: the SAME resolver Gate E filters with. A `find` over
+        // a `HashMap` returned whichever of two overlapping keys the
+        // per-process-randomised iteration order reached first, so
+        // `a__b__t` resolved to `a` or to `a__b` depending on the run.
+        let extensions = self.extensions.lock().await;
+        let keys: Vec<String> = extensions.keys().cloned().collect();
+        let name = Self::resolve_extension_key(&keys, prefixed_name)?;
+        let extension = extensions.get(name)?;
+        Some((
+            name.to_string(),
+            extension.get_client(),
+            extension.config.clone(),
+            extension.tier,
+        ))
     }
 
     /// BR-23's central secret-redaction scan of one tool call's arguments.
@@ -3398,7 +3530,7 @@ mod tests {
             .await;
 
         let tools = extension_manager
-            .get_prefixed_tools_excluding("ext_a")
+            .get_prefixed_tools_excluding("ext_a", None)
             .await
             .unwrap();
         let tool_names: Vec<String> = tools.iter().map(|t| t.name.to_string()).collect();
@@ -5249,5 +5381,170 @@ mod tests {
                  capability admitted while a PUBLIC model was bound (returned: {rendered})"
             );
         }
+    }
+
+    // ----------------------------------------------------------------------
+    // Issue #56 Task 16: Gate E — discovery.
+    //
+    // Not a veto: the reason a public model never sees a private server's tool
+    // NAMES, DESCRIPTIONS or JSON SCHEMAS in its system prompt. Schema text is
+    // content, and it is handed to the model before any tool call exists for
+    // Gate C to refuse.
+    // ----------------------------------------------------------------------
+
+    /// A manager whose provider handle the test keeps, so it can swap the bound
+    /// model the way `Agent::update_provider` does — by writing the mutex, with
+    /// no extension change and therefore no `tools_cache_version` bump.
+    fn manager_bound_to(
+        tier: crate::privacy::ProviderTier,
+    ) -> (TempDir, ExtensionManager, SharedProvider) {
+        let dir = tempfile::tempdir().unwrap();
+        let session_manager = Arc::new(crate::session::SessionManager::new(
+            dir.path().to_path_buf(),
+        ));
+        let provider: SharedProvider = Arc::new(Mutex::new(Some(provider_at(tier))));
+        let em = ExtensionManager::new(provider.clone(), session_manager);
+        (dir, em, provider)
+    }
+
+    impl ExtensionManager {
+        /// Insert a mock extension with the tier stated here instead of the one
+        /// `classify_extension` would stamp.
+        ///
+        /// Every other fixture in this file goes through the real admission
+        /// point on purpose, and this one does not, for a reason that cannot be
+        /// worked around: the hazard below needs a PRIVATE key containing `__`,
+        /// and `PRIVATE_EXTENSIONS` holds `cdwagent` and `ucsfomopagent`, so no
+        /// real admission can produce one today. It can tomorrow — the set is
+        /// hand-maintained, `name_to_key` preserves `_`, and a `.brxt`
+        /// hand-install records no provenance at all — and the resolver has to
+        /// be right before that day, not after it. The half that IS constructible
+        /// against the real registry is asserted separately by
+        /// `the_two_gates_agree_on_a_key_that_contains_the_separator`.
+        async fn add_mock_extension_at_tier(
+            &self,
+            name: String,
+            client: McpClientBox,
+            tier: crate::privacy::ProviderTier,
+        ) {
+            self.extensions.lock().await.insert(
+                name.clone(),
+                Extension {
+                    config: ExtensionConfig::Builtin {
+                        name,
+                        display_name: None,
+                        description: "built-in".to_string(),
+                        timeout: None,
+                        bundled: None,
+                        available_tools: vec![],
+                    },
+                    client,
+                    server_info: None,
+                    _temp_dir: None,
+                    inprocess: false,
+                    _pooled: None,
+                    origin: ExtensionOrigin::Explicit,
+                    tier,
+                },
+            );
+            self.invalidate_tools_cache_and_bump_version().await;
+        }
+    }
+
+    /// O6. `get_all_tools_cached` is guarded by `tools_cache_version`, which is
+    /// bumped only by an extension add/remove — never by `update_provider`.
+    /// Filtering anywhere upstream of `filter_tools` therefore freezes ONE
+    /// model's allowed set into the cache and serves it to the next one. This is
+    /// the assertion a cache-level implementation fails, and it is why the test
+    /// changes the provider WITHOUT touching the extension set.
+    #[tokio::test]
+    async fn the_allowed_set_follows_a_mid_session_model_swap() {
+        use crate::privacy::ProviderTier::{Private, Public};
+        let (_dir, em, provider) = manager_bound_to(Private);
+        em.add_mock_extension("ucsfomopagent".to_string(), Arc::new(MockClient {}))
+            .await;
+        em.add_mock_extension("developer".to_string(), Arc::new(MockClient {}))
+            .await;
+
+        let before = em.get_prefixed_tools(None).await.unwrap();
+        assert!(
+            before
+                .iter()
+                .any(|t| t.name.as_ref().starts_with("ucsfomopagent__")),
+            "a private model must see the private extension it is entitled to"
+        );
+
+        // Exactly what `Agent::update_provider` does, and nothing else.
+        *provider.lock().await = Some(provider_at(Public));
+
+        let after = em.get_prefixed_tools(None).await.unwrap();
+        assert!(
+            !after
+                .iter()
+                .any(|t| t.name.as_ref().starts_with("ucsfomopagent__")),
+            "the cached list outlived the model it was filtered for: {:?}",
+            after.iter().map(|t| t.name.as_ref()).collect::<Vec<_>>()
+        );
+        assert!(after
+            .iter()
+            .any(|t| t.name.as_ref().starts_with("developer__")));
+        assert_ne!(before.len(), after.len());
+    }
+
+    /// `filter_tools` used to compute the prefix by splitting the tool name at
+    /// its FIRST separator and taking the leading segment, while
+    /// the dispatcher resolved by `starts_with` over a `HashMap` with
+    /// per-process-randomised iteration order. `name_to_key` preserves `_`, so
+    /// an extension whose `manifest.name` contains `__` keeps it in the map key —
+    /// reachable by hand-installing a `.brxt`, which records no provenance at all
+    /// (`BrxtInstallModal.tsx`). With keys `a` (public) and `a__b` (private), the
+    /// tool `a__b__t` computes prefix `a` and would be ALLOWED, putting the
+    /// private server's tool names, descriptions and JSON schemas into a public
+    /// model's system prompt.
+    #[tokio::test]
+    async fn an_embedded_double_underscore_cannot_smuggle_a_private_tool_into_the_list() {
+        use crate::privacy::ProviderTier::{Private, Public};
+        let (_dir, em, _provider) = manager_bound_to(Public);
+        em.add_mock_extension("a".to_string(), Arc::new(MockClient {}))
+            .await;
+        em.add_mock_extension_at_tier("a__b".to_string(), Arc::new(MockClient {}), Private)
+            .await;
+
+        let tools = em.get_prefixed_tools(None).await.unwrap();
+        let names: Vec<&str> = tools.iter().map(|t| t.name.as_ref()).collect();
+        assert!(
+            !names.iter().any(|n| n.starts_with("a__b__")),
+            "leaked: {names:?}"
+        );
+        // The public sibling is still listed. Dropping BOTH is a different bug
+        // with the same green result on the assertion above.
+        assert!(names.contains(&"a__tool"), "{names:?}");
+    }
+
+    /// The half of the same hazard that IS constructible against the real
+    /// registry, and the reason the two gates must share one resolver rather
+    /// than one rule: `ucsfomopagent` is private and `ucsfomopagent__mirror` is
+    /// public, so under a public model Gate C dispatches
+    /// `ucsfomopagent__mirror__tool` (`the_tier_comes_from_the_resolved_record_not_the_tool_name`)
+    /// and Gate E must list it. The naive prefix hides it — a tool the model is
+    /// entitled to call and cannot see — while still hiding the private one.
+    #[tokio::test]
+    async fn the_two_gates_agree_on_a_key_that_contains_the_separator() {
+        let (_dir, em, _provider) = manager_bound_to(crate::privacy::ProviderTier::Public);
+        em.add_mock_extension("ucsfomopagent".to_string(), Arc::new(MockClient {}))
+            .await;
+        em.add_mock_extension("ucsfomopagent__mirror".to_string(), Arc::new(MockClient {}))
+            .await;
+
+        let tools = em.get_prefixed_tools(None).await.unwrap();
+        let names: Vec<&str> = tools.iter().map(|t| t.name.as_ref()).collect();
+        assert!(
+            names.contains(&"ucsfomopagent__mirror__tool"),
+            "Gate C dispatches this tool, so Gate E may not hide it: {names:?}"
+        );
+        assert!(
+            !names.contains(&"ucsfomopagent__tool"),
+            "the private extension's own tools stay out of a public model's prompt: {names:?}"
+        );
     }
 }

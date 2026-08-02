@@ -1426,7 +1426,22 @@ impl CodeExecutionClient {
         Ok(Self { info, context })
     }
 
-    async fn get_tool_infos(&self) -> Vec<ToolInfo> {
+    /// The importable-module catalogue.
+    ///
+    /// Issue #56 Gate E: this is a discovery surface — `search_modules` and
+    /// `read_module` serve tool names, signatures and descriptions out of it —
+    /// so a private extension is absent from it under a public model, exactly as
+    /// it is absent from the system prompt.
+    ///
+    /// `admitted` is `Some` for every path that runs INSIDE a tool call, and
+    /// that is not an optimisation: it is the rule this file's own comment
+    /// states, that "a script's tool call inherits the script's permission". A
+    /// resample here would let a model switch mid-turn and change what a running
+    /// script can import. `get_moim` is the one caller with nothing to inherit.
+    async fn get_tool_infos(
+        &self,
+        admitted: Option<crate::privacy::CallCapability>,
+    ) -> Vec<ToolInfo> {
         let Some(manager) = self
             .context
             .extension_manager
@@ -1436,7 +1451,10 @@ impl CodeExecutionClient {
             return Vec::new();
         };
 
-        match manager.get_prefixed_tools_excluding(EXTENSION_NAME).await {
+        match manager
+            .get_prefixed_tools_excluding(EXTENSION_NAME, admitted)
+            .await
+        {
             Ok(tools) if !tools.is_empty() => {
                 tools.iter().filter_map(ToolInfo::from_mcp_tool).collect()
             }
@@ -1458,7 +1476,7 @@ impl CodeExecutionClient {
             .ok_or("Missing required parameter: code")?
             .to_string();
 
-        let tools = self.get_tool_infos().await;
+        let tools = self.get_tool_infos(Some(cap)).await;
         let collected_artifacts = Arc::new(Mutex::new(CollectedArtifacts::default()));
         let (call_tx, call_rx) = mpsc::unbounded_channel();
         let tool_handler = tokio::spawn(Self::run_tool_handler(
@@ -1537,6 +1555,7 @@ impl CodeExecutionClient {
     async fn handle_read_module(
         &self,
         arguments: Option<JsonObject>,
+        cap: crate::privacy::CallCapability,
     ) -> Result<Vec<Content>, String> {
         let path = arguments
             .as_ref()
@@ -1544,7 +1563,7 @@ impl CodeExecutionClient {
             .and_then(|v| v.as_str())
             .ok_or("Missing required parameter: module_path")?;
 
-        let tools = self.get_tool_infos().await;
+        let tools = self.get_tool_infos(Some(cap)).await;
         let parts: Vec<&str> = path.trim_start_matches('/').split('/').collect();
 
         match parts.as_slice() {
@@ -1580,6 +1599,7 @@ impl CodeExecutionClient {
     async fn handle_search_modules(
         &self,
         arguments: Option<JsonObject>,
+        cap: crate::privacy::CallCapability,
     ) -> Result<Vec<Content>, String> {
         let terms = arguments
             .as_ref()
@@ -1614,7 +1634,7 @@ impl CodeExecutionClient {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
-        let tools = self.get_tool_infos().await;
+        let tools = self.get_tool_infos(Some(cap)).await;
         Self::handle_search(&tools, &terms_vec, use_regex)
     }
 
@@ -2197,8 +2217,10 @@ impl McpClientTrait for CodeExecutionClient {
                 }));
         }
         let content = match name {
-            "read_module" => self.handle_read_module(arguments).await,
-            "search_modules" => self.handle_search_modules(arguments).await,
+            // Issue #56 Gate E: these two ARE the discovery surface, so they see
+            // the world the capability this call was admitted on may see.
+            "read_module" => self.handle_read_module(arguments, meta.capability).await,
+            "search_modules" => self.handle_search_modules(arguments, meta.capability).await,
             _ => Err(format!("Unknown tool: {name}")),
         };
 
@@ -2215,7 +2237,9 @@ impl McpClientTrait for CodeExecutionClient {
     }
 
     async fn get_moim(&self, _session_id: &str) -> Option<String> {
-        let tools = self.get_tool_infos().await;
+        // The one catalogue read with no admitted call to inherit from: MOIM is
+        // assembled for the prompt, not inside a tool call, so it samples.
+        let tools = self.get_tool_infos(None).await;
         if tools.is_empty() {
             return None;
         }
@@ -2892,7 +2916,12 @@ mod tests {
             Value::String("nonexistent".to_string()),
         );
 
-        let result = client.handle_read_module(Some(args)).await;
+        let result = client
+            .handle_read_module(
+                Some(args),
+                crate::privacy::CallCapability::for_test_restricted(),
+            )
+            .await;
         assert!(result.is_err());
     }
 

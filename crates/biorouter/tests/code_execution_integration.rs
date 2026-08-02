@@ -1317,13 +1317,32 @@ fn gate_c_refusal_text() -> String {
     .to_string()
 }
 
+/// ⚠ **Re-baselined by Task 16 (Gate E), and the change of premise is the
+/// point.**
+///
+/// This test used to import `ucsfomopagent`, call one of its tools, catch Gate
+/// C's refusal and assert on the caught text. That whole shape depended on the
+/// private module being IMPORTABLE by a public caller — i.e. on its tool names
+/// and signatures being in the bridge's catalogue, which `search_modules` and
+/// `read_module` serve on demand. Gate E takes the module out of that catalogue,
+/// so a public caller can no longer reach the point where Gate C would speak.
+/// The refusal now arrives one layer earlier and one layer stronger: the module
+/// does not exist as far as this caller is concerned.
+///
+/// Nothing is lost by the change. The exact property this test used to hold —
+/// Gate C's refusal reaching a script's sub-call intact and not laundered as a
+/// user decline — is asserted directly, at the only level where a public caller
+/// can still get there, by
+/// `agents::code_execution_extension::gate_c_bridge_tests::the_execute_code_bridge_cannot_reach_a_private_extension`.
+/// What is asserted here instead is Gate E's own guarantee, which that test
+/// cannot see: no tool NAME, SIGNATURE or DESCRIPTION of the private server
+/// reaches the script at all.
 #[tokio::test]
 async fn case29_a_script_cannot_reach_a_private_extension_from_a_public_call() {
     let m = manager_with_a_private_extension().await;
-    // `exec`, not `exec_raw`: the script CATCHES the refusal, so `execute_code`
-    // itself succeeds and the assertion is about the text the script was
-    // handed — which is the text the model would then read.
-    let out = exec(
+    // `exec_raw`, not `exec`: the import itself fails now, so `execute_code`
+    // reports an error result rather than a caught string.
+    let (is_error, out) = exec_raw(
         &m,
         r#"
         import * as omop from "ucsfomopagent";
@@ -1339,13 +1358,74 @@ async fn case29_a_script_cannot_reach_a_private_extension_from_a_public_call() {
     .await;
 
     assert!(
-        out.contains(&gate_c_refusal_text()),
-        "Gate C's refusal must reach the script intact, got: {out}"
+        is_error,
+        "a public caller must not be able to import the private module: {out}"
+    );
+    assert!(
+        !out.contains("the call was not refused"),
+        "the script must not have reached the tool at all, got: {out}"
+    );
+    // Gate E proper: the private server's tool names and descriptions are the
+    // content being withheld, and `data_sources` is one of them. The module name
+    // itself is echoed by the resolver's error and is an existence disclosure
+    // only, which DR-7 puts out of scope.
+    assert!(
+        !out.contains("data_sources"),
+        "a private server's tool names must not reach a public model, got: {out}"
     );
     assert!(
         !out.contains("The user has declined"),
         "a privacy refusal must not be laundered as a decline, got: {out}"
     );
+}
+
+/// Gate E on the bridge's two explicit discovery tools, which is where a model
+/// that has NOT guessed a name would look. They serve tool names, signatures and
+/// descriptions out of the same catalogue, so they are as much Gate E's business
+/// as the system prompt is.
+#[tokio::test]
+async fn case29b_the_module_catalogue_never_names_a_private_extension_to_a_public_call() {
+    let m = manager_with_a_private_extension().await;
+
+    for (tool, args) in [
+        (
+            "code_execution__search_modules",
+            object!({ "terms": ["data", "sources", "sql"] }),
+        ),
+        (
+            "code_execution__read_module",
+            object!({ "module_path": "ucsfomopagent" }),
+        ),
+    ] {
+        let dispatched = m
+            .dispatch_tool_call(
+                SESSION,
+                CallToolRequestParams {
+                    task: None,
+                    meta: None,
+                    name: tool.into(),
+                    arguments: Some(args),
+                },
+                biorouter::privacy::CallCapability::public_enforced(),
+                CancellationToken::new(),
+            )
+            .await
+            .expect("dispatch");
+        let result = dispatched.result.await.expect("tool result");
+        let text = result
+            .content
+            .iter()
+            .filter_map(|c| match &c.raw {
+                RawContent::Text(t) => Some(t.text.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !text.contains("data_sources"),
+            "{tool} handed a public model a private server's tool: {text}"
+        );
+    }
 }
 
 /// The other direction, so the assertion above cannot be satisfied by a bridge
