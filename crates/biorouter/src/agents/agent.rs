@@ -919,10 +919,27 @@ pub enum Drained {
 /// auto-naming (`maybe_rename_session` → `maybe_update_name` →
 /// `generate_session_name` → `complete_fast`), compaction summarisation
 /// (`context_mgmt::compact_messages`) and the stall judge (`agents::stall`).
-/// All three take their provider from [`Agent::provider`], so that accessor is
-/// where the assertion goes — and an assertion needs the classification without
-/// a session id to look it up by, because none of those three call sites has
-/// one to give.
+/// [`Agent::provider`] is where the assertion goes because it is the accessor
+/// those paths reach the binding through — and an assertion needs the
+/// classification without a session id to look it up by, because none of those
+/// three call sites has one to give.
+///
+/// ⚠ **[`Agent::provider`] is not the only way to the binding, and the doc that
+/// said so was wrong.** `SharedProvider` is an `Arc<Mutex<..>>` that is handed
+/// out, and three production sites clone out of it directly:
+///
+/// * [`Agent::maybe_spawn_eager_compaction`] — the background half of a path
+///   this cache DOES claim to cover. It cannot block on the lock, so it cannot
+///   call the accessor; it asserts the same predicate inline instead. Covered.
+/// * `permission::permission_inspector`'s smart-approve judge, which sends tool
+///   names and arguments (not the transcript) to the model.
+/// * `hooks::HooksManager`'s prompt hooks, which send the hook's own payload.
+///
+/// The last two hold a `SharedProvider` and no `&Agent`, so they have no
+/// classification to consult and covering them is a signature change this task
+/// does not own. Their exposure today is bounded — both run during or after a
+/// turn Gate B has already repaired or refused — but neither is *asserted*, and
+/// a later task must not cite this cache as though they were.
 ///
 /// The cache is sound because `AgentManager` holds one `Arc<Agent>` per session
 /// id, so "this agent" and "this session" are the same thing; it is re-synced
@@ -3235,6 +3252,27 @@ impl Agent {
             self.clear_eager_compaction(&session_config.id);
             return;
         };
+        // Issue #56 Gate B'. This is the ONE bypass of [`Agent::provider`] that
+        // is inside a path Gate B' names as covered: compaction summarisation
+        // reads the entire transcript, and its background half takes the
+        // binding straight off the `SharedProvider` because it must not block
+        // on the lock. The predicate is therefore asserted here by hand rather
+        // than inherited from the accessor.
+        //
+        // A refusal takes the same exit as a momentarily-locked provider,
+        // which is the honest outcome: eager compaction is a best-effort
+        // optimisation, and the synchronous fallback at the top of the next
+        // `reply` runs AFTER Gate B has repaired or refused the session, so
+        // skipping here loses nothing but a round-trip.
+        if !crate::privacy::bind_allowed(provider.tier(), self.cached_classification.load()) {
+            tracing::warn!(
+                session_id = session_config.id,
+                provider = provider.get_name(),
+                "skipping eager compaction: the bound provider does not satisfy this session's classification"
+            );
+            self.clear_eager_compaction(&session_config.id);
+            return;
+        }
 
         let session_manager = self.config.session_manager.clone();
         let hooks_manager = Arc::clone(&self.hooks_manager);
@@ -3457,8 +3495,14 @@ impl Agent {
     /// Gate B itself must read the raw binding: asking [`Agent::provider`]
     /// there would consult the very cached classification the gate is about to
     /// replace, and would report "no provider" for the mismatch the gate exists
-    /// to repair. Deliberately not `pub` — this is the one seam past Gate B',
-    /// and it is inside the gate.
+    /// to repair.
+    ///
+    /// ⚠ Deliberately not `pub`, but do NOT read that as "the only way past
+    /// Gate B'" — an earlier draft of this comment claimed exactly that and it
+    /// was false. `SharedProvider` is a clonable `Arc<Mutex<..>>`; three
+    /// production sites hold one and go straight to the binding. See
+    /// [`CachedClassification`] for the enumeration and which of them are
+    /// asserted.
     pub(super) async fn bound_provider_unchecked(&self) -> Option<Arc<dyn Provider>> {
         self.provider.lock().await.clone()
     }
@@ -10732,8 +10776,10 @@ mod gate_b_turn_tests {
     async fn auto_naming_a_private_transcript_on_a_public_provider_is_refused() {
         // Gate B'. `maybe_rename_session` -> `maybe_update_name` ->
         // `generate_session_name` -> `complete_fast` reads the entire
-        // transcript and never passes `reply`. Same for compaction summarisation
-        // and the stall judge, which take the provider from the same accessor.
+        // transcript and never passes `reply`. Same for the stall judge and
+        // for the SYNCHRONOUS half of compaction summarisation, which reach
+        // the binding through the same accessor. Compaction's background half
+        // does not — see the test below it, which covers that one separately.
         //
         // The swap is done directly on the shared `Arc` rather than through
         // `update_provider`, on purpose: `update_provider` is Gate A, and a
@@ -10760,6 +10806,59 @@ mod gate_b_turn_tests {
             public_completions.load(Ordering::SeqCst),
             0,
             "the session's whole transcript was sent to a public model to be named"
+        );
+    }
+
+    /// Is a background compaction registered for this session right now?
+    fn eager_compaction_in_flight(agent: &Agent, id: &str) -> bool {
+        agent
+            .eager_compactions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(id)
+    }
+
+    #[tokio::test]
+    async fn background_compaction_of_a_private_transcript_on_a_public_provider_is_refused() {
+        // Gate B' lives in `Agent::provider`, but `maybe_spawn_eager_compaction`
+        // cannot call it — it must not block on the provider lock — so it clones
+        // the `SharedProvider` directly and asserts the predicate inline. That
+        // makes it the one bypass of the accessor inside a path Gate B' NAMES as
+        // covered, and this is the test that keeps it covered.
+        //
+        // The in-flight marker is the observable, and on a current-thread
+        // runtime it discriminates in both directions: a refusal clears it
+        // synchronously before returning, while a spawned task cannot be polled
+        // until the next await, so a permitted call leaves it set. There is no
+        // await between either call and its assertion, so the background task
+        // cannot interleave and clear the marker underneath us.
+        let (_dir, agent, s) = agent_on(private_provider()).await;
+        let sm = manager(&agent);
+        ratchet_to_private(&sm, &s.id).await;
+        agent
+            .cached_classification
+            .store(&s.id, SessionClassification::Private);
+
+        // Permitted: a private provider on a private session spawns. This half
+        // is not decoration — it is what stops the refusal assertion below from
+        // passing vacuously on a machine where `BIOROUTER_EAGER_COMPACT=false`,
+        // because a disabled feature returns before the marker is ever set.
+        agent.maybe_spawn_eager_compaction(&cfg(&s), std::path::Path::new("."));
+        assert!(
+            eager_compaction_in_flight(&agent, &s.id),
+            "eager compaction did not spawn for the PERMITTED case, so the \
+             refusal assertion below would prove nothing"
+        );
+        agent.clear_eager_compaction(&s.id);
+
+        // Refused: a public provider swapped in behind Gate B's back — the LRU
+        // rehydration residual, arriving between two turns.
+        *agent.provider.lock().await = Some(public_provider());
+        agent.maybe_spawn_eager_compaction(&cfg(&s), std::path::Path::new("."));
+        assert!(
+            !eager_compaction_in_flight(&agent, &s.id),
+            "a public provider was handed a private transcript to summarise in \
+             the background"
         );
     }
 }
