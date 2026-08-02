@@ -1199,11 +1199,8 @@ Stop:
     fn the_classification_store_is_bounded_and_evicts_towards_refusal() {
         use crate::privacy::SessionClassification;
 
-        let manager = HooksManager::with_config(
-            HooksConfig::default(),
-            false,
-            Arc::new(Mutex::new(None)),
-        );
+        let manager =
+            HooksManager::with_config(HooksConfig::default(), false, Arc::new(Mutex::new(None)));
         manager.set_session_classification("oldest", SessionClassification::Public);
         for i in 0..MAX_SESSION_CLASSIFICATIONS {
             manager.set_session_classification(&format!("chat-{i}"), SessionClassification::Public);
