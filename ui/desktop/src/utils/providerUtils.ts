@@ -4,6 +4,7 @@ import {
 } from '../components/settings/extensions';
 import type { ExtensionConfig, FixedExtensionEntry } from '../components/ConfigContext';
 import { Workflow, updateAgentProvider, updateFromSession } from '../api';
+import { userActionHeaders } from './userAction';
 
 // Helper function to substitute parameters in text
 export const substituteParameters = (text: string, params: Record<string, string>): string => {
@@ -44,6 +45,13 @@ export const initializeSystem = async (
         provider,
         model,
       },
+      // Issue #56 DR-16: the third `updateAgentProvider` call site, and the one
+      // the first pass missed. It has no live caller today (only `App.test.tsx`
+      // mocks `initializeSystem`), so this is not a fix to a regression — it is
+      // a trap disarmed: revived without the header, this would bind a session
+      // from the renderer and be refused by the daemon as though a model had
+      // made the call.
+      headers: await userActionHeaders(),
       throwOnError: true,
     });
 
