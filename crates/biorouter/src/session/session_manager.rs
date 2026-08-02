@@ -3674,9 +3674,16 @@ impl SessionStorage {
         // erase the record of the declassification, and
         // `every_projection_that_builds_a_session_reads_the_column` already
         // treats a reason on a public row as meaningful data. Whoever lands
-        // Task 13 or Task 38 has to decide here whether the `ELSE` arm preserves
-        // a `declassified_by_user` provenance the way the `mcp:` arm preserves
-        // its own.
+        // §12.5 declassification has to decide here whether the `ELSE` arm
+        // preserves a `declassified_by_user` provenance the way the `mcp:` arm
+        // preserves its own.
+        //
+        // (This note used to name Gate B's task as one of the deciders. Gate B
+        // has landed and correctly decided nothing: its turn ratchet raises a
+        // PUBLIC row to private with `turn:<provider>`, which is precisely the
+        // `ELSE` arm doing the right thing on a row with no provenance to keep.
+        // The trigger is declassification existing, not this arm acquiring
+        // another caller.)
         if builder.privacy_raise.is_some() {
             if !updates.is_empty() {
                 query.push_str(", ");

@@ -7298,20 +7298,36 @@ impl Agent {
             .await
             .map_err(|e| anyhow!("Could not create provider: {}", e))?;
 
-        // ⚠ Issue #56, and this is Task 13's to finish. This re-binds the row's
-        // OWN recorded provider, and Gate A can refuse it: a row that is
-        // (private, public `provider_name`) makes this return `PrivacyRefusal`,
-        // which `?`-propagates into resume, restart and the injected-turn path.
-        // That row is not exotic — it is the residual a ratchet landing after a
-        // legal bind leaves, and it is what a legacy row or the
-        // `Config::global()` fallback above produces too.
+        // ⚠ Issue #56. This re-binds the row's OWN recorded provider, and Gate A
+        // can refuse it: a row that is (private, public `provider_name`) makes
+        // this return `PrivacyRefusal`, which `?`-propagates into resume,
+        // restart and the injected-turn path, leaving the chat UNOPENABLE
+        // rather than repairable.
         //
-        // Unreachable today: nothing in production writes `privacy_tier =
-        // 'private'` yet. The moment Gate B's ratchet lands, such a chat is
-        // UNOPENABLE rather than repairable unless the repair card reaches THIS
-        // site and not only `reply`. Swallowing the refusal here is not the fix
-        // — it would run a public model against a private session, which is the
-        // one thing Gate A exists to stop.
+        // ⚠ This comment used to say "unreachable today: nothing in production
+        // writes `privacy_tier = 'private'` yet", and addressed itself to Gate
+        // B's task. Gate B has landed — its ratchet in `reply` is now exactly
+        // that writer — so the premise is gone and the note is corrected rather
+        // than deleted. Gate B deliberately did NOT change this site, for a
+        // reason worth writing down: **Gate B's repair does not apply here.**
+        // That repair works by rebinding the provider the ROW names, which
+        // helps only when the live agent is holding something else. This site
+        // is already binding the row's own provider, so when the row itself is
+        // the inconsistent pair there is nothing to rebind to and no repair a
+        // rebind can perform.
+        //
+        // Reachability today is narrow but no longer nil. Every in-process
+        // sequence keeps the row's `provider_name` in step with the tier — the
+        // ratchet only fires with a private provider bound, and every bind path
+        // writes the row and the binding together — so producing the pair takes
+        // a row edited outside this agent's lifetime: a second process on the
+        // same session, a row restored from a backup, or a `provider_name` whose
+        // tier changed in the catalog under a session already ratcheted.
+        //
+        // Swallowing the refusal here is NOT the fix — it would run a public
+        // model against a private session, which is the one thing Gate A exists
+        // to stop. The fix is the repair card reaching this site and not only
+        // `reply`, which needs a UI surface that does not exist yet.
         self.update_provider(provider, &session.id).await
     }
 
