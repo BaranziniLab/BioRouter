@@ -1379,13 +1379,59 @@ async fn case29_a_script_cannot_reach_a_private_extension_from_a_public_call() {
     );
 }
 
+/// Dispatch one of the bridge's discovery tools on a given capability and join
+/// its text content. Never asserts — the two callers below disagree about what
+/// the right answer is, which is the entire point.
+async fn catalogue_text(
+    m: &Arc<ExtensionManager>,
+    tool: &str,
+    args: rmcp::model::JsonObject,
+    cap: biorouter::privacy::CallCapability,
+) -> String {
+    let dispatched = m
+        .dispatch_tool_call(
+            SESSION,
+            CallToolRequestParams {
+                task: None,
+                meta: None,
+                name: tool.to_string().into(),
+                arguments: Some(args),
+            },
+            cap,
+            CancellationToken::new(),
+        )
+        .await
+        .expect("dispatch");
+    let result = dispatched.result.await.expect("tool result");
+    result
+        .content
+        .iter()
+        .filter_map(|c| match &c.raw {
+            RawContent::Text(t) => Some(t.text.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Gate E on the bridge's two explicit discovery tools, which is where a model
 /// that has NOT guessed a name would look. They serve tool names, signatures and
 /// descriptions out of the same catalogue, so they are as much Gate E's business
 /// as the system prompt is.
+///
+/// **Each tool is asserted in both directions, in one test.** A lone negative
+/// (`!contains("data_sources")`) is satisfied by any bridge that has stopped
+/// working: a tool that errors, returns nothing, or a fixture that quietly
+/// stopped loading `ucsfomopagent` all make it green while asserting nothing at
+/// all — and these two tools are exactly the surface this test exists to cover,
+/// so `case30`'s positive control over `execute_code` does not reach them. The
+/// private arm below is that control: the same tool, the same arguments, the
+/// same fixture, admitted on a private capability, must NAME the tool the public
+/// arm may not see.
 #[tokio::test]
 async fn case29b_the_module_catalogue_never_names_a_private_extension_to_a_public_call() {
     let m = manager_with_a_private_extension().await;
+    let private = private_capability().await;
 
     for (tool, args) in [
         (
@@ -1397,33 +1443,24 @@ async fn case29b_the_module_catalogue_never_names_a_private_extension_to_a_publi
             object!({ "module_path": "ucsfomopagent" }),
         ),
     ] {
-        let dispatched = m
-            .dispatch_tool_call(
-                SESSION,
-                CallToolRequestParams {
-                    task: None,
-                    meta: None,
-                    name: tool.into(),
-                    arguments: Some(args),
-                },
-                biorouter::privacy::CallCapability::public_enforced(),
-                CancellationToken::new(),
-            )
-            .await
-            .expect("dispatch");
-        let result = dispatched.result.await.expect("tool result");
-        let text = result
-            .content
-            .iter()
-            .filter_map(|c| match &c.raw {
-                RawContent::Text(t) => Some(t.text.clone()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
+        let public_text = catalogue_text(
+            &m,
+            tool,
+            args.clone(),
+            biorouter::privacy::CallCapability::public_enforced(),
+        )
+        .await;
         assert!(
-            !text.contains("data_sources"),
-            "{tool} handed a public model a private server's tool: {text}"
+            !public_text.contains("data_sources"),
+            "{tool} handed a public model a private server's tool: {public_text}"
+        );
+
+        let private_text = catalogue_text(&m, tool, args, private).await;
+        assert!(
+            private_text.contains("data_sources"),
+            "the positive control failed: {tool} does not name the private \
+             server's tool even to a caller entitled to it, so the assertion \
+             above proves nothing: {private_text}"
         );
     }
 }
