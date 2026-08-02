@@ -20,6 +20,20 @@
 //! and no session at all, so the predicate it needs is the KB-keyed one Task 10C
 //! installs, not this session-keyed one. Putting a `SessionClassification` check
 //! there would be a type error, not merely a misfiling.
+//!
+//! # What this gate does NOT do: it never raises the floor
+//!
+//! [`assert_alt_provider_allowed`] only *checks*; it never calls `raise_privacy`.
+//! So the reverse flow is unclassified: CLI plan mode pushes the planner's
+//! answer back into `self.messages` (`plan_with_reasoner_model`), and if that
+//! planner was PRIVATE while the session is public, the session absorbs private
+//! output and stays public. The same holds for a private prompt-hook model whose
+//! text reaches the transcript.
+//!
+//! That is under-classification, never over-disclosure — the dangerous direction
+//! is refused above — and it is the same class as the one-turn window
+//! `Agent::reply` documents at its ratchet (O5). Recorded here because Task 19
+//! did not close it and nothing else in this module would say so.
 
 use anyhow::{anyhow, Result};
 
