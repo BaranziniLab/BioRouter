@@ -159,8 +159,8 @@ fn is_privacy_refusal(err: &ErrorData) -> bool {
 /// So the two are paired at the one place both are known — `fetch_all_tools`'
 /// single read of the extension map, which is also where the `key__tool` names
 /// are formed. A snapshot therefore cannot describe two different worlds, and
-/// the ambiguity `resolve_extension_key` exists to remove cannot be smuggled
-/// back in through the way its inputs are gathered.
+/// the ownership ambiguity the shared prefix resolver exists to remove cannot be
+/// smuggled back in through the way its inputs are gathered.
 ///
 /// The tier decision is deliberately NOT in here: it belongs to the currently
 /// bound model, and this is cached across model swaps. See
@@ -5738,31 +5738,37 @@ mod tests {
 
         let snapshot = em.get_all_tools_cached().await.unwrap();
         assert!(!snapshot.tools.is_empty(), "the fixture produced no tools");
+
+        // Deliberately restated here rather than run through the production
+        // resolver: a test that calls the function it is validating agrees with
+        // it by construction, and the claim being made is about the DATA — that
+        // these keys are the ones that formed these names — not about the
+        // resolution rule, which its own two tests already pin.
         for tool in &snapshot.tools {
             let name = tool.name.as_ref();
-            let Some(resolved) = ExtensionManager::resolve_extension_key(&snapshot.keys, name)
-            else {
-                panic!(
-                    "{name} resolves to no key in its own snapshot: {:?}",
-                    snapshot.keys
-                );
-            };
             assert!(
-                name.strip_prefix(resolved)
-                    .is_some_and(|rest| rest.starts_with("__")),
-                "{name} resolved to {resolved}, which does not name it"
+                snapshot.keys.iter().any(|k| name
+                    .strip_prefix(k.as_str())
+                    .is_some_and(|rest| rest.starts_with("__"))),
+                "{name} is named by no key in its own snapshot: {:?}",
+                snapshot.keys
             );
         }
 
-        // And specifically: the overlapping pair is in the snapshot, and the
-        // longer key wins for the tool it really owns.
-        assert_eq!(
-            ExtensionManager::resolve_extension_key(&snapshot.keys, "a__b__tool"),
-            Some("a__b")
+        // And specifically: BOTH halves of the overlapping pair are carried, so
+        // the longer key is available to win. A snapshot that had lost `a__b`
+        // would still pass the loop above — every `a__b__*` tool would simply
+        // be attributed to `a`, which is exactly the misattribution this
+        // pairing exists to prevent.
+        assert!(
+            snapshot.keys.iter().any(|k| k == "a"),
+            "{:?}",
+            snapshot.keys
         );
-        assert_eq!(
-            ExtensionManager::resolve_extension_key(&snapshot.keys, "a__tool"),
-            Some("a")
+        assert!(
+            snapshot.keys.iter().any(|k| k == "a__b"),
+            "the snapshot dropped the longer of two overlapping keys: {:?}",
+            snapshot.keys
         );
     }
 }
