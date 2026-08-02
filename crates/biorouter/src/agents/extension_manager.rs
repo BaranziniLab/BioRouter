@@ -4965,23 +4965,45 @@ mod tests {
     }
 
     /// The task's headline. Not one of the eight may reach the private server
-    /// while the session is bound to a public model, and not one may hand its
-    /// names or its content back.
+    /// while the session is bound to a public model, and not one may hand back
+    /// anything that server authored.
+    ///
+    /// ⚠ Run against BOTH shapes of installation, and the private-only one is
+    /// the load-bearing half. `read_resource_tool`'s fan-out iterates a
+    /// `HashMap` (`RandomState`) and returns on the FIRST success, so with a
+    /// public extension also installed an unguarded implementation answers from
+    /// `developer` roughly half the time, never touches the private stub, and
+    /// passes both assertions — a coin flip on the probe the task calls the
+    /// worst of them. With `ucsfomopagent` alone there is nothing else to
+    /// answer, so every probe must refuse or it fails deterministically. The
+    /// mixed shape is kept because it is the realistic installation and it is
+    /// what pins the aggregating probes.
+    ///
+    /// ⚠ `sentinel()` is server-authored CONTENT. The private extension's NAME
+    /// still appears in `read_resource_tool`'s `RESOURCE_NOT_FOUND` list and in
+    /// Gate C's own refusal, deliberately: DR-7 puts the existence of an
+    /// installed extension out of scope, and §14.4 has the refusal name the
+    /// extension so the model can tell the user what to switch. This asserts on
+    /// content, and only content.
     #[tokio::test]
     async fn no_sibling_entry_point_reaches_a_private_extension_under_a_public_model() {
-        for probe in SIBLING_PROBES {
-            let (_dir, em, private, _public) =
-                siblings_fixture(crate::privacy::ProviderTier::Public, true).await;
-            let rendered = run_sibling(&em, probe).await;
-            assert_eq!(
-                private.contacted(),
-                0,
-                "{probe} contacted the private server (returned: {rendered})"
-            );
-            assert!(
-                !rendered.contains(&private.sentinel()),
-                "{probe} leaked the private server's names or content: {rendered}"
-            );
+        for with_public in [false, true] {
+            for probe in SIBLING_PROBES {
+                let (_dir, em, private, _public) =
+                    siblings_fixture(crate::privacy::ProviderTier::Public, with_public).await;
+                let rendered = run_sibling(&em, probe).await;
+                assert_eq!(
+                    private.contacted(),
+                    0,
+                    "{probe} contacted the private server \
+                     (public extension installed: {with_public}; returned: {rendered})"
+                );
+                assert!(
+                    !rendered.contains(&private.sentinel()),
+                    "{probe} leaked the private server's content \
+                     (public extension installed: {with_public}): {rendered}"
+                );
+            }
         }
     }
 
