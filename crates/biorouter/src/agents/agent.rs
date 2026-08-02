@@ -10258,12 +10258,19 @@ mod gate_a_bind_tests {
     }
 
     #[tokio::test]
-    async fn a_private_provider_binds_to_anything_and_a_public_session_accepts_anything() {
+    async fn a_private_provider_binds_to_anything_at_the_agent_layer() {
         let (_dir, agent, s) = agent_on(public_provider()).await;
+        // upward: user-only. Deliberately inverted by DR-16 (was `// upward:
+        // fine`). The AGENT-level bind stays legal, because it is below the
+        // gate: session restore, the CLI and the apps runtime all bind upward
+        // legitimately. The gate is one layer up, on the only channel a model
+        // can reach — see Task 18A, whose
+        // `all_four_raise_channels_call_the_guard` is the assertion that the
+        // HTTP raise is refused.
         agent
             .update_provider(private_provider(), &s.id)
             .await
-            .unwrap(); // upward: fine
+            .unwrap();
 
         let (_dir2, agent2, s2) = agent_on(private_provider()).await;
         ratchet_to_private(&manager(&agent2), &s2.id).await;
