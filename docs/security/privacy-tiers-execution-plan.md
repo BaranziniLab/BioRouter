@@ -4463,6 +4463,15 @@ grep -rn "fn capability_tier" --include='*.rs' crates/ ; echo "expect: no output
 # (`extensionmanager__read_resource` / `__list_resources`) thread their
 # `McpMeta.capability` in as `Some(..)` and never reach the sampler.
 #
+# Task 16 adds the FIFTH, and it is not a tool call either: `allowed_extension_keys`
+# is Gate E's predicate, deciding which extensions the currently-bound model may
+# SEE. Discovery for the system prompt has no admitted turn whose decision it
+# could inherit, so the sample there IS the decision. Discovery from inside an
+# admitted call — the `execute_code` bridge's importable-module catalogue —
+# passes `Some(..)` and never reaches the sampler, for the AR-13 reason Task 15
+# gives: a script's view of the world is the script's permission, not a fresh
+# reading taken mid-turn.
+#
 # There is deliberately NO `grep -v "mod tests"` here. It never worked — it drops
 # only lines containing that literal string, which a call to either constructor
 # does not, so a unit test beside the definition was counted as a production
@@ -4472,12 +4481,13 @@ grep -rn "fn capability_tier" --include='*.rs' crates/ ; echo "expect: no output
 # outside this window; everything else uses `CallCapability::for_test*`.
 grep -rn "CallCapability::sample(\|CallCapability::public_enforced(" --include='*.rs' crates/*/src/ \
   | sort
-echo "expect: exactly 4 lines —"
+echo "expect: exactly 5 lines —"
 echo "  crates/biorouter/src/agents/agent.rs           (the agent loop, dispatch_tool_call)"
 echo "  crates/biorouter/src/agents/agent.rs           (call_prefetch_tool)"
 echo "  crates/biorouter-server/src/routes/agent.rs    (call_tool -> public_enforced)"
 echo "  crates/biorouter/src/agents/extension_manager.rs (Task 15, assert_extension_reachable)"
-echo "A FIFTH is a new entry nobody classified; a THIRD means an entry stopped deciding."
+echo "  crates/biorouter/src/agents/extension_manager.rs (Task 16, allowed_extension_keys)"
+echo "A SIXTH is a new entry nobody classified; a FOURTH means an entry stopped deciding."
 echo "Task 14C adds two more public_enforced() lines in biorouter-server; it owns updating this."
 
 # The provider mutex is not read anywhere a gate can see it. `p.tier()` outside
