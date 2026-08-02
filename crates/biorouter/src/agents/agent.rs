@@ -4785,9 +4785,11 @@ impl Agent {
             // `.biorouter/hooks.yaml`, which the session row never records — and
             // the Stop hook it fires below carries `transcript_tail`. Mirrored
             // from the SAME value stored above, at the same seam, so the two
-            // cannot disagree about this turn.
+            // cannot disagree about this turn — and keyed by the SAME session
+            // id, so an agent shared across chats (`biorouter web`) cannot have
+            // one turn's classification answer another turn's hook.
             self.hooks_manager
-                .set_session_classification(classification);
+                .set_session_classification(&session_config.id, classification);
         } else {
             // No row. There is no classification to honour and no content to
             // protect, but there is also no way to tell "this id names nothing"
@@ -4797,7 +4799,7 @@ impl Agent {
             self.cached_classification
                 .store(&session_config.id, SessionClassification::Private);
             self.hooks_manager
-                .set_session_classification(SessionClassification::Private);
+                .set_session_classification(&session_config.id, SessionClassification::Private);
         }
         // ⚠ A refusal is a YIELD, never an `Err` out of `reply`: `reply`
         // returns `Result<BoxStream<..>>`, and an `Err` here surfaces as a 500
