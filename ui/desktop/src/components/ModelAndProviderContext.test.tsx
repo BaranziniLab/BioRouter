@@ -2,6 +2,7 @@
  * @vitest-environment jsdom
  */
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { useState } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ModelAndProviderProvider, useModelAndProvider } from './ModelAndProviderContext';
 import type Model from './settings/models/modelInterface';
@@ -112,6 +113,59 @@ function SwitchHarness() {
 function StatusHarness() {
   const { modelConfigStatus, currentProvider } = useModelAndProvider();
   return <div data-testid="status">{`${modelConfigStatus}:${currentProvider ?? 'none'}`}</div>;
+}
+
+const publicModel: Model = {
+  name: 'claude-opus-4',
+  provider: 'anthropic',
+  alias: 'Claude Opus',
+  subtext: 'Anthropic',
+  context_limit: 200000,
+};
+
+const privacyBarrier409 = {
+  code: 'privacy_barrier',
+  session_classification: 'private',
+  provider_tier: 'public',
+  available_private_providers: [],
+};
+
+/**
+ * The generated @hey-api client's own error semantics, reproduced (see
+ * `api/client/client.gen.ts`): a non-2xx RETURNS `{error: <parsed body>}` and
+ * only THROWS when the caller passed `throwOnError`.
+ *
+ * A mock that rejects unconditionally would pass against the shipped bug — the
+ * refusal would arrive at the catch arm no matter what the call site asked for,
+ * and the missing `throwOnError` is the bug. This mock is what makes the test
+ * discriminate.
+ */
+const clientRejecting = (body: unknown) => async (options?: { throwOnError?: boolean }) => {
+  if (options?.throwOnError) {
+    throw body;
+  }
+  return { error: body };
+};
+
+/**
+ * A harness that reports what `changeModel` returned, so the refusal path can be
+ * asserted on the boolean the callers branch on rather than on a rendered toast
+ * alone.
+ */
+function SessionSwitchHarness() {
+  const { changeModel } = useModelAndProvider();
+  const [result, setResult] = useState<string>('pending');
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => void changeModel('sess-1', publicModel).then((ok) => setResult(String(ok)))}
+      >
+        Switch this chat
+      </button>
+      <div data-testid="change-result">{result}</div>
+    </>
+  );
 }
 
 function renderHarness() {
@@ -243,6 +297,61 @@ describe('ModelAndProviderProvider Llama Server warm-up', () => {
     await waitFor(() => expect(mocks.toastSuccess).toHaveBeenCalled());
     expect(mocks.toastError).not.toHaveBeenCalledWith(
       expect.objectContaining({ title: expect.stringContaining('llamacpp') })
+    );
+  });
+});
+
+// Issue #56 Gate A. `updateAgentProvider` was called WITHOUT `throwOnError`,
+// so the generated client returned `{error}` instead of throwing: a 409 privacy
+// refusal was discarded, `setConfigProvider` rewrote the global default to the
+// refused provider (P4), and a green toast claimed the switch worked while the
+// session was still bound to the private model.
+describe('ModelAndProviderProvider privacy barrier', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.read.mockImplementation(async (key: string) => {
+      if (key === 'BIOROUTER_MODEL') return 'gpt-5.5';
+      if (key === 'BIOROUTER_PROVIDER') return 'versa_azure';
+      return null;
+    });
+    mocks.getProviders.mockResolvedValue([]);
+    mocks.setConfigProvider.mockResolvedValue(undefined);
+    mocks.refreshConfig.mockResolvedValue(undefined);
+    mocks.updateAgentProvider.mockImplementation(clientRejecting(privacyBarrier409));
+  });
+
+  it('asks the generated client to throw, or the refusal is discarded', async () => {
+    render(
+      <ModelAndProviderProvider>
+        <SessionSwitchHarness />
+      </ModelAndProviderProvider>
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Switch this chat' }));
+
+    await waitFor(() => expect(mocks.updateAgentProvider).toHaveBeenCalled());
+    expect(mocks.updateAgentProvider).toHaveBeenCalledWith(
+      expect.objectContaining({ throwOnError: true })
+    );
+  });
+
+  it('does not report success when the session bind is refused', async () => {
+    render(
+      <ModelAndProviderProvider>
+        <SessionSwitchHarness />
+      </ModelAndProviderProvider>
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Switch this chat' }));
+
+    await waitFor(() => expect(screen.getByTestId('change-result')).toHaveTextContent('false'));
+    expect(mocks.toastSuccess).not.toHaveBeenCalled();
+    // P4: the global default must not be rewritten by a refused per-session bind.
+    expect(mocks.setConfigProvider).not.toHaveBeenCalled();
+    expect(mocks.toastError).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: expect.stringContaining("Can't switch this chat"),
+      })
     );
   });
 });

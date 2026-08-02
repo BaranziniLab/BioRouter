@@ -1464,6 +1464,29 @@ export type PricingResponse = {
 
 export type PrincipalType = 'Extension' | 'Tool';
 
+/**
+ * The body of the 409 `/agent/update_provider` returns when a privacy boundary
+ * refused the bind (issue #56, Gate A).
+ *
+ * Typed rather than a bare string because the GUI does not merely report the
+ * refusal — it renders §14.4's repair card from it, and the card names both
+ * colliding tiers and offers the private models that would work. A plain-text
+ * 409 would leave the renderer parsing prose.
+ */
+export type PrivacyBarrierBody = {
+    /**
+     * The names of the providers a private chat *can* be switched to, so the
+     * card can offer the way forward rather than only the wall.
+     */
+    available_private_providers: Array<string>;
+    /**
+     * Discriminator the client switches on. Always `privacy_barrier`.
+     */
+    code: string;
+    provider_tier: ProviderTier;
+    session_classification: SessionClassification;
+};
+
 export type ProvenanceKind = 'agent_injection' | 'user_direct' | 'spawn_context';
 
 export type ProviderDetails = {
@@ -3077,6 +3100,10 @@ export type UpdateAgentProviderErrors = {
      */
     401: unknown;
     /**
+     * Refused by a privacy boundary (issue #56, Gate A): a public model cannot be bound to a private chat
+     */
+    409: PrivacyBarrierBody;
+    /**
      * Agent not initialized
      */
     424: unknown;
@@ -3085,6 +3112,8 @@ export type UpdateAgentProviderErrors = {
      */
     500: unknown;
 };
+
+export type UpdateAgentProviderError = UpdateAgentProviderErrors[keyof UpdateAgentProviderErrors];
 
 export type UpdateAgentProviderResponses = {
     /**

@@ -2177,7 +2177,89 @@ impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for Session {
     }
 }
 
+/// What [`SessionStorage::bind_provider_if_allowed`] did.
+///
+/// Three outcomes, because two of them are indistinguishable by `rows_affected`
+/// and they mean different things to a caller: a bind that the privacy ratchet
+/// refused is a 409 the user can act on, and a bind against an id that names no
+/// row is a bug or a stale client. A `bool` return collapses them, and the
+/// collapse runs in the dangerous direction — a mistyped id would be reported to
+/// the user as "this chat is private".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BindOutcome {
+    Bound,
+    RefusedByPrivacy,
+    NoSuchSession,
+}
+
 impl SessionStorage {
+    /// Bind a provider, atomically refusing a public one on a private session
+    /// (issue #56, Gate A).
+    ///
+    /// The predicate is in the `WHERE`, not in Rust, so a concurrent ratchet
+    /// cannot interleave into "private session, public provider bound". The
+    /// natural implementation — `SELECT privacy_tier`, decide, `UPDATE` — has a
+    /// window between the read and the write that a ratchet fits inside, and
+    /// nothing about its shape says so.
+    ///
+    /// ⚠ **The test rendezvous belongs HERE, immediately before `.execute`, and
+    /// nowhere else.** Its contract is *"after every read this function
+    /// performs, before the statement that writes"*, and that is the only
+    /// position from which it can distinguish this implementation from the wrong
+    /// one. Called from `Agent::update_provider` instead — before this function
+    /// is even entered — a read-then-write helper passes: the forced ratchet
+    /// commits first and the helper's own read dutifully refuses. If a future
+    /// refactor gives this function a read of its own, the seam call moves down
+    /// below it; it never moves up.
+    ///
+    /// ⚠ `rows_affected == 0` is NOT the refusal on its own: an id that names no
+    /// row produces exactly the same zero. Returning `RefusedByPrivacy` there
+    /// would surface a stale or mistyped id as a 409 privacy refusal, and would
+    /// make Gate A's first test pass for the wrong reason against a stale
+    /// fixture id — the one way that test can lie. The two are distinguished
+    /// with a single follow-up read in the zero case, on a path that is already
+    /// an error.
+    pub(crate) async fn bind_provider_if_allowed(
+        &self,
+        session_id: &str,
+        provider_name: &str,
+        model_config_json: &str,
+        incoming_is_private: bool,
+    ) -> Result<BindOutcome> {
+        let pool = self.pool().await?;
+        let write = sqlx::query(
+            r#"
+            UPDATE sessions
+               SET provider_name = ?, model_config_json = ?, updated_at = datetime('now')
+             WHERE id = ?
+               AND (privacy_tier = 'public' OR ? = 1)
+            "#,
+        )
+        .bind(provider_name)
+        .bind(model_config_json)
+        .bind(session_id)
+        .bind(i64::from(incoming_is_private));
+        // ⚠ The last statement before the write, and test-only. Read the ⚠ in
+        //    this function's doc comment before moving it.
+        #[cfg(test)]
+        crate::agents::agent::seams::before_bind_write().await;
+        let res = write.execute(pool).await?;
+        if res.rows_affected() > 0 {
+            return Ok(BindOutcome::Bound);
+        }
+        // Zero rows: either the row is private and the provider is public, or
+        // there is no row with that id at all.
+        let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM sessions WHERE id = ?)")
+            .bind(session_id)
+            .fetch_one(pool)
+            .await?;
+        Ok(if exists {
+            BindOutcome::RefusedByPrivacy
+        } else {
+            BindOutcome::NoSuchSession
+        })
+    }
+
     fn create_pool(path: &Path) -> Pool<Sqlite> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).expect("Failed to create session database directory");

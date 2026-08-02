@@ -55,12 +55,14 @@ use crate::permission::permission_inspector::PermissionInspector;
 use crate::permission::permission_judge::PermissionCheckResult;
 use crate::permission::tool_risk::ToolRiskRegistry;
 use crate::permission::PermissionConfirmation;
+use crate::privacy::refusal::PrivacyRefusal;
 use crate::providers::base::Provider;
 use crate::providers::errors::ProviderError;
 use crate::scheduler_trait::SchedulerTrait;
 use crate::security::security_inspector::SecurityInspector;
 use crate::session::extension_data::{EnabledExtensionsState, ExtensionState};
 use crate::session::message_blobs;
+use crate::session::session_manager::BindOutcome;
 use crate::session::{Session, SessionManager, SessionType};
 use crate::tool_inspection::{InspectionAction, InspectionResult, ToolInspectionManager};
 use crate::tool_monitor::{FailureLoopConfig, RepetitionInspector, SemanticLoopConfig};
@@ -1226,7 +1228,7 @@ pub(super) fn fire_compaction_hook_on(
 /// caught call the intended call by construction, and holding a LIST of arms
 /// means two tests can be armed at once without clobbering each other.
 #[cfg(test)]
-pub mod seams {
+pub(crate) mod seams {
     use tokio::sync::oneshot;
 
     /// One armed rendezvous: the caller session id and tool name it is waiting
@@ -1276,6 +1278,105 @@ pub mod seams {
                 let _ = release_rx.await;
             }
         }
+    }
+
+    // ─── Issue #56, Gate A: the two rendezvous on the provider-bind path ────
+    //
+    // `arm_*` returns a receiver that fires when the bind path reaches the
+    // rendezvous, carrying the sender that releases it — so a test can run a
+    // whole ratchet *inside* the window instead of hoping a `tokio::spawn`
+    // lands there. Two channels and not a `Barrier`: a 2-party `Barrier::wait`
+    // releases both sides at the rendezvous, which is the one thing this must
+    // not do.
+    //
+    // ⚠ THE TWO SEAMS SIT IN DIFFERENT FUNCTIONS, ON PURPOSE.
+    // `before_bind_write` is inside `SessionStorage::bind_provider_if_allowed`
+    // (`session_manager.rs`), between any read that function performs and the
+    // statement that writes — hence `pub(crate)`, and hence the name: it is
+    // *before the WRITE*, not merely before the call. `after_bind_before_swap`
+    // is in `Agent::update_provider`, between the persist and the in-memory
+    // swap. A seam at the call site instead of inside the helper cannot tell a
+    // conditional `UPDATE` from a `SELECT` followed by an unconditional one,
+    // which is the exact implementation Gate A exists to reject.
+    //
+    // ⚠ THE RENDEZVOUS IS PROCESS-GLOBAL, so — exactly as for
+    // `hold_dispatch_queue` above — it must not be first-come. There is no
+    // session id at the write to key on (the seam call has to stay
+    // argument-free so the structural gate can pin its position), so identity
+    // comes from the CALLING TASK instead: only a future wrapped in [`armed`]
+    // can consume an arm. Without that, the fuzz test next door — 400 bind
+    // arrivals over several seconds, in the same binary — would routinely take
+    // the arm meant for a forced-interleaving test, whose own bind then races
+    // the ratchet it was supposed to be ordered against and fails at random.
+    //
+    // ⚠ ONE ARMER AT A TIME PER SLOT. Two tests arming the same slot
+    // concurrently would clobber each other's sender. Today exactly one test
+    // arms each; if that stops being true, give the arm a key the way
+    // `hold_dispatch_queue` does.
+
+    type Arm = std::sync::Mutex<Option<oneshot::Sender<oneshot::Sender<()>>>>;
+    static BEFORE_BIND: Arm = std::sync::Mutex::new(None);
+    static AFTER_BIND: Arm = std::sync::Mutex::new(None);
+
+    tokio::task_local! {
+        /// Set for the duration of a future wrapped in [`armed`]. Its presence
+        /// — not its value — is what makes a bind eligible to be caught.
+        static ARMED_TASK: ();
+    }
+
+    /// Mark `fut` as the call a seam may catch.
+    ///
+    /// Every other `update_provider` in the process walks through both seams
+    /// with one uncontended `try_with` and no await.
+    pub(crate) fn armed<F: std::future::Future>(
+        fut: F,
+    ) -> impl std::future::Future<Output = F::Output> {
+        ARMED_TASK.scope((), fut)
+    }
+
+    fn arm(slot: &'static Arm) -> oneshot::Receiver<oneshot::Sender<()>> {
+        let (tx, rx) = oneshot::channel();
+        *slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(tx);
+        rx
+    }
+
+    async fn park(slot: &'static Arm) {
+        if ARMED_TASK.try_with(|()| ()).is_err() {
+            return;
+        }
+        // The guard is dropped at the end of this statement, before the await:
+        // holding a std::sync::MutexGuard across an await point is the classic
+        // way to turn a test seam into a deadlock.
+        let armed = {
+            slot.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take()
+        };
+        if let Some(reached) = armed {
+            let (release_tx, release_rx) = oneshot::channel();
+            if reached.send(release_tx).is_ok() {
+                let _ = release_rx.await;
+            }
+        }
+    }
+
+    pub(crate) fn arm_before_bind_write() -> oneshot::Receiver<oneshot::Sender<()>> {
+        arm(&BEFORE_BIND)
+    }
+
+    pub(crate) fn arm_after_bind_before_swap() -> oneshot::Receiver<oneshot::Sender<()>> {
+        arm(&AFTER_BIND)
+    }
+
+    /// Called from `session_manager.rs`, hence `pub(crate)`.
+    pub(crate) async fn before_bind_write() {
+        park(&BEFORE_BIND).await
+    }
+
+    pub(super) async fn after_bind_before_swap() {
+        park(&AFTER_BIND).await
     }
 }
 
@@ -6657,19 +6758,78 @@ impl Agent {
     ) -> Result<()> {
         let provider_name = provider.get_name().to_string();
         let model_config = provider.get_model_config();
+        let tier = provider.tier();
+        let model_config_json = serde_json::to_string(&model_config)
+            .context("Failed to serialize the provider's model config")?;
 
+        // Issue #56 Gate A. Persist FIRST: the in-memory swap used to precede
+        // the persist, so a refused write would leave the chat running on the
+        // refused model. The invariant this establishes is one sentence, and it
+        // is narrower than it looks: **a bind is never accepted against a row
+        // that is already private.** NOT "the provider bound to a private
+        // session is always private" — a ratchet that commits after a legal
+        // bind produces (private, public provider), and that residual is Gate
+        // B's, not this gate's.
+        //
+        // ⚠ There is NO seam at this line. The before-write rendezvous lives
+        // inside the storage helper called below, between any read that function
+        // does and the statement that writes — see its doc comment. A seam here
+        // parks before the helper is entered and therefore cannot tell a
+        // conditional UPDATE from a SELECT-then-UPDATE, which is the exact
+        // implementation Gate A exists to reject.
+        match self
+            .config
+            .session_manager
+            .storage()
+            .bind_provider_if_allowed(
+                session_id,
+                &provider_name,
+                &model_config_json,
+                tier.is_private(),
+            )
+            .await
+            .context("Failed to persist provider config to session")?
+        {
+            BindOutcome::Bound => {}
+            BindOutcome::RefusedByPrivacy => {
+                return Err(PrivacyRefusal::PublicModelOnPrivateSession {
+                    session_id: session_id.to_string(),
+                    provider: provider_name,
+                }
+                .into());
+            }
+            // ⚠ DEVIATION FROM THE PLAN, DELIBERATE. The plan returned
+            // `Err(anyhow!("No such session"))` here. That is not this task's
+            // change to make: an `UPDATE` matching no row has never been an
+            // error in this tree, and four existing tests depend on it — most
+            // explicitly `a_run_that_panics_before_the_stream_still_closes_its_bracket`
+            // (`subagent_handler.rs`), whose entire premise is that the two `?`
+            // exits in the bracket window "cannot be made to fail for any input
+            // a caller controls" *because* an UPDATE matching no row is not an
+            // error. Turning a silent no-op into a hard error is an unrelated
+            // behaviour change with a blast radius no test in this plan covers.
+            //
+            // The distinction the three-way outcome exists for is untouched and
+            // is what matters: an id that names no row must NEVER be reported
+            // as a privacy refusal, because a stale or mistyped id would then
+            // reach the user as "this chat is private". A row that does not
+            // exist has no classification to violate, so there is nothing to
+            // refuse — the persist is skipped and the in-memory swap proceeds,
+            // exactly as before #56.
+            BindOutcome::NoSuchSession => {
+                tracing::warn!(
+                    session_id,
+                    provider = provider_name,
+                    "bound a provider in memory for a session with no row; nothing persisted"
+                );
+            }
+        }
+
+        #[cfg(test)]
+        seams::after_bind_before_swap().await;
         let mut current_provider = self.provider.lock().await;
         *current_provider = Some(provider);
-
-        self.config
-            .session_manager
-            .clone()
-            .update(session_id)
-            .provider_name(&provider_name)
-            .model_config(model_config)
-            .apply()
-            .await
-            .context("Failed to persist provider config to session")
+        Ok(())
     }
 
     /// Restore the provider from session data or fall back to global config
@@ -9347,6 +9507,371 @@ mod persisted_ordering_guard {
             "the ordering seam grew (or lost) a shape. Each name is a claim \
              about when a `MessagesPersisted` may be emitted; adding one means \
              adding a case to the audit."
+        );
+    }
+}
+
+/// Issue #56, Gate A: the bind refuses a public model on a private session, and
+/// it does so in SQL rather than in Rust, so a concurrent ratchet cannot
+/// interleave into "private session, public provider bound".
+///
+/// The two forced-interleaving tests drive the rendezvous points in [`seams`].
+/// Both wrap the spawned bind in [`seams::armed`] — see that function's note for
+/// why an opt-in is required rather than the bare global slot.
+#[cfg(test)]
+mod gate_a_bind_tests {
+    use super::*;
+    use crate::agents::AgentConfig;
+    use crate::config::permission::PermissionManager;
+    use crate::config::BioRouterMode;
+    use crate::model::ModelConfig;
+    use crate::privacy::refusal::PrivacyRefusal;
+    use crate::privacy::{ProviderTier, SessionClassification};
+    use crate::providers::base::{ProviderMetadata, ProviderUsage, Usage};
+    use crate::providers::errors::ProviderError;
+    use crate::session::session_manager::{Session, SessionType};
+    use crate::session::SessionManager;
+    use async_trait::async_trait;
+    use std::path::PathBuf;
+    use tempfile::TempDir;
+
+    /// A real `Provider` whose only interesting property is its tier. The gate
+    /// reads `tier()` and `get_name()`/`get_model_config()`, and nothing here
+    /// ever completes a turn.
+    struct TieredProvider {
+        name: &'static str,
+        model: &'static str,
+        tier: ProviderTier,
+    }
+
+    #[async_trait]
+    impl Provider for TieredProvider {
+        fn metadata() -> ProviderMetadata {
+            ProviderMetadata::new("tiered", "Tiered", "", "tiered-model", vec![], "", vec![])
+        }
+
+        fn get_name(&self) -> &str {
+            self.name
+        }
+
+        fn tier(&self) -> ProviderTier {
+            self.tier
+        }
+
+        async fn complete_with_model(
+            &self,
+            _model_config: &ModelConfig,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[Tool],
+        ) -> Result<(Message, ProviderUsage), ProviderError> {
+            Ok((
+                Message::assistant().with_text("ok"),
+                ProviderUsage::new(self.model.to_string(), Usage::default()),
+            ))
+        }
+
+        fn get_model_config(&self) -> ModelConfig {
+            ModelConfig::new_or_fail(self.model)
+        }
+    }
+
+    fn private_provider() -> Arc<dyn Provider> {
+        Arc::new(TieredProvider {
+            name: "versa_azure",
+            model: "gpt-5.5",
+            tier: ProviderTier::Private,
+        })
+    }
+
+    fn private_provider2() -> Arc<dyn Provider> {
+        Arc::new(TieredProvider {
+            name: "ollama",
+            model: "qwen3.6",
+            tier: ProviderTier::Private,
+        })
+    }
+
+    fn public_provider() -> Arc<dyn Provider> {
+        Arc::new(TieredProvider {
+            name: "anthropic",
+            model: "claude-opus-4",
+            tier: ProviderTier::Public,
+        })
+    }
+
+    /// An agent over an isolated session store, already bound to `provider`.
+    ///
+    /// The `TempDir` is returned because dropping it deletes the SQLite file the
+    /// agent is still holding; every caller binds it for the test's lifetime.
+    /// `Arc<Agent>` because `Agent` is not `Clone` and the race tests hand a
+    /// handle to a spawned task.
+    async fn agent_on(provider: Arc<dyn Provider>) -> (TempDir, Arc<Agent>, Session) {
+        let dir = TempDir::new().unwrap();
+        let session_manager = Arc::new(SessionManager::new(dir.path().to_path_buf()));
+        let permission_manager = Arc::new(PermissionManager::new(dir.path().to_path_buf()));
+        let agent = Arc::new(Agent::with_config(AgentConfig::new(
+            session_manager,
+            permission_manager,
+            None,
+            BioRouterMode::Auto,
+        )));
+        let session = agent
+            .config
+            .session_manager
+            .create_session(PathBuf::from("."), "gate-a".to_string(), SessionType::User)
+            .await
+            .unwrap();
+        agent.update_provider(provider, &session.id).await.unwrap();
+        (dir, agent, session)
+    }
+
+    fn manager(agent: &Agent) -> Arc<SessionManager> {
+        agent.config.session_manager.clone()
+    }
+
+    async fn ratchet_to_private(sm: &SessionManager, id: &str) {
+        sm.update(id)
+            .raise_privacy(SessionClassification::Private, "turn:versa_azure")
+            .apply()
+            .await
+            .unwrap();
+    }
+
+    async fn ratchet_to_private_owned(sm: Arc<SessionManager>, id: String) {
+        ratchet_to_private(&sm, &id).await;
+    }
+
+    async fn reread(sm: &SessionManager, id: &str) -> Session {
+        sm.get_session(id, false).await.unwrap()
+    }
+
+    fn model_name_of(row: &Session) -> String {
+        row.model_config
+            .as_ref()
+            .expect("a bound session carries a model config")
+            .model_name
+            .clone()
+    }
+
+    #[tokio::test]
+    async fn a_public_provider_cannot_be_bound_to_a_private_session() {
+        let (_dir, agent, session) = agent_on(private_provider()).await;
+        let sm = manager(&agent);
+        ratchet_to_private(&sm, &session.id).await;
+
+        let err = agent
+            .update_provider(public_provider(), &session.id)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                err.downcast_ref::<PrivacyRefusal>(),
+                Some(PrivacyRefusal::PublicModelOnPrivateSession { .. })
+            ),
+            "expected a typed privacy refusal, got: {err}"
+        );
+
+        // The half that catches the wrong implementation: before this task the
+        // in-memory swap PRECEDED the persist. A gate that checks the row but
+        // leaves that order alone refuses the write and still leaves the chat
+        // running on the public model in memory.
+        assert_eq!(agent.provider().await.unwrap().get_name(), "versa_azure");
+        // And the row is untouched.
+        assert_eq!(
+            reread(&sm, &session.id).await.provider_name.as_deref(),
+            Some("versa_azure")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_private_provider_binds_to_anything_and_a_public_session_accepts_anything() {
+        let (_dir, agent, s) = agent_on(public_provider()).await;
+        agent
+            .update_provider(private_provider(), &s.id)
+            .await
+            .unwrap(); // upward: fine
+
+        let (_dir2, agent2, s2) = agent_on(private_provider()).await;
+        ratchet_to_private(&manager(&agent2), &s2.id).await;
+        agent2
+            .update_provider(private_provider2(), &s2.id)
+            .await
+            .unwrap(); // private->private
+    }
+
+    #[tokio::test]
+    async fn a_nonexistent_session_is_not_reported_as_a_privacy_refusal() {
+        // `rows_affected == 0` means BOTH "the row is private and this model is
+        // public" AND "there is no row with that id". Collapsing them is the one
+        // way the first test in this module can lie: against a stale fixture id
+        // it would pass for entirely the wrong reason, and in production a
+        // mistyped id would reach the user as "this chat is private".
+        //
+        // Asserted at the layer that owns the distinction, which is stronger
+        // than a `downcast_ref(..).is_none()` on the caller's error: it names
+        // which of the three outcomes was produced.
+        let (_dir, agent, s) = agent_on(private_provider()).await;
+        let sm = manager(&agent);
+        ratchet_to_private(&sm, &s.id).await;
+
+        assert_eq!(
+            sm.storage()
+                .bind_provider_if_allowed("no-such-session-id", "anthropic", "{}", false)
+                .await
+                .unwrap(),
+            BindOutcome::NoSuchSession
+        );
+        // …and the same zero, on a row that DOES exist, is the refusal.
+        assert_eq!(
+            sm.storage()
+                .bind_provider_if_allowed(&s.id, "anthropic", "{}", false)
+                .await
+                .unwrap(),
+            BindOutcome::RefusedByPrivacy
+        );
+
+        // The caller therefore sees no refusal for a bad id. It is not an error
+        // either — see the ⚠ on `update_provider`'s `NoSuchSession` arm.
+        agent
+            .update_provider(public_provider(), "no-such-session-id")
+            .await
+            .expect("a bind against an id with no row persists nothing and refuses nothing");
+    }
+
+    #[tokio::test]
+    async fn a_bind_is_never_accepted_against_a_row_that_is_already_private() {
+        // Interleaving (A), FORCED: the ratchet commits strictly BEFORE the
+        // bind's UPDATE runs. This is the case the conditional UPDATE exists
+        // for, and the one nothing could previously produce.
+        //
+        // The seam's position is the test. `before_bind_write` is called INSIDE
+        // `bind_provider_if_allowed`, as the last statement before `.execute`.
+        // Parked there, a `SELECT privacy_tier` + unconditional `UPDATE` helper
+        // reads Public, parks, lets the ratchet commit, and then writes anyway
+        // — which is the bug, and this assertion is what sees it. Parked before
+        // the helper was even entered (its previous position), that same wrong
+        // helper would run its SELECT after the ratchet and refuse for a
+        // right-looking reason.
+        let (_dir, agent, s) = agent_on(private_provider()).await;
+        let sm = manager(&agent);
+
+        let reached = seams::arm_before_bind_write();
+        let bind = tokio::spawn(seams::armed({
+            let a = Arc::clone(&agent);
+            let id = s.id.clone();
+            async move { a.update_provider(public_provider(), &id).await }
+        }));
+        let release = reached.await.unwrap(); // parked INSIDE the helper, after any read
+        ratchet_to_private(&sm, &s.id).await; // runs alone, to completion
+        release.send(()).unwrap();
+
+        let err = bind.await.unwrap().unwrap_err();
+        assert!(
+            matches!(
+                err.downcast_ref::<PrivacyRefusal>(),
+                Some(PrivacyRefusal::PublicModelOnPrivateSession { .. })
+            ),
+            "the WHERE clause did not see a ratchet that committed before it — \
+             either the predicate is evaluated in Rust before the UPDATE, or the \
+             seam drifted back out of bind_provider_if_allowed"
+        );
+        let row = reread(&sm, &s.id).await;
+        assert_eq!(
+            row.provider_name.as_deref(),
+            Some("versa_azure"),
+            "a refused bind wrote anyway"
+        );
+        assert_eq!(agent.provider().await.unwrap().get_name(), "versa_azure");
+    }
+
+    #[tokio::test]
+    async fn a_ratchet_that_commits_after_a_legal_bind_lands_in_the_state_gate_b_owns() {
+        // Interleaving (B), FORCED: the ratchet commits AFTER the bind's UPDATE
+        // and BEFORE the in-memory swap. Both statements were legal when they
+        // ran, so both succeed and the row ends (private, anthropic).
+        //
+        // THIS IS NOT A BUG. "The provider bound to a private session is always
+        // private" is not a sentence a conditional UPDATE can deliver. What it
+        // delivers is narrower and exact: *a bind is never accepted against a
+        // row that is already private*. A ratchet landing after a legal bind is
+        // a different event, and the state it produces — private row, public
+        // `provider_name` — is the SAME residual an LRU rehydration, a legacy
+        // row and `restore_provider_from_session`'s `Config::global()` fallback
+        // all produce. Task 13's
+        // `an_unrepairable_mismatch_refuses_this_turn_and_leaves_the_row_alone`
+        // is what owns it, and the repair card is what fixes it.
+        let (_dir, agent, s) = agent_on(private_provider()).await;
+        let sm = manager(&agent);
+
+        let reached = seams::arm_after_bind_before_swap();
+        let bind = tokio::spawn(seams::armed({
+            let a = Arc::clone(&agent);
+            let id = s.id.clone();
+            async move { a.update_provider(public_provider(), &id).await }
+        }));
+        let release = reached.await.unwrap();
+        ratchet_to_private(&sm, &s.id).await;
+        release.send(()).unwrap();
+        bind.await.unwrap().unwrap(); // the bind was legal when it ran: Ok
+
+        let row = reread(&sm, &s.id).await;
+        assert_eq!(row.privacy_tier, SessionClassification::Private);
+        assert_eq!(row.provider_name.as_deref(), Some("anthropic"));
+        // Not TORN: `provider_name` and `model_config_json` came from one
+        // UPDATE, so no reader can see one provider's name beside another's
+        // model config.
+        assert_eq!(
+            model_name_of(&row),
+            public_provider().get_model_config().model_name
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_unconstrained_race_observes_both_outcomes() {
+        // The fuzz layer is KEPT — a seam only proves the two interleavings
+        // someone thought of. What changes is that it must PROVE it raced.
+        //
+        // `flavor = "multi_thread"` is load-bearing: `#[tokio::test]` defaults
+        // to `current_thread`, where two `tokio::spawn`s cannot preempt each
+        // other at all — they interleave only at `.await` points, in the same
+        // order every iteration. Two hundred iterations of a deterministic
+        // schedule is one iteration, run two hundred times.
+        let (mut bound, mut refused) = (0usize, 0usize);
+        for _ in 0..200 {
+            let (_dir, agent, s) = agent_on(private_provider()).await;
+            let sm = manager(&agent);
+            let a = tokio::spawn({
+                let a = Arc::clone(&agent);
+                let id = s.id.clone();
+                async move { a.update_provider(public_provider(), &id).await }
+            });
+            let b = tokio::spawn(ratchet_to_private_owned(Arc::clone(&sm), s.id.clone()));
+            let (a, b) = tokio::join!(a, b);
+            b.unwrap();
+            let bind_ok = a.unwrap().is_ok();
+            if bind_ok {
+                bound += 1
+            } else {
+                refused += 1
+            }
+
+            // The invariant that holds in EVERY interleaving, asserted
+            // UNCONDITIONALLY — an `if row.is_private()` guard would make the
+            // whole assertion skippable, and the ratchet always wins the row, so
+            // it would be skipped in the only branch it could have caught.
+            let row = reread(&sm, &s.id).await;
+            assert_eq!(row.privacy_tier, SessionClassification::Private);
+            assert_eq!(
+                row.provider_name.as_deref() == Some("anthropic"),
+                bind_ok,
+                "a refused bind wrote the row, or an accepted one did not"
+            );
+        }
+        assert!(
+            bound > 0 && refused > 0,
+            "200 iterations produced {bound} bound / {refused} refused — one-sided, so the loop \
+             raced nothing. That is the state this test used to report as a pass."
         );
     }
 }

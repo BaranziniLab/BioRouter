@@ -13,6 +13,7 @@ import {
   llamacppWarmup,
   type LlamaCppModel,
   type LlamaCppStatusResponse,
+  type PrivacyBarrierBody,
 } from '../api';
 import { useConfig } from './ConfigContext';
 import {
@@ -85,6 +86,39 @@ const formatContext = (tokens: number | undefined) =>
   typeof tokens === 'number' && tokens > 0 ? tokens.toLocaleString() : 'unknown';
 
 const errorMessage = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
+/**
+ * Issue #56 Gate A. The 409 body, if this is one.
+ *
+ * Under `throwOnError: true` the generated @hey-api client throws the PARSED
+ * RESPONSE BODY rather than an `Error` (see `api/client/client.gen.ts`), so the
+ * typed barrier arrives here verbatim. Anything else — a network failure, a 500
+ * — falls through to the generic error toast.
+ */
+const privacyBarrierOf = (error: unknown): PrivacyBarrierBody | null =>
+  error && typeof error === 'object' && (error as { code?: unknown }).code === 'privacy_barrier'
+    ? (error as PrivacyBarrierBody)
+    : null;
+
+/**
+ * The Gate A refusal card (design §14.4): what happened, which two tiers
+ * collided, why the boundary exists, and the shortest way forward.
+ *
+ * It names the tier and the models only. Never the chat's title or working
+ * directory — a refusal must not carry conversation content.
+ */
+const privacyBarrierMessage = (barrier: PrivacyBarrierBody) => {
+  const lines = [
+    'This chat is private, so it can only run on a private model — its contents never reach a model hosted outside UCSF.',
+  ];
+  if (barrier.available_private_providers.length > 0) {
+    lines.push(`Available private models: ${barrier.available_private_providers.join(', ')}.`);
+  }
+  lines.push(
+    'To use a public model here, make this chat public first (History → this chat → Make public). That permanently exposes its contents and cannot be undone.'
+  );
+  return lines.join('\n');
+};
 
 const acceleratorMemoryLabel = (kind: string | undefined) =>
   kind === 'apple_unified' ? 'unified memory' : 'VRAM';
@@ -287,6 +321,11 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
               context_limit: model.context_limit,
               request_params: model.request_params,
             },
+            // Issue #56: without this the generated @hey-api client returns
+            // {error} instead of throwing, so a 409 privacy refusal is
+            // discarded, setConfigProvider rewrites the global default to the
+            // refused provider, and a green toast claims the switch worked.
+            throwOnError: true,
           });
         }
 
@@ -311,6 +350,17 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
         return true;
       } catch (error) {
         console.error(`Failed to change model at ${phase} step -- ${modelName} ${providerName}`);
+        // A privacy refusal is not a failure to report — it is a boundary to
+        // explain. Rendered as the Gate A card rather than as a stack trace.
+        const barrier = privacyBarrierOf(error);
+        if (barrier) {
+          toastError({
+            title: `Can't switch this chat to ${model.alias ?? modelName}`,
+            msg: privacyBarrierMessage(barrier),
+            traceback: privacyBarrierMessage(barrier),
+          });
+          return false;
+        }
         toastError({
           title: `${providerName}/${modelName} failed`,
           msg: `${error}`,

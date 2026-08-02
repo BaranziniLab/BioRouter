@@ -671,6 +671,12 @@ impl utoipa::Modify for ApiKeySecurity {
         biorouter::agents::types::RetryConfig,
         biorouter::agents::types::SuccessCheck,
         super::routes::agent::UpdateProviderRequest,
+        // #56 Gate A: the typed body of `/agent/update_provider`'s 409. utoipa
+        // emits a `$ref` for a response `body =`, so without the component
+        // registered the document points at a definition it does not contain
+        // and the generated TS client has no `PrivacyBarrierBody` for the
+        // renderer's repair card to switch on.
+        super::routes::agent::PrivacyBarrierBody,
         super::routes::agent::GetToolsQuery,
         super::routes::agent::ReadResourceRequest,
         super::routes::agent::ReadResourceResponse,

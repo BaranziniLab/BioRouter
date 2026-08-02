@@ -20,6 +20,8 @@ use biorouter::config::resolve_extensions_for_new_session;
 use biorouter::config::{BioRouterMode, Config};
 use biorouter::model::ModelConfig;
 use biorouter::permission::{grade_tool, SmartApproveConfig};
+use biorouter::privacy::refusal::PrivacyRefusal;
+use biorouter::privacy::{ProviderTier, SessionClassification};
 use biorouter::prompt_template::render_global_file;
 use biorouter::providers::create;
 use biorouter::session::extension_data::ExtensionState;
@@ -59,6 +61,98 @@ pub struct UpdateProviderRequest {
     session_id: String,
     context_limit: Option<usize>,
     request_params: Option<std::collections::HashMap<String, serde_json::Value>>,
+}
+
+/// The body of the 409 `/agent/update_provider` returns when a privacy boundary
+/// refused the bind (issue #56, Gate A).
+///
+/// Typed rather than a bare string because the GUI does not merely report the
+/// refusal — it renders §14.4's repair card from it, and the card names both
+/// colliding tiers and offers the private models that would work. A plain-text
+/// 409 would leave the renderer parsing prose.
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct PrivacyBarrierBody {
+    /// Discriminator the client switches on. Always `privacy_barrier`.
+    pub code: String,
+    /// The classification of the chat that refused.
+    pub session_classification: SessionClassification,
+    /// The tier of the model that was offered.
+    pub provider_tier: ProviderTier,
+    /// The names of the providers a private chat *can* be switched to, so the
+    /// card can offer the way forward rather than only the wall.
+    pub available_private_providers: Vec<String>,
+}
+
+impl PrivacyBarrierBody {
+    pub const CODE: &'static str = "privacy_barrier";
+}
+
+/// How `/agent/update_provider` failed, at the granularity the client needs.
+///
+/// Split out of the handler so the mapping can be tested without an
+/// `AppState`: `AppState::new()` opens the REAL user session database (see the
+/// note in `routes/session.rs`), so a route test must never go through it.
+#[derive(Debug)]
+pub(crate) enum ProviderBindFailure {
+    /// A privacy boundary refused the bind — 409, with a body the GUI renders.
+    Privacy(Box<PrivacyBarrierBody>),
+    /// Anything else — 500, as before.
+    Internal(String),
+}
+
+impl ProviderBindFailure {
+    pub(crate) fn status(&self) -> StatusCode {
+        match self {
+            Self::Privacy(_) => StatusCode::CONFLICT,
+            Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        }
+    }
+}
+
+impl IntoResponse for ProviderBindFailure {
+    fn into_response(self) -> axum::response::Response {
+        let status = self.status();
+        match self {
+            Self::Privacy(body) => (status, Json(body)).into_response(),
+            Self::Internal(message) => (status, message).into_response(),
+        }
+    }
+}
+
+/// Classify an `Agent::update_provider` failure.
+///
+/// The refusal is a typed error carried inside `anyhow::Error`, so this asks
+/// with `downcast_ref` rather than matching on a message. Every other failure
+/// keeps the pre-#56 behaviour — a 500 with the error's text.
+pub(crate) fn classify_provider_bind_failure(
+    error: &anyhow::Error,
+    available_private_providers: Vec<String>,
+) -> ProviderBindFailure {
+    match error.downcast_ref::<PrivacyRefusal>() {
+        Some(refusal) => ProviderBindFailure::Privacy(Box::new(PrivacyBarrierBody {
+            code: PrivacyBarrierBody::CODE.to_string(),
+            session_classification: refusal.session_classification(),
+            provider_tier: refusal.provider_tier(),
+            available_private_providers,
+        })),
+        None => ProviderBindFailure::Internal(format!("Failed to update provider: {error}")),
+    }
+}
+
+/// Every registered provider whose shipped metadata claims Private — the models
+/// a private chat may be switched to.
+///
+/// Read from the same registry the settings grid reads, so the card can never
+/// offer a model the grid does not show.
+async fn available_private_providers() -> Vec<String> {
+    let mut names: Vec<String> = biorouter::providers::providers()
+        .await
+        .into_iter()
+        .filter(|(metadata, _)| metadata.tier.is_private())
+        .map(|(metadata, _)| metadata.name)
+        .collect();
+    names.sort();
+    names
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
@@ -679,6 +773,9 @@ async fn get_tools(
         (status = 200, description = "Provider updated successfully"),
         (status = 400, description = "Bad request - missing or invalid parameters"),
         (status = 401, description = "Unauthorized - invalid secret key"),
+        (status = 409, description = "Refused by a privacy boundary (issue #56, Gate A): \
+                                      a public model cannot be bound to a private chat",
+                       body = PrivacyBarrierBody),
         (status = 424, description = "Agent not initialized"),
         (status = 500, description = "Internal server error")
     )
@@ -686,17 +783,17 @@ async fn get_tools(
 async fn update_agent_provider(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<UpdateProviderRequest>,
-) -> Result<(), impl IntoResponse> {
+) -> Result<(), axum::response::Response> {
     let agent = state
         .get_agent_for_route(payload.session_id.clone())
         .await
-        .map_err(|e| (e, "No agent for session id".to_owned()))?;
+        .map_err(|e| (e, "No agent for session id".to_owned()).into_response())?;
 
     let config = Config::global();
     let model = match payload.model.or_else(|| config.get_biorouter_model().ok()) {
         Some(m) => m,
         None => {
-            return Err((StatusCode::BAD_REQUEST, "No model specified".to_owned()));
+            return Err((StatusCode::BAD_REQUEST, "No model specified".to_owned()).into_response());
         }
     };
 
@@ -706,6 +803,7 @@ async fn update_agent_provider(
                 StatusCode::BAD_REQUEST,
                 format!("Invalid model config: {}", e),
             )
+                .into_response()
         })?
         .with_context_limit(payload.context_limit)
         .with_request_params(payload.request_params);
@@ -715,17 +813,21 @@ async fn update_agent_provider(
             StatusCode::BAD_REQUEST,
             format!("Failed to create {} provider: {}", &payload.provider, e),
         )
+            .into_response()
     })?;
 
-    agent
+    // Issue #56 Gate A (P3). A privacy refusal is a 409 with a body the GUI
+    // renders a repair card from, not a 500 with a sentence: collapsing it to
+    // the generic error is what let the renderer report a refused switch as a
+    // green success toast.
+    if let Err(e) = agent
         .update_provider(new_provider, &payload.session_id)
         .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to update provider: {}", e),
-            )
-        })?;
+    {
+        return Err(
+            classify_provider_bind_failure(&e, available_private_providers().await).into_response(),
+        );
+    }
 
     Ok(())
 }
@@ -1308,6 +1410,93 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route("/agent/remove_extension", post(agent_remove_extension))
         .route("/agent/stop", post(stop_agent))
         .with_state(state)
+}
+
+#[cfg(test)]
+mod privacy_barrier_tests {
+    //! Issue #56 Gate A, route half: an `Agent::update_provider` refusal must
+    //! reach the client as a typed 409, and everything else must keep its 500.
+    //!
+    //! Exercised through [`classify_provider_bind_failure`] — the exact mapping
+    //! the handler applies — rather than through `AppState`, which opens the
+    //! REAL user session database.
+
+    use super::{classify_provider_bind_failure, PrivacyBarrierBody, ProviderBindFailure};
+    use axum::http::StatusCode;
+    use biorouter::privacy::refusal::PrivacyRefusal;
+    use biorouter::privacy::{ProviderTier, SessionClassification};
+
+    fn refusal() -> anyhow::Error {
+        PrivacyRefusal::PublicModelOnPrivateSession {
+            session_id: "20260801_3".into(),
+            provider: "anthropic".into(),
+        }
+        .into()
+    }
+
+    #[test]
+    fn a_privacy_refusal_becomes_a_typed_409() {
+        let failure = classify_provider_bind_failure(
+            &refusal(),
+            vec!["llamacpp".to_string(), "versa_azure".to_string()],
+        );
+        assert_eq!(failure.status(), StatusCode::CONFLICT);
+        let ProviderBindFailure::Privacy(body) = failure else {
+            panic!("a privacy refusal must not be classified as an internal error");
+        };
+        assert_eq!(body.code, PrivacyBarrierBody::CODE);
+        assert_eq!(body.session_classification, SessionClassification::Private);
+        assert_eq!(body.provider_tier, ProviderTier::Public);
+        assert_eq!(
+            body.available_private_providers,
+            ["llamacpp", "versa_azure"]
+        );
+    }
+
+    #[test]
+    fn every_other_failure_keeps_its_500() {
+        // The pre-#56 behaviour, pinned: a database or provider failure must not
+        // start telling the user their chat is private.
+        let failure = classify_provider_bind_failure(
+            &anyhow::anyhow!("Failed to persist provider config to session"),
+            vec![],
+        );
+        assert_eq!(failure.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(
+            matches!(failure, ProviderBindFailure::Internal(_)),
+            "a non-privacy failure must not be rendered as a privacy barrier"
+        );
+    }
+
+    /// The refusal reaches the handler wrapped in the context
+    /// `Agent::update_provider` adds, so the classifier must look through the
+    /// whole chain rather than at the outermost error.
+    #[test]
+    fn a_refusal_is_still_found_under_an_added_context() {
+        use anyhow::Context;
+        let wrapped = Err::<(), _>(refusal())
+            .context("while switching this chat's model")
+            .unwrap_err();
+        assert_eq!(
+            classify_provider_bind_failure(&wrapped, vec![]).status(),
+            StatusCode::CONFLICT
+        );
+    }
+
+    /// §14.4: the body is what the user reads, and it must not carry
+    /// conversation content — only the two tiers and the way forward.
+    #[test]
+    fn the_409_body_carries_no_session_identity() {
+        let failure = classify_provider_bind_failure(&refusal(), vec!["ollama".to_string()]);
+        let ProviderBindFailure::Privacy(body) = failure else {
+            panic!("expected a privacy barrier");
+        };
+        let json = serde_json::to_string(&*body).unwrap();
+        assert!(
+            !json.contains("20260801_3"),
+            "the 409 body leaked the session id: {json}"
+        );
+    }
 }
 
 #[cfg(test)]
