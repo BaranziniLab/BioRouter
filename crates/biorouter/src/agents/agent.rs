@@ -11074,11 +11074,16 @@ mod gate_c_dispatch_tests {
     }
 
     /// Path 2: `POST /agent/call_tool`. It arrives with no caller identity, so
-    /// it hands the manager the most restrictive pair — the value
-    /// `CallCapability::public_enforced()` returns, built here with the test
-    /// constructor so Task 10's census of the two production spellings keeps
-    /// counting production entries only (`tests/privacy_capability.rs` pins
-    /// that the two agree).
+    /// it hands the manager the most restrictive pair — the value the route's
+    /// own constructor returns — built here with the test constructor so Task
+    /// 10's census of the two production spellings keeps counting production
+    /// entries only (`tests/privacy_capability.rs` pins that the two agree).
+    ///
+    /// ⚠ Do not spell that constructor here, not even inside a comment. The
+    /// census is a `grep` over `crates/*/src/` for its literal name followed by
+    /// `(`, and it asserts an exact count of THREE. A mention in prose is
+    /// indistinguishable from a fourth entry nobody classified, which is the
+    /// one thing that check exists to catch.
     async fn call_private_tool_as_the_http_route_does() -> String {
         let (_dir, agent, session) = agent_with_the_private_extension(public_provider()).await;
         // `ToolCallResult` is not `Debug`, so the outcome is matched rather
