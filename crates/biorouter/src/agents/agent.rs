@@ -1282,10 +1282,10 @@ pub(crate) mod seams {
 
     // ─── Issue #56, Gate A: the two rendezvous on the provider-bind path ────
     //
-    // `arm_*` returns a receiver that fires when the bind path reaches the
-    // rendezvous, carrying the sender that releases it — so a test can run a
-    // whole ratchet *inside* the window instead of hoping a `tokio::spawn`
-    // lands there. Two channels and not a `Barrier`: a 2-party `Barrier::wait`
+    // `arm_*` returns a [`Rendezvous`] that fires when the bind path reaches
+    // it, carrying the sender that releases it — so a test can run a whole
+    // ratchet *inside* the window instead of hoping a `tokio::spawn` lands
+    // there. Two channels and not a `Barrier`: a 2-party `Barrier::wait`
     // releases both sides at the rendezvous, which is the one thing this must
     // not do.
     //
@@ -1300,59 +1300,141 @@ pub(crate) mod seams {
     // which is the exact implementation Gate A exists to reject.
     //
     // ⚠ THE RENDEZVOUS IS PROCESS-GLOBAL, so — exactly as for
-    // `hold_dispatch_queue` above — it must not be first-come. There is no
-    // session id at the write to key on (the seam call has to stay
-    // argument-free so the structural gate can pin its position), so identity
-    // comes from the CALLING TASK instead: only a future wrapped in [`armed`]
-    // can consume an arm. Without that, the fuzz test next door — 400 bind
-    // arrivals over several seconds, in the same binary — would routinely take
-    // the arm meant for a forced-interleaving test, whose own bind then races
-    // the ratchet it was supposed to be ordered against and fails at random.
+    // `hold_dispatch_queue` above — it must not be first-come, and "first-come"
+    // has TWO forms here. Neither is hypothetical: the two forced-interleaving
+    // tests and the 200-iteration fuzz loop are `#[tokio::test]`s in one
+    // binary, which cargo runs on parallel threads with nothing serialising
+    // them. There is no session id at the write to key on (the seam call has to
+    // stay argument-free so the structural gate can pin its position), so
+    // identity travels with the CALLING TASK instead, in a task-local:
     //
-    // ⚠ ONE ARMER AT A TIME PER SLOT. Two tests arming the same slot
-    // concurrently would clobber each other's sender. Today exactly one test
-    // arms each; if that stops being true, give the arm a key the way
-    // `hold_dispatch_queue` does.
+    //   1. A bind nobody armed. Only a future wrapped in [`armed`] is eligible
+    //      at all. Without that, the fuzz loop's 400 bind arrivals over several
+    //      seconds would routinely take the arm meant for a forced test, whose
+    //      own bind then races the ratchet it was supposed to be ordered
+    //      against.
+    //   2. A bind armed for the OTHER seam. `after_bind_before_swap`'s test
+    //      still traverses `before_bind_write` on its way — EVERY bind does, it
+    //      is inside the storage helper — so a token that said only "this task
+    //      is armed" would let that bind consume `before_bind_write`'s arm. The
+    //      theft is invisible exactly where it matters: the robbed test's
+    //      `arrived()` resolves from the wrong task, its own bind is never
+    //      parked, and on a lucky schedule it passes having forced nothing —
+    //      the silent pass a seam exists to make impossible. So the token names
+    //      its seam and [`park`] compares before consuming.
+    //
+    // Identity is per-ARM rather than per-seam: `arm_*` mints a fresh id, so
+    // two tests arming the same seam coexist instead of clobbering each other's
+    // sender. An arm nobody consumes is inert — its token exists nowhere but
+    // inside the one future it was minted for.
 
-    type Arm = std::sync::Mutex<Option<oneshot::Sender<oneshot::Sender<()>>>>;
-    static BEFORE_BIND: Arm = std::sync::Mutex::new(None);
-    static AFTER_BIND: Arm = std::sync::Mutex::new(None);
-
-    tokio::task_local! {
-        /// Set for the duration of a future wrapped in [`armed`]. Its presence
-        /// — not its value — is what makes a bind eligible to be caught.
-        static ARMED_TASK: ();
+    /// Which of the two bind rendezvous a token authorizes.
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    enum Seam {
+        BeforeBindWrite,
+        AfterBindBeforeSwap,
     }
 
-    /// Mark `fut` as the call a seam may catch.
+    /// What one `arm_*` call hands out: permission for one future to be caught
+    /// once, at one named seam. `Copy` because it rides in a task-local.
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    pub(crate) struct ArmToken {
+        seam: Seam,
+        id: u64,
+    }
+
+    type ArmedBind = (ArmToken, oneshot::Sender<oneshot::Sender<()>>);
+
+    /// Arms placed but not yet consumed.
+    static ARMED_BINDS: std::sync::Mutex<Vec<ArmedBind>> = std::sync::Mutex::new(Vec::new());
+    static NEXT_ARM_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    tokio::task_local! {
+        /// Set for the duration of a future wrapped in [`armed`]: the ONE arm
+        /// that future may consume, at the ONE seam that arm names.
+        static ARMED_TASK: ArmToken;
+    }
+
+    /// One armed rendezvous, handed back by `arm_before_bind_write` /
+    /// `arm_after_bind_before_swap`.
+    pub(crate) struct Rendezvous {
+        token: ArmToken,
+        arrived: oneshot::Receiver<oneshot::Sender<()>>,
+    }
+
+    impl Rendezvous {
+        /// The token to hand to [`armed`]. It comes from the rendezvous itself,
+        /// so a test cannot arm one seam and authorize its bind for the other.
+        pub(crate) fn token(&self) -> ArmToken {
+            self.token
+        }
+
+        /// Await arrival at this seam; yields the sender that releases it.
+        ///
+        /// Bounded, because the likeliest failure is that nothing ever arrives
+        /// — a seam call that drifted out of the function, or a bind armed for
+        /// the other one — and a test that hangs is a CI timeout with no
+        /// message instead of a failure with one.
+        pub(crate) async fn arrived(self) -> oneshot::Sender<()> {
+            const WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+            tokio::time::timeout(WAIT, self.arrived)
+                .await
+                .expect(
+                    "nothing reached this seam within 10s: the seam call drifted out of the \
+                     function, or the bind was armed for the other seam",
+                )
+                .expect("the arm was dropped without firing")
+        }
+
+        /// Whether anything has announced itself here yet. The NEGATIVE is what
+        /// the cross-seam test asserts, so only a real arrival counts — an arm
+        /// still sitting unconsumed reads `false`.
+        pub(crate) fn has_fired(&mut self) -> bool {
+            matches!(self.arrived.try_recv(), Ok(_))
+        }
+    }
+
+    /// Mark `fut` as the ONE call that may consume `token`'s arm.
     ///
     /// Every other `update_provider` in the process walks through both seams
     /// with one uncontended `try_with` and no await.
     pub(crate) fn armed<F: std::future::Future>(
+        token: ArmToken,
         fut: F,
     ) -> impl std::future::Future<Output = F::Output> {
-        ARMED_TASK.scope((), fut)
+        ARMED_TASK.scope(token, fut)
     }
 
-    fn arm(slot: &'static Arm) -> oneshot::Receiver<oneshot::Sender<()>> {
+    fn arm(seam: Seam) -> Rendezvous {
         let (tx, rx) = oneshot::channel();
-        *slot
+        let token = ArmToken {
+            seam,
+            id: NEXT_ARM_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        };
+        ARMED_BINDS
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(tx);
-        rx
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((token, tx));
+        Rendezvous { token, arrived: rx }
     }
 
-    async fn park(slot: &'static Arm) {
-        if ARMED_TASK.try_with(|()| ()).is_err() {
-            return;
-        }
+    async fn park(seam: Seam) {
+        // Unarmed, or armed for the other seam — one `try_with`, no await, no
+        // lock. That is every bind in the process except the one under test.
+        let token = match ARMED_TASK.try_with(|token| *token) {
+            Ok(token) if token.seam == seam => token,
+            _ => return,
+        };
         // The guard is dropped at the end of this statement, before the await:
         // holding a std::sync::MutexGuard across an await point is the classic
         // way to turn a test seam into a deadlock.
         let armed = {
-            slot.lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .take()
+            let mut arms = ARMED_BINDS
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            arms.iter()
+                .position(|(armed, _)| *armed == token)
+                .map(|i| arms.remove(i).1)
         };
         if let Some(reached) = armed {
             let (release_tx, release_rx) = oneshot::channel();
@@ -1362,21 +1444,21 @@ pub(crate) mod seams {
         }
     }
 
-    pub(crate) fn arm_before_bind_write() -> oneshot::Receiver<oneshot::Sender<()>> {
-        arm(&BEFORE_BIND)
+    pub(crate) fn arm_before_bind_write() -> Rendezvous {
+        arm(Seam::BeforeBindWrite)
     }
 
-    pub(crate) fn arm_after_bind_before_swap() -> oneshot::Receiver<oneshot::Sender<()>> {
-        arm(&AFTER_BIND)
+    pub(crate) fn arm_after_bind_before_swap() -> Rendezvous {
+        arm(Seam::AfterBindBeforeSwap)
     }
 
     /// Called from `session_manager.rs`, hence `pub(crate)`.
     pub(crate) async fn before_bind_write() {
-        park(&BEFORE_BIND).await
+        park(Seam::BeforeBindWrite).await
     }
 
     pub(super) async fn after_bind_before_swap() {
-        park(&AFTER_BIND).await
+        park(Seam::AfterBindBeforeSwap).await
     }
 }
 
@@ -9516,8 +9598,9 @@ mod persisted_ordering_guard {
 /// interleave into "private session, public provider bound".
 ///
 /// The two forced-interleaving tests drive the rendezvous points in [`seams`].
-/// Both wrap the spawned bind in [`seams::armed`] — see that function's note for
-/// why an opt-in is required rather than the bare global slot.
+/// Both wrap the spawned bind in [`seams::armed`], under the token their own
+/// `arm_*` call minted — see the note above those statics for why a bind must
+/// opt in, and why the token has to name which seam it may be caught at.
 #[cfg(test)]
 mod gate_a_bind_tests {
     use super::*;
@@ -9757,12 +9840,12 @@ mod gate_a_bind_tests {
         let sm = manager(&agent);
 
         let reached = seams::arm_before_bind_write();
-        let bind = tokio::spawn(seams::armed({
+        let bind = tokio::spawn(seams::armed(reached.token(), {
             let a = Arc::clone(&agent);
             let id = s.id.clone();
             async move { a.update_provider(public_provider(), &id).await }
         }));
-        let release = reached.await.unwrap(); // parked INSIDE the helper, after any read
+        let release = reached.arrived().await; // parked INSIDE the helper, after any read
         ratchet_to_private(&sm, &s.id).await; // runs alone, to completion
         release.send(()).unwrap();
 
@@ -9805,12 +9888,12 @@ mod gate_a_bind_tests {
         let sm = manager(&agent);
 
         let reached = seams::arm_after_bind_before_swap();
-        let bind = tokio::spawn(seams::armed({
+        let bind = tokio::spawn(seams::armed(reached.token(), {
             let a = Arc::clone(&agent);
             let id = s.id.clone();
             async move { a.update_provider(public_provider(), &id).await }
         }));
-        let release = reached.await.unwrap();
+        let release = reached.arrived().await;
         ratchet_to_private(&sm, &s.id).await;
         release.send(()).unwrap();
         bind.await.unwrap().unwrap(); // the bind was legal when it ran: Ok
@@ -9824,6 +9907,49 @@ mod gate_a_bind_tests {
         assert_eq!(
             model_name_of(&row),
             public_provider().get_model_config().model_name
+        );
+    }
+
+    #[tokio::test]
+    async fn a_bind_armed_for_one_seam_cannot_consume_the_other_seams_arm() {
+        // The two tests above run as `#[tokio::test]`s in one binary, on
+        // parallel threads, with nothing serialising them — and interleaving
+        // (B)'s bind traverses `before_bind_write` on its way to the seam it
+        // actually wants, because EVERY bind does: that seam is inside the
+        // storage helper. An arm keyed only on "this task is armed" therefore
+        // lets (B)'s bind consume (A)'s arm.
+        //
+        // What that costs is not a visible failure. (A)'s `arrived()` resolves
+        // from the wrong task, so (A) runs its ratchet while its OWN bind is
+        // unparked and racing it; if the ratchet happens to land first, (A)
+        // passes having forced nothing — a silent pass in the one test that
+        // exists to force an interleaving. This pins the fix: the token names
+        // its seam, and `park` compares before consuming.
+        let (_dir, agent, s) = agent_on(private_provider()).await;
+
+        // Interleaving (A)'s arm, placed and never used — it stands in for the
+        // other test being mid-flight on another thread.
+        let mut before = seams::arm_before_bind_write();
+        // …and interleaving (B)'s bind, authorized for the LATER seam only.
+        let after = seams::arm_after_bind_before_swap();
+        let bind = tokio::spawn(seams::armed(after.token(), {
+            let a = Arc::clone(&agent);
+            let id = s.id.clone();
+            async move { a.update_provider(public_provider(), &id).await }
+        }));
+
+        // It must arrive at its own seam. Stealing the other arm parks it at
+        // the earlier one instead, and this bounded await says so rather than
+        // hanging the binary.
+        let release = after.arrived().await;
+        release.send(()).unwrap();
+        bind.await.unwrap().unwrap();
+
+        assert!(
+            !before.has_fired(),
+            "a bind armed for after_bind_before_swap announced itself at \
+             before_bind_write — it consumed an arm belonging to another test, \
+             whose own bind then runs unforced"
         );
     }
 
