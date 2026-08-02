@@ -4780,6 +4780,14 @@ impl Agent {
             // stream ends is the first thing to walk through Gate B'.
             self.cached_classification
                 .store(&session_config.id, classification);
+            // Issue #56 Gate H. The hooks manager resolves a prompt hook's own
+            // provider — an endpoint named by config.yaml or by an agent-writable
+            // `.biorouter/hooks.yaml`, which the session row never records — and
+            // the Stop hook it fires below carries `transcript_tail`. Mirrored
+            // from the SAME value stored above, at the same seam, so the two
+            // cannot disagree about this turn.
+            self.hooks_manager
+                .set_session_classification(classification);
         } else {
             // No row. There is no classification to honour and no content to
             // protect, but there is also no way to tell "this id names nothing"
@@ -4788,6 +4796,8 @@ impl Agent {
             // `?`, so a turn that gets here without one was already over.
             self.cached_classification
                 .store(&session_config.id, SessionClassification::Private);
+            self.hooks_manager
+                .set_session_classification(SessionClassification::Private);
         }
         // ⚠ A refusal is a YIELD, never an `Err` out of `reply`: `reply`
         // returns `Result<BoxStream<..>>`, and an `Err` here surfaces as a 500

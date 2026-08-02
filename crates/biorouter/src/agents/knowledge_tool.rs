@@ -114,11 +114,13 @@ impl Agent {
         if should_use_knowledge_default_model(session) {
             let manifest = svc.get_base(kb_id).map_err(internal)?;
             if let Some(model) = manifest.default_model {
-                return build_model_ref_completer(&model).await.map_err(|e| {
-                    internal(format!(
-                        "the default knowledge model for '{kb_id}' could not be used: {e}"
-                    ))
-                });
+                return build_model_ref_completer(&model, session.privacy_tier)
+                    .await
+                    .map_err(|e| {
+                        internal(format!(
+                            "the default knowledge model for '{kb_id}' could not be used: {e}"
+                        ))
+                    });
             }
         }
 
@@ -230,13 +232,21 @@ fn should_use_knowledge_default_model(session: &Session) -> bool {
     session.session_type == SessionType::Scheduled || session.schedule_id.is_some()
 }
 
+/// The completer behind a KB's `default_model`.
+///
+/// Issue #56 Gate H: `session` is the classification of the chat whose messages
+/// this completer is about to digest. Required rather than optional — this
+/// function's whole job is to build a provider the session row does not name, so
+/// there is no bound provider for a later gate to consult.
 async fn build_model_ref_completer(
     model: &ModelRef,
+    session: crate::privacy::SessionClassification,
 ) -> anyhow::Result<(Box<dyn Completer>, ProviderTier)> {
     if biorouter_mcp::knowledge::test_mode::env_enabled() {
         // No provider exists on this path, so there is no instance to read a
         // tier from — the same fail-safe-for-a-ratchet reasoning as the two
-        // `build_completer` test-mode branches.
+        // `build_completer` test-mode branches. Nothing leaves the process on
+        // this path either, so there is nothing for Gate H to refuse.
         return Ok((
             Box::new(biorouter_mcp::knowledge::test_mode::TestModeCompleter),
             ProviderTier::Public,
@@ -245,6 +255,14 @@ async fn build_model_ref_completer(
 
     let model_config = ModelConfig::new(&model.model)?;
     let provider = crate::providers::create(&model.provider, model_config).await?;
+    // AFTER `create`: the tier belongs to the instance that was resolved, not to
+    // the name the manifest asked for. Constructing it discloses nothing.
+    crate::privacy::assert_alt_provider_allowed(
+        "digesting this conversation",
+        provider.as_ref(),
+        session,
+        "the knowledge base's default model",
+    )?;
     let (completer, tier) = ProviderCompleter::paired(provider);
     Ok((Box::new(completer), tier))
 }
@@ -417,6 +435,57 @@ mod tests {
         assert!(!err.contains("omop"), "{err}");
         assert!(!err.contains("one of"), "an empty candidate list: {err}");
         Ok(())
+    }
+
+    /// Issue #56 Gate H. A scheduled knowledge job prefers the target KB's
+    /// `default_model` over the agent's own provider, so the transcripts it
+    /// digests go to a provider the session row never records — and
+    /// `build_model_ref_completer` is reached from neither
+    /// `Agent::update_provider` nor `Agent::reply`.
+    #[tokio::test]
+    async fn the_knowledge_default_model_obeys_the_barrier() {
+        use super::build_model_ref_completer;
+        use crate::privacy::SessionClassification;
+        use biorouter_mcp::knowledge::types::ModelRef;
+        use std::collections::HashMap;
+
+        fn ollama_at(host: &str) -> HashMap<String, String> {
+            HashMap::from([("OLLAMA_HOST".to_string(), host.to_string())])
+        }
+        let model = ModelRef {
+            provider: "ollama".to_string(),
+            model: "qwen3".to_string(),
+        };
+
+        let err = crate::config::with_config_overrides(
+            // Not this machine ⇒ `tier()` says Public, from a real provider.
+            ollama_at("https://api.example-saas.invalid"),
+            build_model_ref_completer(&model, SessionClassification::Private),
+        )
+        .await
+        // `Completer` is not `Debug`, so the Ok side cannot be unwrapped for a
+        // message; match instead.
+        .err()
+        .expect("a private chat may not digest itself on a public model")
+        .to_string();
+        assert!(
+            err.to_lowercase().contains("private"),
+            "the refusal has to say why, got: {err}"
+        );
+
+        // Both directions, or the gate is just "refuse everyone".
+        assert!(crate::config::with_config_overrides(
+            ollama_at("http://localhost:11434"),
+            build_model_ref_completer(&model, SessionClassification::Private),
+        )
+        .await
+        .is_ok());
+        assert!(crate::config::with_config_overrides(
+            ollama_at("https://api.example-saas.invalid"),
+            build_model_ref_completer(&model, SessionClassification::Public),
+        )
+        .await
+        .is_ok());
     }
 
     #[test]

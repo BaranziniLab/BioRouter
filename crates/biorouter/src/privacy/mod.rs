@@ -17,12 +17,14 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod alt_provider;
 pub mod capability;
 pub mod config_keys;
 pub mod extensions;
 pub mod refusal;
 mod registry_private;
 
+pub use alt_provider::assert_alt_provider_allowed;
 pub use capability::CallCapability;
 pub use config_keys::is_capability_key;
 pub use extensions::{classify_extension, private_extension_ids};
