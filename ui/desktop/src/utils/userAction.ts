@@ -18,6 +18,35 @@
  * model reaches these same routes over HTTP without going through here, and that
  * is precisely the caller the header separates out.
  */
+/**
+ * Issue #56 DR-16. The substring that marks a 409 as *"this request carried no
+ * proof it came from the user"*.
+ *
+ * ⚠ Mirrored verbatim from `USER_ACTION_REFUSAL_MARKER` in
+ * `crates/biorouter/src/privacy/refusal.rs`, where a unit test asserts both
+ * refusals the model picker can receive carry it. Change both together.
+ */
+export const USER_ACTION_REFUSAL_MARKER = "is the user's decision, not yours";
+
+/**
+ * Was this thrown value the daemon refusing a raise for want of a user-proof?
+ *
+ * Under `throwOnError` the generated @hey-api client throws the PARSED BODY, not
+ * the response (`api/client/client.gen.ts`), so the 409 status never reaches the
+ * catch arm and a substring is all there is to go on. A `typeof === 'string'`
+ * test alone would not do: a 500 from the same routes also carries a plain-text
+ * body, and reporting one as "your backend has no user-action key" would be a
+ * confident lie. Gate A's refusal is a typed JSON object and is matched before
+ * this.
+ *
+ * The user should ordinarily never see the toast this gates — the picker carries
+ * the proof. It appears on a backend the user started themselves (open question
+ * 23), which is why the message names that cause rather than accusing the person
+ * at the keyboard of being a model.
+ */
+export const isUserActionRefusal = (error: unknown): boolean =>
+  typeof error === 'string' && error.includes(USER_ACTION_REFUSAL_MARKER);
+
 export const userActionHeaders = async (): Promise<Record<string, string>> => {
   try {
     return { 'X-User-Action': await window.electron.getUserActionKey() };

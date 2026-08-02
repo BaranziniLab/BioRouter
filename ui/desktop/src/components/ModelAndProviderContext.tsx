@@ -16,7 +16,7 @@ import {
   type PrivacyBarrierBody,
 } from '../api';
 import { useConfig } from './ConfigContext';
-import { userActionHeaders } from '../utils/userAction';
+import { isUserActionRefusal, userActionHeaders } from '../utils/userAction';
 import {
   getModelDisplayName,
   getProviderDisplayName,
@@ -40,6 +40,22 @@ export const UNKNOWN_PROVIDER_MSG = 'Unknown provider in config -- please inspec
 // success
 const CHANGE_MODEL_TOAST_TITLE = 'Model changed';
 const SWITCH_MODEL_SUCCESS_MSG = 'Successfully switched models';
+
+/**
+ * Issue #56 DR-16. The one refusal in this feature addressed to the USER rather
+ * than to the model, and one the user should ordinarily never see: the model
+ * picker carries the proof, so this appears only on a backend the app did not
+ * start and which was therefore handed no user-action key (open question 23).
+ *
+ * It names that cause instead of accusing the person at the keyboard of being a
+ * model, and it says what still works — because most of the app does.
+ */
+export const NO_USER_PROOF_TOAST_TITLE = "Can't switch this chat to a private model";
+export const NO_USER_PROOF_TOAST_MSG =
+  'This chat is connected to a backend started outside the Biorouter app, which has no way to ' +
+  'confirm a request came from you. Chats already on a private model keep working, and ' +
+  'switching to a public model still works. To use a private model, open this chat in the ' +
+  'Biorouter app.';
 
 /**
  * Whether `currentModel`/`currentProvider` mean anything yet.
@@ -365,6 +381,21 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
             title: `Can't switch this chat to ${model.alias ?? modelName}`,
             msg: privacyBarrierMessage(barrier),
             traceback: privacyBarrierMessage(barrier),
+          });
+          return false;
+        }
+        // Issue #56 DR-16. The daemon refused because the request carried no
+        // proof it came from the user — which on this path means the backend was
+        // started outside the app and has no user-action key at all, since the
+        // picker always sends the header. The refusal body is model-facing
+        // prose; falling through to the generic arm below would report a policy
+        // refusal as a provider failure with a raw error string, which is the
+        // failure mode the Gate A comment above exists to prevent.
+        if (isUserActionRefusal(error)) {
+          toastError({
+            title: NO_USER_PROOF_TOAST_TITLE,
+            msg: NO_USER_PROOF_TOAST_MSG,
+            traceback: errorMessage(error),
           });
           return false;
         }

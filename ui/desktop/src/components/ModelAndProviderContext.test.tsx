@@ -373,6 +373,91 @@ describe('ModelAndProviderProvider privacy barrier', () => {
   });
 });
 
+// Issue #56 DR-16. A backend the app did not start was handed no user-action
+// key, so it refuses the picker's own raise. That refusal arrives as a PLAIN
+// STRING (not the typed Gate A body), so `privacyBarrierOf` returns null and the
+// refusal used to fall through to the generic arm — reporting a policy decision
+// as "anthropic/claude-opus-4 failed" with the model-facing prose as the
+// message, which is the exact failure the Gate A comment three lines above it
+// exists to prevent.
+describe('ModelAndProviderProvider user-proof refusal', () => {
+  // The real 409 body, verbatim from `PrivacyRefusal::TierRaiseNeedsUser`
+  // (crates/biorouter/src/privacy/refusal.rs). Typed out rather than assembled
+  // from the marker constant, because a fixture built from the thing under test
+  // would pass however the two drift; the Rust side has its own test that the
+  // marker survives a reword.
+  const tierRaiseNeedsUser409 =
+    "Switching this chat to a private model is the user's decision, not yours. The request to " +
+    "switch it to 'llamacpp' did not come from the model picker, so the chat is unchanged and " +
+    'still on its current model. Do not retry — the same call will be refused again. If this ' +
+    'task genuinely needs a private model, stop and ask the user to switch this chat to a ' +
+    'private model first — in the desktop app under Settings > Models, or with the model chip ' +
+    'in the composer.';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.read.mockImplementation(async (key: string) => {
+      if (key === 'BIOROUTER_MODEL') return 'gpt-5.5';
+      if (key === 'BIOROUTER_PROVIDER') return 'versa_azure';
+      return null;
+    });
+    mocks.getProviders.mockResolvedValue([]);
+    mocks.setConfigProvider.mockResolvedValue(undefined);
+    mocks.refreshConfig.mockResolvedValue(undefined);
+    mocks.updateAgentProvider.mockImplementation(clientRejecting(tierRaiseNeedsUser409));
+  });
+
+  it('explains the backend, instead of reporting the refusal as a provider failure', async () => {
+    render(
+      <ModelAndProviderProvider>
+        <SessionSwitchHarness />
+      </ModelAndProviderProvider>
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Switch this chat' }));
+
+    await waitFor(() => expect(screen.getByTestId('change-result')).toHaveTextContent('false'));
+    expect(mocks.toastSuccess).not.toHaveBeenCalled();
+    // The global default must not be rewritten by a refused per-session bind.
+    expect(mocks.setConfigProvider).not.toHaveBeenCalled();
+    expect(mocks.toastError).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "Can't switch this chat to a private model",
+        msg: expect.stringContaining('started outside the Biorouter app'),
+      })
+    );
+    // Not the generic arm: the model-facing prose is not a user-facing message,
+    // and the title must not read as a broken provider.
+    expect(mocks.toastError).not.toHaveBeenCalledWith(
+      expect.objectContaining({ title: expect.stringContaining('failed') })
+    );
+  });
+
+  it('still reports an ordinary failure of the same route as a failure', async () => {
+    // The discriminator is the marker, not "the body happens to be a string":
+    // a 500 from `/agent/update_provider` also carries plain text, and telling
+    // the user their backend has no user-action key would be a confident lie.
+    mocks.updateAgentProvider.mockImplementation(
+      clientRejecting('Failed to create anthropic provider: no API key configured')
+    );
+    render(
+      <ModelAndProviderProvider>
+        <SessionSwitchHarness />
+      </ModelAndProviderProvider>
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Switch this chat' }));
+
+    await waitFor(() => expect(screen.getByTestId('change-result')).toHaveTextContent('false'));
+    expect(mocks.toastError).toHaveBeenCalledWith(
+      expect.objectContaining({ title: expect.stringContaining('failed') })
+    );
+    expect(mocks.toastError).not.toHaveBeenCalledWith(
+      expect.objectContaining({ title: "Can't switch this chat to a private model" })
+    );
+  });
+});
+
 // A null provider/model means two different things — "not read yet" and
 // "nothing is configured" — and consumers were sending users to Settings on
 // the first. The status says which.

@@ -30,6 +30,28 @@ pub const ASK_THE_USER_TO_SWITCH: &str =
     "ask the user to switch this chat to a private model first — in the desktop app under \
      Settings > Models, or with the model chip in the composer.";
 
+/// The substring that marks a refusal as *"this request carried no proof it came
+/// from the user"*, as opposed to any other failure of the same route.
+///
+/// It exists for the same reason [`TURN_REFUSAL_MARKER`] does: two independent
+/// readers key on this text. The model reads the whole sentence; the desktop
+/// renderer (`ModelAndProviderContext.changeModel`) has to tell this refusal
+/// apart from a 500 so it can explain the *cause* — a backend the app did not
+/// start, and therefore one that was handed no user-action key (open question
+/// 23) — instead of reporting a policy refusal as `${error}` under a
+/// "provider/model failed" title.
+///
+/// A substring is all the renderer has: under `throwOnError` the generated
+/// client throws the parsed BODY, not the response, so the 409 status never
+/// reaches the catch arm. Gate A's refusal is distinguishable because its body
+/// is a typed JSON object; these two are plain text, and plain text is also what
+/// a 500 from the same route carries.
+///
+/// ⚠ Mirrored verbatim in `ui/desktop/src/utils/userAction.ts`. A reword that
+/// dropped it here would put every refused switch back on the generic error
+/// toast, with nothing failing.
+pub const USER_ACTION_REFUSAL_MARKER: &str = "is the user's decision, not yours";
+
 /// DR-16's rule, as a predicate: raising a session's capability to Private is
 /// the user's act alone, and only an **upward** bind is a raise.
 ///
@@ -78,10 +100,11 @@ pub enum PrivacyRefusal {
     /// pass against any implementation that merely avoided typing one of three
     /// provider names into a constant.
     #[error(
-        "Switching this chat to a private model is the user's decision, not yours. The request \
-         to switch it to '{requested}' did not come from the model picker, so the chat is \
-         unchanged and still on its current model. Do not retry — the same call will be refused \
-         again. If this task genuinely needs a private model, stop and {}",
+        "Switching this chat to a private model {}. The request to switch it to '{requested}' \
+         did not come from the model picker, so the chat is unchanged and still on its current \
+         model. Do not retry — the same call will be refused again. If this task genuinely needs \
+         a private model, stop and {}",
+        USER_ACTION_REFUSAL_MARKER,
         ASK_THE_USER_TO_SWITCH
     )]
     TierRaiseNeedsUser { requested: String },
@@ -109,9 +132,10 @@ pub enum PrivacyRefusal {
     /// (`privacy::config_keys::CAPABILITY_CONFIG_KEYS`), and carried no
     /// user-proof.
     #[error(
-        "'{key}' decides what privacy level new chats start at, so changing it is the user's \
-         decision, not yours. The setting is unchanged. Do not retry. If *this* task needs a \
-         private model, that is a per-chat change and not a default: {}",
+        "'{key}' decides what privacy level new chats start at, so changing it {}. The setting \
+         is unchanged. Do not retry. If *this* task needs a private model, that is a per-chat \
+         change and not a default: {}",
+        USER_ACTION_REFUSAL_MARKER,
         ASK_THE_USER_TO_SWITCH
     )]
     CapabilityConfigNeedsUser { key: String },
@@ -454,6 +478,44 @@ mod tests {
                 "a refusal the model will retry is a loop: {msg}"
             );
         }
+    }
+
+    /// The two refusals the desktop renderer can receive from the model picker
+    /// both carry the marker it keys on, and the one it cannot receive is not
+    /// required to.
+    ///
+    /// `changeModel` calls `/agent/update_provider` and then
+    /// `/config/set_provider`; a DR-16 refusal from either is the same fact —
+    /// this backend was handed no user-action key — and gets the same user-facing
+    /// explanation. `/agent/add_extension` is not on that path, and its refusal
+    /// is about the extension rather than about the proof, so it is deliberately
+    /// outside the marker.
+    #[test]
+    fn the_two_refusals_the_picker_can_receive_carry_the_marker_the_renderer_keys_on() {
+        for msg in [
+            PrivacyRefusal::TierRaiseNeedsUser {
+                requested: "llamacpp".into(),
+            }
+            .to_string(),
+            PrivacyRefusal::CapabilityConfigNeedsUser {
+                key: "BIOROUTER_PROVIDER".into(),
+            }
+            .to_string(),
+        ] {
+            assert!(
+                msg.contains(USER_ACTION_REFUSAL_MARKER),
+                "the renderer cannot tell this refusal from a 500 and will report it as a \
+                 provider failure: {msg}"
+            );
+        }
+        assert!(
+            !PrivacyRefusal::PrivateExtensionOverHttp {
+                name: "ucsfomopagent".into(),
+            }
+            .to_string()
+            .contains(USER_ACTION_REFUSAL_MARKER),
+            "the extension refusal is not a missing-user-proof refusal and must not claim to be"
+        );
     }
 
     /// Gate D's refusal is a constant for a reason (a model that sees a
