@@ -10006,8 +10006,23 @@ mod gate_a_bind_tests {
         // other at all — they interleave only at `.await` points, in the same
         // order every iteration. Two hundred iterations of a deterministic
         // schedule is one iteration, run two hundred times.
+        //
+        // ⚠ The closing assertion is a claim about a SCHEDULER, and the minority
+        // arm is thin — 11, 13 and 20 refusals per 200 on three measured runs
+        // here (8 cores, load ~7). A runner that serialises the two spawns
+        // harder could go one-sided against a perfectly correct implementation,
+        // and that failure reads as a code defect. So the loop runs a FLOOR of
+        // 200 iterations always, and then keeps going while it has still seen
+        // only one outcome, up to a CEILING. This is NOT an early exit and
+        // cannot shorten the fuzz: the per-iteration invariant is checked on
+        // every iteration either way, so the ceiling only ever ADDS coverage,
+        // on the machines where the floor was not enough.
+        const FLOOR: usize = 200;
+        const CEILING: usize = 1000;
         let (mut bound, mut refused) = (0usize, 0usize);
-        for _ in 0..200 {
+        let mut iterations = 0usize;
+        while iterations < FLOOR || (iterations < CEILING && (bound == 0 || refused == 0)) {
+            iterations += 1;
             let (_dir, agent, s) = agent_on(private_provider()).await;
             let sm = manager(&agent);
             let a = tokio::spawn({
@@ -10039,8 +10054,8 @@ mod gate_a_bind_tests {
         }
         assert!(
             bound > 0 && refused > 0,
-            "200 iterations produced {bound} bound / {refused} refused — one-sided, so the loop \
-             raced nothing. That is the state this test used to report as a pass."
+            "{iterations} iterations produced {bound} bound / {refused} refused — one-sided, so \
+             the loop raced nothing. That is the state this test used to report as a pass."
         );
     }
 }
