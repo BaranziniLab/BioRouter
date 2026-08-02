@@ -4199,8 +4199,10 @@ impl CallCapability {
 }
 ```
 
-**Exactly four production entries sample it** — the same four Task 14's own comment enumerates, and
-no fifth:
+**Exactly four production entries decide a TOOL CALL's capability** — the same four Task 14's own
+comment enumerates, and no fifth. (Task 15 adds a fifth *constructing* site, but it is not a tool
+call: `assert_extension_reachable` is Gate C's predicate for the eight siblings that reach an MCP
+server without being one. See the sampling gate at the end of this task.)
 
 | Entry | Anchor | Samples |
 |---|---|---|
@@ -4445,12 +4447,21 @@ echo "expect: NO OUTPUT. Any hit is a second sample. The method must not exist;"
 echo "        if it does exist, someone will call it, and Gate C will drift back to it."
 grep -rn "fn capability_tier" --include='*.rs' crates/ ; echo "expect: no output"
 
-# FOUR entries decide a capability, but only THREE of them CONSTRUCT one, so
-# three is what this census prints. The fourth — the `execute_code` JS bridge —
-# threads the capability its own `McpMeta` carried in, exactly as the ⚠ table
-# above says; it constructs nothing and can never appear in a grep for these two
-# spellings. (The first version of this gate listed it as a fourth line and
-# therefore could not pass.)
+# FOUR entries decide a TOOL CALL's capability, but only THREE of them CONSTRUCT
+# one. The fourth — the `execute_code` JS bridge — threads the capability its own
+# `McpMeta` carried in, exactly as the ⚠ table above says; it constructs nothing
+# and can never appear in a grep for these two spellings. (The first version of
+# this gate listed it as a fourth line and therefore could not pass.)
+#
+# Task 15 adds the FOURTH constructing entry, and it is not a tool call:
+# `assert_extension_reachable` is Gate C's predicate for the eight siblings that
+# reach an MCP server WITHOUT being a tool call — resource reads, resource and
+# prompt listings, `get_prompt`. Six of those (a route handler,
+# `Agent::list_extension_prompts`, the apps' UI-resource sweep) have no admitted
+# capability to inherit, so the sample there IS the decision, taken once at the
+# decision rather than a second time after one. The two that ARE tool calls
+# (`extensionmanager__read_resource` / `__list_resources`) thread their
+# `McpMeta.capability` in as `Some(..)` and never reach the sampler.
 #
 # There is deliberately NO `grep -v "mod tests"` here. It never worked — it drops
 # only lines containing that literal string, which a call to either constructor
@@ -4461,11 +4472,12 @@ grep -rn "fn capability_tier" --include='*.rs' crates/ ; echo "expect: no output
 # outside this window; everything else uses `CallCapability::for_test*`.
 grep -rn "CallCapability::sample(\|CallCapability::public_enforced(" --include='*.rs' crates/*/src/ \
   | sort
-echo "expect: exactly 3 lines —"
+echo "expect: exactly 4 lines —"
 echo "  crates/biorouter/src/agents/agent.rs           (the agent loop, dispatch_tool_call)"
 echo "  crates/biorouter/src/agents/agent.rs           (call_prefetch_tool)"
 echo "  crates/biorouter-server/src/routes/agent.rs    (call_tool -> public_enforced)"
-echo "A FOURTH is a new entry nobody classified; a SECOND means an entry stopped deciding."
+echo "  crates/biorouter/src/agents/extension_manager.rs (Task 15, assert_extension_reachable)"
+echo "A FIFTH is a new entry nobody classified; a THIRD means an entry stopped deciding."
 echo "Task 14C adds two more public_enforced() lines in biorouter-server; it owns updating this."
 
 # The provider mutex is not read anywhere a gate can see it. `p.tier()` outside
