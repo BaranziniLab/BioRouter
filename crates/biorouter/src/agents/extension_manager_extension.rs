@@ -258,9 +258,16 @@ impl ExtensionManagerClient {
             .map_err(|e| ErrorData::new(ErrorCode::INTERNAL_ERROR, e.to_string(), None))
     }
 
+    /// `admitted` is the capability THIS tool call was admitted on, taken
+    /// straight off its `McpMeta` and threaded into Gate C's sibling guard
+    /// (issue #56). The manager must not sample its own: this runs inside the
+    /// driven future, an unbounded wall-clock gap past admission, and a fresh
+    /// read there is what would let a Public-admitted call list a private
+    /// extension's resources after the user switched models mid-turn.
     async fn handle_list_resources(
         &self,
         arguments: Option<JsonObject>,
+        admitted: crate::privacy::CallCapability,
     ) -> Result<Vec<Content>, ExtensionManagerToolError> {
         if let Some(weak_ref) = &self.context.extension_manager {
             if let Some(extension_manager) = weak_ref.upgrade() {
@@ -269,7 +276,11 @@ impl ExtensionManagerClient {
                     .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
 
                 match extension_manager
-                    .list_resources(params, tokio_util::sync::CancellationToken::default())
+                    .list_resources(
+                        params,
+                        Some(admitted),
+                        tokio_util::sync::CancellationToken::default(),
+                    )
                     .await
                 {
                     Ok(content) => Ok(content),
@@ -285,9 +296,13 @@ impl ExtensionManagerClient {
         }
     }
 
+    /// `admitted`: see [`Self::handle_list_resources`]. `read_resource` with no
+    /// `extension_name` fans out over every installed extension, so the value
+    /// threaded here decides which servers this call is allowed to probe.
     async fn handle_read_resource(
         &self,
         arguments: Option<JsonObject>,
+        admitted: crate::privacy::CallCapability,
     ) -> Result<Vec<Content>, ExtensionManagerToolError> {
         if let Some(weak_ref) = &self.context.extension_manager {
             if let Some(extension_manager) = weak_ref.upgrade() {
@@ -296,7 +311,11 @@ impl ExtensionManagerClient {
                     .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
 
                 match extension_manager
-                    .read_resource_tool(params, tokio_util::sync::CancellationToken::default())
+                    .read_resource_tool(
+                        params,
+                        Some(admitted),
+                        tokio_util::sync::CancellationToken::default(),
+                    )
                     .await
                 {
                     Ok(content) => Ok(content),
@@ -457,7 +476,7 @@ impl McpClientTrait for ExtensionManagerClient {
         &self,
         name: &str,
         arguments: Option<JsonObject>,
-        _meta: McpMeta,
+        meta: McpMeta,
         _cancellation_token: CancellationToken,
     ) -> Result<CallToolResult, Error> {
         let result = match name {
@@ -465,8 +484,13 @@ impl McpClientTrait for ExtensionManagerClient {
                 self.handle_search_available_extensions().await
             }
             MANAGE_EXTENSIONS_TOOL_NAME => self.handle_manage_extensions(arguments).await,
-            LIST_RESOURCES_TOOL_NAME => self.handle_list_resources(arguments).await,
-            READ_RESOURCE_TOOL_NAME => self.handle_read_resource(arguments).await,
+            // Issue #56: these two reach an MCP server, so they carry the
+            // capability this call was ADMITTED on into Gate C's sibling guard
+            // rather than letting the manager sample a newer one.
+            LIST_RESOURCES_TOOL_NAME => {
+                self.handle_list_resources(arguments, meta.capability).await
+            }
+            READ_RESOURCE_TOOL_NAME => self.handle_read_resource(arguments, meta.capability).await,
             _ => Err(ExtensionManagerToolError::UnknownTool {
                 tool_name: name.to_string(),
             }),

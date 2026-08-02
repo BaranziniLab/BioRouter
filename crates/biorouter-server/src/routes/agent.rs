@@ -1183,6 +1183,10 @@ async fn read_resource(
         .read_resource(
             &payload.uri,
             &payload.extension_name,
+            // Issue #56: a route, not a tool call — there is no admitted turn
+            // whose capability this could inherit, so Gate C's sibling guard
+            // takes its own reading of the session's bound model.
+            None,
             CancellationToken::default(),
         )
         .await

@@ -1536,16 +1536,21 @@ impl ExtensionManager {
     /// actively probes each private server on the model's behalf and swallows
     /// the failure.
     ///
-    /// **This samples; `dispatch_tool_call` does not, and the asymmetry is the
-    /// point.** That function takes its [`crate::privacy::CallCapability`] as a
-    /// parameter because four production entries converge on it, each with its
-    /// own admission point, and a second read inside the driven future is what
-    /// would let a Public-admitted call run with Private reach. These eight have
-    /// no admitted capability to inherit — they are called from route handlers,
-    /// from `Agent::list_extension_prompts`, from the apps' UI-resource sweep
-    /// and from the `platform__read_resource` tool — so the only value available
-    /// is the one at the decision, and reading it once there is a single read,
-    /// not the read-then-read the capability exists to prevent.
+    /// **`admitted` is the capability this reach was ADMITTED on, when there is
+    /// one.** Two of the eight — `extensionmanager__read_resource` and
+    /// `extensionmanager__list_resources` — are model-callable tools that arrive
+    /// through `dispatch_tool_call`, so their call already carries a capability
+    /// in its [`McpMeta`]; those paths thread it here and it is used verbatim.
+    /// Re-deriving one inside the driven future is precisely the read-then-read
+    /// [`crate::privacy::CallCapability`] exists to prevent: the provider mutex
+    /// can be reassigned mid-turn with no turn lock, and a resample would let a
+    /// Public-admitted call run with Private reach.
+    ///
+    /// The remaining six have no admitted capability to inherit — they are
+    /// called from route handlers, from `Agent::list_extension_prompts` and from
+    /// the apps' UI-resource sweep, none of which is a tool call — so they pass
+    /// `None` and the only value available is the one read at the decision,
+    /// which is a single read rather than a second one.
     ///
     /// The tier is looked up under its own lock rather than beside the client,
     /// which [`Self::get_client_for_tool`] deliberately refuses to do. That is
@@ -1557,8 +1562,15 @@ impl ExtensionManager {
     /// An unknown name reads Private — fail-closed, the opposite direction from
     /// `classify_extension`'s fail-open ruling, because here the alternative is
     /// to permit a reach at a name the manager could not resolve.
-    async fn assert_extension_reachable(&self, name: &str) -> Result<(), ErrorData> {
-        let cap = crate::privacy::CallCapability::sample(&self.provider).await;
+    async fn assert_extension_reachable(
+        &self,
+        name: &str,
+        admitted: Option<crate::privacy::CallCapability>,
+    ) -> Result<(), ErrorData> {
+        let cap = match admitted {
+            Some(cap) => cap,
+            None => crate::privacy::CallCapability::sample(&self.provider).await,
+        };
         let tier = self
             .extensions
             .lock()
@@ -1575,10 +1587,15 @@ impl ExtensionManager {
         }
     }
 
-    // Function that gets executed for read_resource tool
+    /// Function that gets executed for read_resource tool.
+    ///
+    /// `admitted` is the capability the `extensionmanager__read_resource` call
+    /// was admitted on — see [`Self::assert_extension_reachable`]. `None` from
+    /// any entry that is not that tool call.
     pub async fn read_resource_tool(
         &self,
         params: Value,
+        admitted: Option<crate::privacy::CallCapability>,
         cancellation_token: CancellationToken,
     ) -> Result<Vec<Content>, ErrorData> {
         let uri = require_str_parameter(&params, "uri")?;
@@ -1587,8 +1604,11 @@ impl ExtensionManager {
 
         // If extension name is provided, we can just look it up
         if let Some(ext_name) = extension_name {
+            // Gate C's sibling for this branch is `read_resource`'s own guard,
+            // reached with the same `admitted` capability rather than a fresh
+            // sample — one guard, one decision, no second read.
             let read_result = self
-                .read_resource(uri, ext_name, cancellation_token.clone())
+                .read_resource(uri, ext_name, admitted, cancellation_token.clone())
                 .await?;
 
             let mut result = Vec::new();
@@ -1615,14 +1635,14 @@ impl ExtensionManager {
             // merely has one private extension installed; here the private
             // server is skipped and the public ones still answer.
             if self
-                .assert_extension_reachable(&extension_name)
+                .assert_extension_reachable(&extension_name, admitted)
                 .await
                 .is_err()
             {
                 continue;
             }
             let read_result = self
-                .read_resource(uri, &extension_name, cancellation_token.clone())
+                .read_resource(uri, &extension_name, admitted, cancellation_token.clone())
                 .await;
             match read_result {
                 Ok(read_result) => {
@@ -1660,14 +1680,19 @@ impl ExtensionManager {
         ))
     }
 
+    /// `admitted` carries the capability a `extensionmanager__read_resource`
+    /// tool call was admitted on; the route handler and the apps' sweep, which
+    /// are not tool calls, pass `None`.
     pub async fn read_resource(
         &self,
         uri: &str,
         extension_name: &str,
+        admitted: Option<crate::privacy::CallCapability>,
         cancellation_token: CancellationToken,
     ) -> Result<rmcp::model::ReadResourceResult, ErrorData> {
         // Gate C's sibling: the name is known, so refuse before any client call.
-        self.assert_extension_reachable(extension_name).await?;
+        self.assert_extension_reachable(extension_name, admitted)
+            .await?;
 
         let available_extensions = self
             .extensions
@@ -1715,7 +1740,7 @@ impl ExtensionManager {
             // Gate C's sibling, INSIDE the loop: one private extension must not
             // empty a public model's whole UI-resource sweep.
             if self
-                .assert_extension_reachable(&extension_name)
+                .assert_extension_reachable(&extension_name, None)
                 .await
                 .is_err()
             {
@@ -1746,13 +1771,15 @@ impl ExtensionManager {
     async fn list_resources_from_extension(
         &self,
         extension_name: &str,
+        admitted: Option<crate::privacy::CallCapability>,
         cancellation_token: CancellationToken,
     ) -> Result<Vec<Content>, ErrorData> {
         // Gate C's sibling. This is also the guard that keeps `list_resources`'
         // fan-out partial rather than all-or-nothing: the fan-out drives one of
         // these per extension and collects the failures, so a refusal here drops
         // exactly the private extension.
-        self.assert_extension_reachable(extension_name).await?;
+        self.assert_extension_reachable(extension_name, admitted)
+            .await?;
 
         let client = self
             .get_server_client(extension_name)
@@ -1788,9 +1815,13 @@ impl ExtensionManager {
             })
     }
 
+    /// `admitted` is the capability the `extensionmanager__list_resources` call
+    /// was admitted on — see [`Self::assert_extension_reachable`]. `None` from
+    /// any entry that is not that tool call.
     pub async fn list_resources(
         &self,
         params: Value,
+        admitted: Option<crate::privacy::CallCapability>,
         cancellation_token: CancellationToken,
     ) -> Result<Vec<Content>, ErrorData> {
         let extension = params.get("extension").and_then(|v| v.as_str());
@@ -1802,10 +1833,11 @@ impl ExtensionManager {
                 // but the named branch is a distinct entry point, and stating the
                 // refusal here means a later refactor that inlines the helper
                 // cannot silently drop it.
-                self.assert_extension_reachable(extension_name).await?;
+                self.assert_extension_reachable(extension_name, admitted)
+                    .await?;
 
                 // Handle single extension case
-                self.list_resources_from_extension(extension_name, cancellation_token)
+                self.list_resources_from_extension(extension_name, admitted, cancellation_token)
                     .await
             }
             None => {
@@ -1822,7 +1854,7 @@ impl ExtensionManager {
                     .for_each(|name| {
                         let token = cancellation_token.clone();
                         futures.push(async move {
-                            self.list_resources_from_extension(&name.clone(), token)
+                            self.list_resources_from_extension(&name.clone(), admitted, token)
                                 .await
                         });
                     });
@@ -2068,7 +2100,9 @@ impl ExtensionManager {
         cancellation_token: CancellationToken,
     ) -> Result<Vec<Prompt>, ErrorData> {
         // Gate C's sibling: the name is known, so refuse before any client call.
-        self.assert_extension_reachable(extension_name).await?;
+        // Prompt listing is not a tool call — no admitted capability to inherit.
+        self.assert_extension_reachable(extension_name, None)
+            .await?;
 
         let client = self
             .get_server_client(extension_name)
@@ -2106,7 +2140,7 @@ impl ExtensionManager {
             // Gate C's sibling, INSIDE the loop: a private extension is left out
             // of the map and every public one is still listed.
             if self
-                .assert_extension_reachable(&extension_name)
+                .assert_extension_reachable(&extension_name, None)
                 .await
                 .is_err()
             {
@@ -2161,8 +2195,9 @@ impl ExtensionManager {
         // Gate C's sibling. An MCP prompt body is server-authored text that
         // lands in the transcript verbatim, so this refuses before the fetch —
         // the refusal carries the extension name and the two tiers and nothing
-        // the server wrote.
-        self.assert_extension_reachable(extension_name).await?;
+        // the server wrote. Not a tool call, so nothing to inherit.
+        self.assert_extension_reachable(extension_name, None)
+            .await?;
 
         let client = self
             .get_server_client(extension_name)
@@ -4879,35 +4914,41 @@ mod tests {
         match probe {
             "read_resource_tool (fan-out)" => format!(
                 "{:?}",
-                em.read_resource_tool(serde_json::json!({ "uri": "res://x" }), tok())
+                em.read_resource_tool(serde_json::json!({ "uri": "res://x" }), None, tok())
                     .await
             ),
             "read_resource_tool (named)" => format!(
                 "{:?}",
                 em.read_resource_tool(
                     serde_json::json!({ "uri": "res://x", "extension_name": "ucsfomopagent" }),
+                    None,
                     tok()
                 )
                 .await
             ),
             "read_resource" => format!(
                 "{:?}",
-                em.read_resource("res://x", "ucsfomopagent", tok()).await
+                em.read_resource("res://x", "ucsfomopagent", None, tok())
+                    .await
             ),
             "get_ui_resources" => format!("{:?}", em.get_ui_resources().await),
             "list_resources_from_extension" => format!(
                 "{:?}",
-                em.list_resources_from_extension("ucsfomopagent", tok())
+                em.list_resources_from_extension("ucsfomopagent", None, tok())
                     .await
             ),
             "list_resources (named)" => format!(
                 "{:?}",
-                em.list_resources(serde_json::json!({ "extension": "ucsfomopagent" }), tok())
-                    .await
+                em.list_resources(
+                    serde_json::json!({ "extension": "ucsfomopagent" }),
+                    None,
+                    tok()
+                )
+                .await
             ),
             "list_resources (fan-out)" => format!(
                 "{:?}",
-                em.list_resources(serde_json::json!({}), tok()).await
+                em.list_resources(serde_json::json!({}), None, tok()).await
             ),
             "list_prompts_from_extension" => format!(
                 "{:?}",
@@ -4980,6 +5021,7 @@ mod tests {
         let out = em
             .read_resource_tool(
                 serde_json::json!({ "uri": "res://x" }),
+                None,
                 CancellationToken::default(),
             )
             .await
@@ -5045,5 +5087,85 @@ mod tests {
             "{rendered}"
         );
         assert_eq!(private.contacted(), 0);
+    }
+
+    /// Two of the eight siblings are reachable from a TOOL CALL, so they are the
+    /// two that have an admitted capability to inherit — and must inherit it.
+    ///
+    /// `extensionmanager__read_resource` and `extensionmanager__list_resources`
+    /// arrive at the manager through `dispatch_tool_call`, which puts the
+    /// capability the call was ADMITTED on into the call's [`McpMeta`]. Sampling
+    /// a fresh one inside the driven future is exactly the read-then-read
+    /// [`crate::privacy::CallCapability`] exists to prevent: the model asks for a
+    /// resource while a public model is bound, the user switches to a private
+    /// model mid-turn (Gate A permits that direction, and `update_provider` takes
+    /// the provider mutex with no turn lock), and a resample would hand the
+    /// Public-admitted call Private reach.
+    ///
+    /// Driven through the real `ExtensionManagerClient::call_tool`, not through
+    /// the manager directly, because the defect this pins was the meta being
+    /// bound as `_meta` and dropped — a manager-level test would pass with the
+    /// wiring still absent.
+    #[tokio::test]
+    async fn a_public_admitted_resource_tool_call_does_not_gain_private_reach_mid_turn() {
+        let (_dir, em, private, _public) =
+            siblings_fixture(crate::privacy::ProviderTier::Public, false).await;
+        let em = Arc::new(em);
+
+        let client = crate::agents::extension_manager_extension::ExtensionManagerClient::new(
+            PlatformExtensionContext {
+                extension_manager: Some(Arc::downgrade(&em)),
+                session_manager: em.context.session_manager.clone(),
+            },
+        )
+        .expect("the extension-manager platform client constructs");
+
+        // What `dispatch_tool_call` admitted: a public model was bound then.
+        let admitted =
+            crate::privacy::CallCapability::for_test(crate::privacy::ProviderTier::Public, true);
+
+        // ...and the user switches to a private model while the turn is in
+        // flight. A resample from here on reads Private.
+        *em.provider.lock().await = Some(provider_at(crate::privacy::ProviderTier::Private));
+
+        for (tool, args) in [
+            (
+                crate::agents::extension_manager_extension::READ_RESOURCE_TOOL_NAME,
+                serde_json::json!({ "uri": "res://x", "extension_name": "ucsfomopagent" }),
+            ),
+            (
+                crate::agents::extension_manager_extension::READ_RESOURCE_TOOL_NAME,
+                serde_json::json!({ "uri": "res://x" }),
+            ),
+            (
+                crate::agents::extension_manager_extension::LIST_RESOURCES_TOOL_NAME,
+                serde_json::json!({ "extension": "ucsfomopagent" }),
+            ),
+            (
+                crate::agents::extension_manager_extension::LIST_RESOURCES_TOOL_NAME,
+                serde_json::json!({}),
+            ),
+        ] {
+            let out = client
+                .call_tool(
+                    tool,
+                    args.as_object().cloned(),
+                    McpMeta::new("session", admitted),
+                    CancellationToken::default(),
+                )
+                .await;
+            let rendered = format!("{out:?}");
+            assert!(
+                !rendered.contains(&private.sentinel()),
+                "{tool} {args} handed a Public-admitted call the private server's content: \
+                 {rendered}"
+            );
+            assert_eq!(
+                private.contacted(),
+                0,
+                "{tool} {args} resampled the provider and reached the private server on a \
+                 capability admitted while a PUBLIC model was bound (returned: {rendered})"
+            );
+        }
     }
 }
