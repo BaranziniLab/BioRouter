@@ -2711,6 +2711,10 @@ export type AgentAddExtensionErrors = {
      */
     401: unknown;
     /**
+     * Refused by a privacy boundary (issue #56, DR-16): a private extension cannot be attached to a chat running on a public model
+     */
+    409: unknown;
+    /**
      * Agent not initialized
      */
     424: unknown;
@@ -3100,7 +3104,7 @@ export type UpdateAgentProviderErrors = {
      */
     401: unknown;
     /**
-     * Refused by a privacy boundary (issue #56, Gate A): a public model cannot be bound to a private chat
+     * Refused by a privacy boundary (issue #56). Gate A: a public model cannot be bound to a private chat (body = PrivacyBarrierBody). DR-16: the bind raises this chat's capability to Private and the request carried no proof it came from the user (body = plain text)
      */
     409: PrivacyBarrierBody;
     /**
@@ -3626,6 +3630,24 @@ export type SetConfigProviderData = {
     url: '/config/set_provider';
 };
 
+export type SetConfigProviderErrors = {
+    /**
+     * The provider could not be constructed
+     */
+    400: unknown;
+    /**
+     * Refused by a privacy boundary (issue #56, DR-16): this route writes BIOROUTER_PROVIDER, which decides what privacy capability new chats start at, so it requires proof the request came from the user
+     */
+    409: unknown;
+};
+
+export type SetConfigProviderResponses = {
+    /**
+     * Default provider and model set
+     */
+    200: unknown;
+};
+
 export type GetSlashCommandsData = {
     body?: never;
     path?: never;
@@ -3650,6 +3672,10 @@ export type UpsertConfigData = {
 };
 
 export type UpsertConfigErrors = {
+    /**
+     * Refused by a privacy boundary (issue #56, DR-16): the key decides what privacy capability new chats start at, so writing it requires proof the request came from the user
+     */
+    409: unknown;
     /**
      * Internal server error
      */

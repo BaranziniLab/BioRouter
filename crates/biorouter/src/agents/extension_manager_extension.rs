@@ -145,9 +145,11 @@ fn check_enable_allowed(
                     "Extension '{extension_name}' is a private extension: the Biorouter \
                      marketplace marks it as reaching data held inside the institution, so only \
                      a private model may enable or call it. This session is running on a public \
-                     model, so do not enable it. If it is needed for this task, ask the user to \
-                     switch this chat to a private model first — in the desktop app under \
-                     Settings > Models, or with the model chip in the composer."
+                     model, so do not enable it. If it is needed for this task, {}",
+                    // DR-16 (Task 18A) turned this sentence into a shared
+                    // constant: the same words now reach the model through the
+                    // HTTP channels too, and two copies would drift.
+                    crate::privacy::refusal::ASK_THE_USER_TO_SWITCH
                 ),
                 None,
             ))

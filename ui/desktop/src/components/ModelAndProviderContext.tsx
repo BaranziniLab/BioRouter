@@ -16,6 +16,7 @@ import {
   type PrivacyBarrierBody,
 } from '../api';
 import { useConfig } from './ConfigContext';
+import { userActionHeaders } from '../utils/userAction';
 import {
   getModelDisplayName,
   getProviderDisplayName,
@@ -321,6 +322,11 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
               context_limit: model.context_limit,
               request_params: model.request_params,
             },
+            // Issue #56 DR-16: THIS is the model picker, so this request is the
+            // user's act. Without the header the daemon cannot tell it from a
+            // model curling the same route and refuses every switch to a
+            // private model.
+            headers: await userActionHeaders(),
             // Issue #56: without this the generated @hey-api client returns
             // {error} instead of throwing, so a 409 privacy refusal is
             // discarded, setConfigProvider rewrites the global default to the
@@ -335,6 +341,7 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
             provider: providerName,
             model: modelName,
           },
+          headers: await userActionHeaders(),
           throwOnError: true,
         });
 
@@ -382,6 +389,12 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
             provider: provider,
             model: model,
           },
+          // Issue #56 DR-16: `/config/set_provider` writes BIOROUTER_PROVIDER
+          // by construction and so is guarded unconditionally. This is the
+          // app's own first-run seeding of the bundled default — still a
+          // renderer act, and without the header it would 409 on every launch
+          // that has no provider configured yet.
+          headers: await userActionHeaders(),
           throwOnError: true,
         });
         // Same API-mediated write, same stale cache (#52).

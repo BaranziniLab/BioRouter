@@ -1,3 +1,13 @@
+// `src/routes/` is compiled TWICE — once here and once by `main.rs`, which
+// re-declares the module tree (see `routes::secret_matches` for why that
+// constrains what routes may name). `auth` is lib-only, so its process globals
+// exist exactly once; a route that needs one therefore has to name the lib by
+// crate name, which resolves in the binary compilation and — with this line —
+// in the lib's own. Both spellings then reach the same static, which is the
+// whole point: `commands::agent` installs the user-action digest through
+// `biorouter_server::auth`, and `routes::agent` reads it through the same path.
+extern crate self as biorouter_server;
+
 pub mod auth;
 pub mod configuration;
 pub mod error;

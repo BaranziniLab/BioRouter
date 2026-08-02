@@ -161,6 +161,12 @@ if (needsHeadlessElectron || typeof window.appConfig === 'undefined') {
       hideWindow: () => {},
       getBiorouterdHostPort: async () => headlessConfig.apiBaseUrl,
       getSecretKey: async () => headlessConfig.secretKey,
+      // Issue #56 DR-16: a headless/browser surface was not started by the
+      // Biorouter app, so it holds no proof of user and every request that
+      // would raise a chat's privacy capability fails closed. Chats already on
+      // a private model keep working, and switching to a public model still
+      // does.
+      getUserActionKey: async () => '',
       logInfo: console.info,
       logError: console.error,
       showNotification: () => {},

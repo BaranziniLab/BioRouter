@@ -286,10 +286,15 @@ run-server:
     @echo "Running server..."
     BIOROUTER_DISABLE_KEYRING=true cargo run -p biorouter-server --bin biorouterd agent
 
-# Run server with secret=test so it pairs with `just debug-ui` (which sends X-Secret-Key: test)
+# Run server with secret=test and the published dev user-action key, so it pairs
+# with `just debug-ui` (which sends X-Secret-Key: test and X-User-Action: <same>).
+# The key is DELIBERATELY public: this daemon's user-proof is whatever the person
+# who started it chose, and on this path that person is the developer. It weakens
+# nothing in the shipped app, whose key is 32 random bytes per launch and never
+# leaves the Electron main process. Issue #56 DR-16 / open question 23.
 debug-server:
-    @echo "Running server in debug mode (secret=test)..."
-    BIOROUTER_DISABLE_KEYRING=true BIOROUTER_SERVER__SECRET_KEY=test cargo run -p biorouter-server --bin biorouterd agent
+    @echo "Running server in debug mode (secret=test, published dev user-action key)..."
+    printf '%s\n' "$(printf 'biorouter-dev-user-action' | shasum -a 256 | cut -d' ' -f1)" | BIOROUTER_DISABLE_KEYRING=true BIOROUTER_SERVER__SECRET_KEY=test cargo run -p biorouter-server --bin biorouterd agent
 
 # Check if OpenAPI schema is up-to-date
 check-openapi-schema: generate-openapi

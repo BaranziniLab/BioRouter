@@ -20,8 +20,11 @@ use biorouter::providers::providers as get_providers;
 use biorouter::providers::{retry_operation, RetryConfig};
 use biorouter::{
     agents::execute_commands, agents::ExtensionConfig, config::permission::PermissionLevel,
-    slash_commands,
+    privacy::PrivacyRefusal, slash_commands,
 };
+// Issue #56 DR-16. The LIB path, not `crate::auth` — see the note on the same
+// import in `routes::agent`.
+use biorouter_server::auth::is_user_action;
 use http::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -177,18 +180,46 @@ pub struct DetectableProvidersResponse {
     request_body = UpsertConfigQuery,
     responses(
         (status = 200, description = "Configuration value upserted successfully", body = String),
+        (status = 409, description = "Refused by a privacy boundary (issue #56, DR-16): the key \
+                                      decides what privacy capability new chats start at, so \
+                                      writing it requires proof the request came from the user"),
         (status = 500, description = "Internal server error")
     )
 )]
 pub async fn upsert_config(
+    // Before `Json`, which consumes the body and must be last.
+    headers: http::HeaderMap,
     Json(query): Json<UpsertConfigQuery>,
-) -> Result<Json<Value>, StatusCode> {
+) -> Result<Json<Value>, (StatusCode, String)> {
+    // Issue #56 DR-16, open question 24. `/config/upsert` writes ANY key, and a
+    // handful of them decide what capability the next session comes up with —
+    // `restore_provider_from_session` falls back to the config provider, so a
+    // write here is a tier raise with no `/agent/update_provider` call at all.
+    // DR-14 already makes config.yaml a filesystem deny root for the same
+    // reason; this is the HTTP channel to the same file.
+    //
+    // Key-scoped, NOT blanket: the GUI writes config on nearly every settings
+    // interaction, and a rule that fires constantly is a rule people route
+    // around.
+    if biorouter::privacy::is_capability_key(&query.key) && !is_user_action(&headers) {
+        return Err((
+            StatusCode::CONFLICT,
+            PrivacyRefusal::CapabilityConfigNeedsUser {
+                key: query.key.clone(),
+            }
+            .to_string(),
+        ));
+    }
+
     let config = Config::global();
     let result = config.set(&query.key, &query.value, query.is_secret);
 
     match result {
         Ok(_) => Ok(Json(Value::String(format!("Upserted key {}", query.key)))),
-        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+        Err(_) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to upsert key {}", query.key),
+        )),
     }
 }
 
@@ -872,10 +903,33 @@ pub async fn check_provider(
     post,
     path = "/config/set_provider",
     request_body = SetProviderRequest,
+    responses(
+        (status = 200, description = "Default provider and model set"),
+        (status = 400, description = "The provider could not be constructed"),
+        (status = 409, description = "Refused by a privacy boundary (issue #56, DR-16): this \
+                                      route writes BIOROUTER_PROVIDER, which decides what \
+                                      privacy capability new chats start at, so it requires \
+                                      proof the request came from the user"),
+    )
 )]
 pub async fn set_config_provider(
+    // Before `Json`, which consumes the body and must be last.
+    headers: http::HeaderMap,
     Json(SetProviderRequest { provider, model }): Json<SetProviderRequest>,
 ) -> Result<(), (StatusCode, String)> {
+    // Issue #56 DR-16. Unconditional, unlike `upsert_config`'s key-scoped guard:
+    // this route writes BIOROUTER_PROVIDER by construction, so there is no
+    // tier-irrelevant call to exempt.
+    if !is_user_action(&headers) {
+        return Err((
+            StatusCode::CONFLICT,
+            PrivacyRefusal::CapabilityConfigNeedsUser {
+                key: "BIOROUTER_PROVIDER".to_string(),
+            }
+            .to_string(),
+        ));
+    }
+
     create_with_default_model(&provider)
         .await
         .and_then(|_| {

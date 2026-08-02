@@ -11,6 +11,14 @@ export interface ExternalBiorouterdConfig {
   enabled: boolean;
   url: string;
   secret: string;
+  /**
+   * Issue #56 DR-16: the user-action key of a backend the app did NOT start.
+   * Optional, and absent means the app has no proof of user for that daemon, so
+   * every request that would raise a chat's privacy capability fails closed.
+   * That is the right default for a backend someone else launched — its
+   * user-proof is whatever the person who launched it chose.
+   */
+  userActionKey?: string;
 }
 
 export interface Settings {

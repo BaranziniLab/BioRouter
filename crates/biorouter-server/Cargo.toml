@@ -42,6 +42,9 @@ tokio-tungstenite = { version = "0.28.0", features = ["rustls-tls-native-roots"]
 url = "2.5.7"
 rand = "0.9.2"
 hex = "0.4.3"
+# Issue #56 DR-16: the daemon holds the SHA-256 DIGEST of the user-action key,
+# never the key. Same 0.10 line the other two crates already pin.
+sha2 = "0.10"
 socket2 = "0.6.1"
 fs2 = "0.4.3"
 rustls = { version = "0.23", features = ["ring"] }

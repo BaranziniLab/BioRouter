@@ -18,13 +18,15 @@
 use serde::{Deserialize, Serialize};
 
 pub mod capability;
+pub mod config_keys;
 pub mod extensions;
 pub mod refusal;
 mod registry_private;
 
 pub use capability::CallCapability;
-pub use extensions::classify_extension;
-pub use refusal::PrivacyRefusal;
+pub use config_keys::is_capability_key;
+pub use extensions::{classify_extension, private_extension_ids};
+pub use refusal::{raise_needs_user_action, PrivacyRefusal};
 
 /// The master opt-out (DR-15), read **inside** a gate rather than through an
 /// `is_enabled()` wrapper, so a mid-session change is honoured and the opt-out

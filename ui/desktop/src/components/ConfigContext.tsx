@@ -19,6 +19,7 @@ import {
   getProviderModels as apiGetProviderModels,
 } from '../api';
 import { syncBundledExtensions } from './settings/extensions';
+import { userActionHeaders } from '../utils/userAction';
 import {
   isCapabilityDefaultEnabled,
   shouldDefaultEnableAgentDrafter,
@@ -171,6 +172,14 @@ export const ConfigProvider: React.FC<ConfigProviderProps> = ({ children }) => {
       };
       await upsertConfig({
         body: query,
+        // Issue #56 DR-16: this is the GUI's ONLY path to `/config/upsert`, and
+        // real settings screens write capability keys through it —
+        // BIOROUTER_LEAD_MODEL / BIOROUTER_LEAD_PROVIDER from Lead/Worker
+        // settings, OLLAMA_HOST and LLAMACPP_EXTERNAL_HOST from the provider
+        // forms. Those are the user editing their own settings; the daemon
+        // guards the same four keys against a model curling the route, and
+        // without this header it could not tell the two apart.
+        headers: await userActionHeaders(),
       });
       await reloadConfigAfterWrite();
     },

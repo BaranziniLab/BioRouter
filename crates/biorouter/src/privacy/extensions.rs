@@ -36,6 +36,19 @@ pub fn classify_extension(name: &str) -> ProviderTier {
     }
 }
 
+/// The compiled-in private set, by `name_to_key` key.
+///
+/// `registry_private` is a private module on purpose — nothing outside this
+/// folder may *decide* a tier from the raw list, it must go through
+/// [`classify_extension`]. This accessor exists for the one legitimate reader
+/// that is not a classifier: the disclosure test in [`super::refusal`], which
+/// asserts a refusal never names a member of the set the caller did not ask
+/// about. A hand-written list there would stop tracking this one and the
+/// assertion would go quietly vacuous.
+pub fn private_extension_ids() -> impl Iterator<Item = &'static str> {
+    super::registry_private::PRIVATE_EXTENSIONS.iter().copied()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

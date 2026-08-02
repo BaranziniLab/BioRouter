@@ -39,6 +39,20 @@ vi.mock('./ConfigContext', () => ({
   }),
 }));
 
+/**
+ * Issue #56 DR-16. The model picker is the USER's act, and the daemon cannot
+ * tell it from a model curling the same route unless the request carries
+ * `X-User-Action`. Without this bridge the harness would exercise the
+ * fail-closed path (no header) and the assertions below would pin nothing about
+ * the one property the picker depends on.
+ */
+const USER_ACTION_KEY = 'user-action-key-under-test';
+const userActionHeader = { 'X-User-Action': USER_ACTION_KEY };
+Object.defineProperty(window, 'electron', {
+  writable: true,
+  value: { getUserActionKey: async () => USER_ACTION_KEY },
+});
+
 const llamaModel: Model = {
   name: 'qwen3.6',
   provider: 'llamacpp',
@@ -245,6 +259,9 @@ describe('ModelAndProviderProvider Llama Server warm-up', () => {
           provider: 'llamacpp',
           model: llamaModel.name,
         },
+        // Issue #56 DR-16: `/config/set_provider` writes BIOROUTER_PROVIDER and
+        // is guarded unconditionally, so the picker must prove it is the user.
+        headers: userActionHeader,
         throwOnError: true,
       });
     });

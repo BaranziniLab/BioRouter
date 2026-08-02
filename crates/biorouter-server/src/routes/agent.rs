@@ -21,7 +21,7 @@ use biorouter::config::{BioRouterMode, Config};
 use biorouter::model::ModelConfig;
 use biorouter::permission::{grade_tool, SmartApproveConfig};
 use biorouter::privacy::refusal::PrivacyRefusal;
-use biorouter::privacy::{ProviderTier, SessionClassification};
+use biorouter::privacy::{raise_needs_user_action, ProviderTier, SessionClassification};
 use biorouter::prompt_template::render_global_file;
 use biorouter::providers::create;
 use biorouter::session::extension_data::ExtensionState;
@@ -37,6 +37,13 @@ use biorouter::{
     config::permission::PermissionLevel,
 };
 use biorouter_mcp::knowledge::service::{KnowledgeService, PrimaryUpdate};
+// Issue #56 DR-16. Named through the LIB path, not `crate::auth`: `src/routes/`
+// is compiled into the `biorouterd` binary as well as the lib (see
+// `routes::secret_matches`), and the digest is a process-global that must have
+// exactly ONE instance — the lib's. `crate::auth` does not exist in the binary
+// compilation, and a copy under `routes` would give the binary a second, empty
+// static that `commands::agent` never installs into.
+use biorouter_server::auth::is_user_action;
 use rmcp::model::{CallToolRequestParams, Content};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -124,17 +131,28 @@ impl IntoResponse for ProviderBindFailure {
 /// The refusal is a typed error carried inside `anyhow::Error`, so this asks
 /// with `downcast_ref` rather than matching on a message. Every other failure
 /// keeps the pre-#56 behaviour — a 500 with the error's text.
+///
+/// The card needs the *pair* of colliding tiers, so only a refusal that carries
+/// one is rendered as a barrier. `Agent::update_provider` produces exactly one
+/// such refusal today; Task 18A's three HTTP-channel variants are about a
+/// channel rather than a session collision, carry no pair, and are rendered at
+/// their own handlers — they never travel through here.
 pub(crate) fn classify_provider_bind_failure(
     error: &anyhow::Error,
     available_private_providers: Vec<String>,
 ) -> ProviderBindFailure {
-    match error.downcast_ref::<PrivacyRefusal>() {
-        Some(refusal) => ProviderBindFailure::Privacy(Box::new(PrivacyBarrierBody {
-            code: PrivacyBarrierBody::CODE.to_string(),
-            session_classification: refusal.session_classification(),
-            provider_tier: refusal.provider_tier(),
-            available_private_providers,
-        })),
+    match error
+        .downcast_ref::<PrivacyRefusal>()
+        .and_then(|refusal| Some((refusal.session_classification()?, refusal.provider_tier()?)))
+    {
+        Some((session_classification, provider_tier)) => {
+            ProviderBindFailure::Privacy(Box::new(PrivacyBarrierBody {
+                code: PrivacyBarrierBody::CODE.to_string(),
+                session_classification,
+                provider_tier,
+                available_private_providers,
+            }))
+        }
         None => ProviderBindFailure::Internal(format!("Failed to update provider: {error}")),
     }
 }
@@ -780,8 +798,11 @@ async fn get_tools(
         (status = 200, description = "Provider updated successfully"),
         (status = 400, description = "Bad request - missing or invalid parameters"),
         (status = 401, description = "Unauthorized - invalid secret key"),
-        (status = 409, description = "Refused by a privacy boundary (issue #56, Gate A): \
-                                      a public model cannot be bound to a private chat",
+        (status = 409, description = "Refused by a privacy boundary (issue #56). Gate A: \
+                                      a public model cannot be bound to a private chat \
+                                      (body = PrivacyBarrierBody). DR-16: the bind raises this \
+                                      chat's capability to Private and the request carried no \
+                                      proof it came from the user (body = plain text)",
                        body = PrivacyBarrierBody),
         (status = 424, description = "Agent not initialized"),
         (status = 500, description = "Internal server error")
@@ -789,6 +810,8 @@ async fn get_tools(
 )]
 async fn update_agent_provider(
     State(state): State<Arc<AppState>>,
+    // Before `Json`, which consumes the body and must be last.
+    headers: axum::http::HeaderMap,
     Json(payload): Json<UpdateProviderRequest>,
 ) -> Result<(), axum::response::Response> {
     let agent = state
@@ -823,6 +846,39 @@ async fn update_agent_provider(
             .into_response()
     })?;
 
+    // Issue #56 DR-16. Raising this chat's capability to Private is the user's
+    // act alone, and this route has no principal — `check_token` compares one
+    // machine-wide bearer and every authenticated request looks the same,
+    // whoever sent it (AR-11/AR-15). `llamacpp` needs no credential at all, so
+    // `{"provider":"llamacpp"}` would otherwise be a tier raise any caller can
+    // perform with nothing but the daemon secret.
+    //
+    // A CONDITION, not a blanket refusal: refusing every raise would take the
+    // user's own model picker away along with the model's, which is the posture
+    // DR-16 rejected. Sideways and downward binds are untouched for every
+    // caller, which is what keeps Gate A's path, the CLI,
+    // `restore_provider_from_session` and every apps-runtime bind working.
+    //
+    // An unbound session reads as Public — `Agent::provider` errors when nothing
+    // is bound (and when Gate B' refuses what is), and the conservative reading
+    // is that a session with no private capability has none to preserve, so a
+    // first bind to a private provider is a raise.
+    let current = agent
+        .provider()
+        .await
+        .map(|p| p.tier())
+        .unwrap_or(ProviderTier::Public);
+    if raise_needs_user_action(current, new_provider.tier()) && !is_user_action(&headers) {
+        return Err((
+            StatusCode::CONFLICT,
+            PrivacyRefusal::TierRaiseNeedsUser {
+                requested: payload.provider.clone(),
+            }
+            .to_string(),
+        )
+            .into_response());
+    }
+
     // Issue #56 Gate A (P3). A privacy refusal is a 409 with a body the GUI
     // renders a repair card from, not a 500 with a sentence: collapsing it to
     // the generic error is what let the renderer report a refused switch as a
@@ -846,6 +902,9 @@ async fn update_agent_provider(
     responses(
         (status = 200, description = "Extension added", body = String),
         (status = 401, description = "Unauthorized - invalid secret key"),
+        (status = 409, description = "Refused by a privacy boundary (issue #56, DR-16): a \
+                                      private extension cannot be attached to a chat running on \
+                                      a public model"),
         (status = 424, description = "Agent not initialized"),
         (status = 500, description = "Internal server error")
     )
@@ -855,6 +914,32 @@ async fn agent_add_extension(
     Json(request): Json<AddExtensionRequest>,
 ) -> Result<StatusCode, ErrorResponse> {
     let agent = state.get_agent(request.session_id.clone()).await?;
+
+    // Issue #56 DR-16. `/agent/add_extension` hands `request.config` straight to
+    // the agent and persists it, which is how a private extension's TOOLS arrive
+    // in a session Gate F1 already refuses to let the model enable through
+    // `extensionmanager__manage_extensions`.
+    //
+    // Refused OUTRIGHT — no user-proof branch, deliberately. Attaching a private
+    // extension to a public session is not a raise the user can authorize
+    // either; their route is to switch the model first and then attach.
+    let capability = agent
+        .provider()
+        .await
+        .map(|p| p.tier())
+        .unwrap_or(ProviderTier::Public);
+    let extension_name = request.config.name();
+    if biorouter::privacy::classify_extension(&extension_name).is_private()
+        && capability == ProviderTier::Public
+    {
+        return Err(ErrorResponse {
+            status: StatusCode::CONFLICT,
+            message: PrivacyRefusal::PrivateExtensionOverHttp {
+                name: extension_name,
+            }
+            .to_string(),
+        });
+    }
 
     agent
         .add_extension(request.config)

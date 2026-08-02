@@ -238,6 +238,12 @@ type ElectronAPI = {
   getSettings: () => Promise<unknown | null>;
   saveSettings: (settings: unknown) => Promise<boolean>;
   getSecretKey: () => Promise<string>;
+  /**
+   * Issue #56 DR-16: the proof a tier-raising request came from the user.
+   * Attached as `X-User-Action` on those requests only — not as a default
+   * header, which would make it ambient on every call.
+   */
+  getUserActionKey: () => Promise<string>;
   getBiorouterdHostPort: () => Promise<string | null>;
   setWakelock: (enable: boolean) => Promise<boolean>;
   getWakelockState: () => Promise<boolean>;
@@ -466,6 +472,7 @@ const electronAPI: ElectronAPI = {
   getSettings: () => ipcRenderer.invoke('get-settings'),
   saveSettings: (settings: unknown) => ipcRenderer.invoke('save-settings', settings),
   getSecretKey: () => ipcRenderer.invoke('get-secret-key'),
+  getUserActionKey: () => ipcRenderer.invoke('get-user-action-key'),
   getBiorouterdHostPort: () => ipcRenderer.invoke('get-biorouterd-host-port'),
   setWakelock: (enable: boolean) => ipcRenderer.invoke('set-wakelock', enable),
   getWakelockState: () => ipcRenderer.invoke('get-wakelock-state'),

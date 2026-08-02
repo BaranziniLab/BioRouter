@@ -1,6 +1,7 @@
 import Electron from 'electron';
 import fs from 'node:fs';
 import { spawn, ChildProcess } from 'child_process';
+import { createHash } from 'node:crypto';
 import { createServer } from 'net';
 import os from 'node:os';
 import path from 'node:path';
@@ -239,6 +240,12 @@ const connectToExternalBackend = (workingDir: string, url: string): BiorouterdRe
   return { baseUrl: url, workingDir, process: mockProcess, errorLog: [] };
 };
 
+// ⚠ Issue #56 DR-16: this interface gains NOTHING for the user-action key, and
+// that omission is the point. AR-11 measured a daemon's environment to be
+// recoverable in-process by any tool that reads a caller-named path
+// (`/proc/self/environ`) or, on macOS, by `sysctl(KERN_PROCARGS2)` — which is
+// not a path at all and which no sandbox profile can gate. A user-proof
+// delivered as an env var is a proof the model already holds. It goes on stdin.
 interface BiorouterProcessEnv {
   [key: string]: string | undefined;
 
@@ -252,9 +259,25 @@ interface BiorouterProcessEnv {
   BIOROUTER_DISABLE_KEYRING?: string;
 }
 
+/**
+ * SHA-256, hex. The daemon is handed this and never the key itself, so a tool
+ * that reads the daemon's heap recovers a value it cannot present.
+ */
+const sha256Hex = (value: string): string => createHash('sha256').update(value).digest('hex');
+
 export interface StartBiorouterdOptions {
   app: App;
   serverSecret: string;
+  /**
+   * Issue #56 DR-16: the proof that a tier-raising request came from the person
+   * at the keyboard. Minted per launch by the Electron main process, which keeps
+   * the raw key and gives the daemon only its digest, on stdin.
+   *
+   * Optional because a caller that omits it is a caller with no user-proof, and
+   * that is a legitimate state — the daemon then refuses every raise, which is
+   * exactly what a hand-started `biorouterd agent` does too.
+   */
+  userActionKey?: string;
   dir: string;
   env?: Partial<BiorouterProcessEnv>;
   externalBiorouterd?: ExternalBiorouterdConfig;
@@ -263,7 +286,7 @@ export interface StartBiorouterdOptions {
 export const startBiorouterd = async (
   options: StartBiorouterdOptions
 ): Promise<BiorouterdResult> => {
-  const { app, serverSecret, dir: inputDir, env = {}, externalBiorouterd } = options;
+  const { app, serverSecret, userActionKey, dir: inputDir, env = {}, externalBiorouterd } = options;
   const isWindows = process.platform === 'win32';
   const homeDir = os.homedir();
   const dir = path.resolve(path.normalize(inputDir));
@@ -332,15 +355,31 @@ export const startBiorouterd = async (
   const spawnOptions = {
     cwd: dir,
     env: processEnv,
-    stdio: ['ignore', 'pipe', 'pipe'] as ['ignore', 'pipe', 'pipe'],
+    // stdin is a pipe (it used to be 'ignore') for one reason: issue #56's
+    // user-action digest is written down it and the pipe is closed immediately.
+    stdio: ['pipe', 'pipe', 'pipe'] as ['pipe', 'pipe', 'pipe'],
     windowsHide: true,
     detached: isWindows,
     shell: false,
   };
 
+  // Unchanged, and asserted to stay that way: argv sits in the same
+  // KERN_PROCARGS2 block as the environment and in /proc/<pid>/cmdline, so the
+  // user-action key may not travel here either.
   const safeArgs = ['agent'];
 
   const biorouterdProcess: ChildProcess = spawn(biorouterdPath, safeArgs, spawnOptions);
+
+  // Issue #56 DR-16. The DIGEST, never the key — the daemon compares a hash of
+  // what a caller presents, so what it stores authenticates nothing. Written
+  // and closed immediately: the daemon's read is bounded (2s) and a pipe whose
+  // writer never closes would stall its startup. After `end()` fd 0 is at EOF,
+  // so every process the daemon later spawns inherits a stdin that carries
+  // nothing.
+  if (userActionKey) {
+    biorouterdProcess.stdin?.write(sha256Hex(userActionKey) + '\n');
+  }
+  biorouterdProcess.stdin?.end();
 
   if (isWindows && biorouterdProcess.unref) {
     biorouterdProcess.unref();

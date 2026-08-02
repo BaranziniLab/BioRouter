@@ -27,6 +27,38 @@ async fn shutdown_signal() {
     let _ = tokio::signal::ctrl_c().await;
 }
 
+/// Read the launcher's SHA-256 user-action digest off stdin, as one hex line
+/// (issue #56, DR-16).
+///
+/// The pipe is at EOF once this returns, so every process the daemon later
+/// spawns inherits an fd 0 that carries nothing: the digest is not re-readable
+/// by a child, and the raw key was never there to begin with.
+///
+/// It must **never block a hand-started daemon**, so it is guarded twice.
+async fn read_user_action_digest() -> Option<[u8; 32]> {
+    use std::io::IsTerminal;
+    // (1) A terminal is a human at a prompt, not a launcher with a key. Reading
+    //     it would hang `just run-server` forever waiting for a line.
+    if std::io::stdin().is_terminal() {
+        return None;
+    }
+    // (2) And a pipe whose writer never closes would hang just as hard, so the
+    //     read is bounded. 2s is far longer than a local `write` + `end`.
+    let line = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        tokio::task::spawn_blocking(|| {
+            let mut s = String::new();
+            std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut s).ok()?;
+            Some(s)
+        }),
+    )
+    .await
+    .ok()?
+    .ok()??;
+    let bytes = hex::decode(line.trim()).ok()?;
+    <[u8; 32]>::try_from(bytes.as_slice()).ok()
+}
+
 pub async fn run() -> Result<()> {
     crate::logging::setup_logging(Some("biorouterd"))?;
 
@@ -40,6 +72,21 @@ pub async fn run() -> Result<()> {
         );
         key
     });
+
+    // Issue #56 DR-16. The proof-of-user, minted by whoever launched this
+    // daemon and handed over on **stdin** — never in the environment and never
+    // on argv, because AR-11 measured both to be recoverable in-process by any
+    // tool that reads a caller-named path (`/proc/self/environ`) or, on macOS,
+    // by `sysctl(KERN_PROCARGS2)`, which is not a path at all and which no
+    // sandbox profile can gate.
+    let user_action_digest = read_user_action_digest().await;
+    if user_action_digest.is_none() {
+        tracing::warn!(
+            "no user-action key on stdin: this daemon will refuse every request that raises a \
+             session's privacy capability, including one made by the person at the keyboard"
+        );
+    }
+    biorouter_server::auth::install_user_action_digest(user_action_digest);
 
     let app_state = state::AppState::new().await?;
 

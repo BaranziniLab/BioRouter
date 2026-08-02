@@ -136,6 +136,9 @@
           "401": {
             "description": "Unauthorized - invalid secret key"
           },
+          "409": {
+            "description": "Refused by a privacy boundary (issue #56, DR-16): a private extension cannot be attached to a chat running on a public model"
+          },
           "424": {
             "description": "Agent not initialized"
           },
@@ -644,7 +647,7 @@
             "description": "Unauthorized - invalid secret key"
           },
           "409": {
-            "description": "Refused by a privacy boundary (issue #56, Gate A): a public model cannot be bound to a private chat",
+            "description": "Refused by a privacy boundary (issue #56). Gate A: a public model cannot be bound to a private chat (body = PrivacyBarrierBody). DR-16: the bind raises this chat's capability to Private and the request carried no proof it came from the user (body = plain text)",
             "content": {
               "application/json": {
                 "schema": {
@@ -1316,7 +1319,17 @@
           },
           "required": true
         },
-        "responses": {}
+        "responses": {
+          "200": {
+            "description": "Default provider and model set"
+          },
+          "400": {
+            "description": "The provider could not be constructed"
+          },
+          "409": {
+            "description": "Refused by a privacy boundary (issue #56, DR-16): this route writes BIOROUTER_PROVIDER, which decides what privacy capability new chats start at, so it requires proof the request came from the user"
+          }
+        }
       }
     },
     "/config/slash_commands": {
@@ -1365,6 +1378,9 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "Refused by a privacy boundary (issue #56, DR-16): the key decides what privacy capability new chats start at, so writing it requires proof the request came from the user"
           },
           "500": {
             "description": "Internal server error"

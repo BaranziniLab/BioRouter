@@ -14,11 +14,33 @@
 //! | 12 (this one) | [`PrivacyRefusal`] and its two accessors |
 //! | 13 | `turn_refusal(&Session) -> String`, and Task 10's `CHATRECALL_LOAD_REFUSAL` moves here |
 //! | 14 | `privacy_refusal(extension, extension_tier, caller_tier) -> Option<ErrorData>` |
+//! | 18A | [`ASK_THE_USER_TO_SWITCH`], [`raise_needs_user_action`] and the three HTTP-channel variants |
 //! | 23 | the `PrivateChildOfPublicParent` variant and `PrivacyRefusal::spawn_upgrade` |
 
 use super::{ProviderTier, SessionClassification};
 use crate::session::session_manager::Session;
 use rmcp::model::{ErrorCode, ErrorData};
+
+/// The one sentence every refusal in this feature ends on. DR-16 turns step 1 of
+/// the two-ways-out message from something the model DOES into something it
+/// SAYS, so the wording is shared rather than re-typed per call site —
+/// including by Task 18's `check_enable_allowed` arm, which Task 18A rewrote to
+/// use it. Two audiences, one vocabulary.
+pub const ASK_THE_USER_TO_SWITCH: &str =
+    "ask the user to switch this chat to a private model first — in the desktop app under \
+     Settings > Models, or with the model chip in the composer.";
+
+/// DR-16's rule, as a predicate: raising a session's capability to Private is
+/// the user's act alone, and only an **upward** bind is a raise.
+///
+/// Sideways (`Public → Public`, `Private → Private`) and downward
+/// (`Private → Public`) binds are untouched **for every caller**, which is what
+/// keeps Gate A's own path, the CLI, `restore_provider_from_session` and every
+/// apps-runtime bind working exactly as before. Downward is Gate A's job, not
+/// this one.
+pub const fn raise_needs_user_action(current: ProviderTier, incoming: ProviderTier) -> bool {
+    !current.is_private() && incoming.is_private()
+}
 
 /// A privacy boundary refused an operation.
 ///
@@ -44,30 +66,90 @@ pub enum PrivacyRefusal {
         session_id: String,
         provider: String,
     },
+
+    /// DR-16 / Task 18A: `POST /agent/update_provider` was asked to raise this
+    /// session's capability to Private, and the request carried no proof it came
+    /// from the person at the keyboard.
+    ///
+    /// Model-facing: it is rendered as the 409 body and reaches the model as a
+    /// tool result. It names only the provider the caller itself named.
+    #[error(
+        "Switching this chat to a private model is the user's decision, not yours. This request \
+         did not come from the model picker, so the chat is unchanged and still on its current \
+         model. Do not retry — the same call will be refused again. If this task genuinely needs \
+         a private model, stop and {}",
+        ASK_THE_USER_TO_SWITCH
+    )]
+    TierRaiseNeedsUser { requested: String },
+
+    /// DR-16 / Task 18A: `POST /agent/add_extension` was asked to attach a
+    /// private extension to a session running on a public model.
+    ///
+    /// Refused **outright**, with no user-proof branch: attaching a private
+    /// extension to a public session is not a raise the user can authorize
+    /// either. The way forward is to switch the model first, then attach.
+    ///
+    /// Same shape as Gate F1's `extensionmanager__manage_extensions` refusal, so
+    /// the two channels speak with one voice.
+    #[error(
+        "Extension '{name}' is a private extension: the Biorouter marketplace marks it as \
+         reaching data held inside the institution, so only a private model may enable or call \
+         it. This session is running on a public model, so the extension was not attached. Do not \
+         retry. If it is needed for this task, {}",
+        ASK_THE_USER_TO_SWITCH
+    )]
+    PrivateExtensionOverHttp { name: String },
+
+    /// DR-16 / Task 18A, open question 24: an HTTP config write named a key that
+    /// decides what privacy capability new chats start at
+    /// (`privacy::config_keys::CAPABILITY_CONFIG_KEYS`), and carried no
+    /// user-proof.
+    #[error(
+        "'{key}' decides what privacy level new chats start at, so changing it is the user's \
+         decision, not yours. The setting is unchanged. Do not retry. If *this* task needs a \
+         private model, that is a per-chat change and not a default: {}",
+        ASK_THE_USER_TO_SWITCH
+    )]
+    CapabilityConfigNeedsUser { key: String },
 }
 
 impl PrivacyRefusal {
     /// The classification of the session that refused. Half of the pair the
     /// GUI's card names ("this chat is **private**, that model is **public**").
-    pub fn session_classification(&self) -> SessionClassification {
+    ///
+    /// `None` for the three DR-16 variants, and that is the point: they are
+    /// refusals about a *channel*, not about a session whose contents collided
+    /// with a model, and inventing a classification for them would put a
+    /// fabricated pair on the GUI's repair card. Task 18A's handlers render
+    /// those three straight from [`std::fmt::Display`] and never ask.
+    pub fn session_classification(&self) -> Option<SessionClassification> {
         match self {
-            Self::PublicModelOnPrivateSession { .. } => SessionClassification::Private,
+            Self::PublicModelOnPrivateSession { .. } => Some(SessionClassification::Private),
+            Self::TierRaiseNeedsUser { .. }
+            | Self::PrivateExtensionOverHttp { .. }
+            | Self::CapabilityConfigNeedsUser { .. } => None,
         }
     }
 
     /// The tier of the thing that was refused.
-    pub fn provider_tier(&self) -> ProviderTier {
+    pub fn provider_tier(&self) -> Option<ProviderTier> {
         match self {
-            Self::PublicModelOnPrivateSession { .. } => ProviderTier::Public,
+            Self::PublicModelOnPrivateSession { .. } => Some(ProviderTier::Public),
+            Self::TierRaiseNeedsUser { .. }
+            | Self::PrivateExtensionOverHttp { .. }
+            | Self::CapabilityConfigNeedsUser { .. } => None,
         }
     }
 
     /// The session the refusal is about. Kept as an accessor rather than
     /// destructured at every call site so a future variant without one is a
     /// compile error here instead of at six handlers.
-    pub fn session_id(&self) -> &str {
+    pub fn session_id(&self) -> Option<&str> {
         match self {
-            Self::PublicModelOnPrivateSession { session_id, .. } => session_id,
+            Self::PublicModelOnPrivateSession { session_id, .. } => Some(session_id),
+            Self::TierRaiseNeedsUser { .. }
+            | Self::PrivateExtensionOverHttp { .. }
+            | Self::CapabilityConfigNeedsUser { .. } => None,
         }
     }
 }
@@ -225,10 +307,10 @@ mod tests {
             .expect("a privacy refusal must survive anyhow");
         assert_eq!(
             refusal.session_classification(),
-            SessionClassification::Private
+            Some(SessionClassification::Private)
         );
-        assert_eq!(refusal.provider_tier(), ProviderTier::Public);
-        assert_eq!(refusal.session_id(), "s1");
+        assert_eq!(refusal.provider_tier(), Some(ProviderTier::Public));
+        assert_eq!(refusal.session_id(), Some("s1"));
     }
 
     /// §14.4: refusals are rendered to the user and (for Gate C) to the model,
@@ -287,6 +369,79 @@ mod tests {
             };
             let text = turn_refusal(&session);
             assert!(text.contains(TURN_REFUSAL_MARKER), "{text}");
+        }
+    }
+
+    #[test]
+    fn only_an_upward_bind_needs_the_user() {
+        use ProviderTier::{Private, Public};
+        assert!(raise_needs_user_action(Public, Private)); // the one raise
+        assert!(!raise_needs_user_action(Public, Public)); // sideways
+        assert!(!raise_needs_user_action(Private, Private)); // sideways
+        assert!(!raise_needs_user_action(Private, Public)); // downward — Gate A's job, not this one
+    }
+
+    #[test]
+    fn a_refusal_names_nothing_the_caller_did_not_ask_for() {
+        // R10's disclosure bound. A refusal that says "pick versa_azure instead"
+        // tells a public model which providers are private, and a refusal that
+        // says "ucsfomopagent is private, cdwagent is not" is a classification
+        // oracle the model can drive one name at a time.
+        let msg = PrivacyRefusal::TierRaiseNeedsUser {
+            requested: "llamacpp".into(),
+        }
+        .to_string();
+        for other in ["versa_azure", "versa_bedrock", "ollama"] {
+            assert!(
+                !msg.contains(other),
+                "refusal leaked the classification of {other}"
+            );
+        }
+
+        // The private extension set comes from the generator, not from a
+        // hand-written list here: a hand-written one stops tracking it and the
+        // assertion goes quietly vacuous.
+        let msg = PrivacyRefusal::PrivateExtensionOverHttp {
+            name: "ucsfomopagent".into(),
+        }
+        .to_string();
+        for other in crate::privacy::private_extension_ids().filter(|id| *id != "ucsfomopagent") {
+            assert!(
+                !msg.contains(other),
+                "refusal leaked the classification of {other}"
+            );
+        }
+        assert!(
+            msg.contains("ucsfomopagent"),
+            "the caller's own name may be named"
+        );
+    }
+
+    #[test]
+    fn every_refusal_ends_in_the_same_two_ways_out_sentence() {
+        // DR-16's knock-on: "switch this chat to a private model" is step 1 of
+        // the two-ways-out message in EVERY refusal this feature ships, and here
+        // it becomes something the model hands to the USER instead of following.
+        // One constant, so the two audiences cannot drift into two vocabularies.
+        for msg in [
+            PrivacyRefusal::TierRaiseNeedsUser {
+                requested: "llamacpp".into(),
+            }
+            .to_string(),
+            PrivacyRefusal::PrivateExtensionOverHttp {
+                name: "ucsfomopagent".into(),
+            }
+            .to_string(),
+            PrivacyRefusal::CapabilityConfigNeedsUser {
+                key: "BIOROUTER_PROVIDER".into(),
+            }
+            .to_string(),
+        ] {
+            assert!(msg.contains(ASK_THE_USER_TO_SWITCH), "{msg}");
+            assert!(
+                msg.contains("Do not retry"),
+                "a refusal the model will retry is a loop: {msg}"
+            );
         }
     }
 
