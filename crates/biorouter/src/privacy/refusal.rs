@@ -72,12 +72,16 @@ pub enum PrivacyRefusal {
     /// from the person at the keyboard.
     ///
     /// Model-facing: it is rendered as the 409 body and reaches the model as a
-    /// tool result. It names only the provider the caller itself named.
+    /// tool result. It names only the provider the caller itself named — which
+    /// is what `{requested}` is, and why it is rendered rather than carried: an
+    /// un-rendered field made `a_refusal_names_nothing_the_caller_did_not_ask_for`
+    /// pass against any implementation that merely avoided typing one of three
+    /// provider names into a constant.
     #[error(
-        "Switching this chat to a private model is the user's decision, not yours. This request \
-         did not come from the model picker, so the chat is unchanged and still on its current \
-         model. Do not retry — the same call will be refused again. If this task genuinely needs \
-         a private model, stop and {}",
+        "Switching this chat to a private model is the user's decision, not yours. The request \
+         to switch it to '{requested}' did not come from the model picker, so the chat is \
+         unchanged and still on its current model. Do not retry — the same call will be refused \
+         again. If this task genuinely needs a private model, stop and {}",
         ASK_THE_USER_TO_SWITCH
     )]
     TierRaiseNeedsUser { requested: String },
@@ -397,6 +401,13 @@ mod tests {
                 "refusal leaked the classification of {other}"
             );
         }
+        // …and the loop above only means something if the name IS rendered.
+        // While `requested` was carried but never interpolated, every assertion
+        // in that loop held against a refusal that named nothing at all.
+        assert!(
+            msg.contains("llamacpp"),
+            "the caller's own name may be named — and must be, or the loop above is vacuous"
+        );
 
         // The private extension set comes from the generator, not from a
         // hand-written list here: a hand-written one stops tracking it and the
