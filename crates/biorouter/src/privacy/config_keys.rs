@@ -83,6 +83,13 @@ pub const NOT_CAPABILITY_CONFIG_KEYS: &[(&str, &str)] = &[
 /// it marks Reference. A new provider whose tier depends on config must be added
 /// here — and Task 5's `the_private_set_is_the_four_the_operator_named` is what
 /// fails if a new private provider is added without being classified at all.
+///
+/// ⚠ `#[cfg(test)]`, along with the two scans below: these `include_str!`s pull
+/// ~97 KB of provider source into the crate, and nothing outside this file's own
+/// test module reads them. The shipped `biorouterd`/`biorouter` binaries carry
+/// the key lists and [`is_capability_key`]; they have no reason to carry a copy
+/// of `ollama.rs`.
+#[cfg(test)]
 pub const TIER_INPUT_FILES: &[(&str, &str)] = &[
     (
         "providers/factory.rs",
@@ -114,6 +121,7 @@ pub fn is_capability_key(key: &str) -> bool {
 /// The `(path, source)` pairs the two scans below read. An accessor rather than
 /// the constant itself so a caller cannot accidentally iterate a *different*
 /// set than the one the classification test walks.
+#[cfg(test)]
 pub fn tier_input_sources() -> impl Iterator<Item = (&'static str, &'static str)> {
     TIER_INPUT_FILES.iter().copied()
 }
@@ -124,6 +132,7 @@ pub fn tier_input_sources() -> impl Iterator<Item = (&'static str, &'static str)
 /// Literal-only by construction, which is exactly why
 /// [`computed_get_param_re`] exists beside it: a key built at runtime would be
 /// invisible here and the classification test would go quietly vacuous.
+#[cfg(test)]
 pub fn scan_get_param_keys() -> Vec<String> {
     let literal = regex::Regex::new(r#"get_param(?:::<[^>]*>)?\s*\(\s*"([^"]+)""#)
         .expect("the get_param literal scan is a compile-time-constant pattern");
@@ -143,6 +152,7 @@ pub fn scan_get_param_keys() -> Vec<String> {
 /// Matches a `get_param` whose key is **not** a string literal — a
 /// `get_param(&format!(..))` or a `get_param(some_var)`. The scan above cannot
 /// see those, so the test asserts there are none.
+#[cfg(test)]
 pub fn computed_get_param_re() -> regex::Regex {
     regex::Regex::new(r#"get_param(?:::<[^>]*>)?\s*\(\s*[^"\s]"#)
         .expect("the computed-key pattern is a compile-time constant")
