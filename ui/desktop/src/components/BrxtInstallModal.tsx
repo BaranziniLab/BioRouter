@@ -7,6 +7,7 @@ import { BrxtEnvVar, BrxtManifest } from '../types/brxt';
 import { useConfig } from './ConfigContext';
 import { activateExtensionDefault } from './settings/extensions';
 import { upsertConfig } from '../api';
+import { userActionHeaders } from '../utils/userAction';
 import { toastService } from '../toasts';
 
 interface EnvEntry {
@@ -136,6 +137,13 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath }: Pr
       for (const entry of envEntries.filter((e) => e.secret && e.value.trim())) {
         const res = await upsertConfig({
           body: { is_secret: true, key: entry.key, value: entry.value },
+          // Issue #56 DR-16: the key here is whatever the extension's manifest
+          // declared, so it can collide with a capability key — an extension
+          // that talks to Ollama would plausibly declare OLLAMA_HOST. The guard
+          // is on the key name and does not look at `is_secret`, so without this
+          // the user clicking Install would be refused as though a model had
+          // made the call. This IS the user, so it carries the proof.
+          headers: await userActionHeaders(),
         }).catch(() => null);
         if (res && !res.error) {
           secretEnvKeys.push(entry.key);

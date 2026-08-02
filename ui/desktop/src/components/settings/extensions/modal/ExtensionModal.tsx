@@ -16,6 +16,7 @@ import { PlusIcon, Edit, Trash2, AlertTriangle, Info } from '../../../icons/app-
 import ExtensionInfoFields from './ExtensionInfoFields';
 import ExtensionTimeoutField from './ExtensionTimeoutField';
 import { upsertConfig } from '../../../../api';
+import { userActionHeaders } from '../../../../utils/userAction';
 import { ConfirmationModal } from '../../../ui/ConfirmationModal';
 
 interface ExtensionModalProps {
@@ -192,6 +193,11 @@ export default function ExtensionModal({
           key: key,
           value: value,
         },
+        // Issue #56 DR-16: same reason as `BrxtInstallModal` — the key is the
+        // extension author's, so it can collide with a capability key, and the
+        // guard does not look at `is_secret`. A person saving an extension's
+        // settings is a user act and carries the proof.
+        headers: await userActionHeaders(),
       });
       return true;
     } catch (error) {
