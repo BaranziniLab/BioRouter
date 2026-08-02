@@ -1551,9 +1551,15 @@ async fn configure_worker_extensions(
     manifest: &Manifest,
     profile_name: &str,
     cfg: &AgentConfig,
+    // Issue #56 (CP5). What the profile RECEIVED, not what it named — the same
+    // value and the same reason as the main path's
+    // `report.granted_knowledge_base.is_some()` (`:918`). This read
+    // `cfg.knowledge_base.is_some()`, so a profile refused a private base was
+    // still handed the `kb_*` toolset scoped to nothing.
+    kb_granted: bool,
 ) {
     let mut extensions = cfg.extensions.clone();
-    if cfg.knowledge_base.is_some() && !extensions.iter().any(|e| e == "knowledge") {
+    if kb_granted && !extensions.iter().any(|e| e == "knowledge") {
         extensions.push("knowledge".to_string());
     }
     if !cfg.skills.is_empty() && !extensions.iter().any(|e| e == "skills") {
@@ -1581,34 +1587,58 @@ async fn configure_worker_agent(
     main_bridge: &UiBridge,
 ) {
     configure_worker_provider(agent, session_id, manifest, profile_name, cfg).await;
-    configure_worker_extensions(agent, manifest, profile_name, cfg).await;
 
-    if let Some(kb) = cfg.knowledge_base.as_ref() {
-        // `session_id` here is the WORKER's own session (`build_worker` mints
-        // one per profile), not the app's main session — so the profile's
-        // declared base is this worker's write target, exactly as the main
-        // agent's declared base is the main session's.
-        //
-        // Issue #56 (CP5). Gated on the WORKER's OWN capability:
-        // `configure_worker_provider` ran four lines up and may have bound a
-        // different tier than the main agent's. This path had no
-        // `capability_report` at all, and `grant_knowledge_base` is
-        // `include_kb(.., PrimaryUpdate::Set(kb))` — so a public worker profile
-        // naming a private base got that base un-hidden in its session AND pinned
-        // as its KB-less write target. Task 10C refuses the reads and Task 10B
-        // stamps the writes, so this is not a content crossing; it is the same
-        // "never arm a tool for a grant that cannot be satisfied" rule
-        // `capability_report` exists to enforce, plus a moved pointer.
-        let worker_is_private = agent
-            .provider()
-            .await
-            .map(|p| p.tier())
-            .unwrap_or(biorouter::privacy::ProviderTier::Public)
-            .is_private();
-        if !biorouter_mcp::agent_drafter::catalog::Catalog::discover(worker_is_private).has_kb(kb) {
-            warn!(app = %manifest.id, profile = %profile_name, kb = %kb,
-                  "profile names a knowledge base that is not available to it");
-        } else if let Err(e) = grant_knowledge_base(&state.knowledge_service, session_id, kb) {
+    // `session_id` here is the WORKER's own session (`build_worker` mints one
+    // per profile), not the app's main session — so the profile's declared base
+    // is this worker's write target, exactly as the main agent's declared base
+    // is the main session's.
+    //
+    // Issue #56 (CP5). Gated on the WORKER's OWN capability:
+    // `configure_worker_provider` ran one line up and may have bound a different
+    // tier than the main agent's. This path had no `capability_report` at all,
+    // and `grant_knowledge_base` is `include_kb(.., PrimaryUpdate::Set(kb))` —
+    // so a public worker profile naming a private base got that base un-hidden
+    // in its session AND pinned as its KB-less write target. Task 10C refuses
+    // the reads and Task 10B stamps the writes, so this is not a content
+    // crossing; it is the same "never arm a tool for a grant that cannot be
+    // satisfied" rule `capability_report` exists to enforce, plus a moved
+    // pointer.
+    //
+    // Resolved BEFORE `configure_worker_extensions`, which is the half review
+    // caught: that function auto-armed the `knowledge` toolset from
+    // `cfg.knowledge_base.is_some()` — what the profile NAMED — so a refused
+    // profile still got `kb_*` tools scoped to nothing. The main path has always
+    // read the granted value (`:918`); this is the worker path saying the same
+    // thing, which is why the decision has to be made above both consumers
+    // rather than beside the grant.
+    // A `match` and not `Option::filter`, because the capability read is `.await`
+    // and a closure cannot hold it — blocking on it here would park a tokio
+    // worker inside `Agent`'s own provider lock.
+    let granted_kb = match cfg.knowledge_base.as_ref() {
+        None => None,
+        Some(kb) => {
+            let worker_is_private = agent
+                .provider()
+                .await
+                .map(|p| p.tier())
+                .unwrap_or(biorouter::privacy::ProviderTier::Public)
+                .is_private();
+            if biorouter_mcp::agent_drafter::catalog::Catalog::discover(worker_is_private)
+                .has_kb(kb)
+            {
+                Some(kb)
+            } else {
+                warn!(app = %manifest.id, profile = %profile_name, kb = %kb,
+                      "profile names a knowledge base that is not available to it");
+                None
+            }
+        }
+    };
+
+    configure_worker_extensions(agent, manifest, profile_name, cfg, granted_kb.is_some()).await;
+
+    if let Some(kb) = granted_kb {
+        if let Err(e) = grant_knowledge_base(&state.knowledge_service, session_id, kb) {
             warn!(app = %manifest.id, profile = %profile_name, kb = %kb, "worker grant knowledge base failed: {e}");
         }
     }
@@ -8377,6 +8407,65 @@ mod tests {
                 Some("omop"),
                 "a public worker profile was pinned to a private base as its \
                  KB-less write target"
+            );
+
+            // …and the refusal is not merely a withheld grant: the toolset must
+            // not be armed either. `configure_worker_extensions` auto-pushed
+            // `knowledge` on `cfg.knowledge_base.is_some()` — what the profile
+            // NAMED — where the main path (`:918`) reads
+            // `report.granted_knowledge_base.is_some()`, what it RECEIVED. A
+            // refused worker was left holding `kb_*` tools scoped to nothing,
+            // which is the "never arm a tool for a grant that cannot be
+            // satisfied" rule the gate's own comment cites.
+            let refused = worker_agent
+                .extension_manager
+                .list_extensions()
+                .await
+                .unwrap_or_default();
+            assert!(
+                !refused.iter().any(|e| e == "knowledge"),
+                "a refused worker profile kept the knowledge toolset armed: {refused:?}"
+            );
+
+            // The counter-assertion, so "never arm knowledge" cannot pass: a
+            // PRIVATE worker profile naming the same base is granted it AND gets
+            // the toolset. `model: None` leaves the bound mock in place, because
+            // the global fallback provider does not exist in this test.
+            let (ok_session, ok_agent) =
+                agent_for(&state, "privacy-worker-trusted", dir.path()).await;
+            ok_agent
+                .update_provider(
+                    Arc::new(TierProvider(biorouter::privacy::ProviderTier::Private)),
+                    &ok_session,
+                )
+                .await
+                .unwrap();
+            configure_worker_agent(
+                &ok_agent,
+                &state,
+                &ok_session,
+                &main_manifest,
+                "trusted",
+                &AgentConfig {
+                    model: None,
+                    knowledge_base: Some("omop".to_string()),
+                    ..Default::default()
+                },
+                &bridge,
+            )
+            .await;
+            assert!(
+                session_kb_ids(&svc, &ok_session).contains(&"omop".to_string()),
+                "a private worker profile lost its own base"
+            );
+            let granted = ok_agent
+                .extension_manager
+                .list_extensions()
+                .await
+                .unwrap_or_default();
+            assert!(
+                granted.iter().any(|e| e == "knowledge"),
+                "a granted worker profile did not get the knowledge toolset: {granted:?}"
             );
         }
     }
