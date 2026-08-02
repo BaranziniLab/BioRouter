@@ -1907,7 +1907,19 @@ impl ExtensionManager {
         // record is one it must not perform. A session id with no row is a
         // silent no-op at the storage layer (0 rows updated), not an error, so
         // this refuses only on a real store failure.
-        if ext_tier.is_private() {
+        //
+        // `cap.enforced()` gates the ratchet as well as the refusal, and that
+        // is AR-7 rather than symmetry for its own sake. The master opt-out's
+        // contract is that with it off *nothing is impacted*, and a ratchet
+        // that keeps firing is an impact — a deferred, permanent one, since
+        // `privacy_tier` is monotone and re-enabling never revisits a row. The
+        // alternative ("a session that queried OMOP is still a session that
+        // queried OMOP") was considered by the design and rejected: it would
+        // silently privatise chats a user believes are unprotected, and the
+        // first they would learn of it is a refusal weeks later. The cost is
+        // named and accepted in AR-7 — a disclosure made while the feature was
+        // off is never reclassified.
+        if cap.enforced() && ext_tier.is_private() {
             self.raise_session_privacy(session_id, &format!("mcp:{client_name}"))
                 .await?;
         }
@@ -4216,6 +4228,7 @@ mod tests {
     /// model was allowed to ask an institutional connector a question — so the
     /// session's classification ratchets at permit time, with `mcp:` provenance
     /// so §12.4 can grade the declassification confirmation on it.
+    ///
     #[tokio::test]
     async fn a_permitted_private_dispatch_ratchets_the_session() {
         let (_dir, em, sm, id) = manager_with_a_session().await;
@@ -4348,9 +4361,26 @@ mod tests {
 
     /// DR-15's master opt-out is read INSIDE the gate, through the capability
     /// the call was admitted on. With enforcement off the same call goes
-    /// through — one auditable branch rather than an absent gate.
+    /// through — one auditable branch rather than an absent gate — and the
+    /// RATCHET stops with it.
+    ///
+    /// The name says "silences" rather than "is the only thing that lets it
+    /// through", which is what this was first called: a private caller lets the
+    /// same call through too, and `a_permitted_private_dispatch_ratchets_the_session`
+    /// is that direction.
+    ///
+    /// ⚠ The second half is AR-7, which is binding and easy to get backwards —
+    /// the first implementation of this task ratcheted anyway, on the argument
+    /// that "a session that queried OMOP is still a session that queried OMOP".
+    /// The plan considered exactly that and rejected it: *"it would silently
+    /// privatise sessions a user believes are unprotected, and the first they
+    /// would learn of it is a refusal weeks later when they turn the feature
+    /// back on."* The toggle means what it says; it does not secretly keep a
+    /// ledger. Task 30's own matrix pins this from the other end
+    /// (`nothing_ratchets_while_the_toggle_is_off_and_re_enabling_does_not_backfill`),
+    /// so an implementation that ratchets here cannot pass that task either.
     #[tokio::test]
-    async fn the_master_opt_out_is_the_only_thing_that_lets_it_through() {
+    async fn the_master_opt_out_silences_the_refusal_and_the_ratchet_with_it() {
         let (_dir, em, sm, id) = manager_with_a_session().await;
         em.add_mock_extension("ucsfomopagent".to_string(), Arc::new(MockClient {}))
             .await;
@@ -4369,17 +4399,14 @@ mod tests {
             .expect("with the feature off nothing is refused");
         dispatched.result.await.expect("the mock client answers");
 
-        // …but the RATCHET is not gated on the opt-out, deliberately and in
-        // step with Gate B (and with Gates A/B', which do not consult the
-        // toggle at all): the toggle silences refusals, it does not stop a
-        // session recording what it reached. A session that queried OMOP with
-        // the feature off is still a session that queried OMOP, and that record
-        // is what makes turning the feature back on mean anything.
         let row = sm.get_session(&id, false).await.unwrap();
         assert_eq!(
             row.privacy_tier,
-            crate::privacy::SessionClassification::Private
+            crate::privacy::SessionClassification::Public,
+            "AR-7: with the master opt-out off, DR-4's triggers do not fire — a \
+             classification written while the user believes the feature is off is \
+             permanent, and re-enabling never revisits it"
         );
-        assert_eq!(row.privacy_reason.as_deref(), Some("mcp:ucsfomopagent"));
+        assert_eq!(row.privacy_reason, None);
     }
 }

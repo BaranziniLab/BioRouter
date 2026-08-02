@@ -36,15 +36,28 @@ pub use refusal::PrivacyRefusal;
 /// exists to close.
 ///
 /// ⚠ **Not every gate consults it, and this doc used to say "every gate".**
-/// Gate D goes through [`CallCapability`] and so honours it; Gate A (the
-/// conditional bind in `Agent::update_provider`), Gate B (the turn barrier in
-/// `Agent::reply`) and Gate B' (the assertion in `Agent::provider`) do not —
-/// they call [`bind_allowed`] directly. There is no behavioural difference
-/// while this is a `const fn … { true }`, which is why it went unnoticed. The
-/// divergence becomes real the day Task 30 makes the toggle an atomic: the
-/// opt-out would silence tool-dispatch refusals while still refusing turns and
-/// completions. Whoever lands Task 30 has to route these three through it too,
-/// or state on purpose that the opt-out does not cover the bind lattice.
+/// Gate C (both halves — the dispatch refusal and O5's ratchet) and Gate D go
+/// through [`CallCapability`] and so honour it; Gate A (the conditional bind in
+/// `Agent::update_provider`), Gate B (the turn barrier in `Agent::reply`) and
+/// Gate B' (the assertion in `Agent::provider`) do not — they call
+/// [`bind_allowed`] directly. There is no behavioural difference while this is
+/// a `const fn … { true }`, which is why it went unnoticed. The divergence
+/// becomes real the day Task 30 makes the toggle an atomic: the opt-out would
+/// silence tool-dispatch refusals while still refusing turns and completions.
+/// Whoever lands Task 30 has to route these three through it too, or state on
+/// purpose that the opt-out does not cover the bind lattice.
+///
+/// ⚠ **One of those three is not merely a refusal, and AR-7 names it.** Gate B
+/// also carries DR-4's *other* ratchet (`raise_privacy(floor(tier), "turn:…")`
+/// in `Agent::reply`), and that write is likewise unconditional today. AR-7 is
+/// explicit that the toggle "stops the classification ratchet along with the
+/// gates", and Task 30's own matrix asserts it from the other end
+/// (`nothing_ratchets_while_the_toggle_is_off_and_re_enabling_does_not_backfill`
+/// drives a turn as well as a tool call). Gate C's ratchet was corrected to
+/// honour the toggle when Task 14 was reviewed; Gate B's is the remaining half,
+/// and it must be gated before Task 30 can pass — a classification written
+/// while the user believes the feature is off is permanent, because
+/// `privacy_tier` is monotone and re-enabling never revisits a row.
 ///
 /// A `const fn … { true }` stub until Task 30 turns it into a `pub use` of the
 /// `biorouter-mcp` atomic. Task 30's own file table calls it a stub "since
