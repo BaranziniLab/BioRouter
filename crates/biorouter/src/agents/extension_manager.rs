@@ -5673,9 +5673,7 @@ mod tests {
             .map(|t| t.name.to_string())
             .collect();
         assert!(
-            !model_view
-                .iter()
-                .any(|n| n.starts_with("ucsfomopagent__")),
+            !model_view.iter().any(|n| n.starts_with("ucsfomopagent__")),
             "the model's view is still Gate E filtered: {model_view:?}"
         );
 
