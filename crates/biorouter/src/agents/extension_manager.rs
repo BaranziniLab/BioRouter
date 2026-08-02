@@ -2224,11 +2224,17 @@ impl ExtensionManager {
         // written as an inspector would be invisible to three of the four.
         //
         // `ext_tier` is read off the RESOLVED RECORD, never off the tool-name
-        // string: `get_client_for_tool` routes by `starts_with` over a HashMap
-        // in nondeterministic order and `normalize()` permits `_`, so
-        // extensions keyed `a` and `a__b` make `a__b__c` ambiguous. It comes
-        // out of the same snapshot as the client and the config, so there is no
-        // second lookup to disagree with the first.
+        // string. `normalize()` permits `_`, so extensions keyed `a` and `a__b`
+        // both match `a__b__c` by prefix. `get_client_for_tool` settles that
+        // with the single longest-key-wins resolver in its body — the SAME one
+        // Gate E filters the tool list with, introduced by Task 16 exactly so
+        // the two gates cannot disagree about who owns a name. (This comment
+        // used to say the routing was a `starts_with` scan of a HashMap in
+        // nondeterministic order. That was true, and is what Task 16 fixed.)
+        // Re-deriving the tier from the string here would reintroduce the
+        // disagreement one layer down, where nothing would catch it; instead it
+        // comes out of the same snapshot as the client and the config, so there
+        // is no second lookup to drift from the first either.
         //
         // `cap` is a PARAMETER. Gate C does not sample and cannot:
         // `dispatch_tool_call` has no way to read the provider any more. That
