@@ -1525,6 +1525,56 @@ impl ExtensionManager {
             .await
     }
 
+    /// Gate C's predicate for the entry points that reach an MCP server WITHOUT
+    /// being a tool call — resource reads, resource listings, prompt listings
+    /// and `get_prompt`. `Err` is the refusal; `Ok(())` permits.
+    ///
+    /// `dispatch_tool_call` is a complete choke point for tool calls and for
+    /// nothing else. Eight sibling entry points reach a server beside it, three
+    /// of which fan out over **every** installed extension, and
+    /// `read_resource_tool` with no `extension_name` is the worst of them: it
+    /// actively probes each private server on the model's behalf and swallows
+    /// the failure.
+    ///
+    /// **This samples; `dispatch_tool_call` does not, and the asymmetry is the
+    /// point.** That function takes its [`crate::privacy::CallCapability`] as a
+    /// parameter because four production entries converge on it, each with its
+    /// own admission point, and a second read inside the driven future is what
+    /// would let a Public-admitted call run with Private reach. These eight have
+    /// no admitted capability to inherit — they are called from route handlers,
+    /// from `Agent::list_extension_prompts`, from the apps' UI-resource sweep
+    /// and from the `platform__read_resource` tool — so the only value available
+    /// is the one at the decision, and reading it once there is a single read,
+    /// not the read-then-read the capability exists to prevent.
+    ///
+    /// The tier is looked up under its own lock rather than beside the client,
+    /// which [`Self::get_client_for_tool`] deliberately refuses to do. That is
+    /// safe **here and only here** because `Extension::tier` is stamped as
+    /// `classify_extension(key)` at all three admission points, so it is a pure
+    /// function of the key both lookups use: an entry replaced in between cannot
+    /// carry a different tier.
+    ///
+    /// An unknown name reads Private — fail-closed, the opposite direction from
+    /// `classify_extension`'s fail-open ruling, because here the alternative is
+    /// to permit a reach at a name the manager could not resolve.
+    async fn assert_extension_reachable(&self, name: &str) -> Result<(), ErrorData> {
+        let cap = crate::privacy::CallCapability::sample(&self.provider).await;
+        let tier = self
+            .extensions
+            .lock()
+            .await
+            .get(name)
+            .map(|extension| extension.tier)
+            .unwrap_or(crate::privacy::ProviderTier::Private);
+        match crate::privacy::refusal::privacy_refusal(name, tier, cap.tier()) {
+            // DR-15's master opt-out, read through the capability so the tier
+            // and the toggle can never be sampled at two different instants —
+            // the same predicate Gate C asks, never a second narrower flag.
+            Some(err) if cap.enforced() => Err(err),
+            _ => Ok(()),
+        }
+    }
+
     // Function that gets executed for read_resource tool
     pub async fn read_resource_tool(
         &self,
@@ -1560,6 +1610,17 @@ impl ExtensionManager {
         let extension_names: Vec<String> = self.extensions.lock().await.keys().cloned().collect();
 
         for extension_name in extension_names {
+            // Gate C's sibling, INSIDE the loop rather than above it. A single
+            // up-front check would fail the whole call for a public model that
+            // merely has one private extension installed; here the private
+            // server is skipped and the public ones still answer.
+            if self
+                .assert_extension_reachable(&extension_name)
+                .await
+                .is_err()
+            {
+                continue;
+            }
             let read_result = self
                 .read_resource(uri, &extension_name, cancellation_token.clone())
                 .await;
@@ -1605,6 +1666,9 @@ impl ExtensionManager {
         extension_name: &str,
         cancellation_token: CancellationToken,
     ) -> Result<rmcp::model::ReadResourceResult, ErrorData> {
+        // Gate C's sibling: the name is known, so refuse before any client call.
+        self.assert_extension_reachable(extension_name).await?;
+
         let available_extensions = self
             .extensions
             .lock()
@@ -1648,6 +1712,15 @@ impl ExtensionManager {
         };
 
         for (extension_name, client) in extensions_to_check {
+            // Gate C's sibling, INSIDE the loop: one private extension must not
+            // empty a public model's whole UI-resource sweep.
+            if self
+                .assert_extension_reachable(&extension_name)
+                .await
+                .is_err()
+            {
+                continue;
+            }
             let client_guard = &*client;
 
             match client_guard
@@ -1675,6 +1748,12 @@ impl ExtensionManager {
         extension_name: &str,
         cancellation_token: CancellationToken,
     ) -> Result<Vec<Content>, ErrorData> {
+        // Gate C's sibling. This is also the guard that keeps `list_resources`'
+        // fan-out partial rather than all-or-nothing: the fan-out drives one of
+        // these per extension and collects the failures, so a refusal here drops
+        // exactly the private extension.
+        self.assert_extension_reachable(extension_name).await?;
+
         let client = self
             .get_server_client(extension_name)
             .await
@@ -1718,6 +1797,13 @@ impl ExtensionManager {
 
         match extension {
             Some(extension_name) => {
+                // Gate C's sibling at this altitude too. `list_resources_from_extension`
+                // guards itself — that is what keeps the fan-out below partial —
+                // but the named branch is a distinct entry point, and stating the
+                // refusal here means a later refactor that inlines the helper
+                // cannot silently drop it.
+                self.assert_extension_reachable(extension_name).await?;
+
                 // Handle single extension case
                 self.list_resources_from_extension(extension_name, cancellation_token)
                     .await
@@ -1981,6 +2067,9 @@ impl ExtensionManager {
         extension_name: &str,
         cancellation_token: CancellationToken,
     ) -> Result<Vec<Prompt>, ErrorData> {
+        // Gate C's sibling: the name is known, so refuse before any client call.
+        self.assert_extension_reachable(extension_name).await?;
+
         let client = self
             .get_server_client(extension_name)
             .await
@@ -2014,6 +2103,15 @@ impl ExtensionManager {
 
         let names: Vec<_> = self.extensions.lock().await.keys().cloned().collect();
         for extension_name in names {
+            // Gate C's sibling, INSIDE the loop: a private extension is left out
+            // of the map and every public one is still listed.
+            if self
+                .assert_extension_reachable(&extension_name)
+                .await
+                .is_err()
+            {
+                continue;
+            }
             let token = cancellation_token.clone();
             futures.push(async move {
                 (
@@ -2060,6 +2158,12 @@ impl ExtensionManager {
         arguments: Value,
         cancellation_token: CancellationToken,
     ) -> Result<GetPromptResult> {
+        // Gate C's sibling. An MCP prompt body is server-authored text that
+        // lands in the transcript verbatim, so this refuses before the fetch —
+        // the refusal carries the extension name and the two tiers and nothing
+        // the server wrote.
+        self.assert_extension_reachable(extension_name).await?;
+
         let client = self
             .get_server_client(extension_name)
             .await
@@ -4320,7 +4424,10 @@ mod tests {
             Ok(_) => panic!("BR-23 must block an argument naming an existing .env"),
             Err(e) => e.to_string(),
         };
-        assert!(denied.contains("secret/credential deny pattern"), "{denied}");
+        assert!(
+            denied.contains("secret/credential deny pattern"),
+            "{denied}"
+        );
 
         let row = sm.get_session(&id, false).await.unwrap();
         assert_eq!(
@@ -4477,5 +4584,466 @@ mod tests {
              permanent, and re-enabling never revisits it"
         );
         assert_eq!(row.privacy_reason, None);
+    }
+
+    // ----------------------------------------------------------------------
+    // Issue #56 Task 15: Gate C's siblings — the eight ways to reach an MCP
+    // server that are NOT a tool call. `dispatch_tool_call` is a complete choke
+    // point for tool calls and for nothing else.
+    //
+    // ⚠ `search_available_extensions` is deliberately absent and that is not an
+    // oversight. It reads `config_disabled_extension_lines(&get_all_extensions(),
+    // …)` and the manager's own key set; it never contacts a server and returns
+    // no server-authored content. It does reveal that a private extension is
+    // INSTALLED, which is an existence leak and explicitly out of scope (DR-7).
+    // ----------------------------------------------------------------------
+
+    /// A stub MCP client that answers every read the siblings perform, counts
+    /// how many times it was contacted, and stamps `SENTINEL-<label>` into every
+    /// payload it returns.
+    ///
+    /// The counter and the sentinel answer two different questions and these
+    /// tests need both. The sentinel answers "did this server's content reach
+    /// the caller". The counter answers "was this server contacted at all" — and
+    /// for `read_resource_tool`'s fan-out, which swallows a failure and tries the
+    /// next extension, only the counter can tell a probe that SKIPPED the private
+    /// server from one that ASKED it and threw the answer away. The rendered text
+    /// is identical in both cases.
+    #[derive(Clone)]
+    struct CountingClient {
+        label: &'static str,
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl CountingClient {
+        fn new(label: &'static str) -> Self {
+            Self {
+                label,
+                calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            }
+        }
+
+        fn hit(&self) {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+        }
+
+        fn contacted(&self) -> usize {
+            self.calls.load(Ordering::SeqCst)
+        }
+
+        /// The token every payload this server authors carries.
+        fn sentinel(&self) -> String {
+            format!("SENTINEL-{}", self.label)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl McpClientTrait for CountingClient {
+        fn get_info(&self) -> Option<&InitializeResult> {
+            None
+        }
+
+        async fn list_resources(
+            &self,
+            _next_cursor: Option<String>,
+            _cancellation_token: CancellationToken,
+        ) -> Result<ListResourcesResult, Error> {
+            use rmcp::model::AnnotateAble;
+            self.hit();
+            Ok(ListResourcesResult {
+                resources: vec![
+                    rmcp::model::RawResource::new(
+                        "res://x",
+                        format!("{}-resource", self.sentinel()),
+                    )
+                    .no_annotation(),
+                    // `get_ui_resources` keeps only `ui://` URIs, so the fixture
+                    // has to publish one or that probe can never leak.
+                    rmcp::model::RawResource::new(
+                        format!("ui://{}/panel", self.sentinel()),
+                        format!("{}-ui-resource", self.sentinel()),
+                    )
+                    .no_annotation(),
+                ],
+                next_cursor: None,
+                meta: None,
+            })
+        }
+
+        async fn read_resource(
+            &self,
+            uri: &str,
+            _cancellation_token: CancellationToken,
+        ) -> Result<ReadResourceResult, Error> {
+            self.hit();
+            Ok(ReadResourceResult {
+                contents: vec![ResourceContents::TextResourceContents {
+                    uri: uri.to_string(),
+                    mime_type: Some("text/plain".to_string()),
+                    text: format!("from the {} server ({})", self.label, self.sentinel()),
+                    meta: None,
+                }],
+            })
+        }
+
+        async fn list_tools(
+            &self,
+            _next_cursor: Option<String>,
+            _cancellation_token: CancellationToken,
+        ) -> Result<ListToolsResult, Error> {
+            Ok(ListToolsResult {
+                tools: vec![],
+                next_cursor: None,
+                meta: None,
+            })
+        }
+
+        async fn call_tool(
+            &self,
+            _name: &str,
+            _arguments: Option<JsonObject>,
+            _meta: McpMeta,
+            _cancellation_token: CancellationToken,
+        ) -> Result<CallToolResult, Error> {
+            self.hit();
+            Ok(CallToolResult {
+                content: vec![],
+                is_error: None,
+                structured_content: None,
+                meta: None,
+            })
+        }
+
+        async fn list_prompts(
+            &self,
+            _next_cursor: Option<String>,
+            _cancellation_token: CancellationToken,
+        ) -> Result<ListPromptsResult, Error> {
+            self.hit();
+            Ok(ListPromptsResult {
+                prompts: vec![Prompt::new(
+                    format!("{}-prompt", self.sentinel()),
+                    Some("a prompt"),
+                    None,
+                )],
+                next_cursor: None,
+                meta: None,
+            })
+        }
+
+        async fn get_prompt(
+            &self,
+            _name: &str,
+            _arguments: Value,
+            _cancellation_token: CancellationToken,
+        ) -> Result<GetPromptResult, Error> {
+            self.hit();
+            // An MCP prompt body is server-authored text that lands in the
+            // transcript verbatim, so it is CONTENT, not a name.
+            Ok(GetPromptResult {
+                description: Some(format!("{}-PROMPT-BODY", self.sentinel())),
+                messages: vec![rmcp::model::PromptMessage::new_text(
+                    rmcp::model::PromptMessageRole::User,
+                    format!("{}-PROMPT-BODY", self.sentinel()),
+                )],
+            })
+        }
+
+        async fn subscribe(&self) -> mpsc::Receiver<ServerNotification> {
+            mpsc::channel(1).1
+        }
+    }
+
+    /// A **real** provider at the requested tier — never a mock.
+    ///
+    /// `Provider::tier` has an enumerating gate over its implementations
+    /// (`providers::tier_tests`, Task 5 Step 5) that lists the production ones
+    /// for a human to read; a seventh, test-only implementation here would have
+    /// to be read past on every run. An Ollama-engine provider's tier is a pure
+    /// function of the base URL it resolved (`self_hosted_tier`), so loopback
+    /// yields Private and a host off the machine yields Public, with no network
+    /// touched at construction.
+    fn provider_at(
+        tier: crate::privacy::ProviderTier,
+    ) -> Arc<dyn crate::providers::base::Provider> {
+        use crate::providers::base::Provider;
+        let base_url = match tier {
+            crate::privacy::ProviderTier::Private => "http://localhost:11434",
+            crate::privacy::ProviderTier::Public => "https://ollama.example.test",
+        };
+        let provider = crate::providers::ollama::OllamaProvider::from_custom_config(
+            crate::model::ModelConfig::new_or_fail("qwen3"),
+            crate::config::declarative_providers::DeclarativeProviderConfig {
+                name: "sibling-fixture".to_string(),
+                engine: crate::config::declarative_providers::ProviderEngine::Ollama,
+                display_name: "Sibling Fixture".to_string(),
+                description: None,
+                api_key_env: "NOT_USED".to_string(),
+                base_url: base_url.to_string(),
+                models: vec![],
+                headers: None,
+                timeout_seconds: None,
+                supports_streaming: None,
+            },
+        )
+        .expect("a declarative ollama provider must construct");
+        assert_eq!(
+            provider.tier(),
+            tier,
+            "the fixture only discriminates if its provider really is at this tier"
+        );
+        Arc::new(provider)
+    }
+
+    /// A manager bound to a provider at `caller`, holding the private
+    /// `ucsfomopagent` and — when `with_public` — the public `developer`.
+    ///
+    /// Both stubs are admitted through the real `add_client`, so their tier is
+    /// stamped by the same rule a real extension's is, and both advertise
+    /// resources and prompts: `list_resources`' fan-out filters on
+    /// `supports_resources()`, so a server with no `ServerInfo` would make that
+    /// probe iterate over nothing and pass vacuously.
+    async fn siblings_fixture(
+        caller: crate::privacy::ProviderTier,
+        with_public: bool,
+    ) -> (TempDir, ExtensionManager, CountingClient, CountingClient) {
+        let dir = tempfile::tempdir().unwrap();
+        let session_manager = Arc::new(crate::session::SessionManager::new(
+            dir.path().to_path_buf(),
+        ));
+        let em = ExtensionManager::new(
+            Arc::new(Mutex::new(Some(provider_at(caller)))),
+            session_manager,
+        );
+
+        let info = ServerInfo {
+            capabilities: rmcp::model::ServerCapabilities::builder()
+                .enable_tools()
+                .enable_prompts()
+                .enable_resources()
+                .build(),
+            ..Default::default()
+        };
+        let private = CountingClient::new("private");
+        let public = CountingClient::new("public");
+
+        for (name, client) in [
+            ("ucsfomopagent", private.clone()),
+            ("developer", public.clone()),
+        ] {
+            if name == "developer" && !with_public {
+                continue;
+            }
+            em.add_client(
+                normalize(name),
+                ExtensionConfig::Builtin {
+                    name: name.to_string(),
+                    display_name: Some(name.to_string()),
+                    description: "built-in".to_string(),
+                    timeout: None,
+                    bundled: None,
+                    available_tools: vec![],
+                },
+                Arc::new(client),
+                Some(info.clone()),
+                None,
+            )
+            .await;
+        }
+
+        (dir, em, private, public)
+    }
+
+    /// Every non-dispatch entry point that reaches an MCP server, by the name of
+    /// the function it exercises. `read_resource_tool` and `list_resources` each
+    /// appear twice because their two branches are different code paths: one
+    /// names an extension, the other probes every installed one in turn.
+    const SIBLING_PROBES: &[&str] = &[
+        "read_resource_tool (fan-out)",
+        "read_resource_tool (named)",
+        "read_resource",
+        "get_ui_resources",
+        "list_resources_from_extension",
+        "list_resources (named)",
+        "list_resources (fan-out)",
+        "list_prompts_from_extension",
+        "list_prompts",
+        "get_prompt",
+    ];
+
+    /// Drive one probe and render its WHOLE outcome — `Ok` and `Err` alike — so
+    /// a single substring scan can ask whether any server-authored content came
+    /// back.
+    async fn run_sibling(em: &ExtensionManager, probe: &str) -> String {
+        let tok = CancellationToken::default;
+        match probe {
+            "read_resource_tool (fan-out)" => format!(
+                "{:?}",
+                em.read_resource_tool(serde_json::json!({ "uri": "res://x" }), tok())
+                    .await
+            ),
+            "read_resource_tool (named)" => format!(
+                "{:?}",
+                em.read_resource_tool(
+                    serde_json::json!({ "uri": "res://x", "extension_name": "ucsfomopagent" }),
+                    tok()
+                )
+                .await
+            ),
+            "read_resource" => format!(
+                "{:?}",
+                em.read_resource("res://x", "ucsfomopagent", tok()).await
+            ),
+            "get_ui_resources" => format!("{:?}", em.get_ui_resources().await),
+            "list_resources_from_extension" => format!(
+                "{:?}",
+                em.list_resources_from_extension("ucsfomopagent", tok())
+                    .await
+            ),
+            "list_resources (named)" => format!(
+                "{:?}",
+                em.list_resources(serde_json::json!({ "extension": "ucsfomopagent" }), tok())
+                    .await
+            ),
+            "list_resources (fan-out)" => format!(
+                "{:?}",
+                em.list_resources(serde_json::json!({}), tok()).await
+            ),
+            "list_prompts_from_extension" => format!(
+                "{:?}",
+                em.list_prompts_from_extension("ucsfomopagent", tok()).await
+            ),
+            "list_prompts" => format!("{:?}", em.list_prompts(tok()).await),
+            "get_prompt" => format!(
+                "{:?}",
+                em.get_prompt("ucsfomopagent", "cohort", serde_json::json!({}), tok())
+                    .await
+            ),
+            other => panic!("unknown sibling probe: {other}"),
+        }
+    }
+
+    /// The task's headline. Not one of the eight may reach the private server
+    /// while the session is bound to a public model, and not one may hand its
+    /// names or its content back.
+    #[tokio::test]
+    async fn no_sibling_entry_point_reaches_a_private_extension_under_a_public_model() {
+        for probe in SIBLING_PROBES {
+            let (_dir, em, private, _public) =
+                siblings_fixture(crate::privacy::ProviderTier::Public, true).await;
+            let rendered = run_sibling(&em, probe).await;
+            assert_eq!(
+                private.contacted(),
+                0,
+                "{probe} contacted the private server (returned: {rendered})"
+            );
+            assert!(
+                !rendered.contains(&private.sentinel()),
+                "{probe} leaked the private server's names or content: {rendered}"
+            );
+        }
+    }
+
+    /// The other direction, without which the guard could be "always refuse a
+    /// private extension" and every assertion above would still pass. A private
+    /// model may reach a private extension; the boundary is the tier pair, not
+    /// the extension.
+    #[tokio::test]
+    async fn every_sibling_entry_point_still_reaches_a_private_extension_under_a_private_model() {
+        for probe in SIBLING_PROBES {
+            // No public extension: the two fan-out probes that return on the
+            // first success would otherwise be settled by whichever key the
+            // HashMap yielded first.
+            let (_dir, em, private, _public) =
+                siblings_fixture(crate::privacy::ProviderTier::Private, false).await;
+            let rendered = run_sibling(&em, probe).await;
+            assert!(
+                private.contacted() > 0,
+                "{probe} refused a private extension to a PRIVATE caller (returned: {rendered})"
+            );
+        }
+    }
+
+    /// `read_resource_tool` with no `extension_name` probes every extension in
+    /// turn and swallows failures (`Err(_) => continue`). If the guard is a
+    /// single up-front check the whole call fails; placed inside the loop, the
+    /// private server is skipped and the public one still answers.
+    ///
+    /// ⚠ The call COUNTER is the assertion that discriminates, not the returned
+    /// text: in the buggy case where the private server was contacted first and
+    /// its answer discarded, the text is identical.
+    #[tokio::test]
+    async fn the_resource_fanout_still_serves_the_public_extension() {
+        let (_dir, em, private, public) =
+            siblings_fixture(crate::privacy::ProviderTier::Public, true).await;
+
+        let out = em
+            .read_resource_tool(
+                serde_json::json!({ "uri": "res://x" }),
+                CancellationToken::default(),
+            )
+            .await
+            .expect("one private extension must not cost a public model its resource reads");
+
+        assert!(
+            format!("{out:?}").contains("from the public server"),
+            "{out:?}"
+        );
+        assert_eq!(
+            private.contacted(),
+            0,
+            "the fan-out asked the private server and swallowed the answer"
+        );
+        assert!(public.contacted() > 0, "the public server was never asked");
+    }
+
+    /// The same property for the other two fan-outs: one private extension must
+    /// not empty a public model's UI-resource sweep or its prompt listing.
+    #[tokio::test]
+    async fn the_other_two_fanouts_still_serve_the_public_extension() {
+        let (_dir, em, private, public) =
+            siblings_fixture(crate::privacy::ProviderTier::Public, true).await;
+
+        let ui = em.get_ui_resources().await.expect("ui sweep");
+        assert!(ui.iter().all(|(name, _)| name == "developer"), "{ui:?}");
+        assert!(
+            !ui.is_empty(),
+            "the public server's ui:// resource vanished"
+        );
+
+        let prompts = em
+            .list_prompts(CancellationToken::default())
+            .await
+            .expect("prompt listing");
+        assert!(prompts.contains_key("developer"), "{prompts:?}");
+        assert!(!prompts.contains_key("ucsfomopagent"), "{prompts:?}");
+
+        assert_eq!(private.contacted(), 0);
+        assert!(public.contacted() > 0);
+    }
+
+    /// An MCP prompt body is server-authored text that lands in the transcript
+    /// verbatim, so a refusal that echoed it would defeat the point of refusing.
+    #[tokio::test]
+    async fn get_prompt_refuses_without_echoing_the_prompt_body() {
+        let (_dir, em, private, _public) =
+            siblings_fixture(crate::privacy::ProviderTier::Public, false).await;
+
+        let err = em
+            .get_prompt(
+                "ucsfomopagent",
+                "cohort",
+                serde_json::json!({}),
+                CancellationToken::default(),
+            )
+            .await
+            .expect_err("a public model must not fetch a private extension's prompt");
+
+        let rendered = format!("{err:?}");
+        assert!(
+            !rendered.contains(&format!("{}-PROMPT-BODY", private.sentinel())),
+            "{rendered}"
+        );
+        assert_eq!(private.contacted(), 0);
     }
 }
