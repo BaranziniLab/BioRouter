@@ -2920,19 +2920,46 @@ function registryCachePath(): string {
   return path.join(app.getPath('userData'), 'registry-last-good.json');
 }
 
-/** A document is only worth caching if it is actually a catalogue. */
+/**
+ * A document is only worth caching if it is actually a catalogue.
+ *
+ * ⚠ **Element-wise, not just array-shaped.** `{"extensions":[null],"skills":[]}`
+ * satisfies `Array.isArray` on both members and is nonetheless not a catalogue;
+ * admitting it wrote it to the cache, where it was re-admitted on every launch
+ * thereafter and blew up the renderer's classifier on a `null.privacy`. The
+ * cache is precisely what turns one bad response into a permanent one, so the
+ * validation that guards it has to look at what is IN the arrays. Only
+ * "is a plain object" is checked — a v1 document's entries carry different
+ * fields from a v2 document's, and rejecting on a missing field would refuse
+ * catalogues the site legitimately publishes.
+ */
 function isRegistryDocument(json: unknown): boolean {
   if (!json || typeof json !== 'object') return false;
   const doc = json as { extensions?: unknown; skills?: unknown };
-  return Array.isArray(doc.extensions) && Array.isArray(doc.skills);
+  if (!Array.isArray(doc.extensions) || !Array.isArray(doc.skills)) return false;
+  const isEntry = (e: unknown) => !!e && typeof e === 'object' && !Array.isArray(e);
+  return doc.extensions.every(isEntry) && doc.skills.every(isEntry);
 }
 
+/**
+ * Write-to-temp-then-rename, because two writers of this file is the NORMAL
+ * case, not a rare one: `ExtensionsSection` calls `loadRegistry()` on mount and
+ * it also renders `BrowseExtensionsModal`, which calls it again — two
+ * `registry:fetch` handlers in flight at once. A plain `writeFile` truncates and
+ * then writes, so two payloads of different lengths can interleave into a file
+ * that is neither. `rename` within a directory is atomic, so a reader sees the
+ * old document or the new one and never a splice of both.
+ */
 async function writeLastGoodRegistry(registry: unknown, fetchedAt: string): Promise<void> {
+  const target = registryCachePath();
+  const scratch = `${target}.${crypto.randomBytes(6).toString('hex')}.tmp`;
   try {
-    await fs.writeFile(registryCachePath(), JSON.stringify({ fetchedAt, registry }), 'utf8');
+    await fs.writeFile(scratch, JSON.stringify({ fetchedAt, registry }), 'utf8');
+    await fs.rename(scratch, target);
   } catch (err) {
     // A cache that cannot be written costs freshness on the next offline run,
     // never the fetch that just succeeded.
+    await fs.rm(scratch, { force: true }).catch(() => {});
     log.warn('Could not write the last-good registry cache:', err);
   }
 }

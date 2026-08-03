@@ -59,6 +59,26 @@ describe('loadRegistry — freshness that raises and never lowers', () => {
     expect(effectivePrivacy(registry, 'labarchivesagent')).toBe('private');
   });
 
+  /**
+   * The threat model this task names is "a compromised or merely stale
+   * `registry.json`", and the last-good cache is what turns a one-shot bad
+   * response into a permanent one. `{"extensions":[null],"skills":[]}` is a 200
+   * whose `extensions` IS an array, so an array-shaped check admits it, caches
+   * it, and re-admits it on every launch thereafter.
+   *
+   * The failure was not a wrong badge — it was `loadRegistry` REJECTING, from
+   * `rememberPrivateExtensions` outside the `try` whose comment promises it
+   * never does. Browse fell to its error state instead of the bundled snapshot,
+   * `ExtensionsSection` took an unhandled rejection and dropped every §13.5
+   * line, and `effectivePrivacy` threw inside React render.
+   */
+  it('a document with a malformed entry loads, and still badges the compiled set', async () => {
+    mockFetch({ extensions: [null, 'nonsense', { extension_name: 'ucsfomopagent' }] });
+    const { registry } = await loadRegistry();
+    expect(effectivePrivacy(registry, 'ucsfomopagent')).toBe('private');
+    expect(effectivePrivacy(registry, 'spokeagent')).toBe('public');
+  });
+
   it('a hung registry does not hang the modal', async () => {
     // Fake timers, not an eleven-second wall-clock wait: the assertion the plan
     // wrote is `< 12_000`, and the renderer's budget is deliberately just above

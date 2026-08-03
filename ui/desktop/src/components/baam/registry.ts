@@ -154,14 +154,42 @@ export async function loadRegistry(): Promise<RegistryLoad> {
     Array.isArray(result.registry.skills) &&
     Array.isArray(result.registry.extensions)
   ) {
-    rememberPrivateExtensions(result.registry);
+    const registry = withUsableEntriesOnly(result.registry);
+    rememberPrivateExtensions(registry);
     return {
-      registry: result.registry,
+      registry,
       live: result.stale !== true,
       fetchedAt: result.fetchedAt,
     };
   }
   return { registry: FALLBACK_REGISTRY, live: false };
+}
+
+/** A usable catalogue entry is a plain object; everything else is not one. */
+function isEntry(value: unknown): boolean {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+/**
+ * Drop entries that are not objects, once, at the boundary.
+ *
+ * Every consumer downstream — the classifier, the two Browse lists, the
+ * provenance line — reads fields off these entries, so a single `null` in the
+ * array is a `TypeError` in whichever of them runs first. Sanitising here makes
+ * all of them total at one seam instead of asking each to remember, and it is
+ * the right seam: this is where an untrusted document stops being untrusted.
+ *
+ * The main process rejects such a document before caching it, so in practice
+ * this only ever fires on a cache written by an older build. Both layers exist
+ * because either alone would leave the other trusting its input.
+ */
+function withUsableEntriesOnly(registry: BaamRegistry): BaamRegistry {
+  const extensions = registry.extensions.filter(isEntry);
+  const skills = registry.skills.filter(isEntry);
+  if (extensions.length === registry.extensions.length && skills.length === registry.skills.length) {
+    return registry;
+  }
+  return { ...registry, extensions, skills };
 }
 
 /**
@@ -177,10 +205,17 @@ function privacyKeyOf(entry: RegistryExtension): string | null {
   return entry.extension_name ? nameToKey(entry.extension_name) : null;
 }
 
-/** Every key this document marks private. */
+/**
+ * Every key this document marks private.
+ *
+ * Total by construction, and deliberately so even though `loadRegistry`
+ * sanitises: this is the classifier, it is called during React render, and a
+ * classifier that throws on a hostile input has failed in the one direction it
+ * exists to prevent. It must never depend on a caller having tidied up first.
+ */
 function privateKeysIn(registry: BaamRegistry): string[] {
-  return registry.extensions
-    .filter((e) => e.privacy === 'private')
+  return (registry.extensions ?? [])
+    .filter((e): e is RegistryExtension => isEntry(e) && e.privacy === 'private')
     .map(privacyKeyOf)
     .filter((k): k is string => k !== null);
 }
@@ -233,9 +268,10 @@ export function marketplaceEntryFor(
 ): RegistryExtension | null {
   const key = nameToKey(name);
   return (
-    registry.extensions.find(
+    (registry.extensions ?? []).find(
       (e) =>
-        privacyKeyOf(e) === key || nameToKey(e.id ?? '') === key || nameToKey(e.name ?? '') === key
+        isEntry(e) &&
+        (privacyKeyOf(e) === key || nameToKey(e.id ?? '') === key || nameToKey(e.name ?? '') === key)
     ) ?? null
   );
 }

@@ -108,9 +108,16 @@ export default function ExtensionsSection({
   const [catalog, setCatalog] = useState<RegistryLoad | null>(null);
   useEffect(() => {
     let cancelled = false;
-    loadRegistry().then((load) => {
-      if (!cancelled) setCatalog(load);
-    });
+    loadRegistry()
+      .then((load) => {
+        if (!cancelled) setCatalog(load);
+      })
+      // `loadRegistry` documents that it never rejects, and it is hardened so
+      // that stays true against a hostile document — but this screen is not the
+      // right place to find out it was wrong. Without a handler the failure is
+      // an unhandled rejection and every §13.5 provenance line silently
+      // vanishes, which looks exactly like a slow load and never resolves.
+      .catch(() => {});
     return () => {
       cancelled = true;
     };
