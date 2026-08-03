@@ -1017,7 +1017,6 @@ mod tests {
             extensions: vec![],
             max_turns: Some(3),
             privacy_tier: crate::privacy::SessionClassification::Public,
-            requires_downgrade_confirmation: false,
             dropped_private_extensions: Vec::new(),
         };
 
@@ -1733,7 +1732,6 @@ mod tests {
             extensions: vec![],
             max_turns: Some(3),
             privacy_tier: crate::privacy::SessionClassification::Public,
-            requires_downgrade_confirmation: false,
             dropped_private_extensions: Vec::new(),
         };
 
@@ -1936,7 +1934,6 @@ mod tests {
             extensions: vec![],
             max_turns: Some(3),
             privacy_tier: crate::privacy::SessionClassification::Public,
-            requires_downgrade_confirmation: false,
             dropped_private_extensions: Vec::new(),
         };
         (config, workflow, task_config)

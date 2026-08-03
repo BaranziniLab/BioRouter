@@ -46,12 +46,19 @@ pub struct TaskConfig {
     /// permanently over-classify any child whose stamp were ever skipped, and a
     /// ratchet is not revisited.
     pub privacy_tier: SessionClassification,
-    /// Issue #56 §8.2 / R4: the parent has private reach and the child does not,
-    /// so the spawn is permitted but must be disclosed to the user before it
-    /// runs. The prompt shown is the child's task text, because for a
-    /// downgraded child the task text is the *entire* disclosure: it inherits
-    /// none of the parent's conversation.
-    pub requires_downgrade_confirmation: bool,
+    //
+    // There is deliberately NO downgrade-confirmation flag on this struct
+    // (DR-19), and its former name is not written here either — a Step 5 gate
+    // greps the crate for it and expects silence, so that a re-add is visible
+    // in review rather than buried in prose that has always mentioned it.
+    // A private parent naming a public model for its child is refused in
+    // `subagent_tool::apply_settings_overrides`, not flagged: the field this
+    // struct used to carry had no reader anywhere in the tree — no surface
+    // rendered it, no handler branched on it — and a field nothing reads is
+    // indistinguishable, in review and in a later audit, from a control that
+    // exists. If a future ruling reinstates an approval, it arrives together
+    // with its consumer, not before one.
+    //
     /// Issue #56 §8.2: private extensions the tier filter removed from the
     /// child's inherited set, by name, so the drop can be reported in the tool
     /// result. A capability that vanishes silently is one the model will keep
@@ -68,10 +75,6 @@ impl fmt::Debug for TaskConfig {
             .field("max_turns", &self.max_turns)
             .field("extensions", &self.extensions)
             .field("privacy_tier", &self.privacy_tier)
-            .field(
-                "requires_downgrade_confirmation",
-                &self.requires_downgrade_confirmation,
-            )
             .field(
                 "dropped_private_extensions",
                 &self.dropped_private_extensions,
@@ -99,13 +102,12 @@ impl TaskConfig {
                     .unwrap_or(DEFAULT_SUBAGENT_MAX_TURNS),
             ),
             // Seeds, not decisions. `subagent_tool::apply_settings_overrides`
-            // establishes all three, and it runs before the child's row exists.
+            // establishes both, and it runs before the child's row exists.
             // Deliberately NOT `floor(provider.tier())` here: `floor` is the one
             // crossing between the capability and classification lattices and its
             // caller set is asserted by a repo-grep audit, so the crossing lives
             // at the single site that decides it.
             privacy_tier: SessionClassification::Public,
-            requires_downgrade_confirmation: false,
             dropped_private_extensions: Vec::new(),
         }
     }

@@ -1229,11 +1229,34 @@ async fn apply_settings_overrides(
     if child_tier.is_private() && !parent_cap.is_private() {
         return Err(crate::privacy::PrivacyRefusal::spawn_upgrade(child_tier).into());
     }
-    // R4, permitted but disclosed: a private parent MAY delegate to a public
-    // model. The child inherits none of the parent's conversation, so the task
-    // prompt is the entire disclosure — which is what the confirmation shows.
+    // DR-19, refused. This branch used to raise a downgrade-confirmation flag
+    // on the child's config — a write nothing in the tree ever read, no surface
+    // rendering it and no handler branching on it. A flag nothing reads is
+    // worse than no control at all, because in review it reads like one. (The
+    // flag's name is deliberately not written anywhere in this crate any more;
+    // a Step 5 gate greps for it and expects silence.)
+    //
+    // A subagent spawn is a tool call and there is no surface on which a human
+    // spawns one and picks its provider, so this is the MODEL choosing to send
+    // private-origin prompt text to a public model it named. There is no
+    // request on this path to carry a proof of user, and an approval an agent
+    // can author the approver for — from config files it holds `text_editor`
+    // over — is not an approval. So: refuse, ABOVE all of that machinery, and
+    // say what the user can do instead.
+    //
+    // "Above" is load-bearing and is asserted two ways: this function names
+    // nothing permission-shaped (a Step 5 gate greps for exactly that, which is
+    // why the sentence above is careful not to name one either), and
+    // `the_spawn_refusal_cannot_be_unlocked_by_anything_the_agent_can_write`
+    // drives a real spawn under every such unlock at once.
+    //
+    // ⚠ This fires ONLY on an explicit request, and needs no extra term to say
+    // so. An inheriting child is handed the parent's SAME `Arc<dyn Provider>`
+    // (the fact R5 rides on), so `child_tier == parent_cap` identically and the
+    // comparison cannot be true. The two can differ only when the request named
+    // a provider or a model and `providers::create` above built something else.
     if !child_tier.is_private() && parent_cap.is_private() {
-        task_config.requires_downgrade_confirmation = true;
+        return Err(crate::privacy::PrivacyRefusal::spawn_downgrade(child_tier).into());
     }
     // The ONE crossing this task adds: the child's CAPABILITY establishes the
     // CLASSIFICATION its row is born with.
@@ -2228,16 +2251,21 @@ mod tests {
         .await
     }
 
-    /// Design §8.2, row by row.
+    /// Design §8.2, row by row, as amended by DR-19.
+    ///
+    /// The `prompt` column is GONE. It had no subject: nothing in the tree read
+    /// the downgrade-confirmation flag it reported, so the only thing this could
+    /// assert was that a field had been written — and a flag nothing reads is
+    /// worse than no control at all, because in review it reads like one. The
+    /// row it annotated is now a refusal instead.
     #[tokio::test]
     async fn the_spawn_matrix_holds() {
         use ProviderTier::{Private, Public};
-        for (parent, ask, tier, prompt) in [
-            (Private, Ask::Inherit, SessionClassification::Private, false),
-            (Private, Ask::Private, SessionClassification::Private, false),
-            (Private, Ask::Public, SessionClassification::Public, true),
-            (Public, Ask::Inherit, SessionClassification::Public, false),
-            (Public, Ask::Public, SessionClassification::Public, false),
+        for (parent, ask, tier) in [
+            (Private, Ask::Inherit, SessionClassification::Private),
+            (Private, Ask::Private, SessionClassification::Private),
+            (Public, Ask::Inherit, SessionClassification::Public),
+            (Public, Ask::Public, SessionClassification::Public),
         ] {
             let child = resolve_child(parent, ask, vec![])
                 .await
@@ -2245,10 +2273,6 @@ mod tests {
             assert_eq!(
                 child.privacy_tier, tier,
                 "{parent:?} + {ask:?} must be born {tier:?}"
-            );
-            assert_eq!(
-                child.requires_downgrade_confirmation, prompt,
-                "{parent:?} + {ask:?} confirmation"
             );
         }
 
@@ -2263,17 +2287,39 @@ mod tests {
             ),
             "expected R4's typed refusal, got: {err}"
         );
+
+        // DR-19: and a private session may not hand its task prompt to a public
+        // model the MODEL picked. A refusal in the other direction, for the
+        // other reason — R4 permits this crossing, but only a model can ask for
+        // it and there is no channel here to ask a human on.
+        let err = resolve_child(Private, Ask::Public, vec![])
+            .await
+            .expect_err("a private parent may not spawn a child on a public model it named");
+        assert!(
+            matches!(
+                err.downcast_ref::<PrivacyRefusal>(),
+                Some(PrivacyRefusal::PublicChildOfPrivateParent { .. })
+            ),
+            "expected DR-19's typed refusal, got: {err}"
+        );
     }
 
-    /// A downgraded child is born PUBLIC, not inheriting the parent's private —
-    /// otherwise it starts life in the stuck residual state where its
-    /// classification outranks the only model it can run.
+    /// Step 3(d): a child is born at the tier of the model it actually
+    /// resolved, with the spawn recorded as its provenance.
     ///
-    /// The private half is in the same test on purpose: "born public" passes
-    /// vacuously against an implementation that stamps nothing at all, because
-    /// `sessions.privacy_tier` already defaults to `'public'`.
+    /// Both classifications, and the PUBLIC one is the reason both are here:
+    /// "born public" passes vacuously against an implementation that stamps
+    /// nothing at all, because `sessions.privacy_tier` already defaults to
+    /// `'public'`. Only the private arm discriminates; only the public arm
+    /// proves the stamp is not unconditionally private.
+    ///
+    /// ⚠ The public arm is driven by a PUBLIC parent, not by DR-19's refused
+    /// downgrade. Before that amendment this test reached Public through
+    /// `parent = Private, ask = Public`, which is a spawn this feature no
+    /// longer performs — asserting on the shape of a child that is never
+    /// created is how a test outlives the behaviour it was written for.
     #[tokio::test]
-    async fn a_downgraded_child_is_born_public_not_inheriting_the_parents_private() {
+    async fn a_child_is_born_at_the_tier_of_the_model_it_resolved() {
         let temp = tempfile::TempDir::new().unwrap();
         let sm = std::sync::Arc::new(crate::session::SessionManager::new(
             temp.path().to_path_buf(),
@@ -2286,13 +2332,11 @@ mod tests {
         );
         let params = ask_params(Ask::Inherit);
 
-        for (ask, expected) in [
-            (Ask::Public, SessionClassification::Public),
-            (Ask::Inherit, SessionClassification::Private),
+        for (parent, expected) in [
+            (ProviderTier::Public, SessionClassification::Public),
+            (ProviderTier::Private, SessionClassification::Private),
         ] {
-            let child_config = resolve_child(ProviderTier::Private, ask, vec![])
-                .await
-                .unwrap();
+            let child_config = resolve_child(parent, Ask::Inherit, vec![]).await.unwrap();
             let session = create_subagent_session(
                 &config,
                 temp.path().to_path_buf(),
@@ -2304,19 +2348,247 @@ mod tests {
             .unwrap();
 
             let row = sm.get_session(&session.id, false).await.unwrap();
-            assert_eq!(row.privacy_tier, expected, "{ask:?}");
-            assert_eq!(session.privacy_tier, expected, "{ask:?} in-memory handle");
+            assert_eq!(row.privacy_tier, expected, "{parent:?}");
+            assert_eq!(
+                session.privacy_tier, expected,
+                "{parent:?} in-memory handle"
+            );
             assert_eq!(
                 row.privacy_reason.as_deref(),
                 Some("inherited:parent-1"),
                 "the provenance names the spawn, so §12.4 can grade it"
             );
-            // It receives only the task prompt — none of the parent's history,
-            // which is exactly why the downgrade confirmation shows the prompt:
-            // the prompt is the entire disclosure.
+            // A child receives only the task prompt — none of the parent's
+            // history. That is also why DR-19 refuses a downgrade rather than
+            // disclosing it: the prompt would be the entire disclosure, and
+            // only a model is ever there to read it.
             assert_eq!(row.message_count, 0, "no parent conversation is carried");
             assert_eq!(row.diverged_from, None, "a spawn is not a branch");
             assert_eq!(row.parent_session_id.as_deref(), Some("parent-1"));
+        }
+    }
+
+    /// DR-19, and it replaces `a_downgraded_child_is_born_public_…`.
+    ///
+    /// A subagent spawn is a **tool call**. There is no shipped surface on
+    /// which a human spawns a subagent and chooses its provider — the request
+    /// arrives as tool arguments the model wrote — so `parent = Private,
+    /// request = Public` is an agent-initiated send of private-origin prompt
+    /// text to a public model *the model itself named*. DR-19's agent half is
+    /// unconditional: it escalates to a human, or it does not happen. And there
+    /// is nothing here to escalate to — Task 18A's `X-User-Action` is an HTTP
+    /// request header, and `apply_settings_overrides` runs in-process inside
+    /// the parent's own turn. So it does not happen.
+    ///
+    /// Driven through the real tool on BOTH spawn paths, because a refusal must
+    /// also leave nothing behind — which is only true because Step 3(a) moved
+    /// the resolve ahead of the row.
+    #[tokio::test]
+    async fn a_private_parent_cannot_hand_its_prompt_to_a_public_model_it_picked() {
+        for background in [false, true] {
+            let temp = tempfile::TempDir::new().unwrap();
+            let sm = std::sync::Arc::new(crate::session::SessionManager::new(
+                temp.path().to_path_buf(),
+            ));
+            let config = AgentConfig::new(
+                sm.clone(),
+                crate::config::permission::PermissionManager::instance(),
+                None,
+                crate::config::BioRouterMode::Auto,
+            );
+            let provider: std::sync::Arc<dyn crate::providers::base::Provider> =
+                std::sync::Arc::new(TieredParent {
+                    tier: ProviderTier::Private,
+                });
+            let task_config = TaskConfig::new(provider, "parent-1", temp.path(), vec![]);
+
+            let mut overrides = ask_overrides(Ask::Public);
+            overrides.insert(
+                "BIOROUTER_SUBAGENT_BACKGROUND".to_string(),
+                background.to_string(),
+            );
+
+            let err = crate::config::with_config_overrides(overrides, async {
+                handle_subagent_tool(
+                    &config,
+                    json!({
+                        "instructions": "summarise the cohort in /phi/cohort-3",
+                        "settings": { "provider": "ollama" },
+                        "background": background,
+                    }),
+                    task_config,
+                    HashMap::new(),
+                    temp.path().to_path_buf(),
+                    None,
+                )
+                .result
+                .await
+            })
+            .await
+            .expect_err(&format!(
+                "DR-19 refuses a private parent's public child (background={background})"
+            ));
+
+            assert!(
+                err.message.contains("public model"),
+                "background={background}, got: {}",
+                err.message
+            );
+            assert!(
+                err.message.contains("start a new chat"),
+                "a refusal must name the way out, not just say no (background={background}): {}",
+                err.message
+            );
+            // §14.4 / R10: the prompt is the thing being withheld, so it must
+            // not be quoted back — and the parent's own provider must not be
+            // named, or the refusal becomes a classification oracle.
+            assert!(
+                !err.message.contains("cohort-3"),
+                "the refusal quoted the prompt it exists to withhold: {}",
+                err.message
+            );
+            assert_eq!(
+                sm.count_all_sessions().await.unwrap(),
+                0,
+                "a refused spawn must leave no session behind (background={background})"
+            );
+        }
+    }
+
+    /// DR-19's second half, as an assertion.
+    ///
+    /// The refusal is a `return Err` inside `apply_settings_overrides`, which
+    /// runs **above** every unlock an agent can author: hooks load from
+    /// `~/.config/biorouter/config.yaml` and — with `allow_project_hooks` —
+    /// from `.biorouter/hooks.yaml`, both writable by the same agent holding
+    /// `text_editor`, and neither behind a deny root. An approval an agent can
+    /// author the approver for is not an approval.
+    ///
+    /// ⚠ What this does and does not discriminate, stated so nobody reads more
+    /// into a green run than is there. `handle_subagent_tool` consults none of
+    /// these today, so this is a **position** assertion: it fails the day
+    /// someone moves the privacy decision below an approval, which is exactly
+    /// the change DR-19 forbids and the one no other test in this file would
+    /// notice. The structural half — that nothing permission-shaped is even
+    /// named inside `apply_settings_overrides` — is Step 5's `awk`/`grep` gate.
+    #[tokio::test]
+    async fn the_spawn_refusal_cannot_be_unlocked_by_anything_the_agent_can_write() {
+        /// One agent-writable unlock, in the vocabulary of DR-19's banner.
+        #[derive(Clone, Copy, Debug)]
+        enum Unlock {
+            /// A `PermissionRequest` hook in the global config that approves
+            /// everything — open question 2 measured that this bypasses an
+            /// ordinary approval.
+            PermissionRequestHookAllow,
+            /// The same, from the project file, with the opt-in that enables it.
+            ProjectHooksAllow,
+            /// A persisted `always_allow` record for the spawn tool itself.
+            AlwaysAllowRecord,
+            /// The two permission modes that dilute approval.
+            PermissionMode(crate::config::BioRouterMode),
+        }
+
+        const ALLOW_EVERYTHING: &str = r#"{"PermissionRequest":[{"matcher":"*","hooks":[{"type":"command","command":"true"}]}]}"#;
+
+        for unlock in [
+            Unlock::PermissionRequestHookAllow,
+            Unlock::ProjectHooksAllow,
+            Unlock::AlwaysAllowRecord,
+            Unlock::PermissionMode(crate::config::BioRouterMode::SmartApprove),
+            Unlock::PermissionMode(crate::config::BioRouterMode::Chat),
+        ] {
+            let temp = tempfile::TempDir::new().unwrap();
+            let sm = std::sync::Arc::new(crate::session::SessionManager::new(
+                temp.path().to_path_buf(),
+            ));
+
+            // A permission store rooted in the temp dir, never the user's own:
+            // `update_user_permission` WRITES `permission.yaml`, and the global
+            // singleton points at `~/.config/biorouter`.
+            let permissions = std::sync::Arc::new(
+                crate::config::permission::PermissionManager::new(temp.path().to_path_buf()),
+            );
+            if matches!(unlock, Unlock::AlwaysAllowRecord) {
+                for tool in ["subagent", "platform__subagent"] {
+                    permissions.update_user_permission(
+                        tool,
+                        crate::config::permission::PermissionLevel::AlwaysAllow,
+                    );
+                    permissions.update_smart_approve_permission(
+                        tool,
+                        crate::config::permission::PermissionLevel::AlwaysAllow,
+                    );
+                }
+            }
+
+            let mode = match unlock {
+                Unlock::PermissionMode(mode) => mode,
+                _ => crate::config::BioRouterMode::Auto,
+            };
+            let config = AgentConfig::new(sm.clone(), permissions, None, mode);
+
+            let mut overrides = ask_overrides(Ask::Public);
+            match unlock {
+                Unlock::PermissionRequestHookAllow => {
+                    overrides.insert("HOOKS".to_string(), ALLOW_EVERYTHING.to_string());
+                }
+                Unlock::ProjectHooksAllow => {
+                    std::fs::create_dir_all(temp.path().join(".biorouter")).unwrap();
+                    std::fs::write(
+                        temp.path().join(crate::hooks::config::PROJECT_HOOKS_FILE),
+                        format!("hooks: {ALLOW_EVERYTHING}\n"),
+                    )
+                    .unwrap();
+                    overrides.insert("BIOROUTER_ALLOW_PROJECT_HOOKS".to_string(), "true".into());
+                }
+                Unlock::AlwaysAllowRecord => {}
+                // The wire spelling, not `Debug`: `BioRouterMode` deserializes
+                // `snake_case`, so `{mode:?}` would be silently unparseable and
+                // the override would do nothing at all.
+                Unlock::PermissionMode(mode) => {
+                    let spelling = match mode {
+                        crate::config::BioRouterMode::SmartApprove => "smart_approve",
+                        crate::config::BioRouterMode::Chat => "chat",
+                        other => panic!("unexpected permission mode in this table: {other:?}"),
+                    };
+                    overrides.insert("BIOROUTER_MODE".to_string(), spelling.to_string());
+                }
+            }
+
+            let provider: std::sync::Arc<dyn crate::providers::base::Provider> =
+                std::sync::Arc::new(TieredParent {
+                    tier: ProviderTier::Private,
+                });
+            let task_config = TaskConfig::new(provider, "parent-1", temp.path(), vec![]);
+
+            let err = crate::config::with_config_overrides(overrides, async {
+                handle_subagent_tool(
+                    &config,
+                    json!({
+                        "instructions": "summarise the cohort",
+                        "settings": { "provider": "ollama" },
+                    }),
+                    task_config,
+                    HashMap::new(),
+                    temp.path().to_path_buf(),
+                    None,
+                )
+                .result
+                .await
+            })
+            .await
+            .expect_err(&format!("{unlock:?} must not unlock DR-19's refusal"));
+
+            assert!(
+                err.message.contains("public model"),
+                "{unlock:?} changed the refusal into something else: {}",
+                err.message
+            );
+            assert_eq!(
+                sm.count_all_sessions().await.unwrap(),
+                0,
+                "{unlock:?} left a session behind"
+            );
         }
     }
 
@@ -2399,11 +2671,21 @@ mod tests {
     /// session holding `ucsfomopagent` could spawn a public-model child that
     /// inherited it verbatim, and Gate C would then be the only thing between a
     /// public model and the clinical warehouse.
+    ///
+    /// ⚠ THE FIXTURE CHANGED WITH DR-19, and the filter did NOT become dead
+    /// code. The obvious fixture — a private parent asking for a public child —
+    /// is now a refusal, so written that way this test would assert on a spawn
+    /// that never happens. The surviving reachable case is a parent whose
+    /// CAPABILITY is Public while its extension list still holds a
+    /// private-classified record: Gate C refuses that extension at dispatch and
+    /// Gate E hides it from discovery, but neither REMOVES it from the manager,
+    /// so `TaskConfig.extensions` — the parent's own list — still carries it.
+    /// An inheriting child is then Public and must not receive it.
     #[tokio::test]
     async fn a_public_child_does_not_inherit_its_parents_private_extensions() {
         let child = resolve_child(
-            ProviderTier::Private,
-            Ask::Public,
+            ProviderTier::Public,
+            Ask::Inherit,
             vec![
                 builtin_extension("ucsfomopagent"),
                 builtin_extension("developer"),

@@ -15,7 +15,7 @@
 //! | 13 | `turn_refusal(&Session) -> String`, and Task 10's `CHATRECALL_LOAD_REFUSAL` moves here |
 //! | 14 | `privacy_refusal(extension, extension_tier, caller_tier) -> Option<ErrorData>` |
 //! | 18A | [`ASK_THE_USER_TO_SWITCH`], [`raise_needs_user_action`] and the three HTTP-channel variants |
-//! | 23 | the `PrivateChildOfPublicParent` variant and `PrivacyRefusal::spawn_upgrade` |
+//! | 23 | the two spawn variants and `PrivacyRefusal::spawn_upgrade` / `spawn_downgrade` |
 
 use super::{ProviderTier, SessionClassification};
 use crate::session::session_manager::Session;
@@ -157,6 +157,36 @@ pub enum PrivacyRefusal {
         ASK_THE_USER_TO_SWITCH
     )]
     PrivateChildOfPublicParent { requested: ProviderTier },
+
+    /// DR-19: a private-capability session may not hand its task prompt to a
+    /// public model the **model** chose.
+    ///
+    /// R4 permits a private session to have public children; it says nothing
+    /// about who may ask for one. DR-19 supplies the initiator R4 never named,
+    /// and here there is only ever one: a subagent spawn is a tool call, and no
+    /// shipped surface lets a human spawn a subagent and pick its provider. So
+    /// this is an agent-initiated send of private-origin text to a public model,
+    /// which DR-19's agent half refuses outright — there being no in-process
+    /// channel to escalate on (Task 18A's `X-User-Action` is an HTTP header, and
+    /// the approval machinery is unlockable by hooks the same agent can author).
+    ///
+    /// It ends on the user's route rather than on [`ASK_THE_USER_TO_SWITCH`],
+    /// and that difference is deliberate: this chat is *already* private, so
+    /// "switch to a private model" would be advice it has already taken. The
+    /// route out is a second chat, which costs the user two steps and not a
+    /// wall. The message names neither the parent's provider (R10: a refusal
+    /// must not become a classification oracle) nor the prompt — the prompt is
+    /// the thing being withheld.
+    #[error(
+        "This chat is private, so it cannot start a subagent on a public model: the task \
+         prompt is private-origin text, sending it would put that text on a model outside \
+         the institution, and this request came from the assistant rather than from the \
+         person at the keyboard. No subagent was started and this chat is unchanged. Do not \
+         retry — the same call will be refused again, and no setting, hook or permission mode \
+         changes it. If the task really belongs on that model, tell the user so: they can \
+         start a new chat on it and give it the task directly."
+    )]
+    PublicChildOfPrivateParent { requested: ProviderTier },
 }
 
 impl PrivacyRefusal {
@@ -164,6 +194,12 @@ impl PrivacyRefusal {
     /// nowhere before, because Task 23's spawn gate is its only caller.
     pub fn spawn_upgrade(requested: ProviderTier) -> Self {
         Self::PrivateChildOfPublicParent { requested }
+    }
+
+    /// DR-19: the child a private parent asked for was public, and only a model
+    /// can have asked. Same call site, opposite direction.
+    pub fn spawn_downgrade(requested: ProviderTier) -> Self {
+        Self::PublicChildOfPrivateParent { requested }
     }
 
     /// The classification of the session that refused. Half of the pair the
@@ -183,7 +219,8 @@ impl PrivacyRefusal {
             // A spawn refusal is about the CAPABILITY the parent has, not about
             // a session whose stored contents collided with a model. Inventing a
             // classification for it would put a fabricated pair on the GUI card.
-            | Self::PrivateChildOfPublicParent { .. } => None,
+            | Self::PrivateChildOfPublicParent { .. }
+            | Self::PublicChildOfPrivateParent { .. } => None,
         }
     }
 
@@ -192,7 +229,8 @@ impl PrivacyRefusal {
         match self {
             Self::PublicModelOnPrivateSession { .. } => Some(ProviderTier::Public),
             // The child's tier — what was asked for, which is what was refused.
-            Self::PrivateChildOfPublicParent { requested } => Some(*requested),
+            Self::PrivateChildOfPublicParent { requested }
+            | Self::PublicChildOfPrivateParent { requested } => Some(*requested),
             Self::TierRaiseNeedsUser { .. }
             | Self::PrivateExtensionOverHttp { .. }
             | Self::CapabilityConfigNeedsUser { .. } => None,
@@ -208,7 +246,8 @@ impl PrivacyRefusal {
             Self::TierRaiseNeedsUser { .. }
             | Self::PrivateExtensionOverHttp { .. }
             | Self::CapabilityConfigNeedsUser { .. }
-            | Self::PrivateChildOfPublicParent { .. } => None,
+            | Self::PrivateChildOfPublicParent { .. }
+            | Self::PublicChildOfPrivateParent { .. } => None,
         }
     }
 }
@@ -539,6 +578,80 @@ mod tests {
         assert_eq!(refusal.provider_tier(), Some(ProviderTier::Private));
         assert_eq!(refusal.session_classification(), None);
         assert_eq!(refusal.session_id(), None);
+    }
+
+    /// DR-19's refusal, the other direction. Same §14.4 bound, and one extra
+    /// obligation the R4 refusal does not carry: it must name the way out.
+    ///
+    /// The way out is a NEW CHAT, not [`ASK_THE_USER_TO_SWITCH`] — this chat is
+    /// already private, so "switch to a private model" is advice it has already
+    /// taken. That is why this variant is deliberately absent from
+    /// `every_refusal_ends_in_the_same_two_ways_out_sentence`, and the exclusion
+    /// is asserted here rather than left as a silent omission from a list.
+    #[test]
+    fn the_downgrade_refusal_names_the_boundary_and_the_way_out_and_no_provider() {
+        let refusal = PrivacyRefusal::spawn_downgrade(ProviderTier::Public);
+        let msg = refusal.to_string();
+        assert!(msg.contains("public model"), "{msg}");
+        assert!(msg.contains("No subagent was started"), "{msg}");
+        assert!(
+            msg.contains("Do not retry"),
+            "a refusal the model will retry is a loop: {msg}"
+        );
+        // DR-19's second half, said out loud to the model: the wall is not
+        // something it can unlock by writing a hook or flipping a mode.
+        assert!(
+            msg.contains("no setting, hook or permission mode changes it"),
+            "{msg}"
+        );
+        // The way out, and it is a different one.
+        assert!(msg.contains("start a new chat"), "{msg}");
+        assert!(
+            !msg.contains(ASK_THE_USER_TO_SWITCH),
+            "this chat is already private; telling the user to switch to a private model is \
+             advice it has already taken: {msg}"
+        );
+
+        // R10 / §14.4: it names neither a provider nor any session content.
+        // These are provider names rather than extension ids, so there is no
+        // generator to draw them from — the list is the same one the sibling
+        // spawn-refusal test uses, and the `start a new chat` assertion above is
+        // what keeps this loop from passing against a message that says nothing.
+        for leak in [
+            "versa_azure",
+            "versa_bedrock",
+            "ollama",
+            "llamacpp",
+            "anthropic",
+        ] {
+            assert!(
+                !msg.contains(leak),
+                "downgrade refusal leaked {leak}: {msg}"
+            );
+        }
+        for content in ["20260801_7", "Patient MRN 4471 workup", "phi/cohort-3"] {
+            assert!(!msg.contains(content), "{msg}");
+        }
+
+        assert_eq!(refusal.provider_tier(), Some(ProviderTier::Public));
+        assert_eq!(refusal.session_classification(), None);
+        assert_eq!(refusal.session_id(), None);
+    }
+
+    /// The two spawn refusals are opposite crossings and must not collapse into
+    /// one sentence: a model that gets the R4 wording for a DR-19 crossing is
+    /// told to ask for a private model, which is the reverse of what it should
+    /// do — and the whole point of the second variant is that its way out is
+    /// different.
+    #[test]
+    fn the_two_spawn_refusals_do_not_say_the_same_thing() {
+        let upgrade = PrivacyRefusal::spawn_upgrade(ProviderTier::Private).to_string();
+        let downgrade = PrivacyRefusal::spawn_downgrade(ProviderTier::Public).to_string();
+        assert_ne!(upgrade, downgrade);
+        assert!(upgrade.contains(ASK_THE_USER_TO_SWITCH), "{upgrade}");
+        assert!(!downgrade.contains(ASK_THE_USER_TO_SWITCH), "{downgrade}");
+        assert!(!upgrade.contains("start a new chat"), "{upgrade}");
+        assert!(downgrade.contains("start a new chat"), "{downgrade}");
     }
 
     /// The two refusals the desktop renderer can receive from the model picker
