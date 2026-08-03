@@ -16204,6 +16204,42 @@ breaks under the gates.
 Design §7 is a nine-column table over three inputs. Written once, as a pure function, it is
 unit-testable without a database and BR-71's tool handlers can call it rather than re-deriving it.
 
+> ⚠ **This task ships the predicate with no caller, and no later task adds one.** Recorded by
+> **Task 20's Phase 2 gate**, which found the surface through its metadata sweep and measured the
+> following against this plan:
+>
+> * Step 5 below states the consumer count itself — *"every consumer calls `may_read`/`may_write`/
+>   `appears_in_list`. **Measured today: 0**"* — and nothing after Task 21 changes it.
+> * `workspace_list` appears in this plan **exactly once**: in `appears_in_list`'s doc comment in
+>   Step 3. `workspace_read_conversation` appears **zero** times, and
+>   `crates/biorouter/src/agents/workspace_extension.rs` — the file holding both handlers —
+>   appears **zero** times. No task modifies it. Tasks 22 (copy), 23 (spawn), 24 (scheduler +
+>   Agent Drafter route) and the Task 25 / Task 40 gates never name a workspace tool.
+>
+> **What that leaves open, today and at the end of this plan as written.** `workspace_list`
+> (`list_session_row`, `workspace_extension.rs:749-803`) emits, for every non-hidden session,
+> `name` · `working_dir` · `extensions` · `knowledge_bases` · `primary_kb` — where §11.4 rules
+> the first **CONTENT — withheld** ("the LLM-generated session title … the one that leaks most per
+> byte") and the second **CONTENT — withheld** ("routinely names a cohort, a study or a patient
+> population"), and `extensions` re-exposes by name exactly the private extensions Gate E omits
+> from that model's own tool list. `workspace_read_conversation` (`:805`) then returns the full
+> transcript. Neither consults `privacy_tier`: `workspace_extension.rs` greps 5 privacy hits, all
+> `for_test_restricted()` in tests, and both `workspace_services.rs` files grep **0**.
+>
+> Design §7 already rules both (`privacy-tiers.md:493` `workspace_list` = **∅ row omitted**,
+> `:494` `workspace_read_conversation` = **✗**), so this is a ruled requirement with no
+> implementation behind it — not deferred work, unassigned work.
+>
+> **The wiring is small.** `SessionSummary` already carries `privacy_tier`
+> (`session_manager.rs:227-230`, added by this issue for the sidebar badge), and `list_session_row`
+> is handed that summary — so the
+> filter is one `appears_in_list` call on data already in hand, no extra query;
+> `handle_read_conversation` needs one `may_read`. Reaching either tool requires an explicit
+> `workspace` extension entry: auto-injection grants the spawn tool only, asserted by
+> `subagents_enabled_injects_the_workspace_extension_with_the_spawn_tool_only` (`agent.rs:8525`).
+> **Scheduling this is an operator decision** — Task 20 is a gate and records it rather than
+> inventing a task.
+
 **Files:**
 
 | Action | Path | Anchor |
