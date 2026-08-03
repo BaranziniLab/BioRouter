@@ -80,9 +80,15 @@
 >   ran to EOF (Task 10); a `-v` filter that did not match the negated form of the assertion it meant
 >   to exclude (Task 30); two `cargo test -p biorouter-mcp --test mcp_integration_test` invocations
 >   naming a target that lives in `crates/biorouter/tests/`, which cargo hard-errors on (Tasks 20,
->   40); and a contrast total of **294** that is unreachable — three of its eighteen new assertions
->   fail AA and the same task forbids the theme edit that would fix them (Tasks 26, 32; now **288**,
->   with the deferred pair recorded as [Open question 16](#open-questions)).
+>   40); and a contrast total that is unreachable — three of its eighteen new assertions fail AA and
+>   the same task forbids the theme edit that would fix them (Tasks 26, 32; the reachable total is
+>   the two-token variant, with the deferred pair recorded as
+>   [Open question 16](#open-questions)). ⚠ **A fourth number, quoted in five places, was simply
+>   stale**: the baseline this plan added its delta to was measured before issue #65's reference-chip
+>   block joined the same loop, so `252 + 36` was quoted as the expected total when `main` had long
+>   since been 288. Task 32 found it as `324`, which is correct. Both failures are the same failure —
+>   an absolute count in a document, checked against a script that moves — which is why Tasks 26 and
+>   32 now state the **delta** (`+36`) as well as the total.
 > - **Gates that pass vacuously**, which is worse, because they are reported as verification:
 >   `grep -c '"409"'` (already 6 before any #56 code); `grep -rn "PrivacyInspector"` in three places
 >   (a name this plan invented — 0 today and 0 under every wrong implementation, so green both ways;
@@ -17717,7 +17723,7 @@ parchment:dark measures exactly 1.00, the same colour — and **no border token 
 3:1 on any ground**, so an outline pill is not expressible here at all. And a `--text-subtle` label
 drops under AA the moment the user hovers a History row in three of the six scopes.
 
-`ui/desktop/scripts/check-contrast.mjs` passes 252 assertions today and looks at **none** of those pairs: its
+`ui/desktop/scripts/check-contrast.mjs` passes 288 assertions today and looks at **none** of those pairs: its
 `TEXT_GROUNDS` (`:70-78`) is `app, canvas, default, muted, sidebar`, and `--background-medium`
 appears only in `RING_GROUNDS` (`:83`). Which also means the app's own `Badge` default tone
 (`neutral` = `bg-background-medium text-text-muted`) is outside the audit; it happens to pass
@@ -17774,13 +17780,21 @@ ring assertion changes. (An earlier version of this task moved the ground and th
 `RING_GROUNDS`' copy to avoid six duplicate ring assertions; that whole manoeuvre is gone with the
 move.) Do not "tidy" line 83.
 
-**The arithmetic, so the expected total is derived rather than guessed:** 252 today, `+12` from the
+**The arithmetic, so the expected total is derived rather than guessed:** 288 today, `+12` from the
 new hover-ground block (2 text tokens × 6 family×mode scopes), `+24` from the four badge assertions
-(× 6 scopes), `+0` from rings → **288**.
+(× 6 scopes), `+0` from rings → **324**.
 
-Verify the 252 decomposes as you expect before trusting the delta: per scope the script runs
-15 (TEXT_GROUNDS 5 × 3 tokens) + 6 (RING_GROUNDS) + 2 (accent) + 8 (4 statuses × 2) + 2 (borders)
-+ 3 (code ground) + 3 (focus) + 3 (sidebar icon) = **42**, and 42 × 6 scopes = 252.
+⚠ **This baseline was `252` in every earlier version of this plan and it was stale — measure, do not
+quote.** Issue #65's `<biorouter-ref>` reference chip added a six-assertion block (2 grounds × 3
+assertions) to the same per-scope loop after this task was written, taking `main` from 42 to 48 per
+scope. Nothing about this task changed; the number it is added to did. Re-run
+`node scripts/check-contrast.mjs | tail -1` on `main` before trusting any figure here, because a
+"pre + N" assertion against a stale baseline reads a shortfall as a pass.
+
+Verify the 288 decomposes as you expect before trusting the delta: per scope the script runs
+15 (TEXT_GROUNDS 5 × 3 tokens) + 6 (RING_GROUNDS) + 2 (accent) + 8 (4 statuses × 2)
++ 6 (reference chip, 2 grounds × 3 — issue #65) + 2 (borders) + 3 (code ground) + 3 (focus)
++ 3 (sidebar icon) = **48**, and 48 × 6 scopes = 288.
 
 ```tsx
 // PrivacyBadge.test.tsx
@@ -17846,19 +17860,20 @@ cd ui/desktop && node scripts/check-contrast.mjs && npm run themes -- --check
 npx vitest run PrivacyBadge 2>&1 | tail -5
 ```
 
-Expected: `OK — all 288 contrast assertions pass` (252 + 12 + 24 + 0, per the arithmetic above),
+Expected: `OK — all 324 contrast assertions pass` (288 + 12 + 24 + 0, per the arithmetic above),
 `OK — generated artifacts are current (3 themes)`, and **1 file / 2 tests**. Read a wrong total
-rather than "fixing" the theme: **294** means `--background-medium` went into `TEXT_GROUNDS` after
+rather than "fixing" the theme: **330** means `--background-medium` went into `TEXT_GROUNDS` after
 all — the run then shows `3 FAIL` on `--text-subtle` and exits 1, and the only way to green is a
-theme edit Step 5 forbids; **276** means the hover-ground block landed outside the per-scope loop
-and ran once instead of six times; **264** means the four badge assertions did.
+theme edit Step 5 forbids; **314** means the hover-ground block landed outside the per-scope loop
+and ran once instead of six times; **304** means the four badge assertions did. A total that is
+`36` above whatever `main` prints is this task landing correctly, whatever `main` prints.
 
 - [ ] **Step 5: Gate**
 
 ```bash
 cd ui/desktop
 # The assertion count is the tell that the new checks actually ran.
-node scripts/check-contrast.mjs | tail -1 ; echo "expect: OK — all 288 contrast assertions pass"
+node scripts/check-contrast.mjs | tail -1 ; echo "expect: OK — all 324 contrast assertions pass"
 # RING_GROUNDS is UNTOUCHED. `--background-medium` never moved into TEXT_GROUNDS,
 # so there is no duplicate — and a worker who removes this line anyway silently
 # deletes six ring assertions.
@@ -17893,15 +17908,15 @@ comment in `src/styles/search.css:2` that says the token does not exist. A gate 
 **What this catches.** A worker copying §14.1 verbatim ships a `var(--text-standard)` label that
 resolves to nothing and inherits whatever colour it lands on, and a Public pill that is invisible in
 parchment:dark. Neither produces an error, neither fails a screenshot review at a glance, and both
-pass the current 252 assertions. The `--background-medium` block is what turns that class of gap
+pass the current 288 assertions. The `--background-medium` block is what turns that class of gap
 into a CI failure for every future chip on a hover row, not just this one.
 
-**What it deliberately does NOT catch, and why the number is 288 rather than 294.** An earlier
+**What it deliberately does NOT catch, and why the number is 324 rather than 330.** An earlier
 version of this task added `--background-medium` to `TEXT_GROUNDS` wholesale, which audits three
-tokens rather than two and totals 294. Three of those eighteen assertions **fail**:
+tokens rather than two and totals 330. Three of those eighteen assertions **fail**:
 `--text-subtle` on `--background-medium` measures 3.75 (parchment:dark), 4.45 (alma-mater:light) and
 4.28 (alma-mater:dark) — the same three numbers this task's own D4 table already prints, from the
-same resolver. So the gate demanded `all 294 pass` from a run that exits 1 with `3 FAIL`, while
+same resolver. So the gate demanded `all 330 pass` from a run that exits 1 with `3 FAIL`, while
 Step 5 forbade the only available fix ("Zero theme work … an empty diffstat"). It was unreachable by
 construction, and it was quoted in three places. The pair is a **pre-existing** a11y gap — the app
 paints subtle text on hover rows today and CI has never asserted it — so it belongs to the theme
@@ -20389,21 +20404,34 @@ cargo test --workspace --no-fail-fast 2>&1 | tail -20
 cargo fmt --check && ./scripts/clippy-lint.sh
 just generate-openapi && git diff --exit-code ui/desktop/openapi.json
 cd ui/desktop && npx tsc --noEmit && npm run lint:check && npm run test:run 2>&1 | tail -8
-node scripts/check-contrast.mjs | tail -1     # expect: OK — all 288 contrast assertions pass
+node scripts/check-contrast.mjs | tail -1     # expect: OK — all 324 contrast assertions pass
 npm run themes -- --check                     # expect: OK — generated artifacts are current (3 themes)
 ```
 
-⚠ **288 — and it must match Task 26's Step 4 exactly, because two of the three numbers this plan has
-quoted here were wrong.** 252 measured on `main` today (42 assertions × 6 family×mode scopes),
-`+12` from Task 26's hover-ground block (2 text tokens × 6 scopes), `+24` from the four new badge
-assertions (× 6 scopes), `+0` from rings — `RING_GROUNDS` is untouched, because
-`--background-medium` never moves into `TEXT_GROUNDS`. The first version said **274**, a number its
-own Task 26 contradicted. The second said **294**, which is the total for a variant that puts
+⚠ **324 = `main` + 36, and it must match Task 26's Step 4 exactly, because THREE of the four numbers
+this plan has quoted here were wrong.** 288 measured on `main` (48 assertions × 6 family×mode
+scopes), `+12` from Task 26's hover-ground block (2 text tokens × 6 scopes), `+24` from the four new
+badge assertions (× 6 scopes), `+0` from rings — `RING_GROUNDS` is untouched, because
+`--background-medium` never moves into `TEXT_GROUNDS`.
+
+The history, because the same mistake was made four times and in two different ways. **274** was a
+number its own Task 26 contradicted. **294** was the total for a variant that puts
 `--background-medium` into `TEXT_GROUNDS` — and that run does not print `OK` at all: three of its
-eighteen new assertions fail AA (`--text-subtle`, measured 3.75 / 4.45 / 4.28) and it exits 1. Both
-versions read to a worker as "the phase failed" when the phase had succeeded. If the printed total
-is **294**, the ground moved after all; if **276** or **264**, one of the two new blocks landed
-outside the per-scope loop and ran once instead of six times.
+eighteen new assertions fail AA (`--text-subtle`, measured 3.75 / 4.45 / 4.28) and it exits 1. Then
+**288** — arithmetically consistent with itself and with Task 26, and still wrong, because its
+`252` baseline had been overtaken: issue #65's `<biorouter-ref>` reference-chip block (2 grounds × 3
+assertions) joined the same per-scope loop after this plan was written, taking `main` from 42 to 48
+per scope. Task 32 measured `324` and the plan was corrected to it. Every one of those versions
+reads to a worker as "the phase failed" when the phase had succeeded.
+
+⚠ **Trust the delta over the total.** An absolute count in a document is checked against a script
+that other issues keep adding to, so it goes stale silently and in the direction that reads as
+failure. The invariant this task actually owns is **`+36` over whatever `main` prints** — run
+`git stash`-free on a `main` checkout if you need the baseline, or read it off
+`git diff main -- ui/desktop/scripts/check-contrast.mjs`, which must be exactly six new `assert`
+calls inside the `for (const [theme, scope] of Object.entries(SCOPES))` loop and nothing else. If
+the printed total is `main + 42`, the ground moved after all; if `main + 26` or `main + 16`, one of
+the two new blocks landed outside the per-scope loop and ran once instead of six times.
 
 - [ ] **Step 2: Live GUI verification over CDP — the four surfaces, in a sandbox**
 
@@ -20435,25 +20463,57 @@ count and gates the button on the base id, and privatizing is one click.
 accepted risks are acceptable. A Phase 4 that passes without it has shipped the narrowing without the
 thing that justifies it.
 
+⚠ **(5) failed on the first run of this gate, and the failure was invisible to the whole test
+suite** — which is the reason it is a *live* check and not a `vitest` line. The disclosure gate's
+only mount was `BaseChat`, keyed on `session?.provider_name`; `session` is filled from
+`/agent/resume`, which is a plain storage read with no create semantics, so on a fresh profile there
+was no row, no provider name and no dialog until the first turn had already gone out — a receipt.
+Every one of the gate's sixteen unit tests hands `providerName` a literal, so they proved the
+predicate ("given a public provider, disclose") and never the conjunction ("is one bound yet?"),
+and `BaseChat.privacy.test.tsx` asserts a source-text regex for the presence of the very expression
+that was the defect. Fixed by an `AppNonPrivateModelDisclosureGate` mounted in `App.tsx`, keyed on
+the **configured** provider, alongside — not instead of — the chat-level mount;
+`useSoleDisclosurePresenter` keeps the two to one dialog. When re-verifying, check it on a profile
+with **no chat open at all**, because a check performed after opening one cannot tell the two mounts
+apart.
+
 - [ ] **Step 3: The badges are mounted, not merely defined**
 
 ```bash
 cd ui/desktop
-# Enumerate rather than count: Task 27 mounted 6 host files, Task 28 mounted 5
-# more, and a bare number invites "fixing" a mismatch by deleting a mount.
-grep -rl "PrivacyBadge" src/components | sort
-# Expected, exactly these 13:
-#   ui/badge-adjacent:  ui/PrivacyBadge.tsx, ui/PrivacyBadge.test.tsx
-#   Task 27 hosts:      sessions/SessionListView.tsx, sessions/SessionItem.tsx,
-#                       sessions/SessionHistoryView.tsx, SessionNamePill.tsx,
-#                       BioRouterSidebar/RecentChats.tsx, chatGroups/ChatTabStrip.tsx
-#   Task 28 hosts:      settings/providers/ProviderGrid.tsx,
-#                       settings/models/subcomponents/SwitchModelModal.tsx,
-#                       settings/models/bottom_bar/ModelsBottomBar.tsx,
-#                       bottom_menu/BottomMenuExtensionSelection.tsx,
-#                       settings/extensions/subcomponents/ExtensionItem.tsx
+# MOUNTED means rendered. Grep for the JSX, not for the name — the name also
+# appears in five doc comments that reference the component without using it,
+# and a gate that counts those is satisfied by prose.
+grep -rl "<PrivacyBadge" src/components | sort
+# Expected, exactly these 10 — 9 render sites plus the badge's own suite:
+#   Task 27 hosts:  sessions/SessionListView.tsx, sessions/SessionItem.tsx,
+#                   sessions/SessionHistoryView.tsx, SessionNamePill.tsx,
+#                   BioRouterSidebar/RecentChats.tsx, chatGroups/ChatTabStrip.tsx
+#   Task 28 host:   settings/models/bottom_bar/ModelsBottomBar.tsx
+#   Task 29A hosts: knowledge/KBSelector/KBSelectorPalette.tsx, knowledge/KbTierControl.tsx
+#   its own suite:  ui/PrivacyBadge.test.tsx
 grep -c 'data-testid="settings-.*-tab"' src/components/settings/SettingsView.tsx ; echo "expect: 4"
 ```
+
+⚠ **The 13-file list this step used to print was wrong in both directions, and "fixing" the mismatch
+by editing the code would have been the damaging move.** It named four Task 28 files that carry no
+badge — `settings/providers/ProviderGrid.tsx`, `settings/models/subcomponents/SwitchModelModal.tsx`,
+`bottom_menu/BottomMenuExtensionSelection.tsx`, `settings/extensions/subcomponents/ExtensionItem.tsx`
+— and it omitted Task 29A's two knowledge hosts, which did not exist when it was written. The four
+are not gaps: each surfaces the tier by the affordance that fits it, which is what Task 28 asked for.
+`ProviderGrid` renders `NonPrivateModelDisclosureNote` above the Commercial section (`:233`);
+`SwitchModelModal` takes `privacyTier` and disables public models pre-flight (`:190`, `:277`);
+`BottomMenuExtensionSelection` (`:419`) and `ExtensionItem` (`:70`) both call
+`extensionPairingRefused` and render the row visible-but-disabled with `PAIRING_REFUSED_REASON` as
+its title. A pill on a disabled row that already explains itself is noise; the badge is for surfaces
+that name a *chat* or a *knowledge base*.
+
+⚠ **`grep -rl "PrivacyBadge"` — the name, not the JSX — returns 16 and is the wrong gate.** The six
+extra hits are `ui/PrivacyBadge.tsx` itself, `ModelsBottomBar.privacy.test.tsx`, and four doc
+comments that mention the component while explaining something else (`ConfigContext.tsx:471`,
+`settings/privacy/privacyTiers.ts:6`, `settings/privacy/PrivacyPanel.tsx:12`,
+`settings/providers/providerOrdering.ts:83` — the last of which exists precisely to say a badge does
+**not** belong on that field). Counting mentions rewards writing the name in a comment.
 
 - [ ] **Step 4: Adversarial review of the phase diff; every finding addressed.**
 
@@ -21639,7 +21699,8 @@ independent follow-ups.
 | **18** | ⚠ **WIDENED by [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store), not resolved.** DR-14 used to remove two of the three local sources of an app id; with the barrier deferred, **all three are open again** — `GET /apps` needs only the secret, the app tree is an ordinary directory, and `agent_drafter__list_apps` is unfiltered because Task 14E is deferred. So any loopback client that can list apps can drive any app's agent socket with no credential. This is squarely inside DR-17's accepted risk and inside [Task 30A](#task-30a-the-non-private-model-disclosure)'s disclosure. Original text: **Should the per-app agent WebSocket be authenticated by something a shell cannot obtain?** `GET /apps/{id}` and `GET /apps/{id}/agent` are deliberately unauthenticated (`auth.rs:52-78`), and `serve_index` (`apps.rs:168-184`) embeds the socket token in the page it serves, so any loopback client that knows an app id can read the token and drive that app's agent. ⚠ **There are THREE local sources of app ids, not two, and this row said two until this round.** DR-14 removes the first two — `GET /apps` needs the secret, and the app tree is deny root #4 — but the third is `agent_drafter__list_apps` (`agent_drafter/mod.rs:2636` → `ArtifactStore::list`, `store.rs:606`), a tool on a **public** extension that takes no path argument, so neither Layer A nor a filesystem deny can see it. Task 14C withdrew that premise; this row had not caught up. What Task 14E changes is narrower than "removes": a public-capability session's `list_apps` no longer returns a **private** app's id, so what stays reachable is that any loopback client — including a public-capability session — can drive a **public** app's agent socket with no credential at all. | Nothing in this plan; the residual is stated in [AR-6](#ar-6--retired-by-dr-17--on-a-host-that-cannot-express-the-read-deny-a-public-session-loses-the-shell-and-two-costs-come-with-the-sandbox-itself) and pinned by Task 14C's `the_unauthenticated_app_surface_does_not_grow_by_accident`. |
 | **20** | ⚠ **WIDENED by [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store), not resolved.** Layer A used to cover the biggest local route, `POST /agent/call_tool`; with it deferred, that route is covered by **Gate C** for private *extensions* and by nothing for private *paths*. The route list below is unchanged and is now the full extent of what a local caller holding the secret can read. Original text: **Should the daemon's HTTP API authenticate a caller that is on the same machine?** [AR-11](#ar-11--amended-by-dr-17--the-daemons-own-api-secret-is-recoverable): the secret is recoverable from the daemon's own environment (`ps -Ewww -p $PPID` on macOS, `/proc/self/environ` in-process on Linux), so `check_token`'s header comparison stops a remote caller and not a local one. Layer A covers the biggest local route, `POST /agent/call_tool`, because that route dispatches through the same choke point. It does **not** cover the routes that return private content without running a tool: `GET /sessions/{id}/export` and the rest of the transcript family, the `/knowledge/*` read routes, `GET /apps/{id}/export`, and `GET /diagnostics/{id}` — which returns a zip of `session.json`, recent `logs/*.jsonl` and a verbatim `config.yaml`, and is the widest single route in the API. | Nothing in this plan. Task 14C states the residual instead of the old "no way to authenticate" claim, and pins the strip so the *remote* half stays closed. Closing the local half needs a per-caller credential the daemon does not hand to its own children — the same shape as [Open question 18](#open-questions), and probably the same fix. |
 | **19** | ✅ **RESOLVED by [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store) — the filesystem channel is descoped, so there is no root to narrow.** The ergonomic loss it recorded (a public chat cannot `cat` its own app's source) is not incurred. The *tool*-channel half went with it: Task 14E is deferred, so apps carry no tier in v1 (see [AR-14](#ar-14--every-biorouter-app-that-exists-today-starts-public-at-migration-even-if-it-was-built-in-a-private-chat)). ~~**Should DR-14's Agent Drafter root narrow to `.vault/` plus other sessions' apps on the FILESYSTEM channel too?** Task 14E has now answered the *tool* channel: apps carry a tier, and a public session may read a public app and not a private one. The filesystem channel still denies the whole root, so a public-capability chat cannot `cat` even its **own** public app's source from the shell (AR-6(3)) — a real ergonomic loss, and now an asymmetry a user can see (`read_app` works, `cat` does not). Narrowing it means teaching Layer A which app a raw path belongs to, which is the per-object resolution the filesystem channel deliberately does not have.~~ | **Nothing — Tasks 14B and 14E are deferred.** Previously: Task 14B denies the whole root on the filesystem channel; Task 14E resolves per app on the tool channel. Narrowing the filesystem side is a follow-up, and it is no longer blocked on 18 — Task 14E's `list_apps` filter already removes a **private** app's id from a public model's reach, which was 18's dependency. |
-| **16** | **`--text-subtle` on `--background-medium` is sub-AA in three of the six family×mode scopes, and #56 is not the right owner of the fix.** Measured with `ui/desktop/scripts/lib/theme-tokens.mjs`: parchment:dark **3.75**, alma-mater:light **4.45**, alma-mater:dark **4.28**, against a 4.5 floor. `--background-medium` is the row-hover ground that `biorouter-list-row`, `SessionItem` and `ExtensionItem` all paint, so this affects every subtle label on a hovered row **today** — it is a pre-existing gap, not something the privacy badge introduces, and `check-contrast.mjs` has never asserted it. Task 26 therefore audits only `--text-default` and `--text-muted` on that ground (the two the badge actually uses) and the total is **288**, not 294. Auditing the third token as well makes the run exit 1 with three failures whose only fix is a theme-token edit — precisely the "Zero theme work" Task 26 Step 5 forbids, and a scope the privacy feature has no business taking. | Nothing in this plan. Open it as a theme/a11y follow-up at Task 40 Step 6, alongside the deferred findings from the 2026-07 theme redesign. Do **not** close it by lowering the threshold in `check-contrast.mjs`. |
+| **16** | **`--text-subtle` on `--background-medium` is sub-AA in three of the six family×mode scopes, and #56 is not the right owner of the fix.** Measured with `ui/desktop/scripts/lib/theme-tokens.mjs`: parchment:dark **3.75**, alma-mater:light **4.45**, alma-mater:dark **4.28**, against a 4.5 floor. `--background-medium` is the row-hover ground that `biorouter-list-row`, `SessionItem` and `ExtensionItem` all paint, so this affects every subtle label on a hovered row **today** — it is a pre-existing gap, not something the privacy badge introduces, and `check-contrast.mjs` has never asserted it. Task 26 therefore audits only `--text-default` and `--text-muted` on that ground (the two the badge actually uses) and the total is **324**, not 330 — measured, after Task 32 found
+the plan's `288` baseline had been stale since issue #65's reference-chip block. Auditing the third token as well makes the run exit 1 with three failures whose only fix is a theme-token edit — precisely the "Zero theme work" Task 26 Step 5 forbids, and a scope the privacy feature has no business taking. | Nothing in this plan. Open it as a theme/a11y follow-up at Task 40 Step 6, alongside the deferred findings from the 2026-07 theme redesign. Do **not** close it by lowering the threshold in `check-contrast.mjs`. |
 | **21** | **`bin/knowledge_ingest_probe.rs` is the one macro caller with no behavioural row.** It is a `[[bin]]` target, so `cargo test -p biorouter-server --lib` never compiles it and no harness in the repo executes it. Task 10B closes it *by construction* instead — `ProviderCompleter::paired` hands back the completer and the tier from one `Arc`, and Step 5 asserts zero surviving production uses of `ProviderCompleter::new` — but if a future edit re-derives the probe's tier from `cli.provider` rather than from the instance, nothing fails. | Nothing in this plan. **Accepted risk, in the operator's terms:** the probe is a developer diagnostic run by hand with `--root` and a default `probe` KB; a wrong tier there mis-stamps one developer's own scratch base on their own machine, and no model can reach it. If the probe ever becomes something a model or a route invokes, it needs a behavioural row before that lands. |
 | **22** | ✅ **RESOLVED by [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store) as posed, and it does not become moot.** The comparison it rests on — that the *other three* roots have a private resolver and knowledge does not — is gone with the other three roots. What survives is real and is now covered by [DR-18](#dr-18--the-knowledge-base-tier-is-user-controllable-and-a-private-session-creates-a-private-base)'s gates rather than by a deny root: CP1–CP4 **are** the knowledge door, and a new reader added beside them inside `biorouter-mcp` still bypasses the barrier. The `pub(crate)` follow-up below stands on its own merits. ~~**The knowledge root's door is a convention enforced by a grep, not by a private function.** The other three roots have a resolver the type system can hide: `ArtifactStore::dir` is already private (`agent_drafter/store.rs:447`), `MemoryRouter::get_memory_file` is private (`memory/mod.rs:336`), and the session store is a sqlx pool nobody outside `session/` should hold. Knowledge has none — `resolve_readable_path` (`knowledge/store.rs:121`) has **3** call sites against roughly **40** direct filesystem reads in the same module, and `KnowledgeService::root()` is `pub` (`service.rs:415`) because `routes/knowledge.rs` legitimately joins off it at 7 sites. So CP1–CP4 are the door and Task 14E Step 5 (4) is what stops an eighth reader appearing beside them.~~ **With Task 14E deferred, nothing does** — [Task 10C](#task-10c-the-knowledge-base-barrier--one-line-at-each-of-the-four-choke-points)'s completeness test is the surviving guard, and it is a test rather than a type. | Nothing in this plan. **Accepted risk, in the operator's terms:** a future reader of the knowledge tree added inside `biorouter-mcp` would bypass the barrier and only a grep would notice. The fix is to make `root()` `pub(crate)` and give `biorouter-server` a narrower accessor that returns a *base's* directory rather than the tree's — a mechanical change across 7 call sites, deliberately not bundled into a task whose subject is something else. |
 
