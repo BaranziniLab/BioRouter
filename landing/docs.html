@@ -1411,6 +1411,7 @@ BIOROUTER_PATH_ROOT="$(mktemp -d)" \
     <tr><td><strong>Computer Controller</strong></td><td>Off</td><td>Automates your real desktop: launches apps, clicks and types, changes system settings, scrapes the web, and reads or writes Office documents. The highest-blast-radius built-in, because it acts on your actual machine.</td><td><code>computer_control</code>, <code>automation_script</code>, <code>web_scrape</code>, <code>xlsx_tool</code>, <code>docx_tool</code>, <code>pdf_tool</code>, <code>cache</code></td></tr>
     <tr><td><strong>Tutorial</strong></td><td>Off</td><td>Loads interactive, step-by-step walkthroughs of BioRouter features and guides you a step at a time. Seven tutorials ship, from getting started to building an MCP extension.</td><td><code>load_tutorial</code></td></tr>
     <tr><td><strong>Chat Recall</strong></td><td>Off</td><td>Searches your past session history by keyword or session ID so the agent can pull earlier context into the current conversation. Search runs entirely against local session history; nothing is sent to a remote service.</td><td><code>chatrecall</code> (search mode or load mode)</td></tr>
+    <tr><td><strong>Workspace Control</strong></td><td>Off</td><td>Lets the agent work across your <em>conversations</em>: open one in a tab, split, or window, read what another has done, prompt or steer it, wait for it, and change the extensions, skills, model, or knowledge bases it uses (see <a href="#agentloop" onclick="showDoc('agentloop');return false;">Workspace control</a>). Delegating to a subagent needs no extension enabled; these cross-conversation tools do.</td><td><code>workspace_open</code>, <code>workspace_list</code>, <code>workspace_read_conversation</code>, <code>workspace_send_prompt</code>, <code>workspace_set_tools</code>, <code>workspace_watch</code>, <code>workspace_close</code>, <code>subagent</code></td></tr>
     <tr><td><strong>Code Execution</strong></td><td>On</td><td>Backs Code Mode: instead of calling tools one at a time, the model writes one short JavaScript program that batches many tool calls into a single execution, using the context window more efficiently.</td><td><code>execute_code</code>, <code>search_modules</code>, <code>read_module</code></td></tr>
     <tr><td><strong>Agent Drafter</strong></td><td>On</td><td>Builds <a href="#apps" onclick="showDoc('apps');return false;">Biorouter apps</a>: TypeScript front-ends wired to a live per-app agent, and exports them as standalone, directly runnable projects (see the Apps &amp; Agent Drafter section).</td><td><code>create_app</code>, <code>configure_app</code>, <code>build_app</code>, <code>export_app</code>, plus the <code>ui_*</code> tools</td></tr>
   </tbody>
@@ -1891,7 +1892,7 @@ biorouter schedule delete &lt;job-id&gt;</code></pre>
       <div class="doc-page" id="doc-agentloop">
         <span class="doc-eyebrow">Under the hood</span>
 <h1>Agentic loop and orchestration</h1>
-<p class="doc-intro">When you send BioRouter a request, it does not answer in a single step. It runs a loop: it gathers the context the model needs, asks the model what to do, runs any tool the model asks for, feeds the result back, and repeats until the work is actually finished. BioRouter, not the model, controls that loop. It decides what context is assembled, which tool calls are allowed to run, what gets saved, and whether a tool-free answer really ends the turn. This page walks through the loop from the moment a request arrives to the moment a final answer is sent, then covers the controls that keep a long-running turn safe, correct, and interruptible.</p>
+<p class="doc-intro">When you send BioRouter a request, it does not answer in a single step. It runs a loop: it gathers the context the model needs, asks the model what to do, runs any tool the model asks for, feeds the result back, and repeats until the work is actually finished. BioRouter, not the model, controls that loop. It decides what context is assembled, which tool calls are allowed to run, what gets saved, and whether a tool-free answer really ends the turn. This page walks through the loop from the moment a request arrives to the moment a final answer is sent, then covers the controls that keep a long-running turn safe, correct, and interruptible, and finally how the agent works across more than one conversation at a time.</p>
 
 <h2>From a request to an answer</h2>
 <p>Every turn moves through the same stages. For a simple question the model may pass through them once with no tool calls. For a real task the middle stages (model call, tool routing, execution, observation) repeat many times before the loop reaches a final answer.</p>
@@ -2113,6 +2114,118 @@ biorouter schedule delete &lt;job-id&gt;</code></pre>
 
 <h3>Memory across sessions</h3>
 <p>The loop's context is normally scoped to one session, but two mechanisms carry knowledge forward. A knowledge base (including a built-in "Soul" base for durable user facts) can be searched during context assembly and written to explicitly. Separately, past chats are indexed for relevance-ranked recall, so you can ask what was decided in an earlier conversation and get the right session back rather than merely the most recent one. Automatic distillation of durable facts from settled sessions is a planned extension of this recall path rather than current behavior.</p>
+
+<h2>Workspace control</h2>
+<p>A subagent puts a second agent to work inside one conversation. <strong>Workspace control</strong> is the layer above that: it lets the agent act on your conversations themselves. It can open a new one in a tab, a split pane, or its own window; read what another conversation has already done; leave a note in it or start a turn in it; wait for it to finish; and change which extensions, skills, model, or knowledge bases it uses. The practical effect is that "run the QC pass while I write the methods" stops meaning <em>you</em> open a second chat, paste the context across, and remember to come back to it.</p>
+
+<div class="doc-table-scroll"><table class="doc-table">
+  <thead><tr><th>What you ask for</th><th>What you get</th></tr></thead>
+  <tbody>
+    <tr><td>"Open a second chat for the QC pass, in a split, and start it on the flowcell report."</td><td>A new session in its own pane, already working, sharing your working directory unless you said otherwise.</td></tr>
+    <tr><td>"Delegate the test suite to a subagent and tell me when it is done."</td><td>A child conversation in its own tab that you can read, steer, and stop, and a parent that waits on it properly instead of polling.</td></tr>
+    <tr><td>"Give the transcriptomics chat the single-cell skill."</td><td>That chat reconfigured, with a confirmation card first and a notice in its own tab afterwards.</td></tr>
+  </tbody>
+</table></div>
+
+<div class="alert alert-info"><strong>Mostly opt-in.</strong> Delegating to a subagent needs nothing turned on. Everything else reaches into conversations the agent did not create, so it ships as the <strong>Workspace Control</strong> extension and is <strong>off by default</strong>: enable it under <strong>Extensions</strong> in the sidebar, or with <code>biorouter configure</code> &rarr; <em>Toggle Extensions</em> &rarr; <code>workspace</code>. Nothing enables it for you.</div>
+
+<h3>Where a new conversation lands</h3>
+<p>The agent places a conversation with the same vocabulary you use by hand, and only that vocabulary. Anything it does not recognize is refused outright rather than quietly treated as a tab, so an odd placement is always an error message and never a silent surprise.</p>
+
+<figure class="doc-figure">
+<svg viewBox="0 0 720 240" role="img" aria-label="The three placements a new conversation can be given">
+  <defs><marker id="ahWS" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" class="m-a"/></marker></defs>
+  <rect x="20" y="88" width="170" height="64" rx="10" class="f-soft s-soft"/>
+  <text x="105" y="115" text-anchor="middle" font-size="12.5" font-weight="700" class="t-a">Agent opens</text>
+  <text x="105" y="132" text-anchor="middle" font-size="10.5" class="t-a">a conversation</text>
+
+  <line x1="190" y1="112" x2="246" y2="52" class="l-a" stroke-width="1.8" marker-end="url(#ahWS)"/>
+  <line x1="190" y1="120" x2="246" y2="120" class="l-a" stroke-width="1.8" marker-end="url(#ahWS)"/>
+  <line x1="190" y1="128" x2="246" y2="188" class="l-a" stroke-width="1.8" marker-end="url(#ahWS)"/>
+
+  <rect x="250" y="24" width="450" height="56" rx="10" class="f-card s-b"/>
+  <text x="272" y="48" font-size="12.5" font-weight="600" class="t-1">tab</text>
+  <text x="272" y="66" font-size="10.5" class="t-3">a new tab in the pane you are already in &mdash; the default, and it opens in the background</text>
+
+  <rect x="250" y="92" width="450" height="56" rx="10" class="f-card s-b"/>
+  <text x="272" y="116" font-size="12.5" font-weight="600" class="t-1">split</text>
+  <text x="272" y="134" font-size="10.5" class="t-3">a new pane beside the current one, up to six panes in one window</text>
+
+  <rect x="250" y="160" width="450" height="56" rx="10" class="f-card s-b"/>
+  <text x="272" y="184" font-size="12.5" font-weight="600" class="t-1">window</text>
+  <text x="272" y="202" font-size="10.5" class="t-3">a separate window of its own</text>
+</svg>
+<figcaption>The agent has exactly the three placements you have by hand. A value it does not recognize is refused, not guessed at.</figcaption>
+</figure>
+
+<p>Two defaults are worth knowing because they are the opposite of what people expect. <strong>New tabs open in the background</strong>, so your focus stays where you are typing; the agent has to ask for focus explicitly and rarely should. And <strong>a new conversation inherits your working directory</strong> unless the agent is told otherwise, in which case you are told where it actually landed. Opening a conversation never moves an existing one's working directory; only a newly created session gets one, and it gets it at creation.</p>
+
+<p>If a split is refused because the window is already at six panes, the agent is told the conversation was <em>not</em> opened and why, so it can say so rather than claim a pane exists.</p>
+
+<div class="info-box">
+  <h4>If you would rather nothing appeared on its own</h4>
+  <p>Turn on <strong>Settings &rarr; App &rarr; Workspace &rarr; "Never open tabs automatically"</strong>. Conversations and subagents still run; you get a notification naming them and open them from History when you want to. The agent is explicitly told that no tab opened, so it cannot report one that is not there. The setting is off by default.</p>
+</div>
+
+<h3>Watching a delegated run</h3>
+<p>Ask for a subagent in plain language and, whenever the desktop app is open, the child appears in its own background tab with a <strong>sub</strong> badge and a link back to the conversation that spawned it. Inside that tab you can read the child's transcript as it streams, type into it to steer it mid-run, and stop it from the header. Three things about that tab people get wrong:</p>
+<ul>
+  <li><strong>Closing it does not kill the child.</strong> Closing is a view operation everywhere in Biorouter. Stop is the kill switch, and a child whose tab you closed is still running and still in History.</li>
+  <li><strong>If you typed into it, the parent is told.</strong> The parent's result carries a note that you intervened, so it weighs the child's self-report accordingly. Nothing is said when you did not.</li>
+  <li><strong>The badge follows the session, not the tab.</strong> A child that never got a tab is still badged when you open it later from History.</li>
+</ul>
+<p>At most <strong>four</strong> children from one parent hold a tab at the same time. Ask for ten in parallel and you get four tabs; the rest run in the background and appear in History nested under their parent. A spawn is never refused for hitting that ceiling, only downgraded to a background run, and the parent is told which children that happened to. The cap counts <em>live</em> children, so a slot frees as each one finishes.</p>
+<p>For a long job, the right way to collect a result is to wait rather than poll: the agent parks until one (or all) of the conversations it names finishes, and a timeout there is not an error &mdash; the work keeps running and it can wait again.</p>
+
+<div class="alert alert-warning"><strong>Delegation has its own gate.</strong> The spawn tool is only offered when the session runs in <strong>Completely Autonomous</strong> permission mode (the default) and is not itself a subagent &mdash; a child cannot spawn grandchildren. If asking for a subagent produces an ordinary answer instead of a child conversation, the permission mode is the first thing to check. A few narrower conditions apply as well; the repo documentation lists all of them.</div>
+
+<h3>Looking into another conversation</h3>
+<p>Ask what you are running right now and the agent lists the workspace: each conversation's id and name, whether a turn is in flight, which parent spawned it, the extensions and knowledge bases it has, and &mdash; when the desktop app is attached &mdash; which window, pane, and tab it sits in. To look <em>inside</em> one, four views are available, and the narrowest honest one is the right choice:</p>
+<div class="doc-table-scroll"><table class="doc-table">
+  <thead><tr><th>View</th><th>What it shows</th><th>Reach for it when</th></tr></thead>
+  <tbody>
+    <tr><td>Summary</td><td>Working directory, message count, the first and last few messages</td><td>"Where has that chat got to?"</td></tr>
+    <tr><td>Transcript (default)</td><td>The user-visible messages, with tool payloads collapsed to one-line stubs</td><td>You want the prose</td></tr>
+    <tr><td>Tool calls</td><td>Request and response pairs, correlated and clipped</td><td>"What did it actually <em>do</em> to my repository?"</td></tr>
+    <tr><td>Spawn context</td><td>The instructions a subagent was started with</td><td>Auditing a delegation</td></tr>
+  </tbody>
+</table></div>
+<p>Long reads are clipped, and the clip names the controls that would narrow it. Sessions you have hidden are refused in every view. And because a read is an ordinary tool call, it is recorded in the conversation doing the reading: there is always a trail of who read what.</p>
+
+<h3>Changing another conversation's setup</h3>
+<p>One tool changes what a <em>different</em> conversation may use: add or remove extensions, scope a skill to that conversation alone, switch its provider and model, or set its knowledge bases. A model switch takes effect on the target's next turn, so a turn already running finishes on the provider it started with, and skills added this way never touch your machine-wide preferences.</p>
+<p>Some of those changes raise a confirmation card <strong>in every permission mode, including the fully automatic one</strong> &mdash; handing a conversation a process-spawning extension, removing a security-relevant one, switching its provider, or adding a skill. Whatever changes, the target conversation gets a notice saying what happened and who did it. Silent cross-session action is not a supported configuration. Two refusals are deliberate and should not be worked around: an extension an administrator has disabled cannot be re-enabled this way, and a subagent can never be granted workspace control at all.</p>
+
+<h3>From the terminal</h3>
+<p>The CLI is a first-class front end here, and it reaches the feature two ways. Inside an interactive <code>biorouter session</code> chat the agent advertises the same tools, because the CLI links the same core library the desktop backend does; without a running daemon, listing, reading, waiting, leaving a note, and spawning still work, and the rest refuse <em>by name</em> ("requires the BioRouter daemon") rather than failing obscurely. Separately, there are ordinary subcommands you type:</p>
+<div class="doc-table-scroll"><table class="doc-table">
+  <thead><tr><th>What you want</th><th>Command</th><th>Needs <code>biorouterd</code></th></tr></thead>
+  <tbody>
+    <tr><td>See what exists, with subagent runs nested under their parents</td><td><code>biorouter session list --subagents</code></td><td>No</td></tr>
+    <tr><td>Read a conversation</td><td><code>biorouter session export --id &lt;id&gt;</code></td><td>No</td></tr>
+    <tr><td>Send a prompt into a session and stream its turn</td><td><code>biorouter session send &lt;id&gt; "&lt;text&gt;"</code></td><td>Yes</td></tr>
+    <tr><td>Wait for a turn to end</td><td><code>biorouter session watch &lt;id&gt;</code></td><td>Yes</td></tr>
+    <tr><td>Join a live session, follow it, and steer it</td><td><code>biorouter session attach &lt;id&gt;</code></td><td>Yes</td></tr>
+    <tr><td>Stop the turn a session is running</td><td><code>biorouter session cancel &lt;id&gt;</code></td><td>Yes</td></tr>
+  </tbody>
+</table></div>
+<p>Use <code>session attach</code> rather than resuming a session that is running right now: resuming opens a second agent on the same conversation, and the two do not share the daemon's turn lock. Exactly two capabilities have no terminal equivalent &mdash; spawning a subagent (already a tool inside <code>biorouter session</code>, so a subcommand would add nothing) and reconfiguring another session's tools. That is not folklore: the mapping between the tools and the subcommands is a compiled table checked against the real command tree, and a new capability with no CLI row fails the build.</p>
+
+<h3>The limits you will actually meet</h3>
+<p>Each of these is a real, named bound rather than a guideline.</p>
+<div class="doc-table-scroll"><table class="doc-table">
+  <thead><tr><th>Limit</th><th>Value</th></tr></thead>
+  <tbody>
+    <tr><td>Panes in one window</td><td>6</td></tr>
+    <tr><td>Subagent tabs from one parent, at once</td><td>4 (further children run in the background)</td></tr>
+    <tr><td>Turns one conversation may drive in others at once</td><td>4 (the fifth waits rather than saturating the daemon)</td></tr>
+    <tr><td>Conversations a single wait may watch</td><td>32</td></tr>
+    <tr><td>Wait timeout</td><td>120 seconds by default, 600 maximum</td></tr>
+    <tr><td>Rows per listing page</td><td>50 by default, 200 maximum</td></tr>
+    <tr><td>Characters per conversation read</td><td>20,000 by default, 200,000 maximum</td></tr>
+  </tbody>
+</table></div>
+<p>The full account &mdash; every refusal message, the exact confirmation rules, and the handful of cases where a tool can report a tab that the window declined to open &mdash; lives in the repository, in <a href="https://github.com/BaranziniLab/biorouter/blob/main/docs/agent-loop/workspace-control.md" target="_blank">workspace control</a> and its <a href="https://github.com/BaranziniLab/biorouter/blob/main/docs/agent-loop/workspace-control-tools.md" target="_blank">per-tool reference</a>.</p>
         <div class="doc-next"><span class="lbl">Next</span> <a href="#vaulting" onclick="showDoc('vaulting');return false;">Vaulting &amp; security &rarr;</a></div>
       </div>
       <div class="doc-page" id="doc-vaulting">
