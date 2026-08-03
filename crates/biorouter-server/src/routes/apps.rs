@@ -8842,13 +8842,23 @@ mod tests {
         /// R5. An unpinned worker profile used to fall straight through to
         /// `Config::global()`, so a worker under a `versa_azure` app answered on
         /// the user's commercial default.
+        ///
+        /// ⚠ The app's provider is deliberately a name NO registered provider
+        /// and no user config can produce. Asserting on a real name — this test
+        /// asserted `"versa_azure"` — makes the test environment-dependent in
+        /// the direction that makes it vacuous: delete the inherit rung and rung
+        /// 3 runs `Config::global()`, which on the machine this was written on
+        /// *is* `versa_azure` with live credentials, so the test would have gone
+        /// green with the fix removed. (Measured: with the rung deleted the test
+        /// does not fail, it blocks in `create_provider` on the developer's
+        /// credential store.) A fabricated name can only have come from rung 2.
         #[tokio::test]
         async fn an_unpinned_worker_profile_inherits_the_main_agents_provider() {
             let dir = tempfile::TempDir::new().unwrap();
             let session_manager = Arc::new(SessionManager::new(dir.path().to_path_buf()));
 
             // The app itself, on a private model.
-            let main_provider = tiered("versa_azure", ProviderTier::Private);
+            let main_provider = tiered("task24-app-model", ProviderTier::Private);
 
             // A worker profile with no `model` of its own.
             let worker_agent = agent_over(session_manager.clone(), dir.path());
@@ -8873,7 +8883,7 @@ mod tests {
 
             assert_eq!(
                 worker_agent.provider().await.unwrap().get_name(),
-                "versa_azure"
+                "task24-app-model"
             );
         }
 
