@@ -23,6 +23,7 @@ pub mod config_keys;
 pub mod extensions;
 pub mod refusal;
 mod registry_private;
+pub mod visibility;
 
 pub use alt_provider::assert_alt_provider_allowed;
 pub use capability::CallCapability;
