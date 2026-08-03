@@ -153,16 +153,18 @@ There is nothing GUI-shaped in the contract, but the surface is not identical wi
 
 **Standalone `biorouter` in a terminal, with no daemon.** The tools that *inspect* work — `workspace_list`, `workspace_read_conversation`, `workspace_watch` (which reads the background-handle registry, so it still knows a child is running), `workspace_send_prompt mode:"note"`, and `subagent` itself. The tools that need something to *drive* a session do not, and each refuses by name rather than failing obscurely: starting a new session, `mode:"turn"`, `mode:"steer"`, setting knowledge bases, and `workspace_close` at `turn` or `agent` scope all answer *"requires the BioRouter daemon"*. Start `biorouterd` (or open the app) if you need them.
 
-The CLI covers the same ground from the other side. These are commands *you* run, and they talk to `biorouterd` — so they belong to the second configuration above, not the third; `session watch` says "requires a running daemon" in its own help for that reason:
+The CLI covers the same ground from the other side. These are commands *you* run, and they do **not** all sit in the same configuration: the two that only read the session store on disk are fine in the third, while the four that drive a live turn go over HTTP to `biorouterd` and need the second — which is why `session watch` says "requires a running daemon" in its own help.
 
-| Capability | CLI |
-|------------|-----|
-| List conversations, including subagent runs | `biorouter session list --subagents` |
-| Read a conversation | `biorouter session export --format …` |
-| Inject a prompt | `biorouter session send` |
-| Wait for a turn to finish | `biorouter session watch` (exits on Finish/Error; add `--follow` to keep watching past it) |
-| Cancel a turn | `biorouter session cancel` |
-| Watch or steer a live session | `biorouter session attach` (`--of` to pick a subagent, `--read-only` to observe without participating) |
+| Capability | CLI | Needs `biorouterd` |
+|------------|-----|--------------------|
+| List conversations, including subagent runs | `biorouter session list --subagents` | no — but the live/done marks do |
+| Read a conversation | `biorouter session export --format …` | no |
+| Inject a prompt | `biorouter session send` | yes |
+| Wait for a turn to finish | `biorouter session watch` (exits on Finish/Error; add `--follow` to keep watching past it) | yes |
+| Cancel a turn | `biorouter session cancel` | yes |
+| Watch or steer a live session | `biorouter session attach` (`--of` to pick a subagent, `--read-only` to observe without participating) | yes |
+
+The listing is the one hybrid. Its rows come off disk, so it always prints; only the `● live` / `○ done` marks beside subagent runs are the daemon's to answer, and a run whose state could not be asked for reads `· state unknown` instead of the command failing.
 
 Two capabilities deliberately have no CLI counterpart: spawning (it is a tool the model calls, and it already works inside `biorouter session`) and `workspace_set_tools` (reconfiguring another session from a terminal is out of scope; `biorouter extension` / `biorouter skill` are machine-wide, not session-scoped).
 
