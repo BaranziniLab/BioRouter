@@ -16,9 +16,11 @@ const read = (...p: string[]) => readFileSync(path.join(process.cwd(), ...p), 'u
  *
  * This is the join `check-contrast.mjs` cannot make on its own: it reads
  * `main.css` and never opens this component, so a label written the way the
- * design's §14.1 specified it — `text-[var(--text-standard)]`, a token that
- * does not exist in any theme — passes every one of its assertions, raises no
- * error, and silently inherits whatever colour it lands on.
+ * design's §14.1 specified it — an arbitrary value naming a token that exists
+ * in no theme — passes every one of its assertions, raises no error, and
+ * silently inherits whatever colour it lands on. That spelling is deliberately
+ * not repeated here: `src/components` is grepped for it and owes zero hits, and
+ * a comment is not a use. It is in the commit that added these assertions.
  */
 const DECLARED_TOKENS = new Set(
   [...read('src', 'styles', 'main.css').matchAll(/(--[\w-]+)\s*:/g)].map((m) => m[1])
