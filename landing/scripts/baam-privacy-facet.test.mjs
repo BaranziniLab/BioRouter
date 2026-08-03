@@ -241,11 +241,52 @@ if (!existsSync(PLAYWRIGHT)) {
     }
   });
 
-  test('the no-JS view is badged too', async () => {
+  test('the no-JS view labels every card, at both geometries', async () => {
+    // The static cards are the fallback view AND the registry generator's input.
+    // Without JS nothing re-renders and nothing trims, so whatever the markup
+    // says is what a visitor reads — and an unbadged card there reads as "not yet
+    // reviewed" rather than "public", which is exactly the ambiguity the badge
+    // was added to remove. Badging only the two private cards leaves the other
+    // 35 saying nothing.
     const ctx = await browser.newContext({ javaScriptEnabled: false });
-    const page = await ctx.newPage();
-    await page.goto(`${BASE}/baam.html`);
-    assert.equal(await page.locator('.ext-card[data-privacy="private"] .tag.private').count(), 2);
+    for (const width of [1280, 390]) {
+      const page = await ctx.newPage();
+      await page.setViewportSize({ width, height: 900 });
+      await page.goto(`${BASE}/baam.html`);
+
+      assert.equal(
+        await page.locator('.ext-card[data-privacy="private"] .tag.private').count(),
+        2,
+        'the two private cards must declare their tier in markup'
+      );
+
+      const wrong = await page.$$eval('#extensions-section .ext-card', (els) =>
+        els
+          .map((e) => {
+            const name = e.querySelector('h3').textContent;
+            const badges = [...e.querySelectorAll('.ext-tags > span[data-privacy-badge]')];
+            if (badges.length !== 1) return `${name}: ${badges.length} privacy badges, expected 1`;
+            const [badge] = badges;
+            const want = e.dataset.privacy === 'private' ? 'Private' : 'Public';
+            if (badge.textContent !== want) {
+              return `${name}: the badge says "${badge.textContent}" but the card declares ${want}`;
+            }
+            // The badge is authored FIRST precisely so the row's
+            // `overflow: hidden` eats subject tags rather than the tier. Nothing
+            // trims this view, so first-or-clipped is the whole guarantee.
+            const row = badge.parentElement;
+            if (badge !== row.firstElementChild) return `${name}: the badge is not the first chip`;
+            const r = badge.getBoundingClientRect();
+            if (r.width === 0 || r.bottom > row.getBoundingClientRect().bottom + 0.5) {
+              return `${name}: the badge is clipped out of the tag row`;
+            }
+            return null;
+          })
+          .filter(Boolean)
+      );
+      assert.deepEqual(wrong, [], `unlabelled or mislabelled no-JS cards at ${width}px`);
+      await page.close();
+    }
     await ctx.close();
   });
 }

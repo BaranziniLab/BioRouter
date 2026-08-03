@@ -1,0 +1,32 @@
+<!--
+  Fixture: a card whose SUBJECT tags include the word "Public".
+
+  The badge and the subject tags live in the same .ext-tags row, and this
+  generator harvests that row. The first version of the skip filter matched the
+  chip's `private`/`public` CLASS, which deletes a legitimate topic — the skills
+  shelf carries "Public Databases", and UnifiedPublicDatabaseLookupAgent's own
+  tag row is one class rename away from the same fate. The marker is therefore
+  the `data-privacy-badge` attribute, which nothing but the badge uses.
+
+  Expect: tags == ["MCP", "Public Data", "Public"], badge excluded.
+-->
+<div id="extensions-section">
+  <div class="ext-grid" id="extensions-grid">
+
+    <div class="ext-card" data-license="Apache-2.0">
+      <div class="ext-card-header">
+        <div class="ext-meta">
+          <h3>Public Data Agent</h3>
+          <div class="ext-org">Fixtures · v0.1.0</div>
+        </div>
+        <a href="https://example.invalid/public-data-agent" class="ext-gh-link">GitHub</a>
+      </div>
+      <p class="ext-desc">A card that is topically about public data, so one of its subject tags is the same word its badge uses.</p>
+      <div class="ext-footer">
+        <div class="ext-tags"><span class="tag public" data-privacy-badge>Public</span><span class="tag mcp">MCP</span><span class="tag public">Public Data</span><span class="tag">Public</span></div>
+        <a href="https://example.invalid/publicdataagent.brxt" class="brxt-chip">.brxt</a>
+      </div>
+    </div>
+
+  </div>
+</div>

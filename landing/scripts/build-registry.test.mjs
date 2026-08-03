@@ -72,6 +72,12 @@ const REJECTED = [
   ['boolean-attribute', /^registry: .*data-privacy is present with no value/m],
   ['nested-metadata', /^registry: .*data-privacy.*must be declared on the card element itself/m],
 
+  // The badge is the no-JS view's ONLY statement of the tier, and the attribute
+  // is the generator's. Two sources for one fact drift; publishing while they
+  // disagree ships a card that reads "Public" over a private connector.
+  ['badge-contradicts-tier', /^registry: .*the privacy badge reads "Public" but the card declares data-privacy="private"/m],
+  ['unbadged-card', /^registry: .*carries 0 \[data-privacy-badge\] chips, expected exactly one reading "Public"/m],
+
   // A catalog of nothing is never a legitimate result — on a real run it
   // rewrites the compiled-in private set to empty.
   ['missing-section', /^registry: .*no element with id="extensions-section"/m],
@@ -120,6 +126,27 @@ test('the happy fixture parses, so the refusals above are not "zero cards"', () 
   assert.equal(priv.privacy, 'private');
   assert.equal(priv.extension_name, 'privatefixtureagent', 'emitted in name_to_key form');
   assert.deepEqual(priv.affiliation, ['ucsf']);
+
+  // The badge shares the .ext-tags row with the subject tags, and this row is
+  // the tag source. Exact lists, not `includes` — a filter that dropped one tag
+  // too many, or published "Private" as a topic, satisfies every other
+  // assertion here.
+  assert.deepEqual(pub.tags, ['MCP'], 'the Public badge must not be published as a subject tag');
+  assert.deepEqual(priv.tags, ['UCSF', 'MCP'], 'the Private badge must not be published as a subject tag');
+});
+
+test('a subject tag is not deleted for being spelled like the badge', () => {
+  // The first version of the skip filter matched the chip's private/public
+  // CLASS. `allTags` also harvests the skills shelf, where "Public" is an
+  // ordinary topic, so that filter silently deleted legitimate tags from the
+  // published catalog — with no fixture and no assertion on emitted tags, in a
+  // generator whose whole job is to be trusted about what it publishes.
+  const out = outPath();
+  const r = run({ input: fixture('subject-tag-named-public'), out });
+  assert.equal(r.code, 0, r.both);
+  const reg = JSON.parse(readFileSync(out, 'utf8'));
+  assert.deepEqual(reg.extensions[0].tags, ['MCP', 'Public Data', 'Public']);
+  assert.equal(reg.extensions[0].privacy, 'public');
 });
 
 test('attribute order does not decide whether a card exists', () => {

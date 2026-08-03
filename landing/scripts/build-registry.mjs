@@ -410,19 +410,48 @@ const first = (re, s) => {
   return m ? m[1] : '';
 };
 
-// `.tag private` / `.tag public` are the PRIVACY BADGE, not a subject tag. The
+// A `[data-privacy-badge]` chip is the PRIVACY BADGE, not a subject tag. The
 // badge lives inside .ext-tags so it reads as the first chip of the row, and the
 // row is also this generator's tag source — so without this filter the word
 // "Private" would be published as a topic of the two private extensions, and
 // then re-rendered as a second chip beside the badge the shelf already prepends.
 // The card's real annotation is `data-privacy`; the badge is only its picture.
-const PRIVACY_BADGE_CLASS = /(?:^|\s)(?:private|public)(?:\s|$)/;
+//
+// The marker is an ATTRIBUTE, not the `private`/`public` class. `allTags` also
+// harvests the skills shelf, where "Public" is a perfectly ordinary subject tag
+// — filtering on the class would delete it, silently, from the published
+// catalog. An attribute nothing else uses cannot collide with a topic name.
+const PRIVACY_BADGE_ATTR = 'data-privacy-badge';
+
+/** Every `<span class="tag …">` in `block`, as `{ label, badge }`. */
+function tagSpans(block) {
+  const all = tagsOf(block);
+  const out = [];
+  for (let k = 0; k < all.length; k++) {
+    const t = all[k];
+    if (t.closing || t.name !== 'span' || !classList(t).includes('tag')) continue;
+    const inner = innerOf(block, all, k);
+    if (inner === null) continue; // an unclosed span has no label to read
+    out.push({ label: stripTags(inner), badge: PRIVACY_BADGE_ATTR in t.attrs });
+  }
+  return out;
+}
+
 const allTags = (containerRe, s) => {
   const block = first(containerRe, s);
   if (!block) return [];
-  return [...block.matchAll(/<span class="(tag[^"]*)">([^<]+)<\/span>/g)]
-    .filter((m) => !PRIVACY_BADGE_CLASS.test(m[1]))
-    .map((m) => stripTags(m[2]));
+  return tagSpans(block)
+    .filter((t) => !t.badge)
+    .map((t) => t.label);
+};
+
+/** The labels of the badge chips in a card's tag row, in document order. */
+const privacyBadges = (containerRe, s) => {
+  const block = first(containerRe, s);
+  if (!block) return [];
+  return tagSpans(block)
+    .filter((t) => t.badge)
+    .map((t) => t.label);
 };
 
 // ---- Extensions ----------------------------------------------------------
@@ -493,6 +522,29 @@ const extensions = extCards.map(({ attrs, inner: card }, index) => {
     fail(`${label}: data-privacy is present with no value; it must be "private" or "public"`);
   } else if (privacy !== 'private' && privacy !== 'public') {
     fail(`${label}: data-privacy must be "private" or "public", got "${privacy}"`);
+  } else {
+    // The badge is what a visitor with JavaScript disabled actually reads: the
+    // shelf re-renders from registry.json, but the static cards it renders over
+    // are the whole page for that visitor, and nothing there trims, filters or
+    // corrects anything. So the badge is held to the card's declared tier rather
+    // than trusted to have been kept in step by hand.
+    //
+    // BOTH directions are enforced. A card with no badge at all is the gap this
+    // rule closes — an unbadged card reads as "not yet reviewed" rather than
+    // "public", which is precisely the ambiguity labelling both states removes.
+    const badges = privacyBadges(/<div class="ext-tags">([\s\S]*?)<\/div>/, card);
+    const want = privacy === 'private' ? 'Private' : 'Public';
+    if (badges.length !== 1) {
+      fail(
+        `${label}: the tag row carries ${badges.length} [${PRIVACY_BADGE_ATTR}] chips, expected ` +
+          `exactly one reading "${want}" — without JavaScript this card is all a visitor sees`
+      );
+    } else if (badges[0] !== want) {
+      fail(
+        `${label}: the privacy badge reads "${badges[0]}" but the card declares ` +
+          `data-privacy="${privacy}" — the two views would disagree about the tier`
+      );
+    }
   }
   // The join key between this catalog and the installed config entry. Validate
   // the KEY, not the raw attribute: `data-extension-name="   "` is truthy and
