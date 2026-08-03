@@ -127,6 +127,37 @@ describe('SchedulesView interactions', () => {
     await waitFor(() => expect(pause).not.toBeDisabled());
   });
 
+  // Issue #56, task 24 step 3(a). A cron tick that returns `Err` used to leave
+  // nothing behind but a log line, and a scheduled run mints a fresh session
+  // each time — so a job that had been failing since the day it was created had
+  // no surface anywhere. The backend now records `last_error` on the job; this
+  // is the half that lets a user see it.
+  it('shows a failing schedule as failing, with the reason', async () => {
+    mocks.listSchedules.mockResolvedValue([
+      {
+        ...schedule,
+        last_run: '2026-08-02T09:00:00Z',
+        last_error: 'no provider configured for the chat this schedule was created from',
+      },
+    ]);
+    renderSchedules();
+
+    expect(await screen.findByText('Failed')).toBeInTheDocument();
+    expect(
+      screen.getByText(/no provider configured for the chat this schedule was created from/)
+    ).toBeInTheDocument();
+  });
+
+  it('does not claim failure when the last run succeeded', async () => {
+    mocks.listSchedules.mockResolvedValue([
+      { ...schedule, last_run: '2026-08-02T09:00:00Z', last_error: null },
+    ]);
+    renderSchedules();
+
+    await screen.findByRole('button', { name: 'View schedule nightly-cohort' });
+    expect(screen.queryByText('Failed')).not.toBeInTheDocument();
+  });
+
   it('presents an accessible empty state that opens schedule creation', async () => {
     const user = userEvent.setup();
     mocks.listSchedules.mockResolvedValueOnce([]);
