@@ -18114,7 +18114,36 @@ git commit -m "feat(ui): tier badges and pre-flight states on every model and ex
 
 ---
 
-### Task 29: Declassification — the dialog, the route, and the audit
+### Task 29: Declassification — the system authentication, the batch, and the audit
+
+> ⚠ **REWRITTEN by [DR-20](#dr-20--declassification-is-gated-by-a-system-authentication-and-that-is-what-lets-an-agent-ask), 2026-08-02 — read the ruling before Step 1.**
+> Three things changed and two stayed.
+>
+> **Changed.** (1) The authorization is an **operating-system authentication prompt**, raised once
+> per operation. (2) The operation takes a **batch** of session ids, fixed before the prompt and
+> named inside it. (3) `secret_key_and_capability_token()` — this task's third assertion, a helper
+> named twice in this campaign and defined neither time
+> ([DR-16](#decisions-of-record) says so in its own row) — is **gone**, replaced by the mechanism
+> DR-20 specifies.
+>
+> **Stayed, and both still earn their place.** (1) The graded confirmation of
+> [DR-8](#decisions-of-record) / §12.4 is untouched: it now grades the **in-app review step** that
+> precedes the prompt rather than the authorization itself, because DR-20 point 2 admits no grading
+> of the prompt. The typed phrase is kept for the same reason
+> [Task 30](#task-30-settings--privacy--the-master-toggle-its-three-hardening-measures-and-the-badge-it-does-not-hide)'s
+> amendment kept its own — *"the phrase still guards the accident; the header guards the adversary"* —
+> with the prompt now in the adversary's slot. (2) `UserConfirmation` stays, in a **stronger** form:
+> it stops being a ZST and becomes a private-field newtype over the authorised id set, so a proof
+> minted for one batch is not spendable on another, and it is consumed **by value**, so one
+> authentication cannot be spent twice. The property that made the ZST worth having — no
+> agent-reachable path can construct one — is preserved by the compiler exactly as before.
+>
+> **And the *"no CLI subcommand can construct one"* clause is withdrawn**, because DR-20 makes
+> [Task 31](#task-31-the-cli-is-a-required-r10-surface)'s `biorouter session declassify` legitimate:
+> the gate is the OS prompt, not the caller. Step 5's "no output" grep becomes an **enumeration** of
+> the four files that may name the type — the same shape as
+> [Task 29A](#task-29a-knowledge-base-publicize--privatize--user-only-graded-audited)'s gate (2),
+> and for the same reason a count would not do.
 
 ⚠ **The design's stated attachment point does not exist.** §12.1 says "History → the session's own
 row → overflow menu". `SessionListView`'s row has **no** overflow menu: it has a `DropdownMenu`
@@ -18134,27 +18163,44 @@ returns **zero** product hits. `ConfirmationModal` (`ui/desktop/src/components/u
 
 | Action | Path | Anchor (re-verified at `9558c346`) |
 |---|---|---|
-| Create | `crates/biorouter/src/privacy/declassify.rs` | new |
-| Create | `ui/desktop/src/components/ui/DangerousConfirmDialog.tsx` | new — used by **both** typed confirmations (§12.4 and §14.6) so they cannot diverge |
-| Create | `ui/desktop/src/components/sessions/DeclassifySessionDialog.tsx` | new — shared by both entry points |
-| Modify | `crates/biorouter-server/src/routes/session.rs` | new `POST /sessions/{session_id}/declassify`; route table beside `:1013`/`:1029` |
-| Modify | `crates/biorouter-server/src/auth.rs` | `is_public_app_get` `:52-77`; `check_token` `:80-126` |
-| Modify | `ui/desktop/src/components/sessions/SessionListView.tsx` | the row control cluster `:788-855` |
+| Create | `crates/biorouter/src/privacy/system_auth.rs` | new — DR-20's whole mechanism: `AuthRequest`, `AuthOutcome`, the `SystemAuthenticator` trait, `authenticate()` (the **only** constructor of `UserConfirmation`), and the platform resolver |
+| Create | `crates/biorouter/src/privacy/system_auth_macos.rs` | new — `#[cfg(target_os = "macos")]`; the real prompter. ⚠ verify the API before writing it: nothing in this tree has ever raised an OS auth prompt (measured — `LocalAuthentication`, `LAContext`, `promptTouchID`, `systemPreferences` return **zero** hits across `crates/` and `ui/desktop/src/`) |
+| Create | `crates/biorouter/src/privacy/system_auth_seam.rs` | new — `#[cfg(all(debug_assertions, feature = "privacy-test-auth"))]`, and **nothing else in the tree may carry that cfg pair**. Default REFUSE, one-shot arming, records the `AuthRequest` |
+| Modify | `crates/biorouter/Cargo.toml` | `[features]` `:114-124` — add `privacy-test-auth = []` beside `aws-providers`. **Non-default**, and it must never appear in any crate's `[dependencies]` features list |
+| Modify | `crates/biorouter/src/lib.rs` | the unconditional `compile_error!` guard from DR-20 requirement (2). It is the gate; everything else about the seam is a convention |
+| Modify | `crates/biorouter-server/Cargo.toml` | `[features]` `:58-61` — `privacy-test-auth = ["biorouter/privacy-test-auth"]`, plus a `[dev-dependencies]` entry on `biorouter` carrying the feature, so `resolver = "2"` (root `Cargo.toml:3`) unifies it into **test** builds and not into `cargo build` |
+| Modify | `crates/biorouter-cli/Cargo.toml` | `[features]` `:76-79` — the same two lines |
+| Create | `crates/biorouter/src/privacy/declassify.rs` | new — the one lowering writer; takes `UserConfirmation` **by value** |
+| Modify | `crates/biorouter-server/src/routes/session.rs` | new **`POST /sessions/declassify`** (a collection route taking `{ "session_ids": [...] }` — a per-id route cannot express one authentication over N); route table beside `:1013`/`:1029` |
+| Modify | `crates/biorouter-server/src/auth.rs` | `is_public_app_get` `:52-77`; `check_token` `:80-126`; and Task 18A's `user_action_matches` / installed digest, **reused, not duplicated** |
+| Modify | `ui/desktop/src/main.ts` | the prompter and the `declassify-sessions` IPC handler — main raises the prompt **and makes the HTTP call**; `getServerSecret` `:902-910` is the shape to mirror, `getUserActionKey` (Task 18A) is what it presents |
+| Modify | `ui/desktop/src/preload.ts` | one binding, beside `getSecretKey` `:240`/`:468` |
+| Create | `ui/desktop/src/components/ui/DangerousConfirmDialog.tsx` | new — used by **all three** typed confirmations (§12.4, §14.6 and Task 29A) so they cannot diverge |
+| Create | `ui/desktop/src/components/sessions/DeclassifySessionDialog.tsx` | new — shared by both entry points, and the **batch review list** |
+| Modify | `ui/desktop/src/components/sessions/SessionListView.tsx` | the row control cluster `:788-855`, plus the multi-select the batch needs |
 | Modify | `ui/desktop/src/components/sessions/SessionHistoryView.tsx` | `SessionHeader`'s `actionButtons` slot `:230-266` |
-| Reference | `ui/desktop/src/components/settings/app/ResetPanel.tsx` | `:344-387` — the closest precedent: a bespoke `Dialog` that **previews exactly what will be destroyed** before confirming, with a `variant="destructive"` confirm at `:383` |
+| Modify | `Justfile` | one recipe, `run-dev-testauth`, so the operator can drive the GUI with the seam armed. ⚠ `just run-dev` must **not** arm it — an unarmed dev build meets the real prompt, which is the fail-closed default DR-20 requires |
+| Reference | `ui/desktop/src/components/settings/app/ResetPanel.tsx` | `:344-387` — the closest precedent: a bespoke `Dialog` that **previews exactly what will be destroyed** before confirming, with a `variant="destructive"` confirm at `:383`. The batch review list is this pattern |
+| Reference | `crates/biorouter-mcp/src/knowledge/test_mode.rs` | `:22-32` — this tree's existing test seam, and the one to **not** copy: it is gated by an env var alone, which [AR-11](#ar-11--amended-by-dr-17--the-daemons-own-api-secret-is-recoverable) makes insufficient for a security boundary. It is a fine precedent for the *shape* (`env_enabled()`, a swapped implementation) and a wrong one for the *gate* |
 
 - [ ] **Step 1: Write the failing tests**
 
 ```rust
 #[tokio::test]
-async fn only_a_user_confirmation_can_lower_the_tier() {
-    // UserConfirmation is a ZST whose constructor is invoked in exactly one
-    // place: the HTTP handler, after it has matched the typed confirmation. No
-    // MCP server, no ToolRouter, no workspace_* handler and no CLI subcommand
-    // can construct one. "An agent cannot call this" is enforced by Rust module
-    // privacy, not by the route being undocumented.
+async fn only_an_authenticated_confirmation_can_lower_the_tier() {
+    // DR-20. `UserConfirmation` is a private-field newtype over the authorised
+    // id set, and `privacy::system_auth::authenticate` is its ONLY constructor.
+    // No MCP server, no ToolRouter and no `workspace_*` handler can produce one.
+    // The CLI CAN (Task 31) — and that is now correct, because what gates the
+    // operation is the prompt inside `authenticate`, not the caller's identity.
     let s = private_session_with_reason("mcp:ucsfomopagent").await;
-    declassify(&sm, &s.id, UserConfirmation::for_test()).await.unwrap();
+
+    seam::answer_next_prompt(AuthOutcome::Approved);           // one-shot; see below
+    let ok = system_auth::authenticate(AuthRequest::declassify(&[s.id.clone()]))
+        .await
+        .expect("armed seam approves");
+
+    declassify(&sm, ok).await.unwrap();                        // consumed by value
     let row = reread(&s.id).await;
     assert_eq!(row.privacy_tier, SessionClassification::Public);
     assert_eq!(row.privacy_reason.as_deref(), Some("declassified_by_user"));
@@ -18168,15 +18214,86 @@ async fn only_a_user_confirmation_can_lower_the_tier() {
 }
 
 #[tokio::test]
-async fn the_route_needs_more_than_the_secret_key() {
-    // §9.3 A1: the secret is reachable from any developer-enabled agent shell,
-    // so `X-Secret-Key` alone is not a human. Note that a test asserting the
-    // route is not in the public-GET exemption list is VACUOUSLY true —
-    // is_public_app_get only matches GETs under /apps/{id} with an explicit
-    // tail allowlist (auth.rs:52-77) and can never match a POST under /sessions.
+async fn the_seam_refuses_by_default_and_arms_exactly_once() {
+    // DR-20 requirement (3), and the single most important test in this task.
+    // A test that FORGETS to arm the seam must fail CLOSED. If this assertion
+    // is ever "flipped to make the suite green", every other test in this file
+    // becomes vacuous.
+    let s = private_session().await;
+    let denied = system_auth::authenticate(AuthRequest::declassify(&[s.id.clone()])).await;
+    assert!(matches!(denied, Err(DeclassifyRefusal::Denied)));
+    assert_eq!(reread(&s.id).await.privacy_tier, SessionClassification::Private);
+
+    // Arming is consumed by the prompt it answers — DR-20 point 2 (no cached
+    // grant) expressed in the seam, so the seam is not weaker than the thing it
+    // stands in for.
+    seam::answer_next_prompt(AuthOutcome::Approved);
+    system_auth::authenticate(AuthRequest::declassify(&[s.id.clone()])).await.unwrap();
+    let second = system_auth::authenticate(AuthRequest::declassify(&[s.id.clone()])).await;
+    assert!(matches!(second, Err(DeclassifyRefusal::Denied)));
+}
+
+#[tokio::test]
+async fn one_authentication_covers_the_batch_it_named_and_nothing_else() {
+    // DR-20 point 4, in the type system. The proof carries the id set; a proof
+    // minted for one batch is not spendable on a session that was not in it.
+    let a = private_session().await;
+    let b = private_session().await;
+    let outsider = private_session().await;
+
+    seam::answer_next_prompt(AuthOutcome::Approved);
+    let ok = system_auth::authenticate(
+        AuthRequest::declassify(&[a.id.clone(), b.id.clone()]),
+    ).await.unwrap();
+
+    // The request the prompt was shown carries both, in a stable order, so the
+    // renderer's list and the prompt's text cannot disagree.
+    assert_eq!(seam::last_request().session_ids, vec![a.id.clone(), b.id.clone()]);
+
+    let err = declassify_ids(&sm, &[a.id.clone(), outsider.id.clone()], ok).await.unwrap_err();
+    assert!(err.to_string().contains("not covered by this authentication"));
+    assert_eq!(reread(&outsider.id).await.privacy_tier, SessionClassification::Private);
+    // …and nothing partially applied: the batch is one transaction.
+    assert_eq!(reread(&a.id).await.privacy_tier, SessionClassification::Private);
+}
+
+#[tokio::test]
+async fn a_cancelled_or_unavailable_prompt_changes_nothing() {
+    // Cancel and "this platform has no prompter" are DIFFERENT outcomes with the
+    // same effect and different messages. Open question 30 is why the second
+    // exists at all, and it is the one a Windows or Linux build hits today.
+    let s = private_session().await;
+
+    seam::answer_next_prompt(AuthOutcome::Denied);
+    assert!(matches!(
+        system_auth::authenticate(AuthRequest::declassify(&[s.id.clone()])).await,
+        Err(DeclassifyRefusal::Denied)
+    ));
+
+    seam::answer_next_prompt(AuthOutcome::Unavailable);
+    let err = system_auth::authenticate(AuthRequest::declassify(&[s.id.clone()])).await.unwrap_err();
+    assert!(err.to_string().contains("cannot ask"));       // names the platform
+    assert_eq!(reread(&s.id).await.privacy_tier, SessionClassification::Private);
+}
+
+#[tokio::test]
+async fn the_route_needs_the_launcher_proof_and_fails_closed_without_a_digest() {
+    // §9.3 A1: the daemon secret is reachable from any developer-enabled agent
+    // shell, so `X-Secret-Key` alone is not a human. DR-20's HTTP carrier is
+    // Task 18A's EXISTING key and header — one proof of user, not two (DR-19).
+    // Note that a test asserting the route is not in the public-GET exemption
+    // list is VACUOUSLY true: `is_public_app_get` only matches GETs under
+    // /apps/{id} with an explicit tail allowlist (auth.rs:52-77) and can never
+    // match a POST under /sessions.
     assert_eq!(post_declassify(no_headers()).await.status(), 401);
     assert_eq!(post_declassify(secret_key_only()).await.status(), 403);
-    assert_eq!(post_declassify(secret_key_and_capability_token()).await.status(), 200);
+    assert_eq!(post_declassify(secret_key_and_user_action_key()).await.status(), 200);
+
+    // Open question 23's answer, applied to a second route: a daemon launched
+    // with no digest (`just run-server`, a hand-run `biorouterd agent`, any
+    // headless deployment) refuses every caller, including the human.
+    let keyless = daemon_with_no_user_action_digest().await;
+    assert_eq!(post_declassify_to(&keyless, secret_key_and_user_action_key()).await.status(), 403);
 }
 ```
 
@@ -18218,19 +18335,170 @@ it('the action is on the History row and NOT in the chat header', async () => {
   render(<SessionNamePill name="x" privacyTier="private" onRename={vi.fn()} />);
   expect(screen.queryByText(/Make this chat public/)).toBeNull();
 });
+
+// ── DR-20 ──────────────────────────────────────────────────────────────────
+
+it('the batch names every chat it will release, and the set is fixed before the prompt', async () => {
+  const declassify = vi.fn().mockResolvedValue({ ok: true });
+  render(<DeclassifySessionDialog sessions={[a, b, c]} onDeclassify={declassify} />);
+  // Every row is named and individually checked — this list IS the "fixed
+  // before the prompt" half of DR-20 point 4, and the OS prompt only summarises
+  // it. A dialog that says "3 chats" and lists nothing fails here.
+  expect(screen.getByText(a.name)).toBeInTheDocument();
+  expect(screen.getByText(/…def456/)).toBeInTheDocument();
+  await user.click(screen.getByRole('checkbox', { name: new RegExp(a.name) }));
+  await user.click(screen.getByRole('checkbox', { name: new RegExp(b.name) }));
+  await user.click(screen.getByRole('button', { name: /Make public/ }));
+  expect(declassify).toHaveBeenCalledWith([a.id, b.id]);          // NOT c
+});
+
+it('the renderer never calls the declassify route itself', async () => {
+  // DR-20's carrier is the Electron MAIN process: it raises the prompt and then
+  // makes the HTTP call. The renderer holds Task 18A's raw user-action key for
+  // its three tier-raising requests, so a renderer that called the route
+  // directly would bypass the prompt with a key it already has. This asserts
+  // the one call it may make.
+  const invoke = vi.fn().mockResolvedValue({ ok: true });
+  const fetchSpy = vi.spyOn(globalThis, 'fetch');
+  render(<DeclassifySessionDialog sessions={[a]} electron={{ declassifySessions: invoke }} />);
+  await user.click(screen.getByRole('button', { name: /Make public/ }));
+  expect(invoke).toHaveBeenCalledWith([a.id]);
+  expect(fetchSpy).not.toHaveBeenCalled();
+});
+
+it('the main-process prompt seam cannot be armed in a packaged app', () => {
+  // DR-20 requirement (5). TypeScript has no `cfg`, so this is the assertion
+  // that stands in for the Rust `compile_error!`, and the packaged-artifact
+  // grep in Step 5 is what covers the case where this test is deleted.
+  const env = { BIOROUTER_PRIVACY_TEST_AUTH: 'approve' };
+  expect(resolveTestAuthAnswer({ isPackaged: true, dev: false, env })).toBeNull();
+  expect(resolveTestAuthAnswer({ isPackaged: false, dev: false, env })).toBeNull();
+  expect(resolveTestAuthAnswer({ isPackaged: false, dev: true, env })).toBe('approve');
+  // Unarmed is refuse, never approve — the same fail-closed default as the Rust seam.
+  expect(resolveTestAuthAnswer({ isPackaged: false, dev: true, env: {} })).toBeNull();
+});
 ```
 
-- [ ] **Step 2: Run** → Rust **COMPILE ERROR** (`unresolved module declassify`); TS **FAIL**.
+- [ ] **Step 2: Run** → Rust **COMPILE ERROR** (`unresolved module system_auth`); TS **FAIL**.
 
 - [ ] **Step 3: Implement**
 
 ```rust
-// crates/biorouter/src/privacy/declassify.rs
+// crates/biorouter/src/privacy/system_auth.rs — DR-20's whole mechanism.
 
-/// Proof that a human confirmed. A ZST whose constructor is `pub(in …)` — it is
-/// invoked in exactly one place, the HTTP handler, after it has matched the
-/// typed confirmation.
-pub struct UserConfirmation(());
+/// What the user is about to be asked. Built BEFORE the prompt and rendered
+/// inside it: DR-20 point 4 requires the set to be fixed and stated, and a
+/// prompt that says "BioRouter wants to make changes" satisfies the letter of
+/// the ruling and defeats its purpose.
+pub struct AuthRequest {
+    pub reason: String,            // e.g. "Make 3 chats public. This cannot be undone."
+    pub session_ids: Vec<String>,  // sorted, deduplicated, non-empty
+}
+
+pub enum AuthOutcome {
+    Approved,
+    Denied,       // the user said no, or dismissed the prompt
+    Unavailable,  // no prompter on this platform / no desktop session — Open question 30
+}
+
+/// The prompt itself. One implementation per platform, plus the test seam.
+/// NOTHING here ever receives, stores or logs a password: the OS asks, the OS
+/// verifies, and this trait returns a decision (DR-20 point 3).
+#[async_trait]
+pub trait SystemAuthenticator: Send + Sync {
+    async fn authenticate(&self, req: &AuthRequest) -> AuthOutcome;
+}
+
+/// Proof that a system authentication succeeded, FOR THESE IDS.
+///
+/// Not a ZST any more, and the change is deliberate: the private field carries
+/// the authorised set, so a proof minted for one batch cannot be spent on a
+/// session that was not named in the prompt. It is `!Clone`, `!Default`, has no
+/// public constructor, and `declassify` consumes it BY VALUE — so one
+/// authentication cannot be spent twice, which is DR-20 point 2 in the type
+/// system rather than in a comment. The property the ZST had (no agent-reachable
+/// path can construct one) is unchanged and still enforced by module privacy.
+pub struct UserConfirmation {
+    session_ids: Vec<String>,
+}
+
+/// The ONLY constructor of `UserConfirmation` in the tree.
+pub async fn authenticate(req: AuthRequest) -> Result<UserConfirmation, DeclassifyRefusal> {
+    match prompter().authenticate(&req).await {
+        AuthOutcome::Approved    => Ok(UserConfirmation { session_ids: req.session_ids }),
+        AuthOutcome::Denied      => Err(DeclassifyRefusal::Denied),
+        AuthOutcome::Unavailable => Err(DeclassifyRefusal::NoPrompter { platform: … }),
+    }
+}
+
+/// Resolution order, and the ONLY place the seam is reachable from.
+fn prompter() -> &'static dyn SystemAuthenticator {
+    #[cfg(all(debug_assertions, feature = "privacy-test-auth"))]
+    { return crate::privacy::system_auth_seam::prompter(); }
+    #[cfg(all(target_os = "macos", not(all(debug_assertions, feature = "privacy-test-auth"))))]
+    { return crate::privacy::system_auth_macos::prompter(); }
+    // Open question 30: no Windows or Linux prompter exists. Fail CLOSED — a
+    // build whose declassification refuses is a missing feature; one whose
+    // declassification silently approves is the worst outcome this feature can
+    // produce.
+    #[allow(unreachable_code)]
+    { &NoPrompter }
+}
+```
+
+```rust
+// crates/biorouter/src/lib.rs — the gate. DR-20 requirement (2).
+//
+// This is a COMPILER error, not a script someone must remember to run, which is
+// what makes it stronger than the `scripts/check-*.sh` convention the rest of
+// this repo uses. `debug_assertions` is off in `release`, `release-dist` and
+// `quick` (root Cargo.toml:43-62 — the latter two `inherits = "release"`), i.e.
+// in every profile `scripts/release.sh` and every `just release-*` recipe build.
+#[cfg(all(feature = "privacy-test-auth", not(debug_assertions)))]
+compile_error!(
+    "privacy-test-auth is a TEST SEAM that bypasses the DR-20 declassification \
+     prompt and must never be compiled into a release profile. Drop the feature \
+     from this build; do not relax this guard."
+);
+```
+
+```rust
+// crates/biorouter/src/privacy/system_auth_seam.rs
+#![cfg(all(debug_assertions, feature = "privacy-test-auth"))]
+
+// DEFAULT REFUSE. A test that forgets to arm this fails CLOSED and reads as
+// "the user cancelled" — which is what it should read as. Arming is one-shot:
+// the canned answer is CONSUMED by the prompt it answers, so an armed test
+// cannot accidentally approve a second declassification it never intended.
+static NEXT: Mutex<Option<AuthOutcome>> = Mutex::new(None);
+static LAST: Mutex<Option<AuthRequest>> = Mutex::new(None);
+
+pub fn answer_next_prompt(outcome: AuthOutcome) { *NEXT.lock() = Some(outcome); }
+pub fn last_request() -> AuthRequest { … }   // so a test can assert what was named
+
+impl SystemAuthenticator for Seam {
+    async fn authenticate(&self, req: &AuthRequest) -> AuthOutcome {
+        *LAST.lock() = Some(req.clone());
+        // The operator's "a programatic msg is sent", taken literally. A live
+        // seam must be obvious in a log at a glance; that visibility is itself a
+        // safety property.
+        warn!(event = "privacy_test_auth_used", ids = ?req.session_ids, "{}", req.reason);
+        NEXT.lock().take()
+            .or_else(|| env_answer())        // BIOROUTER_PRIVACY_TEST_AUTH=approve|deny
+            .unwrap_or(AuthOutcome::Denied)  // ← the default, and it is REFUSE
+    }
+}
+```
+
+⚠ **`BIOROUTER_PRIVACY_TEST_AUTH` selects the canned answer; it never makes the seam exist.** The
+boundary is the `cfg` pair above and the `compile_error!` beside it. This ordering is the whole
+difference between this seam and `knowledge/test_mode.rs`, which is env-gated alone and is a
+security boundary in no build — see [AR-11](#ar-11--amended-by-dr-17--the-daemons-own-api-secret-is-recoverable),
+which measured the daemon's environment to be recoverable in process by any tool that reads a
+caller-named path.
+
+```rust
+// crates/biorouter/src/privacy/declassify.rs
 
 /// The ONLY writer in the tree permitted to lower `privacy_tier`. Every other
 /// write goes through the session update builder, whose emission is the
@@ -18238,24 +18506,61 @@ pub struct UserConfirmation(());
 /// builder with its own UPDATE. A repo-grep gate asserts exactly one statement
 /// matching `privacy_tier\s*=\s*'public'` exists outside the migration.
 ///
-/// The audit row is written in the SAME transaction, BEFORE the UPDATE.
+/// Takes the proof BY VALUE and refuses any id the proof does not cover. The
+/// whole batch is ONE transaction: a partial declassification would leave the
+/// user unable to say what they released. Each session gets its own audit row,
+/// written in that same transaction, BEFORE the UPDATE.
 pub async fn declassify(
     sm: &SessionManager,
-    session_id: &str,
-    _ok: UserConfirmation,
+    ok: UserConfirmation,
 ) -> Result<()> { … }
 ```
 
-§12.4's graded confirmation, keyed on `privacy_reason`: `mcp:*` (or inherited from an `mcp:*`
-ancestor) → typed confirmation on the **last 6 characters of the session id**, displayed beside the
-field; `turn:*` only → **single-click with a 5-second undo**, still audited, still user-only, still
-not agent-invocable. Not the session name: `is_default_session_name`
-(`session_manager.rs:1821`, ⚠ the design cites a stale `:1614-1632`) shows `"New Session"`,
-`"CLI Session"`, `"Session <N>"` and `"New session <N>"` are all live placeholders, and
-`fallback_session_name` (`:1721`, ⚠ design cites `:1527`) derives a short title from the first user
-message — so a name-typed phrase is either a duplicate string shared by dozens of rows, destroying
-the justification (forcing the user to look at *which* conversation), or a sentence to retype. An id
-suffix is unique, short, and forces row-identity checking.
+**The route and the two carriers.** `POST /sessions/declassify` takes `{ "session_ids": [...] }` —
+a collection route, because a per-id route cannot express one authentication over N. It reuses
+Task 18A's key and header verbatim (DR-19: *one proof of user, not two*), and the **Electron main
+process** is what presents them: the renderer calls `window.electron.declassifySessions(ids)`, main
+raises the prompt, and **main makes the HTTP call**. The renderer never touches the route.
+
+⚠ **Stated, because Task 18A states its own equivalent.** The renderer already holds the raw
+user-action key for its three tier-raising requests, so a *compromised renderer* could call this
+route without a prompt. That is the same same-machine-caller residual as
+[Open question 20](#open-questions), it is not made worse here, and the gate below is what keeps our
+own UI on the correct side of it. What the daemon verifies is that *a process holding the per-launch
+key asserts a system authentication succeeded for this id set* — never that a prompt occurred, which
+it cannot observe. No document in this campaign may describe it as more than that.
+
+**The graded confirmation now grades the review step, not the authorization.**
+[DR-8](#decisions-of-record) / §12.4 are unrepealed and unchanged in substance; what changed is that
+the OS prompt fires **unconditionally** afterwards, because DR-20 point 2 admits no grading of the
+prompt.
+
+| Case | In-app step before the prompt | After |
+|---|---|---|
+| One session, `mcp:*` (or inherited from an `mcp:*` ancestor) | typed confirmation on the **last 6 characters of the session id**, displayed beside the field | permanent |
+| One session, `turn:*` only | single click, no phrase | 5-second undo (DR-8's ergonomic ruling, kept: it is a mis-click guard on a low-exposure row, not an authorization) |
+| **A batch of 2 or more** | the **review list** — every chat by name, id suffix, privacy reason and date, each with its own checkbox, all explicitly checked | **no undo** if any row is `mcp:*` |
+
+The id suffix, not the session name: `is_default_session_name` (`session_manager.rs:1821`, ⚠ the
+design cites a stale `:1614-1632`) shows `"New Session"`, `"CLI Session"`, `"Session <N>"` and
+`"New session <N>"` are all live placeholders, and `fallback_session_name` (`:1721`, ⚠ design cites
+`:1527`) derives a short title from the first user message — so a name-typed phrase is either a
+duplicate string shared by dozens of rows, destroying the justification (forcing the user to look at
+*which* conversation), or a sentence to retype. An id suffix is unique, short, and forces row-identity
+checking. In the batch case that job belongs to the review list, which is why the batch has no phrase:
+stacking a typed phrase on top of a per-row checklist and an OS prompt is three frictions on one
+action, and DR-19's user half is explicit that a control the user routes around buys nothing.
+
+**The prompt's own text** is built from the same list: *"Make 3 chats public — "OMOP cohort
+characterisation", "Lab results Q2" and 1 more. Their contents become readable by every model,
+including commercial models hosted outside UCSF."* Truncation is fine; anonymity is not.
+
+**The Justfile recipe.** `just run-dev-testauth` = `just run-dev` plus
+`--features biorouter-server/privacy-test-auth,biorouter-cli/privacy-test-auth` and
+`BIOROUTER_PRIVACY_TEST_AUTH=approve`. ⚠ **`just run-dev` must not arm it.** A plain `cargo build`
+pulls no dev-dependencies and enables no non-default feature, so an ordinary dev build meets the real
+prompt — which is the fail-closed default DR-20 requires and the thing that makes the seam's absence
+the normal case rather than the exceptional one.
 
 `DangerousConfirmDialog` owns the `onOpenAutoFocus` handler that puts focus on Cancel, and binds no
 keyboard shortcut to confirm. §14.6's `DISABLE PROTECTION` uses the same component.
@@ -18263,44 +18568,117 @@ keyboard shortcut to confirm. §14.6's `DISABLE PROTECTION` uses the same compon
 - [ ] **Step 4: Run**
 
 ```bash
-cargo test -p biorouter --lib privacy::declassify
+# ⚠ The seam is a NON-DEFAULT feature, so a bare `cargo test -p biorouter` runs
+# every DR-20 test against the real prompter and they hang or fail. The feature
+# comes from the `[dev-dependencies]` entry for the server and CLI crates; for
+# `biorouter`'s own unit tests it has to be asked for by name.
+cargo test -p biorouter --features privacy-test-auth --lib privacy::system_auth
+cargo test -p biorouter --features privacy-test-auth --lib privacy::declassify
 cargo test -p biorouter-server --lib routes::session
 just generate-openapi && (cd ui/desktop && npm run generate-api)
 cd ui/desktop && npx vitest run DeclassifySessionDialog DangerousConfirmDialog SessionListView SessionNamePill 2>&1 | tail -6
 ```
 
+⚠ **`routes::session` reports 29 passed before this task** (measured by Task 4b at `fd14ef9a`, and it
+was 20 three days earlier). **Re-measure and record the pre-count, then assert `pre + N`** — a bare
+"non-zero" here is satisfied by a tree in which this task added no route test at all.
+
 - [ ] **Step 5: Gate**
 
 ```bash
-# The entire audit surface for "can the ratchet be reversed".
+# ── The ratchet ────────────────────────────────────────────────────────────
+# The entire audit surface for "can the ratchet be reversed". Unchanged by
+# DR-20: the batch is one transaction through one writer.
 grep -rn --include='*.rs' "privacy_tier *= *'public'" crates/ | grep -v "DEFAULT 'public'"
 echo "expect: exactly 1 hit, in crates/biorouter/src/privacy/declassify.rs"
-# Nothing agent-reachable can construct the proof.
-grep -rn "UserConfirmation" crates/ | grep -v "privacy/declassify.rs" | grep -v routes/session.rs
-echo "expect: no output"
-# One dialog primitive, and it is genuinely shared. At the end of THIS task the
-# list is the primitive, its own test, and DeclassifySessionDialog; Task 30 adds
-# PrivacyPanel as the fourth. Building a second typed-confirm component instead
-# would guarantee the two phrases diverge, which is why this is a file list and
-# not a count.
+
+# ── The proof ──────────────────────────────────────────────────────────────
+# ENUMERATE, do not expect "no output". Under DR-19 the CLI could not name this
+# type; under DR-20 it must (Task 31), so the old "no output" grep would now fail
+# a CORRECT implementation. A count would not do either: it is satisfied by
+# deleting one of these and adding a construction site somewhere worse.
+grep -rln "UserConfirmation" crates/ | sort
+echo "expect exactly these four:"
+echo "  crates/biorouter/src/privacy/system_auth.rs        (the only constructor)"
+echo "  crates/biorouter/src/privacy/declassify.rs         (consumes it by value)"
+echo "  crates/biorouter-server/src/routes/session.rs      (the GUI carrier)"
+echo "  crates/biorouter-cli/src/commands/session.rs       (the CLI carrier, Task 31)"
+# …and the constructor really is the only one. `authenticate` is a function, so
+# module privacy is what enforces this; the grep is what makes a `pub(crate)`
+# slip visible in review.
+grep -rn "UserConfirmation *{" crates/ | grep -v "^crates/biorouter/src/privacy/system_auth.rs"
+echo "expect: no output — no other file constructs the struct literal"
+
+# ── The seam: the gate that fails the BUILD ────────────────────────────────
+# This must FAIL. A zero exit here is the finding: it means the compile_error!
+# guard is missing, mis-spelled, or was relaxed, and the seam can be compiled
+# into a shipped binary. Run it and read the exit code, not the noise.
+cargo check -p biorouter --release --features privacy-test-auth 2>&1 | tail -3
+echo "expect: FAILS with 'privacy-test-auth is a TEST SEAM' — a SUCCESS here is the defect"
+
+# The seam module carries the cfg pair, and nothing else in the tree does.
+grep -rn 'debug_assertions, feature = "privacy-test-auth"' crates/ | sort
+echo "expect: 2 lines — system_auth_seam.rs's inner attribute and system_auth.rs's resolver arm"
+
+# The feature is never enabled from a NORMAL dependency. Under resolver = "2"
+# a dev-dependency's features unify into test builds only; a `[dependencies]`
+# entry carrying it would turn the seam on in `cargo build` for every consumer,
+# which is the one way to get it into a debug binary nobody asked for.
+grep -rn "privacy-test-auth" crates/*/Cargo.toml
+echo "expect: only [features] declarations and [dev-dependencies] entries — never a [dependencies] one"
+
+# The release pipeline does not enable features by hand, and --all-features
+# would trip the compile_error! anyway.
+grep -rn -- "--all-features\|--features" scripts/release.sh Justfile | grep -v check-cross
+echo "expect: no privacy-test-auth, and no --all-features on any release path"
+
+# ── The seam: the Electron half, checked on the ARTIFACT ───────────────────
+# TypeScript has no cfg, so the packaged bundle is the thing to inspect. Run
+# after `npm run package`; app.asar is not stripped, unlike the Rust binaries
+# (root Cargo.toml sets strip = true), which is why the Rust side is gated at
+# compile time and this side is gated on the artifact.
+grep -ac "BIOROUTER_PRIVACY_TEST_AUTH" ui/desktop/out/BioRouter-darwin-arm64/BioRouter.app/Contents/Resources/app.asar
+echo "expect: 0 — the seam's env literal must not survive into a packaged app"
+
+# ── The renderer stays off the route ───────────────────────────────────────
+# Main raises the prompt and makes the call; the renderer holds Task 18A's raw
+# key for three OTHER requests and must never spend it here.
+cd ui/desktop && grep -rn "sessions/declassify" src/components src/hooks
+echo "expect: no output — components call window.electron.declassifySessions"
+
+# ── One dialog primitive, genuinely shared ─────────────────────────────────
+# At the end of THIS task the list is the primitive, its own test, and
+# DeclassifySessionDialog; Task 29A adds KbTierControl and Task 30 adds
+# PrivacyPanel. Building a second typed-confirm component instead would
+# guarantee the phrases diverge, which is why this is a file list and not a count.
 cd ui/desktop && grep -rl "DangerousConfirmDialog" src/components | sort
 echo "expect: DangerousConfirmDialog.tsx, DangerousConfirmDialog.test.tsx, DeclassifySessionDialog.tsx"
 ```
 
-**What this catches.** Three wrong implementations. (1) A phrase field that is rendered but never
-gates the button — with no precedent in the app to copy, this is the likely outcome; the three-step
-type-and-assert test fails it. (2) Relying on Radix defaults for focus, which lands on the close
-button and lets Enter submit; the focus test fails it. (3) Attaching the action to
-`SessionNamePill`'s existing overflow menu — the obvious slot, and the one §12.1 forbids; the
-paired presence/absence test fails it.
+**What this catches.** Six wrong implementations, and the last three are the ones DR-20 exists for.
+(1) A phrase field that is rendered but never gates the button — with no precedent in the app to
+copy, this is the likely outcome; the three-step type-and-assert test fails it. (2) Relying on Radix
+defaults for focus, which lands on the close button and lets Enter submit; the focus test fails it.
+(3) Attaching the action to `SessionNamePill`'s existing overflow menu — the obvious slot, and the
+one §12.1 forbids; the paired presence/absence test fails it. (4) **A seam gated by an environment
+variable alone** — the natural thing to copy from `knowledge/test_mode.rs`, and a bypass any
+compromised agent can arm for itself (AR-11); the `cargo check --release --features` gate and the
+cfg-pair grep fail it. (5) **A seam that defaults to approve**, or that stays armed across prompts —
+`the_seam_refuses_by_default_and_arms_exactly_once` fails it, and it is the assertion most likely to
+be "fixed" by someone chasing a red suite. (6) **A proof spendable on a session the prompt never
+named** — the obvious implementation is to keep the ZST and pass the ids separately, and
+`one_authentication_covers_the_batch_it_named_and_nothing_else` fails it.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add crates/biorouter/src/privacy/declassify.rs crates/biorouter-server/src/routes/session.rs \
-        crates/biorouter-server/src/auth.rs ui/desktop/src/components/ui/DangerousConfirmDialog.tsx \
+git add crates/biorouter/src/privacy crates/biorouter/src/lib.rs crates/biorouter/Cargo.toml \
+        crates/biorouter-server/src/routes/session.rs crates/biorouter-server/src/auth.rs \
+        crates/biorouter-server/Cargo.toml crates/biorouter-cli/Cargo.toml Justfile \
+        ui/desktop/src/main.ts ui/desktop/src/preload.ts \
+        ui/desktop/src/components/ui/DangerousConfirmDialog.tsx \
         ui/desktop/src/components/sessions ui/desktop/openapi.json ui/desktop/src/api
-git commit -m "feat(privacy): user-only declassification with a graded confirmation and an audit row (#56)"
+git commit -m "feat(privacy): declassification behind a system authentication, in batches, audited (#56)"
 ```
 
 ---
