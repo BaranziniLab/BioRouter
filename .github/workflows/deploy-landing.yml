@@ -31,7 +31,31 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # This workflow used to run zero checks, so a push to landing/ could publish a
+  # registry the shipped app does not enforce — retagging an extension Public on
+  # the site while the compiled-in private set still calls it private, or the
+  # reverse. The deploy is now gated on the same two registry assertions
+  # `just check-everything` runs, so the published catalog and the app that
+  # enforces it can never be shipped out of agreement.
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Use Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Check the BAAM private set agrees in all three committed copies
+        run: node landing/scripts/check-consistency.mjs --check
+
+      - name: Check the three registry outputs are what baam.html generates
+        run: node landing/scripts/build-registry.mjs --check
+
   deploy:
+    needs: check
     runs-on: ubuntu-latest
     environment:
       name: github-pages

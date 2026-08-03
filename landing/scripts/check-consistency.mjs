@@ -31,6 +31,86 @@ const mockups = landing('app-mockups.js');
 const baam = landing('baam.html');
 const registry = JSON.parse(landing('registry.json'));
 
+// ---- The BAAM private set, in the three places it is committed -------------
+// `landing/registry.json` (what the marketplace publishes),
+// `ui/desktop/src/components/baam/registry.fallback.json` (the snapshot bundled
+// in the desktop app) and `crates/biorouter/src/privacy/registry_private.rs`
+// (the set compiled into the CLI and the daemon) each carry the extensions
+// tagged private. `build-registry.mjs` writes all three in one run, which is not
+// the same as their still agreeing: a hand edit to the Rust file, or a rebase
+// that took one side of a conflict, leaves the app enforcing a different set
+// from the one the marketplace publishes — and the failure is silent, because an
+// extension missing from the compiled-in set is simply classified Public and
+// admitted to a public session.
+//
+// `--check` runs THIS check and nothing else, which is what lets it be wired
+// into `just check-everything` and the landing deploy: the landing-copy checks
+// below track a published site that legitimately lags the app's main branch, so
+// a mode that ran them too could never be a gate.
+const PRIVACY_ONLY = process.argv.slice(2).includes('--check');
+
+// The form `classify_extension` reduces its argument to before the lookup —
+// mirrors `name_to_key` in crates/biorouter/src/privacy/extensions.rs, so an
+// entry matches either spelling the registry publishes (id or manifest name).
+const nameToKey = (value) => value.replace(/\s+/g, '').toLowerCase();
+
+const privateKeysOf = (catalog, label) => {
+  const extensions = catalog.extensions || [];
+  check(extensions.length > 0, `${label} publishes no extensions at all`);
+  const keys = [];
+  for (const ext of extensions) {
+    check(
+      ext.privacy === 'private' || ext.privacy === 'public',
+      `${label}: extension ${ext.id || '(unnamed)'} declares no privacy tier`
+    );
+    if (ext.privacy !== 'private') continue;
+    const join = ext.extension_name || ext.id;
+    check(Boolean(join), `${label}: a private extension carries no join key`);
+    if (join) keys.push(nameToKey(join));
+  }
+  return keys.sort();
+};
+
+const rustPrivateKeys = () => {
+  const rust = source('crates/biorouter/src/privacy/registry_private.rs');
+  const body = capture(
+    rust,
+    /pub const PRIVATE_EXTENSIONS: &\[&str\] = &\[([\s\S]*?)\];/,
+    'PRIVATE_EXTENSIONS in crates/biorouter/src/privacy/registry_private.rs'
+  );
+  return [...body.matchAll(/"([^"]*)"/g)].map((match) => match[1]).sort();
+};
+
+const publishedPrivate = privateKeysOf(registry, 'landing/registry.json');
+const bundledPrivate = privateKeysOf(
+  JSON.parse(source('ui/desktop/src/components/baam/registry.fallback.json')),
+  'ui/desktop/src/components/baam/registry.fallback.json'
+);
+const compiledPrivate = rustPrivateKeys();
+// An empty private set is not "there are no private extensions"; it is a gate
+// that admits everything, and it satisfies every equality below unless it is
+// named separately.
+check(
+  publishedPrivate.length > 0,
+  'landing/registry.json tags no extension private — the tier gate would admit every extension'
+);
+const showKeys = (keys) => (keys.length ? keys.join(', ') : '(none)');
+const regenerate = 'run `node landing/scripts/build-registry.mjs` to regenerate all three';
+check(
+  JSON.stringify(bundledPrivate) === JSON.stringify(publishedPrivate),
+  `private set drift: registry.json has [${showKeys(publishedPrivate)}], ` +
+    `registry.fallback.json has [${showKeys(bundledPrivate)}] — ${regenerate}`
+);
+check(
+  JSON.stringify(compiledPrivate) === JSON.stringify(publishedPrivate),
+  `private set drift: registry.json has [${showKeys(publishedPrivate)}], ` +
+    `registry_private.rs has [${showKeys(compiledPrivate)}] — ${regenerate}`
+);
+
+if (PRIVACY_ONLY) {
+  report(`BAAM private set agrees in all three copies (${showKeys(publishedPrivate)}).`);
+}
+
 const cargoVersion = capture(source('Cargo.toml'), /version = "([^"]+)"/, 'Cargo workspace version');
 const packageVersion = capture(source('ui/desktop/package.json'), /"version": "([^"]+)"/, 'desktop package version');
 const landingVersion = capture(content, /\*\*Version:\*\* v([^\s]+)/, 'landing release version');
@@ -107,9 +187,15 @@ for (const stale of ['v1.85.0', 'v1.80.0', 'claude-opus-4-1', 'claude-sonnet-4-2
   check(!index.includes(stale) && !download.includes(stale) && !docs.includes(stale), `stale token remains: ${stale}`);
 }
 
-if (failures.length) {
-  console.error(failures.map((failure) => `- ${failure}`).join('\n'));
-  process.exit(1);
-}
+report('Landing consistency checks passed.');
 
-console.log('Landing consistency checks passed.');
+// A function declaration so it hoists: `--check` reports and exits from the top
+// of the file, long before this line is reached.
+function report(passed) {
+  if (failures.length) {
+    console.error(failures.map((failure) => `- ${failure}`).join('\n'));
+    process.exit(1);
+  }
+  console.log(passed);
+  process.exit(0);
+}

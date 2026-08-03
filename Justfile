@@ -23,6 +23,8 @@ check-everything:
     ./scripts/check-no-cross-drift.sh
     @echo "  → Checking the BAAM registry generator still refuses what it must..."
     just check-registry
+    @echo "  → Checking the BAAM private set agrees in all three committed copies..."
+    just check-privacy-registry
     @echo ""
     @echo "✅ All style checks passed!"
 
@@ -40,6 +42,16 @@ check-versions:
 check-registry:
     node --test landing/scripts/build-registry.test.mjs
     node landing/scripts/build-registry.mjs --check
+
+# The set of private extensions is committed in three places at once: the
+# published landing/registry.json, the snapshot bundled in the desktop app, and
+# the Rust baseline compiled into the CLI and the daemon. `check-registry` above
+# asks whether they are byte-for-byte what baam.html generates; this asks the
+# question that survives a generator change — do all three name the same private
+# set, and does that set have anything in it at all. An extension missing from
+# the compiled-in copy is not a build error, it is silently classified Public.
+check-privacy-registry:
+    node landing/scripts/check-consistency.mjs --check
 
 # Default release command
 release-binary:
