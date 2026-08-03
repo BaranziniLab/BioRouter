@@ -133,8 +133,7 @@ export default function PrivacyPanel() {
             // screen the user turned it off from.
             <p className="min-w-0 text-text-muted">
               <strong>
-                Those three are not being stopped right now — privacy tiers are off on this
-                machine.
+                Those three are not being stopped right now — privacy tiers are off on this machine.
               </strong>{' '}
               Turning them back on restores them for what is already marked private.
             </p>

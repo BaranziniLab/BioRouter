@@ -171,9 +171,7 @@ describe('NonPrivateModelDisclosure — the blocking dialog', () => {
         onAcknowledge={vi.fn()}
       />
     );
-    expect(
-      screen.getByRole('dialog', { name: /not hosted by your institution/i })
-    ).toBeVisible();
+    expect(screen.getByRole('dialog', { name: /not hosted by your institution/i })).toBeVisible();
     expect(screen.getByRole('dialog')).toHaveTextContent(/OpenAI/);
   });
 });
@@ -355,7 +353,10 @@ describe('NonPrivateModelDisclosureGate — when it is shown', () => {
     // without a tier is Public by the daemon's own polarity, and a name with no
     // entry at all is a provider Biorouter cannot vouch for.
     mocks.getProviders.mockResolvedValue([
-      { ...provider('mystery', 'public'), metadata: { ...provider('mystery', 'public').metadata, tier: undefined } },
+      {
+        ...provider('mystery', 'public'),
+        metadata: { ...provider('mystery', 'public').metadata, tier: undefined },
+      },
     ]);
     render(<NonPrivateModelDisclosureGate providerName="mystery" />);
     expect(await screen.findByRole('dialog')).toBeVisible();

@@ -106,10 +106,7 @@ export function NonPrivateModelDisclosureGate({
   const [dismissedUnrecorded, setDismissedUnrecorded] = useState(false);
 
   const wantsDialog =
-    resolved?.required === true &&
-    acknowledged === false &&
-    copy !== null &&
-    !dismissedUnrecorded;
+    resolved?.required === true && acknowledged === false && copy !== null && !dismissedUnrecorded;
   // ⚠ ONE dialog, however many panes are open. `ChatGroupsShell` mounts one
   // `BaseChat` — and so one of these — per chat group, six at a time; without
   // this a two-pane split stacked two un-dismissible modals. The store makes the

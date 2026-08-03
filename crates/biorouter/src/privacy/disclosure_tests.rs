@@ -135,7 +135,11 @@ fn the_limit_is_emphasised_and_the_guarantee_is_not() {
     );
     // The short form is rendered raw — a chip tooltip, a CLI line — so it must
     // carry no markers at all.
-    assert!(!disclosure::COPY_SHORT.contains('*'), "{}", disclosure::COPY_SHORT);
+    assert!(
+        !disclosure::COPY_SHORT.contains('*'),
+        "{}",
+        disclosure::COPY_SHORT
+    );
 }
 
 #[test]
