@@ -209,6 +209,48 @@ fn the_record_is_swapped_into_place_not_truncated_in_place() {
     assert!(leftovers.is_empty(), "left behind: {leftovers:?}");
 }
 
+/// `docs/` quotes the constant, and this is what keeps that true.
+///
+/// The task's gate (1) counts *definitions* of the sentence in code and expects
+/// one; it deliberately does not scan prose, because the docs legitimately
+/// contain the words. That leaves the drift it exists to prevent free to happen
+/// in exactly the place a user is most likely to read: someone edits the copy
+/// here, the doc keeps yesterday's wording, and nothing says so. Task 39 owns the
+/// full sweep and Task 36 the landing page — whose entity-escaped HTML this
+/// cannot check — but the markdown is one `include_str!` away and there is no
+/// reason to leave it unpinned in the meantime.
+///
+/// Whitespace is collapsed on both sides, so the doc may wrap its blockquote
+/// however it likes; the words and the emphasis are what is pinned.
+#[test]
+fn the_docs_quote_the_copy_rather_than_paraphrasing_it() {
+    const DOC: &str = include_str!("../../../../docs/security/data-privacy-and-phi.md");
+
+    /// Blockquote markers off, every run of whitespace down to one space.
+    fn flatten(text: &str) -> String {
+        text.lines()
+            .map(|line| line.trim().trim_start_matches('>').trim())
+            .collect::<Vec<_>>()
+            .join(" ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    let doc = flatten(DOC);
+    for paragraph in disclosure::COPY_LONG.split("\n\n") {
+        let wanted = flatten(paragraph);
+        assert!(
+            doc.contains(&wanted),
+            "docs/security/data-privacy-and-phi.md no longer quotes the copy. Missing:\n{wanted}"
+        );
+    }
+    assert!(
+        doc.contains(&flatten(disclosure::COPY_SHORT)),
+        "the docs' one-line form has drifted from COPY_SHORT"
+    );
+}
+
 #[test]
 fn an_unreadable_record_reads_as_not_yet_acknowledged() {
     // Fail-safe here means fail TOWARDS disclosing. The cost of showing the
