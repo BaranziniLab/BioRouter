@@ -18203,6 +18203,82 @@ git commit -m "feat(privacy): user-only publicize/privatize for knowledge bases,
 
 ### Task 30: Settings → Privacy — the master toggle, its three hardening measures, and the badge it does not hide
 
+> ⚠ **AMENDED by [DR-19](#dr-19--a-warning-for-the-user-a-wall-for-the-agent), 2026-08-02 — the
+> disabling arm requires Task 18A's `X-User-Action`, and `BIOROUTER_PRIVACY_TIERS` joins
+> `CAPABILITY_CONFIG_KEYS`.** Read this before Step 1; it adds one header check, one entry to a
+> list, and one open question. It removes nothing: the typed phrase **stays**.
+>
+> **What was wrong.** This task's own ⚠ concedes it: *"The phrase is a fixed string in the shipped
+> source, so a caller holding the daemon secret replays it."* The concession is accepted there on a
+> premise that two later rulings have taken away. (1) It rests on *"a model **can** compose one of
+> those through a tool and **cannot** compose the daemon secret out of thin air on macOS without a
+> shell"* — and [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store) **keeps the
+> shell**, because Tasks 14A–14F are deferred and [AR-6](#ar-6--retired-by-dr-17--on-a-host-that-cannot-express-the-read-deny-a-public-session-loses-the-shell-and-two-costs-come-with-the-sandbox-itself)
+> is retired precisely so that public sessions do *not* lose `developer__shell`. (2)
+> [AR-11](#ar-11--amended-by-dr-17--the-daemons-own-api-secret-is-recoverable) measured the secret
+> to be recoverable **in process**, without a shell, by any tool that reads a caller-named path.
+> So both halves of the "cannot" are false, and what remained was a machine-wide off switch for the
+> whole feature guarded by a string the model can read out of the source it is standing in.
+>
+> **And the switch was less protected than the default provider.** `BIOROUTER_PRIVACY_TIERS` is
+> **not** in `CAPABILITY_CONFIG_KEYS` (measured: five keys, `BIOROUTER_PROVIDER`,
+> `BIOROUTER_LEAD_MODEL`, `BIOROUTER_LEAD_PROVIDER`, `OLLAMA_HOST`, `LLAMACPP_EXTERNAL_HOST`) — so
+> `POST /config/upsert` guards a key that raises *one future session's* capability and does not
+> guard the key that disables **every gate on the machine**. [Open question 24](#open-questions)'s
+> own answer already saw where this ends: *"Task 30's `/config/upsert` confirmation phrase, which is
+> a UX guard and not an authorization boundary, and which **Task 18A's key now can promote it to
+> one**."* This amendment takes that promotion.
+>
+> **The requirement, in DR-19's two halves.**
+>
+> - **The user, explicitly → warn, then allow.** Unchanged, and it is why nothing here is a wall.
+>   Settings → Privacy keeps the typed `DISABLE PRIVACY TIERS` phrase and all four sentences of the
+>   disclosure, because that is the *warning*, and [Task 30A](#task-30a-the-non-private-model-disclosure)
+>   is what makes accepting it legitimate. The renderer already holds the raw user-action key for
+>   its three tier-raising requests ([Task 18A](#task-18a-the-two-http-channels-that-raise-a-sessions-own-tier-and-the-user-proof-neither-of-them-has));
+>   this is a **fourth** — the same key, the same header, no second mechanism. DR-19: *"One proof of
+>   user, not two."*
+> - **An agent, automatically → never.** A tool-composed `/config/upsert` cannot present
+>   `X-User-Action`, because the key never enters the daemon's environment, its argv or its heap —
+>   only the digest does. That is the whole of what the header buys here, and it is exactly the
+>   residual the phrase could not cover.
+>
+> **The concrete changes.**
+>
+> 1. **Add `"BIOROUTER_PRIVACY_TIERS"` to `CAPABILITY_CONFIG_KEYS`** in
+>    `crates/biorouter/src/privacy/config_keys.rs` (Task 18A Step 3(d)), with the comment: *"Not a
+>    provider key — the master switch itself. In this list because `is_capability_key` is what
+>    `upsert_config` consults, and a switch a model can flip is not a switch (DR-14's phrasing,
+>    DR-19's rule)."* **Task 18A's `assert_eq!(CAPABILITY_CONFIG_KEYS.len(), 5)` becomes `6` in the
+>    same commit.** ⚠ Like `BIOROUTER_PROVIDER`, this key is **seeded, not scanned**: it is never
+>    read through `get_param` in any of `TIER_INPUT_FILES`, so
+>    `every_config_key_the_tier_resolver_reads_is_classified` neither requires it nor rejects it,
+>    and it must **not** also be added to `NOT_CAPABILITY_CONFIG_KEYS` — a key in both lists fails
+>    that test's "exactly one" rule.
+> 2. **The guard is on the disabling arm only.** `upsert_config` refuses without `X-User-Action`
+>    when the key is `BIOROUTER_PRIVACY_TIERS` **and the value turns enforcement off**. Turning it
+>    back **on** stays ungated, for the same reason `/config/remove` is ungated: restoring the
+>    control cannot be the iffy operation, and a gate there would be a wall in front of the one
+>    action nobody needs protecting from.
+> 3. **Both proofs, not either.** The phrase still guards the accident (a settings write that flips
+>    the switch as a side effect); the header guards the adversary. Step 1's existing three
+>    assertions therefore gain a fourth shape: secret-only → 403 (already asserted); secret + phrase,
+>    **no header** → **403**, and `privacy_tiers_enabled()` still true; secret + phrase + header →
+>    200; secret + header, wrong phrase → 403. The middle one is the new assertion and it is the
+>    one this amendment exists for.
+> 4. **Step 5's writer inventory is unchanged at two** (`set_privacy_tiers_enabled` from startup and
+>    from `/config/upsert`'s gated arm). This adds a condition to an existing writer, not a writer.
+>
+> **What this does not close, and it is not small.** The daemon reads the value from `config.yaml`
+> at startup (hardening measure 3), and under DR-17 that file is **no longer behind a deny root** —
+> [DR-14](#decisions-of-record) is deferred, and `<config>/config.yaml` was its entry #5, added for
+> exactly this reason (*"a master switch a public model can edit is not a switch"*). So an agent
+> holding `developer__shell` or `developer__text_editor` can write `BIOROUTER_PRIVACY_TIERS: off`
+> into the file directly. Measure (3) means this does **not** take effect in the running daemon —
+> the authoritative value is the in-memory atomic — so it is a **next-launch** disable rather than an
+> immediate one, and the HTTP channel this amendment closes was the immediate one. That is a real
+> narrowing and not a fix. It is [Open question 27](#open-questions).
+
 **This task changed shape under DR-15.** The first version shipped a Gate-C-scoped switch and a test
 asserting that Gates A and D were *unaffected* by it. The operator has since ruled the other way
 ([Open question 3](#open-questions) is closed): one master toggle, `BIOROUTER_PRIVACY_TIERS`,
@@ -18497,18 +18573,37 @@ async fn a_bare_config_upsert_cannot_flip_the_key_but_the_confirmed_one_can() {
     assert!(r.text().await.contains("Settings"));
     assert!(privacy_tiers_enabled(), "a refused request must not have written");
 
+    // DR-19, the assertion this amendment exists for: the PHRASE ALONE IS NOT
+    // ENOUGH. It is a fixed string in the shipped source, so a caller holding
+    // the daemon secret replays it — and AR-11 measured that secret to be
+    // recoverable in process, while DR-17 keeps the shell that would also
+    // reach it. Task 18A's key is the difference, and there is exactly one of
+    // it (DR-19: "one proof of user, not two").
     let r = post_config_upsert_confirmed("BIOROUTER_PRIVACY_TIERS", "off",
-                                         "DISABLE PRIVACY TIERS").await;
+                                         "DISABLE PRIVACY TIERS").await;   // no header
+    assert_eq!(r.status(), 403);
+    assert!(privacy_tiers_enabled(), "a phrase a model can read is not a human");
+
+    let r = post_config_upsert_confirmed_by_user("BIOROUTER_PRIVACY_TIERS", "off",
+                                                 "DISABLE PRIVACY TIERS").await;
     assert_eq!(r.status(), 200);
     assert!(!privacy_tiers_enabled());
+
+    // …and the RE-ARMING direction needs neither, because restoring the control
+    // is not the iffy operation — the same reasoning that leaves
+    // `/config/remove` unguarded in Task 18A Step 3(d).
+    let r = post_config_upsert("BIOROUTER_PRIVACY_TIERS", "on").await;
+    assert_eq!(r.status(), 200);
+    assert!(privacy_tiers_enabled());
+    biorouter_mcp::privacy_toggle::set_privacy_tiers_enabled(false);        // back to the OFF state
 
     // A wrong phrase is refused, and the comparison is exact.
     // ⚠ A BARE re-arm, not a second `set_privacy_tiers(..)`: `_g` still holds
     // the (non-reentrant) lock, so calling the helper again here would deadlock
     // rather than fail. `_g`'s Drop still restores the value this test found.
     biorouter_mcp::privacy_toggle::set_privacy_tiers_enabled(true);
-    let r = post_config_upsert_confirmed("BIOROUTER_PRIVACY_TIERS", "off",
-                                         "disable privacy tiers").await;
+    let r = post_config_upsert_confirmed_by_user("BIOROUTER_PRIVACY_TIERS", "off",
+                                                 "disable privacy tiers").await;
     assert_eq!(r.status(), 403);
     assert!(privacy_tiers_enabled());
 }
@@ -18525,6 +18620,21 @@ to private capability anyway. **What the guard actually buys** is that the flip 
 effect of an ordinary `/config/upsert` — which is the reachable path, because a model *can* compose
 one of those through a tool and cannot compose the daemon secret out of thin air on macOS without a
 shell. Closing it properly needs a per-caller credential, [Open question 20](#open-questions).
+
+⚠ **SUPERSEDED IN PART by [DR-19](#dr-19--a-warning-for-the-user-a-wall-for-the-agent) — the last
+two sentences above are no longer the state of the plan.** The paragraph is kept because its
+*analysis* is right and is the reason this amendment exists; what changed is the conclusion.
+(1) The premise **"a model … cannot compose the daemon secret out of thin air on macOS without a
+shell"** fails twice over: [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store)
+**keeps** the shell (14A–14F deferred, AR-6 retired), and
+[AR-11](#ar-11--amended-by-dr-17--the-daemons-own-api-secret-is-recoverable) measured the secret
+recoverable **in process**, path-read only, no shell required. (2) **The per-caller credential
+exists now.** [Task 18A](#task-18a-the-two-http-channels-that-raise-a-sessions-own-tier-and-the-user-proof-neither-of-them-has)
+built it, and [Open question 24](#open-questions)'s answer already anticipated this exact promotion:
+*"Task 18A's key now can promote it to one."* So the disabling arm requires `X-User-Action` as well
+as the phrase — see this task's amendment banner — and the phrase keeps the job this paragraph
+correctly describes: the accident, not the adversary. The residual that is genuinely still open is
+the **file** channel, not the HTTP one: [Open question 27](#open-questions).
 
 ```tsx
 it('the Privacy tab exists and its toggle is mounted', async () => {
@@ -18708,6 +18818,21 @@ grep -rn "set_privacy_tiers_enabled(" --include='*.rs' crates/*/src/ \
   | grep -v "fn set_privacy_tiers_enabled"
 echo "expect: exactly 2 — the startup load and /config/upsert's gated arm. A third"
 echo "  writer is a way to flip the switch that Settings does not know about."
+echo "  ⚠ DR-19 added a CONDITION to the second writer, not a third writer: the"
+echo "  count stays 2."
+
+# (2b) DR-19: the master switch is at least as protected as the default
+#      provider. Before this amendment it was not — /config/upsert guarded
+#      BIOROUTER_PROVIDER and did not guard the key that disables every gate.
+grep -c "BIOROUTER_PRIVACY_TIERS" crates/biorouter/src/privacy/config_keys.rs ; echo "expect: 1 (0 today) — in CAPABILITY_CONFIG_KEYS"
+awk '/NOT_CAPABILITY_CONFIG_KEYS/,/^\];/' crates/biorouter/src/privacy/config_keys.rs \
+  | grep -c "BIOROUTER_PRIVACY_TIERS" ; echo "expect: 0 — a key in BOTH lists fails Task 18A's exactly-one test"
+cargo test -p biorouter --lib -- privacy::config_keys 2>&1 | grep "test result:"
+echo "expect: all passed, with CAPABILITY_CONFIG_KEYS.len() == 6 (Task 18A's assertion moves 5 -> 6"
+echo "  IN THIS COMMIT — a stale 5 there fails, which is the point of asserting a length at all)"
+# The disabling arm demands the header; the ENABLING arm must not.
+awk '/async fn upsert_config/,/^}/' crates/biorouter-server/src/routes/config_management.rs \
+  | grep -c "is_user_action" ; echo "expect: 1 — one condition, covering the capability keys and the off-switch"
 
 # (3) EVERY enforcement point reads it, and NOTHING refuses without reading it.
 #     Two closures over the tree, both mechanical, both exit non-zero. The
@@ -20509,6 +20634,7 @@ and is a scope question the ruling does not reach.
 | **24** | **Does DR-16 extend to the config routes that set the *default* provider?** The ruling names two routes. Two more reach the same outcome one step later and are not covered: `POST /config/set_provider` (`config_management.rs:876-889`, registered `:923`) writes `BIOROUTER_PROVIDER`/`BIOROUTER_MODEL`, and `POST /config/upsert` (`:183-193`) writes **any** key including `BIOROUTER_PROVIDER`, both with nothing but the secret. `restore_provider_from_session` (`agent.rs:5682-5688`) falls back to `config.get_biorouter_provider()` for a row with no `provider_name`, so a session started after such a write comes up private-capability with no `/agent/update_provider` call at all. ⚠ **DR-14 does not cover this.** It makes `<config>/config.yaml` deny entry #5 on the *filesystem* channel precisely because *"a master switch a public model can edit is not a switch"* — and `POST /config/upsert` is the **HTTP** channel to the same file, which no layer of DR-14 sees. By DR-14's own argument, a default provider a public model can edit is a tier raise. It is a raise of every *future* session rather than of the caller's own, which is why it is a scope question and not a bug report. | **Answered by [Task 18A](#task-18a-the-two-http-channels-that-raise-a-sessions-own-tier-and-the-user-proof-neither-of-them-has) Step 3(d).** **Ruled:** the `X-User-Action` requirement extends to both handlers, for a **named key set only** — a blanket rule on `/config/upsert` would make every programmatic config write a user act, and a rule that fires constantly is one people route around. The set is `CAPABILITY_CONFIG_KEYS` in the new `crates/biorouter/src/privacy/config_keys.rs`, and it is five: `BIOROUTER_PROVIDER` (the default itself, read through `config_value!` at `config/base.rs:1147`); `BIOROUTER_LEAD_MODEL` (its mere presence diverts `create()` to the lead/worker path at `factory.rs:142-146`, **before** the registry lookup, changing the tier of every provider name rather than of one); `BIOROUTER_LEAD_PROVIDER` (names the lead half, one of the two tiers `least()` takes); and `OLLAMA_HOST` + `LLAMACPP_EXTERNAL_HOST` (Task 5's third test makes a self-hosted provider Private only while its base URL is loopback, so these two keys *are* that boundary). `set_config_provider` is guarded unconditionally, since it writes `BIOROUTER_PROVIDER` by construction; `upsert_config` is guarded by `is_capability_key(&query.key)`. `/config/remove` is deliberately unguarded — deleting the key cannot raise anything, because `restore_provider_from_session` then fails with *"Could not configure agent: missing provider"* (`agent.rs:5686`). **How a future capability-determining key avoids being forgotten:** not by a rule someone must remember, but by `every_config_key_the_tier_resolver_reads_is_classified`, which scans the five files Task 5 touches to define `tier()` for `get_param("KEY")` literals — 22 today — and fails unless each appears in **exactly one** of `CAPABILITY_CONFIG_KEYS` or `NOT_CAPABILITY_CONFIG_KEYS`, the latter carrying a one-line reason per key. Adding a config read to any of those files fails the test until someone classifies it. A companion test forbids computed keys (`get_param(&format!(..))`), which the scan could not see; measured, there are none today. Related: Task 30's `/config/upsert` confirmation phrase, which is a UX guard and not an authorization boundary, and which Task 18A's key now can promote to one. |
 | **25** | **Does DR-16 reach the app runtime, which binds a provider the model itself authored?** Measured while writing Task 18A, and not covered by it. `configure_main_provider` (`routes/apps.rs:809`, called `:1259`) and `configure_worker_provider` (`:1480`, called `:1553`) both read `AgentConfig.model` — a `{provider, model}` pair — out of the app's stored manifest (`agent_drafter/store.rs:76-79`) and bind it with `agent.update_provider` **in process**, at `:820` and `:1492`, never through `POST /agent/update_provider`. That manifest is agent-authored: `agent_drafter__declare_profiles` (`agent_drafter/mod.rs:2497-2528`) takes a per-profile `model` straight from `ProfileParam` (`:699-712`) — tool arguments the model writes — and `agent_drafter` is **Public** by design. So a public model can name `llamacpp` in a profile and the app runtime will bind it, with Task 18A's guard nowhere on that path. **What is NOT claimed:** a worker profile gets its own session (`worker_session_key` → `app:{id}:{cid}:{profile}`, `:1450-1452`), so that is a session *created* at a tier, which is the same shape as any new session and not a raise. The sharp case is the app's **main** session, which is long-lived: a manifest edit followed by a reconnect re-runs `configure_main_provider` against a session that already exists. | ⚠ **The referral in this column was checked and does not hold — see [Open question 26](#open-questions), which is where the live half now lives.** Neither [Task 22](#task-22-session-copy--three-hand-rolled-builders-become-one-derived-session-helper) nor [Task 23](#task-23-spawn--reorder-stamp-filter-and-the-spawn-matrix) answers it: measured over both tasks' full text on 2026-08-02, neither mentions apps, manifests, per-connection re-derivation or session-capability lifetime at all, so the answer this row waits on was never going to arrive from there. [DR-19](#dr-19--a-warning-for-the-user-a-wall-for-the-agent) also settles the *scope* half the row called undecided: a bind that raises a **live** session is a raise whatever re-derives it, because the rule is about who initiated it and not about when it is recomputed. [Task 24](#task-24-the-two-shipped-features-the-gates-break)'s banner states the requirement and names the three guard sites. Original text: **Nothing in this plan. The question is scope, not mechanism:** whether an app session's capability is fixed for its lifetime or re-derived per connection is Task 22's and Task 23's to answer, and the answer decides whether this is a raise at all. Extending Task 18A here is not mechanical the way open question 24 was: these are in-process calls with no HTTP request to carry a header, so the proof would have to be a manifest-level grant rather than a request-level one — the *scoped permission* shape DR-16 names as the right answer if the local-model handoff turns out to be a routine agent step. |
 | **26** | **What is a proof-of-user for a bind that has no request?** [Task 24](#task-24-the-two-shipped-features-the-gates-break)'s banner establishes the requirement — agent-authored data may not raise a live app session's capability — and there are **three** sites, of which only the first two were previously known. (a) `configure_main_provider` (`routes/apps.rs:809`, bind `:820`) binds the manifest's `model`, which `agent_drafter__declare_profiles` wrote from tool arguments. (b) `apply_route_for_turn` (`:2181-2229`, bind `:2211`) binds a manifest route pin — **this is H4's own sequence**, which this plan narrates as *"Gate A allows the bind → Gate B ratchets"* and has never authorised. (c) **New, and the sharpest:** `ClientFrame::ModelSelect` (`:3409-3428`, bind `:3418`) arrives on `GET /apps/{id}/agent`, which is exempt from secret-key auth (`auth.rs:52-77`, `is_public_app_get` at `:76`), from a page whose TypeScript the model itself authored — so it is a raise over a channel needing **no credential at all**, and Task 24's *"fixed with zero new code — Gate A covers it"* is true of the downward arrow only. **Why the mechanism cannot be lifted from Task 18A:** (a) and (b) are in-process calls with no `HeaderMap`, and (c) has one but on an unauthenticated socket, where a header proves nothing. **The decision needed:** does an app that declares a private-tier provider require a one-time user grant, and if so where is it recorded? It cannot be the manifest (`store.rs:76-79`, agent-writable, which is the whole defect) and it cannot be an env var ([AR-11](#ar-11--amended-by-dr-17--the-daemons-own-api-secret-is-recoverable)). This is the *scoped permission* shape DR-16 names and deliberately did not build. | **Nothing is built.** [Task 24](#task-24-the-two-shipped-features-the-gates-break) carries the requirement in its banner, the three sites in its text, and one `#[ignore]`d test, `agent_authored_data_cannot_raise_a_live_app_sessions_capability`, that asserts all three — placed so that answering this question has somewhere to land. **Until it is answered the exposure is live and belongs to [Task 30A](#task-30a-the-non-private-model-disclosure)'s disclosure**, not to a gate. ⚠ Do **not** close it by adding a confirmation phrase or a manifest boolean: DR-19 says a confirmation compiled into the source is a UX guard and not a human, and a grant stored where the agent writes is not a grant. |
+| **27** | **What stops an agent from disabling the master switch by writing `config.yaml`?** [Task 30](#task-30-settings--privacy--the-master-toggle-its-three-hardening-measures-and-the-badge-it-does-not-hide)'s amendment closes the HTTP channel — `POST /config/upsert` now needs [Task 18A](#task-18a-the-two-http-channels-that-raise-a-sessions-own-tier-and-the-user-proof-neither-of-them-has)'s `X-User-Action` on the disabling arm — but the value's home is a **file**, and [DR-14](#decisions-of-record) made `<config>/config.yaml` deny entry #5 for exactly this reason (*"a master switch a public model can edit is not a switch"*). [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store) defers DR-14, so in v1 that file is an ordinary file and `developer__shell` / `developer__text_editor` can write `BIOROUTER_PRIVACY_TIERS: off` into it. **What limits it today, and it is a real limit rather than a fix:** hardening measure (3) holds the authoritative value in the daemon's memory from startup, so a file write is a **next-launch** disable and not an immediate one — the running daemon keeps enforcing, and the badge keeps reading `Private`, until someone restarts the app. **The decision needed** is which of three: (a) revive the *one file* of DR-14 for this key alone — a single deny path, not the deferred four-root barrier, and the cheapest of the three; (b) move the switch out of `config.yaml` into a store the agent cannot write (the OS credential store already used for secrets, per `docs/security/secret-storage.md`); or (c) accept it, in which case it belongs in [Accepted risks](#accepted-risks) with the next-launch limitation stated, and in [Task 30A](#task-30a-the-non-private-model-disclosure)'s disclosure. | **Nothing is built beyond the narrowing.** Task 30's amendment banner states it; the immediate HTTP path is closed. ⚠ Do not close this by re-enabling `get_param`'s env branch for the key, or by reading the file per gate — measure (1) forbids the first (`BIOROUTER_PRIVACY_TIERS=off biorouterd` is a one-token disable) and measure (3) forbids the second. |
 
 ---
 
