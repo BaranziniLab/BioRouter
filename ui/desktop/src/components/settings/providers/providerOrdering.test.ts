@@ -65,7 +65,7 @@ describe('getOrderedProviderGroups', () => {
     // config.name, after the built-ins), and the declarative path defaults the
     // tier to public rather than inheriting the engine's. The renderer must
     // follow the backend rather than recognising the name, or a provider that
-    // is not the real ollama keeps a "Local Models" badge it never earned.
+    // is not the real ollama keeps a "Private · Local" badge it never earned.
     //
     // What this does NOT yet cover, deliberately: GET /config/providers serves
     // the *type-level* metadata, so a genuine built-in ollama re-pointed off

@@ -130,8 +130,15 @@ const modelOptionSearchText = (option: ModelOption) =>
 /**
  * §14.2's pre-flight reason, rendered ON the row rather than after the attempt.
  *
- * Deliberately not a truncated hint: this is the whole explanation, and the way
- * forward it names ("make the chat public") is the only one that exists.
+ * States the rule and stops there, deliberately, because for THIS chat there is
+ * no way forward to name. A row's classification only ever rises:
+ * `update_session_metadata` writes `privacy_tier = CASE WHEN privacy_tier <>
+ * 'public' THEN privacy_tier ELSE ?`, so a chat that has gone private cannot be
+ * returned to public, and §14.6's declassification control does not exist yet.
+ * Offering "make the chat public" here would name an action the user cannot
+ * take. The repair that DOES exist — switch to a private model — is the set of
+ * rows left enabled right beside this one, and Gate B's card is where §14.4
+ * puts the buttons.
  */
 const PUBLIC_MODEL_IN_PRIVATE_CHAT =
   'Unavailable — this is a private chat, so only private models may run in it';
