@@ -175,6 +175,26 @@ pub enum DeclassifyOutcome {
 /// [`requires_typed_confirmation`] grades onto the strong control, so that
 /// second click would otherwise be refused over a phrase the single-click path
 /// never showed the user.
+///
+/// ⚠ **Two of these racing on the same row do not both succeed, but not because
+/// of anything written here.** The pool is `max_connections(4)` over WAL, so
+/// both transactions can hold the same read snapshot showing `private`; the
+/// loser's upgrade to a writer then fails `SQLITE_BUSY_SNAPSHOT` *immediately* —
+/// a busy handler does not cover a snapshot conflict, which this tree has
+/// measured at 0.0000s elsewhere — so the single-ledger-row invariant holds by
+/// SQLite's snapshot isolation, and the loser surfaces as a 500 rather than the
+/// tidy [`DeclassifyOutcome::AlreadyPublic`] a sequential second call gets. The
+/// direction is safe (a refusal, never a double write) and the double-click that
+/// motivated `AlreadyPublic` is sequential in practice, because the dialog
+/// disables its confirm button while a request is in flight.
+///
+/// ⚠ **Nothing here stops an in-flight turn from raising the row straight back.**
+/// Declassifying a chat that is mid-turn leaves a running agent that may reach a
+/// private model or data source a moment later and re-raise through the normal
+/// ratchet, writing a second ledger row under the new provenance. The audit stays
+/// honest and the direction is fail-safe — private is the protected state — but
+/// the user can watch their action undo itself. Preventing it would mean
+/// refusing to declassify a busy session, which §12.4 does not ask for.
 pub async fn declassify(
     sm: &SessionManager,
     session_id: &str,
@@ -576,6 +596,16 @@ mod tests {
     ///
     /// The needle is composed at runtime rather than written out, so this file
     /// does not match its own audit — see below.
+    ///
+    /// ⚠ **This is a tripwire, not a proof, and the difference matters.** It
+    /// matches one SPELLING of the assignment. `SET privacy_tier=?1`, a bind
+    /// parameter, a builder that emits the column name from a variable — none of
+    /// them are seen by it. What it reliably catches is the realistic case: a
+    /// second hand-written bypass, added by someone who copied this one. The
+    /// property that actually holds is structural and lives elsewhere —
+    /// `SessionUpdateBuilder`'s emission is a monotone `CASE WHEN` that cannot
+    /// express a lowering whatever the caller passes, so every write that is not
+    /// this function is incapable of it by construction.
     #[test]
     fn exactly_one_statement_in_the_tree_assigns_a_public_classification() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

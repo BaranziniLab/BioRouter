@@ -697,10 +697,10 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
       setDeclassifyTarget(session);
     }, []);
 
-    /// The row is stale the moment the daemon answers: its badge and its
-    /// overflow menu both key on `privacy_tier`. Patch the shared cache as well
-    /// as this pane's list, exactly as the delete path does, so the sidebar's
-    /// Recents and any second History pane stop badging it too.
+    // The row is stale the moment the daemon answers: its badge and its
+    // overflow menu both key on `privacy_tier`. Patch the shared cache as well
+    // as this pane's list, exactly as the delete path does, so the sidebar's
+    // Recents and any second History pane stop badging it too.
     const handleDeclassified = useCallback((sessionId: string) => {
       const markPublic = (currentSessions: Session[]) =>
         currentSessions.map((session) =>
