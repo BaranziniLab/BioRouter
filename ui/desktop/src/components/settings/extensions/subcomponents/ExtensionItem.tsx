@@ -4,8 +4,9 @@ import { Switch } from '../../../ui/switch';
 import { Settings } from '../../../icons/app-icons';
 import { FixedExtensionEntry } from '../../../ConfigContext';
 import BuiltInBadge from '../../../ui/BuiltInBadge';
+import { PrivacyBadge } from '../../../ui/PrivacyBadge';
 import { getSubtitle, getFriendlyTitle, isBuiltInExtension } from './ExtensionList';
-import { extensionPairingRefused } from '../extensionPrivacy';
+import { classifyExtension, extensionPairingRefused } from '../extensionPrivacy';
 import type { DefaultProvider } from '../ExtensionsSection';
 import { extensionProvenance, type RegistryLoad } from '../../../baam/registry';
 
@@ -80,20 +81,41 @@ export default function ExtensionItem({
       : null;
 
   /**
-   * §13.5's three strings. **How** an extension got here is the thing a user
-   * cannot otherwise see, and it is what decides the badge: an extension
-   * installed from a file is Public under R11(ii) because the install records no
-   * provenance at all, and nothing on this card said so.
+   * §13.5's strings. **How** an extension got here is the thing a user cannot
+   * otherwise see, and it is what decides the badge: an extension installed from
+   * a file is Public under R11(ii) because the install records no provenance at
+   * all, and nothing on this card said so.
    *
-   * Built-ins are excluded rather than given a fourth string. They are neither
-   * on the marketplace nor installed from a file, so both marketplace strings
-   * would be false statements — and `BuiltInBadge`, already beside the title,
-   * answers the provenance question for them.
+   * A built-in gets its own sentence rather than one of the two marketplace
+   * ones, which would both be false statements: it is not published on BAAM and
+   * it was not installed from a file. Saying nothing was the previous answer and
+   * left the row that most obviously ships with the app as the only row that
+   * would not say where it came from — and `BuiltInBadge` beside the title says
+   * *that it is built in*, not what any model may do with it, which is the half
+   * §13.5 exists to state.
+   *
+   * The built-in sentence needs no catalogue, so it renders immediately; the two
+   * marketplace ones wait for the load, because "published" is a claim only the
+   * catalogue can back.
    */
-  const provenance =
-    catalog && !isBuiltInExtension(extension)
+  const builtIn = isBuiltInExtension(extension);
+  const provenance = builtIn
+    ? 'Public — built into Biorouter, not on the marketplace. Any model can call it.'
+    : catalog
       ? extensionProvenance(catalog.registry, extension.name)
       : null;
+
+  /**
+   * §13.5's other half: *a badge* plus provenance, on every card. The sentence
+   * is the explanation; the pill is what survives being skimmed, and a user
+   * scanning twenty rows for the one that is Private reads pills.
+   *
+   * `classifyExtension`, deliberately the same call `extensionPairingRefused`
+   * above makes, so one card can never show a Public badge beside an
+   * "unavailable in new chats" notice that only a Private extension earns. It
+   * also needs no catalogue, so the badge does not appear a beat after the row.
+   */
+  const tier = classifyExtension(extension.name);
 
   return (
     <div
@@ -105,7 +127,8 @@ export default function ExtensionItem({
           <p className="text-sm font-medium text-text-default leading-snug">
             {getFriendlyTitle(extension)}
           </p>
-          {isBuiltInExtension(extension) && <BuiltInBadge />}
+          {builtIn && <BuiltInBadge />}
+          <PrivacyBadge tier={tier} />
         </div>
         {description && (
           <p className="text-xs text-text-muted mt-0.5 line-clamp-1">{description}</p>

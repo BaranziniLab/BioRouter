@@ -35,6 +35,9 @@ vi.mock('../../ConfigContext', () => ({
     read: mocks.read,
     getProviders: mocks.getProviders,
   }),
+  // `PrivacyBadge` reads the master switch off this same context and fails
+  // loudly if the mock omits it — see the warning in `ui/PrivacyBadge.tsx`.
+  usePrivacyTiersEnabled: () => true,
 }));
 
 vi.mock('./index', () => ({
@@ -110,6 +113,50 @@ describe('ExtensionsSection — the pairing state Settings can actually compute'
     expect(screen.getByText('Public — published on the Biorouter marketplace')).toBeInTheDocument();
     // The catalogue on screen is the bundled one, and the screen says so.
     expect(screen.getByText(/showing bundled catalog \(offline\)/i)).toBeInTheDocument();
+  });
+
+  /**
+   * §13.5 asks for "a badge plus provenance on every card". The provenance
+   * prose landed and the badge did not, which is the half that survives being
+   * skimmed — a user scanning twenty rows for the one that is Private reads
+   * pills, not sentences.
+   */
+  it('every card carries the badge, not only the provenance sentence', async () => {
+    render(<ExtensionsSection hideButtons />);
+    await screen.findByText(/UCSF OMOP/);
+
+    const badges = screen.getAllByTestId('privacy-badge');
+    expect(badges).toHaveLength(2);
+    expect(badges.map((b) => b.getAttribute('data-privacy')).sort()).toEqual(['private', 'public']);
+  });
+
+  /**
+   * "Every card" includes the ones neither string fits. A built-in is not on the
+   * marketplace and was not installed from a file, so both §13.5 marketplace
+   * strings would be false statements — but saying nothing leaves the row that
+   * most obviously ships with the app as the only row that will not say where it
+   * came from.
+   */
+  it('a built-in card is badged and claims neither the marketplace nor a file', async () => {
+    mocks.extensionsList = [
+      {
+        type: 'builtin',
+        name: 'somebundledserver',
+        display_name: 'Some Bundled Server',
+        description: 'Ships with Biorouter',
+        enabled: true,
+      },
+    ];
+    render(<ExtensionsSection hideButtons />);
+    await screen.findByText(/Ships with Biorouter/);
+
+    expect(screen.getByTestId('privacy-badge')).toHaveAttribute('data-privacy', 'public');
+    // Not a bare /marketplace/i: the freshness line above the list legitimately
+    // says "Marketplace catalogue", and matching it would make this pass for the
+    // wrong reason. Both §13.5 marketplace sentences, by name.
+    expect(screen.queryByText(/published on the Biorouter marketplace/i)).toBeNull();
+    expect(screen.queryByText(/installed from a file/i)).toBeNull();
+    expect(screen.getByText(/built into Biorouter/i)).toBeInTheDocument();
   });
 
   it('an extension the catalogue does not list is named as installed from a file', async () => {

@@ -5,9 +5,9 @@
 
 import type { ProviderTier } from '../../api/types.gen';
 import { nameToKey } from '../settings/extensions/utils';
-import { learnedPrivateExtensionKeys, rememberPrivateExtensionKeys } from './privateSet';
+import { rememberPrivateExtensionKeys } from './privateSet';
 import fallback from './registry.fallback.json';
-import { PRIVATE_EXTENSION_KEYS } from '../settings/extensions/extensionPrivacy';
+import { classifyExtension } from '../settings/extensions/extensionPrivacy';
 
 export interface RegistryExtension {
   id: string;
@@ -186,7 +186,10 @@ function isEntry(value: unknown): boolean {
 function withUsableEntriesOnly(registry: BaamRegistry): BaamRegistry {
   const extensions = registry.extensions.filter(isEntry);
   const skills = registry.skills.filter(isEntry);
-  if (extensions.length === registry.extensions.length && skills.length === registry.skills.length) {
+  if (
+    extensions.length === registry.extensions.length &&
+    skills.length === registry.skills.length
+  ) {
     return registry;
   }
   return { ...registry, extensions, skills };
@@ -242,13 +245,24 @@ function rememberPrivateExtensions(registry: BaamRegistry): void {
  *   1. `PRIVATE_EXTENSION_KEYS` — the compiled-in mirror of the Rust baseline.
  *   2. the persisted last-good set — every private key ever fetched.
  *   3. `registry`, the document in hand.
+ *
+ * ⚠ **The first two are `classifyExtension` and are delegated to it, not
+ * restated here.** A card renders a badge from one and a provenance sentence
+ * from the other; two copies of "is this private" on one row is a row that can
+ * contradict itself, and only one of the two would be edited when the rule
+ * changes.
+ *
+ * The third term is additive and, in practice, already redundant:
+ * `loadRegistry` folds every private key in a fetched document into the learned
+ * set before returning it, so for any registry that came from `loadRegistry`
+ * this function and `classifyExtension` agree by construction. It is kept
+ * because this function is also callable with a document that never went
+ * through that path, and dropping it there would be the one direction the rule
+ * forbids.
  */
 export function effectivePrivacy(registry: BaamRegistry, name: string): ProviderTier {
-  const key = nameToKey(name);
-  if (PRIVATE_EXTENSION_KEYS.includes(key)) return 'private';
-  if (learnedPrivateExtensionKeys().has(key)) return 'private';
-  if (privateKeysIn(registry).includes(key)) return 'private';
-  return 'public';
+  if (classifyExtension(name) === 'private') return 'private';
+  return privateKeysIn(registry).includes(nameToKey(name)) ? 'private' : 'public';
 }
 
 /**
@@ -271,7 +285,9 @@ export function marketplaceEntryFor(
     (registry.extensions ?? []).find(
       (e) =>
         isEntry(e) &&
-        (privacyKeyOf(e) === key || nameToKey(e.id ?? '') === key || nameToKey(e.name ?? '') === key)
+        (privacyKeyOf(e) === key ||
+          nameToKey(e.id ?? '') === key ||
+          nameToKey(e.name ?? '') === key)
     ) ?? null
   );
 }
