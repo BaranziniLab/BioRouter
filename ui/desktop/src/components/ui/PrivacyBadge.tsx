@@ -87,7 +87,14 @@ export function PrivacyBadge({ tier, dense = false, className }: PrivacyBadgePro
     return (
       <span
         data-testid="privacy-badge"
-        data-privacy="private"
+        // `{tier}`, never the literal `"private"`. The dense branch is reachable
+        // only for a tier with `markedWhenDense`, which today is Private alone —
+        // so this is not observably different yet, and no test can discriminate
+        // it without widening the union. It is written this way because the
+        // TIER map above exists precisely so a third tier is a compile error,
+        // and a hardcoded value is the one shape that would compile and then
+        // silently mislabel the new tier as Private on every dense surface.
+        data-privacy={tier}
         // `role`, not a bare title: a plain span maps to role `generic`, which
         // does not take an accessible name, so `title` alone would leave the
         // dot silent to a screen reader — invisible AND unannounced.
