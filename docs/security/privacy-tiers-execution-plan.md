@@ -20096,6 +20096,38 @@ git commit -m "feat(privacy): disclose what a non-private model can reach (#56, 
 
 ### Task 31: The CLI is a required R10 surface
 
+> ⚠ **REWRITTEN by [DR-20](#dr-20--declassification-is-gated-by-a-system-authentication-and-that-is-what-lets-an-agent-ask), 2026-08-02 — read the ruling before Step 1.**
+>
+> **This task contradicted [Task 29](#task-29-declassification--the-system-authentication-the-batch-and-the-audit)
+> and the contradiction was real, not a wording slip.** Task 29 said *"no MCP server, no
+> `ToolRouter`, no `workspace_*` handler and no CLI subcommand can construct one"* and backed it
+> with a grep gate expecting **no output** outside two files; this task then required
+> `biorouter session declassify <id>`, which cannot exist without constructing exactly that proof.
+> Whichever was implemented first, the other's gate failed. Under
+> [DR-19](#dr-19--a-warning-for-the-user-a-wall-for-the-agent) Task 29 was the one that was right:
+> the same binary is runnable by any agent holding `developer__shell`, so *"the person who ran the
+> command is the user"* was false, which is
+> [Open question 29](#open-questions)'s whole subject.
+>
+> **DR-20 dissolves it rather than picking a side.** The subcommand may exist because what gates it
+> is an operating-system authentication prompt raised by the `biorouter` process itself — not the
+> caller's identity. An agent may run the command; it cannot answer the prompt. Task 29's gate
+> becomes a four-file enumeration that names this file.
+>
+> **Four things this adds.** (1) The subcommand takes a **batch** of ids, `declassify <id>...`.
+> (2) The prompt states **exactly** what will be declassified before it is raised — DR-20 point 4,
+> and the thing that stops an agent harvesting an approval the user thought was for one chat.
+> (3) A **denied or cancelled** prompt changes nothing and exits non-zero. (4) On a host with no
+> prompter — headless Linux, and Windows until [Open question 30](#open-questions) is answered — it
+> **fails closed** and says so, naming the platform.
+>
+> ⚠ **The third test's `SessionType` loop stays, and it is not in tension with anything.** Task 29
+> never forbade declassifying a `SubAgent` or `Hidden` session; what it forbade was a *caller* the
+> route could not authenticate. The escape hatch works by id for every session type precisely
+> because `list_sessions` filters History to `('user','scheduled')` — and the alternative fix, a
+> "System sessions" filter in the GUI, surfaces 511 hidden sessions on this machine into a
+> user-facing list.
+
 Every repair affordance in Phase 4 so far is a GUI card. `biorouter-cli/src/session/builder.rs:479-484`
 resolves the provider as `--provider` flag → saved session provider → workflow's
 `biorouter_provider` → global default; two of those four can produce a public provider on a private
@@ -20107,9 +20139,11 @@ any private session with nothing explaining why.
 | Action | Path | Anchor (re-verified at `9558c346`) |
 |---|---|---|
 | Modify | `crates/biorouter-cli/src/session/builder.rs` | provider precedence `:479-484`; `providers::create` `:523`; bind `:601` |
-| Modify | `crates/biorouter-cli/src/commands/session.rs` | new `declassify <id>` subcommand |
+| Modify | `crates/biorouter-cli/src/commands/session.rs` | new **`declassify <id>...`** subcommand — variadic, one prompt per invocation. It is the **second** of the two files permitted to name `UserConfirmation` outside `privacy/` ([Task 29](#task-29-declassification--the-system-authentication-the-batch-and-the-audit) Step 5's enumeration), and it calls `privacy::declassify` in process rather than the HTTP route: the daemon may not be running, and a route call would need the launcher proof this process does not have |
 | Modify | `crates/biorouter-cli/src/session/mod.rs` | the Gate B terminal refusal rendering |
 | Modify | `crates/biorouter/src/workflow/` | workflow load-time provider check |
+| Modify | `crates/biorouter-cli/Cargo.toml` | `[features]` `:76-79` — `privacy-test-auth = ["biorouter/privacy-test-auth"]` plus the `[dev-dependencies]` arming entry, both created by Task 29. Nothing new here; the row exists so this task's Step 4 command is not a surprise |
+| Reference | `crates/biorouter/src/privacy/system_auth.rs` | Task 29's module. **Reused, never re-implemented** — a second prompter is how the CLI's prompt and the GUI's come to say different things about the same operation |
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -20140,19 +20174,120 @@ async fn declassify_works_by_id_regardless_of_session_type() {
     // hidden sessions into a user-facing list. The CLI escape hatch works by id.
     for t in [SessionType::Hidden, SessionType::SubAgent, SessionType::User] {
         let s = private_session_of_type(t).await;
-        run_cli_confirming(&["session", "declassify", &s.id]).await.unwrap();
+        seam::answer_next_prompt(AuthOutcome::Approved);
+        run_cli(&["session", "declassify", &s.id]).await.unwrap();
         assert_eq!(reread(&s.id).await.privacy_tier, SessionClassification::Public);
     }
 }
+
+// ── DR-20 ──────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn one_invocation_one_prompt_and_the_prompt_names_every_chat() {
+    // DR-20 point 4. The set is fixed by argv BEFORE the prompt is raised, and
+    // the prompt states it. An agent may run this command; what it cannot do is
+    // get an approval for a set the user was not shown — which is the ONLY
+    // thing standing between agent initiation and an agent-driven release.
+    let a = private_session_named("OMOP cohort characterisation").await;
+    let b = private_session_named("Lab results Q2").await;
+
+    seam::answer_next_prompt(AuthOutcome::Approved);
+    let out = run_cli(&["session", "declassify", &a.id, &b.id]).await.unwrap();
+
+    assert_eq!(seam::prompt_count(), 1);                      // ONE prompt, not two
+    let asked = seam::last_request();
+    assert_eq!(asked.session_ids, vec![a.id.clone(), b.id.clone()]);
+    assert!(asked.reason.contains("2 chats"));
+    assert!(asked.reason.contains("OMOP cohort characterisation"));
+    // The terminal shows the same list BEFORE the prompt, so the user is not
+    // reading a one-line OS dialog for the first time.
+    assert!(out.contains("OMOP cohort characterisation"));
+    assert!(out.contains("Lab results Q2"));
+    assert_eq!(reread(&a.id).await.privacy_tier, SessionClassification::Public);
+    assert_eq!(reread(&b.id).await.privacy_tier, SessionClassification::Public);
+}
+
+#[tokio::test]
+async fn a_denied_prompt_declassifies_nothing_and_exits_non_zero() {
+    let a = private_session().await;
+    let b = private_session().await;
+
+    seam::answer_next_prompt(AuthOutcome::Denied);
+    let err = run_cli(&["session", "declassify", &a.id, &b.id]).await.unwrap_err();
+    assert!(err.to_string().contains("Cancelled"));
+    assert_eq!(err.exit_code(), 1);
+    assert_eq!(reread(&a.id).await.privacy_tier, SessionClassification::Private);
+    assert_eq!(reread(&b.id).await.privacy_tier, SessionClassification::Private);
+
+    // And an UNARMED seam is the same outcome, because the seam's default is
+    // refuse. A test that forgets to arm it must not silently pass.
+    let err = run_cli(&["session", "declassify", &a.id]).await.unwrap_err();
+    assert_eq!(err.exit_code(), 1);
+    assert_eq!(reread(&a.id).await.privacy_tier, SessionClassification::Private);
+}
+
+#[tokio::test]
+async fn a_host_with_no_prompter_fails_closed_and_says_which_host() {
+    // Open question 30. Headless Linux has no polkit agent; Windows has no
+    // verified prompter at all. The refusal names the platform and points at a
+    // machine that can ask — a build whose declassification refuses is a missing
+    // feature, and one whose declassification silently approves is the worst
+    // outcome this feature can produce.
+    let s = private_session().await;
+    seam::answer_next_prompt(AuthOutcome::Unavailable);
+    let err = run_cli(&["session", "declassify", &s.id]).await.unwrap_err();
+    assert!(err.to_string().contains("cannot ask"));
+    assert!(err.to_string().contains("system authentication"));
+    assert_eq!(err.exit_code(), 1);
+    assert_eq!(reread(&s.id).await.privacy_tier, SessionClassification::Private);
+}
+
+#[tokio::test]
+async fn a_batch_with_one_bad_id_prompts_for_nothing() {
+    // The set must be VALID before the prompt: asking the user to authenticate
+    // a list and then applying a shorter one is exactly what point 4 forbids.
+    let s = private_session().await;
+    let err = run_cli(&["session", "declassify", &s.id, "no-such-session"]).await.unwrap_err();
+    assert!(err.to_string().contains("no-such-session"));
+    assert_eq!(seam::prompt_count(), 0);
+    assert_eq!(reread(&s.id).await.privacy_tier, SessionClassification::Private);
+}
 ```
 
-- [ ] **Step 2: Run** → **FAIL** on all three.
+- [ ] **Step 2: Run** → **FAIL** on all seven.
 
 - [ ] **Step 3: Implement** — (a) tier printed at session start; (b) Gate B's terminal refusal lists
-the available private models and the exact re-run command; (c) `biorouter session declassify <id>`
-running the same graded confirmation at the terminal; (d) the workflow load-time check.
+the available private models and the exact re-run command; (c) **`biorouter session declassify
+<id>...`**; (d) the workflow load-time check.
 
-- [ ] **Step 4: Run** → `cargo test -p biorouter-cli` → **PASS**.
+**(c), in order, because the order is the requirement.** Resolve every id first and abort on any
+that does not exist or is already public — a prompt for a set that will not be applied whole is the
+thing DR-20 point 4 forbids. Print the resolved list to the terminal (name, id suffix,
+`privacy_reason`, date). Build **one** `AuthRequest` naming that exact set and raise **one** prompt
+through `privacy::system_auth::authenticate` — the same module as the GUI, never a second
+implementation. On `Approved`, call `privacy::declassify` in process with the returned
+`UserConfirmation`; on `Denied` print `Cancelled — nothing was changed.` and exit 1; on
+`Unavailable` print the platform-named refusal and exit 1.
+
+⚠ **No `--yes` flag, and no `--force`.** A flag that skips the prompt is the bypass this whole
+ruling exists to prevent, it would be the first thing an agent reaches for, and it cannot be
+justified by scripting convenience: a script that declassifies without a human is precisely the
+actor DR-20 excludes. If a future need appears, it is a ruling, not a flag.
+
+⚠ **The graded confirmation is Task 29's and this command does not re-grade it.** The typed phrase
+and the 5-second undo are GUI affordances; at a terminal the review list plus the OS prompt carry
+the same job, and a CLI that asked for six characters *and* a password would be the "three
+frictions" DR-19's user half warns about.
+
+- [ ] **Step 4: Run** → **PASS**.
+
+```bash
+# ⚠ The DR-20 tests need the seam, which is a NON-DEFAULT feature (Task 29).
+# A bare `cargo test -p biorouter-cli` runs them against the real prompter: on
+# macOS that means a password dialog per test, and on CI it means a hang.
+cargo test -p biorouter-cli --features privacy-test-auth
+cargo test -p biorouter-cli          # the rest of the suite, unarmed, still green
+```
 
 - [ ] **Step 5: Gate**
 
@@ -20163,24 +20298,51 @@ running the same graded confirmation at the terminal; (d) the workflow load-time
 # if the worker names it anything else.
 awk '/fn declassify_command/,/^}/' crates/biorouter-cli/src/commands/session.rs | wc -l
 echo "expect: > 1 (0 today — the fn does not exist yet). A 0 here makes the next"
-echo "  line vacuous, so read this one first."
+echo "  three lines vacuous, so read this one first."
 awk '/fn declassify_command/,/^}/' crates/biorouter-cli/src/commands/session.rs | grep -c "SessionType"
 echo "expect: 0 — it works by id"
+
+# DR-20: exactly one prompt call, and it is the SHARED module. A CLI that
+# re-implements the prompt is how the two surfaces come to describe the same
+# operation differently — and how one of them ends up not prompting at all.
+awk '/fn declassify_command/,/^}/' crates/biorouter-cli/src/commands/session.rs \
+  | grep -c "system_auth::authenticate("
+echo "expect: 1"
+grep -rn "SystemAuthenticator\|AuthOutcome::Approved" crates/biorouter-cli/src/
+echo "expect: no output — the CLI CONSUMES the authenticator, it does not implement or fake one"
+
+# No bypass flag, under any spelling. This is the one grep on this task that is
+# 0 today AND 0 under a correct implementation — a genuine tripwire.
+awk '/fn declassify_command/,/^}/' crates/biorouter-cli/src/commands/session.rs \
+  | grep -n "yes\|force\|no_prompt\|skip_auth\|assume"
+echo "expect: no output"
+
+# The prompt is raised ONCE per invocation, not once per id. A loop that calls
+# authenticate() inside it satisfies every functional test and violates the
+# ruling — this is the shape that catches it.
+awk '/fn declassify_command/,/^}/' crates/biorouter-cli/src/commands/session.rs \
+  | awk '/for .* in .*ids/,/^    }/' | grep -c "authenticate("
+echo "expect: 0 — one AuthRequest for the whole batch"
+
 # And History did not gain a system-sessions filter. (0 today AND 0 under a
-# correct implementation — this one is a genuine tripwire, not a measurement:
-# the wrong implementation is the only thing that makes it non-zero.)
+# correct implementation — also a genuine tripwire, not a measurement.)
 grep -rn "System sessions\|include_hidden" ui/desktop/src/components/sessions/ ; echo "expect: no output"
 ```
 
-**What this catches.** Adding a "System sessions" filter to History as the declassification path for
-Hidden sessions — which is the obvious fix and which surfaces 511 hidden sessions on this machine
-into a user-facing list, a regression traded for an edge case.
+**What this catches.** Three wrong implementations. (1) Adding a "System sessions" filter to History
+as the declassification path for Hidden sessions — the obvious fix, which surfaces 511 hidden
+sessions on this machine into a user-facing list, a regression traded for an edge case. (2) **A
+prompt per id**, which passes every functional assertion in Step 1 except `prompt_count() == 1` and
+turns a 12-chat batch into twelve password dialogs — at which point the user learns to approve
+without reading, which is the exact failure DR-20 point 4 exists to prevent. (3) **A `--yes` flag**,
+added in good faith for scripting, which hands an agent the bypass the whole ruling is built to
+deny.
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add crates/biorouter-cli crates/biorouter/src/workflow
-git commit -m "feat(cli): print the tier, teach the repair, and declassify by id (#56)"
+git commit -m "feat(cli): print the tier, teach the repair, and declassify batches behind a system prompt (#56)"
 ```
 
 ---
