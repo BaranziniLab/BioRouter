@@ -51,6 +51,35 @@ pub fn requires_typed_confirmation(privacy_reason: Option<&str>) -> bool {
     !privacy_reason.is_some_and(|reason| reason.starts_with("turn:"))
 }
 
+/// The last six characters of `session_id`, which is what §12.4 asks the user to
+/// retype.
+///
+/// Characters, not bytes: session ids are `YYYYMMDD_HHMMSS` today, but a slice
+/// that can split a multi-byte character is a panic waiting for the first id
+/// that is not.
+///
+/// NOT the session NAME, and the design says why: `is_default_session_name`
+/// shows `"New Session"`, `"CLI Session"`, `"Session <N>"` and `"New session
+/// <N>"` are all live placeholders, so a name-typed phrase is either a string
+/// dozens of rows share — destroying the justification, which is to force the
+/// user to look at *which* conversation — or a whole sentence to retype.
+pub fn confirmation_phrase(session_id: &str) -> String {
+    let chars: Vec<char> = session_id.chars().collect();
+    chars[chars.len().saturating_sub(6)..].iter().collect()
+}
+
+/// Whitespace-insensitive and case-insensitive. The phrase is a "are you looking
+/// at the right row" check, not a secret — it is derived from an id the caller
+/// already had to know to address the row at all — so being strict about a
+/// trailing space buys nothing and costs a user a retry.
+pub fn confirmation_matches(session_id: &str, presented: Option<&str>) -> bool {
+    presented.is_some_and(|typed| {
+        typed
+            .trim()
+            .eq_ignore_ascii_case(&confirmation_phrase(session_id))
+    })
+}
+
 /// Proof that a human confirmed.
 ///
 /// A ZST with a **private field**, so the tuple literal `UserConfirmation(())`
@@ -92,8 +121,8 @@ impl UserConfirmation {
 }
 
 /// What a declassification actually did. The route turns these into 200 / 200 /
-/// 404 — a "no such session" must not read as a successful declassification, and
-/// an already-public row must not read as a failure.
+/// 400 / 404 — a "no such session" must not read as a successful
+/// declassification, and an already-public row must not read as a failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeclassifyOutcome {
     /// The row was Private (to the fail-closed reader) and is now Public. One
@@ -103,6 +132,10 @@ pub enum DeclassifyOutcome {
     /// double-clicked confirm button must not leave a second ledger entry
     /// claiming a transition that never happened.
     AlreadyPublic,
+    /// The provenance read inside the transaction grades this chat onto §12.4's
+    /// typed confirmation, and the confirmation presented did not match. Nothing
+    /// was written.
+    ConfirmationRequired,
     /// No row with that id.
     SessionNotFound,
 }
@@ -124,9 +157,28 @@ pub enum DeclassifyOutcome {
 /// model; that direction was never restricted (`bind_allowed` admits any
 /// provider on a public session), so clearing it here would break a working chat
 /// to enforce a rule that does not exist.
+///
+/// **§12.4's grade is decided here, from the provenance this transaction reads**,
+/// rather than by the caller from an earlier read. A caller that checked the
+/// grade first and then called this would be a check-then-act: a `turn:*` chat
+/// that reaches an MCP data source in the window between the two would be
+/// declassified on the single-click control it no longer qualifies for. The
+/// grade and the write are now the same transaction, so the provenance that
+/// decided which confirmation was required is exactly the provenance the
+/// `UPDATE` overwrites.
+///
+/// The three non-writing outcomes are ordered deliberately: **not found**, then
+/// **already public**, then **confirmation required**. An already-public row is
+/// a no-op, so there is nothing to confirm and demanding a phrase for it would
+/// refuse a second, harmless click of the same button — and after a successful
+/// call the provenance reads `declassified_by_user`, which
+/// [`requires_typed_confirmation`] grades onto the strong control, so that
+/// second click would otherwise be refused over a phrase the single-click path
+/// never showed the user.
 pub async fn declassify(
     sm: &SessionManager,
     session_id: &str,
+    confirmation: Option<&str>,
     _ok: UserConfirmation,
 ) -> Result<DeclassifyOutcome> {
     let pool = sm.storage().pool().await?;
@@ -154,6 +206,16 @@ pub async fn declassify(
     let from = SessionClassification::from_stored(&raw_tier);
     if from == SessionClassification::Public {
         return Ok(DeclassifyOutcome::AlreadyPublic);
+    }
+
+    // §12.4's graded confirmation, keyed on the provenance this transaction just
+    // read. The client decides which control to SHOW; this decides whether that
+    // was the right one, so a caller cannot claim the weak path for a chat that
+    // reached a private data source.
+    if requires_typed_confirmation(reason_before.as_deref())
+        && !confirmation_matches(session_id, confirmation)
+    {
+        return Ok(DeclassifyOutcome::ConfirmationRequired);
     }
 
     let message_count: i64 =
@@ -282,9 +344,14 @@ mod tests {
         let sm = SessionManager::new(temp.path().to_path_buf());
         let id = private_session_with_reason(&sm, "mcp:ucsfomopagent").await;
 
-        declassify(&sm, &id, UserConfirmation::for_test())
-            .await
-            .unwrap();
+        declassify(
+            &sm,
+            &id,
+            Some(&confirmation_phrase(&id)),
+            UserConfirmation::for_test(),
+        )
+        .await
+        .unwrap();
 
         let row = sm.get_session(&id, false).await.unwrap();
         assert_eq!(row.privacy_tier, SessionClassification::Public);
@@ -327,13 +394,18 @@ mod tests {
         let id = private_session_with_reason(&sm, "turn:versa_azure").await;
 
         assert_eq!(
-            declassify(&sm, &id, UserConfirmation::for_test())
+            declassify(&sm, &id, None, UserConfirmation::for_test())
                 .await
                 .unwrap(),
             DeclassifyOutcome::Declassified
         );
+        // The second click carries no confirmation, exactly as the first did.
+        // An already-public row is answered BEFORE the grade is consulted —
+        // otherwise this arm is unreachable on the single-click path, because
+        // the first call rewrote the provenance to `declassified_by_user`, which
+        // grades onto the strong control.
         assert_eq!(
-            declassify(&sm, &id, UserConfirmation::for_test())
+            declassify(&sm, &id, None, UserConfirmation::for_test())
                 .await
                 .unwrap(),
             DeclassifyOutcome::AlreadyPublic
@@ -341,11 +413,89 @@ mod tests {
         assert_eq!(audit_rows(&sm, &id).await.len(), 1);
 
         assert_eq!(
-            declassify(&sm, "29990101_00000", UserConfirmation::for_test())
+            declassify(&sm, "29990101_00000", None, UserConfirmation::for_test())
                 .await
                 .unwrap(),
             DeclassifyOutcome::SessionNotFound
         );
+    }
+
+    #[tokio::test]
+    async fn the_grade_is_taken_from_the_provenance_the_writing_transaction_reads() {
+        // The check-then-act this closes: the caller reads the row, sees
+        // `turn:*`, renders the single-click control, and by the time the write
+        // happens the chat has reached an MCP data source. Deciding the grade
+        // from an earlier read would declassify it on a control it no longer
+        // qualifies for. Here the raise lands between the two, and the answer
+        // comes from what the transaction reads, not from what the caller saw.
+        let temp = tempfile::TempDir::new().unwrap();
+        let sm = SessionManager::new(temp.path().to_path_buf());
+        let id = private_session_with_reason(&sm, "turn:versa_azure").await;
+
+        sm.update(&id)
+            .raise_privacy(SessionClassification::Private, "mcp:ucsfomopagent")
+            .apply()
+            .await
+            .unwrap();
+
+        assert_eq!(
+            declassify(&sm, &id, None, UserConfirmation::for_test())
+                .await
+                .unwrap(),
+            DeclassifyOutcome::ConfirmationRequired
+        );
+        // Refused means refused: no ledger row claiming a transition, and the
+        // row is untouched.
+        assert!(audit_rows(&sm, &id).await.is_empty());
+        let row = sm.get_session(&id, false).await.unwrap();
+        assert_eq!(row.privacy_tier, SessionClassification::Private);
+        assert_eq!(row.privacy_reason.as_deref(), Some("mcp:ucsfomopagent"));
+
+        // A wrong phrase of the same length is refused too, so this cannot pass
+        // merely because something was presented.
+        let phrase = confirmation_phrase(&id);
+        let wrong: String = phrase.chars().rev().collect();
+        if wrong != phrase {
+            assert_eq!(
+                declassify(&sm, &id, Some(&wrong), UserConfirmation::for_test())
+                    .await
+                    .unwrap(),
+                DeclassifyOutcome::ConfirmationRequired
+            );
+        }
+
+        assert_eq!(
+            declassify(&sm, &id, Some(&phrase), UserConfirmation::for_test())
+                .await
+                .unwrap(),
+            DeclassifyOutcome::Declassified
+        );
+        // …and the ledger records the provenance that decided the grade.
+        assert_eq!(
+            audit_rows(&sm, &id).await[0]
+                .privacy_reason_before
+                .as_deref(),
+            Some("mcp:ucsfomopagent")
+        );
+    }
+
+    #[test]
+    fn the_phrase_is_the_last_six_characters_of_the_id() {
+        assert_eq!(confirmation_phrase("abc123def456"), "def456");
+        // Shorter than six: the whole id, not a panic.
+        assert_eq!(confirmation_phrase("abc"), "abc");
+        assert_eq!(confirmation_phrase(""), "");
+        // Characters, not bytes. A byte slice would split the last character and
+        // panic; ids are ASCII today and this is what keeps that from being a
+        // load-bearing assumption.
+        assert_eq!(confirmation_phrase("aé漢字漢字漢字"), "漢字漢字漢字");
+
+        assert!(confirmation_matches("abc123def456", Some("def456")));
+        assert!(confirmation_matches("abc123def456", Some("  def456 ")));
+        assert!(confirmation_matches("abc123DEF456", Some("def456")));
+        assert!(!confirmation_matches("abc123def456", Some("ef456")));
+        assert!(!confirmation_matches("abc123def456", Some("")));
+        assert!(!confirmation_matches("abc123def456", None));
     }
 
     #[tokio::test]
@@ -375,7 +525,7 @@ mod tests {
         );
 
         assert_eq!(
-            declassify(&sm, &id, UserConfirmation::for_test())
+            declassify(&sm, &id, None, UserConfirmation::for_test())
                 .await
                 .unwrap(),
             DeclassifyOutcome::Declassified

@@ -14,9 +14,7 @@ use axum::{
 };
 use biorouter::agents::ExtensionConfig;
 use biorouter::conversation::message::Message;
-use biorouter::privacy::declassify::{
-    declassify, requires_typed_confirmation, DeclassifyOutcome, UserConfirmation,
-};
+use biorouter::privacy::declassify::{declassify, DeclassifyOutcome, UserConfirmation};
 use biorouter::privacy::SessionClassification;
 use biorouter::session::extension_data::ExtensionState;
 use biorouter::session::session_manager::{
@@ -1217,7 +1215,12 @@ pub struct DeclassifySessionResponse {
     pub session_id: String,
     /// The tier after the call. Always `public` on a 200 — including the
     /// already-public case, which is a success rather than a conflict so a
-    /// double-clicked confirm button does not surface an error.
+    /// double-clicked confirm button does not surface an error. That holds on
+    /// BOTH graded paths: an already-public row is answered before the
+    /// confirmation is consulted, so the second single-click request is not
+    /// refused over a phrase that path never showed the user (the first call
+    /// rewrites the provenance to `declassified_by_user`, which grades onto the
+    /// typed control).
     pub privacy_tier: SessionClassification,
 }
 
@@ -1269,31 +1272,29 @@ async fn declassify_session(
         return Err((StatusCode::FORBIDDEN, DECLASSIFY_NEEDS_USER).into_response());
     }
 
-    let manager = state.session_manager();
-    let session = manager
-        .get_session(&session_id, false)
-        .await
-        .map_err(|_| StatusCode::NOT_FOUND.into_response())?;
-
-    // The grade comes from the STORED provenance. The client says which control
-    // it rendered by whether it sends a phrase; the daemon decides whether that
-    // was the right control.
-    if requires_typed_confirmation(session.privacy_reason.as_deref())
-        && !confirmation_matches(&session_id, request.confirmation.as_deref())
-    {
-        return Err((StatusCode::BAD_REQUEST, DECLASSIFY_CONFIRMATION_MISMATCH).into_response());
-    }
-
-    // The single construction site of the proof-of-user, pinned by
+    // §12.4's grade is NOT decided here. The confirmation is handed to the
+    // writer, which derives the grade from the provenance its own transaction
+    // reads — so a chat that reaches an MCP data source between this request
+    // arriving and the row being written cannot be declassified on the
+    // single-click control it has stopped qualifying for. Reading the row here
+    // to grade it would be a check-then-act, and would also cost a second
+    // round-trip to say what the transaction is about to read anyway.
+    //
+    // The construction below is the single construction site of the
+    // proof-of-user, pinned by
     // `privacy::declassify::tests::the_proof_of_user_is_constructed_in_exactly_one_place`.
     match declassify(
-        manager,
+        state.session_manager(),
         &session_id,
+        request.confirmation.as_deref(),
         UserConfirmation::from_typed_confirmation(),
     )
     .await
     {
         Ok(DeclassifyOutcome::SessionNotFound) => Err(StatusCode::NOT_FOUND.into_response()),
+        Ok(DeclassifyOutcome::ConfirmationRequired) => {
+            Err((StatusCode::BAD_REQUEST, DECLASSIFY_CONFIRMATION_MISMATCH).into_response())
+        }
         Ok(DeclassifyOutcome::Declassified) | Ok(DeclassifyOutcome::AlreadyPublic) => {
             Ok(Json(DeclassifySessionResponse {
                 session_id,
@@ -1305,35 +1306,6 @@ async fn declassify_session(
             Err(StatusCode::INTERNAL_SERVER_ERROR.into_response())
         }
     }
-}
-
-/// The last six characters of `session_id`, which is what §12.4 asks the user to
-/// retype.
-///
-/// Characters, not bytes: session ids are `YYYYMMDD_HHMMSS` today, but a slice
-/// that can split a multi-byte character is a panic waiting for the first id
-/// that is not.
-///
-/// NOT the session NAME, and the design says why: `is_default_session_name`
-/// shows `"New Session"`, `"CLI Session"`, `"Session <N>"` and `"New session
-/// <N>"` are all live placeholders, so a name-typed phrase is either a string
-/// dozens of rows share — destroying the justification, which is to force the
-/// user to look at *which* conversation — or a whole sentence to retype.
-fn confirmation_phrase(session_id: &str) -> String {
-    let chars: Vec<char> = session_id.chars().collect();
-    chars[chars.len().saturating_sub(6)..].iter().collect()
-}
-
-/// Whitespace-insensitive and case-insensitive. The phrase is a "are you looking
-/// at the right row" check, not a secret — it is derived from an id the caller
-/// already had to know to address this route — so being strict about a trailing
-/// space buys nothing and costs a user a retry.
-fn confirmation_matches(session_id: &str, presented: Option<&str>) -> bool {
-    presented.is_some_and(|typed| {
-        typed
-            .trim()
-            .eq_ignore_ascii_case(&confirmation_phrase(session_id))
-    })
 }
 
 #[derive(Serialize, ToSchema)]
@@ -2931,6 +2903,10 @@ mod declassify_tests {
     use axum::http::{Request, StatusCode};
     use biorouter::conversation::message::Message;
     use biorouter::model::ModelConfig;
+    // The phrase lives beside the grading it belongs to, in the writer's module:
+    // the daemon's check now happens inside the writing transaction, so the
+    // route has nothing left to derive it for. Its own unit tests moved with it.
+    use biorouter::privacy::declassify::confirmation_phrase;
     use biorouter::session::SessionType;
     use serial_test::serial;
     use std::path::PathBuf;
@@ -3131,23 +3107,43 @@ mod declassify_tests {
         manager.delete_session(&id).await.unwrap();
     }
 
-    #[test]
-    fn the_phrase_is_the_last_six_characters_of_the_id() {
-        assert_eq!(confirmation_phrase("abc123def456"), "def456");
-        // Shorter than six: the whole id, not a panic.
-        assert_eq!(confirmation_phrase("abc"), "abc");
-        assert_eq!(confirmation_phrase(""), "");
-        // Characters, not bytes. A byte slice would split the last character and
-        // panic; ids are ASCII today and this is what keeps that from being a
-        // load-bearing assumption.
-        assert_eq!(confirmation_phrase("aé漢字漢字漢字"), "漢字漢字漢字");
+    /// The idempotency `DeclassifySessionResponse` documents, on the path that
+    /// actually needs it.
+    ///
+    /// That doc promises the already-public case is a 200 "so a double-clicked
+    /// confirm button does not surface an error". It was only true on the typed
+    /// path, which resends its phrase: a successful call rewrites the provenance
+    /// to `declassified_by_user`, which `requires_typed_confirmation` grades onto
+    /// the STRONG control, so the second of two single-click requests arrived
+    /// carrying no confirmation, was refused at the phrase check over a field
+    /// the user was never shown, and never reached the already-public arm at
+    /// all. An already-public row is a no-op, so it is answered before the
+    /// confirmation is consulted — there is nothing to confirm.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn a_second_single_click_confirm_is_a_success_not_a_refusal() {
+        install_test_user_action_key();
+        let state = AppState::new().await.unwrap();
+        let manager = state.session_manager();
+        let id = seed_private(manager, "turn:versa_azure").await;
 
-        assert!(confirmation_matches("abc123def456", Some("def456")));
-        assert!(confirmation_matches("abc123def456", Some("  def456 ")));
-        assert!(confirmation_matches("abc123DEF456", Some("def456")));
-        assert!(!confirmation_matches("abc123def456", Some("ef456")));
-        assert!(!confirmation_matches("abc123def456", Some("")));
-        assert!(!confirmation_matches("abc123def456", None));
+        for attempt in 1..=2 {
+            let (status, body) = post_declassify(
+                state.clone(),
+                &id,
+                serde_json::json!({}),
+                Some(TEST_SECRET),
+                Some(TEST_USER_ACTION_KEY),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "attempt {attempt} answered {body}");
+        }
+        assert_eq!(
+            manager.get_session(&id, false).await.unwrap().privacy_tier,
+            SessionClassification::Public
+        );
+
+        manager.delete_session(&id).await.unwrap();
     }
 
     /// The two refusals this route can emit are distinguishable from each other
