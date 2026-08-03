@@ -103,6 +103,9 @@ xz2 = "0.1.7"
 bzip2 = "0.6.1"
 
 [dev-dependencies]
+# Issue #56: `knowledge::tier_user`'s two source audits walk `crates/` to pin the
+# set of files that may name the proof-of-user or write the tier store.
+walkdir = "2.5.0"
 sysinfo = "0.32.1"
 temp-env = "0.3.6"
 colored = "2"

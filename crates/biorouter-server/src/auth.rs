@@ -71,6 +71,28 @@ pub fn user_action_matches(presented: Option<&str>, expected: Option<&[u8; 32]>)
     diff == 0
 }
 
+/// What [`user_action_proof`] found. Three answers, not two, because two of them
+/// need to be *said* differently: a caller who presented no proof is being told
+/// "the user decides this", while a caller on a daemon that holds no key is
+/// being told "this control is unavailable on this daemon" — and reporting the
+/// second as the first sends the person at the keyboard hunting for a permission
+/// they can never obtain (open question 23).
+///
+/// Both non-`Proven` answers refuse. The distinction is in the message only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UserActionProof {
+    /// The header carried a key that hashes to the installed digest.
+    Proven,
+    /// A digest is installed and the request did not match it.
+    Unproven,
+    /// This daemon was handed no user-action key on stdin, so there is nothing
+    /// to verify against and every caller is refused — including the human.
+    /// `just run-server`, a hand-run `biorouterd agent` and any headless
+    /// deployment land here. (`just debug-server` does not: it pipes the
+    /// published dev key.)
+    NoKeyInstalled,
+}
+
 /// Did this request come from the user rather than from the model?
 ///
 /// A **per-route** requirement, not a second gate on every request:
@@ -78,11 +100,31 @@ pub fn user_action_matches(presented: Option<&str>, expected: Option<&[u8; 32]>)
 /// would take the user's own model picker away along with the model's — the
 /// posture DR-16 rejected. CORS already passes the header through; the daemon's
 /// layer is `.allow_headers(Any)`.
-pub fn is_user_action(headers: &axum::http::HeaderMap) -> bool {
-    user_action_matches(
+///
+/// ONE header, ONE key, ONE comparison. Every route that needs a proof of user
+/// reads this; a second header name anywhere is the defect the tier route's own
+/// gate looks for.
+pub fn user_action_proof(headers: &axum::http::HeaderMap) -> UserActionProof {
+    let Some(expected) = USER_ACTION_DIGEST.get().and_then(|d| d.as_ref()) else {
+        return UserActionProof::NoKeyInstalled;
+    };
+    if user_action_matches(
         headers.get("X-User-Action").and_then(|v| v.to_str().ok()),
-        USER_ACTION_DIGEST.get().and_then(|d| d.as_ref()),
-    )
+        Some(expected),
+    ) {
+        UserActionProof::Proven
+    } else {
+        UserActionProof::Unproven
+    }
+}
+
+/// The boolean form, for the five raise channels that have one refusal to give.
+///
+/// Defined in terms of [`user_action_proof`] so there is exactly one place where
+/// "does this request carry the proof" is decided — a second implementation that
+/// happened to read the same header would still be a second answer.
+pub fn is_user_action(headers: &axum::http::HeaderMap) -> bool {
+    matches!(user_action_proof(headers), UserActionProof::Proven)
 }
 
 fn get_failed_attempts() -> &'static Mutex<HashMap<String, Vec<Instant>>> {
@@ -370,6 +412,65 @@ mod tests {
         let unguarded = body_of(session_rs, "async fn get_session_extensions");
         assert!(
             !unguarded.contains("is_user_action("),
+            "the body scan is over-reading: a handler with no guard reported one"
+        );
+        assert!(
+            !unguarded.contains(mint),
+            "the body scan is over-reading: a handler that mints nothing reported the proof"
+        );
+    }
+
+    /// Issue #56 DR-18. The knowledge-base tier route is the second channel that
+    /// goes the *other* way, and it needs the same proof for the same reason:
+    /// `check_token` compares one machine-wide bearer that AR-11 measured to be
+    /// recoverable from inside the daemon, so an authenticated request is not
+    /// evidence of a human.
+    ///
+    /// The behaviour is pinned over HTTP by
+    /// `knowledge_routes::tier_route::the_tier_route_needs_more_than_the_secret_key`
+    /// and its keyless sibling; this is the cheap tripwire that survives a
+    /// refactor which moves those. `is_public_app_get` needs no change for this
+    /// route — it only ever matches GETs under `/apps/{id}`, so a POST under
+    /// `/knowledge` can never reach the exemption — and with nothing in
+    /// `check_token` to change either, the ONLY thing standing between the model
+    /// and this route is the line this asserts is present.
+    ///
+    /// It also pins WHERE the proof-of-user is minted, the half its sibling in
+    /// `knowledge::tier_user` cannot see: that test counts the constructor across
+    /// the tree and requires exactly one call in `routes/knowledge.rs`; this
+    /// requires that call to be inside the body of the handler that consults the
+    /// guard. Neither alone is enough.
+    #[test]
+    fn the_kb_tier_route_consults_the_user_action_guard() {
+        let knowledge_rs = include_str!("routes/knowledge.rs");
+        let handler = body_of(knowledge_rs, "pub async fn set_kb_tier");
+        assert!(
+            handler.contains("user_action_proof("),
+            "the knowledge-base tier route does not consult the user-action guard"
+        );
+        // Split across two literals so this file does not itself become a place
+        // that names the proof-of-user: `tier_user`'s audit asserts the set of
+        // files containing that name is exactly {service.rs, routes/knowledge.rs},
+        // and a spelled-out needle here would break it.
+        let mint = concat!("User", "KbTierChange::from_user_action(");
+        assert!(
+            handler.contains(mint),
+            "the proof-of-user is no longer minted inside the handler that checks the guard"
+        );
+        // Both refusal arms, so a handler that admits the keyless daemon — the
+        // easy mistake, because `Proven` is the only arm the happy path needs —
+        // fails here rather than in production.
+        assert!(
+            handler.contains("NoKeyInstalled"),
+            "the tier route does not distinguish a daemon with no user-action key"
+        );
+
+        // The negative control, so the scan is provably not vacuous: a handler in
+        // the same file that has neither must come back with neither, or
+        // `body_of` is over-reading past a function end.
+        let unguarded = body_of(knowledge_rs, "pub async fn get_kb_tier");
+        assert!(
+            !unguarded.contains("user_action_proof("),
             "the body scan is over-reading: a handler with no guard reported one"
         );
         assert!(

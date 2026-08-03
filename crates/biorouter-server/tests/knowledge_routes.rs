@@ -2502,3 +2502,270 @@ mod privacy_ratchet {
         );
     }
 }
+
+/// Issue #56 DR-18 — `POST /knowledge/bases/{id}/tier`, the user's own
+/// publicize / privatize control.
+///
+/// ⚠ The keyless-daemon half of this lives in its OWN test binary,
+/// `tests/knowledge_tier_no_user_key.rs`. The installed digest is a process
+/// global (`OnceLock`), so "a daemon that was handed a key" and "a daemon that
+/// was not" are not both reachable inside one binary — the second
+/// `install_user_action_digest` is a no-op by construction. Same reason
+/// `knowledge_ingest_stream` is its own binary.
+mod tier_route {
+    use super::*;
+    use biorouter_mcp::knowledge::tier;
+
+    /// The server secret this binary's "daemon" was launched with.
+    const TEST_SECRET: &str = "task-29a-kb-tier-route-secret";
+    /// The raw user-action key the launcher would have minted.
+    const TEST_USER_ACTION_KEY: &str = "task-29a-kb-tier-user-action-key";
+
+    fn install_test_user_action_key() {
+        let digest: [u8; 32] =
+            <sha2::Sha256 as sha2::Digest>::digest(TEST_USER_ACTION_KEY.as_bytes()).into();
+        biorouter_server::auth::install_user_action_digest(Some(digest));
+    }
+
+    /// The knowledge router behind the SAME `check_token` layer
+    /// `commands::agent::run` installs in front of the real one. Layering it is
+    /// what makes the 401 arm mean anything: `router()` alone is unauthenticated,
+    /// so a test against it would assert that a route nobody guards lets everyone
+    /// through.
+    fn guarded_router() -> (tempfile::TempDir, std::path::PathBuf, Router) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        let svc = Arc::new(biorouter_mcp::knowledge::service::KnowledgeService::new(
+            root.clone(),
+        ));
+        let router = biorouter_server::routes::knowledge::router(svc).layer(
+            axum::middleware::from_fn_with_state(
+                TEST_SECRET.to_string(),
+                biorouter_server::auth::check_token,
+            ),
+        );
+        (dir, root, router)
+    }
+
+    async fn post_tier(
+        app: &Router,
+        kb_id: &str,
+        tier: &str,
+        secret: Option<&str>,
+        user_action: Option<&str>,
+    ) -> (u16, String) {
+        let mut builder = Request::builder()
+            .method("POST")
+            .uri(format!("/bases/{kb_id}/tier"))
+            .header("content-type", "application/json");
+        if let Some(key) = secret {
+            builder = builder.header("X-Secret-Key", key);
+        }
+        if let Some(key) = user_action {
+            builder = builder.header("X-User-Action", key);
+        }
+        let req = builder
+            .body(Body::from(
+                serde_json::to_vec(&serde_json::json!({ "tier": tier })).unwrap(),
+            ))
+            .unwrap();
+        let res = app.clone().oneshot(req).await.unwrap();
+        let status = res.status().as_u16();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    /// Create `omop` through the real route and ratchet it private, the state
+    /// every publicize test starts from.
+    async fn seed(root: &std::path::Path, app: &Router) {
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/bases")
+                    .header("content-type", "application/json")
+                    .header("X-Secret-Key", TEST_SECRET)
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({ "id": "omop", "name": "OMOP" }))
+                            .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200);
+        tier::raise_unlocked(root, "omop", /* caller_is_private */ true).unwrap();
+    }
+
+    /// Identical to Task 29's `the_route_needs_more_than_the_secret_key`, and it
+    /// must stay identical: §9.3 A1 puts the secret inside any developer-enabled
+    /// agent shell, so `X-Secret-Key` alone is not a human.
+    #[tokio::test]
+    async fn the_tier_route_needs_more_than_the_secret_key() {
+        install_test_user_action_key();
+        let (_d, root, app) = guarded_router();
+        seed(&root, &app).await;
+
+        let (status, _) = post_tier(&app, "omop", "public", None, None).await;
+        assert_eq!(status, 401);
+
+        let (status, body) = post_tier(&app, "omop", "public", Some(TEST_SECRET), None).await;
+        assert_eq!(
+            status, 403,
+            "a secret-key-only caller publicized a knowledge base"
+        );
+        assert!(
+            body.contains("Do not retry"),
+            "the refusal must foreclose the retry: {body}"
+        );
+        assert!(
+            tier::is_private(&root, "omop"),
+            "the refused call moved the tier anyway"
+        );
+
+        let (status, body) = post_tier(
+            &app,
+            "omop",
+            "public",
+            Some(TEST_SECRET),
+            Some(TEST_USER_ACTION_KEY),
+        )
+        .await;
+        assert_eq!(status, 200, "got {body}");
+        assert!(!tier::is_private(&root, "omop"));
+    }
+
+    /// Both directions, not just the disclosing one. Privatizing needs no
+    /// confirmation *dialog*, but it is still not a thing a model may do —
+    /// admitting one direction without the proof is how the tool channel gets the
+    /// pointer back.
+    #[tokio::test]
+    async fn privatizing_needs_the_proof_too() {
+        install_test_user_action_key();
+        let (_d, root, app) = guarded_router();
+        seed(&root, &app).await;
+        // Start from public, so "private" is a real change rather than a no-op.
+        let (status, _) = post_tier(
+            &app,
+            "omop",
+            "public",
+            Some(TEST_SECRET),
+            Some(TEST_USER_ACTION_KEY),
+        )
+        .await;
+        assert_eq!(status, 200);
+
+        let (status, _) = post_tier(&app, "omop", "private", Some(TEST_SECRET), None).await;
+        assert_eq!(status, 403);
+        assert!(
+            !tier::is_private(&root, "omop"),
+            "an unproven caller privatized a base"
+        );
+
+        let (status, body) = post_tier(
+            &app,
+            "omop",
+            "private",
+            Some(TEST_SECRET),
+            Some(TEST_USER_ACTION_KEY),
+        )
+        .await;
+        assert_eq!(status, 200, "got {body}");
+        assert!(tier::is_private(&root, "omop"));
+    }
+
+    /// The renderer cannot render a chip for a tier it was never told. The
+    /// listing carries it; `manifest.yaml` does not, and must not — the tier
+    /// lives in `.kb-tiers` and a second copy would be a second answer.
+    #[tokio::test]
+    async fn the_bases_listing_carries_the_tier_and_the_manifest_does_not() {
+        install_test_user_action_key();
+        let (_d, root, app) = guarded_router();
+        seed(&root, &app).await;
+
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/bases")
+                    .header("X-Secret-Key", TEST_SECRET)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200);
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let listing: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(listing[0]["id"], "omop");
+        assert_eq!(listing[0]["tier"], "private");
+        // …and the manifest on disk is untouched by any of it.
+        let manifest = std::fs::read_to_string(root.join("omop").join("manifest.yaml")).unwrap();
+        assert!(
+            !manifest.contains("tier"),
+            "the tier was persisted into manifest.yaml: {manifest}"
+        );
+    }
+
+    /// The blast radius the publicize dialog names is computed from the tree, not
+    /// from whatever the renderer had lying around.
+    #[tokio::test]
+    async fn the_tier_read_reports_what_a_publicize_would_release() {
+        install_test_user_action_key();
+        let (_d, root, app) = guarded_router();
+        seed(&root, &app).await;
+        std::fs::write(
+            root.join("omop").join("knowledge").join("cohort.md"),
+            "# cohort\n\nn=412\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.join("omop").join("raw").join("s1")).unwrap();
+        std::fs::write(
+            root.join("omop").join("raw").join("s1").join("meta.yaml"),
+            "id: s1\n",
+        )
+        .unwrap();
+
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/bases/omop/tier")
+                    .header("X-Secret-Key", TEST_SECRET)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200);
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["tier"], "private");
+        assert_eq!(v["page_count"], 1);
+        assert_eq!(v["raw_source_count"], 1);
+    }
+
+    /// A base that is not there is a 404, not a silent success that leaves the
+    /// user believing they released something.
+    #[tokio::test]
+    async fn an_unknown_base_is_not_publicized() {
+        install_test_user_action_key();
+        let (_d, _root, app) = guarded_router();
+        let (status, _) = post_tier(
+            &app,
+            "no-such-base",
+            "public",
+            Some(TEST_SECRET),
+            Some(TEST_USER_ACTION_KEY),
+        )
+        .await;
+        assert_eq!(status, 404);
+    }
+}

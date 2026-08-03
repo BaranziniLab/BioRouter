@@ -16,6 +16,7 @@ pub mod store;
 pub mod subagent;
 pub mod test_mode;
 pub mod tier;
+pub mod tier_user;
 pub mod types;
 
 pub use server::KnowledgeServer;

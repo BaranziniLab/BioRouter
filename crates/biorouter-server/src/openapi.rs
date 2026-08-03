@@ -466,6 +466,8 @@ impl utoipa::Modify for ApiKeySecurity {
         super::routes::knowledge::list_bases,
         super::routes::knowledge::create_base,
         super::routes::knowledge::get_base,
+        super::routes::knowledge::get_kb_tier,
+        super::routes::knowledge::set_kb_tier,
         super::routes::knowledge::set_default_model,
         super::routes::knowledge::delete_base,
         super::routes::knowledge::get_graph,
@@ -767,6 +769,11 @@ impl utoipa::Modify for ApiKeySecurity {
         super::routes::knowledge::CheckModelResponse,
         super::routes::knowledge::SetActiveBody,
         super::routes::knowledge::ActiveKbResponse,
+        // Issue #56 DR-18: the knowledge-base tier and the user's control over it.
+        biorouter_mcp::knowledge::types::KbTier,
+        super::routes::knowledge::KbListEntry,
+        super::routes::knowledge::SetKbTierBody,
+        super::routes::knowledge::KbTierResponse,
     ))
 )]
 pub struct ApiDoc;

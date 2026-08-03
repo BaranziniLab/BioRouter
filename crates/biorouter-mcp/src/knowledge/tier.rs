@@ -46,14 +46,15 @@
 //!    user-writable, and the threat model is "a public model reads private
 //!    notes", not "a local attacker with a shell".
 
+use crate::knowledge::types::KbTier;
 use anyhow::Result;
 use std::collections::BTreeMap;
 use std::path::Path;
 
 const SCHEMA: u32 = 1;
 
-const PUBLIC: &str = "public";
-const PRIVATE: &str = "private";
+pub(super) const PUBLIC: &str = "public";
+pub(super) const PRIVATE: &str = "private";
 
 /// The meta key the daemon writes the caller's capability into. Defined here,
 /// not in `server.rs`, because `agent_drafter` (CP4) reads the same key and two
@@ -70,12 +71,40 @@ model chip in the composer — and try again. Do not retry with a different know
 through an export, or through a raw-source search; the boundary is the same everywhere.";
 
 #[derive(serde::Serialize, serde::Deserialize)]
-struct Store {
+pub(super) struct Store {
     schema: u32,
     /// kb id -> "public" | "private". An id ABSENT from a store that exists,
     /// for a directory that DOES exist, is unknown provenance and reads
     /// PRIVATE; the whole file being absent means the migration has not run.
-    bases: BTreeMap<String, String>,
+    pub(super) bases: BTreeMap<String, String>,
+    /// kb id -> how the value in `bases` got there, for the entries a USER moved
+    /// (issue #56 DR-18 / Task 29A). Absent for every base the ratchet placed,
+    /// which is the common case and carries no provenance worth writing down.
+    ///
+    /// ⚠ **A second map rather than a richer value type, and the reason is
+    /// downgrade safety.** Turning `bases`' value into `{tier, reason,
+    /// changed_at}` would make a store written by this version unparseable to
+    /// every older binary — and `load` reads unparseable as PRIVATE, so
+    /// installing yesterday's build would lock the user out of every knowledge
+    /// base at once. Serde ignores unknown fields, so an older binary reads the
+    /// `bases` map exactly as before and simply never sees this one. The pairing
+    /// is maintained by both writers: [`raise_unlocked`] and [`forget_unlocked`]
+    /// drop the entry here whenever they move or remove the tier, so a stale
+    /// reason can never outlive the value it describes.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(super) provenance: BTreeMap<String, Provenance>,
+}
+
+/// How a base's tier came to hold the value it holds — written only when a
+/// **user** moved it, so a released base is never indistinguishable from one
+/// that was always public.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub(super) struct Provenance {
+    /// `publicized_by_user` / `privatized_by_user`. A word, not a sentence: it
+    /// is read by a support conversation six months later and by nothing else.
+    pub(super) reason: String,
+    /// RFC 3339, UTC.
+    pub(super) changed_at: String,
 }
 
 impl Default for Store {
@@ -83,7 +112,37 @@ impl Default for Store {
         Self {
             schema: SCHEMA,
             bases: BTreeMap::new(),
+            provenance: BTreeMap::new(),
         }
+    }
+}
+
+/// One row of `.kb-tiers` as a reader sees it: the tier every gate enforces,
+/// plus the provenance if a user put it there.
+///
+/// The tier is taken from [`is_private`] rather than from the raw word, so the
+/// fail-closed rules have exactly one implementation and this cannot come to
+/// disagree with the barrier.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TierEntry {
+    pub tier: KbTier,
+    pub reason: Option<String>,
+    pub changed_at: Option<String>,
+}
+
+/// Read one base's tier together with its provenance.
+///
+/// Lock-free, like every other reader here: the store is only ever replaced by
+/// `rename`, so a read sees the old file or the new one and never a torn one.
+pub fn entry(root: &Path, kb_id: &str) -> TierEntry {
+    let prov = match load(root) {
+        StoreState::Parsed(store) => store.provenance.get(kb_id).cloned(),
+        StoreState::Missing | StoreState::Unreadable => None,
+    };
+    TierEntry {
+        tier: KbTier::from_is_private(is_private(root, kb_id)),
+        reason: prov.as_ref().map(|p| p.reason.clone()),
+        changed_at: prov.map(|p| p.changed_at),
     }
 }
 
@@ -127,7 +186,7 @@ fn load(root: &Path) -> StoreState {
 /// A missing file is an empty store. An **unreadable** one is refused: silently
 /// replacing a store we cannot parse would erase every ratchet in it, which is
 /// the one direction this module exists to prevent.
-fn load_for_write(root: &Path) -> Result<Store> {
+pub(super) fn load_for_write(root: &Path) -> Result<Store> {
     match load(root) {
         StoreState::Missing => Ok(Store::default()),
         StoreState::Parsed(store) => Ok(store),
@@ -141,7 +200,14 @@ fn load_for_write(root: &Path) -> Result<Store> {
 
 /// `manifest::save`'s idiom: write a sibling tmp file and `rename` over the
 /// target, so a reader sees the old file or the new one, never a torn one.
-fn save(root: &Path, store: &Store) -> Result<()> {
+///
+/// `pub(super)` — visible inside `crate::knowledge` and nowhere else — because
+/// [`crate::knowledge::tier_user::set_unlocked`], the one writer permitted to
+/// LOWER a tier, cannot go through [`raise_unlocked`] (which is monotone by
+/// construction and must stay that way) and so needs the raw write. That reach
+/// is pinned at exactly one caller by
+/// `tier_user::tests::exactly_one_writer_outside_the_ratchet_saves_the_tier_store`.
+pub(super) fn save(root: &Path, store: &Store) -> Result<()> {
     std::fs::create_dir_all(root)?;
     let path = super::paths::kb_tiers_path(root);
     let tmp = path.with_extension("tmp");
@@ -276,6 +342,13 @@ pub fn raise_unlocked(root: &Path, kb_id: &str, caller_is_private: bool) -> Resu
     store
         .bases
         .insert(kb_id.to_string(), tier_word(caller_is_private).to_string());
+    // The ratchet has just decided this base's tier, so any `publicized_by_user`
+    // a user left behind now describes a value that is gone. Publicizing is not
+    // an exemption from the ratchet
+    // (`tier_user::tests::the_ratchet_still_ratchets_after_a_publicize`), and an
+    // entry reading Private under `publicized_by_user` would be an audit trail
+    // that says the opposite of what happened.
+    store.provenance.remove(kb_id);
     save(root, &store)
 }
 
@@ -321,7 +394,12 @@ pub fn has_entry_unlocked(root: &Path, kb_id: &str) -> bool {
 /// classified by its own creator rather than by a base that no longer exists.
 pub fn forget_unlocked(root: &Path, kb_id: &str) -> Result<()> {
     let mut store = load_for_write(root)?;
-    if store.bases.remove(kb_id).is_none() {
+    // Both halves, and the provenance one FIRST so the early return below cannot
+    // strand it: an id can carry a user's reason with no tier entry only if
+    // something went wrong, and leaving it would hand a base created later under
+    // the same id a history that is not its own.
+    let had_provenance = store.provenance.remove(kb_id).is_some();
+    if store.bases.remove(kb_id).is_none() && !had_provenance {
         return Ok(());
     }
     save(root, &store)

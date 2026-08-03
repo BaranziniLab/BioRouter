@@ -446,6 +446,27 @@ impl KnowledgeService {
         crate::knowledge::tier::raise_unlocked(&self.root, kb_id, caller_is_private)
     }
 
+    /// Take the root lock and SET `kb_id`'s tier on the user's behalf (issue #56
+    /// DR-18) — the one call in the tree that can lower one.
+    ///
+    /// It sits beside [`Self::raise_tier`] and shares its lock discipline and its
+    /// deadlock rule: never call it from `create_base` / `import_brkb` /
+    /// `delete_base`, which are already inside `lock_root()`.
+    ///
+    /// The `&UserKbTierChange` is a proof-of-user with a private field. This
+    /// wrapper can accept one and cannot make one — the only construction site
+    /// in the tree is the HTTP handler behind the user-action header, pinned by
+    /// `tier_user::tests::the_proof_of_user_is_constructed_in_exactly_one_place`.
+    pub fn set_tier_by_user(
+        &self,
+        kb_id: &str,
+        tier: crate::knowledge::types::KbTier,
+        ok: &crate::knowledge::tier_user::UserKbTierChange,
+    ) -> Result<()> {
+        let _lock = self.lock_root()?;
+        crate::knowledge::tier_user::set_unlocked(&self.root, kb_id, tier, ok)
+    }
+
     /// The mirror of [`Self::raise_tier`], for a base that has gone away.
     pub fn forget_tier(&self, kb_id: &str) -> Result<()> {
         let _lock = self.lock_root()?;

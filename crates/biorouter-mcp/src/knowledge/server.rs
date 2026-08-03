@@ -2145,6 +2145,57 @@ mod tests {
         );
     }
 
+    /// DR-18(b), pinned here as well as in Task 10B's
+    /// `a_base_created_from_a_private_chat_is_born_private`, because this is the
+    /// assertion a reader lands on when they ask "when does a base become
+    /// private?" — and the answer is *at creation*, not at the first ingest.
+    ///
+    /// The extra thing this says over its sibling is the timing: NOTHING has been
+    /// written into the base at the moment it is classified. No page, no raw
+    /// source, no macro run. An implementation that stamped the tier from the
+    /// first write would leave a window in which a private session's own base is
+    /// readable by every public model, and its sibling — which only checks the
+    /// end state — would pass.
+    #[tokio::test]
+    async fn a_base_created_by_a_private_model_is_private_before_any_ingest() {
+        let (srv, _tmp, root) = migrated_server_with_bases(&[]);
+        call_tool_as(
+            &srv,
+            "kb_create_base",
+            serde_json::json!({ "id": "cohort", "name": "Cohort" }),
+            Private,
+        )
+        .await
+        .unwrap();
+        assert!(crate::knowledge::tier::is_private(&root, "cohort"));
+        assert!(
+            crate::knowledge::store::list_pages(&root.join("cohort"), None)
+                .unwrap()
+                .is_empty(),
+            "the base was classified only after something was written into it"
+        );
+        assert!(
+            std::fs::read_dir(root.join("cohort").join("raw"))
+                .unwrap()
+                .next()
+                .is_none(),
+            "the base already holds a raw source, so this proves nothing about timing"
+        );
+
+        // The symmetric half: a public chat's brand-new base is public from the
+        // same instant, so the assertion above is not satisfied by "everything is
+        // private".
+        call_tool_as(
+            &srv,
+            "kb_create_base",
+            serde_json::json!({ "id": "notes", "name": "Notes" }),
+            Public,
+        )
+        .await
+        .unwrap();
+        assert!(!crate::knowledge::tier::is_private(&root, "notes"));
+    }
+
     #[tokio::test]
     async fn a_public_chat_can_still_create_and_import_a_knowledge_base() {
         // The regression the sixteen-site enumeration encoded, as a test. A

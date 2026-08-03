@@ -8,8 +8,9 @@ import {
   Search,
   Trash2,
 } from '../../icons/app-icons';
-import type { Manifest } from '../../../api/types.gen';
+import type { KbListEntry } from '../../../api/types.gen';
 import { Badge } from '../../ui/badge';
+import { PrivacyBadge } from '../../ui/PrivacyBadge';
 import { Button } from '../../ui/button';
 import {
   Dialog,
@@ -31,7 +32,7 @@ interface Props {
   onClose: () => void;
 }
 
-type DraftMode = { kind: 'create' } | { kind: 'rename'; base: Manifest } | null;
+type DraftMode = { kind: 'create' } | { kind: 'rename'; base: KbListEntry } | null;
 
 export function KBSelectorPalette({ onClose }: Props) {
   const {
@@ -51,7 +52,7 @@ export function KBSelectorPalette({ onClose }: Props) {
   const [draft, setDraft] = useState('');
   const [draftMode, setDraftMode] = useState<DraftMode>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
-  const [baseToDelete, setBaseToDelete] = useState<Manifest | null>(null);
+  const [baseToDelete, setBaseToDelete] = useState<KbListEntry | null>(null);
   const [error, setError] = useState<string | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const importRef = useRef<HTMLInputElement>(null);
@@ -109,7 +110,7 @@ export function KBSelectorPalette({ onClose }: Props) {
     setDraft(query.trim());
   }
 
-  function startRename(base: Manifest) {
+  function startRename(base: KbListEntry) {
     setError(null);
     setDraftMode({ kind: 'rename', base });
     setDraft(base.name);
@@ -171,7 +172,7 @@ export function KBSelectorPalette({ onClose }: Props) {
     }
   }
 
-  async function handleExport(base: Manifest) {
+  async function handleExport(base: KbListEntry) {
     setError(null);
     setBusyId(base.id);
     try {
@@ -342,7 +343,7 @@ export function KBSelectorPalette({ onClose }: Props) {
                 No knowledge bases match this search.
               </div>
             ) : (
-              <div className="biorouter-list-shell">
+              <div className="biorouter-list-shell" role="listbox" aria-label="Knowledge bases">
                 {filtered.map((base) => {
                   const isPrimary = primaryKbId === base.id;
                   const isBusy = busyId === base.id;
@@ -355,6 +356,12 @@ export function KBSelectorPalette({ onClose }: Props) {
                     >
                       <button
                         type="button"
+                        // The row IS the choice, so it carries the option role and
+                        // says whether it is the current one. Without this the
+                        // palette is a pile of buttons to a screen reader, and the
+                        // tier badge below has no row to belong to.
+                        role="option"
+                        aria-selected={isPrimary}
                         // Making a base primary is not a navigation: the palette
                         // is where the whole selection is managed, so it stays open.
                         onClick={() => setPrimaryKbId(base.id)}
@@ -371,6 +378,23 @@ export function KBSelectorPalette({ onClose }: Props) {
                             </div>
                             {isBuiltinKnowledgeBase(base.id) && (
                               <BuiltInBadge title={BUILTIN_RECREATED_TITLE} />
+                            )}
+                            {/* Issue #56 DR-18. The palette is the switch, so the
+                                tier has to be legible BEFORE the user switches —
+                                a badge only on the base you already chose tells
+                                you what you did, not what you are about to do.
+                                Private is the marked state; Public is quiet, so
+                                the marking stays a marking (`PrivacyBadge`'s
+                                dense mode is that rule as code) — a badge on
+                                every row trains people to stop seeing badges.
+
+                                `!== 'public'`, not `=== 'private'`: anything the
+                                daemon sends that is not exactly Public is marked,
+                                which is the polarity the whole feature uses and
+                                the one that fails in the safe direction if the
+                                union ever widens. */}
+                            {base.tier !== 'public' && (
+                              <PrivacyBadge tier={base.tier} className="text-[10px]" />
                             )}
                             {hidden && (
                               <Badge uppercase className="text-[10px]">

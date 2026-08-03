@@ -7,8 +7,16 @@ const mocks = vi.hoisted(() => ({
   refresh: vi.fn(),
 }));
 
+const state = vi.hoisted(() => ({
+  primaryKb: null as { id: string; name: string; tier?: string } | null,
+}));
+
 vi.mock('./KnowledgeContext', () => ({
-  useKnowledge: () => ({ refresh: mocks.refresh }),
+  useKnowledge: () => ({ refresh: mocks.refresh, primaryKb: state.primaryKb }),
+}));
+
+vi.mock('./KbTierControl', () => ({
+  KbTierPanel: ({ kb }: { kb: { id: string } }) => <div>tier control for {kb.id}</div>,
 }));
 
 vi.mock('../Layout/MainPanelLayout', () => ({
@@ -37,6 +45,7 @@ vi.mock('./changelog/ChangeLogDrawer', () => ({
 
 beforeEach(() => {
   vi.clearAllMocks();
+  state.primaryKb = null;
 });
 
 describe('KnowledgeView compact workspace', () => {
@@ -63,5 +72,21 @@ describe('KnowledgeView compact workspace', () => {
     expect(graphTab).toHaveAttribute('aria-selected', 'true');
     expect(graphPanel).toHaveClass('flex');
     expect(digestPanel).toHaveClass('hidden');
+  });
+});
+
+// Issue #56 DR-18. The tier control lives beside the base it acts on, in the
+// KB header — not in a settings page, where a user reading a private base would
+// never meet it.
+describe('KnowledgeView tier control', () => {
+  it('offers the tier control for the base the view is showing', () => {
+    state.primaryKb = { id: 'omop', name: 'OMOP', tier: 'private' };
+    render(<KnowledgeView />);
+    expect(screen.getByText(/tier control for omop/)).toBeInTheDocument();
+  });
+
+  it('offers nothing when there is no base to act on', () => {
+    render(<KnowledgeView />);
+    expect(screen.queryByText(/tier control for/)).toBeNull();
   });
 });

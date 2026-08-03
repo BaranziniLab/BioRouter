@@ -15,8 +15,14 @@ use biorouter_mcp::knowledge::{
     service::{KnowledgeService, PrimaryUpdate, ReadPageError},
     source_paths, store,
     subagent::{events::SubAgentEvent, loop_::SubAgentBounds},
-    types::{Credibility, Graph, HistoryEntry, Manifest, ModelRef},
+    tier,
+    tier_user::UserKbTierChange,
+    types::{Credibility, Graph, HistoryEntry, KbTier, Manifest, ModelRef},
 };
+// Issue #56 DR-16/DR-18. `src/routes/` is compiled into the `biorouterd` binary
+// as well as the lib and cannot name `crate::auth`, so this is the shared
+// direction — the same import `routes::session` uses for the declassify route.
+use biorouter_server::auth::{user_action_proof, UserActionProof};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
@@ -34,6 +40,7 @@ pub fn router(svc: Arc<KnowledgeService>) -> Router {
             "/bases/{id}",
             get(get_base).put(update_base).delete(delete_base),
         )
+        .route("/bases/{id}/tier", get(get_kb_tier).post(set_kb_tier))
         .route("/bases/{id}/default-model", put(set_default_model))
         .route("/bases/{id}/graph", get(get_graph))
         .route("/bases/{id}/location", get(get_location))
@@ -333,17 +340,44 @@ pub struct LintBody {
 // Task 5: read-only routes (list / create / get / delete / graph)
 // ──────────────────────────────────────────────────────────────────────────────
 
+/// One row of `GET /knowledge/bases`: the stored manifest plus the privacy tier
+/// (issue #56).
+///
+/// The tier is **flattened alongside** the manifest rather than added to it,
+/// because `manifest.yaml` is the on-disk record and the tier lives in
+/// `.kb-tiers`. A `tier` field on [`Manifest`] would be persisted by the next
+/// `manifest::save` and become a second, staler answer to a question the tier
+/// store already answers — and it would also appear on `kb_list_bases`, a
+/// model-facing tool whose payload Task 10D's metadata register governs.
+///
+/// This route is user-facing: the renderer is the only caller, and Task 10C
+/// already removes private bases from the model's own listing entirely.
+#[derive(Serialize, ToSchema)]
+pub struct KbListEntry {
+    #[serde(flatten)]
+    pub manifest: Manifest,
+    pub tier: KbTier,
+}
+
 #[utoipa::path(
     get, path = "/knowledge/bases",
-    responses((status = 200, description = "List of knowledge bases", body = Vec<Manifest>))
+    responses((status = 200, description = "List of knowledge bases", body = Vec<KbListEntry>))
 )]
 pub async fn list_bases(
     State(svc): State<Arc<KnowledgeService>>,
-) -> Result<Json<Vec<Manifest>>, (StatusCode, String)> {
+) -> Result<Json<Vec<KbListEntry>>, (StatusCode, String)> {
     let bases = svc
         .list_bases()
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    Ok(Json(bases))
+    Ok(Json(
+        bases
+            .into_iter()
+            .map(|manifest| KbListEntry {
+                tier: tier::entry(svc.root(), &manifest.id).tier,
+                manifest,
+            })
+            .collect(),
+    ))
 }
 
 #[utoipa::path(
@@ -430,6 +464,199 @@ pub async fn set_default_model(
         }
     })?;
     Ok(Json(manifest))
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Issue #56 DR-18 / Task 29A: the user's own publicize / privatize control.
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// What `POST /knowledge/bases/{id}/tier` says to a caller holding nothing but
+/// the daemon secret.
+///
+/// §9.3 A1: that secret is reachable from any developer-enabled agent shell, so
+/// `X-Secret-Key` alone is not a human (AR-11/AR-15). Moving a base's tier is the
+/// one operation that can *reverse* the knowledge-base ratchet, so it is the last
+/// place an unproven caller may be given the benefit of the doubt.
+///
+/// §14.4's content rule: it names the boundary and nothing about the base, and it
+/// forecloses the retry, because a model that reads a refusal as transient loops
+/// on it.
+///
+/// ⚠ It deliberately carries NEITHER of the two markers the renderer keys on —
+/// not `USER_ACTION_REFUSAL_MARKER` ("is the user's decision, not yours"), whose
+/// toast says *switch this chat's model*, nor `COPY_OF_PRIVATE_REFUSAL_MARKER`
+/// ("only the person at the keyboard may do it"), whose toast says *branch it
+/// from the chat window*. Both would send the user somewhere that cannot help.
+const TIER_NEEDS_USER: &str =
+    "Changing a knowledge base's privacy is a choice only the person at the keyboard can make, and \
+     this request carried no proof it came from them. Nothing was changed. Do not retry; the same \
+     call will be refused again. If this base should be readable by public models, stop and ask \
+     the user to change it from the Knowledge view.";
+
+/// Open question 23's posture, applied here without inventing a second answer: a
+/// daemon that was handed no user-action key cannot verify one, so the control is
+/// **unavailable** rather than open — in both directions, for every caller,
+/// including the human at the keyboard.
+///
+/// It names the cause, because a refusal that reads as a permission denial sends
+/// the user hunting for a permission that does not exist.
+const TIER_NEEDS_A_DAEMON_KEY: &str =
+    "This Biorouter backend was started without a user-action key, so it cannot tell a request \
+     made by you from one made by a model — and changing a knowledge base's privacy is yours to \
+     decide. Nothing was changed. The desktop app supplies that key; a backend started by `just \
+     run-server`, by running `biorouterd agent` by hand, or as a headless server deployment does \
+     not, and cannot offer this control. Use the desktop app for this change.";
+
+#[derive(Deserialize, ToSchema)]
+pub struct SetKbTierBody {
+    /// The tier the user chose. Both directions require the proof-of-user:
+    /// privatizing discloses nothing and needs no confirmation dialog, but it is
+    /// still not a thing a model may do, and admitting one direction unproven is
+    /// how the tool channel gets the decision back.
+    pub tier: KbTier,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct KbTierResponse {
+    pub id: String,
+    pub tier: KbTier,
+    /// `publicized_by_user` / `privatized_by_user`, or absent for a base whose
+    /// tier only the ratchet has ever touched. A base the user released must
+    /// never be indistinguishable from one that was always public.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// RFC 3339, and set exactly when `reason` is.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub changed_at: Option<String>,
+    /// What a publicize would release, counted from the tree at read time — not
+    /// from anything the renderer already had. The confirmation states the blast
+    /// radius rather than asking "are you sure", so these are the numbers it
+    /// says out loud.
+    pub page_count: usize,
+    pub raw_source_count: usize,
+}
+
+/// Count what a publicize would release: every page under `knowledge/` and every
+/// raw source under `raw/`.
+///
+/// A missing directory counts zero rather than failing: a base can legitimately
+/// have no raw sources, and a dialog that cannot open because a folder is absent
+/// is worse than one that says "0 raw sources".
+fn blast_radius(root: &std::path::Path, kb_id: &str) -> (usize, usize) {
+    let kb_root = paths::kb_root(root, kb_id);
+    let pages = store::list_pages(&kb_root, None)
+        .map(|p| p.len())
+        .unwrap_or(0);
+    let raw = std::fs::read_dir(paths::kb_raw_dir(root, kb_id))
+        .map(|entries| {
+            entries
+                .filter_map(|e| e.ok())
+                .filter(|e| e.path().is_dir())
+                .count()
+        })
+        .unwrap_or(0);
+    (pages, raw)
+}
+
+fn tier_response(svc: &KnowledgeService, id: &str) -> KbTierResponse {
+    let entry = tier::entry(svc.root(), id);
+    let (page_count, raw_source_count) = blast_radius(svc.root(), id);
+    KbTierResponse {
+        id: id.to_string(),
+        tier: entry.tier,
+        reason: entry.reason,
+        changed_at: entry.changed_at,
+        page_count,
+        raw_source_count,
+    }
+}
+
+/// Read a base's tier, its provenance, and what publicizing it would release.
+///
+/// A plain read: it is the Knowledge view asking about the user's own base, and
+/// the barrier Task 10C installs is for model callers. No proof-of-user, because
+/// nothing is changed.
+#[utoipa::path(
+    get, path = "/knowledge/bases/{id}/tier",
+    params(("id" = String, Path, description = "Knowledge base ID")),
+    responses(
+        (status = 200, description = "The base's tier and what a publicize would release", body = KbTierResponse),
+        (status = 404, description = "Not found"),
+    )
+)]
+pub async fn get_kb_tier(
+    State(svc): State<Arc<KnowledgeService>>,
+    Path(id): Path<String>,
+) -> Result<Json<KbTierResponse>, (StatusCode, String)> {
+    svc.get_base(&id)
+        .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
+    Ok(Json(tier_response(&svc, &id)))
+}
+
+/// Move a knowledge base's privacy tier, on the user's behalf (issue #56 DR-18).
+///
+/// The ONLY route in the tree that can LOWER one. It is user-only (DR-16's
+/// `X-User-Action`, the same header and the same key Task 18A installs — not a
+/// second one), it works in both directions, and the change carries its
+/// provenance into `.kb-tiers` so a released base stays distinguishable from one
+/// that was always public.
+///
+/// ⚠ **There is no `kb_set_tier` tool and there must never be one.** A model
+/// raises a tier as a side effect of writing (Task 10B, raise-only) and can do
+/// nothing else.
+///
+/// ⚠ **The typed confirmation is not enforced here, and that is deliberate**,
+/// unlike `POST /sessions/{id}/declassify` where the daemon re-derives the grade.
+/// A session's grade depends on server state (its stored provenance), so a client
+/// could otherwise claim the weak control for a chat that no longer qualifies.
+/// A base's grade depends only on the DIRECTION, which the request itself states:
+/// a publicize with no phrase is exactly what the request says it wants, and the
+/// phrase's job — making the user check *which* base — is a property of the
+/// dialog, not a claim about server state. What the daemon enforces is the thing
+/// a client cannot fake: the proof that a human asked at all.
+#[utoipa::path(
+    post, path = "/knowledge/bases/{id}/tier",
+    request_body = SetKbTierBody,
+    params(("id" = String, Path, description = "Knowledge base ID")),
+    responses(
+        (status = 200, description = "The base's tier after the change", body = KbTierResponse),
+        (status = 403, description = "Refused by a privacy boundary: changing a knowledge base's \
+                                      privacy is the user's decision and the request carried no \
+                                      proof it came from them — or this daemon holds no \
+                                      user-action key at all (body = plain text)"),
+        (status = 404, description = "Not found"),
+        (status = 500, description = "Internal server error"),
+    )
+)]
+pub async fn set_kb_tier(
+    State(svc): State<Arc<KnowledgeService>>,
+    Path(id): Path<String>,
+    // Before `Json`, which consumes the body and must be last.
+    headers: HeaderMap,
+    Json(body): Json<SetKbTierBody>,
+) -> Result<Json<KbTierResponse>, (StatusCode, String)> {
+    // FIRST, before the base is even looked up. An unproven caller learns nothing
+    // about which ids exist, and the refusal cannot be told apart from one for a
+    // base that is not there.
+    match user_action_proof(&headers) {
+        UserActionProof::Proven => {}
+        UserActionProof::Unproven => {
+            return Err((StatusCode::FORBIDDEN, TIER_NEEDS_USER.to_string()))
+        }
+        UserActionProof::NoKeyInstalled => {
+            return Err((StatusCode::FORBIDDEN, TIER_NEEDS_A_DAEMON_KEY.to_string()))
+        }
+    }
+
+    svc.get_base(&id)
+        .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
+
+    // The single construction site of the proof-of-user, pinned by
+    // `knowledge::tier_user::tests::the_proof_of_user_is_constructed_in_exactly_one_place`.
+    svc.set_tier_by_user(&id, body.tier, &UserKbTierChange::from_user_action())
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(Json(tier_response(&svc, &id)))
 }
 
 #[utoipa::path(

@@ -793,6 +793,68 @@ export type JsonObject = {
     [key: string]: unknown;
 };
 
+/**
+ * One row of `GET /knowledge/bases`: the stored manifest plus the privacy tier
+ * (issue #56).
+ *
+ * The tier is **flattened alongside** the manifest rather than added to it,
+ * because `manifest.yaml` is the on-disk record and the tier lives in
+ * `.kb-tiers`. A `tier` field on [`Manifest`] would be persisted by the next
+ * `manifest::save` and become a second, staler answer to a question the tier
+ * store already answers — and it would also appear on `kb_list_bases`, a
+ * model-facing tool whose payload Task 10D's metadata register governs.
+ *
+ * This route is user-facing: the renderer is the only caller, and Task 10C
+ * already removes private bases from the model's own listing entirely.
+ */
+export type KbListEntry = Manifest & {
+    tier: KbTier;
+};
+
+/**
+ * A knowledge base's privacy tier (issue #56, design §9.3 B4).
+ *
+ * The stored form is the lowercase word in `.kb-tiers`, and it is the same
+ * vocabulary [`crate::knowledge::tier`] compares against — one spelling, so the
+ * enum and the store cannot drift.
+ *
+ * ⚠ **This is a USER-FACING type, not a model-facing one.** Task 10D's metadata
+ * register governs what a model may learn about a base; nothing here is added
+ * to a `#[tool]` response. It travels on the HTTP surface the renderer reads
+ * (`GET /knowledge/bases`, `GET|POST /knowledge/bases/{id}/tier`) and nowhere
+ * else — in particular it is deliberately NOT a field on [`Manifest`], because
+ * `manifest.yaml` is the on-disk record and a second copy of the tier there
+ * would be a second answer to the question `.kb-tiers` already answers.
+ *
+ * The `bool` in `tier.rs` is unchanged and stays: `biorouter-mcp` cannot depend
+ * on `biorouter`, where `ProviderTier` lives, and the ratchet's argument is the
+ * CALLER's capability rather than a base's tier.
+ */
+export type KbTier = 'public' | 'private';
+
+export type KbTierResponse = {
+    /**
+     * RFC 3339, and set exactly when `reason` is.
+     */
+    changed_at?: string | null;
+    id: string;
+    /**
+     * What a publicize would release, counted from the tree at read time — not
+     * from anything the renderer already had. The confirmation states the blast
+     * radius rather than asking "are you sure", so these are the numbers it
+     * says out loud.
+     */
+    page_count: number;
+    raw_source_count: number;
+    /**
+     * `publicized_by_user` / `privatized_by_user`, or absent for a base whose
+     * tier only the ratchet has ever touched. A base the user released must
+     * never be indistinguishable from one that was always public.
+     */
+    reason?: string | null;
+    tier: KbTier;
+};
+
 export type KillJobResponse = {
     message: string;
 };
@@ -2051,6 +2113,10 @@ export type SetActiveBody = {
 
 export type SetDefaultModelBody = {
     model?: ModelRef | null;
+};
+
+export type SetKbTierBody = {
+    tier: KbTier;
 };
 
 export type SetProviderRequest = {
@@ -3897,7 +3963,7 @@ export type ListBasesResponses = {
     /**
      * List of knowledge bases
      */
-    200: Array<Manifest>;
+    200: Array<KbListEntry>;
 };
 
 export type ListBasesResponse = ListBasesResponses[keyof ListBasesResponses];
@@ -4533,6 +4599,70 @@ export type ReclassifyResponses = {
 };
 
 export type ReclassifyResponse = ReclassifyResponses[keyof ReclassifyResponses];
+
+export type GetKbTierData = {
+    body?: never;
+    path: {
+        /**
+         * Knowledge base ID
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/knowledge/bases/{id}/tier';
+};
+
+export type GetKbTierErrors = {
+    /**
+     * Not found
+     */
+    404: unknown;
+};
+
+export type GetKbTierResponses = {
+    /**
+     * The base's tier and what a publicize would release
+     */
+    200: KbTierResponse;
+};
+
+export type GetKbTierResponse = GetKbTierResponses[keyof GetKbTierResponses];
+
+export type SetKbTierData = {
+    body: SetKbTierBody;
+    path: {
+        /**
+         * Knowledge base ID
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/knowledge/bases/{id}/tier';
+};
+
+export type SetKbTierErrors = {
+    /**
+     * Refused by a privacy boundary: changing a knowledge base's privacy is the user's decision and the request carried no proof it came from them — or this daemon holds no user-action key at all (body = plain text)
+     */
+    403: unknown;
+    /**
+     * Not found
+     */
+    404: unknown;
+    /**
+     * Internal server error
+     */
+    500: unknown;
+};
+
+export type SetKbTierResponses = {
+    /**
+     * The base's tier after the change
+     */
+    200: KbTierResponse;
+};
+
+export type SetKbTierResponse = SetKbTierResponses[keyof SetKbTierResponses];
 
 export type CheckModelData = {
     body: CheckModelBody;

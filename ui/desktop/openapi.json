@@ -1606,7 +1606,7 @@
                 "schema": {
                   "type": "array",
                   "items": {
-                    "$ref": "#/components/schemas/Manifest"
+                    "$ref": "#/components/schemas/KbListEntry"
                   }
                 }
               }
@@ -2457,6 +2457,92 @@
           },
           "500": {
             "description": "Internal error"
+          }
+        }
+      }
+    },
+    "/knowledge/bases/{id}/tier": {
+      "get": {
+        "tags": [
+          "super::routes::knowledge"
+        ],
+        "summary": "Read a base's tier, its provenance, and what publicizing it would release.",
+        "description": "A plain read: it is the Knowledge view asking about the user's own base, and\nthe barrier Task 10C installs is for model callers. No proof-of-user, because\nnothing is changed.",
+        "operationId": "get_kb_tier",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Knowledge base ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The base's tier and what a publicize would release",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KbTierResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "super::routes::knowledge"
+        ],
+        "summary": "Move a knowledge base's privacy tier, on the user's behalf (issue #56 DR-18).",
+        "description": "The ONLY route in the tree that can LOWER one. It is user-only (DR-16's\n`X-User-Action`, the same header and the same key Task 18A installs — not a\nsecond one), it works in both directions, and the change carries its\nprovenance into `.kb-tiers` so a released base stays distinguishable from one\nthat was always public.\n\n⚠ **There is no `kb_set_tier` tool and there must never be one.** A model\nraises a tier as a side effect of writing (Task 10B, raise-only) and can do\nnothing else.\n\n⚠ **The typed confirmation is not enforced here, and that is deliberate**,\nunlike `POST /sessions/{id}/declassify` where the daemon re-derives the grade.\nA session's grade depends on server state (its stored provenance), so a client\ncould otherwise claim the weak control for a chat that no longer qualifies.\nA base's grade depends only on the DIRECTION, which the request itself states:\na publicize with no phrase is exactly what the request says it wants, and the\nphrase's job — making the user check *which* base — is a property of the\ndialog, not a claim about server state. What the daemon enforces is the thing\na client cannot fake: the proof that a human asked at all.",
+        "operationId": "set_kb_tier",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Knowledge base ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetKbTierBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The base's tier after the change",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KbTierResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Refused by a privacy boundary: changing a knowledge base's privacy is the user's decision and the request carried no proof it came from them — or this daemon holds no user-action key at all (body = plain text)"
+          },
+          "404": {
+            "description": "Not found"
+          },
+          "500": {
+            "description": "Internal server error"
           }
         }
       }
@@ -6656,6 +6742,69 @@
         "type": "object",
         "additionalProperties": true
       },
+      "KbListEntry": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Manifest"
+          },
+          {
+            "type": "object",
+            "required": [
+              "tier"
+            ],
+            "properties": {
+              "tier": {
+                "$ref": "#/components/schemas/KbTier"
+              }
+            }
+          }
+        ],
+        "description": "One row of `GET /knowledge/bases`: the stored manifest plus the privacy tier\n(issue #56).\n\nThe tier is **flattened alongside** the manifest rather than added to it,\nbecause `manifest.yaml` is the on-disk record and the tier lives in\n`.kb-tiers`. A `tier` field on [`Manifest`] would be persisted by the next\n`manifest::save` and become a second, staler answer to a question the tier\nstore already answers — and it would also appear on `kb_list_bases`, a\nmodel-facing tool whose payload Task 10D's metadata register governs.\n\nThis route is user-facing: the renderer is the only caller, and Task 10C\nalready removes private bases from the model's own listing entirely."
+      },
+      "KbTier": {
+        "type": "string",
+        "description": "A knowledge base's privacy tier (issue #56, design §9.3 B4).\n\nThe stored form is the lowercase word in `.kb-tiers`, and it is the same\nvocabulary [`crate::knowledge::tier`] compares against — one spelling, so the\nenum and the store cannot drift.\n\n⚠ **This is a USER-FACING type, not a model-facing one.** Task 10D's metadata\nregister governs what a model may learn about a base; nothing here is added\nto a `#[tool]` response. It travels on the HTTP surface the renderer reads\n(`GET /knowledge/bases`, `GET|POST /knowledge/bases/{id}/tier`) and nowhere\nelse — in particular it is deliberately NOT a field on [`Manifest`], because\n`manifest.yaml` is the on-disk record and a second copy of the tier there\nwould be a second answer to the question `.kb-tiers` already answers.\n\nThe `bool` in `tier.rs` is unchanged and stays: `biorouter-mcp` cannot depend\non `biorouter`, where `ProviderTier` lives, and the ratchet's argument is the\nCALLER's capability rather than a base's tier.",
+        "enum": [
+          "public",
+          "private"
+        ]
+      },
+      "KbTierResponse": {
+        "type": "object",
+        "required": [
+          "id",
+          "tier",
+          "page_count",
+          "raw_source_count"
+        ],
+        "properties": {
+          "changed_at": {
+            "type": "string",
+            "description": "RFC 3339, and set exactly when `reason` is.",
+            "nullable": true
+          },
+          "id": {
+            "type": "string"
+          },
+          "page_count": {
+            "type": "integer",
+            "description": "What a publicize would release, counted from the tree at read time — not\nfrom anything the renderer already had. The confirmation states the blast\nradius rather than asking \"are you sure\", so these are the numbers it\nsays out loud.",
+            "minimum": 0
+          },
+          "raw_source_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "reason": {
+            "type": "string",
+            "description": "`publicized_by_user` / `privatized_by_user`, or absent for a base whose\ntier only the ratchet has ever touched. A base the user released must\nnever be indistinguishable from one that was always public.",
+            "nullable": true
+          },
+          "tier": {
+            "$ref": "#/components/schemas/KbTier"
+          }
+        }
+      },
       "KillJobResponse": {
         "type": "object",
         "required": [
@@ -9502,6 +9651,17 @@
               }
             ],
             "nullable": true
+          }
+        }
+      },
+      "SetKbTierBody": {
+        "type": "object",
+        "required": [
+          "tier"
+        ],
+        "properties": {
+          "tier": {
+            "$ref": "#/components/schemas/KbTier"
           }
         }
       },
