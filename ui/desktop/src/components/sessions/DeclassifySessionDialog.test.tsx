@@ -238,6 +238,36 @@ describe('DeclassifySessionDialog', () => {
     expect(mocks.declassifySession).not.toHaveBeenCalled();
   });
 
+  it('a refused single-click escalates to the typed control instead of looping', async () => {
+    // The row this dialog is handed comes from the session list's cache. If it
+    // still says `turn:*` but the daemon has since recorded `mcp:*`, the
+    // single-click control is the wrong one: the request goes out with no
+    // confirmation and the daemon refuses it over a phrase the user was never
+    // shown. Dropping back to the SAME control re-renders it from the SAME
+    // stale prop, so clicking again fails identically — an unrecoverable
+    // dialog. The strong control is always an acceptable answer to a refusal,
+    // and it is the only one that can recover from a stale grade.
+    mocks.declassifySession.mockRejectedValue(
+      new Error("The confirmation did not match the last six characters of this chat's id.")
+    );
+
+    render(
+      <DeclassifySessionDialog
+        session={{ ...s, privacy_reason: 'turn:versa_azure' }}
+        onClose={vi.fn()}
+        undoMs={5}
+      />
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Make public/ }));
+
+    await waitFor(() => expect(mocks.toastError).toHaveBeenCalled());
+    expect(screen.getByLabelText(/last 6 characters/i)).toBeInTheDocument();
+    // And it says why the field appeared, rather than borrowing the copy for a
+    // chat that genuinely reached a private data source — which would be a
+    // claim about this conversation that nothing here established.
+    expect(screen.queryByText(/reached a private data source/i)).toBeNull();
+  });
+
   it('surfaces a refusal instead of claiming the chat is now public', async () => {
     const user = userEvent.setup();
     const onDeclassified = vi.fn();

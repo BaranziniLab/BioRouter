@@ -92,7 +92,13 @@ export function DeclassifySessionDialog({
   undoMs = 5000,
 }: DeclassifySessionDialogProps) {
   const [phase, setPhase] = useState<Phase>('confirm');
-  const needsPhrase = requiresTypedConfirmation(session.privacy_reason);
+  // Set when a request that carried no confirmation came back refused. The
+  // grade below is read off a row from the session list's CACHE, so it can be
+  // stale; the daemon's is read off the row inside the writing transaction and
+  // is the one that decides. See the catch in `send`.
+  const [escalated, setEscalated] = useState(false);
+  const gradedStrong = requiresTypedConfirmation(session.privacy_reason);
+  const needsPhrase = gradedStrong || escalated;
   const phrase = confirmationPhrase(session.id);
   const undoSeconds = Math.max(1, Math.round(undoMs / 1000));
 
@@ -135,6 +141,13 @@ export function DeclassifySessionDialog({
           title: 'Could not mark this chat public',
           msg: error instanceof Error ? error.message : String(error),
         });
+        // A request that carried no confirmation was refused, so the weak
+        // control this dialog rendered was the wrong one — most likely because
+        // the cached row's `turn:*` provenance has since been displaced by an
+        // `mcp:*` one. Returning to the same control would re-render it from
+        // the same stale prop and fail identically, forever. Escalating is the
+        // only recovery, and it is never the wrong answer to a refusal.
+        if (confirmation === null) setEscalated(true);
         setPhase('confirm');
       }
     },
@@ -179,12 +192,18 @@ export function DeclassifySessionDialog({
       busy={phase === 'sending'}
       title="Make this chat public?"
       description={
-        needsPhrase
+        gradedStrong
           ? 'This chat reached a private data source. Marking it public removes its private ' +
             'marker and lets it be opened by a public model — its contents are unchanged, and ' +
             'this cannot be undone.'
-          : `This chat only ran turns against a private model. Marking it public removes its ` +
-            `private marker; you will have ${undoSeconds} seconds to undo.`
+          : escalated
+            ? // Not the sentence above: nothing here established that this chat
+              // reached a private data source, and saying so would be a claim
+              // about the conversation rather than about the refusal.
+              "That request was refused. This chat's record has changed since this list was " +
+              'loaded, so it now takes the typed confirmation. Marking it public cannot be undone.'
+            : `This chat only ran turns against a private model. Marking it public removes its ` +
+              `private marker; you will have ${undoSeconds} seconds to undo.`
       }
       phrase={needsPhrase ? phrase : undefined}
       fieldLabel="Type the last 6 characters of this chat's ID"
