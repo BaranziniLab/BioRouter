@@ -95,15 +95,22 @@ export function NonPrivateModelDisclosureGate({
   // anything — see this component's doc comment on what that interval is. The
   // cost is one small GET on a machine that only ever runs local models, and the
   // store makes it once per app rather than once per pane.
-  const { copy, acknowledged, acknowledge, acknowledgeError } = useDisclosure(
-    Boolean(providerName)
-  );
-
-  // Set only when the daemon REFUSED to record the acknowledgement. There is
-  // nothing the person at the keyboard can present to satisfy a daemon that
-  // holds no user-action key, so once they have been told it was not saved they
-  // are let past — and, because nothing was written, told again next launch.
-  const [dismissedUnrecorded, setDismissedUnrecorded] = useState(false);
+  //
+  // `dismissedUnrecorded` is set only when the daemon REFUSED to record the
+  // acknowledgement. There is nothing the person at the keyboard can present to
+  // satisfy a daemon that holds no user-action key, so once they have been told
+  // it was not saved they are let past — and, because nothing was written, told
+  // again next launch. It is shared across panes for the same reason
+  // `acknowledged` is: otherwise the pane they got past releases the dialog to
+  // the next one waiting for it.
+  const {
+    copy,
+    acknowledged,
+    acknowledge,
+    acknowledgeError,
+    dismissedUnrecorded,
+    dismissUnrecorded,
+  } = useDisclosure(Boolean(providerName));
 
   const wantsDialog =
     resolved?.required === true && acknowledged === false && copy !== null && !dismissedUnrecorded;
@@ -126,7 +133,7 @@ export function NonPrivateModelDisclosureGate({
       acknowledgeError={acknowledgeError}
       onAcknowledge={() => {
         if (acknowledgeError) {
-          setDismissedUnrecorded(true);
+          dismissUnrecorded();
           return;
         }
         setBusy(true);

@@ -55,6 +55,20 @@ export interface DisclosureState {
    * is the outcome this whole task exists to prevent.
    */
   acknowledgeError: string | null;
+  /**
+   * The user was told the acknowledgement could not be saved, and went on.
+   *
+   * ⚠ Shared, like everything else here, and for a reason the two fixes only
+   * have together: nothing was written, so `acknowledged` stays false, so a pane
+   * that let the user past would release the dialog to the next pane waiting for
+   * it. On a keyless daemon with a four-way split that is four identical
+   * un-satisfiable dialogs to click through. It is deliberately NOT persisted —
+   * the daemon holds no record, so the next launch asks again, which is the
+   * honest behaviour.
+   */
+  dismissedUnrecorded: boolean;
+  /** Record that the user went past an unrecorded acknowledgement. */
+  dismissUnrecorded: () => void;
 }
 
 /**
@@ -123,6 +137,7 @@ interface DisclosureStore {
   copy: DisclosureCopy | null;
   acknowledged: boolean | null;
   acknowledgeError: string | null;
+  dismissedUnrecorded: boolean;
   /** The gate currently showing the blocking dialog, if any. */
   presenter: symbol | null;
 }
@@ -131,6 +146,7 @@ let store: DisclosureStore = {
   copy: null,
   acknowledged: null,
   acknowledgeError: null,
+  dismissedUnrecorded: false,
   presenter: null,
 };
 const listeners = new Set<() => void>();
@@ -183,7 +199,13 @@ function ensureFetched() {
  * isolation and fail in a run.
  */
 export function __resetDisclosureStoreForTests() {
-  store = { copy: null, acknowledged: null, acknowledgeError: null, presenter: null };
+  store = {
+    copy: null,
+    acknowledged: null,
+    acknowledgeError: null,
+    dismissedUnrecorded: false,
+    presenter: null,
+  };
   fetching = null;
   listeners.clear();
 }
@@ -233,7 +255,10 @@ export function useSoleDisclosurePresenter(wants: boolean): boolean {
  * away from the user.
  */
 export function useDisclosure(enabled: boolean = true): DisclosureState {
-  const { copy, acknowledged, acknowledgeError } = useSyncExternalStore(subscribe, readStore);
+  const { copy, acknowledged, acknowledgeError, dismissedUnrecorded } = useSyncExternalStore(
+    subscribe,
+    readStore
+  );
 
   useEffect(() => {
     if (enabled) ensureFetched();
@@ -266,5 +291,16 @@ export function useDisclosure(enabled: boolean = true): DisclosureState {
     return true;
   }, []);
 
-  return { copy, acknowledged, acknowledge, acknowledgeError };
+  const dismissUnrecorded = useCallback(() => {
+    patch({ dismissedUnrecorded: true });
+  }, []);
+
+  return {
+    copy,
+    acknowledged,
+    acknowledge,
+    acknowledgeError,
+    dismissedUnrecorded,
+    dismissUnrecorded,
+  };
 }

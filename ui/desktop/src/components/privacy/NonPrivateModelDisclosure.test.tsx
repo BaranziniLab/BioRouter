@@ -285,6 +285,31 @@ describe('NonPrivateModelDisclosureGate — when it is shown', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
   });
 
+  it('getting past a refusal gets past it in every pane, not one at a time', async () => {
+    // The two fixes meet here. Nothing was written, so `acknowledged` stays
+    // false, so the pane that let the user past releases the dialog — and a
+    // waiting pane would take it straight over. On a keyless daemon with a
+    // four-way split that is four identical un-satisfiable dialogs to click
+    // through, which is worse than the defect either fix was for.
+    const user = userEvent.setup();
+    mocks.ackPrivacyDisclosure.mockResolvedValue({ error: 'refused' });
+    render(
+      <>
+        <NonPrivateModelDisclosureGate providerName="openai" />
+        <NonPrivateModelDisclosureGate providerName="openai" />
+      </>
+    );
+    const [dialog] = await screen.findAllByTestId('non-private-model-disclosure');
+
+    await user.click(within(dialog).getByRole('button', { name: /I understand/i }));
+    await screen.findByTestId('disclosure-ack-error');
+    await user.click(screen.getByRole('button', { name: /continue/i }));
+
+    await waitFor(() =>
+      expect(screen.queryAllByTestId('non-private-model-disclosure')).toHaveLength(0)
+    );
+  });
+
   it('two chat panes on a public model get ONE dialog, not one each', async () => {
     // `ChatGroupsShell` mounts one `BaseChat` per chat group and the split view
     // caps at six, so a two-pane split mounted two of these gates. Each held its
