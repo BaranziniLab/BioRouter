@@ -2,6 +2,7 @@
 import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { checkDocsPrivacy } from './check-docs-privacy.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const BIOROUTER = resolve(process.env.BIOROUTER_REPO || join(ROOT, '..'));
@@ -107,8 +108,18 @@ check(
     `registry_private.rs has [${showKeys(compiledPrivate)}] — ${regenerate}`
 );
 
+// `docs.html`'s "Extension agents in the marketplace" table is hand-written and
+// ungenerated, so it is the one privacy surface with no producer to keep it
+// honest. It belongs in the gated `--check` half rather than the landing-copy
+// half below: it reads only files in this repo, so it can never fail merely
+// because the published site lags main.
+for (const failure of checkDocsPrivacy(docs, registry)) failures.push(failure);
+
 if (PRIVACY_ONLY) {
-  report(`BAAM private set agrees in all three copies (${showKeys(publishedPrivate)}).`);
+  report(
+    `BAAM private set agrees in all three copies (${showKeys(publishedPrivate)}), ` +
+      "and docs.html's agents table agrees with the registry."
+  );
 }
 
 const cargoVersion = capture(source('Cargo.toml'), /version = "([^"]+)"/, 'Cargo workspace version');

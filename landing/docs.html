@@ -1467,15 +1467,16 @@ biorouter session --with-streamable-http-extension "https://my-mcp-server.exampl
 
 <h2>Extension agents in the marketplace</h2>
 <p>BAAM features a set of extension agents that connect BioRouter to specialized data and services. Each installs as a <code>.brxt</code> bundle. Several are UCSF connectors that need institutional credentials.</p>
+<p>The <em>Privacy</em> column is the extension's tier, the same one BAAM shows as a badge on the card and Biorouter enforces at runtime: an agent marked Private reaches institution-governed data and is available only to a chat on a private model, while a Public one is reachable from any chat. The tier is published in the marketplace registry and cannot be granted locally, so this table is checked against it on every build rather than maintained by hand. See <a href="#vaulting" onclick="showDoc('vaulting');return false;">Vaulting &amp; security</a> for what a non-private model can and cannot reach.</p>
 <div class="doc-table-scroll"><table class="doc-table">
-  <thead><tr><th>Agent</th><th>What it connects</th><th>Credentials</th></tr></thead>
+  <thead><tr><th>Agent</th><th>Privacy</th><th>What it connects</th><th>Credentials</th></tr></thead>
   <tbody>
-    <tr><td><strong>SPOKEAgent</strong></td><td>Cypher queries on the SPOKE biomedical knowledge graph (diseases, genes, proteins, drugs, pathways).</td><td><code>SPOKEAGENT_PASSCODE</code> from the UCSF wiki credentials page.</td></tr>
-    <tr><td><strong>UCSFOMOPAgent</strong></td><td>Natural-language SQL over the UCSF OMOP de-identified clinical database (read-only).</td><td>UCSF credentials.</td></tr>
-    <tr><td><strong>CDWAgent</strong></td><td>Multimodal access to the UCSF Clinical Data Warehouse: cohorts, labs, imaging, notes and NLP (read-only).</td><td>UCSF network credentials (<code>CAMPUS\username</code>).</td></tr>
-    <tr><td><strong>PlaywrightAgent</strong></td><td>Browser automation: navigate pages, extract content, and fill forms. No vision model needed.</td><td>None. Requires Node.js.</td></tr>
-    <tr><td><strong>CodeGraphAgent</strong></td><td>A pre-indexed code knowledge graph across 23 languages ("who calls X?", "what breaks if I change Z?").</td><td>None.</td></tr>
-    <tr><td><strong>BiorOffice</strong></td><td>Create, read, and edit Word, Excel, and PowerPoint files from chat.</td><td>None. No Microsoft Office install needed.</td></tr>
+    <tr><td><strong>SPOKEAgent</strong></td><td>Public</td><td>Cypher queries on the SPOKE biomedical knowledge graph (diseases, genes, proteins, drugs, pathways).</td><td><code>SPOKEAGENT_PASSCODE</code> from the UCSF wiki credentials page.</td></tr>
+    <tr><td><strong>UCSFOMOPAgent</strong></td><td>Private</td><td>Natural-language SQL over the UCSF OMOP de-identified clinical database (read-only).</td><td>UCSF credentials.</td></tr>
+    <tr><td><strong>CDWAgent</strong></td><td>Private</td><td>Multimodal access to the UCSF Clinical Data Warehouse: cohorts, labs, imaging, notes and NLP (read-only).</td><td>UCSF network credentials (<code>CAMPUS\username</code>).</td></tr>
+    <tr><td><strong>PlaywrightAgent</strong></td><td>Public</td><td>Browser automation: navigate pages, extract content, and fill forms. No vision model needed.</td><td>None. Requires Node.js.</td></tr>
+    <tr><td><strong>CodeGraphAgent</strong></td><td>Public</td><td>A pre-indexed code knowledge graph across 23 languages ("who calls X?", "what breaks if I change Z?").</td><td>None.</td></tr>
+    <tr><td><strong>BiorOffice</strong></td><td>Public</td><td>Create, read, and edit Word, Excel, and PowerPoint files from chat.</td><td>None. No Microsoft Office install needed.</td></tr>
   </tbody>
 </table></div>
 
