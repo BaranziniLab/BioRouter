@@ -218,17 +218,27 @@ pub async fn upsert_config(
     // uses — and a BARE upsert of this key MUST be refused. What separates them
     // is the confirmation field, which is what the panel sends and what a tool
     // call composing an ordinary config write does not.
-    if query.key == biorouter::privacy::PRIVACY_TIERS_CONFIG_KEY {
+    if biorouter::privacy::is_privacy_tiers_key(&query.key) {
         // Exact comparison, deliberately: a case-insensitive or trimmed match
         // would let "disable privacy tiers" through, and the phrase exists to be
         // typed rather than guessed.
         if query.confirm.as_deref() != Some(biorouter::privacy::PRIVACY_TIERS_DISABLE_PHRASE) {
+            return Err((StatusCode::FORBIDDEN, master_switch_refusal(&query.key)));
+        }
+        // ⚠ And never into the SECRET store. `config.set(.., is_secret)` routes a
+        // secret to the OS credential store, which the startup loader's
+        // `all_values()` does not read — so a confirmed secret write would set
+        // this process's atomic to `off` and then silently revert to `on` at the
+        // next launch, with the panel showing whichever of the two it last read.
+        // Unreachable from the panel, which always sends `false`; refused here so
+        // that stays a property of the daemon rather than of one caller.
+        if query.is_secret {
             return Err((
                 StatusCode::FORBIDDEN,
                 format!(
-                    "'{}' is the master privacy switch. It cannot be written as an ordinary \
-                     configuration value: change it in Settings > Privacy, which asks the user \
-                     to type the confirmation phrase and explains what turning it off exposes.",
+                    "'{}' is the master privacy switch and cannot be stored as a secret: the \
+                     daemon reads it from the configuration file at start-up and would not see \
+                     a value written to the credential store.",
                     query.key
                 ),
             ));
@@ -271,7 +281,7 @@ pub async fn upsert_config(
             // `load_privacy_tiers_from_config`). Re-deriving it from the value
             // just written, through the same parser the loader uses, so the
             // running daemon and the next start-up can never disagree.
-            if query.key == biorouter::privacy::PRIVACY_TIERS_CONFIG_KEY {
+            if biorouter::privacy::is_privacy_tiers_key(&query.key) {
                 let on =
                     biorouter::privacy::privacy_tiers_value_is_on(&query.value).unwrap_or(true);
                 biorouter_mcp::privacy_toggle::set_privacy_tiers_enabled(on);
@@ -285,12 +295,25 @@ pub async fn upsert_config(
     }
 }
 
+/// The one sentence both verbs refuse the master switch with. One copy, so the
+/// two channels cannot drift into saying different things about the same rule.
+fn master_switch_refusal(key: &str) -> String {
+    format!(
+        "'{key}' is the master privacy switch. It cannot be written or removed as an ordinary \
+         configuration value: change it in Settings > Privacy, which asks the user to type the \
+         confirmation phrase and explains what turning it off exposes."
+    )
+}
+
 #[utoipa::path(
     post,
     path = "/config/remove",
     request_body = ConfigKeyQuery,
     responses(
         (status = 200, description = "Configuration value removed successfully", body = String),
+        (status = 403, description = "Refused: `BIOROUTER_PRIVACY_TIERS` is the master privacy \
+                                      switch and may only be changed from Settings > Privacy, \
+                                      never removed"),
         (status = 404, description = "Configuration key not found"),
         (status = 409, description = "Refused by a privacy boundary (issue #56, DR-16): the key \
                                       decides what privacy capability new chats start at, and a \
@@ -304,6 +327,20 @@ pub async fn remove_config(
     headers: http::HeaderMap,
     Json(query): Json<ConfigKeyQuery>,
 ) -> Result<Json<String>, (StatusCode, String)> {
+    // Issue #56 Task 30, hardening measure (2) — the same predicate `upsert_config`
+    // applies, because "one predicate, both verbs" is the argument DR-16 already
+    // made for the capability keys and it holds here for the same reason.
+    //
+    // Refused OUTRIGHT rather than taking the confirmation phrase: a delete of
+    // this key removes it from disk, so the next start-up reads *absent* and
+    // resolves to ON while the running daemon keeps whatever its atomic held.
+    // Both halves of that divergence are in the safe direction, and there is no
+    // legitimate caller — Settings > Privacy writes 'on' or 'off' and never
+    // deletes — so the honest answer is "not through this verb", which leaves
+    // exactly one way for the value to change and one place to look for it.
+    if biorouter::privacy::is_privacy_tiers_key(&query.key) {
+        return Err((StatusCode::FORBIDDEN, master_switch_refusal(&query.key)));
+    }
     // Issue #56 DR-16. The FIFTH channel to the capability keys, and the one the
     // task's own four-channel enumeration missed.
     //

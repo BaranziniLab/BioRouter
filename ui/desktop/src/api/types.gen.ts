@@ -3730,6 +3730,10 @@ export type RemoveConfigData = {
 
 export type RemoveConfigErrors = {
     /**
+     * Refused: `BIOROUTER_PRIVACY_TIERS` is the master privacy switch and may only be changed from Settings > Privacy, never removed
+     */
+    403: unknown;
+    /**
      * Configuration key not found
      */
     404: unknown;

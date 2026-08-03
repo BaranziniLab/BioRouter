@@ -86,6 +86,21 @@ pub fn load_privacy_tiers_from_config() {
 /// loader, by `/config/upsert`'s gated arm and by the Settings panel.
 pub const PRIVACY_TIERS_CONFIG_KEY: &str = "BIOROUTER_PRIVACY_TIERS";
 
+/// Is this key the master privacy switch? **One predicate, every verb** — the
+/// same argument [`is_capability_key`] makes, and for the same reason it was
+/// made there: a rule that holds for `POST /config/upsert` and not for
+/// `POST /config/remove` is not a rule, it is a door with one lock.
+///
+/// A DELETE of this key is not the absence of a write. It removes the key from
+/// disk, so the next start-up reads *absent* and resolves to ON — while the
+/// running daemon's atomic keeps whatever it had. Every consequence of that is
+/// in the safe direction, which is exactly why it went unnoticed; the reason to
+/// close it anyway is that the divergence is real, silent, and the next person
+/// to reason about "where can this value change" would be wrong.
+pub fn is_privacy_tiers_key(key: &str) -> bool {
+    key == PRIVACY_TIERS_CONFIG_KEY
+}
+
 /// The typed phrase Settings → Privacy sends with the flip. A **UX guard against
 /// an accidental or model-composed config write**, not an authorization
 /// boundary: the phrase is a fixed string in the shipped source, so a caller
@@ -104,14 +119,24 @@ pub const PRIVACY_TIERS_DISABLE_PHRASE: &str = "DISABLE PRIVACY TIERS";
 /// nothing would believe the feature is off while it is on. Over-reading an
 /// "off" costs protection the user asked to drop; under-reading one costs them
 /// a belief that is false.
+///
+/// ⚠ **`trim` for the same reason, and it is not cosmetic.** The renderer's
+/// mirror of this function (`settings/privacy/privacyTiers.ts`) trims, and the
+/// two must agree or a hand-edited `BIOROUTER_PRIVACY_TIERS: " off "` renders as
+/// off in Settings → Privacy while the daemon goes on enforcing — the user is
+/// then told something false about the control they just used, which is the
+/// exact failure the paragraph above rejects.
 pub fn privacy_tiers_value_is_on(value: &serde_json::Value) -> Option<bool> {
     match value {
         serde_json::Value::Bool(b) => Some(*b),
-        serde_json::Value::String(s) => Some(
-            !(s.eq_ignore_ascii_case("off")
-                || s.eq_ignore_ascii_case("false")
-                || s.eq_ignore_ascii_case("no")),
-        ),
+        serde_json::Value::String(s) => {
+            let s = s.trim();
+            Some(
+                !(s.eq_ignore_ascii_case("off")
+                    || s.eq_ignore_ascii_case("false")
+                    || s.eq_ignore_ascii_case("no")),
+            )
+        }
         _ => None,
     }
 }

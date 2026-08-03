@@ -17,7 +17,9 @@
 
 use axum::Json;
 use biorouter::config::Config;
-use biorouter_server::routes::config_management::{upsert_config, UpsertConfigQuery};
+use biorouter_server::routes::config_management::{
+    remove_config, upsert_config, ConfigKeyQuery, UpsertConfigQuery,
+};
 use http::{HeaderMap, StatusCode};
 use serde_json::Value;
 
@@ -68,9 +70,7 @@ impl PrivacyToggleFixture {
         // assertion below would still pass while the side effect landed in
         // `~/.config/biorouter/config.yaml`.
         assert!(
-            Config::global()
-                .all_values()
-                .is_ok_and(|_| true)
+            Config::global().all_values().is_ok_and(|_| true)
                 && biorouter::config::paths::Paths::config_dir().starts_with(root.path()),
             "the config root was not redirected; refusing to write the real config.yaml"
         );
@@ -168,6 +168,99 @@ async fn a_bare_config_upsert_cannot_flip_the_key_but_the_confirmed_one_can() {
     .await
     .expect("the confirmed flip is the one write this route allows");
     assert!(!biorouter::privacy::privacy_tiers_enabled());
+}
+
+/// The two asymmetries review found beside the confirmed arm above. Neither was
+/// a hole — both land in the safe direction — and both are closed because the
+/// value of "there is exactly one way this changes" is that it is TRUE, not that
+/// every way it is false happens to be harmless.
+///
+/// ⚠ `#[serial]` for the same reason as its two siblings: one process-global
+/// atomic, one shared temp config file, and `cargo test` runs a binary's tests
+/// in threads.
+#[tokio::test]
+#[serial_test::serial]
+async fn the_master_switch_has_exactly_one_door_and_it_is_not_delete_or_the_secret_store() {
+    let _fixture = PrivacyToggleFixture::capture();
+    biorouter_mcp::privacy_toggle::set_privacy_tiers_enabled(true);
+    let headers = HeaderMap::new();
+
+    // DELETE. `is_capability_key`'s own doc argues one predicate for both verbs;
+    // this key had the guard on `upsert` alone, so a `/config/remove` took the
+    // key off disk — the next boot then reads *absent* and resolves to ON while
+    // the running daemon keeps whatever its atomic held.
+    Config::global()
+        .set(
+            biorouter::privacy::PRIVACY_TIERS_CONFIG_KEY,
+            &Value::String("off".to_string()),
+            false,
+        )
+        .unwrap();
+    let (status, body) = remove_config(
+        headers.clone(),
+        Json(ConfigKeyQuery {
+            key: biorouter::privacy::PRIVACY_TIERS_CONFIG_KEY.to_string(),
+            is_secret: false,
+        }),
+    )
+    .await
+    .expect_err("a delete of the master switch must be refused");
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(
+        body.contains("Settings"),
+        "the refusal must name the way in: {body}"
+    );
+    assert!(
+        Config::global()
+            .get_param::<Value>(biorouter::privacy::PRIVACY_TIERS_CONFIG_KEY)
+            .is_ok(),
+        "a refused delete must not have removed the key"
+    );
+
+    // THE SECRET STORE. `config.set(.., is_secret)` routes to the OS credential
+    // store, which the loader's `all_values()` does not read — so a CONFIRMED
+    // secret write would set this process's atomic to `off` and then silently
+    // revert to `on` at the next launch. The panel always sends `false`, so this
+    // is unreachable today; it is refused so that stays a property of the daemon
+    // rather than of one caller.
+    let (status, body) = upsert_config(
+        headers,
+        Json(UpsertConfigQuery {
+            key: biorouter::privacy::PRIVACY_TIERS_CONFIG_KEY.to_string(),
+            value: Value::String("off".to_string()),
+            is_secret: true,
+            confirm: Some(biorouter::privacy::PRIVACY_TIERS_DISABLE_PHRASE.to_string()),
+        }),
+    )
+    .await
+    .expect_err("the master switch must not be written to the secret store");
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(body.contains("secret"), "{body}");
+    assert!(
+        biorouter::privacy::privacy_tiers_enabled(),
+        "a refused request must not have moved the live value"
+    );
+}
+
+/// The renderer mirrors [`biorouter::privacy::privacy_tiers_value_is_on`] in
+/// `settings/privacy/privacyTiers.ts`, and the two must agree on surrounding
+/// whitespace or a hand-edited `BIOROUTER_PRIVACY_TIERS: " off "` renders as off
+/// in Settings → Privacy while the daemon goes on enforcing. Telling the user
+/// something false about the control they just used is the one failure the
+/// parser's own doc-comment says to avoid.
+#[test]
+fn the_value_parser_agrees_with_the_renderer_about_whitespace() {
+    let is_on = |s: &str| biorouter::privacy::privacy_tiers_value_is_on(&Value::String(s.into()));
+    assert_eq!(is_on(" off "), Some(false));
+    assert_eq!(is_on("\tFalse\n"), Some(false));
+    assert_eq!(is_on(" no "), Some(false));
+    assert_eq!(is_on(" on "), Some(true));
+    // A shape that is neither a bool nor a string still says "I cannot tell",
+    // which every caller resolves to ON.
+    assert_eq!(
+        biorouter::privacy::privacy_tiers_value_is_on(&Value::Null),
+        None
+    );
 }
 
 /// The other half of hardening measure (1): the value the daemon boots with

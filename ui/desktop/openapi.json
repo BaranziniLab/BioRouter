@@ -1294,6 +1294,9 @@
               }
             }
           },
+          "403": {
+            "description": "Refused: `BIOROUTER_PRIVACY_TIERS` is the master privacy switch and may only be changed from Settings > Privacy, never removed"
+          },
           "404": {
             "description": "Configuration key not found"
           },
