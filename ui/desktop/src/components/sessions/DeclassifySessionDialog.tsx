@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { declassifySession, type Session } from '../../api';
 import { toastError, toastSuccess } from '../../toasts';
 import { userActionHeaders } from '../../utils/userAction';
@@ -96,6 +96,21 @@ export function DeclassifySessionDialog({
   const phrase = confirmationPhrase(session.id);
   const undoSeconds = Math.max(1, Math.round(undoMs / 1000));
 
+  // The callbacks are read through a ref so that `send` — and therefore the undo
+  // timer's effect — has an identity that does not change when the parent
+  // re-renders. Both entry points pass INLINE arrows (`SessionListView`:
+  // `onClose={() => setDeclassifyTarget(null)}`), so a `send` that closed over
+  // them directly would be a new function on every parent render; an effect
+  // keyed on it clears the pending timeout and arms a fresh FULL-LENGTH one, so
+  // one re-render doubles the advertised window and a re-render source faster
+  // than the window — the session list's own change subscription, a search
+  // debounce — means the request is never sent at all. Pinned by "the undo
+  // window is a deadline, not a countdown a re-render restarts".
+  const latest = useRef({ onClose, onDeclassified });
+  useLayoutEffect(() => {
+    latest.current = { onClose, onDeclassified };
+  });
+
   const send = useCallback(
     async (confirmation: string | null) => {
       setPhase('sending');
@@ -113,8 +128,8 @@ export function DeclassifySessionDialog({
           title: 'Chat marked public',
           msg: 'It no longer carries a private marker. The change is recorded.',
         });
-        onDeclassified?.(session.id);
-        onClose?.();
+        latest.current.onDeclassified?.(session.id);
+        latest.current.onClose?.();
       } catch (error) {
         toastError({
           title: 'Could not mark this chat public',
@@ -123,11 +138,14 @@ export function DeclassifySessionDialog({
         setPhase('confirm');
       }
     },
-    [onClose, onDeclassified, session.id]
+    [session.id]
   );
 
   // The undo window. The request has NOT been made while this is pending —
-  // that is the whole difference between an undo and an apology.
+  // that is the whole difference between an undo and an apology. Unmounting
+  // therefore sends nothing, which is the safe direction: the chat stays
+  // private rather than turning public after the user left the surface that
+  // announced it.
   useEffect(() => {
     if (phase !== 'undo') return;
     const timer = setTimeout(() => void send(null), undoMs);

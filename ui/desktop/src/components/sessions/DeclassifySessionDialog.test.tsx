@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DeclassifySessionDialog } from './DeclassifySessionDialog';
@@ -39,7 +39,10 @@ beforeEach(() => {
   mocks.declassifySession.mockResolvedValue({});
 });
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+});
 
 describe('DeclassifySessionDialog', () => {
   it('the phrase gate is real, not decorative', async () => {
@@ -169,6 +172,70 @@ describe('DeclassifySessionDialog', () => {
       })
     );
     await waitFor(() => expect(onDeclassified).toHaveBeenCalledWith('abc123def456'));
+  });
+
+  it('the undo window is a deadline, not a countdown a re-render restarts', async () => {
+    // Both entry points hand this component INLINE arrows —
+    // `SessionListView`: `onClose={() => setDeclassifyTarget(null)}`,
+    // `SessionHistoryView`: both props — so it is given fresh callback
+    // identities on every parent render, and the session list re-renders on its
+    // own change subscription. A `send` that closes over them directly changes
+    // identity each time; an effect keyed on it then clears the pending timeout
+    // and arms a fresh FULL-LENGTH one. One re-render silently doubles the
+    // advertised window, and any re-render source faster than it means the
+    // request is never sent at all — the user sits in front of "becomes public
+    // in 5 seconds" forever. That is precisely the "an action that reads as an
+    // action that did nothing" failure this dialog exists to avoid.
+    vi.useFakeTimers();
+    const view = render(
+      <DeclassifySessionDialog
+        session={{ ...s, privacy_reason: 'turn:versa_azure' }}
+        onClose={() => {}}
+        onDeclassified={() => {}}
+        undoMs={5000}
+      />
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Make public/ }));
+    expect(screen.getByRole('button', { name: /Undo/ })).toBeInTheDocument();
+
+    for (let elapsed = 0; elapsed < 5000; elapsed += 1000) {
+      // A new pair of arrows each time, exactly as a parent re-render supplies.
+      view.rerender(
+        <DeclassifySessionDialog
+          session={{ ...s, privacy_reason: 'turn:versa_azure' }}
+          onClose={() => {}}
+          onDeclassified={() => {}}
+          undoMs={5000}
+        />
+      );
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+    }
+
+    expect(mocks.declassifySession).toHaveBeenCalledTimes(1);
+  });
+
+  it('abandoning the undo window sends nothing at all', () => {
+    // Pins the direction this fails in, which is the safe one: the request has
+    // not been made while the window is open, so unmounting — navigating away,
+    // closing History — leaves the chat private. The alternative, firing an
+    // irreversible action after the user has left the surface that announced
+    // it, would be worse.
+    vi.useFakeTimers();
+    const { unmount } = render(
+      <DeclassifySessionDialog
+        session={{ ...s, privacy_reason: 'turn:versa_azure' }}
+        onClose={vi.fn()}
+        undoMs={5000}
+      />
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Make public/ }));
+    unmount();
+    act(() => {
+      vi.advanceTimersByTime(60_000);
+    });
+    expect(mocks.declassifySession).not.toHaveBeenCalled();
   });
 
   it('surfaces a refusal instead of claiming the chat is now public', async () => {
