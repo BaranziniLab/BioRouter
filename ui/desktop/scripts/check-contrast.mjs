@@ -192,6 +192,29 @@ for (const [theme, scope] of Object.entries(SCOPES)) {
     );
   }
 
+  // Issue #56. The two badge fills and the dense-surface dot.
+  assert(`${theme}: privacy Private label`, '--text-default', '--background-muted', 4.5, scope);
+  assert(`${theme}: privacy Public label`, '--text-muted', '--background-muted', 4.5, scope);
+  assert(`${theme}: privacy dot on sidebar`, '--text-default', '--sidebar', 3.0, scope);
+  assert(`${theme}: privacy dot on tab`, '--text-default', '--background-default', 3.0, scope);
+
+  // The row-hover ground (design.md's `biorouter-list-row`). Issue #56 needs it
+  // because both privacy pills sit on rows that paint it, and nothing has ever
+  // asserted a text ratio against it.
+  //
+  // ⚠ Two tokens, NOT the TEXT_GROUNDS triple. `--text-subtle` on
+  // `--background-medium` is sub-AA in three of the six scopes — parchment:dark
+  // 3.75, alma-mater:light 4.45, alma-mater:dark 4.28 (measured with this
+  // script's own resolver). Those three are a PRE-EXISTING theme gap, not
+  // something #56 introduces: the app already paints subtle text on hover rows
+  // and CI has never looked. Adding `--background-medium` to TEXT_GROUNDS would
+  // therefore turn this feature red on arrival with only a theme edit to fix
+  // it. Audit the two tokens this feature actually uses, and leave the third to
+  // the a11y backlog that owns it.
+  for (const t of ['--text-default', '--text-muted']) {
+    assert(`${theme}: ${t.slice(2)} on --background-medium`, t, '--background-medium', 4.5, scope);
+  }
+
   // A hairline must be perceivable against its own ground, though it is not "text".
   assert(`${theme}: border-subtle vs app`, '--border-subtle', '--background-app', 1.25, scope);
   assert(`${theme}: border-strong vs subtle`, '--border-strong', '--border-subtle', 1.1, scope);
