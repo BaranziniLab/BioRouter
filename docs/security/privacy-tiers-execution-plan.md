@@ -9231,7 +9231,7 @@ and says which:
 | **12** (here) | the `PrivacyRefusal` error enum with `PublicModelOnPrivateSession { session_id, provider }`, its `session_classification()` / `provider_tier()` accessors for the typed 409, and `std::error::Error` so `anyhow`'s `downcast_ref` works |
 | **13** | `turn_refusal(&Session) -> String`, and moves Task 10's file-local `CHATRECALL_LOAD_REFUSAL` here as `chatrecall_load_refusal()` |
 | **14** | `privacy_refusal(extension, extension_tier, caller_tier) -> Option<ErrorData>` |
-| **23** | the `PrivateChildOfPublicParent { requested }` variant and its `PrivacyRefusal::spawn_upgrade(tier)` constructor |
+| **23** | **two** variants — `PrivateChildOfPublicParent { requested }` (R4) and `PublicChildOfPrivateParent { requested }` (DR-19; see Task 23's amendment banner) — and their `spawn_upgrade(tier)` / `spawn_downgrade(tier)` constructors |
 
 ⚠ `bind_provider_if_allowed` replaces the builder for this one write, so the `.provider_name(..)`
 call at `:5670` disappears — and with it the tree's only use of that setter. Leave the setter in
@@ -16645,6 +16645,58 @@ git commit -m "fix(session): carry tier, provider and model config across all th
 
 ### Task 23: Spawn — reorder, stamp, filter, and the spawn matrix
 
+> ⚠ **AMENDED by [DR-19](#dr-19--a-warning-for-the-user-a-wall-for-the-agent), 2026-08-02 — the
+> spawn downgrade is a REFUSAL, not a confirmation.** Read this before Step 1. It changes one
+> matrix row, one test, one `TaskConfig` field and one branch of Step 3(c), and it **answers**
+> [Open question 2](#open-questions).
+>
+> **The defect: a flag with no reader.** `requires_downgrade_confirmation` occurs **three times in
+> this entire document** — the field in Step 3(b), the assignment in Step 3(c), and
+> [Open question 2](#open-questions) — and nowhere else. No surface renders it, no handler branches
+> on it, and none of the three interfaces this feature must serve (GUI, CLI, headless) is named as
+> its consumer. Step 1's matrix carries a `prompt =` column whose only possible subject is the flag
+> itself: `assert_child` can observe the field being set, because there is nothing else in the plan
+> to observe. **A flag nothing reads is worse than no control at all**, because in review it reads
+> like one. DR-19 makes that silence a defect rather than a gap.
+>
+> **Who initiates this, stated: only a model, ever.** A subagent spawn is a tool call. There is no
+> shipped surface on which a human spawns a subagent and chooses its provider — the request comes
+> out of `ProfileParam`-shaped tool arguments the model writes, and a private parent asking for a
+> public child is therefore an **agent-initiated** send of private-origin prompt text to a public
+> model, plus the model's own choice of which public provider receives it. DR-19's agent half is
+> unconditional: *never* — it escalates to a human or it does not happen.
+>
+> **And there is no escalation path to escalate to.** DR-19 names exactly one proof of user,
+> [Task 18A](#task-18a-the-two-http-channels-that-raise-a-sessions-own-tier-and-the-user-proof-neither-of-them-has)'s
+> `X-User-Action`, and it is an HTTP request header. `apply_settings_overrides` runs in process,
+> inside the parent's own turn, with no request to carry one — the same obstacle
+> [Open question 25](#open-questions) records for the app runtime. The only other candidate is the
+> permission/approval machinery, and [Open question 2](#open-questions) already measured that a
+> planted `PermissionRequest` hook bypasses it: hooks load from `~/.config/biorouter/config.yaml`
+> and, with `allow_project_hooks`, from `.biorouter/hooks.yaml`, **both writable by the same agent
+> with `text_editor`** — and under [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store)
+> neither file is behind a deny root any more, because [DR-14](#decisions-of-record) is deferred. An
+> approval an agent can author the approver for is not an approval. **So the requirement is stated
+> both ways, and the second half is not decoration: the child spawn is refused, and the refusal must
+> not be satisfiable by any hook, config entry, permission mode or `always_allow` record the agent
+> can write.** The refusal is a `return Err` inside `apply_settings_overrides`, upstream of every
+> one of those, which is precisely why it is the branch to take.
+>
+> **This is not DR-19 overriding R4; it is DR-19 supplying the initiator R4 never named.** R4 permits
+> a private session to have public children. It says nothing about *who asks for one*, and DR-19's
+> `POST /agent/add_extension` precedent is the governing shape: *"It does not require a user override
+> on a control that only a model can trigger… the user's route is to switch the model first, which
+> is two steps, not a wall."* Here the user's route is the same two steps — start a chat on the
+> public model and give it the task directly — and it costs the user nothing they cannot see.
+> `parent = Priv, request = Inherit` is untouched, so the ordinary case (a private parent delegating
+> on its own model) still works exactly as before; only the model **naming a public provider for a
+> child** is refused.
+>
+> **What this does NOT change.** Task 21's `requires_first_crossing_approval` is a different
+> subject — a cross-session *write* to a public session that already exists (BR-71's workspace
+> tools), not the minting of a public child — and this amendment neither touches nor relies on it.
+> Task 7's `floor` crossing count stays **1**: refusing a branch removes no crossing.
+
 ⚠ **The design's §8.2 sketch does not survive the tree's ordering.** `create_subagent_session` runs
 at `subagent_tool.rs:507` and `:526`; `overridden_task_config` (→ `apply_settings_overrides`) runs
 at `:508` and `:527`. The child row is INSERTed **before** its tier is known, and a spawn refusal
@@ -16671,24 +16723,50 @@ async fn the_spawn_matrix_holds() {
     // when only `model` is given today's code keeps the parent's provider_name
     // and swaps the model string — harmless, because the tier is a property of
     // the instance and never of the model id.
-    assert_child(parent = Priv, request = Inherit,  ok(), tier = Private, prompt = false).await;
-    assert_child(parent = Priv, request = Private,  ok(), tier = Private, prompt = false).await;
-    assert_child(parent = Priv, request = Public,   ok(), tier = Public,  prompt = true ).await;
-    assert_child(parent = Pub,  request = Inherit,  ok(), tier = Public,  prompt = false).await;
-    assert_child(parent = Pub,  request = Public,   ok(), tier = Public,  prompt = false).await;
+    // ⚠ The `prompt` column is GONE with DR-19 — see the amendment banner. It
+    // had no subject: nothing in this plan reads
+    // `requires_downgrade_confirmation`, so the only thing `assert_child` could
+    // have asserted was that the field was written.
+    assert_child(parent = Priv, request = Inherit,  ok(), tier = Private).await;
+    assert_child(parent = Priv, request = Private,  ok(), tier = Private).await;
+    assert_child(parent = Pub,  request = Inherit,  ok(), tier = Public ).await;
+    assert_child(parent = Pub,  request = Public,   ok(), tier = Public ).await;
     // R4: a public session may never gain private reach. Hard refusal.
     assert_spawn_refused(parent = Pub, request = Private).await;
+    // DR-19: a model may not send private-origin prompt text to a public model
+    // of its own choosing, and there is no in-process channel on which it could
+    // ask a human. Hard refusal, in the other direction, for the other reason.
+    assert_spawn_refused(parent = Priv, request = Public).await;
 }
 
 #[tokio::test]
-async fn a_downgraded_child_is_born_public_not_inheriting_the_parents_private() {
-    // Otherwise it is born in the stuck residual state. It receives only the
-    // task prompt — none of the parent's history, none of its private
-    // extensions — which is exactly why the confirmation shows the prompt: the
-    // prompt is the entire disclosure.
-    let child = spawn(parent = Priv, request = Public).await.unwrap();
-    assert_eq!(row(&child.id).await.privacy_tier, SessionClassification::Public);
-    assert!(child.conversation_carried_from_parent().is_none());
+async fn a_private_parent_cannot_hand_its_prompt_to_a_public_model_it_picked() {
+    // DR-19, replacing `a_downgraded_child_is_born_public_not_inheriting_the_parents_private`.
+    // That test asserted the shape of a child this plan no longer creates. What
+    // has to be true instead is that the refusal happens, that it names the way
+    // out, and — the part a refusal test usually forgets — that it leaves
+    // NOTHING behind, because Step 3(a)'s reorder is what makes that possible.
+    let before = session_count().await;
+    let err = spawn(parent = Priv, request = Public).await.unwrap_err();
+    assert!(err.to_string().contains("public model"), "{err}");
+    assert!(err.to_string().contains("start a new chat"), "the way out, not just a no: {err}");
+    assert_eq!(session_count().await, before);
+}
+
+#[tokio::test]
+async fn the_spawn_refusal_cannot_be_unlocked_by_anything_the_agent_can_write() {
+    // DR-19's second half, as an assertion. Open question 2 measured that a
+    // planted PermissionRequest hook bypasses an approval, and that hooks load
+    // from two files an agent holding `text_editor` can write — neither of them
+    // behind a deny root, because DR-14 is deferred by DR-17. So the refusal is
+    // asserted to survive every agent-writable unlock in the tree at once.
+    for unlock in [Unlock::PermissionRequestHookAllow, Unlock::ProjectHooksAllow,
+                   Unlock::AlwaysAllowRecord, Unlock::PermissionMode(Smart),
+                   Unlock::PermissionMode(Chat)] {
+        with_unlock(unlock, || async {
+            assert!(spawn(parent = Priv, request = Public).await.is_err(), "{unlock:?}");
+        }).await;
+    }
 }
 
 #[tokio::test]
@@ -16707,7 +16785,18 @@ async fn a_public_child_does_not_inherit_its_parents_private_extensions() {
     // (`task_config.extensions.retain(|ext| extension_names.contains(&ext.name()))`,
     // :788-791), never by tier — so today a session holding ucsfomopagent can
     // spawn a public-model child that inherits it verbatim.
-    let child = spawn_with_parent_extensions(parent = Priv, request = Public,
+    //
+    // ⚠ THE FIXTURE CHANGED WITH DR-19, and the filter did NOT become dead code.
+    // The obvious fixture — a private parent asking for a public child — is now
+    // a refusal (see the banner), so this test would have asserted on a spawn
+    // that never happens. The surviving reachable case is a parent whose
+    // CAPABILITY is Public while its extension list still holds a
+    // private-classified record: Gate C refuses that extension at dispatch and
+    // Gate E hides it from discovery, but neither REMOVES it from the manager,
+    // so `TaskConfig.extensions` (the parent's own list, agent.rs:2727) still
+    // carries it — the AR-13 shape, one layer over. An inheriting child is then
+    // Public and must not receive it.
+    let child = spawn_with_parent_extensions(parent = Pub, request = Inherit,
                                              &["ucsfomopagent", "developer"]).await.unwrap();
     assert_eq!(child.extension_names(), vec!["developer"]);
     assert!(child.tool_result_text().contains("ucsfomopagent"),
@@ -16715,7 +16804,8 @@ async fn a_public_child_does_not_inherit_its_parents_private_extensions() {
 }
 ```
 
-- [ ] **Step 2: Run** → tests 1, 3 and 4 **FAIL**; test 2 **FAIL**.
+- [ ] **Step 2: Run** → all **five** tests **FAIL** (the count changed with DR-19: the downgrade
+test was replaced and a second one added).
 
 - [ ] **Step 3: Implement**
 
@@ -16729,8 +16819,12 @@ async fn a_public_child_does_not_inherit_its_parents_private_extensions() {
     let session = create_subagent_session(&config, working_dir, task_config.privacy_tier).await?;
 ```
 
-(b) **`TaskConfig` gains two fields** — `privacy_tier: SessionClassification` and
-`requires_downgrade_confirmation: bool`.
+(b) **`TaskConfig` gains ONE field** — `privacy_tier: SessionClassification`.
+
+⚠ **It was two, and `requires_downgrade_confirmation: bool` is deliberately not added** (DR-19; see
+the banner). Adding a field no code reads is how a refusal that was never built comes to look, in
+review and in a later audit, like a control that exists. If a future ruling reinstates the approval,
+it is added **together with its consumer**, not before one.
 
 (c) **`apply_settings_overrides`** (`:756-795`), after `providers::create` at `:778`:
 
@@ -16741,8 +16835,22 @@ async fn a_public_child_does_not_inherit_its_parents_private_extensions() {
         if child_tier.is_private() && !parent_cap.is_private() {
             return Err(PrivacyRefusal::spawn_upgrade(child_tier).into());   // R4
         }
+        // DR-19. Was `task_config.requires_downgrade_confirmation = true`, a
+        // write nothing in the tree read. The prompt is private-origin text and
+        // the MODEL chose which public provider receives it; there is no
+        // request on this path to carry Task 18A's `X-User-Action`, and the
+        // approval machinery is unlockable by hooks the same agent can author.
+        // So: refuse, above every one of those, and say what the user can do.
+        //
+        // ⚠ This condition fires ONLY on an explicit request, and needs no
+        // extra term to say so. `request = Inherit` hands the child the
+        // parent's SAME `Arc<dyn Provider>` (agent.rs:2727, and it is the same
+        // fact R5 rides on), so `child_tier == parent_cap` identically and the
+        // comparison cannot be true. The two tiers can only differ when the
+        // request named a provider or a model and `providers::create` (:778)
+        // built something else — which is exactly the case DR-19 refuses.
         if !child_tier.is_private() && parent_cap.is_private() {
-            task_config.requires_downgrade_confirmation = true;             // R4 permits; disclose
+            return Err(PrivacyRefusal::spawn_downgrade(child_tier).into());  // DR-19
         }
         // The ONE crossing this task adds: the child's CAPABILITY establishes
         // the CLASSIFICATION its row is born with. Task 7's EXPECTED gains
@@ -16775,12 +16883,26 @@ to need — **`PrivacyRefusal::spawn_upgrade` is defined here, and nowhere befor
     /// parent's, so the message can say what was asked for without naming the
     /// parent's provider.
     PrivateChildOfPublicParent { requested: ProviderTier },
+
+    /// DR-19: a private-capability session may not hand its task prompt to a
+    /// public model the MODEL chose. The prompt is private-origin content and
+    /// the spawn is agent-initiated with no channel to ask a human on, so this
+    /// is a refusal and not a confirmation — see Task 23's banner.
+    ///
+    /// The message must end on the user's route, like every other refusal in
+    /// this feature: *"Start a new chat on that model and give it this task
+    /// directly."* Do NOT name the parent's provider or quote the prompt — the
+    /// prompt is the thing being withheld.
+    PublicChildOfPrivateParent { requested: ProviderTier },
 ```
 
 ```rust
 impl PrivacyRefusal {
     pub fn spawn_upgrade(requested: ProviderTier) -> Self {
         Self::PrivateChildOfPublicParent { requested }
+    }
+    pub fn spawn_downgrade(requested: ProviderTier) -> Self {
+        Self::PublicChildOfPrivateParent { requested }
     }
 }
 ```
@@ -16826,14 +16948,34 @@ cargo test -p biorouter --lib \
 # subagent_tool.rs with count 2 means the extension retain used `floor` instead
 # of the shared refusal predicate — read the comment in Step 3 (c) before
 # "fixing" the constant.
-# And the spawn refusal is a real variant, not an invented constructor.
+# And the spawn refusals are real variants, not invented constructors — BOTH
+# directions, because DR-19 added the second one.
 grep -c "PrivateChildOfPublicParent" crates/biorouter/src/privacy/refusal.rs ; echo "expect: >= 2 (variant + constructor)"
+grep -c "PublicChildOfPrivateParent" crates/biorouter/src/privacy/refusal.rs ; echo "expect: >= 2 (variant + constructor)"
+# DR-19: the flag with no reader is GONE and must not come back. This is the
+# gate for the amendment banner, and it is a zero on purpose — a field nothing
+# reads is indistinguishable, in review, from a control.
+grep -rn --include='*.rs' "requires_downgrade_confirmation" crates/
+echo "expect: NO OUTPUT. If a hit appears, its READER must be named in the same"
+echo "  commit, on all three interfaces (GUI, CLI, headless), or it is the defect"
+echo "  DR-19 removed. Do not re-add the field 'for later'."
+# The refusal sits ABOVE every unlock an agent can author (hooks, always_allow,
+# permission mode), which is the whole reason it is a refusal and not an
+# approval. Assert it by position: nothing permission-shaped is consulted here.
+awk '/async fn apply_settings_overrides/,/^}/' crates/biorouter/src/agents/subagent_tool.rs \
+  | grep -c "PermissionRequest\|always_allow\|permission_mode\|hook" ; echo "expect: 0"
 ```
 
 **What this catches.** Stamping the tier in `create_subagent_session`'s INSERT without reordering —
 which is literally what the design says to do, compiles, and produces an orphan `SubAgent` row on
 every refused spawn (durably, and in a detached task on the background path). Test 3 is the only
-thing that fails it, and the ordering grep is what makes the fix visible in review.
+thing that fails it, and the ordering grep is what makes the fix visible in review. **DR-19 makes
+the reorder load-bearing twice**, because the downgrade is now a refusal as well: a plan that kept
+the old ordering would leave an orphan row on the *commonest* refusal rather than the rarest.
+
+And, from the amendment banner: **a `bool` assigned and never read.** Nothing in the test suite
+fails when a control is a field, which is why the gate for that one is a `grep` returning nothing
+rather than an assertion returning true.
 
 - [ ] **Step 6: Commit**
 
@@ -20217,7 +20359,7 @@ costs recorded in [Accepted risks](#accepted-risks) (AR-1, AR-2 and AR-5).
 | # | Question | What this plan does while it is open |
 |---|---|---|
 | **1** | **Does a mixed lead/worker composite ratchet the session?** R3 says "switched to a private model even once → private permanently", and a private-lead/public-worker composite *contains* a private model. The design says it does **not** ratchet, because `tier = least` and the transcript has already gone to the public worker, and because ratcheting on `max` would make the bind gate refuse that same composite on the next resume — bricking a working configuration. Using one reduction for both the gate and the ratchet is what makes `capability ≥ classification` provable by induction (Task 7). **This is the single place the letter of a requirement was not followed, and it needs a ruling.** | Implements the design: `LeadWorkerProvider::tier() = least(lead, worker)`, and `floor(Public) = Public` so no ratchet fires. Task 5's composite test and Task 7's induction test both encode this; **a ruling the other way changes both tests and the `tier()` override, and nothing else.** |
-| **2** | **Is the spawn-downgrade an approval or a refusal?** R4 permits it, so the design makes it an approval showing the task prompt. But the prompt is written by a private-context model and is the only leak vector, and it is the one control a planted `PermissionRequest` hook could bypass — hooks load from `~/.config/biorouter/config.yaml` and, with `allow_project_hooks`, from `.biorouter/hooks.yaml`, both writable by an agent with `text_editor`. | Task 23 implements the approval, behind `requires_downgrade_confirmation`. Flipping it to a `Deny` is one branch. |
+| **2** | ✅ **ANSWERED by [DR-19](#dr-19--a-warning-for-the-user-a-wall-for-the-agent) — a refusal.** The question named the two branches and this row said *"flipping it to a `Deny` is one branch"*; DR-19 picks that branch, and picks it for the reason this row already gave. The spawn is agent-initiated, there is no in-process channel to present Task 18A's `X-User-Action` on, and the approval this row worried about is unlockable by a hook the same agent can author — a hazard that grew, not shrank, when [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store) deferred [DR-14](#decisions-of-record) and left both hook files outside any deny root. Original text: **Is the spawn-downgrade an approval or a refusal?** R4 permits it, so the design makes it an approval showing the task prompt. But the prompt is written by a private-context model and is the only leak vector, and it is the one control a planted `PermissionRequest` hook could bypass — hooks load from `~/.config/biorouter/config.yaml` and, with `allow_project_hooks`, from `.biorouter/hooks.yaml`, both writable by an agent with `text_editor`. | [Task 23](#task-23-spawn--reorder-stamp-filter-and-the-spawn-matrix) refuses the spawn, drops `requires_downgrade_confirmation` rather than adding a field nothing reads, and gates the flag's absence. The user's route is R4-equivalent and two steps: start a chat on the public model and give it the task directly. |
 | **3** | ~~**Does the R7 opt-out really stop at Gate C?**~~ **CLOSED — the operator ruled: it stops nowhere.** `BIOROUTER_PRIVACY_TIERS=off` disables every gate, the ratchet and the sandbox (DR-15). The original wording — "opt out of the **entire** protection layer" — is now read literally. | Task 30 implements the master toggle and its Step 1 is a **twenty-row** on/off matrix — nineteen enforcement points plus the session-copy invariant — closed at both ends by Step 5's two inventory diffs. The cost this closure buys is real and is recorded as [AR-7](#ar-7--while-the-tiers-are-off-nothing-is-recorded-and-turning-them-back-on-does-not-reclassify-the-gap): while the toggle is off the ratchet does not run, so sessions that handled private material during that window stay stamped `public` for ever. |
 | **4** | **Is the first cross-tier write approval remembered per (caller, target) or per call?** Per-pair-per-session-lifetime was chosen because a confirmation on every steer of a public worker is miserable and would be clicked through. | Task 21 exposes `requires_first_crossing_approval`; the memoisation policy lives with BR-71's inspector. |
 | **5** | **Institutional Ollama versus hosted Ollama SaaS.** R1 says self-hosted *or* institution-hosted is private, and config cannot tell a lab GPU box at `OLLAMA_HOST=gpu.lab.ucsf.edu` from a hosted SaaS. **This plan disagrees with the design on the severity**: the design rates "non-loopback stays Private" a false-private and "the one place this design is permissive". It is a live bypass — `ProviderEngine::Ollama` plus a remote `base_url` in one agent-writable JSON file mints a Private-tier provider pointing anywhere. Certainty needs a `BIOROUTER_PRIVATE_HOSTS` allowlist, a new concept deliberately not added. | Task 5 makes **loopback-only** Private and non-loopback Public, and its third test encodes the bypass. A lab GPU box therefore reads Public until an allowlist exists. **This is a real ergonomic regression for lab users and needs a ruling.** |
