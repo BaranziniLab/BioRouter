@@ -18478,8 +18478,15 @@ async fn the_master_toggle_governs_every_gate_in_both_directions() {
     assert!(check_enable_allowed(Some(entry_for("ucsfomopagent")), false,
                                  "ucsfomopagent", ProviderTier::Public).is_err());      // 11 F1  (Task 18)
     assert!(!public_system_prompt().await.contains(PRIVATE_SERVER_INSTRUCTION_SENTINEL));// 12 F2 (Task 18)
-    // Spawn (Task 23): a public parent may not spawn a private child.
+    // Spawn (Task 23): a public parent may not spawn a private child (R4), and
+    // ⚠ a private parent may not hand its prompt to a public model it picked
+    // (DR-19, added with Task 23's amendment). ONE enforcement point — the
+    // toggle read in `apply_settings_overrides` — with TWO refusal directions,
+    // so it is one inventory row and two assertions. A row that exercised only
+    // the upgrade arrow would let the DR-19 arrow stay armed with the toggle
+    // off, which is this matrix's named failure class.
     assert!(spawn(Parent::Public, Request::Private).await.is_err());                    // 13 spawn
+    assert!(spawn(Parent::Private, Request::Public).await.is_err());                    // 13 spawn (DR-19)
     // Knowledge-base surfaces beyond the read barrier.
     assert!(!platform_catalog_as_public().await.contains("omop"));                      // 14 CP5 (Task 10D)
     assert!(kb_export_as(ProviderTier::Private, "omop", &outside)                       // 15 archive
@@ -18551,6 +18558,7 @@ async fn the_master_toggle_governs_every_gate_in_both_directions() {
                                  "ucsfomopagent", ProviderTier::Public).is_ok());
     assert!(public_system_prompt().await.contains(PRIVATE_SERVER_INSTRUCTION_SENTINEL));
     assert!(spawn(Parent::Public, Request::Private).await.is_ok());
+    assert!(spawn(Parent::Private, Request::Public).await.is_ok());          // 13's DR-19 arrow
     assert!(platform_catalog_as_public().await.contains("omop"));
     assert_eq!(kb_export_as(ProviderTier::Private, "omop", &outside).await.unwrap(), outside);
     assert!(kb_write_as(ProviderTier::Private, "notes2").await.is_ok()
