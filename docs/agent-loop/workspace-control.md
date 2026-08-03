@@ -26,7 +26,19 @@ Workspace control ships in two sizes. The small one is automatic: any session al
 
 In the desktop app, open **Extensions** in the left sidebar and turn on **Workspace Control**. From the terminal, run `biorouter configure`, choose `Toggle Extensions`, and enable `workspace`. The extension is registered `default_enabled: false`; nothing enables it for you.
 
-Job 2 (delegation) works without any of that. Jobs 1 and 3 need the full surface.
+Jobs 1 and 3 need that full surface. Job 2 does not — but "allowed to delegate" is a real gate, and it is the likeliest reason a request for a subagent quietly does nothing.
+
+### When delegation is allowed
+
+`Agent::subagents_enabled` (`crates/biorouter/src/agents/agent.rs:3711`) decides whether the spawn tool is offered at all, and it is consulted twice: once when the tool list is built, and again when a call arrives — so a model that simply remembers the name cannot spawn where delegation is off. It refuses with *Subagent delegation is not available in this session*.
+
+All of the following must hold:
+
+- **The permission mode is Completely Autonomous** (`auto`). In Manual Approval, Smart Approval and Chat Only — three of the [four modes](../security/permission-modes.md) — there is no spawn tool at all. Autonomous is the default, so most people never meet this; anyone who has turned the mode down will, and the symptom is an ordinary answer where a child conversation was expected.
+- **The session is not itself a subagent.** A child cannot spawn grandchildren, which is the same rule that stops a child being granted workspace control.
+- **At least one ordinary extension is loaded.** The auto-injected `workspace` entry is deliberately not counted — otherwise one turn's grant would justify the next one's, and an agent that dropped its last real extension would keep delegating forever off a grant it derived from itself.
+- **The active model name does not begin with `gemini`.** This is a flat exclusion in the gate, with no rationale recorded in the source, so treat it as observed behaviour rather than a rule with a reason: on a Gemini model, delegation is off whatever your mode says.
+- **The session is not a BioRouter app that delegates through `consult`.** Apps with worker profiles route delegation through their own mechanism and have the generic tool withdrawn so the two cannot both be offered.
 
 ## Running several conversations side by side
 
@@ -70,6 +82,8 @@ If the split is refused because the window is already at six panes, the agent is
 If you would rather nothing ever appeared on its own, turn on **Settings → App → Workspace → "Never open tabs automatically"**. Conversations and subagents still run; you get a notification naming them and open them from History when you want. The agent is explicitly told no tab opened, so it cannot report one. The setting is stored as `WORKSPACE_ANNOUNCE_ONLY` and is off by default.
 
 ## Delegating work you can watch
+
+This section assumes delegation is available in the session — if asking for a subagent produces an ordinary answer instead, check [When delegation is allowed](#when-delegation-is-allowed) first.
 
 Ask for a subagent in plain language ("delegate the QC pass to a subagent") and, whenever the desktop app is open, the child opens in its own background tab carrying a **`sub`** badge and a link back to the conversation that spawned it. Inside that tab you can read the child's transcript as it streams, type into it to steer it mid-run, and stop it from the header.
 
@@ -145,25 +159,31 @@ What changes without a daemon is not the tool list but what the handlers can rea
 
 ### As subcommands you type
 
-These talk to a running `biorouterd` over HTTP and SSE, so they belong to the daemon-attached configuration — not to a bare `biorouter` with nothing else running.
+These are ordinary shell commands. They split in two, and the split matters: **listing and exporting read the session store on disk** and work with nothing else running, while **watching, sending, attaching and cancelling** drive a live turn through a running `biorouterd` over HTTP and SSE.
+
+| What you want | Command | Needs a daemon |
+|---|---|---|
+| See what exists, including subagent runs nested under their parents | `biorouter session list --subagents` | no |
+| Read a conversation | `biorouter session export --id <id>` (or `--name <name>`; `--format markdown\|json\|yaml`) | no |
+| Start or name a session | `biorouter session --name <name>` | no |
+| Send a prompt into a session and stream its turn | `biorouter session send <id> "<text>"` (`--no-wait` to return as soon as the turn starts) | yes |
+| Wait for a turn to end | `biorouter session watch <id>` (exits on finish or error; `--follow` keeps watching past it) | yes |
+| Join a live session, follow it, and steer it | `biorouter session attach <id>` — `--name` to pick it by name, `--of <parent>` to attach to that parent's running subagent, `--read-only` to observe without participating | yes |
+| Stop the turn a session is running | `biorouter session cancel <id>` | yes |
+
+Give `session export` an identifier. With neither `--id` nor `--name` it drops into an interactive session picker instead of exporting the conversation you meant — which is a surprise in a script.
+
+`session list --subagents` reads the store for the rows but has to ask the daemon who is still live, so it marks each run `● live`, `○ done`, or — when it could not ask — `· state unknown`. It deliberately does *not* blame a missing daemon for that third state: a stripped `BIOROUTER_SERVER__SECRET_KEY` (which is what an agent-spawned shell gets) produces it with a daemon running perfectly well. The actual reason is printed once on stderr, so `--format json` on stdout stays clean.
+
+The four daemon-bound commands need one running:
 
 ```bash
 BIOROUTER_SERVER__SECRET_KEY=<key> biorouterd agent
 ```
 
-The daemon listens on `127.0.0.1:3000` unless `BIOROUTER_PORT` says otherwise, and the commands below authenticate with the same `BIOROUTER_SERVER__SECRET_KEY`. `biorouterd` invents a random key when that variable is unset, in which case no client can authenticate — so set it on both sides. A mismatch shows up as HTTP 401.
+It listens on `127.0.0.1:3000` unless `BIOROUTER_PORT` says otherwise, and `send`, `watch`, `attach` and `cancel` authenticate with the same `BIOROUTER_SERVER__SECRET_KEY`. `biorouterd` invents a random key when that variable is unset, in which case no client can authenticate — so set it on both sides. A mismatch shows up as HTTP 401.
 
-| What you want | Command |
-|---|---|
-| See what exists, including subagent runs nested under their parents | `biorouter session list --subagents` |
-| Read a conversation | `biorouter session export --format markdown\|json\|yaml` |
-| Send a prompt into a session and stream its turn | `biorouter session send <id> "<text>"` (`--no-wait` to return as soon as the turn starts) |
-| Wait for a turn to end | `biorouter session watch <id>` (exits on finish or error; `--follow` keeps watching past it) |
-| Join a live session, follow it, and steer it | `biorouter session attach <id>` — `--name` to pick it by name, `--of <parent>` to attach to that parent's running subagent, `--read-only` to observe without participating |
-| Stop the turn a session is running | `biorouter session cancel <id>` |
-| Start or name a session | `biorouter session --name <name>` |
-
-`session list --subagents` marks each run live or done — or *state unknown*, honestly, when no daemon can be reached to ask. Use `session attach` rather than `session --resume` on a session that is running right now: resuming opens a second agent on the same conversation, and the two do not share the daemon's turn lock.
+Use `session attach` rather than `session --resume` on a session that is running right now: resuming opens a second agent on the same conversation, and the two do not share the daemon's turn lock.
 
 ### What has no terminal equivalent
 
@@ -176,16 +196,18 @@ That gate is coarse by design, and it is worth knowing where it is coarse: `sess
 
 ## When a tab does not appear
 
-Most of the time the answer is one of the deliberate behaviours above — announce-only is on, the fan-out cap downgraded the child, or the window was already at six panes. Two honest caveats beyond those:
+Most of the time the answer is one of the deliberate behaviours above — announce-only is on, the fan-out cap downgraded the child, or the window was already at six panes. Three honest caveats beyond those:
 
 - **A subagent spawn does not wait for the window to answer.** When a conversation is opened directly, the agent parks on the renderer's reply and reports "NOT opened" with the reason if it was refused. A *subagent* announcement is fire-and-forget, deliberately: waiting would couple every spawn to the window, and one wedged window would stall a whole fan-out. So in the narrow case where the renderer refuses a subagent's tab, the agent may believe a tab opened when none did. The child still exists, still runs, and is still reachable from History and from a conversation read — check there before assuming the run failed.
 - **A request for a separate window is reported as *requested*.** The window is asked for and the answer comes back before the window has actually been created, so a window that fails to appear is not distinguished from one that did.
+- **A split can silently arrive as a plain tab.** The six-pane refusal above is announced; a second one is not. The renderer will not split a pane off a tab that is that pane's *only* tab — that would trade one pane for another and leave an empty one behind. So a `split` whose conversation ends up alone in its pane does not split: most often that is a conversation which already has a tab of its own in a pane by itself, which is simply focused instead. The planner asks the reducer first, so nothing pointless is dispatched, but the agent is told `opened` rather than `opened in split` and may not pass that difference on. If you asked for a pane and got a tab, drag the tab to a pane edge yourself.
 
 ## Related documentation
 
-- [Workspace Control extension](../extensions/built-in/workspace.md) — the reference: the two tiers, every tool's parameters, the always-confirm rule, and how injected messages are labelled forever.
+- [Workspace Control extension](../extensions/built-in/workspace.md) — the user-facing reference: the two tiers, what each tool asks you first, the always-confirm rule, and how injected messages are labelled forever.
+- [Workspace Control tool reference](workspace-control-tools.md) — the developer-facing contract for the same eight tools: exact arguments and defaults, every refusal string, the caps and clamps, and the cases where a tool reports success it did not earn.
 - [Subagents](subagents.md) — the glass-box tab in full, steering and stopping a child, and configuring one from a workflow file.
 - [Tool routing](tool-routing.md) — which tool the agent should reach for, and what separates workspace control from Chat Recall, Memory and the knowledge base.
-- [Permission modes](../security/permission-modes.md) — which modes allow autonomous delegation at all.
+- [Permission modes](../security/permission-modes.md) — the four modes, what each one still puts to you for approval, and how to switch between them. It does not discuss delegation; that gate is [above](#when-delegation-is-allowed).
 - [biorouter CLI command reference](../cli/command-reference.md) — the rest of the `biorouter session` surface.
 - [Agent workspace control (BR-71 design)](designs/agent-workspace-control.md) — the design of record behind this feature, including its permissions and abuse-resistance analysis.

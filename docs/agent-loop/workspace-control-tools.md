@@ -10,11 +10,17 @@ Everything below is read off `crates/biorouter/src/agents/workspace_extension.rs
 
 ## Conventions that apply to every tool
 
-**The name the model sees is prefixed.** Extension tools reach dispatch as `{extension}__{tool}`, so the model's tool list holds `workspace__workspace_list`, `workspace__workspace_read_conversation`, and so on — `subagent` included, as `workspace__subagent`. The bare forms are also accepted at dispatch, because some models strip prefixes. This page uses the bare names.
+**The name the model sees is prefixed, and for seven of the eight that is the only spelling that works.** Extension tools reach dispatch as `{extension}__{tool}`, so the model's tool list holds `workspace__workspace_list`, `workspace__workspace_read_conversation`, and so on — `subagent` included, as `workspace__subagent`.
+
+For the seven `workspace_*` tools the prefixed form is the **only dispatchable spelling**. `ExtensionManager::dispatch_tool_call` does repair a stripped prefix, but only for a hardcoded three: `execute_code`, `read_module`, `search_modules`, and only when a `code_execution` extension is loaded. Everything else keeps the name it arrived with, and the next step is fatal to a bare workspace name: `get_client_for_tool` matches a client by `prefixed_name.starts_with(key)`, so a bare `workspace_close` *does* find the `workspace` client, but dispatch then strips the client name and requires a `__` separator — `"workspace_close".strip_prefix("workspace")` yields `_close`, the `__` strip fails, and the call dies with `Invalid tool name format: 'workspace_close'`.
+
+Only `subagent` tolerates both spellings, and not at dispatch: `is_spawn_tool_call` (`agent.rs`) matches `subagent` and `workspace__subagent` alike, and `Agent::dispatch_tool_call` intercepts either form before the extension manager ever sees it. The bare names that appear in `is_workspace_tool_refused_for` and `is_parking_workspace_tool` are defensive *classification* — they make the subagent refusal and the parking exemption hold whatever spelling arrives — not evidence of a second dispatch path.
+
+This page uses the bare names for readability.
 
 **Errors are returned, not raised.** Every handler returns `Result<Vec<Content>, String>`; `call_tool` converts an `Err` into `CallToolResult::error` with the text `Error: {message}`. A refusal is therefore a normal tool result the model reads and can act on, not a transport failure.
 
-**Enum arguments are validated inconsistently, and that matters when diagnosing.** Four of them are closed vocabularies that refuse an unknown value; three silently fall back to a default. `serde` does not enforce the `enum` in a JSON schema, so the only enforcement is the handler's own `match`.
+**Enum arguments are validated inconsistently, and that matters when diagnosing.** Five of them are closed vocabularies that refuse an unknown value; three silently fall back to a default. `serde` does not enforce the `enum` in a JSON schema, so the only enforcement is the handler's own `match`.
 
 | Argument | Behaviour on an unrecognised value |
 |---|---|
@@ -35,7 +41,7 @@ Everything below is read off `crates/biorouter/src/agents/workspace_extension.rs
 
 | Tool | With no daemon |
 |---|---|
-| `workspace_list` | Works. `gui_attached: false`, every `running` is `false`, `knowledge_bases`/`primary_kb` empty |
+| `workspace_list` | Works. `gui_attached: false`, every `running` is `false`, `knowledge_bases` `[]` and `primary_kb` `null` — the KB selection comes from the services handle, so with none it is the default rather than a read of the session |
 | `workspace_read_conversation` | Works — it reads the session store directly |
 | `workspace_watch` | Works, and still sees background children through the handle registry; liveness for anything else is `Unknown` |
 | `workspace_send_prompt` | `note` works; `steer` and `turn` refuse by name |
@@ -43,6 +49,50 @@ Everything below is read off `crates/biorouter/src/agents/workspace_extension.rs
 | `workspace_close` | `tab` is a stated no-op; `turn` and `agent` refuse |
 | `workspace_open` | `session_id` form reports the session with no tab; `new` refuses |
 | `subagent` | Works, headless (no tab) |
+
+## One worked sequence
+
+Every tool below is documented in isolation, but they are meant to compose. This is the common four-call shape — find the target, delegate, park, verify — with complete argument objects. Each argument is the one the corresponding section describes; nothing here is a shortcut the tools do not offer.
+
+**1. Find out what is already running**, so the delegation does not duplicate work in flight:
+
+```json
+{ "scope": "running", "limit": 20 }
+```
+
+`scope: "running"` is the exact "a turn is in flight" filter; `open` would also return idle tabs.
+
+**2. Delegate, without blocking on the child**:
+
+```json
+{
+  "instructions": "Run the crate's test suite and report every failing test with its assertion message.",
+  "extensions": ["developer"],
+  "background": true,
+  "visible": true,
+  "placement": "split"
+}
+```
+
+`background: true` returns immediately with a handle message naming the child's **session id** — that is the id every subsequent call takes, not the handle id. If `BIOROUTER_SUBAGENT_BACKGROUND` is off, this argument is silently ignored and the call blocks instead, so read the result text rather than assuming.
+
+**3. Park until it finishes**, instead of polling:
+
+```json
+{ "session_ids": ["<child session id>"], "mode": "all", "timeout_s": 300 }
+```
+
+A timeout is not an error. If the reply says nothing finished, the child is still running and the same call can be repeated; if it adds the "no daemon attached" second line, the ids resolved as `Unknown` and it was never established that they had started.
+
+**4. Verify what the child actually did**, rather than trusting its summary:
+
+```json
+{ "session_id": "<child session id>", "view": "tool_calls", "last": 100, "max_chars": 60000 }
+```
+
+`view: "tool_calls"` is the only view that shows the child's effects on the repo; `last` and `max_chars` are the two controls the clip message names when the projection is cut.
+
+A fan-out is the same sequence with step 2 issued several times in one assistant message and step 3 taking every child id at once.
 
 ---
 
@@ -193,7 +243,7 @@ The only tool that changes what another conversation may use. Four independent d
 | `remove_extensions` | string[] | `[]` | Not pre-resolved — see the false-success note below. |
 | `add_skills` | string[] | `[]` | **Session-scoped only.** Never touches the machine-wide skill file. |
 | `remove_skills` | string[] | `[]` | Same scope. |
-| `provider` | string | — | Required whenever `model` is given. |
+| `provider` | string | — | Required whenever `model` is given. Legal on its own: `provider` with no `model` silently selects that provider's `metadata.default_model`, so the `model={provider}/{model}` label can name a model the caller never asked for. |
 | `model` | string | — | Validated against the provider's `known_models`. |
 | `set_knowledge_bases` | string[] | — | Replaces the session's set. `[]` clears it. |
 | `primary_knowledge_base` | string | — | Three-valued: **absent** = `Auto` (keep the current target if it is still a member, else pin the first, else clear); `""` = `Clear`; a name = `Set`. Only meaningful with `set_knowledge_bases`, and the service refuses a name outside the resulting set. |
@@ -210,7 +260,7 @@ Application then runs in order: extensions → skills → provider → knowledge
 
 > **Warning.** Resolution is atomic; **application is not.** If a later step fails, earlier steps stay applied. A `remove_extensions` failure after `add_extensions` succeeded leaves the additions in place.
 
-> **False success: removing an extension the target does not have.** `remove_extensions` names are not pre-resolved, and `ExtensionManager::remove_extension` is a `HashMap::remove` on the normalized name that returns `Ok(())` whether or not anything was there. So a typo, or a removal from a session that never loaded that extension, is reported as `-name` in the applied list and persisted, indistinguishably from a real removal. Verify with `workspace_list`, whose per-row `extensions` field is read from the stored state.
+> **False success: removing an extension the target does not have.** `remove_extensions` names are not pre-resolved, and `ExtensionManager::remove_extension` is a `HashMap::remove` on the normalized name that returns `Ok(())` whether or not anything was there. So a typo, or a removal from a session that never loaded that extension, is reported as `-name` in the applied list, indistinguishably from a real removal. The store is not corrupted by it: `persist_extension_state` writes the agent's *live* extension set, which a no-op removal left unchanged — the phantom exists only in the label. Verify with `workspace_list`, whose per-row `extensions` field is read from that stored state and will still show the truth.
 
 ### Returns
 
@@ -438,7 +488,7 @@ Delegation with a fresh context window. The parent receives only the final summa
 
 ## Frames, and one that is dead
 
-The seven GUI commands the renderer accepts are `open_tab`, `activate_tab`, `close_tab`, `open_window`, `notify`, `annotate_tab`, and an `unknown cmd` refusal for anything else (`workspaceCommandRegistry.ts`, `workspaceCommandPlanner.ts`).
+The renderer accepts **six** GUI commands, and `WorkspaceCommand.cmd` in `workspaceCommandRegistry.ts` is the closed union that names them: `open_tab`, `activate_tab`, `close_tab`, `open_window`, `notify`, `annotate_tab`. `workspaceCommandPlanner.ts` switches on exactly those six; its `default` arm refuses anything else with `unknown cmd '…'`, which is the planner's answer to an unrecognised frame, not a seventh command.
 
 > **`activate_tab` has no production emitter.** Its only occurrences in `crates/` are the `FOCUS_STEALING_CMDS` list it belongs to, a doc comment, and one unit test. `workspace_open` always sends `open_tab` and relies on the reducer's dedupe rule to focus an existing session, so nothing constructs an `activate_tab` frame. The renderer's handler is live and correct; it is simply never reached today. Treat it as reserved vocabulary, not as a capability — and do not document a "focus an existing tab" frame as something an agent can trigger.
 
