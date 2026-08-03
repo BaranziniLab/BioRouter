@@ -4139,6 +4139,10 @@ async fn handle_agent_socket(
                     // inherits. `Agent::provider` can refuse under Gate B', in
                     // which case there is nothing to inherit and the global
                     // fallback stands.
+                    //
+                    // Read once, when this profile's worker is BUILT — the
+                    // `worker_agents` guard above means a later `/model` switch
+                    // does not reach a worker that already exists.
                     agent.provider().await.ok().as_ref(),
                 )
                 .await
@@ -4339,9 +4343,19 @@ async fn handle_agent_socket(
                                 valid: &valid_profiles.valid,
                                 worker_agents: &mut worker_agents,
                                 main_bridge: &ui_bridge,
-                                // R5: what an unpinned worker inherits. Read
-                                // here rather than captured at connect, so a
-                                // mid-session `/model` switch is reflected.
+                                // R5: what an unpinned worker inherits, read at
+                                // consult time rather than captured at connect.
+                                //
+                                // ⚠ That buys less than it looks like. It is
+                                // only consumed on a profile's FIRST consult —
+                                // `run_consult` calls `build_worker` behind
+                                // `!worker_agents.contains_key(..)`, and that
+                                // map lives for the socket's lifetime. So a
+                                // profile first consulted after a `/model`
+                                // switch does inherit the new model; one built
+                                // before it keeps the old one until the page
+                                // reloads. Re-binding live workers on a model
+                                // switch is a separate change.
                                 main_provider: agent.provider().await.ok(),
                                 client_id: client_id.as_deref(),
                                 durable,

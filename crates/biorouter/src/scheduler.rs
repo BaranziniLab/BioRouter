@@ -950,6 +950,23 @@ async fn execute_job(
     let (provider_name, model_config) =
         resolve_scheduled_provider(&job, agent.config.session_manager.as_ref()).await?;
 
+    // ⚠ DELIBERATE BEHAVIOUR CHANGE, and the one place this task makes a job
+    // fail that used to run. `resolve_scheduled_provider` falls back carefully —
+    // a creator row that is gone, or that records no provider, yields the global
+    // default — but a creator that DID name a provider is taken at its word, and
+    // if that provider can no longer be constructed (its credential was revoked,
+    // its endpoint retired) this `?` ends the run.
+    //
+    // Falling back to the global default here instead would be the R5 defect
+    // wearing a repair's clothing: the job silently moves the private chat's
+    // work onto the user's commercial default, which is exactly what the chat
+    // chose a private model to avoid. And under C2 it would not even work — a
+    // `Scheduled` row inherits its creator's classification, so Gate A refuses
+    // the public bind a few lines below regardless.
+    //
+    // Failing loudly is therefore the correct outcome, and it is no longer
+    // invisible: `run_workflow_job` records the error on the job as
+    // `last_error`, and both schedule views render it.
     let agent_provider = create(&provider_name, model_config).await?;
 
     let extensions = resolve_extensions_for_new_session(workflow.extensions.as_deref(), None);
