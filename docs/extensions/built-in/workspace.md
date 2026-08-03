@@ -6,6 +6,8 @@
 
 Every BioRouter conversation is a session: its own agent, its own extensions, skills and knowledge bases, its own history, and — when the desktop app is running — its own tab. Workspace Control gives the agent tools over that layer. Instead of telling you "open Settings and enable the single-cell skill in that other chat", it can do it; instead of a subagent being an opaque spinner, the child runs in a tab you can read, talk to and stop.
 
+This page is the reference — what each tool does, what it asks you first, and how its writes are labelled. If you are trying to *arrange* work rather than look a tool up, start with [Workspace control](../../agent-loop/workspace-control.md), which covers the tab/pane/window layout, delegating to subagents, and the terminal path.
+
 Workspace Control adds no network access of its own: every tool operates on sessions stored under `~/.config/biorouter/sessions/` and on the local daemon that runs them. What it can *grant* is another matter — pointing a conversation at a different provider sends that conversation's history to the provider's endpoint, and handing one an extension that talks to the network gives it the network. Those are exactly the changes that always ask you first; see [the always-confirm rule](#the-always-confirm-rule).
 
 ## Two tiers, and why they differ
@@ -172,6 +174,7 @@ That is why enabling Workspace Control in the desktop app raises a one-time, dis
 
 ## Related documentation
 
+- [Workspace control](../../agent-loop/workspace-control.md) — the how-to companion to this reference: arranging tabs, panes and windows, delegating, the caps you will meet, and the terminal path.
 - [Subagents](../../agent-loop/subagents.md) — the glass-box tab, steering a child, the fan-out cap, and the `subagent_status` migration note.
 - [Chat Recall extension](chat-recall.md) — the complementary tool for searching past conversations by content.
 - [Tool routing](../../agent-loop/tool-routing.md) — the routing table that separates Workspace Control from Chat Recall, Memory and the knowledge base.

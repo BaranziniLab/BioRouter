@@ -23,6 +23,7 @@ Two kinds of document live here, and the difference matters more than any other 
 | Change a setting | [Configuration file reference](configuration/config-file-reference.md) for `config.yaml`, [Environment variables](configuration/environment-variables.md) for per-invocation overrides |
 | Decide how much autonomy the agent gets | [Permission modes](security/permission-modes.md) |
 | Resume, export or prune your past work | [Managing sessions](getting-started/managing-sessions.md) |
+| Run several conversations at once, or delegate to a subagent you can watch | [Workspace control](agent-loop/workspace-control.md) |
 | Run BioRouter as a shared headless server | [Headless Linux deployment](deployment/headless-linux.md) |
 | Fix an error you are hitting right now | [Common problems and fixes](troubleshooting/common-problems-and-fixes.md) |
 | Understand the codebase before changing it | [System overview](architecture/system-overview.md) |
