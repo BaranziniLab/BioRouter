@@ -23,9 +23,9 @@
 //   node scripts/build-registry.mjs --input scripts/fixtures/happy.html \
 //                                   --out /tmp/happy-registry.json
 
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const REPO = join(ROOT, '..');
@@ -39,20 +39,63 @@ const SITE_BASE = 'https://biorouter.ucsf.edu/';
 const argv = process.argv.slice(2);
 const flag = (name, fallback) => {
   const i = argv.indexOf(name);
-  return i === -1 ? fallback : argv[i + 1];
+  if (i === -1) return fallback;
+  const value = argv[i + 1];
+  if (value === undefined || value.startsWith('--')) {
+    // Otherwise `--out` as the last argument reaches writeFileSync(undefined),
+    // which exits non-zero with a stack trace — indistinguishable from a
+    // validation failure to anything checking only the status.
+    console.error(`registry: ${name} needs a value`);
+    process.exit(1);
+  }
+  return value;
 };
+
+// Path comparisons here decide whether a run may overwrite a published
+// artifact, so they compare what the FILESYSTEM sees, never what was typed.
+// `landing/registry.json` from the repo root is a different string from the
+// absolute default and the same file; so is a symlink to it. A raw string
+// comparison let both through, and a two-card fixture then replaced the
+// 37-extension catalog while skipping its two siblings entirely.
+function canonical(p) {
+  const abs = resolve(p);
+  try {
+    return realpathSync(abs);
+  } catch {
+    // Not created yet — canonicalise the directory it will be created in, which
+    // is what resolves any symlinked parent.
+    try {
+      return join(realpathSync(dirname(abs)), basename(abs));
+    } catch {
+      return abs;
+    }
+  }
+}
+const samePath = (a, b) => canonical(a) === canonical(b);
+
 const DEFAULT_INPUT = join(ROOT, 'baam.html');
 const DEFAULT_OUTPUT = join(ROOT, 'registry.json');
+const FALLBACK_OUTPUT = join(REPO, 'ui/desktop/src/components/baam/registry.fallback.json');
+const RUST_OUTPUT = join(REPO, 'crates/biorouter/src/privacy/registry_private.rs');
+// The three files a real run publishes. Nothing else may write any of them.
+const PUBLISHED = [DEFAULT_OUTPUT, FALLBACK_OUTPUT, RUST_OUTPUT];
+const isPublished = (p) => PUBLISHED.some((q) => samePath(p, q));
+
 const INPUT = flag('--input', DEFAULT_INPUT);
 const OUTPUT = flag('--out', DEFAULT_OUTPUT);
-if (INPUT !== DEFAULT_INPUT && OUTPUT === DEFAULT_OUTPUT) {
-  console.error('registry: --input requires --out; refusing to overwrite landing/registry.json');
+// A real run is the full one: the real page in, all three artifacts out. Its
+// two sibling outputs belong to it alone — a two-card fixture must never leave
+// the compiled-in private set holding two invented names.
+const IS_REAL_RUN = samePath(INPUT, DEFAULT_INPUT) && samePath(OUTPUT, DEFAULT_OUTPUT);
+
+if (isPublished(OUTPUT) && !IS_REAL_RUN) {
+  console.error(
+    `registry: --input requires an --out of its own — "${OUTPUT}" resolves to ` +
+      `${canonical(OUTPUT)}, which is one of the three published artifacts, and only a ` +
+      `full run from ${DEFAULT_INPUT} may write those`
+  );
   process.exit(1);
 }
-// The two sibling outputs belong to a real run only. A fixture run writes its
-// own --out and nothing else, or a two-card fixture would leave the compiled-in
-// private set holding two invented names.
-const IS_REAL_RUN = OUTPUT === DEFAULT_OUTPUT;
 
 // `--emit-rust <path>` renders the compiled-in private set for a FIXTURE run.
 // Without it, the one output that is a security artifact could only ever be
@@ -63,6 +106,13 @@ const IS_REAL_RUN = OUTPUT === DEFAULT_OUTPUT;
 const EMIT_RUST = flag('--emit-rust', null);
 if (EMIT_RUST !== null && IS_REAL_RUN) {
   console.error('registry: --emit-rust is for fixture runs; a real run always writes the crate path');
+  process.exit(1);
+}
+if (EMIT_RUST !== null && isPublished(EMIT_RUST)) {
+  console.error(
+    `registry: --emit-rust may not target "${EMIT_RUST}" — it resolves to ` +
+      `${canonical(EMIT_RUST)}, one of the three published artifacts`
+  );
   process.exit(1);
 }
 

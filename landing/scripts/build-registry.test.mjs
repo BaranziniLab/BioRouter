@@ -22,7 +22,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -177,5 +177,85 @@ test('a private extension with no affiliation is unconstrained, not rejected', (
 test('--input without --out is refused rather than defaulted', () => {
   const r = run({ input: fixture('happy') });
   assert.equal(r.code, 1, r.both);
-  assert.match(r.stderr, /--input requires --out/);
+  assert.match(r.stderr, /--input requires an --out/);
+});
+
+// ---- The three published artifacts are unwritable by a fixture run ---------
+// The guard compared raw path STRINGS, so any second spelling of a protected
+// file slipped past it while resolving to the same inode. Each test below
+// snapshots the real file and restores it in a `finally`, so a regression makes
+// the test red without also rewriting the tracked catalog.
+const PROTECTED = {
+  'the published registry': join(LANDING, 'registry.json'),
+  'the desktop fallback snapshot': join(
+    REPO,
+    'ui/desktop/src/components/baam/registry.fallback.json'
+  ),
+  'the compiled-in private set': join(
+    REPO,
+    'crates/biorouter/src/privacy/registry_private.rs'
+  ),
+};
+
+/** Run `body`, and put every protected artifact back byte-for-byte afterwards. */
+function protectingArtifacts(body) {
+  const before = Object.values(PROTECTED).map((p) => [p, readFileSync(p)]);
+  try {
+    body();
+  } finally {
+    for (const [p, bytes] of before) writeFileSync(p, bytes);
+  }
+}
+
+test('a relative --out that aliases the real registry is refused', () => {
+  protectingArtifacts(() => {
+    const real = PROTECTED['the published registry'];
+    const before = readFileSync(real);
+    // Textually different from the absolute default, same file.
+    const r = run({ input: fixture('happy'), out: 'landing/registry.json', cwd: REPO });
+    assert.equal(r.code, 1, r.both);
+    assert.match(r.stderr, /--input requires an --out/);
+    assert.deepEqual(readFileSync(real), before, 'the real catalog must not be rewritten');
+  });
+});
+
+test('a symlink to the real registry is refused', () => {
+  protectingArtifacts(() => {
+    const real = PROTECTED['the published registry'];
+    const before = readFileSync(real);
+    const alias = join(scratch, `alias-${tmpSeq++}.json`);
+    symlinkSync(real, alias);
+    const r = run({ input: fixture('happy'), out: alias });
+    assert.equal(r.code, 1, r.both);
+    assert.match(r.stderr, /--input requires an --out/);
+    assert.deepEqual(readFileSync(real), before, 'the real catalog must not be rewritten');
+  });
+});
+
+for (const [what, path] of Object.entries(PROTECTED)) {
+  if (path === PROTECTED['the published registry']) continue;
+  test(`--out pointing at ${what} is refused`, () => {
+    protectingArtifacts(() => {
+      const before = readFileSync(path);
+      const r = run({ input: fixture('happy'), out: path });
+      assert.equal(r.code, 1, r.both);
+      assert.deepEqual(readFileSync(path), before);
+    });
+  });
+}
+
+test('--emit-rust pointing at the compiled-in private set is refused', () => {
+  protectingArtifacts(() => {
+    const rs = PROTECTED['the compiled-in private set'];
+    const before = readFileSync(rs);
+    const r = run({ input: fixture('happy'), out: outPath(), args: ['--emit-rust', rs] });
+    assert.equal(r.code, 1, r.both);
+    assert.deepEqual(readFileSync(rs), before);
+  });
+});
+
+test('a flag with no value is refused by name, not by a stack trace', () => {
+  const r = run({ input: fixture('happy'), args: ['--out'] });
+  assert.equal(r.code, 1, r.both);
+  assert.match(r.stderr, /^registry: --out needs a value/m);
 });
