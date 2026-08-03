@@ -379,6 +379,25 @@ export type DeclarativeProviderConfig = {
     timeout_seconds?: number | null;
 };
 
+export type DeclassifySessionRequest = {
+    /**
+     * The last six characters of the session id, as the user typed them.
+     *
+     * Required when the chat's provenance is anything other than `turn:*` —
+     * see `biorouter::privacy::declassify::requires_typed_confirmation`, which
+     * is where the grading lives. The daemon re-derives the grade from the
+     * STORED provenance rather than trusting the client to say which control it
+     * showed, so a caller cannot claim the single-click path for a chat that
+     * reached a private data source.
+     */
+    confirmation?: string | null;
+};
+
+export type DeclassifySessionResponse = {
+    privacyTier: SessionClassification;
+    sessionId: string;
+};
+
 export type DecodeWorkflowRequest = {
     deeplink: string;
 };
@@ -5404,6 +5423,50 @@ export type GetSessionResponses = {
 };
 
 export type GetSessionResponse = GetSessionResponses[keyof GetSessionResponses];
+
+export type DeclassifySessionData = {
+    body: DeclassifySessionRequest;
+    path: {
+        /**
+         * Unique identifier for the session to declassify
+         */
+        session_id: string;
+    };
+    query?: never;
+    url: '/sessions/{session_id}/declassify';
+};
+
+export type DeclassifySessionErrors = {
+    /**
+     * Bad request - invalid session id, or the typed confirmation did not match (body = plain text)
+     */
+    400: unknown;
+    /**
+     * Unauthorized - Invalid or missing API key
+     */
+    401: unknown;
+    /**
+     * Refused by a privacy boundary (issue #56 §12.4): lowering a chat's classification is the user's decision, and the request carried no proof it came from them (body = plain text)
+     */
+    403: unknown;
+    /**
+     * Session not found
+     */
+    404: unknown;
+    /**
+     * Internal server error
+     */
+    500: unknown;
+};
+
+export type DeclassifySessionResponses = {
+    /**
+     * The chat is public
+     */
+    200: DeclassifySessionResponse;
+};
+
+export type DeclassifySessionResponse2 = DeclassifySessionResponses[keyof DeclassifySessionResponses];
 
 export type DivergeSessionData = {
     body: DivergeSessionRequest;

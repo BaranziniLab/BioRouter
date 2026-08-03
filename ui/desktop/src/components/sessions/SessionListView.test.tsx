@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   listSessions: vi.fn(),
   deleteSession: vi.fn(),
   updateSessionName: vi.fn(),
+  declassifySession: vi.fn(),
   toastSuccess: vi.fn(),
   toastError: vi.fn(),
 }));
@@ -20,6 +21,7 @@ vi.mock('../../api', () => ({
   exportSession: vi.fn(),
   importSession: vi.fn(),
   updateSessionName: mocks.updateSessionName,
+  declassifySession: mocks.declassifySession,
 }));
 
 vi.mock('../../toasts', () => ({

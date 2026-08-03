@@ -319,6 +319,37 @@ mod tests {
         );
     }
 
+    /// Issue #56 §12.4. Declassification is not a *raise*, so it is not one of
+    /// the five channels above — it is the one channel that goes the other way,
+    /// and it needs the same proof for the same reason: `check_token` compares
+    /// one machine-wide bearer that AR-11 measured to be recoverable from inside
+    /// the daemon, so an authenticated request is not evidence of a human.
+    ///
+    /// Its own module is where the behaviour is pinned
+    /// (`routes::session::declassify_tests::the_route_needs_more_than_the_secret_key`
+    /// drives all three credential sets through the real `check_token` layer).
+    /// This scan is the cheap tripwire that survives a refactor which moves that
+    /// test: `is_public_app_get` needs no change for this route — it only ever
+    /// matches GETs under `/apps/{id}`, so a POST under `/sessions` can never
+    /// reach the exemption — and with nothing in `check_token` to change either,
+    /// the ONLY thing standing between the model and this route is the line this
+    /// asserts is present.
+    #[test]
+    fn the_declassify_route_consults_the_user_action_guard() {
+        let session_rs = include_str!("routes/session.rs");
+        assert!(
+            body_of(session_rs, "async fn declassify_session").contains("is_user_action("),
+            "the declassify route does not consult the user-action guard"
+        );
+        // Same negative control as above, in the same file: a handler that has no
+        // guard must come back without one, or `body_of` is over-reading past a
+        // function end and the assertion above is passing on someone else's body.
+        assert!(
+            !body_of(session_rs, "async fn get_session_extensions").contains("is_user_action("),
+            "the body scan is over-reading: a handler with no guard reported one"
+        );
+    }
+
     #[test]
     fn the_workspace_socket_is_exempt_and_nothing_that_merely_starts_with_it_is() {
         assert!(is_unauthenticated_path("/ui/workspace"));

@@ -2313,7 +2313,14 @@ impl SessionStorage {
         self.pool.close().await;
     }
 
-    async fn pool(&self) -> Result<&Pool<Sqlite>> {
+    /// The migrated pool. `pub(crate)` rather than private because
+    /// [`crate::privacy::declassify`] owns the ONE statement in the tree that
+    /// lowers `privacy_tier`, and it deliberately does not go through
+    /// [`SessionUpdateBuilder`] — the builder's monotone `CASE WHEN` cannot
+    /// express a lowering, and giving it a way to would hand every caller in the
+    /// tree the same ability. Still crate-internal: no route, no MCP tool and no
+    /// CLI command can reach a raw connection through this.
+    pub(crate) async fn pool(&self) -> Result<&Pool<Sqlite>> {
         self.initialized
             .get_or_try_init(|| async {
                 let schema_exists = sqlx::query_scalar::<_, bool>(

@@ -3603,6 +3603,69 @@
         ]
       }
     },
+    "/sessions/{session_id}/declassify": {
+      "post": {
+        "tags": [
+          "Session Management"
+        ],
+        "summary": "Mark a private chat public (issue #56 §12.4/§12.5).",
+        "description": "The ONLY route in the tree that lowers a session's classification. It is\nuser-only (DR-16's `X-User-Action`), it is graded on the chat's provenance,\nand every use leaves a row in `classification_audit` — a declassified session\nmust never become indistinguishable from one that was always public.",
+        "operationId": "declassify_session",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "description": "Unique identifier for the session to declassify",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeclassifySessionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The chat is public",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeclassifySessionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request - invalid session id, or the typed confirmation did not match (body = plain text)"
+          },
+          "401": {
+            "description": "Unauthorized - Invalid or missing API key"
+          },
+          "403": {
+            "description": "Refused by a privacy boundary (issue #56 §12.4): lowering a chat's classification is the user's decision, and the request carried no proof it came from them (body = plain text)"
+          },
+          "404": {
+            "description": "Session not found"
+          },
+          "500": {
+            "description": "Internal server error"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
     "/sessions/{session_id}/diverge": {
       "post": {
         "tags": [
@@ -5596,6 +5659,31 @@
             "format": "int64",
             "nullable": true,
             "minimum": 0
+          }
+        }
+      },
+      "DeclassifySessionRequest": {
+        "type": "object",
+        "properties": {
+          "confirmation": {
+            "type": "string",
+            "description": "The last six characters of the session id, as the user typed them.\n\nRequired when the chat's provenance is anything other than `turn:*` —\nsee `biorouter::privacy::declassify::requires_typed_confirmation`, which\nis where the grading lives. The daemon re-derives the grade from the\nSTORED provenance rather than trusting the client to say which control it\nshowed, so a caller cannot claim the single-click path for a chat that\nreached a private data source.",
+            "nullable": true
+          }
+        }
+      },
+      "DeclassifySessionResponse": {
+        "type": "object",
+        "required": [
+          "sessionId",
+          "privacyTier"
+        ],
+        "properties": {
+          "privacyTier": {
+            "$ref": "#/components/schemas/SessionClassification"
+          },
+          "sessionId": {
+            "type": "string"
           }
         }
       },

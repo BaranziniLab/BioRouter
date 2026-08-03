@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 pub mod alt_provider;
 pub mod capability;
 pub mod config_keys;
+pub mod declassify;
 pub mod extensions;
 pub mod refusal;
 mod registry_private;
