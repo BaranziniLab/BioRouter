@@ -2,6 +2,7 @@ import { useRef } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../ui/dialog';
 import { Button } from '../ui/button';
 import { disclosureTitle, type DisclosureCopy } from './disclosureCopy';
+import { DisclosureProse } from './DisclosureProse';
 
 export interface NonPrivateModelDisclosureProps {
   open: boolean;
@@ -83,11 +84,7 @@ export function NonPrivateModelDisclosure({
           tabIndex={-1}
           className="space-y-3 text-sm text-text-default outline-none max-h-[50vh] overflow-y-auto"
         >
-          {copy.long.split('\n\n').map((paragraph) => (
-            <p key={paragraph.slice(0, 48)} className="min-w-0 [overflow-wrap:anywhere]">
-              {paragraph}
-            </p>
-          ))}
+          <DisclosureProse text={copy.long} paragraphClassName="min-w-0 [overflow-wrap:anywhere]" />
         </div>
 
         {acknowledgeError && (

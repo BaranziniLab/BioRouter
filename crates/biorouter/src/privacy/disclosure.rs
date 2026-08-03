@@ -66,16 +66,26 @@ pub const COPY_TITLE_TEMPLATE: &str = "{provider} is not hosted by your institut
 ///
 /// Paragraphs are separated by a blank line; every surface that renders this
 /// splits on `\n\n` rather than shipping its own prose.
+///
+/// ⚠ **`**` marks emphasis, and only the two clauses that say what is NOT
+/// protected carry it.** Ordering alone does not carry the ruling: three
+/// paragraphs of identical weight let a skimmer take the middle one — the
+/// flattering half, the three things Biorouter *does* stop — as the summary and
+/// conclude the machine is opaque to a public model, which is the reading DR-17
+/// forbids. The guarantee is deliberately unmarked; emphasis that is everywhere
+/// is emphasis nowhere. The markers are balanced, so a renderer can split on
+/// them and wrap the odd segments. [`COPY_SHORT`] carries none: it is printed
+/// raw into a tooltip and a terminal.
 pub const COPY_LONG: &str = "\
 It is not HIPAA-compliant, is not hosted on-premise, and does not run on this machine. \
-It can read files on this computer — anything a chat on this model can reach, it can send \
+It can read **files on this computer** — anything a chat on this model can reach, it can send \
 there: the contents of your working directory, and whatever a command you approve prints.
 
 Biorouter does stop three things: this model cannot read another chat's transcript, cannot \
 read a knowledge base marked private, and cannot use the private data extensions (UCSF OMOP, \
 CDW) or switch this chat to a private model to reach them.
 
-It does not stop it reading ordinary files on this computer through the shell — including \
+It **does not** stop it reading ordinary files on this computer through the shell — including \
 files an earlier private chat wrote outside Biorouter's own storage. If the work involves \
 patient data, use a local model or an institutional one.";
 

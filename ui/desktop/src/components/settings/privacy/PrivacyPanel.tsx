@@ -4,6 +4,7 @@ import { Button } from '../../ui/button';
 import { Input } from '../../ui/input';
 import { useConfig } from '../../ConfigContext';
 import { useDisclosure } from '../../privacy/disclosureCopy';
+import { DisclosureProse } from '../../privacy/DisclosureProse';
 import { DISABLE_PHRASE, PRIVACY_TIERS_KEY, privacyTiersEnabledFromConfig } from './privacyTiers';
 
 // Re-exported so the panel stays the name every existing importer already
@@ -121,11 +122,10 @@ export default function PrivacyPanel() {
           data-testid="non-private-model-statement"
           className="rounded-lg border border-borderStandard px-3 py-3 space-y-2 text-sm text-text-default"
         >
-          {disclosure.long.split('\n\n').map((paragraph) => (
-            <p key={paragraph.slice(0, 48)} className="min-w-0 [overflow-wrap:anywhere]">
-              {paragraph}
-            </p>
-          ))}
+          <DisclosureProse
+            text={disclosure.long}
+            paragraphClassName="min-w-0 [overflow-wrap:anywhere]"
+          />
           {!enabled && (
             // The served copy names three things Biorouter "does stop". With
             // the master switch off it stops none of them, so reprinting that

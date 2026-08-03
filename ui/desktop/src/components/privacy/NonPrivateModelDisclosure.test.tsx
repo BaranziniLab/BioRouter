@@ -100,6 +100,25 @@ describe('NonPrivateModelDisclosure — the blocking dialog', () => {
     expect(screen.getByText(/SERVED-COPY-MARKER/)).toBeInTheDocument();
   });
 
+  it('renders the served emphasis instead of printing its markers', () => {
+    // The copy marks the two clauses that say what is NOT protected, and leaves
+    // the guarantee unmarked. A renderer that printed the markers verbatim would
+    // put `**` in front of the user; one that stripped them would flatten the
+    // three paragraphs to equal weight and let a skimmer take the guarantee as
+    // the summary — the reading DR-17 forbids. The marker convention is the
+    // served copy's, so this fixture uses it without using the product's words.
+    render(
+      <NonPrivateModelDisclosure
+        open
+        providerDisplayName="OpenAI"
+        copy={{ ...SERVED, long: 'SERVED-COPY-MARKER — it **does not** stop it.' }}
+        onAcknowledge={vi.fn()}
+      />
+    );
+    expect(screen.getByText('does not').tagName).toBe('STRONG');
+    expect(screen.getByRole('dialog')).not.toHaveTextContent(/\*\*/);
+  });
+
   it('the dialog cannot be dismissed by Escape or an overlay click', async () => {
     const user = userEvent.setup();
     const onAck = vi.fn();

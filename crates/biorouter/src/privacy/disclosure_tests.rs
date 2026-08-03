@@ -102,6 +102,43 @@ fn the_short_form_says_the_same_three_things_in_one_line() {
 }
 
 #[test]
+fn the_limit_is_emphasised_and_the_guarantee_is_not() {
+    // Ordering alone does not carry the ruling. Three paragraphs of identical
+    // weight let a skimmer take the middle one — the flattering half, the three
+    // things Biorouter DOES stop — as the summary, and conclude the machine is
+    // opaque to a public model. That is precisely the reading DR-17 says the
+    // copy must not permit. So the two clauses that say what is NOT protected
+    // are marked, and the guarantee is deliberately unmarked: emphasis that is
+    // everywhere is emphasis nowhere.
+    let paragraphs: Vec<&str> = disclosure::COPY_LONG.split("\n\n").collect();
+    assert_eq!(paragraphs.len(), 3, "{paragraphs:#?}");
+    assert!(
+        paragraphs[0].contains("**files on this computer**"),
+        "the thing at risk is not marked: {}",
+        paragraphs[0]
+    );
+    assert!(
+        !paragraphs[1].contains("**"),
+        "the guarantee is marked, which is the emphasis this copy must not have: {}",
+        paragraphs[1]
+    );
+    assert!(
+        paragraphs[2].contains("**does not**"),
+        "the limit of the protection is not marked: {}",
+        paragraphs[2]
+    );
+    // Balanced, or a renderer splitting on the marker prints a stray one.
+    assert_eq!(
+        disclosure::COPY_LONG.matches("**").count() % 2,
+        0,
+        "unbalanced emphasis markers"
+    );
+    // The short form is rendered raw — a chip tooltip, a CLI line — so it must
+    // carry no markers at all.
+    assert!(!disclosure::COPY_SHORT.contains('*'), "{}", disclosure::COPY_SHORT);
+}
+
+#[test]
 fn the_title_names_the_provider_and_does_not_leave_the_placeholder_behind() {
     let title = disclosure::title_for("OpenAI");
     assert!(title.starts_with("OpenAI"), "{title}");

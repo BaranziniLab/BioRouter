@@ -47,14 +47,14 @@ smaller.
 > **{Provider} is not hosted by your institution.**
 >
 > It is not HIPAA-compliant, is not hosted on-premise, and does not run on this machine. It can
-> read files on this computer — anything a chat on this model can reach, it can send there: the
-> contents of your working directory, and whatever a command you approve prints.
+> read **files on this computer** — anything a chat on this model can reach, it can send there:
+> the contents of your working directory, and whatever a command you approve prints.
 >
 > Biorouter does stop three things: this model cannot read another chat's transcript, cannot read
 > a knowledge base marked private, and cannot use the private data extensions (UCSF OMOP, CDW) or
 > switch this chat to a private model to reach them.
 >
-> It does not stop it reading ordinary files on this computer through the shell — including files
+> It **does not** stop it reading ordinary files on this computer through the shell — including files
 > an earlier private chat wrote outside Biorouter's own storage. If the work involves patient
 > data, use a local model or an institutional one.
 
