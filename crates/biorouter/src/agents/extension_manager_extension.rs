@@ -96,7 +96,7 @@ pub struct ExtensionManagerClient {
 /// ever writing that. Only an entry actually present in the on-disk config
 /// counts as operator-disabled; injected defaults stay agent-enableable.
 ///
-/// `caller` is Gate F1 (issue #56), and it is a REQUIRED parameter rather than
+/// `cap` is Gate F1 (issue #56), and it is a REQUIRED parameter rather than
 /// a check bolted onto the caller because this predicate is the only part of
 /// the enable path that is pure — testable with no global config, no registry
 /// and no live extension. Enabling `ucsfomopagent` is not a tool call into a
@@ -104,12 +104,31 @@ pub struct ExtensionManagerClient {
 /// `CLINICAL_RECORDS_*` secrets out of the keychain and opens a session to the
 /// UCSF CDW. Gate C refusing the first tool call afterwards is already too
 /// late.
+///
+/// ⚠ **The capability, not a bare tier.** DR-15's master opt-out reaches this
+/// gate through [`CallCapability::enforced`], and it is taken here rather than
+/// at the call site so that the whole of Gate F1 — the tier axis and the toggle
+/// axis — is one function, testable in both toggle positions with no global
+/// mutation, and so that Task 30's structural inventory can name a single
+/// `(file, fn)` pair for this row. `handle_manage_extensions` used to perform
+/// the collapse itself, which left the toggle half of the decision with no
+/// subject a test could hold.
 fn check_enable_allowed(
     entry: Option<ExtensionEntry>,
     persisted: bool,
     extension_name: &str,
-    caller: ProviderTier,
+    cap: crate::privacy::CallCapability,
 ) -> Result<ExtensionConfig, ErrorData> {
+    // DR-15's master opt-out, read off the SAME sample as the tier so the two
+    // can never be observed at different instants. With tiers switched off the
+    // caller is treated as private, which silences the Gate F1 arm below and
+    // nothing else — the alternative, a second flag inside this predicate, is
+    // exactly the second read `CallCapability` exists to prevent.
+    let caller = if cap.enforced() {
+        cap.tier()
+    } else {
+        ProviderTier::Private
+    };
     match entry {
         None => Err(ErrorData::new(
             ErrorCode::RESOURCE_NOT_FOUND,
@@ -286,17 +305,11 @@ impl ExtensionManagerClient {
         let persisted = entry
             .as_ref()
             .is_some_and(|entry| extension_entry_is_persisted(&entry.config.name()));
-        // DR-15's master opt-out, read off the SAME sample as the tier so the
-        // two can never be observed at different instants. With tiers switched
-        // off the caller is handed to the gate as private, which silences Gate
-        // F1 and nothing else — the alternative, a second flag inside the pure
-        // predicate, is exactly the second read this type exists to prevent.
-        let caller = if cap.enforced() {
-            cap.tier()
-        } else {
-            ProviderTier::Private
-        };
-        let config = check_enable_allowed(entry, persisted, &extension_name, caller)?;
+        // The capability is handed to Gate F1 WHOLE — both axes, one sample.
+        // The collapse DR-15's opt-out performs lives inside
+        // `check_enable_allowed`, so the toggle half of this decision has a
+        // subject a test can hold; doing it here left it with none.
+        let config = check_enable_allowed(entry, persisted, &extension_name, cap)?;
 
         extension_manager
             .add_extension(config)
@@ -600,6 +613,13 @@ impl McpClientTrait for ExtensionManagerClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::privacy::CallCapability;
+
+    /// The capability a public caller carries with the feature ON — the pair
+    /// every pre-#56 test in this module was implicitly written against.
+    fn public_enforcing() -> CallCapability {
+        CallCapability::for_test(ProviderTier::Public, true)
+    }
 
     fn entry(enabled: bool) -> ExtensionEntry {
         ExtensionEntry {
@@ -617,7 +637,7 @@ mod tests {
 
     #[test]
     fn enable_of_unknown_extension_is_not_found() {
-        let err = check_enable_allowed(None, false, "ghost", ProviderTier::Public).unwrap_err();
+        let err = check_enable_allowed(None, false, "ghost", public_enforcing()).unwrap_err();
         assert_eq!(err.code, ErrorCode::RESOURCE_NOT_FOUND);
         assert!(err.message.contains("not found"), "{}", err.message);
     }
@@ -627,7 +647,7 @@ mod tests {
         // #42: `enabled: false` written into config.yaml must be a dependable
         // pin — the agent may not silently re-enable what the operator turned
         // off. `persisted: true` = the entry exists in the on-disk config.
-        let err = check_enable_allowed(Some(entry(false)), true, "developer", ProviderTier::Public)
+        let err = check_enable_allowed(Some(entry(false)), true, "developer", public_enforcing())
             .unwrap_err();
         assert_eq!(err.code, ErrorCode::INVALID_REQUEST);
         assert!(err.message.contains("disabled"), "{}", err.message);
@@ -649,21 +669,16 @@ mod tests {
         // extensions map with its default — a default-off one (chatrecall)
         // carries `enabled: false` without any operator writing it. That is
         // not an operator pin, so the agent enable flow must stay open.
-        let config = check_enable_allowed(
-            Some(entry(false)),
-            false,
-            "chatrecall",
-            ProviderTier::Public,
-        )
-        .expect("allowed");
+        let config =
+            check_enable_allowed(Some(entry(false)), false, "chatrecall", public_enforcing())
+                .expect("allowed");
         assert_eq!(config.name(), "developer");
     }
 
     #[test]
     fn enable_of_config_enabled_extension_passes_the_config_through() {
-        let config =
-            check_enable_allowed(Some(entry(true)), true, "developer", ProviderTier::Public)
-                .expect("allowed");
+        let config = check_enable_allowed(Some(entry(true)), true, "developer", public_enforcing())
+            .expect("allowed");
         assert_eq!(config.name(), "developer");
     }
 
@@ -698,7 +713,7 @@ mod tests {
             Some(entry_for("ucsfomopagent")),
             false,
             "ucsfomopagent",
-            Public,
+            CallCapability::for_test(Public, true),
         )
         .unwrap_err();
         assert!(e.message.contains("marketplace"), "{}", e.message);
@@ -707,10 +722,69 @@ mod tests {
             Some(entry_for("ucsfomopagent")),
             false,
             "ucsfomopagent",
-            Private,
+            CallCapability::for_test(Private, true),
         )
         .expect("a private caller may enable it");
-        check_enable_allowed(Some(entry_for("developer")), false, "developer", Public)
-            .expect("public extensions are unaffected");
+        check_enable_allowed(
+            Some(entry_for("developer")),
+            false,
+            "developer",
+            CallCapability::for_test(Public, true),
+        )
+        .expect("public extensions are unaffected");
+    }
+
+    /// Task 30's matrix ROW 11, asserted where the gate lives.
+    ///
+    /// ⚠ **Why this row is here and not in `crates/biorouter/tests/privacy_toggle.rs`
+    /// with the other seventeen.** Gate F1 is an ON-THE-TOOL-CALL-PATH gate: the
+    /// master toggle reaches it through the [`CallCapability`] that
+    /// `Agent::dispatch_tool_call` already sampled, never through a second read
+    /// of the global. So the OFF column of this row is *by construction* a
+    /// capability whose `enforced` is false — and the only constructor for one
+    /// is `CallCapability::for_test`, which is `#[cfg(test)] pub(crate)` and
+    /// therefore invisible to an integration binary. Driving it end-to-end
+    /// instead would mean writing `ucsfomopagent` into the developer's real
+    /// `config.yaml`, because `get_extension_entry_by_name` reads the global
+    /// config: the ON column would otherwise stop at "not found" and never
+    /// reach the arm this row is about.
+    ///
+    /// That `CallCapability::sample` itself reads the master toggle is asserted
+    /// end-to-end by the matrix's rows 3, 4/5 and 7, which flip the global and
+    /// watch a real dispatch change its answer. This row is the other half: the
+    /// gate honours what the sample handed it.
+    #[test]
+    fn the_master_toggle_silences_gate_f1() {
+        use ProviderTier::Public;
+        // ON — the shipped default: a public model may not spawn the clinical
+        // connector's process.
+        assert!(check_enable_allowed(
+            Some(entry_for("ucsfomopagent")),
+            false,
+            "ucsfomopagent",
+            CallCapability::for_test(Public, true),
+        )
+        .is_err());
+        // OFF — DR-15: nothing is refused. The SAME public caller may enable it.
+        let config = check_enable_allowed(
+            Some(entry_for("ucsfomopagent")),
+            false,
+            "ucsfomopagent",
+            CallCapability::for_test(Public, false),
+        )
+        .expect("with privacy tiers off, nothing is refused");
+        assert_eq!(config.name(), "ucsfomopagent");
+        // …and the toggle silences GATE F1 ONLY. #42's operator pin is not a
+        // privacy control and must survive the master switch being off, or
+        // turning privacy tiers off would quietly hand the agent the power to
+        // re-enable everything the operator disabled.
+        let err = check_enable_allowed(
+            Some(entry(false)),
+            true,
+            "developer",
+            CallCapability::for_test(Public, false),
+        )
+        .unwrap_err();
+        assert!(err.message.contains("operator"), "{}", err.message);
     }
 }

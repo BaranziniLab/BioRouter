@@ -22,12 +22,16 @@
 //! plan's `cargo test -p biorouter --lib privacy`; the plan's own ⚠ names the
 //! hazard but its remedy only covers callers of the helper.
 //!
-//! ⚠ **Two rows live elsewhere, and the reason is Rust's crate graph, not
-//! omission.** `kb_export`'s forced export location is inside `biorouter-mcp`
-//! and its only cheap fixture is a `KnowledgeServer` built by that crate's own
-//! `#[cfg(test)]` helpers; `/config/upsert`'s gated arm is inside
-//! `biorouter-server`, which this crate cannot depend on. Both are asserted in
-//! both toggle positions beside the code they govern.
+//! ⚠ **Three rows live elsewhere, and each reason is a visibility rule, not
+//! omission.** Every one of them is asserted in BOTH toggle positions beside
+//! the code it governs — none is missing, and the file it lives in is named
+//! here so this list can be checked rather than believed:
+//!
+//! | Row | Gate | Where it is asserted | Why not here |
+//! |---|---|---|---|
+//! | 11 | F1, `check_enable_allowed` | `src/agents/extension_manager_extension.rs`, `the_master_toggle_silences_gate_f1` | An on-tool-call-path gate: its OFF column is a `CallCapability` whose `enforced` is false, and the only constructor for one is `#[cfg(test)] pub(crate)`. Driving it end-to-end would also need `ucsfomopagent` written into the developer's real `config.yaml`. |
+//! | 15 | archive, `kb_export` | `biorouter-mcp/tests/privacy_toggle_export.rs` | Inside `biorouter-mcp`; its only cheap fixture is a `KnowledgeServer` built by that crate's own `#[cfg(test)]` helpers. |
+//! | — | `/config/upsert`'s gated arm | `biorouter-server/tests/privacy_toggle_config.rs` | Inside `biorouter-server`, which this crate cannot depend on. |
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -98,6 +102,14 @@ const PRIVATE_TOOL: &str = "ucsfomopagent__data_sources";
 /// than imported, so a change to `turn_refusal`'s wording that silently stopped
 /// refusing would still have to get past this test.
 const TURN_REFUSAL_MARKER: &str = "this turn was not sent";
+
+/// Row 7's subject, and deliberately a session TITLE. §11.4 classifies a title
+/// as CONTENT — in this product it is generated from the conversation — so a
+/// LOAD guard placed after the header `format!` would return it. Asserting on
+/// the title in both directions is what makes row 7 discriminating: an ON column
+/// that merely errored, or an OFF column that merely did not, would pass against
+/// an unwired guard.
+const PRIVATE_SESSION_TITLE: &str = "OMOP diabetes cohort characterisation";
 
 struct TieredProvider {
     name: &'static str,
@@ -281,6 +293,117 @@ async fn search_as(tier: ProviderTier, sm: &SessionManager, query: &str) -> usiz
         .len()
 }
 
+/// Rows 7 and 18's subject: `chatrecall`'s LOAD guard, driven through the REAL
+/// dispatch path so the capability is sampled by production code.
+///
+/// This is also the row that carries the visibility predicate. `visible_to` is
+/// PURE — it reads no toggle and cannot — so the plan's ⚠ requires its row to be
+/// asserted THROUGH a caller, and this is that caller: the guard it sits inside
+/// is `cap.enforced() && !visible_to(cap.tier(), loaded.privacy_tier)`, so
+/// flipping the master toggle must change what comes back here without
+/// `visible_to` itself ever changing its answer.
+///
+/// Returns the tool's output text **whatever the outcome**, refusal included.
+async fn chatrecall_load_as(agent: &Agent, caller: &Session, target_id: &str) -> String {
+    let mut args = rmcp::model::JsonObject::new();
+    args.insert(
+        "session_id".into(),
+        serde_json::Value::String(target_id.to_string()),
+    );
+    let (_id, result) = agent
+        .dispatch_tool_call(
+            CallToolRequestParams {
+                task: None,
+                name: "chatrecall__chatrecall".to_string().into(),
+                arguments: Some(args),
+                meta: None,
+            },
+            "req-chatrecall".to_string(),
+            None,
+            caller,
+        )
+        .await;
+    match result {
+        Ok(call) => match call.result.await {
+            Ok(ok) => format!("{ok:?}"),
+            Err(e) => e.message.to_string(),
+        },
+        Err(e) => e.to_string(),
+    }
+}
+
+// ── Row 13's fixtures: the spawn matrix ─────────────────────────────────────
+//
+// `apply_settings_overrides` makes THREE decisions that hang off one read of
+// the master toggle — R4's refusal, DR-19's refusal and the private-extension
+// filter — and each is asserted in both columns below. The filter is the one a
+// flipped sense would ship green on: it is a `partition` predicate, so an
+// inverted conjunct drops the wrong half rather than refusing anything.
+
+/// What the spawning model asked for. The requested NAME is `ollama` for both
+/// tiered asks, deliberately: §8.2 validates the CONSTRUCTED INSTANCE, and
+/// `ollama` is the one registry entry that constructs with no credential and no
+/// network *and* reads its tier off the resolved base URL — so one real
+/// `providers::create` yields a Private instance pointed at this machine and a
+/// Public one pointed off it, under the identical requested name.
+fn spawn_params(named_provider: bool) -> biorouter::agents::subagent_tool::SubagentParams {
+    let body = if named_provider {
+        serde_json::json!({
+            "instructions": "do the thing",
+            "settings": { "provider": "ollama" }
+        })
+    } else {
+        serde_json::json!({ "instructions": "do the thing" })
+    };
+    serde_json::from_value(body).unwrap()
+}
+
+/// Task-local config, which beats both the environment and the config file and
+/// touches neither. BOTH poles are pinned, including the one that agrees with
+/// the shipped default: leaving the private pole to the *absence* of
+/// `OLLAMA_HOST` would let a developer machine with Ollama pointed off-box turn
+/// this row vacuous.
+fn ollama_host(private: bool) -> std::collections::HashMap<String, String> {
+    let host = if private {
+        "http://localhost:11434"
+    } else {
+        "https://ollama.example.com"
+    };
+    std::collections::HashMap::from([("OLLAMA_HOST".to_string(), host.to_string())])
+}
+
+fn builtin_extension(name: &str) -> biorouter::agents::ExtensionConfig {
+    biorouter::agents::ExtensionConfig::Builtin {
+        name: name.to_string(),
+        display_name: Some(name.to_string()),
+        description: String::new(),
+        timeout: Some(30),
+        bundled: Some(true),
+        available_tools: Vec::new(),
+    }
+}
+
+/// One row of the spawn matrix, through the real resolver.
+async fn resolve_child(
+    parent: Arc<dyn Provider>,
+    named_provider: bool,
+    child_is_private: bool,
+    extensions: Vec<biorouter::agents::ExtensionConfig>,
+) -> anyhow::Result<biorouter::agents::TaskConfig> {
+    let task_config = biorouter::agents::TaskConfig::new(
+        parent,
+        "parent-1",
+        std::path::Path::new("."),
+        extensions,
+    );
+    let params = spawn_params(named_provider);
+    biorouter::config::with_config_overrides(
+        ollama_host(child_is_private),
+        biorouter::agents::subagent_tool::apply_settings_overrides(task_config, &params),
+    )
+    .await
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// DR-15. Every enforcement point this crate can reach, asserted in BOTH toggle
@@ -316,10 +439,16 @@ async fn the_master_toggle_governs_every_gate_in_both_directions() {
     assert!(turn_text(&agent2, &s2).await.contains(TURN_REFUSAL_MARKER));
 
     // 3  C     (Task 14) — tool dispatch into a private extension.
+    //
+    // BOTH markers, and the second is not decoration: the helper collapses every
+    // failure into one string, so an unrelated dispatch error ("… not found")
+    // would satisfy the ON column's `contains(PRIVATE_EXTENSION)` and the OFF
+    // column's `!contains("private extension")` SIMULTANEOUSLY. Naming Gate C's
+    // own sentence in the ON column is what makes the pair discriminating.
     let (_d3, agent3, s3) = agent_with_the_private_extension(public_provider()).await;
-    assert!(call_private_tool_via_agent_loop(&agent3, &s3)
-        .await
-        .contains(PRIVATE_EXTENSION));
+    let gate_c_on = call_private_tool_via_agent_loop(&agent3, &s3).await;
+    assert!(gate_c_on.contains(PRIVATE_EXTENSION), "{gate_c_on}");
+    assert!(gate_c_on.contains("private extension"), "{gate_c_on}");
 
     // 4/5 C'+E+F2 (Tasks 15, 16, 18) — discovery, and a private server's
     //          instructions in a public system prompt.
@@ -335,6 +464,48 @@ async fn the_master_toggle_governs_every_gate_in_both_directions() {
         .unwrap();
     ratchet_to_private(&sm6, &s6.id).await;
     assert_eq!(search_as(ProviderTier::Public, &sm6, "cohort").await, 0);
+
+    // 7  LOAD  (Task 10) — `chatrecall`'s LOAD guard, and with it row 18's
+    //          visibility predicate, asserted THROUGH a caller.
+    //
+    // The target's NAME is the assertion's subject in both directions: §11.4
+    // classifies a session title as CONTENT (it is LLM-generated from the
+    // conversation), so the ON column must not return it and the OFF column
+    // must. Asserting on the title rather than on "did it error" is what keeps
+    // the OFF column from passing on an unrelated failure.
+    let (_d7, agent7, s7) = agent_on(public_provider()).await;
+    let sm7 = agent7.config.session_manager.clone();
+    agent7
+        .extension_manager
+        .add_extension(biorouter::agents::ExtensionConfig::Platform {
+            name: "chatrecall".to_string(),
+            description: biorouter::agents::extension::PLATFORM_EXTENSIONS["chatrecall"]
+                .description
+                .to_string(),
+            bundled: None,
+            available_tools: Vec::new(),
+        })
+        .await
+        .expect("load the chatrecall platform extension");
+    let target7 = sm7
+        .create_session(
+            PathBuf::from("."),
+            PRIVATE_SESSION_TITLE.to_string(),
+            SessionType::User,
+        )
+        .await
+        .unwrap();
+    // A message, or `handle_chatrecall` short-circuits on "has no messages"
+    // BEFORE it builds the header the title lives in — and the OFF column would
+    // then fail against a guard that is behaving perfectly. Measured, not
+    // assumed: the first run of this row failed exactly there.
+    sm7.add_message(&target7.id, &Message::user().with_text("cohort n=412"))
+        .await
+        .unwrap();
+    ratchet_to_private(&sm7, &target7.id).await;
+    let load_on = chatrecall_load_as(&agent7, &s7, &target7.id).await;
+    assert!(!load_on.contains(PRIVATE_SESSION_TITLE), "{load_on}");
+    assert!(load_on.contains("private"), "{load_on}");
 
     // 8  KB    (Task 10C) — the knowledge-base read barrier.
     let kb_dir = TempDir::new().unwrap();
@@ -370,6 +541,59 @@ async fn the_master_toggle_governs_every_gate_in_both_directions() {
     )
     .is_err());
 
+    // 13 spawn (Task 23) — the spawn matrix's THREE decisions, all hanging off
+    //          one toggle read inside `apply_settings_overrides`.
+    //
+    // 13a R4: a public parent may not spawn a private child.
+    let up_on = resolve_child(public_provider(), true, true, vec![])
+        .await
+        .expect_err("a public parent may not spawn a private child");
+    assert!(
+        matches!(
+            up_on.downcast_ref::<biorouter::privacy::PrivacyRefusal>(),
+            Some(biorouter::privacy::PrivacyRefusal::PrivateChildOfPublicParent { .. })
+        ),
+        "expected R4's typed refusal, got: {up_on}"
+    );
+    // 13b DR-19: a private parent may not spawn a child on a public model it
+    //     named.
+    let down_on = resolve_child(private_provider(), true, false, vec![])
+        .await
+        .expect_err("a private parent may not name a public model for its child");
+    assert!(
+        matches!(
+            down_on.downcast_ref::<biorouter::privacy::PrivacyRefusal>(),
+            Some(biorouter::privacy::PrivacyRefusal::PublicChildOfPrivateParent { .. })
+        ),
+        "expected DR-19's typed refusal, got: {down_on}"
+    );
+    // 13c the private-extension filter — a `partition`, so an inverted conjunct
+    //     drops the wrong half rather than refusing anything, and neither column
+    //     of 13a/13b would notice.
+    let inherited_on = resolve_child(
+        public_provider(),
+        false,
+        false,
+        vec![
+            builtin_extension(PRIVATE_EXTENSION),
+            builtin_extension("developer"),
+        ],
+    )
+    .await
+    .expect("an inheriting spawn is permitted");
+    assert_eq!(
+        inherited_on
+            .extensions
+            .iter()
+            .map(|e| e.name())
+            .collect::<Vec<_>>(),
+        vec!["developer".to_string()]
+    );
+    assert_eq!(
+        inherited_on.dropped_private_extensions,
+        vec![PRIVATE_EXTENSION.to_string()]
+    );
+
     // 14 CP5   (Task 10D) — the Agent Drafter catalog's knowledge bases. The
     //          private base is omitted for a public caller, and the assertion is
     //          NOT vacuous: a private caller sees it in the same tree.
@@ -395,9 +619,16 @@ async fn the_master_toggle_governs_every_gate_in_both_directions() {
         .unwrap();
     assert_eq!(copy_on.privacy_tier, SessionClassification::Private);
 
-    // 18 VIS   (Task 21) — the visibility predicate is PURE; the toggle reaches
-    //          it through the caller, which is why the row above (Gate D, a
-    //          caller) changes below while this line does not.
+    // 18 VIS   (Task 21) — ASSERTED THROUGH A CALLER, at row 7 above: `visible_to`
+    //          is PURE, so the toggle reaches it only through
+    //          `cap.enforced() && !visible_to(..)` in `handle_chatrecall`, and it
+    //          is row 7's output that must change between the two columns.
+    //
+    //          The line below is NOT that row. It is a restatement of the
+    //          predicate's own invariant — the toggle does not, and must not,
+    //          change what `visible_to` answers — and it is written identically
+    //          in both columns for exactly that reason. Read on its own it can
+    //          never fail for the reason row 18 exists; row 7 is what can.
     assert!(!biorouter::privacy::visible_to(
         ProviderTier::Public,
         SessionClassification::Private
@@ -419,6 +650,12 @@ async fn the_master_toggle_governs_every_gate_in_both_directions() {
         .await
         .contains(PRIVATE_EXTENSION));
     assert_eq!(search_as(ProviderTier::Public, &sm6, "cohort").await, 1);
+    // 7 + 18: the same public session now reads the private chat, title and all.
+    let load_off = chatrecall_load_as(&agent7, &s7, &target7.id).await;
+    assert!(
+        load_off.contains(PRIVATE_SESSION_TITLE),
+        "the chatrecall LOAD guard was still armed with privacy tiers off: {load_off}"
+    );
     assert!(biorouter_mcp::knowledge::tier::assert_reachable(kb_root, "omop", false).is_ok());
     assert!(
         !biorouter::knowledge::conversation_ingest::refuses_every_session(
@@ -433,6 +670,37 @@ async fn the_master_toggle_governs_every_gate_in_both_directions() {
         "BIOROUTER_PLANNER_PROVIDER",
     )
     .is_ok());
+    // 13 spawn: all three decisions go quiet, and the third is the one a flipped
+    //    `partition` sense would hide — the child now inherits the private
+    //    extension instead of losing it.
+    let up_off = resolve_child(public_provider(), true, true, vec![])
+        .await
+        .expect("with privacy tiers off, a public parent may spawn a private child");
+    assert_eq!(up_off.privacy_tier, SessionClassification::Private);
+    let down_off = resolve_child(private_provider(), true, false, vec![])
+        .await
+        .expect("with privacy tiers off, a private parent may name a public model");
+    assert_eq!(down_off.privacy_tier, SessionClassification::Public);
+    let inherited_off = resolve_child(
+        public_provider(),
+        false,
+        false,
+        vec![
+            builtin_extension(PRIVATE_EXTENSION),
+            builtin_extension("developer"),
+        ],
+    )
+    .await
+    .expect("an inheriting spawn is permitted");
+    assert_eq!(
+        inherited_off
+            .extensions
+            .iter()
+            .map(|e| e.name())
+            .collect::<Vec<_>>(),
+        vec![PRIVATE_EXTENSION.to_string(), "developer".to_string()]
+    );
+    assert!(inherited_off.dropped_private_extensions.is_empty());
     assert!(catalog_kb_ids(path_root, /* caller_is_private */ false).contains(&"omop".to_string()));
     // AR-7: the ratchet stops too.
     biorouter_mcp::knowledge::tier::raise_unlocked(kb_root, "notes2", true).unwrap();

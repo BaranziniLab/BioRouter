@@ -1177,7 +1177,19 @@ fn build_adhoc_workflow(params: &SubagentParams) -> Result<Workflow> {
     Ok(workflow)
 }
 
-async fn apply_settings_overrides(
+/// Resolve the child's provider, classification and extension set from the
+/// parent's `TaskConfig` and what the spawning model asked for.
+///
+/// **The whole of issue #56's spawn matrix (§8.2, R4, DR-19) is decided here**,
+/// before a child session row exists, and all three of its decisions hang off
+/// one read of DR-15's master toggle. `pub` for that reason and no other: the
+/// toggle's behavioural gate
+/// (`crates/biorouter/tests/privacy_toggle.rs`) is an integration binary — a
+/// separate process, so that flipping a process-global atomic cannot disarm the
+/// crate's own privacy tests — and an integration binary can only see what is
+/// public. Left private, the three decisions this function makes had no
+/// both-directions assertion anywhere in the tree.
+pub async fn apply_settings_overrides(
     mut task_config: TaskConfig,
     params: &SubagentParams,
 ) -> Result<TaskConfig> {
