@@ -9,3 +9,10 @@ src/api
 # `npm run check:themes` report the file stale — the two tools cannot both be
 # satisfied. The generator owns this file's formatting inside its region.
 src/styles/main.css
+
+# Same rule, same reason. landing/scripts/build-registry.mjs writes this
+# snapshot byte-for-byte identical to the published landing/registry.json, so
+# the two can be diffed to prove they agree. Prettier collapses short arrays
+# onto one line, which would make every regeneration show a whole-file diff and
+# would break that comparison. The generator owns this file's formatting.
+src/components/baam/registry.fallback.json

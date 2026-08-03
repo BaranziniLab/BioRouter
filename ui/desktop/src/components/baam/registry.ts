@@ -16,6 +16,26 @@ export interface RegistryExtension {
   download: string;
   filename: string;
   license?: string;
+  /**
+   * Registry v2. All three are optional so a v1 document cached before the
+   * upgrade still parses — a stale snapshot must degrade, never throw.
+   *
+   * `extension_name` is the name the installed config entry carries, in
+   * `name_to_key` form. It exists because `id` is derived from the download
+   * filename and agrees with the installed name only by luck (`spokeagent-0.4.1`
+   * already diverges), and a suffix-stripping heuristic in a security path is
+   * right until it isn't. The generator hard-fails on a private entry without one.
+   */
+  extension_name?: string;
+  /** Absent on a v1 document; the generator emits it for every v2 entry. */
+  privacy?: 'private' | 'public';
+  /**
+   * DR-26. Institution ids from `BaamRegistry.institutions`. Absent means
+   * unconstrained — any private model may use it. Never an empty array: the
+   * generator rejects one, because "nothing is permitted" and "no constraint"
+   * must not share a spelling.
+   */
+  affiliation?: string[];
 }
 
 export type SkillCategory = 'Core' | 'Developer' | 'Biomedical';
@@ -36,6 +56,14 @@ export interface RegistrySkill {
 export interface BaamRegistry {
   version: number;
   source: string;
+  /**
+   * Registry v2, DR-26. Institution id → display name. Cross-institutional
+   * warning copy renders names from here rather than hardcoding them, so an
+   * `affiliation` naming an id absent from this map has no name to render with
+   * — which is why the generator treats that as a build failure. Optional so a
+   * cached v1 document still parses.
+   */
+  institutions?: Record<string, string>;
   extensions: RegistryExtension[];
   skills: RegistrySkill[];
 }

@@ -1,0 +1,53 @@
+<!--
+  Fixture: two well-formed extension cards, one public and one private-with-name.
+
+  This is the control for the failure fixtures beside it. Without it, a parser
+  that finds zero cards would make every failure fixture "pass" by validating
+  nothing at all. Run it and check stdout says 2 extensions.
+
+  Every fixture opens with the extensions-section wrapper, because that is the
+  id sliceById() in build-registry.mjs anchors on before walking div depth; a
+  bare ext-card yields an empty scope, zero cards and exit 0.
+
+  Note what this comment does NOT contain: an opening div tag, or the wrapper id
+  spelled out as an attribute. sliceById anchors on the FIRST occurrence of that
+  attribute anywhere in the file, comments included, and then walks div depth
+  from the nearest preceding div tag. A comment illustrating the wrapper made
+  this file parse to zero cards while still exiting 0 — the exact silent-pass
+  this control exists to catch, caught on the control itself.
+-->
+<div id="extensions-section">
+  <div class="ext-grid" id="extensions-grid">
+
+    <div class="ext-card" data-license="Apache-2.0">
+      <div class="ext-card-header">
+        <div class="ext-meta">
+          <h3>Public Fixture Agent</h3>
+          <div class="ext-org">Fixtures · v0.1.0</div>
+        </div>
+        <a href="https://example.invalid/public-fixture-agent" class="ext-gh-link">GitHub</a>
+      </div>
+      <p class="ext-desc">A card that declares no privacy at all and mentions nothing sensitive, so it is public by construction.</p>
+      <div class="ext-footer">
+        <div class="ext-tags"><span class="tag mcp">MCP</span></div>
+        <a href="https://example.invalid/publicfixtureagent.brxt" class="brxt-chip">.brxt</a>
+      </div>
+    </div>
+
+    <div class="ext-card" data-license="Apache-2.0" data-privacy="private" data-extension-name="PrivateFixtureAgent" data-affiliation="ucsf">
+      <div class="ext-card-header">
+        <div class="ext-meta">
+          <h3>Private Fixture Agent</h3>
+          <div class="ext-org">Fixtures · UCSF · v0.1.0</div>
+        </div>
+        <a href="https://example.invalid/private-fixture-agent" class="ext-gh-link">GitHub</a>
+      </div>
+      <p class="ext-desc">A card that declares private, names the extension the installed config entry will carry, and names the institution whose agreements cover its data.</p>
+      <div class="ext-footer">
+        <div class="ext-tags"><span class="tag ucsf">UCSF</span><span class="tag mcp">MCP</span></div>
+        <a href="https://example.invalid/privatefixtureagent.brxt" class="brxt-chip">.brxt</a>
+      </div>
+    </div>
+
+  </div>
+</div>

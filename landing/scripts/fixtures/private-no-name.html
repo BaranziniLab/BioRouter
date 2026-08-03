@@ -1,0 +1,29 @@
+<!--
+  Fixture: a private card with no data-extension-name.
+
+  Expected: exit 1, with a message naming data-extension-name. The registry id
+  is derived from the download filename, so it agrees with the installed
+  extension name only by luck — spokeagent-0.4.1 already proves the two diverge.
+  A private entry must state the name explicitly rather than let a resolver
+  strip a version suffix and hope.
+-->
+<div id="extensions-section">
+  <div class="ext-grid" id="extensions-grid">
+
+    <div class="ext-card" data-license="Apache-2.0" data-privacy="private">
+      <div class="ext-card-header">
+        <div class="ext-meta">
+          <h3>Private No Name Agent</h3>
+          <div class="ext-org">Fixtures · v0.3.2</div>
+        </div>
+        <a href="https://example.invalid/private-no-name-agent" class="ext-gh-link">GitHub</a>
+      </div>
+      <p class="ext-desc">A card that claims the private tier without declaring the name its installed config entry will carry.</p>
+      <div class="ext-footer">
+        <div class="ext-tags"><span class="tag mcp">MCP</span></div>
+        <a href="https://example.invalid/privatenonameagent-0.3.2.brxt" class="brxt-chip">.brxt</a>
+      </div>
+    </div>
+
+  </div>
+</div>
