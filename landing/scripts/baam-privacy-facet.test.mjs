@@ -27,9 +27,16 @@
 // ui/desktop/node_modules, and the browser is whatever this machine already has
 // (headless shell, the bundled chromium, or a system Chrome). If none launches
 // the tests FAIL rather than skip: a silent skip is how a layout gate becomes a
-// decoration. That is also why this file is deliberately NOT wired into
-// `just check-registry` / the deploy workflow, both of which name their scripts
-// explicitly and run on a bare checkout with no npm install.
+// decoration.
+//
+// Where this runs. `just check-shelf` locally; the `shelf` job in
+// .github/workflows/frontend.yml on every PR and push; and — the one that
+// matters — a step in the `check` job of .github/workflows/deploy-landing.yml,
+// which the Pages deploy depends on. `landing/` is published as-is, with no
+// build step between this repo and biorouter.ucsf.edu, so a gate the deploy does
+// not consult is a gate the site can regress straight past. It is NOT in
+// `just check-everything` / `just check-registry`, which run on a bare checkout
+// with no npm install and no browser.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';

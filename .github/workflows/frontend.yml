@@ -123,6 +123,45 @@ jobs:
         if: ${{ !cancelled() }}
         run: node landing/scripts/build-registry.mjs --check
 
+  # ── The BAAM shelf in a real browser ──────────────────────────────────────
+  # The generator job above proves the CATALOG is right. This proves the PAGE
+  # is: that the privacy facet matches a card's declared tier rather than a
+  # substring of its prose, that the 22px `overflow: hidden` tag row drops only
+  # what does not fit and never the tier badge, that the no-JS fallback labels
+  # every card, and that a registry entry with an unreadable tier is refused
+  # rather than painted Public.
+  #
+  # Half of that is layout, and jsdom returns zeros for every rect — a clipped
+  # tag row and a perfect one are indistinguishable there. So it needs a real
+  # chromium, which is why it is its own job: `npm ci` in ui/desktop for the
+  # Playwright module, one browser download, and nothing else in the workflow
+  # has to wait for either.
+  shelf:
+    name: BAAM shelf (browser)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: ui/desktop/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Only chromium. The suite launches whatever it can find, but a runner
+      # with no browser at all FAILS rather than skipping — a layout gate that
+      # silently skips is a decoration.
+      - name: Install chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Privacy badges and facet
+        working-directory: .
+        run: node --test landing/scripts/baam-privacy-facet.test.mjs
+
   # ── Unit tests ────────────────────────────────────────────────────────────
   unit:
     name: Unit tests (vitest)

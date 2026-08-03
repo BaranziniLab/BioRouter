@@ -53,6 +53,16 @@ check-registry:
 check-privacy-registry:
     node landing/scripts/check-consistency.mjs --check
 
+# The BAAM shelf's privacy badges and Private/Public facet, in a real browser.
+# Half of what it asserts is layout — a chip that does not fit the 22px
+# `overflow: hidden` tag row is not cramped, it is deleted from view — and jsdom
+# returns zeros for every rect, so it cannot stand in. NOT part of
+# `check-everything`: it resolves Playwright out of ui/desktop/node_modules and
+# needs a chromium, neither of which a bare checkout has. CI runs it as its own
+# job, and the landing deploy is gated on it.
+check-shelf:
+    node --test landing/scripts/baam-privacy-facet.test.mjs
+
 # Default release command
 release-binary:
     @echo "Building release version..."
