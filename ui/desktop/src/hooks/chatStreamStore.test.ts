@@ -725,6 +725,11 @@ describe('ChatStreamRegistry', () => {
     expect(editMessage).toHaveBeenCalledWith({
       path: { session_id: sourceSessionId },
       body: { timestamp: 10, editType: 'diverge', expectedMessageIds: ['u1'] },
+      // Issue #56 DR-19: `diverge` mints a new session inheriting this chat's
+      // provider, so it carries the user-action proof. Empty here because the
+      // harness has no `window.electron` bridge to mint a key from — the shape
+      // is what this pins; the two `edit` cases below must NOT carry it.
+      headers: {},
       throwOnError: true,
     });
     expect(onDiverged).toHaveBeenCalledTimes(1);

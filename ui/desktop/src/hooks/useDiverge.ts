@@ -2,6 +2,7 @@ import { useCallback } from 'react';
 import { divergeSession } from '../api';
 import { toastError } from '../toasts';
 import { notifySessionListChanged } from '../utils/sessionListCache';
+import { userActionHeaders } from '../utils/userAction';
 
 export interface UseDivergeResult {
   /**
@@ -28,7 +29,6 @@ export interface UseDivergeResult {
 }
 
 export function useDiverge(): UseDivergeResult {
-
   const diverge = useCallback(
     async (
       sessionId: string,
@@ -46,6 +46,13 @@ export function useDiverge(): UseDivergeResult {
             ...(truncateAfterMs != null ? { truncateAfter: truncateAfterMs } : {}),
             ...(truncateAfterId ? { truncateAfterId } : {}),
           },
+          // Issue #56 DR-19: the branch inherits the source chat's provider, so
+          // branching a PRIVATE chat mints a new private-capability session and
+          // the daemon refuses it without proof the request came from the
+          // person at the keyboard. This is that surface — every call it makes
+          // is a user act — so it carries Task 18A's header. Branching a public
+          // chat is unaffected either way.
+          headers: await userActionHeaders(),
           throwOnError: true,
         });
 

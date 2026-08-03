@@ -14,12 +14,14 @@ use axum::{
 };
 use biorouter::agents::ExtensionConfig;
 use biorouter::conversation::message::Message;
+use biorouter::privacy::SessionClassification;
 use biorouter::session::extension_data::ExtensionState;
 use biorouter::session::session_manager::{
     ActivityWindow, ModelUsageRow, SessionInsights, TruncateOutcome,
 };
 use biorouter::session::{EnabledExtensionsState, Session, SessionSummary, SessionType};
 use biorouter::workflow::Workflow;
+use biorouter_server::auth::is_user_action;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -35,6 +37,25 @@ pub struct SessionListResponse {
 
 const DEFAULT_SIDEBAR_SESSION_LIMIT: u32 = 10;
 const MAX_SIDEBAR_SESSION_LIMIT: u32 = 50;
+
+/// Issue #56 DR-19. What both copy handlers say when the SOURCE chat is private
+/// and the request carried no proof it came from the person at the keyboard.
+///
+/// Deliberately **not** a [`biorouter::privacy::PrivacyRefusal`] variant: every
+/// one of those ends on `ASK_THE_USER_TO_SWITCH` ("ask the user to switch this
+/// chat to a private model first"), and that is the wrong way out of this one —
+/// the chat is already private, and the refused act is a copy rather than a
+/// model bind. §14.4's content rule still holds: it names the boundary and
+/// nothing about the chat, no id, no title, no working directory.
+///
+/// It ends by foreclosing the retry for the same reason every refusal in this
+/// feature does — a model that reads a refusal as transient loops on it.
+const COPY_OF_PRIVATE_NEEDS_USER: &str =
+    "This chat is private, and branching it creates a new chat that inherits its private model — \
+     so only the person at the keyboard may do it, and this request carried no proof it came \
+     from them. Nothing was branched and this chat is unchanged. Do not retry; the same call \
+     will be refused again. If this task genuinely needs the branch, stop and ask the user to \
+     branch the chat from the chat window.";
 
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct SidebarSessionsQuery {
@@ -720,6 +741,10 @@ async fn import_session(
         (status = 200, description = "Session prepared for editing - frontend should submit the edited message", body = EditMessageResponse),
         (status = 400, description = "Bad request - invalid session id"),
         (status = 401, description = "Unauthorized - Invalid or missing API key"),
+        (status = 403, description = "Refused by a privacy boundary (issue #56 DR-19): \
+                                      `editType: diverge` on a private chat branches it into a \
+                                      new chat that inherits its private model, and the request \
+                                      carried no proof it came from the user (body = plain text)"),
         (status = 404, description = "Session or message not found"),
         (status = 409, description = "A turn is in flight for this session, or a supplied \
                                       `expectedMessageIds` is missing messages the server holds \
@@ -734,6 +759,8 @@ async fn import_session(
 async fn edit_message(
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
+    // Before `Json`, which consumes the body and must be last.
+    headers: axum::http::HeaderMap,
     Json(request): Json<EditMessageRequest>,
 ) -> Response {
     if !is_valid_session_id(&session_id) {
@@ -742,6 +769,25 @@ async fn edit_message(
     let manager = state.session_manager();
     match request.edit_type {
         EditType::Diverge => {
+            // Issue #56 DR-19. The second of the two HTTP copy handlers, and the
+            // one a gate written against `/diverge` alone would miss.
+            // `diverge_session_for_edit` performs the same carry-over, so it
+            // mints a session already bound to the source's private provider —
+            // see `diverge_session` below for why nothing downstream ever sees
+            // that as a raise.
+            //
+            // A CONDITION on the SOURCE's tier, not an unconditional refusal.
+            // Fails closed on a source that cannot be read: a session we cannot
+            // classify is not one we can prove is public, and the copy below
+            // would fail on the same read anyway.
+            let source_is_private = manager
+                .get_session(&session_id, false)
+                .await
+                .map(|session| session.privacy_tier == SessionClassification::Private)
+                .unwrap_or(true);
+            if source_is_private && !is_user_action(&headers) {
+                return (StatusCode::FORBIDDEN, COPY_OF_PRIVATE_NEEDS_USER).into_response();
+            }
             match manager
                 .diverge_session_for_edit(&session_id, request.timestamp)
                 .await
@@ -941,6 +987,10 @@ async fn edit_in_place(
         (status = 200, description = "Session diverged successfully", body = DivergeSessionResponse),
         (status = 400, description = "Bad request - Invalid session id or name too long"),
         (status = 401, description = "Unauthorized - Invalid or missing API key"),
+        (status = 403, description = "Refused by a privacy boundary (issue #56 DR-19): the \
+                                      source chat is private, so the branch would inherit its \
+                                      private model, and the request carried no proof it came \
+                                      from the user (body = plain text)"),
         (status = 404, description = "Session not found"),
         (status = 500, description = "Internal server error")
     ),
@@ -952,10 +1002,12 @@ async fn edit_in_place(
 async fn diverge_session(
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
+    // Before `Json`, which consumes the body and must be last.
+    headers: axum::http::HeaderMap,
     Json(request): Json<DivergeSessionRequest>,
-) -> Result<Json<DivergeSessionResponse>, StatusCode> {
+) -> Result<Json<DivergeSessionResponse>, Response> {
     if !is_valid_session_id(&session_id) {
-        return Err(StatusCode::BAD_REQUEST);
+        return Err(StatusCode::BAD_REQUEST.into_response());
     }
     let manager = state.session_manager();
 
@@ -963,15 +1015,36 @@ async fn diverge_session(
     // name; too long → reject).
     if let Some(ref n) = request.name {
         if !n.trim().is_empty() && n.trim().chars().count() > MAX_NAME_LENGTH {
-            return Err(StatusCode::BAD_REQUEST);
+            return Err(StatusCode::BAD_REQUEST.into_response());
         }
     }
 
     // A missing source session is a clean 404 (rather than a 500 from the copy).
-    manager
+    let source = manager
         .get_session(&session_id, false)
         .await
-        .map_err(|_| StatusCode::NOT_FOUND)?;
+        .map_err(|_| StatusCode::NOT_FOUND.into_response())?;
+
+    // Issue #56 DR-19. The branch inherits `provider_name` and `model_config`,
+    // not just the tier (`create_derived_session`) — so branching a private chat
+    // does not copy a label, it MINTS a new session already bound to a private
+    // provider. DR-16 guards raises on sessions that already exist
+    // (`raise_needs_user_action` compares a live agent's bound provider against
+    // a requested one), so a session born private passes no gate at all: it
+    // never calls `POST /agent/update_provider`, and every gate downstream then
+    // reads it as legitimately private. This route sits behind `check_token`
+    // alone, which AR-11 and AR-15 between them establish is not a proof of a
+    // human.
+    //
+    // A CONDITION on the SOURCE's tier, never an unconditional refusal:
+    // branching a public chat mints no capability, and a gate that fires on
+    // every branch of every chat is one people route around. The proof is Task
+    // 18A's `X-User-Action`, reused — one proof of user in this feature, not
+    // two — and the renderer holds the key, so the person at the keyboard
+    // clicks Diverge and it works.
+    if source.privacy_tier == SessionClassification::Private && !is_user_action(&headers) {
+        return Err((StatusCode::FORBIDDEN, COPY_OF_PRIVATE_NEEDS_USER).into_response());
+    }
 
     // diverge_session does the placeholder-aware, sibling-numbered naming,
     // records the lineage pointer + divergence point, and trims the branch to end at
@@ -988,7 +1061,7 @@ async fn diverge_session(
         .await
         .map_err(|e| {
             tracing::error!("Failed to diverge session {}: {}", session_id, e);
-            StatusCode::INTERNAL_SERVER_ERROR
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
         })?;
 
     Ok(Json(DivergeSessionResponse {
@@ -1107,16 +1180,54 @@ mod diverge_tests {
     use std::path::PathBuf;
     use tower::ServiceExt;
 
-    async fn post_diverge(
+    /// The user-action key this test binary's "daemon" was launched with.
+    ///
+    /// Issue #56 DR-16 keeps the digest in a process-global `OnceLock` that
+    /// `commands::agent` fills from stdin, so a route test that wants the
+    /// *authorised* arm has to install one. Nothing else in this crate installs
+    /// a digest — `auth::tests` exercises the pure `user_action_matches` — and
+    /// [`install_test_user_action_key`] asserts the install took rather than
+    /// letting a second installer turn every positive arm below into a silent
+    /// 403.
+    const TEST_USER_ACTION_KEY: &str = "task-22-diverge-route-user-action-key";
+
+    fn install_test_user_action_key() {
+        let digest: [u8; 32] =
+            <sha2::Sha256 as sha2::Digest>::digest(TEST_USER_ACTION_KEY.as_bytes()).into();
+        biorouter_server::auth::install_user_action_digest(Some(digest));
+
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            "X-User-Action",
+            TEST_USER_ACTION_KEY.parse().expect("a header-safe key"),
+        );
+        assert!(
+            biorouter_server::auth::is_user_action(&headers),
+            "the user-action digest this test installs did not take — something else in this \
+             test binary installed a different one first, and every authorised arm below would \
+             otherwise report a 403 as a policy result"
+        );
+    }
+
+    /// `POST /sessions/{id}/diverge`, optionally carrying DR-16's proof-of-user
+    /// header. `user_action: None` is a request holding nothing but the daemon
+    /// secret — the caller AR-11/AR-15 establish is indistinguishable from the
+    /// model.
+    async fn post_diverge_with(
         state: Arc<AppState>,
         session_id: &str,
         body: serde_json::Value,
+        user_action: Option<&str>,
     ) -> (axum::http::StatusCode, serde_json::Value) {
         let app = routes(state);
-        let req = Request::builder()
+        let mut builder = Request::builder()
             .method("POST")
             .uri(format!("/sessions/{session_id}/diverge"))
-            .header("content-type", "application/json")
+            .header("content-type", "application/json");
+        if let Some(key) = user_action {
+            builder = builder.header("X-User-Action", key);
+        }
+        let req = builder
             .body(Body::from(serde_json::to_vec(&body).unwrap()))
             .unwrap();
         let res = app.oneshot(req).await.unwrap();
@@ -1124,6 +1235,42 @@ mod diverge_tests {
         let bytes = to_bytes(res.into_body(), usize::MAX).await.unwrap();
         let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
         (status, json)
+    }
+
+    /// `POST /sessions/{id}/edit_message`, same header treatment. The edit route
+    /// has its own test module below; this copy exists because the DR-19 gate is
+    /// one requirement across BOTH copy handlers, and a test that reached only
+    /// `/diverge` would miss exactly the half that shipped broken last time.
+    async fn post_edit_message_with(
+        state: Arc<AppState>,
+        session_id: &str,
+        body: serde_json::Value,
+        user_action: Option<&str>,
+    ) -> (axum::http::StatusCode, serde_json::Value) {
+        let app = routes(state);
+        let mut builder = Request::builder()
+            .method("POST")
+            .uri(format!("/sessions/{session_id}/edit_message"))
+            .header("content-type", "application/json");
+        if let Some(key) = user_action {
+            builder = builder.header("X-User-Action", key);
+        }
+        let req = builder
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+        let res = app.oneshot(req).await.unwrap();
+        let status = res.status();
+        let bytes = to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+        (status, json)
+    }
+
+    async fn post_diverge(
+        state: Arc<AppState>,
+        session_id: &str,
+        body: serde_json::Value,
+    ) -> (axum::http::StatusCode, serde_json::Value) {
+        post_diverge_with(state, session_id, body, None).await
     }
 
     fn user_msg(text: &str) -> Message {
@@ -1545,12 +1692,19 @@ mod diverge_tests {
     /// a branch of a private chat can never be resumed against the user's
     /// default public model through `restore_provider_from_session`'s
     /// `Config::global()` fallback.
+    ///
+    /// It carries DR-19's `X-User-Action` because the SOURCE is private and this
+    /// route now asks who is calling before it mints a private-capability
+    /// branch. That is the *authorised* arm; the refusal arm, and the public
+    /// source that needs no proof at all, are
+    /// [`diverging_a_private_chat_needs_the_user_and_diverging_a_public_one_does_not`].
     #[tokio::test(flavor = "multi_thread")]
     #[serial]
     async fn diverging_a_private_session_through_the_route_keeps_it_private() {
         use biorouter::model::ModelConfig;
         use biorouter::privacy::SessionClassification;
 
+        install_test_user_action_key();
         let state = AppState::new().await.unwrap();
         let manager = state.session_manager();
 
@@ -1579,7 +1733,13 @@ mod diverge_tests {
             .await
             .unwrap();
 
-        let (status, json) = post_diverge(state.clone(), &original.id, serde_json::json!({})).await;
+        let (status, json) = post_diverge_with(
+            state.clone(),
+            &original.id,
+            serde_json::json!({}),
+            Some(TEST_USER_ACTION_KEY),
+        )
+        .await;
         assert_eq!(status, axum::http::StatusCode::OK);
         let new_id = json["sessionId"].as_str().unwrap().to_string();
 
@@ -1605,6 +1765,174 @@ mod diverge_tests {
 
         manager.delete_session(&new_id).await.unwrap();
         manager.delete_session(&original.id).await.unwrap();
+    }
+
+    /// One source session for the DR-19 gate test: a complete exchange, under a
+    /// name derived from its own id so the sibling branch index is deterministic
+    /// against the shared session store. Returns `(id, base_name)`.
+    async fn seed_dr19_source(
+        manager: &biorouter::session::session_manager::SessionManager,
+        label: &str,
+    ) -> (String, String) {
+        let session = manager
+            .create_session(
+                PathBuf::from("/tmp/diverge_route_dr19"),
+                "placeholder".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        let base = format!("{label} {}", session.id);
+        manager
+            .update(&session.id)
+            .user_provided_name(base.clone())
+            .apply()
+            .await
+            .unwrap();
+        manager
+            .add_message(&session.id, &user_msg("patient MRN 12345"))
+            .await
+            .unwrap();
+        manager
+            .add_message(&session.id, &Message::assistant().with_text("noted"))
+            .await
+            .unwrap();
+        (session.id, base)
+    }
+
+    /// Issue #56 DR-19, the other half of the carry-over above.
+    ///
+    /// The copy carries `provider_name` and `model_config`, not just the tier —
+    /// so diverging a private chat does not copy a *label*, it **mints a new
+    /// session already bound to a private provider**. DR-16 guards raises on
+    /// sessions that ALREADY exist (`raise_needs_user_action` compares a live
+    /// agent's bound provider against a requested one), so a session born
+    /// private passes no gate at all: it never calls `/agent/update_provider`,
+    /// and every gate downstream then reads it as legitimately private. The
+    /// route sits behind `check_token`, which AR-11 and AR-15 between them
+    /// establish is not a proof of a human — so on the unamended implementation
+    /// a caller holding nothing but the daemon secret could hand itself
+    /// private capability by branching a private chat.
+    ///
+    /// A CONDITION on the SOURCE's tier, never an unconditional refusal: a
+    /// public source mints no capability, and a gate that fires on every branch
+    /// of every chat is one people route around (DR-19's user half). And the
+    /// proof is Task 18A's `X-User-Action`, reused — there is exactly one proof
+    /// of user in this feature and this is not a second.
+    ///
+    /// Both handlers, not just the one the GUI's Diverge button uses:
+    /// `/edit_message` reaches `diverge_session_for_edit`, which performs the
+    /// same carry-over, and a test written against `/diverge` alone would miss
+    /// it — the same omission shape as `copy_session`-only coverage.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn diverging_a_private_chat_needs_the_user_and_diverging_a_public_one_does_not() {
+        use biorouter::model::ModelConfig;
+        use biorouter::privacy::SessionClassification;
+
+        install_test_user_action_key();
+        let state = AppState::new().await.unwrap();
+        let manager = state.session_manager();
+
+        let (private_id, private_base) = seed_dr19_source(manager, "DR19 Private").await;
+        let (public_id, _public_base) = seed_dr19_source(manager, "DR19 Public").await;
+
+        manager
+            .update(&private_id)
+            .provider_name("versa_azure")
+            .model_config(ModelConfig::new("gpt-4o").unwrap())
+            .raise_privacy(SessionClassification::Private, "turn:versa_azure")
+            .apply()
+            .await
+            .unwrap();
+
+        // 1. A private source, with nothing but the daemon secret: refused.
+        let (status, _) =
+            post_diverge_with(state.clone(), &private_id, serde_json::json!({}), None).await;
+        assert_eq!(
+            status,
+            axum::http::StatusCode::FORBIDDEN,
+            "a secret-key-only caller minted itself a private-capability session"
+        );
+
+        // 2. The same request, carrying the user's proof: allowed. The branch
+        // index is what shows the refusal above branched NOTHING — had it
+        // created a session, this one would be `(branch 2)`.
+        let (status, json) = post_diverge_with(
+            state.clone(),
+            &private_id,
+            serde_json::json!({}),
+            Some(TEST_USER_ACTION_KEY),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK, "got {json}");
+        let diverge_branch = json["sessionId"].as_str().unwrap().to_string();
+        assert_eq!(
+            json["name"].as_str().unwrap(),
+            format!("{private_base} (branch 1)"),
+            "the refused diverge branched something anyway"
+        );
+        assert_eq!(
+            manager
+                .get_session(&diverge_branch, false)
+                .await
+                .unwrap()
+                .privacy_tier,
+            SessionClassification::Private
+        );
+
+        // 3. A PUBLIC source needs no proof: copying a public chat mints no
+        // capability, and a gate that fires on every branch is one people route
+        // around.
+        let (status, json) =
+            post_diverge_with(state.clone(), &public_id, serde_json::json!({}), None).await;
+        assert_eq!(
+            status,
+            axum::http::StatusCode::OK,
+            "the gate is a wall in front of the user, not a condition: {json}"
+        );
+        let public_branch = json["sessionId"].as_str().unwrap().to_string();
+
+        // 4. `/edit_message`'s diverge arm is the second copy handler and takes
+        // the same gate. `i64::MAX / 2` is past every message, so the branch
+        // carries the whole conversation and this stays a test about the gate.
+        let edit_body = serde_json::json!({
+            "timestamp": i64::MAX / 2,
+            "editType": "diverge",
+        });
+        let (status, _) =
+            post_edit_message_with(state.clone(), &private_id, edit_body.clone(), None).await;
+        assert_eq!(
+            status,
+            axum::http::StatusCode::FORBIDDEN,
+            "the edit_message copy path is ungated"
+        );
+
+        let (status, json) = post_edit_message_with(
+            state.clone(),
+            &private_id,
+            edit_body,
+            Some(TEST_USER_ACTION_KEY),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK, "got {json}");
+        let edit_branch = json["sessionId"].as_str().unwrap().to_string();
+        assert_ne!(edit_branch, private_id);
+        assert_eq!(
+            manager.get_session(&edit_branch, false).await.unwrap().name,
+            format!("{private_base} (branch 2)"),
+            "the refused edit_message diverge branched something anyway"
+        );
+
+        for id in [
+            diverge_branch,
+            public_branch,
+            edit_branch,
+            private_id,
+            public_id,
+        ] {
+            manager.delete_session(&id).await.unwrap();
+        }
     }
 
     #[tokio::test(flavor = "multi_thread")]

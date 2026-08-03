@@ -38,6 +38,10 @@ describe('MessageDivergeLink', () => {
       expect(mockDivergeSession).toHaveBeenCalledWith({
         path: { session_id: '20260622_1' },
         body: {},
+        // Issue #56 DR-19: a branch inherits the source chat's provider, so the
+        // renderer proves the request came from the user. Empty here because
+        // this harness has no bridge to mint a key from.
+        headers: {},
         throwOnError: true,
       });
     });
@@ -72,6 +76,7 @@ describe('MessageDivergeLink', () => {
           truncateAfter: 1717171717000,
           truncateAfterId: 'assistant-message-1',
         },
+        headers: {},
         throwOnError: true,
       });
     });
@@ -113,9 +118,16 @@ describe('MessageDivergeLink', () => {
     fireEvent.click(btn);
     fireEvent.click(btn);
 
-    expect(mockDivergeSession).toHaveBeenCalledTimes(1);
+    // Issue #56 DR-19: the renderer mints the user-action header before it
+    // calls the API, so the request now lands a microtask after the click
+    // instead of during it. The guard itself is unchanged — clicks 2 and 3 hit
+    // a button React has already disabled — and the re-assertion after the
+    // branch opens is what still holds that, rather than `waitFor` merely
+    // catching the first of three calls.
+    await waitFor(() => expect(mockDivergeSession).toHaveBeenCalledTimes(1));
     resolve({ data: { sessionId: '20260622_9', workingDir: '/x' } });
     await waitFor(() => expect(mockCreateDivergedChatWindow).toHaveBeenCalledTimes(1));
+    expect(mockDivergeSession).toHaveBeenCalledTimes(1);
     expect(mockCreateChatWindow).not.toHaveBeenCalled();
   });
 });

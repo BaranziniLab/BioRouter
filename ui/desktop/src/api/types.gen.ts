@@ -5404,6 +5404,10 @@ export type DivergeSessionErrors = {
      */
     401: unknown;
     /**
+     * Refused by a privacy boundary (issue #56 DR-19): the source chat is private, so the branch would inherit its private model, and the request carried no proof it came from the user (body = plain text)
+     */
+    403: unknown;
+    /**
      * Session not found
      */
     404: unknown;
@@ -5443,6 +5447,10 @@ export type EditMessageErrors = {
      * Unauthorized - Invalid or missing API key
      */
     401: unknown;
+    /**
+     * Refused by a privacy boundary (issue #56 DR-19): `editType: diverge` on a private chat branches it into a new chat that inherits its private model, and the request carried no proof it came from the user (body = plain text)
+     */
+    403: unknown;
     /**
      * Session or message not found
      */

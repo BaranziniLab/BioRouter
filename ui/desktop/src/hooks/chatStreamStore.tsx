@@ -35,6 +35,7 @@ import {
 import { errorMessage, isConnectionError } from '../utils/conversionUtils';
 import { showExtensionLoadResults } from '../utils/extensionErrorUtils';
 import { reasoningEffortForRequest } from '../store/reasoningEffort';
+import { userActionHeaders } from '../utils/userAction';
 import type { ChatTurnErrorData, TurnErrorScope } from '../types/turnError';
 import type { PendingSteer } from '../utils/trailingActivity';
 
@@ -1599,6 +1600,13 @@ class ChatStreamController {
           editType,
           ...(expectedMessageIds ? { expectedMessageIds } : {}),
         },
+        // Issue #56 DR-19: `diverge` branches this chat into a NEW session that
+        // inherits its provider, so on a private chat it mints a new
+        // private-capability session and the daemon refuses it without proof the
+        // request came from the person at the keyboard. `edit` truncates this
+        // session in place and mints nothing, so it is not gated and does not
+        // carry the proof.
+        ...(editType === 'diverge' ? { headers: await userActionHeaders() } : {}),
         throwOnError: true,
       });
 

@@ -3649,6 +3649,9 @@
           "401": {
             "description": "Unauthorized - Invalid or missing API key"
           },
+          "403": {
+            "description": "Refused by a privacy boundary (issue #56 DR-19): the source chat is private, so the branch would inherit its private model, and the request carried no proof it came from the user (body = plain text)"
+          },
           "404": {
             "description": "Session not found"
           },
@@ -3708,6 +3711,9 @@
           },
           "401": {
             "description": "Unauthorized - Invalid or missing API key"
+          },
+          "403": {
+            "description": "Refused by a privacy boundary (issue #56 DR-19): `editType: diverge` on a private chat branches it into a new chat that inherits its private model, and the request carried no proof it came from the user (body = plain text)"
           },
           "404": {
             "description": "Session or message not found"
