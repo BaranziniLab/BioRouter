@@ -19994,6 +19994,63 @@ git commit -m "docs(landing): a Privacy column on the agents table, checked agai
 
 ### Task 37: The in-app registry — freshness that raises and never lowers
 
+> ⚠ **AMENDED by [DR-19](#dr-19--a-warning-for-the-user-a-wall-for-the-agent), 2026-08-02 — this
+> task's union rule protects the registry document and not the **key** it is looked up by, and the
+> plan never says who may write that key.** Read this before Step 3. It adds a requirement and one
+> open question; the mechanism is not obvious from the tree, so none is invented here.
+>
+> **The chain, end to end.** `classify_extension` (Task 8) resolves the tier from
+> `name_to_key(name)` (`config/extensions.rs:23`) against `PRIVATE_EXTENSIONS ∪
+> private(last_good_fetch)` — a string join on the extension's **config entry name**, which
+> `BrxtInstallModal.tsx:152-161` writes from `manifest.name` and which this task's Step 3 already
+> describes as recording *"no provenance whatsoever"*. Step 3 then writes down the consequence as a
+> known naming quirk: *"a genuinely private extension renamed locally becomes public."*
+>
+> **That consequence is larger than "a badge".** `classify_extension` is what stamps
+> `Extension.tier` at all three admission points (Task 8 Step 3), and `Extension.tier` is what
+> **Gate C** reads at dispatch, **Gate E** at discovery and **Gate F** at enable. So renaming a
+> config entry does not merely relabel `ucsfomopagent` — it makes a public model able to **call**
+> it. And `add_extension`'s early `contains_key -> Ok(())` (`:678`) means a re-add never restamps,
+> so the change lands on the next admission and is invisible until then. The direction is one-way in
+> the dangerous sense: renaming *to* a private name is fail-closed and harmless (Step 3 says so);
+> renaming *away* removes enforcement.
+>
+> **Who may write it? The plan does not say, and DR-19 makes that the defect.** *"It makes silence a
+> defect: every task that changes privacy state must say who may initiate it, because an unstated
+> initiator becomes whatever the implementer assumes."* Compare the two objects this feature
+> classifies:
+>
+> | Object | Who may lower its tier | What proves it |
+> |---|---|---|
+> | A **session** | one function, `privacy::declassify` | `UserConfirmation` + `X-User-Action`; [Task 40](#task-40-final-release-gate) Step 3 asserts `privacy_tier = 'public'` appears **exactly once** in the tree |
+> | A **knowledge base** | one file, `knowledge/tier_user.rs::set_unlocked` | `UserKbTierChange` (a ZST no model can construct) + the same header ([Task 29A](#task-29a-knowledge-base-publicize--privatize--user-only-graded-audited)) |
+> | An **extension** | **anyone who can rename a config entry** | **nothing** |
+>
+> **The requirement, stated.** An extension's effective tier may be lowered only by the user. Today
+> it is lowered by a rename, `config.yaml` is agent-writable with `text_editor` (§9.3 C1), and
+> [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store) deferred
+> [DR-14](#decisions-of-record), which had made that file deny entry #5 for a closely related
+> reason. The union rule this task builds is the right shape — freshness raises and never lowers —
+> but it is applied to the *value* side of the lookup while the *key* side is unprotected, and an
+> attacker (or an accident) takes the cheaper of the two.
+>
+> **Why this task states it and stops.** The obvious fix is to stop deriving the badge from the
+> mutable name and derive it from install **provenance** instead — a registry id, source URL and
+> hash recorded at install — but this task's own Files table records that the install writes
+> *"name/cmd/args/envs and no registry id, source URL or hash"*, so the provenance the fix needs
+> does not exist to be read, and creating it changes what a `.brxt` install writes, what
+> `ExtensionConfig` carries (which Task 8's OpenAPI gate deliberately freezes), and how R11(i) is
+> phrased. That is a design decision, not an implementation detail. It is
+> [Open question 28](#open-questions).
+>
+> **What must NOT be done in the meantime.** Do not "fix" it by letting the local config declare a
+> tier — that is R11(i) inverted and Task 8's gate exists to catch it. Do not widen
+> `PRIVATE_EXTENSIONS` to cover aliases; a rename can pick any string. And when Step 3 writes down
+> the rename consequence as *"already the accepted direction under R11(ii)"*, correct it to say what
+> it is: R11(ii) is about extensions **not on BAAM** defaulting public, which is a statement about
+> unknown extensions; a **known** private extension losing its tier because someone edited a name is
+> a different fact and was never ruled on.
+
 `main.ts:2855-2866` is a bare `fetch(REGISTRY_URL, { headers })` (`REGISTRY_URL` at `:2832`, preload
 bridge at `:355`/`:580`) with **no timeout, no cache and no last-good write**.
 
@@ -20064,8 +20121,16 @@ Any model can call it."*
 
 Two naming consequences to write down as **known rather than discovered**: a hand-installed
 extension *named* `ucsfomopagent` inherits the private badge (fail-closed, fine); and a genuinely
-private extension renamed locally becomes public — already the accepted direction under R11(ii), and
-unavoidable because the install records no provenance at all.
+private extension renamed locally becomes public.
+
+⚠ **The second one is NOT "already the accepted direction under R11(ii)"** — that clause was in this
+paragraph and is withdrawn by DR-19 (see this task's banner). R11(ii) rules that an extension **not
+on BAAM** is public, which is a statement about *unknown* extensions. A **known** private extension
+losing its tier because a config entry was renamed is a different fact, it was never ruled on, and it
+is not a badge change: `classify_extension` stamps `Extension.tier`, which Gates C, E and F read, so
+the rename removes **enforcement**. "Unavoidable because the install records no provenance at all"
+is the accurate half and is exactly why this is [Open question 28](#open-questions) rather than a
+fix in this task.
 
 - [ ] **Step 4: Run** — name the FILES, never the bare word `registry`:
 
@@ -20635,6 +20700,7 @@ and is a scope question the ruling does not reach.
 | **25** | **Does DR-16 reach the app runtime, which binds a provider the model itself authored?** Measured while writing Task 18A, and not covered by it. `configure_main_provider` (`routes/apps.rs:809`, called `:1259`) and `configure_worker_provider` (`:1480`, called `:1553`) both read `AgentConfig.model` — a `{provider, model}` pair — out of the app's stored manifest (`agent_drafter/store.rs:76-79`) and bind it with `agent.update_provider` **in process**, at `:820` and `:1492`, never through `POST /agent/update_provider`. That manifest is agent-authored: `agent_drafter__declare_profiles` (`agent_drafter/mod.rs:2497-2528`) takes a per-profile `model` straight from `ProfileParam` (`:699-712`) — tool arguments the model writes — and `agent_drafter` is **Public** by design. So a public model can name `llamacpp` in a profile and the app runtime will bind it, with Task 18A's guard nowhere on that path. **What is NOT claimed:** a worker profile gets its own session (`worker_session_key` → `app:{id}:{cid}:{profile}`, `:1450-1452`), so that is a session *created* at a tier, which is the same shape as any new session and not a raise. The sharp case is the app's **main** session, which is long-lived: a manifest edit followed by a reconnect re-runs `configure_main_provider` against a session that already exists. | ⚠ **The referral in this column was checked and does not hold — see [Open question 26](#open-questions), which is where the live half now lives.** Neither [Task 22](#task-22-session-copy--three-hand-rolled-builders-become-one-derived-session-helper) nor [Task 23](#task-23-spawn--reorder-stamp-filter-and-the-spawn-matrix) answers it: measured over both tasks' full text on 2026-08-02, neither mentions apps, manifests, per-connection re-derivation or session-capability lifetime at all, so the answer this row waits on was never going to arrive from there. [DR-19](#dr-19--a-warning-for-the-user-a-wall-for-the-agent) also settles the *scope* half the row called undecided: a bind that raises a **live** session is a raise whatever re-derives it, because the rule is about who initiated it and not about when it is recomputed. [Task 24](#task-24-the-two-shipped-features-the-gates-break)'s banner states the requirement and names the three guard sites. Original text: **Nothing in this plan. The question is scope, not mechanism:** whether an app session's capability is fixed for its lifetime or re-derived per connection is Task 22's and Task 23's to answer, and the answer decides whether this is a raise at all. Extending Task 18A here is not mechanical the way open question 24 was: these are in-process calls with no HTTP request to carry a header, so the proof would have to be a manifest-level grant rather than a request-level one — the *scoped permission* shape DR-16 names as the right answer if the local-model handoff turns out to be a routine agent step. |
 | **26** | **What is a proof-of-user for a bind that has no request?** [Task 24](#task-24-the-two-shipped-features-the-gates-break)'s banner establishes the requirement — agent-authored data may not raise a live app session's capability — and there are **three** sites, of which only the first two were previously known. (a) `configure_main_provider` (`routes/apps.rs:809`, bind `:820`) binds the manifest's `model`, which `agent_drafter__declare_profiles` wrote from tool arguments. (b) `apply_route_for_turn` (`:2181-2229`, bind `:2211`) binds a manifest route pin — **this is H4's own sequence**, which this plan narrates as *"Gate A allows the bind → Gate B ratchets"* and has never authorised. (c) **New, and the sharpest:** `ClientFrame::ModelSelect` (`:3409-3428`, bind `:3418`) arrives on `GET /apps/{id}/agent`, which is exempt from secret-key auth (`auth.rs:52-77`, `is_public_app_get` at `:76`), from a page whose TypeScript the model itself authored — so it is a raise over a channel needing **no credential at all**, and Task 24's *"fixed with zero new code — Gate A covers it"* is true of the downward arrow only. **Why the mechanism cannot be lifted from Task 18A:** (a) and (b) are in-process calls with no `HeaderMap`, and (c) has one but on an unauthenticated socket, where a header proves nothing. **The decision needed:** does an app that declares a private-tier provider require a one-time user grant, and if so where is it recorded? It cannot be the manifest (`store.rs:76-79`, agent-writable, which is the whole defect) and it cannot be an env var ([AR-11](#ar-11--amended-by-dr-17--the-daemons-own-api-secret-is-recoverable)). This is the *scoped permission* shape DR-16 names and deliberately did not build. | **Nothing is built.** [Task 24](#task-24-the-two-shipped-features-the-gates-break) carries the requirement in its banner, the three sites in its text, and one `#[ignore]`d test, `agent_authored_data_cannot_raise_a_live_app_sessions_capability`, that asserts all three — placed so that answering this question has somewhere to land. **Until it is answered the exposure is live and belongs to [Task 30A](#task-30a-the-non-private-model-disclosure)'s disclosure**, not to a gate. ⚠ Do **not** close it by adding a confirmation phrase or a manifest boolean: DR-19 says a confirmation compiled into the source is a UX guard and not a human, and a grant stored where the agent writes is not a grant. |
 | **27** | **What stops an agent from disabling the master switch by writing `config.yaml`?** [Task 30](#task-30-settings--privacy--the-master-toggle-its-three-hardening-measures-and-the-badge-it-does-not-hide)'s amendment closes the HTTP channel — `POST /config/upsert` now needs [Task 18A](#task-18a-the-two-http-channels-that-raise-a-sessions-own-tier-and-the-user-proof-neither-of-them-has)'s `X-User-Action` on the disabling arm — but the value's home is a **file**, and [DR-14](#decisions-of-record) made `<config>/config.yaml` deny entry #5 for exactly this reason (*"a master switch a public model can edit is not a switch"*). [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store) defers DR-14, so in v1 that file is an ordinary file and `developer__shell` / `developer__text_editor` can write `BIOROUTER_PRIVACY_TIERS: off` into it. **What limits it today, and it is a real limit rather than a fix:** hardening measure (3) holds the authoritative value in the daemon's memory from startup, so a file write is a **next-launch** disable and not an immediate one — the running daemon keeps enforcing, and the badge keeps reading `Private`, until someone restarts the app. **The decision needed** is which of three: (a) revive the *one file* of DR-14 for this key alone — a single deny path, not the deferred four-root barrier, and the cheapest of the three; (b) move the switch out of `config.yaml` into a store the agent cannot write (the OS credential store already used for secrets, per `docs/security/secret-storage.md`); or (c) accept it, in which case it belongs in [Accepted risks](#accepted-risks) with the next-launch limitation stated, and in [Task 30A](#task-30a-the-non-private-model-disclosure)'s disclosure. | **Nothing is built beyond the narrowing.** Task 30's amendment banner states it; the immediate HTTP path is closed. ⚠ Do not close this by re-enabling `get_param`'s env branch for the key, or by reading the file per gate — measure (1) forbids the first (`BIOROUTER_PRIVACY_TIERS=off biorouterd` is a one-token disable) and measure (3) forbids the second. |
+| **28** | **Who may write an extension config entry's `name`, and what enforces it?** [DR-19](#dr-19--a-warning-for-the-user-a-wall-for-the-agent) makes an unstated initiator a defect, and this is the one object in the feature that has none. A session's tier has exactly one lowering writer (`privacy::declassify`, asserted by [Task 40](#task-40-final-release-gate) Step 3: `privacy_tier = 'public'` appears **once** in the tree); a knowledge base's has exactly one (`knowledge/tier_user.rs::set_unlocked` + a ZST no model can construct, [Task 29A](#task-29a-knowledge-base-publicize--privatize--user-only-graded-audited)); an **extension's has none**. `classify_extension` (Task 8) keys on `name_to_key(name)` — the config entry's name, written from `manifest.name` by `BrxtInstallModal.tsx:152-161`, which [Task 37](#task-37-the-in-app-registry--freshness-that-raises-and-never-lowers) records as carrying *"no provenance whatsoever"* — and `config.yaml` is agent-writable with `text_editor` (§9.3 C1), with [DR-14](#decisions-of-record)'s deny entry #5 deferred by [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store). ⚠ **This is not a badge bug.** `classify_extension` stamps `Extension.tier` at all three admission points, and Gates C (dispatch), E (discovery) and F (enable) all read it — so a rename makes a public model able to **call** `ucsfomopagent`, and `add_extension`'s early `contains_key -> Ok(())` (`:678`) means it lands silently on the next admission. Task 37's union rule protects the registry *document* and not the *key* it is looked up by. **The decision needed:** does a `.brxt` install record provenance (registry id + source URL + hash) so the tier is derived from where an extension came from rather than from a mutable local string — and if so, does that provenance live on `ExtensionConfig` (which [Task 8](#task-8-classify_extension-and-the-generated-private-set)'s OpenAPI gate deliberately freezes) or beside it? The alternative is to accept it and say so in [Accepted risks](#accepted-risks) and in [Task 30A](#task-30a-the-non-private-model-disclosure)'s disclosure. | **Nothing is built.** Task 37's banner states the requirement and withdraws the *"already the accepted direction under R11(ii)"* clause that made this look ruled-on when it was not. ⚠ Do **not** close it by letting `config.yaml` declare a tier — that is R11(i) inverted, and Task 8's OpenAPI-diff gate exists to catch exactly that implementation. Do not close it by adding aliases to `PRIVATE_EXTENSIONS` either: a rename can pick any string. |
 
 ---
 
