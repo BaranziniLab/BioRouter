@@ -1186,6 +1186,16 @@ async fn apply_settings_overrides(
     //
     // `tier()` on a composite is `least()` over its components, so a lead/worker
     // parent contributes the reach it actually has, not the reach of its lead.
+    //
+    // This is the `Arc` the parent held when its `TaskConfig` was built, not a
+    // re-read of its live binding, so a user who switches the parent's model
+    // mid-turn leaves an in-flight spawn deciding against the older instance.
+    // Deliberately not chased: the window is one turn and user-initiated, and
+    // BOTH stale directions fail closed — a stale Private parent refuses the
+    // public child DR-19 forbids, a stale Public parent refuses the private
+    // child R4 forbids. Re-reading the live binding would trade that for a
+    // race in which the tier used to authorise the spawn is not the tier the
+    // prompt was composed under, which is the worse of the two.
     let parent_cap = task_config.provider.tier();
 
     if let Some(settings) = &params.settings {
@@ -2205,15 +2215,21 @@ mod tests {
     /// Task-local config for one ask. `with_config_overrides` beats both the
     /// environment and the config file, and touches neither, so these tests can
     /// run in parallel with everything else in this binary.
+    /// BOTH poles are pinned, including the one that agrees with the shipped
+    /// default. Leaving `Ask::Private` as an empty map made the private pole
+    /// rest on the *absence* of `OLLAMA_HOST`: `get_param` falls through
+    /// override → env → `config.yaml`, so on a developer machine with Ollama
+    /// pointed off-box the "private" row would resolve Public and the matrix
+    /// would stop testing the crossing it exists for. It fails loudly rather
+    /// than vacuously, but only after someone has spent an hour on it.
     fn ask_overrides(ask: Ask) -> HashMap<String, String> {
-        match ask {
-            Ask::Public => HashMap::from([(
-                "OLLAMA_HOST".to_string(),
-                "https://ollama.example.com".to_string(),
-            )]),
-            // The shipped default is `localhost`, i.e. loopback, i.e. Private.
-            Ask::Inherit | Ask::Private => HashMap::new(),
-        }
+        let host = match ask {
+            Ask::Public => "https://ollama.example.com",
+            // Loopback, i.e. Private — the same value the provider defaults to,
+            // written down so it cannot be taken away by the environment.
+            Ask::Inherit | Ask::Private => "http://localhost:11434",
+        };
+        HashMap::from([("OLLAMA_HOST".to_string(), host.to_string())])
     }
 
     fn builtin_extension(name: &str) -> crate::agents::ExtensionConfig {
@@ -2650,8 +2666,20 @@ mod tests {
                 ErrorCode::INVALID_PARAMS,
                 "background={background}"
             );
+            // R4's OWN wording, not just "subagent" + INVALID_PARAMS: the
+            // fork-bomb guard's refusal ("Wait for running subagents to
+            // finish…") satisfies both of those AND leaves zero rows, so under
+            // inflight pressure this test could pass for entirely the wrong
+            // reason. `InflightGuard` is process-global across this binary.
             assert!(
-                err.message.contains("subagent"),
+                err.message
+                    .contains("a subagent may never reach further than the chat that started it"),
+                "expected R4's refusal, not some other INVALID_PARAMS \
+                 (background={background}), got: {}",
+                err.message
+            );
+            assert!(
+                err.message.contains("No subagent was started"),
                 "background={background}, got: {}",
                 err.message
             );
