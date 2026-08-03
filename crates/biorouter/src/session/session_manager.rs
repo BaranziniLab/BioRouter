@@ -5301,8 +5301,15 @@ impl SessionStorage {
             )
             .await?;
 
+        // Parsed, but never authoritative for `public`. An imported transcript
+        // of unknown provenance is sensitive: unlike migration, there is no
+        // local evidence to reason from, so the imported field is read ONLY in
+        // the raising direction (issue #56 §9.3 B1).
+        let imported = import.privacy_tier;
+
         let mut builder = session_manager
             .update(&session.id)
+            .raise_privacy(SessionClassification::Private.max(imported), "imported")
             .extension_data(import.extension_data)
             .total_tokens(import.total_tokens)
             .input_tokens(import.input_tokens)
@@ -5328,6 +5335,52 @@ impl SessionStorage {
         self.get_session(&session.id, true).await
     }
 
+    /// Create a session derived from `source`, carrying everything a branch must
+    /// inherit. The three copy paths (`copy_session`, `diverge_session_for_edit`,
+    /// `diverge_session`) each hand-rolled their own builder, and none of them
+    /// carried `provider_name`/`model_config`/`privacy_tier` — so a branch of a
+    /// private chat resolved through `restore_provider_from_session`'s
+    /// `Config::global()` fallback and ran private history on the user's default
+    /// public model, with no prompt (issue #56 §9.3 B1).
+    ///
+    /// Callers add only their own extras (`user_provided_name`, `diverged_from`,
+    /// `branch_point_msg_uid`) and their own conversation, so the carry-over
+    /// cannot be missed by one of them.
+    async fn create_derived_session(
+        &self,
+        session_manager: &SessionManager,
+        source: &Session,
+        new_name: String,
+        reason: &str,
+    ) -> Result<Session> {
+        let new_session = self
+            .create_session(source.working_dir.clone(), new_name, source.session_type)
+            .await?;
+        let mut update = session_manager
+            .update(&new_session.id)
+            .extension_data(source.extension_data.clone())
+            .schedule_id(source.schedule_id.clone())
+            .workflow(source.workflow.clone())
+            .user_workflow_values(source.user_workflow_values.clone())
+            .raise_privacy(source.privacy_tier, reason);
+        // ⚠ The two provider setters take VALUES, not Options:
+        // `provider_name(impl Into<String>)` and `model_config(ModelConfig)`
+        // each wrap their argument as `Some(Some(v))`, because
+        // `Option<Option<T>>` is how this builder distinguishes "leave alone"
+        // from "set to NULL". Neither setter has an Option-taking variant, and
+        // passing `source.model_config.clone()` straight in is a type error. A source
+        // with no provider must leave the child's column untouched rather than
+        // writing NULL over the default.
+        if let Some(name) = source.provider_name.clone() {
+            update = update.provider_name(name);
+        }
+        if let Some(cfg) = source.model_config.clone() {
+            update = update.model_config(cfg);
+        }
+        update.apply().await?;
+        self.get_session(&new_session.id, false).await
+    }
+
     async fn copy_session(
         &self,
         session_manager: &SessionManager,
@@ -5337,24 +5390,16 @@ impl SessionStorage {
         let original_session = self.get_session(session_id, true).await?;
 
         let new_session = self
-            .create_session(
-                original_session.working_dir.clone(),
+            .create_derived_session(
+                session_manager,
+                &original_session,
                 new_name,
-                original_session.session_type,
+                &format!("diverged:{session_id}"),
             )
             .await?;
 
-        session_manager
-            .update(&new_session.id)
-            .extension_data(original_session.extension_data)
-            .schedule_id(original_session.schedule_id)
-            .workflow(original_session.workflow)
-            .user_workflow_values(original_session.user_workflow_values)
-            .apply()
-            .await?;
-
-        if let Some(conversation) = original_session.conversation {
-            self.replace_conversation(&new_session.id, &conversation)
+        if let Some(conversation) = original_session.conversation.as_ref() {
+            self.replace_conversation(&new_session.id, conversation)
                 .await?;
         }
 
@@ -5377,9 +5422,22 @@ impl SessionStorage {
                 .and_then(|message| message.id.clone())
         });
 
+        // The same carry-over `copy_session` performs, spelled here rather than
+        // delegated, so no copy path can quietly stop using the shared helper
+        // (`no_copy_path_hand_rolls_its_own_builder_any_more`).
         let new_session = self
-            .copy_session(session_manager, session_id, new_name.clone())
+            .create_derived_session(
+                session_manager,
+                &original,
+                new_name.clone(),
+                &format!("diverged:{session_id}"),
+            )
             .await?;
+
+        if let Some(conversation) = original.conversation.as_ref() {
+            self.replace_conversation(&new_session.id, conversation)
+                .await?;
+        }
 
         session_manager
             .update(&new_session.id)
@@ -5431,23 +5489,21 @@ impl SessionStorage {
                 .and_then(|m| m.id.clone())
         });
 
-        // Mint the branch session and copy the carry-over metadata (mirrors
-        // copy_session, but writes the *trimmed* conversation rather than the
-        // full one).
+        // Mint the branch session with the shared carry-over (same as
+        // copy_session, but this path writes the *trimmed* conversation rather
+        // than the full one). This is the path `POST /sessions/{id}/diverge`
+        // reaches — it does NOT go through `copy_session`.
         let new_session = self
-            .create_session(
-                original.working_dir.clone(),
+            .create_derived_session(
+                session_manager,
+                &original,
                 new_name.clone(),
-                original.session_type,
+                &format!("diverged:{session_id}"),
             )
             .await?;
 
         session_manager
             .update(&new_session.id)
-            .extension_data(original.extension_data)
-            .schedule_id(original.schedule_id)
-            .workflow(original.workflow)
-            .user_workflow_values(original.user_workflow_values)
             // Lock the computed/custom name (so the auto-namer never clobbers
             // the branch marker) and record the lineage pointer + divergence point.
             .user_provided_name(new_name)
@@ -12225,6 +12281,224 @@ mod tests {
         assert!(column_exists(&db, "sessions", "privacy_tier").await);
         assert!(column_exists(&db, "sessions", "privacy_reason").await);
         assert!(table_exists(&db, "classification_audit").await);
+    }
+
+    /// Issue #56 §9.3 B1 — the three session-copy paths.
+    ///
+    /// Every one of them mints a fresh session and then hand-copies a chosen
+    /// subset of the parent's metadata onto it. None of them carried
+    /// `provider_name` / `model_config` / `privacy_tier`, so a branch of a
+    /// private chat resolved its provider through
+    /// `restore_provider_from_session`'s `Config::global()` fallback and ran
+    /// private history on the user's default *public* model, with no prompt.
+    mod derived_session_carry_over {
+        use super::*;
+
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        enum CopyPath {
+            Copy,
+            DivergeForEdit,
+            Diverge,
+        }
+
+        /// A private session bound to `provider`, carrying one complete
+        /// exchange so every path has history to carry over.
+        async fn private_session_on(provider: &str) -> (TempDir, SessionManager, Session) {
+            let temp = TempDir::new().unwrap();
+            let manager = SessionManager::new(temp.path().to_path_buf());
+            let parent = manager
+                .create_session(
+                    temp.path().to_path_buf(),
+                    "parent".into(),
+                    SessionType::User,
+                )
+                .await
+                .unwrap();
+            manager
+                .add_message(&parent.id, &Message::user().with_text("hello"))
+                .await
+                .unwrap();
+            manager
+                .add_message(&parent.id, &Message::assistant().with_text("hi there"))
+                .await
+                .unwrap();
+            manager
+                .update(&parent.id)
+                .provider_name(provider)
+                .model_config(ModelConfig::new("gpt-4o").unwrap())
+                .raise_privacy(SessionClassification::Private, "turn:versa_azure")
+                .apply()
+                .await
+                .unwrap();
+            let parent = manager.get_session(&parent.id, true).await.unwrap();
+            assert_eq!(parent.privacy_tier, SessionClassification::Private);
+            assert_eq!(parent.provider_name.as_deref(), Some(provider));
+            (temp, manager, parent)
+        }
+
+        async fn run_copy(
+            manager: &SessionManager,
+            path: CopyPath,
+            parent: &Session,
+        ) -> Result<Session> {
+            match path {
+                CopyPath::Copy => manager.copy_session(&parent.id, "child".into()).await,
+                // A timestamp beyond every stored message, so the edit path's
+                // truncation keeps the whole conversation and this test is
+                // about the carry-over and nothing else.
+                CopyPath::DivergeForEdit => {
+                    manager
+                        .diverge_session_for_edit(&parent.id, i64::MAX / 2)
+                        .await
+                }
+                CopyPath::Diverge => manager.diverge_session(&parent.id, None, None).await,
+            }
+        }
+
+        #[tokio::test]
+        async fn every_copy_path_carries_the_tier_and_the_provider() {
+            // A test on `copy_session` alone passes an implementation that
+            // misses the GUI path entirely — which is exactly how this bug
+            // shipped: `routes/session.rs`'s `POST /sessions/{id}/diverge`
+            // reaches `diverge_session`, and `diverge_session` does NOT call
+            // `copy_session`.
+            for path in [CopyPath::Copy, CopyPath::DivergeForEdit, CopyPath::Diverge] {
+                let (_temp, manager, parent) = private_session_on("versa_azure").await;
+                let child = run_copy(&manager, path, &parent).await.unwrap();
+                assert_eq!(
+                    child.privacy_tier,
+                    SessionClassification::Private,
+                    "{path:?}"
+                );
+                assert_eq!(
+                    child.provider_name.as_deref(),
+                    Some("versa_azure"),
+                    "{path:?}"
+                );
+                assert!(child.model_config.is_some(), "{path:?}");
+                let expected_reason = format!("diverged:{}", parent.id);
+                assert_eq!(
+                    child.privacy_reason.as_deref(),
+                    Some(expected_reason.as_str()),
+                    "{path:?}"
+                );
+            }
+        }
+
+        /// Export a real session and hand the JSON back to `import_session`,
+        /// with `privacy_tier` set to `tier` (or removed when `None`).
+        async fn import_json_with_tier(tier: Option<&str>) -> Session {
+            let temp = TempDir::new().unwrap();
+            let manager = SessionManager::new(temp.path().to_path_buf());
+            let source = manager
+                .create_session(temp.path().to_path_buf(), "src".into(), SessionType::User)
+                .await
+                .unwrap();
+            manager
+                .add_message(&source.id, &Message::user().with_text("hello"))
+                .await
+                .unwrap();
+            let exported = manager.export_session(&source.id).await.unwrap();
+
+            let mut value: serde_json::Value = serde_json::from_str(&exported).unwrap();
+            let object = value.as_object_mut().unwrap();
+            assert!(
+                object.contains_key("privacy_tier"),
+                "export must carry the field this test is about"
+            );
+            match tier {
+                Some(t) => {
+                    object.insert("privacy_tier".into(), serde_json::Value::from(t));
+                }
+                None => {
+                    object.remove("privacy_tier");
+                }
+            }
+            manager
+                .import_session(&serde_json::to_string(&value).unwrap())
+                .await
+                .unwrap()
+        }
+
+        #[tokio::test]
+        async fn an_import_with_no_tier_is_private_and_one_with_a_tier_is_only_raised_by_it() {
+            // Read the imported field ONLY in the raising direction — never as
+            // authority to set public. An imported transcript of unknown
+            // provenance is sensitive: unlike migration, there is no local
+            // evidence to reason from.
+            assert_eq!(
+                import_json_with_tier(None).await.privacy_tier,
+                SessionClassification::Private
+            );
+            assert_eq!(
+                import_json_with_tier(Some("private")).await.privacy_tier,
+                SessionClassification::Private
+            );
+            assert_eq!(
+                import_json_with_tier(Some("public")).await.privacy_tier,
+                SessionClassification::Private
+            );
+        }
+
+        /// The body of the LAST `fn <name>(` in `src`. The three copy paths each
+        /// appear twice in this file — a thin `SessionManager` wrapper first,
+        /// then the real `SessionStorage` implementation — and it is the second
+        /// one this test is about.
+        fn fn_body(src: &str, name: &str) -> String {
+            let needle = format!("fn {name}(");
+            let start = src
+                .rfind(&needle)
+                .unwrap_or_else(|| panic!("no `fn {name}(` in the file"));
+            // `get` rather than `&src[..]` throughout: clippy's `string_slice`
+            // refuses raw indexing into a `str`, and every offset here comes
+            // from a search on the same string, so `None` is unreachable.
+            let signature_onwards = src.get(start..).expect("rfind returns a char boundary");
+            let open = signature_onwards
+                .find('{')
+                .unwrap_or_else(|| panic!("no body for fn {name}"));
+            let body_onwards = signature_onwards
+                .get(open..)
+                .expect("find returns a char boundary");
+            let mut depth = 0usize;
+            for (offset, ch) in body_onwards.char_indices() {
+                match ch {
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            return body_onwards
+                                .get(..offset + ch.len_utf8())
+                                .expect("char_indices yields char boundaries")
+                                .to_string();
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            panic!("unbalanced braces in fn {name}");
+        }
+
+        #[test]
+        fn no_copy_path_hand_rolls_its_own_builder_any_more() {
+            // The enumeration test, aimed at the three functions that matter
+            // rather than at all 104 `create_session` call sites.
+            let src = std::fs::read_to_string("src/session/session_manager.rs").unwrap();
+            for f in [
+                "copy_session",
+                "diverge_session_for_edit",
+                "diverge_session",
+            ] {
+                let body = fn_body(&src, f);
+                assert!(
+                    body.contains("create_derived_session"),
+                    "{f} does not use the shared helper"
+                );
+                assert!(
+                    !body.contains(".extension_data("),
+                    "{f} still hand-rolls its carry-over"
+                );
+            }
+        }
     }
 }
 

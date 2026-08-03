@@ -1538,6 +1538,75 @@ mod diverge_tests {
         manager.delete_session(&original.id).await.unwrap();
     }
 
+    /// Issue #56 §9.3 B1, at the route that actually ships it. The storage-level
+    /// loop in `session::session_manager::tests::derived_session_carry_over`
+    /// covers all three copy paths; this one pins the specific claim that the
+    /// GUI's Diverge button — `POST /sessions/{id}/diverge` — is one of them, so
+    /// a branch of a private chat can never be resumed against the user's
+    /// default public model through `restore_provider_from_session`'s
+    /// `Config::global()` fallback.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn diverging_a_private_session_through_the_route_keeps_it_private() {
+        use biorouter::model::ModelConfig;
+        use biorouter::privacy::SessionClassification;
+
+        let state = AppState::new().await.unwrap();
+        let manager = state.session_manager();
+
+        let original = manager
+            .create_session(
+                PathBuf::from("/tmp/diverge_route_privacy"),
+                "Private Original".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        manager
+            .add_message(&original.id, &user_msg("patient MRN 12345"))
+            .await
+            .unwrap();
+        manager
+            .add_message(&original.id, &Message::assistant().with_text("noted"))
+            .await
+            .unwrap();
+        manager
+            .update(&original.id)
+            .provider_name("versa_azure")
+            .model_config(ModelConfig::new("gpt-4o").unwrap())
+            .raise_privacy(SessionClassification::Private, "turn:versa_azure")
+            .apply()
+            .await
+            .unwrap();
+
+        let (status, json) = post_diverge(state.clone(), &original.id, serde_json::json!({})).await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        let new_id = json["sessionId"].as_str().unwrap().to_string();
+
+        let branch = manager.get_session(&new_id, false).await.unwrap();
+        assert_eq!(
+            branch.privacy_tier,
+            SessionClassification::Private,
+            "the GUI diverge route dropped the tier"
+        );
+        assert_eq!(
+            branch.provider_name.as_deref(),
+            Some("versa_azure"),
+            "the GUI diverge route dropped the bound provider"
+        );
+        assert!(
+            branch.model_config.is_some(),
+            "the GUI diverge route dropped the model config"
+        );
+        assert_eq!(
+            branch.privacy_reason.as_deref(),
+            Some(format!("diverged:{}", original.id).as_str())
+        );
+
+        manager.delete_session(&new_id).await.unwrap();
+        manager.delete_session(&original.id).await.unwrap();
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     #[serial]
     async fn diverge_with_custom_name_and_too_long_name() {
