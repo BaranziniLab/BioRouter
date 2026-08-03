@@ -5346,6 +5346,23 @@ impl SessionStorage {
     /// Callers add only their own extras (`user_provided_name`, `diverged_from`,
     /// `branch_point_msg_uid`) and their own conversation, so the carry-over
     /// cannot be missed by one of them.
+    ///
+    /// ⚠ **`raise_privacy` is called unconditionally, and on a PUBLIC source
+    /// that writes a `privacy_reason` where the child previously had none.** The
+    /// tier is untouched — a public source raises a public child to public — but
+    /// the dominance `CASE` in [`SessionUpdateBuilder::apply`] guards both preserving
+    /// arms on the row being already non-public, so the trailing `ELSE` fires
+    /// and stamps `diverged:<parent>` on a public row. Harmless today:
+    /// `privacy_reason` is audit and UX only, never read by a gate, and the
+    /// value is true of the row it lands on.
+    ///
+    /// It stops being harmless at exactly the point that `apply`'s own note
+    /// names — when §12.5 declassification starts leaving `declassified_by_user`
+    /// in `privacy_reason` on a row it has just returned to public. A copy of a
+    /// declassified chat would then erase that provenance. Whoever lands
+    /// declassification has to decide there whether the `ELSE` arm preserves it
+    /// the way the `mcp:` arm preserves its own; this call site is the one that
+    /// will hit it, so it is named here as well as there.
     async fn create_derived_session(
         &self,
         session_manager: &SessionManager,
@@ -5425,6 +5442,16 @@ impl SessionStorage {
         // The same carry-over `copy_session` performs, spelled here rather than
         // delegated, so no copy path can quietly stop using the shared helper
         // (`no_copy_path_hand_rolls_its_own_builder_any_more`).
+        //
+        // ⚠ This path used to call `copy_session`, which re-read the parent a
+        // second time. It now branches from the SINGLE `original` snapshot read
+        // above, so `branch_point` and the copied conversation can no longer
+        // disagree — a message appended to the parent between the two former
+        // reads used to land in the branch's conversation while sitting outside
+        // the branch point computed from the earlier read. The deliberate
+        // consequence is that such a message is no longer carried at all, which
+        // is the consistent reading of "branch the conversation the caller
+        // asked about".
         let new_session = self
             .create_derived_session(
                 session_manager,
