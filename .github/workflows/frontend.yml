@@ -88,6 +88,32 @@ jobs:
         if: ${{ !cancelled() }}
         run: npm run check:contrast
 
+  # ── The BAAM registry generator ───────────────────────────────────────────
+  # landing/scripts/build-registry.mjs writes three copies of one catalog, and
+  # one of them is a compiled-in Rust security baseline
+  # (crates/biorouter/src/privacy/registry_private.rs). Its refusals are what
+  # keeps a mis-tagged card from silently classifying a private extension as
+  # Public, so they get a gate rather than a hand-run.
+  #
+  # Its own job, not a step in `static`: it needs no npm install (node:test
+  # ships with the runtime) and it runs from the repo root, not ui/desktop.
+  registry:
+    name: Registry generator
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Generator regression suite
+        run: node --test landing/scripts/build-registry.test.mjs
+
   # ── Unit tests ────────────────────────────────────────────────────────────
   unit:
     name: Unit tests (vitest)

@@ -21,6 +21,8 @@ check-everything:
     ./scripts/check-brand-consistency.sh
     @echo "  → Checking cross-compile recipes have not drifted (glibc floor pin)..."
     ./scripts/check-no-cross-drift.sh
+    @echo "  → Checking the BAAM registry generator still refuses what it must..."
+    just check-registry
     @echo ""
     @echo "✅ All style checks passed!"
 
@@ -29,6 +31,14 @@ check-everything:
 # the desktop JSON files out of sync with the Rust workspace version.
 check-versions:
     ./scripts/check-version-consistency.sh
+
+# The BAAM registry generator writes three copies of one catalog, one of them a
+# compiled-in Rust security baseline (crates/biorouter/src/privacy/
+# registry_private.rs). Its refusals are the only thing standing between a
+# mis-tagged card and a private extension silently classified Public, so they
+# need a gate of their own. No npm install: node:test ships with the runtime.
+check-registry:
+    node --test landing/scripts/build-registry.test.mjs
 
 # Default release command
 release-binary:
