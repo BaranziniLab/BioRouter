@@ -19659,6 +19659,53 @@ git commit -m "docs(security): user documentation for privacy tiers and the desi
 
 ---
 
+### Review provenance — what evidence this branch actually has
+
+> ⚠ **Read before Task 40 and before the merge to `main`.** The original plan reserved adversarial
+> Codex review for exactly this moment. That is no longer available, and the release gate must not
+> be run as though it were.
+
+**Measured across all 61 workflow journals of this campaign, 2026-08-03:**
+
+| Reviewer | Verdicts | Share |
+| --- | --- | --- |
+| Codex (independent second model) | 32 | **19%** |
+| Claude, self-labelled as a basic non-adversarial pass | 134 | 81% |
+
+Most of the shortfall is one incident: a malformed `[agents]` key in `~/.codex/config.toml` left the
+reviewer dead for **30 hours** while returning *"Waiting for the background…"* — a string with no
+verdict in it, which an earlier harness scored as a pass. That is why `usable()` was added, and why
+a verdict-less review now fails closed. As of 2026-08-03 Codex is out of credits, so the forwarding
+path is **removed from the harness entirely** rather than left to fail over: a fallback still spends
+a call and waits for it before failing over, and a 19%-hit-rate reviewer at 0% credits is pure
+latency.
+
+**Every review from here is Claude, and every review says so in its first line.**
+
+⚠ **What that costs, stated plainly.** A reviewer from the same model family as the implementer
+shares its blind spots: a defect the author could not see, the reviewer may not see either. Claude
+review is not worthless here — it reliably catches the mechanical failures this campaign has actually
+shipped — but it is **not** the independent adversarial check the plan assumed at merge time.
+
+**So the merge gate leans on the three things that never depended on the reviewer.** Every
+cross-file defect this campaign actually caught was caught by one of these, not by a review:
+
+1. **The compiler.** Both semantic merge conflicts git merged textually — `SkillsClient` gaining a
+   field, `handle_load_skill` gaining a parameter — were caught by `cargo` and by nothing else.
+2. **Anti-vacuity assertions.** The BR-71 test sandbox versus #63's runtime-resolved store path was
+   invisible to git *and* to the compiler; an assertion that refused to pass vacuously found it.
+3. **Differential test counts.** Run the merged tree's suite and compare against **both** parents by
+   name, not just "it's green" — a suite that silently lost a file is green.
+
+**And one thing to add, because it is the only real substitute available:** where a review still
+matters, use **perspective-diverse** reviewers rather than more identical ones — give each a distinct
+lens (vacuous tests / concurrency / security / does-the-gate-fail-a-wrong-implementation). Diversity
+recovers some of what independence would have given; redundancy recovers none of it.
+
+⚠ **Do not record this branch as "adversarially reviewed" anywhere.** It is 19% adversarially
+reviewed and 81% self-reviewed, and the next person deciding whether to trust it is entitled to that
+number rather than a reassuring adjective.
+
 ### Task 40: Final release gate
 
 - [ ] **Step 1: The whole tree**
