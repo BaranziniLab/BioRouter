@@ -1728,6 +1728,40 @@ async fn handle_session_subcommand(command: SessionCommand) -> Result<()> {
     Ok(())
 }
 
+/// `biorouter session` — both of its forms, dispatched in one place.
+///
+/// ⚠ **Extracted from `cli()` rather than inlined, and the reason is mechanical.**
+/// Task 31 (issue #56) gave the interactive form a seventh field, `model_opts`,
+/// which pushed the call past one line and `cli()` past clippy's 100-line
+/// ceiling (`too_many_lines`, 103/100 — a NEW violation against
+/// `scripts/clippy-lint.sh`'s baseline, so CI fails on it). The honest fix is to
+/// move the arm's body out, not to `#[allow]` the lint on a function that has
+/// been growing an arm per feature for years.
+async fn handle_session_command(
+    command: Option<SessionCommand>,
+    identifier: Option<Identifier>,
+    resume: bool,
+    history: bool,
+    session_opts: SessionOptions,
+    extension_opts: ExtensionOptions,
+    model_opts: ModelOptions,
+) -> Result<()> {
+    match command {
+        Some(cmd) => handle_session_subcommand(cmd).await,
+        None => {
+            handle_interactive_session(
+                identifier,
+                resume,
+                history,
+                session_opts,
+                extension_opts,
+                model_opts,
+            )
+            .await
+        }
+    }
+}
+
 async fn handle_interactive_session(
     identifier: Option<Identifier>,
     resume: bool,
@@ -2243,10 +2277,7 @@ pub async fn cli() -> anyhow::Result<()> {
             None => biorouter_acp::server::run(builtins).await,
         },
         Some(Command::Session {
-            command: Some(cmd), ..
-        }) => handle_session_subcommand(cmd).await,
-        Some(Command::Session {
-            command: None,
+            command,
             identifier,
             resume,
             history,
@@ -2254,7 +2285,8 @@ pub async fn cli() -> anyhow::Result<()> {
             extension_opts,
             model_opts,
         }) => {
-            handle_interactive_session(
+            handle_session_command(
+                command,
                 identifier,
                 resume,
                 history,
@@ -2264,14 +2296,10 @@ pub async fn cli() -> anyhow::Result<()> {
             )
             .await
         }
-        Some(Command::Project {}) => {
-            handle_project_default()?;
-            Ok(())
-        }
-        Some(Command::Projects) => {
-            handle_projects_interactive()?;
-            Ok(())
-        }
+        // Both already return `anyhow::Result<()>`, so `?` followed by `Ok(())`
+        // was a six-line restatement of the value the call hands back.
+        Some(Command::Project {}) => handle_project_default(),
+        Some(Command::Projects) => handle_projects_interactive(),
         Some(Command::Run {
             input_opts,
             identifier,
