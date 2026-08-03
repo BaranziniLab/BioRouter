@@ -18796,6 +18796,34 @@ file Task 8 created.
 
 ### Task 33: `registry.json` v2 and the generator's first hard failures
 
+> ⚠ **AMENDED 2026-08-03 by [DR-26](#dr-26--affiliation-is-a-third-axis-and-hipaa-compliance-does-not-transfer-between-institutions).
+> Read that ruling before starting.** v2 carries **affiliation** as well as privacy, because HIPAA
+> compliance does not transfer between institutions and a UCSF model reaching another institution's
+> private connector must warn. Two schema revisions for one release would be the avoidable mistake,
+> so it lands here.
+>
+> **What v2 gains, on top of everything below:**
+>
+> 1. **A top-level `institutions` map**, id → display name, e.g. `{"ucsf": "UCSF"}`. The warning copy
+>    renders from this; Task 49 asserts against it rather than hardcoding names.
+> 2. **An optional per-extension `affiliation`.** Absent means *any private model may use this*, which
+>    is the correct default — most extensions carry no institutional constraint and must not all
+>    become mismatches on day one. Present, it names one or more institution ids.
+> 3. **Two more hard failures in the generator**, in the same spirit as the ones this task already
+>    adds: an `affiliation` naming an id absent from the `institutions` map is a **build failure**,
+>    and so is an `affiliation` present on a `public` entry, which is meaningless and signals a
+>    mis-tagged card.
+> 4. **`cdwagent` and `ucsfomopagent` are tagged `ucsf`** — the operator named both. Do **not** sweep
+>    every UCSF-authored extension into it: `spokeagent` serves public biomedical graph data and
+>    carries no PHI, so tagging it would fire a compliance warning on a flow that has no compliance
+>    question. Affiliation marks *whose data this is*, not who wrote the code.
+> 5. **A fixture for each new failure**, wrapped in `<div id="extensions-section">` like the others —
+>    `unknown-institution.html` and `public-with-affiliation.html`.
+>
+> ⚠ **An empty `affiliation: []` must NOT behave like "absent".** Absent means *unconstrained*; an
+> empty list means *nothing is permitted*, and conflating them turns a registry typo into a granted
+> flow. The generator should reject the empty list outright so the ambiguity never reaches a reader.
+
 ⚠ **The join key is right by luck today.** `id` is derived from the download filename by
 `slugFromUrl` (`build-registry.mjs:33-36`), and `spokeagent-0.4.1` is the **only** version-suffixed
 id among the 37 (verified). `cdwagent` and `ucsfomopagent` happen to be un-suffixed and happen to
@@ -19912,6 +19940,140 @@ and is a scope question the ruling does not reach.
 
 ---
 
+## DR-26 — affiliation is a third axis, and HIPAA compliance does not transfer between institutions
+
+> **Ruled 2026-08-03**, from the operator, after checking how a HIPAA-compliant LLM at one
+> institution may treat another institution's PHI. This adds a **third axis** to the model and a
+> **Phase 6** (Tasks 45–51) to this plan. It amends [Task 33](#task-33-registryjson-v2-and-the-generators-first-hard-failures)'s
+> schema, which is why that task must not ship before this section is read.
+
+### The gap, stated plainly
+
+Today the plan treats **Private** as one undifferentiated bucket: local models and UCSF's Versa
+providers sit in it together, and every private extension is reachable from every private model. That
+is wrong in a way no tier gate can see.
+
+A "HIPAA-compliant LLM" approved at Institution A has **no** blanket permission over PHI controlled by
+Institution B. Compliance is established per data flow — by BAAs, subcontractor chains, IRB approvals,
+Data Use Agreements and the purpose of the disclosure — and **it does not transfer** because both
+endpoints happen to be called "private". The operator's case: UCSF's Versa reaching the UCSF OMOP and
+CDW agents is exactly the arrangement everyone has approved; the same Versa model reaching *another*
+institution's private connector is a cross-institutional linkage nobody has papered.
+
+That pair passes every gate this plan has built. Both endpoints are Private, so Gates C, E and F all
+say yes.
+
+### The axis
+
+**Affiliation answers a different question from tier.** Tier asks *how sensitive is this?*
+Affiliation asks *under whose agreements?* Two things can be equally Private and still be
+incompatible, which is precisely why this cannot be expressed by subdividing the tier lattice.
+
+**A model's affiliation:**
+
+| Value | Meaning |
+|---|---|
+| `Local` | Runs on this machine; the data never leaves it |
+| `Institution(id)` | Covered by that institution's agreements — `Institution("ucsf")` for both Versa providers |
+| *(none)* | A public model. The tier gates already keep it away from private data; affiliation never applies |
+
+**An extension's affiliation:**
+
+| Value | Meaning |
+|---|---|
+| `Any` | Safe for **any** private model. The default for a private extension with no institutional constraint |
+| `Institution(id)` | Its data belongs to that institution — `Institution("ucsf")` for the OMOP and CDW agents |
+| `Institutions([…])` | An explicit allowlist, for an extension that permits a named set |
+
+### The compatibility rule
+
+For a bound model **M** and an extension **E**, both Private:
+
+| M | E | Outcome |
+|---|---|---|
+| `Local` | **anything** | ✅ compatible |
+| `Institution(X)` | `Any` | ✅ compatible |
+| `Institution(X)` | `Institution(X)` | ✅ compatible |
+| `Institution(X)` | `Institutions([… X …])` | ✅ compatible |
+| `Institution(X)` | `Institution(Y)`, X ≠ Y | ⚠ **mismatch** |
+| `Institution(X)` | `Institutions([…])` without X | ⚠ **mismatch** |
+
+⚠ **The inversion an implementer will get wrong.** `Local` is the **most** permissive affiliation, not
+a peer of the institutions. The natural implementation — an equality test, or set membership that
+happens to include `Local` — makes the local model match only itself and breaks the single most
+important case. A local model may reach **everything private**, because no transfer occurs at all:
+there is no disclosure, so there is nothing for a BAA to govern. Write it as an explicit early return
+with that reason in a comment, not as a comparison.
+
+The operator's words: *"the local llm should be completely private, as in it can just access
+anything."*
+
+### A mismatch warns — it does not block, and an agent can never clear it
+
+This is [DR-19](#decisions-of-record) applied to the third axis, and it is why the operator framed it
+as *"instead of blocking these actions, we should be able to spot those cross linking mismatch and pop
+up a warning and ask for users strict manual approval before proceeding just so that the user know the
+risks."*
+
+- **The user, explicitly** — warn, **naming both institutions** and the specific flow at risk, and
+  proceed if they insist.
+- **An agent, automatically** — never. It escalates to the user or the call does not happen.
+
+A blocked-outright design is one researchers route around by turning the feature off, and legitimate
+cross-institutional work under a real DUA does exist. A silently-allowed design is not a control. The
+warning is the product.
+
+⚠ **The warning must be specific enough to act on.** "This may be a compliance risk" is not a warning,
+it is a shrug. It must name the institution that owns the extension, the institution whose model is
+bound, and what will be sent where. The user can only accept a risk that was stated to them — the same
+requirement [Task 30A](#task-30a) exists to satisfy.
+
+### The grant
+
+Approval is recorded as a **cross-affiliation grant** scoped to the triple
+**(session, extension, model affiliation)**.
+
+- **Once per triple, not per turn.** A control that fires constantly is one people click through, which
+  is the prompt fatigue DR-19 warns about. This follows the operator's earlier ruling on approval
+  propagation: *"users only need to approve once in either place, and then the approval for that very
+  specific ask will be propagated throughout."*
+- **Never machine-wide.** The risk statement was about *this* data flow. A grant given in one chat must
+  not silently cover another.
+- **Re-binding to a different institution's model invalidates it** — the triple changed, so the
+  approved flow no longer exists.
+- **A subagent inherits its parent's grants and can never exceed them**, which is BR-71 Task 36b's
+  shape: a child may act only within authority the parent already holds.
+
+### Discovery lists, dispatch refuses
+
+Gate E hides private tools from a public model because the tool's *existence* is the secret. **That
+reasoning does not carry here** — in a mismatch both endpoints are Private and the user is entitled to
+know the connector exists. Hiding it would also let the agent silently route around a tool it cannot
+see, with no one told why.
+
+So: a mismatched extension's tools are **listed and marked**, and **refused at dispatch** with the
+warning that offers the approval. The refusal is where the user meets the decision.
+
+### Where this is checked — structurally, not by enumeration
+
+The operator asked that this be *"checked in all scenarios where this need to be checked."* ⚠ **That
+sentence is the enumeration trap this campaign has already lost to three times** in this very feature
+(tool name → tool list → argument shape). A list of call sites is not the answer, because the next call
+site will not be on it.
+
+The answer is that affiliation resolves **in the same place tier already resolves**: it becomes a field
+on **`CallCapability`**, which is sampled once per call and threaded through the gates. Any path that
+reaches an extension without going through the extended `CallCapability` is itself the defect, and
+Task 51 is the audit that proves none does.
+
+The surfaces that must consult it: Gates **C** (dispatch), **E** (discovery, to mark), **F** (extension
+channels); the **bind** and the **extension-enablement** paths, which are the same mismatch discovered
+from opposite ends and must both warn; **knowledge bases**, whose affiliation is the union of what they
+ingested and ratchets like classification; **subagent spawn**; and **chat recall / cross-session
+ingest**.
+
+---
+
 ## Operator rulings DR-21 – DR-25 — the five open questions, answered
 
 > **Ruled 2026-08-03.** Open questions 25/26, 27, 28, 29 and 30 accumulated across Phases 3 and 4
@@ -20157,6 +20319,246 @@ cargo build --release -p biorouter-server 2>&1 | tail -3
 Per platform: an approve, a deny, and an unavailable, each mapping to the right `AuthOutcome`. Plus
 the compile-out assertion from Step 3 — which is the one that fails the plausible wrong
 implementation, since every functional test passes just as well with the bypass still reachable.
+
+---
+
+## Phase 6 — affiliation (Tasks 45–51)
+
+Implements [DR-26](#dr-26--affiliation-is-a-third-axis-and-hipaa-compliance-does-not-transfer-between-institutions).
+Strictly ordered: 45 defines the vocabulary 46–48 consume, and 48 is the single resolver 49–51 depend on.
+
+### Task 45: The affiliation vocabulary and the one compatibility function
+
+- [ ] **Step 1: The types**
+
+In `crates/biorouter/src/privacy/affiliation.rs`:
+
+```rust
+/// Whose compliance regime covers this? Orthogonal to `Tier` — see DR-26.
+pub enum ModelAffiliation { Local, Institution(InstitutionId) }
+pub enum ExtensionAffiliation { Any, Institutions(BTreeSet<InstitutionId>) }
+```
+
+`InstitutionId` is a newtype over a lowercase ASCII slug, normalised at construction. `"UCSF"`,
+`"ucsf"` and `" ucsf "` must be the same institution — a case-sensitive comparison here would make a
+mismatch appear between an institution and itself, which fails **open** in the worst way: it trains
+users to click through the warning.
+
+Represent `Institution(x)` on the extension side as `Institutions({x})`; one shape, not two.
+
+- [ ] **Step 2: The one compatibility function**
+
+```rust
+pub fn compatible(model: &ModelAffiliation, ext: &ExtensionAffiliation) -> bool
+```
+
+⚠ **`Local` returns `true` before any comparison happens.** Write it as an explicit early return
+carrying its reason — *the data never leaves this machine, so no disclosure occurs and there is
+nothing for an agreement to govern*. Do not express it as membership in a set that happens to contain
+`Local`; see DR-26 for why that is the failure this task exists to prevent.
+
+There must be exactly **one** such function. No gate may hand-compare affiliations.
+
+- [ ] **Step 3: The gate**
+
+```bash
+cargo test -p biorouter --lib privacy::affiliation 2>&1 | grep "test result:"
+```
+
+Every row of DR-26's compatibility table, as a named test. Plus the four that catch the real mistakes:
+
+1. `local_reaches_every_institutions_extension` — `Local` vs `Institutions({"stanford"})` → **true**.
+   This is the one an equality-based implementation fails, and every other test still passes.
+2. `institution_ids_compare_case_insensitively` — `Institution("UCSF")` vs `Institutions({"ucsf"})`
+   → **true**.
+3. `any_accepts_every_institution` and its mirror, an empty `Institutions({})`, which must **not**
+   silently behave like `Any`. An extension that names an empty allowlist permits nothing; conflating
+   the two turns a typo in the registry into a granted flow.
+4. A property test over generated pairs asserting `compatible` is total and never panics.
+
+### Task 46: Provider affiliations — Versa is UCSF, local is Local
+
+- [ ] **Step 1: Extend the tier resolver, do not add a second one**
+
+Task 5's provider tier resolver gains an affiliation alongside the tier it already returns, in the
+same function and from the same data. A separate resolver would be a second thing to keep in sync,
+and the two would drift on the first provider added after this task.
+
+- [ ] **Step 2: The assignments**
+
+- **Both Versa providers → `Institution("ucsf")`.** They are UCSF's MuleSoft-proxied gateway and
+  covered by UCSF's agreements.
+- **`llamacpp` → `Local`.** Bundled sidecar, on-machine.
+- **`ollama` → `Local` only when its base URL is loopback.** Task 5 already makes it Private on
+  exactly that condition; a remote `OLLAMA_HOST` is someone else's server, so it is neither `Local`
+  nor `Institution` and must not inherit `Local`'s blanket permission. ⚠ **This is the sharp one** —
+  reusing Task 5's loopback predicate is required, and reimplementing it here is a defect.
+- Public providers get **no** affiliation. Affiliation never applies to them; the tier gates already
+  hold.
+
+- [ ] **Step 3: A new provider cannot be forgotten**
+
+Not a rule someone must remember. Mirror the mechanism Task 18A built for `CAPABILITY_CONFIG_KEYS`:
+a test that enumerates every provider the factory registers and fails unless each appears in exactly
+one of the affiliation tables, private or explicitly-not-applicable, with a one-line reason. Adding a
+provider then fails the suite until someone classifies it.
+
+- [ ] **Step 4: The gate**
+
+```bash
+cargo test -p biorouter --lib privacy:: 2>&1 | grep "test result:"
+cargo test -p biorouter --lib providers::factory 2>&1 | grep "test result:"
+```
+
+Assert both Versa providers resolve to `ucsf`; assert `ollama` on a **remote** host is not `Local`;
+assert the completeness test fails when a provider is removed from the table (verify by temporarily
+deleting an entry, watching it fail, and restoring it — a completeness test that has never been seen
+to fail is not known to work).
+
+### Task 47: Extension affiliations, resolved from the registry
+
+⚠ **Sequence with [Task 43](#task-43-extension-tiers-re-derived-from-the-registry--dr-23)** — DR-23
+already re-derives the extension *tier* from the registry at read time. Affiliation rides the **same**
+resolution, on the same stable id, in the same call. Two lookups would let tier and affiliation
+disagree about the same extension.
+
+- [ ] **Step 1: Read the field Task 33 added**
+
+`registry.json` v2 carries `affiliation` per extension and an `institutions` display-name map
+(see the amendment to Task 33). Resolve `ExtensionAffiliation` from it.
+
+- [ ] **Step 2: Absent means `Any`, and unknown means mismatch**
+
+- A private extension with **no** `affiliation` → `Any`. Most extensions carry no institutional
+  constraint and must not all become mismatches on the day this ships.
+- An `affiliation` naming an institution **not** in the `institutions` map → treat as a mismatch and
+  surface the raw id in the warning. Failing open on a typo is how a real constraint disappears.
+- Registry unreachable → **retain** the last known affiliation, exactly as DR-23 requires for tier.
+  Never fall back to `Any`.
+
+- [ ] **Step 3: The gate**
+
+Install a UCSF-tagged extension, take the registry away, and assert it is **still** `ucsf`. Assert an
+untagged private extension resolves `Any`. Assert an extension naming `"atlantis"` (absent from the
+map) is a mismatch whose warning contains the string `atlantis`.
+
+### Task 48: The gate — affiliation on `CallCapability`, resolved once
+
+This is the structural half of DR-26 and the task the others depend on.
+
+- [ ] **Step 1: One field, one sampling**
+
+`CallCapability` — already sampled once per call and threaded, replacing four independent samples —
+gains the bound model's affiliation. Every surface that asks "may this model reach this extension?"
+answers it from that value through Task 45's `compatible`.
+
+- [ ] **Step 2: The surfaces**
+
+| Surface | Behaviour on mismatch |
+| --- | --- |
+| Gate C — dispatch | **Refuse**, with the warning that offers the grant |
+| Gate E — discovery | **List and mark.** Do not hide; see DR-26 |
+| Gate F — extension channels | Refuse, same as C |
+| Bind | Warn: this model is incompatible with N enabled extensions |
+| Extension enablement | Warn: this extension is incompatible with the bound model |
+
+Bind and enablement are the same mismatch found from opposite ends. Both warn; neither blocks.
+
+- [ ] **Step 3: The gate**
+
+```bash
+cargo test -p biorouter --lib privacy:: 2>&1 | grep "test result:"
+cargo test -p biorouter --test mcp_integration_test
+```
+
+⚠ The test that matters is **not** "a mismatch is refused". It is that a mismatch is refused **on
+every surface in the table**, each as its own named test, with a local model passing all of them.
+
+### Task 49: The grant, and a warning specific enough to act on
+
+- [ ] **Step 1: Reuse the proof-of-user; do not invent a second one**
+
+The grant is a user act, so it rides Task 18A's `X-User-Action` key and Task 29's `UserConfirmation`.
+⚠ A second proof-of-user mechanism is forbidden — DR-18 already refused one for the same reason: two
+mechanisms mean two things to get right and one to forget.
+
+- [ ] **Step 2: The scope**
+
+Keyed on **(session, extension, model affiliation)**. Persisted with the session. Re-binding to a
+different institution's model does not match the key, so it does not reuse the grant. A subagent
+reads its parent's grants and cannot create its own.
+
+- [ ] **Step 3: The copy**
+
+One constant, like Task 30A's. It must name: the institution owning the extension, the institution
+whose model is bound, and what data would flow where. ⚠ Generic risk language fails this step —
+"this may be a compliance risk" is a shrug, and a user cannot accept a risk that was not stated.
+
+- [ ] **Step 4: The gate**
+
+1. A granted triple permits the call; the **same** extension after re-binding to another institution's
+   model does **not**.
+2. An agent cannot create a grant — assert the tool-facing surface has no path to one, the way
+   Task 29 pinned its proof-of-user to a single call site.
+3. The warning contains both institution display names, asserted against the registry's map rather
+   than hardcoded strings.
+
+### Task 50: Knowledge bases, subagents, and chat recall
+
+- [ ] **Step 1: A knowledge base's affiliation is the union of what it ingested, and it ratchets**
+
+Same shape as classification: once a KB holds Institution-B content it carries that affiliation
+permanently. A KB may therefore carry **several** institutions, and a model matching only one of them
+is a mismatch — do not stop at the first match.
+
+- [ ] **Step 2: Subagents inherit and cannot exceed**
+
+A spawned agent gets its parent's affiliation and grants. It can never widen either.
+
+- [ ] **Step 3: Chat recall and cross-session ingest**
+
+A private chat carries the affiliation of the extensions it touched. Recalling it into a session bound
+to a different institution's model is a mismatch and warns.
+
+- [ ] **Step 4: The gate**
+
+```bash
+cargo test -p biorouter-mcp --lib knowledge:: 2>&1 | grep "test result:"
+cargo test -p biorouter --test subagent_delegation
+```
+
+Assert a two-institution KB mismatches a model matching only one. Assert a child cannot hold a grant
+its parent lacks.
+
+### Task 51: The Phase 6 audit — no path reaches an extension without the resolver
+
+The task that answers *"checked in all scenarios where this need to be checked"* structurally.
+
+- [ ] **Step 1: Prove the choke point**
+
+A repo-walk test asserting every extension-reaching path resolves affiliation through
+`CallCapability`. A path that samples independently, or compares affiliations by hand, fails it. This
+is the same shape as Task 18A's `every_config_key_the_tier_resolver_reads_is_classified` and
+Task 29's single-call-site pin — both of which caught real omissions.
+
+- [ ] **Step 2: Anti-vacuity**
+
+Add a deliberately non-conforming path, watch the audit **fail**, then remove it. Record the observed
+failure in the commit message. An audit never seen to fail is not known to work — this plan has
+already shipped a grep gate, a file-exists check and a filter matching nothing, each of which passed
+by accident.
+
+- [ ] **Step 3: The gate**
+
+```bash
+cargo test --workspace --no-fail-fast 2>&1 | tail -20
+cargo test -p biorouter --lib privacy:: 2>&1 | grep "test result:"
+```
+
+Plus the end-to-end case in one test, because it is the operator's actual scenario: a Versa model
+bound, the UCSF OMOP agent reachable, a hypothetical Stanford connector refused with a warning naming
+both institutions, that warning granted by a user act, the call then permitted — and the same grant
+**not** honoured after re-binding to a different institution's model.
 
 ---
 
