@@ -153,13 +153,13 @@ The CLI is a first-class front end here, and it reaches the feature in **two dif
 
 ### As tools, inside `biorouter session`
 
-The CLI links the same core library the daemon does, so an interactive terminal chat advertises the same tool surface. `subagent` is live in `biorouter session` with no extra setup, and enabling the `workspace` extension adds the seven `workspace_*` tools there too. You ask for delegation in the terminal exactly as you would in the app.
+The CLI links the same core library the daemon does, so an interactive terminal chat advertises the same tool surface. `subagent` needs no extension enabled in `biorouter session` — only the same delegation gate as everywhere else, so `/mode auto` in the terminal chat is a prerequisite — and enabling the `workspace` extension adds the seven `workspace_*` tools there too. You ask for delegation in the terminal exactly as you would in the app.
 
 What changes without a daemon is not the tool list but what the handlers can reach. These keep working headlessly: listing conversations, reading them, waiting on them (the wait consults the parent's own background-subagent registry, so it still knows a child is running), leaving a note in another conversation, and spawning subagents. These refuse **by name**, with "requires the BioRouter daemon" rather than an obscure failure: starting a new session, starting or steering a turn in another conversation, setting knowledge bases, and cancelling a turn or stopping an agent. With no app attached, closing a tab is a stated no-op and a newly created session reports plainly that no tab was opened.
 
 ### As subcommands you type
 
-These are ordinary shell commands. They split in two, and the split matters: **listing and exporting read the session store on disk** and work with nothing else running, while **watching, sending, attaching and cancelling** drive a live turn through a running `biorouterd` over HTTP and SSE.
+These are ordinary shell commands, and they split in two. The first three touch only the session store on disk and work with nothing else running. The last four — `send`, `watch`, `attach`, `cancel` — drive a live turn through a running `biorouterd` over HTTP and SSE, and fail without one.
 
 | What you want | Command | Needs a daemon |
 |---|---|---|
