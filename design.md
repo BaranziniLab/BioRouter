@@ -1,9 +1,10 @@
 # Biorouter Design System
 
-**Status:** ✅ **Signed off 2026-07-09** · **Sidebar density addendum 2026-07-15** · **UI cohesion pass 2026-07-16 ([Part 6b](#part-6b--ui-cohesion-pass--2026-07-16))** · **Version:** 1.87.2 · **Owner:** Baranzini Lab, UCSF
+**Status:** ✅ **Signed off 2026-07-09** · **Sidebar density addendum 2026-07-15** · **UI cohesion pass 2026-07-16 ([Part 6b](#part-6b--ui-cohesion-pass--2026-07-16))** · **Row density superseded 2026-08-02 (Astryx A-03)** · **Version:** 1.87.2 · **Owner:** Baranzini Lab, UCSF
 
 > All 14 open decisions are settled — see [Part 6](#part-6--open-decisions). Recommendations were accepted for
-> D-01 … D-11, D-13, D-14; **D-12 was refined to one fixed density profile: 40px content rows and 32px sidebar navigation/session rows.**
+> D-01 … D-11, D-13, D-14; **D-12 was refined to one fixed density profile — now 36px content rows and 32px sidebar
+> navigation/session rows** (content rows were 40px from 2026-07-15 until Astryx **A-03** superseded that value on 2026-08-02).
 > The [drift register](#part-7--drift-register) is now the active work backlog.
 
 This is the single source of truth for how Biorouter looks and feels. It reconciles the design language *as documented*, *as implemented*, and *as it should be*. Where those three disagree — and they disagree often — this document names the winner.
@@ -405,7 +406,7 @@ Six steps. Nothing between them.
 | Header bottom padding | 24px (`pb-6`) |
 | Header separator | 1px `--border-subtle` |
 | Max content measure | 1080px, centred |
-| Row height | 40px content · 32px sidebar navigation/session (D-12·B) |
+| Row height | 36px content · 32px sidebar navigation/session ([D-12·C](#d-12--row-density)) |
 | Sidebar width | 240px expanded / 60px collapsed |
 
 **Today:** the documented flat header (`px-8 pt-12 pb-6 border-b`) is contradicted by `.biorouter-page-header`, which sets `border-bottom-color: transparent !important` and replaces the hairline with a gradient wash plus `box-shadow: var(--shadow-modal-chrome-bottom)` ([`main.css:519`](ui/desktop/src/styles/main.css#L519)). So the "flat header with a bottom border" is actually a shadowed, gradient header with no border. `DR-09`. See **[Decision D-05](#d-05--elevation-policy)**.
@@ -898,7 +899,7 @@ Flat. A hairline. No gradient, no shadow, no card wrapper. Primary action, if an
 
 ### 4.14 · List rows
 
-Full-bleed inside a `--radius-lg` shell. **40px tall** (D-12·B), 8px×16px. Bottom hairline `--border-subtle`; last child none. Hover `--background-medium` at 42%. Focus-within: same, plus the standard outline. Right-side actions fade in on hover **but remain in the tab order and visible on focus-within** — a hover-only affordance is a keyboard trap.
+Full-bleed inside a `--radius-lg` shell. **36px tall** ([D-12·C](#d-12--row-density)), 8px×16px. Bottom hairline `--border-subtle`; last child none. Hover `--background-medium` at 42%. Focus-within: same, plus the standard outline. Right-side actions fade in on hover **but remain in the tab order and visible on focus-within** — a hover-only affordance is a keyboard trap.
 
 **Today.** `.biorouter-list-row` is `border-radius: 8px` with a bottom border; the design doc says `rounded-xl` (12px). Both patterns exist in the codebase. `DR-34` → **[Decision D-04](#d-04--radius-scale)**.
 
@@ -924,7 +925,7 @@ It has **zero call sites.** Delete the file. `DR-35`
 
 ### 4.17 · Tables
 
-Header row 32px, 11px caps `--text-muted`, bottom hairline. Body rows 40px, hairline between. Numeric columns right-aligned with `tabular-nums`. No zebra striping, no vertical rules. Sortable headers show a 12px chevron on hover and when active.
+Header row 32px, 11px caps `--text-muted`, bottom hairline. Body rows 36px ([D-12·C](#d-12--row-density)), hairline between. Numeric columns right-aligned with `tabular-nums`. No zebra striping, no vertical rules. Sortable headers show a 12px chevron on hover and when active.
 
 ---
 
@@ -1158,7 +1159,7 @@ ground*, which is what the ANSI dim slot is for. See **[Decision D-11](#d-11--te
 > | D-09 | Sidebar | **Keep two-tone**; `--text-muted` → `#6e6760` |
 > | D-10 | Code theme | **Custom warm theme**, light + dark, token-derived |
 > | D-11 | Terminal ground | **`--background-muted`** — `#faf8f3` / `#16120c` |
-> | D-12 | Row density | **40px content · 32px sidebar navigation/session** — one fixed profile, no density setting ⚠️ *refined 2026-07-15* |
+> | D-12 | Row density | **36px content · 32px sidebar navigation/session** — one fixed profile, no density setting ⚠️ *refined 2026-07-15* ⚠️ *content rows 40 → 36px, 2026-08-02 — option **B** superseded by **C** (Astryx **A-03**)* |
 > | D-13 | Status colours | **Split `--fill-{s}` from `--text-{s}`**, per theme |
 > | D-14 | Decorative motion | **Delete** sidebar entrance + `Bird1–6` |
 >
@@ -1330,13 +1331,35 @@ The warm two-tone sidebar shipped in v1.87.1.
 | | Option | Consequence |
 |---|---|---|
 | A | 44px default, 36px compact (user-togglable) | Comfortable default, dense on request. |
-| **B** ✅ | **40px content; compact sidebar rhythm** | 40px content rows and 32px sidebar navigation/session rows; no setting. **← chosen and refined 2026-07-15** |
+| B ⚠️ | 40px content; compact sidebar rhythm | 40px content rows and 32px sidebar navigation/session rows; no setting. *Chosen and refined 2026-07-15; **superseded 2026-08-02** by **C**.* |
+| **C** ✅ | **36px content; compact sidebar rhythm** | The same single profile, one grid step tighter: 36px content rows, 32px sidebar navigation/session rows; still no setting. **← chosen 2026-08-02 (Astryx [A-03](#a-03-supersedes-d-12b--2026-08-02))** |
 
-✅ **B.** There is one authored density profile and no user-facing compact mode or density setting.
-Table body rows, content lists, and settings rows use the 40px rhythm. The persistent sidebar is the
+✅ **C.** There is one authored density profile and no user-facing compact mode or density setting.
+Table body rows, content lists, and settings rows use the 36px rhythm. The persistent sidebar is the
 deliberate exception: primary navigation, the New Session action, and recent-session rows are 32px,
 and adjacent navigation rows have no added gap. This keeps the always-visible rail dense without
 changing the established type scale, icon sizes, or hit-target clarity.
+
+##### A-03 supersedes D-12·B — 2026-08-02
+
+The operator approved Astryx **A-03**: content list rows and table rows move from **40px to 36px**.
+D-12·B's *principle* is what was signed off and it survives untouched — one authored rhythm, no compact
+mode, no density setting. Only the value moves, by one 4px grid step, and the app gains roughly 10% more
+rows per screen. B is retained above as the rationale record, not as the target; build to **C**.
+
+The sidebar rhythm is unchanged at 32px, and so is the type scale. The **`lg` control height stays 40px**
+([§4.1](#41--buttons)): A-03 rules on row heights, not on the control ladder. The two happened to share the
+value 40px, which is exactly why this needs saying — a sweep that replaced every 40 would have moved a
+control size nobody ruled on.
+
+The full density ladder this value belongs to — control sizes, chrome bar, tabs, terminal dock strip,
+icon-label gap, sidebar and reading widths — is specified in **§2.3 of
+`docs/design/astryx-adoption/astryx-ui-adoption-design.md`**, which is where to read it. Only **A-03** has
+been ruled on; the rest of that ladder (including its own answer for `lg`) is still proposed, so where it
+disagrees with this document, this document holds until each item is settled. *(That spec is still on the
+unmerged `worktree-heatmap-responsive-home` branch — read it with
+`git show worktree-heatmap-responsive-home:docs/design/astryx-adoption/astryx-ui-adoption-design.md`
+until it lands.)*
 
 ---
 
@@ -1518,8 +1541,9 @@ The original backlog, as audited:
 | `DR-59` | Med | open | Empty / loading / error states hand-rolled in all 7 list views; icon sizes, alignment, text sizes and heights all differ | `WorkflowsView.tsx:651`, `SessionListView.tsx:763`, +5 |
 | `DR-60` | Med | open | Light-mode `--text-default/-muted/-subtle` are raw hex outside the neutral ramp; dark mode derives from it — asymmetric | `main.css:83–86` vs `151–153` |
 | `DR-61` | Med | open | Boot splash `--br-navy` `#052049` never flips for dark mode, and the mark has no plate — the navy half of the BR mark is invisible on **every** dark splash: **1.02:1** (Parchment `#282217`), **1.12:1** (Alma Mater `#0d2a50`), **1.02:1** (Roche Limit `#232320`). D-39 already decided this case for `<BioRouterMark>`; the splash is a separate literal path that never got the rule. | `index.html` `THEMES:GENERATED:SPLASH`; `themes/*.theme.mjs` `splash.navy` |
+| `DR-62` | Med | open | Content rows, settings rows and table body rows still render **40px** against the 36px canonical ([D-12·C](#d-12--row-density), 2026-08-02). One token plus one markdown-table rule cover almost all of it; three call sites hardcode the height instead. | `main.css:97` (`--row-height`), consumed at `main.css:1528` (`.biorouter-list-row`) and `main.css:1618` (`.biorouter-settings-row`); `main.css:1918` (`.prose tbody td`, comments at `1881`/`1914`); `SessionListView.tsx:251`, `ExportAppDialog.tsx:36`, `ModelBreakdownTable.tsx:63` |
 
-**Totals:** 61 items — **18 high, 27 medium, 16 low.**
+**Totals:** 62 items — **18 high, 28 medium, 16 low.**
 
 - **Dead code / silent no-ops (14):** `DR-11`, `DR-17`, `DR-21`, `DR-22`, `DR-23`, `DR-26`, `DR-31`, `DR-35`, `DR-40`, `DR-50`, `DR-51`, `DR-54`, `DR-55`, `DR-56`
 - **WCAG AA failures (5):** `DR-03`, `DR-04`, `DR-05`, `DR-15`, `DR-42`
