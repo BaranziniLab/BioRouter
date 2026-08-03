@@ -75,9 +75,21 @@ export function NonPrivateModelDisclosureGate({
 
   // The copy is fetched only once there is something to disclose, so a machine
   // that only ever runs local models never asks for it.
-  const { copy, acknowledged, acknowledge } = useDisclosure(resolved?.required === true);
+  const { copy, acknowledged, acknowledge, acknowledgeError } = useDisclosure(
+    resolved?.required === true
+  );
 
-  const open = resolved?.required === true && acknowledged === false && copy !== null;
+  // Set only when the daemon REFUSED to record the acknowledgement. There is
+  // nothing the person at the keyboard can present to satisfy a daemon that
+  // holds no user-action key, so once they have been told it was not saved they
+  // are let past — and, because nothing was written, told again next launch.
+  const [dismissedUnrecorded, setDismissedUnrecorded] = useState(false);
+
+  const open =
+    resolved?.required === true &&
+    acknowledged === false &&
+    copy !== null &&
+    !dismissedUnrecorded;
   if (!open || !resolved || !copy) return null;
 
   return (
@@ -86,7 +98,12 @@ export function NonPrivateModelDisclosureGate({
       providerDisplayName={resolved.displayName}
       copy={copy}
       busy={busy}
+      acknowledgeError={acknowledgeError}
       onAcknowledge={() => {
+        if (acknowledgeError) {
+          setDismissedUnrecorded(true);
+          return;
+        }
         setBusy(true);
         void acknowledge().finally(() => setBusy(false));
       }}

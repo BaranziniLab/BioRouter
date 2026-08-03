@@ -15,6 +15,18 @@ export interface NonPrivateModelDisclosureProps {
   copy: DisclosureCopy;
   onAcknowledge: () => void;
   busy?: boolean;
+  /**
+   * Why the acknowledgement was not recorded, when it was not.
+   *
+   * ⚠ Shown, and the button then says so. A daemon holding no user-action key
+   * refuses this and there is nothing the person at the keyboard can present to
+   * satisfy it, so the honest sequence is: tell them it was not saved, and let
+   * them past — this dialog conveys a fact, it does not grant a permission.
+   * Silently closing as though it had been saved is the failure that turns a
+   * once-per-install disclosure into a modal they see on every launch and stop
+   * reading.
+   */
+  acknowledgeError?: string | null;
 }
 
 /**
@@ -43,6 +55,7 @@ export function NonPrivateModelDisclosure({
   copy,
   onAcknowledge,
   busy = false,
+  acknowledgeError = null,
 }: NonPrivateModelDisclosureProps) {
   const bodyRef = useRef<HTMLDivElement>(null);
 
@@ -77,9 +90,18 @@ export function NonPrivateModelDisclosure({
           ))}
         </div>
 
+        {acknowledgeError && (
+          <p
+            data-testid="disclosure-ack-error"
+            className="min-w-0 [overflow-wrap:anywhere] text-sm text-text-muted"
+          >
+            {acknowledgeError}
+          </p>
+        )}
+
         <div className="flex justify-end pt-2">
           <Button type="button" variant="default" disabled={busy} onClick={onAcknowledge}>
-            I understand
+            {acknowledgeError ? 'Continue' : 'I understand'}
           </Button>
         </div>
       </DialogContent>

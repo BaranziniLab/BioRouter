@@ -35,8 +35,47 @@ export interface DisclosureState {
   copy: DisclosureCopy | null;
   /** `null` until the daemon has answered. */
   acknowledged: boolean | null;
-  /** Record the acknowledgement, carrying DR-16's proof of user. */
-  acknowledge: () => Promise<void>;
+  /**
+   * Record the acknowledgement, carrying DR-16's proof of user. Resolves `true`
+   * only when the daemon actually recorded it — see {@link acknowledgeError}.
+   */
+  acknowledge: () => Promise<boolean>;
+  /**
+   * Why the last acknowledgement was **not** recorded, or `null`.
+   *
+   * ⚠ Load-bearing. The daemon refuses this POST with 403 when it holds no
+   * user-action key — `UserActionProof::NoKeyInstalled`, which `auth.rs`
+   * documents as the state of `just run-server`, a hand-run `biorouterd agent`
+   * and every headless deployment. The generated client's default is
+   * `ThrowOnError = false`, so it *returns* that refusal rather than throwing
+   * it: an unconditional `setAcknowledged(true)` after the `await` would close
+   * the dialog as though it had worked, write nothing, and re-present the same
+   * blocking modal on every launch with no symptom the user could act on. A
+   * confirmation a user sees daily is a confirmation they stop reading, which
+   * is the outcome this whole task exists to prevent.
+   */
+  acknowledgeError: string | null;
+}
+
+/**
+ * The renderer's framing for an acknowledgement that was not written.
+ *
+ * ⚠ Not product copy about *the disclosure* — that lives in Rust and arrives
+ * over the wire, and a second definition of it here is what gate (1) greps for.
+ * This is the operational sentence around the daemon's own refusal text, which
+ * is appended to it verbatim.
+ */
+export const ACK_FAILED_PREFIX = 'This acknowledgement could not be saved.';
+
+/** {@link ACK_FAILED_PREFIX} plus whatever the daemon said, when it said anything. */
+function describeAckFailure(detail: unknown): string {
+  const said =
+    typeof detail === 'string'
+      ? detail.trim()
+      : detail instanceof Error
+        ? detail.message.trim()
+        : '';
+  return said ? `${ACK_FAILED_PREFIX} ${said}` : ACK_FAILED_PREFIX;
 }
 
 /**
@@ -76,6 +115,7 @@ export function disclosureRequiredForTier(tier: ProviderTier | null | undefined)
 export function useDisclosure(enabled: boolean = true): DisclosureState {
   const [copy, setCopy] = useState<DisclosureCopy | null>(null);
   const [acknowledged, setAcknowledged] = useState<boolean | null>(null);
+  const [acknowledgeError, setAcknowledgeError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!enabled) return;
@@ -104,9 +144,29 @@ export function useDisclosure(enabled: boolean = true): DisclosureState {
     // DR-16's proof of user. Without it the daemon refuses with a 403, which is
     // the correct direction: a model must not be able to dismiss this on the
     // user's behalf.
-    await ackPrivacyDisclosure({ headers: await userActionHeaders() });
+    //
+    // ⚠ The ANSWER is read, not just awaited. This client does not throw on a
+    // non-2xx by default — it hands the refusal back in `error` — so the two
+    // outcomes are indistinguishable to an `await` alone, and the failing one is
+    // the one that silently never writes the record. The returned shape is
+    // checked rather than `throwOnError` because the refusal body is plain text
+    // with no typed error to parse, and because a transport failure must land in
+    // the same place as a policy refusal; both leave the record unwritten.
+    let refusal: unknown;
+    try {
+      const result = await ackPrivacyDisclosure({ headers: await userActionHeaders() });
+      refusal = result?.error;
+    } catch (thrown) {
+      refusal = thrown;
+    }
+    if (refusal !== undefined && refusal !== null) {
+      setAcknowledgeError(describeAckFailure(refusal));
+      return false;
+    }
+    setAcknowledgeError(null);
     setAcknowledged(true);
+    return true;
   }, []);
 
-  return { copy, acknowledged, acknowledge };
+  return { copy, acknowledged, acknowledge, acknowledgeError };
 }

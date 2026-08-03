@@ -214,6 +214,53 @@ describe('NonPrivateModelDisclosureGate — when it is shown', () => {
       )
     );
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    // …and it closed because the daemon ACCEPTED it, not merely because the call
+    // returned. See the refusal test below for why that distinction is the whole
+    // point.
+    expect(screen.queryByTestId('disclosure-ack-error')).toBeNull();
+  });
+
+  it('a refused acknowledgement is not reported to the user as recorded', async () => {
+    // A daemon that holds no user-action key refuses this POST with 403 —
+    // `UserActionProof::NoKeyInstalled`, which `auth.rs` documents as the state
+    // of `just run-server`, a hand-run `biorouterd agent` and every headless
+    // deployment. The generated client is `ThrowOnError = false` by default, so
+    // it RETURNS `{ error }` instead of throwing: an `await` followed by an
+    // unconditional `setAcknowledged(true)` closes the dialog as though it had
+    // worked, writes nothing, and re-presents the same blocking modal on every
+    // launch with no symptom the user can act on. A confirmation a user sees
+    // daily is a confirmation they stop reading — the outcome this task exists
+    // to prevent.
+    const user = userEvent.setup();
+    mocks.ackPrivacyDisclosure.mockResolvedValue({
+      error:
+        'Acknowledging the non-private-model disclosure is a user action. This request carried no proof that it came from the person at the keyboard.',
+    });
+    render(<NonPrivateModelDisclosureGate providerName="openai" />);
+    await screen.findByRole('dialog');
+
+    await user.click(screen.getByRole('button', { name: /I understand/i }));
+
+    const failure = await screen.findByTestId('disclosure-ack-error');
+    expect(failure).toHaveTextContent(/carried no proof/i);
+    expect(screen.getByRole('dialog')).toBeVisible();
+  });
+
+  it('a refusal does not trap the user in a dialog they cannot satisfy', async () => {
+    // The refusal is not something the person at the keyboard can fix from
+    // inside this dialog — on a keyless daemon there is no key for them to
+    // present. Having told them the acknowledgement was not saved, the dialog
+    // must let them past; it is a fact to convey, not a permission to grant.
+    const user = userEvent.setup();
+    mocks.ackPrivacyDisclosure.mockResolvedValue({ error: 'refused' });
+    render(<NonPrivateModelDisclosureGate providerName="openai" />);
+    await screen.findByRole('dialog');
+
+    await user.click(screen.getByRole('button', { name: /I understand/i }));
+    await screen.findByTestId('disclosure-ack-error');
+    await user.click(screen.getByRole('button', { name: /continue/i }));
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
   });
 
   it('a provider it cannot classify is disclosed, not waved through', async () => {
