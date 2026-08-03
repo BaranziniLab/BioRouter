@@ -80,8 +80,19 @@ describe('BottomMenuExtensionSelection — the pairing, not the extension', () =
     // in the GUI by construction — it returns ErrorData from inside
     // dispatch_tool_call, so it never enters PermissionCheckResult and produces
     // no approval card and no denial record.
+    //
+    // ⚠ VISIBLE is asserted first and on its own, because it is the half that
+    // the task's `grep -c "aria-disabled"` gate cannot see. Radix derives that
+    // attribute from `disabled`, so the literal appears nowhere in the JSX and
+    // the grep is satisfied by the explanatory comment beside it — an
+    // implementation that FILTERED the row out and kept the comment would score
+    // green. This assertion is the real tripwire for that wrong turn: the
+    // refused row must still be in the list, and the list must still be whole.
     render(<BottomMenuExtensionSelection sessionId="s1" privacyTier="public" />);
     await openMenu();
+
+    expect(screen.getAllByRole('menuitemcheckbox')).toHaveLength(2);
+    expect(screen.getByText('ucsfomopagent')).toBeInTheDocument();
 
     const item = screen.getByText('ucsfomopagent').closest('[role="menuitemcheckbox"]')!;
     expect(item).toHaveAttribute('aria-disabled', 'true');
