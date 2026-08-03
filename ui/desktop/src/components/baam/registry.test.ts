@@ -60,6 +60,39 @@ describe('loadRegistry — freshness that raises and never lowers', () => {
   });
 
   /**
+   * "Never lowers" has to hold when our own bookkeeping fails, not only when it
+   * works. `localStorage.setItem` throws on a quota, in private-browsing modes,
+   * and wherever storage is disabled — and the learned key was then neither
+   * persisted NOR retained in memory, so the very next document could take the
+   * badge back off. A failure to write is a reason to re-learn later; it is
+   * never a reason to forget now.
+   *
+   * ⚠ The key is unique to this test on purpose: an unpersisted key is held for
+   * the life of the module and, having never reached storage, is not removed by
+   * another test's `localStorage.clear()`.
+   *
+   * ⚠ The spy goes on `localStorage` itself, NOT on `Storage.prototype`. This
+   * suite's setup (`src/test/setup.ts`) installs its own `MemoryStorage` class
+   * because jsdom's storage is unusable here, so a `Storage.prototype` spy
+   * intercepts nothing, `setItem` succeeds, and the test passes against the very
+   * bug it is written to catch — measured, not theorised.
+   */
+  it('a learned badge survives a storage write that fails', async () => {
+    const setItem = vi.spyOn(localStorage, 'setItem').mockImplementation(() => {
+      throw new Error('QuotaExceededError');
+    });
+    try {
+      mockFetch({ extensions: [{ extension_name: 'unwritablequotaagent', privacy: 'private' }] });
+      await loadRegistry();
+      mockFetch({ extensions: [{ extension_name: 'unwritablequotaagent', privacy: 'public' }] });
+      const { registry } = await loadRegistry();
+      expect(effectivePrivacy(registry, 'unwritablequotaagent')).toBe('private');
+    } finally {
+      setItem.mockRestore();
+    }
+  });
+
+  /**
    * The threat model this task names is "a compromised or merely stale
    * `registry.json`", and the last-good cache is what turns a one-shot bad
    * response into a permanent one. `{"extensions":[null],"skills":[]}` is a 200

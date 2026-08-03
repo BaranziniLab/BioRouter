@@ -36,6 +36,25 @@ const STORAGE_KEY = 'biorouter.baam.privateExtensionKeys';
 let cachedRaw: string | null | undefined;
 let cachedSet: ReadonlySet<string> = new Set();
 
+/**
+ * Keys learned this run that storage REFUSED to take.
+ *
+ * `setItem` throws on a quota, in some private-browsing modes, and wherever
+ * storage is disabled outright. Swallowing that and moving on lost the key
+ * twice over — not written, and not held either — so the very next document
+ * could take the badge back off, which is the one thing this module exists to
+ * prevent. A failed write is a reason to RE-LEARN on the next fetch; it is
+ * never a reason to forget now.
+ *
+ * Held separately from `cachedSet` rather than folded into it because
+ * `cachedSet` is keyed on the raw stored string and is therefore invalidated by
+ * anything that changes storage; these keys are not in storage, so nothing in
+ * storage can speak for them. They live for the life of the module, which is
+ * the life of the window — exactly the horizon over which "never lowers" has to
+ * hold when the durable half is unavailable.
+ */
+const unpersisted = new Set<string>();
+
 function rawValue(): string | null {
   try {
     return localStorage.getItem(STORAGE_KEY);
@@ -49,10 +68,12 @@ function rawValue(): string | null {
 /** The keys learned from every successful fetch so far. Never shrinks. */
 export function learnedPrivateExtensionKeys(): ReadonlySet<string> {
   const raw = rawValue();
-  if (raw === cachedRaw) return cachedSet;
-  cachedRaw = raw;
-  cachedSet = parse(raw);
-  return cachedSet;
+  if (raw !== cachedRaw) {
+    cachedRaw = raw;
+    cachedSet = parse(raw);
+  }
+  if (unpersisted.size === 0) return cachedSet;
+  return new Set([...cachedSet, ...unpersisted]);
 }
 
 function parse(raw: string | null): ReadonlySet<string> {
@@ -72,21 +93,23 @@ function parse(raw: string | null): ReadonlySet<string> {
  */
 export function rememberPrivateExtensionKeys(keys: Iterable<string>): void {
   const next = new Set(learnedPrivateExtensionKeys());
-  let grew = false;
+  const added: string[] = [];
   for (const key of keys) {
     if (key && !next.has(key)) {
       next.add(key);
-      grew = true;
+      added.push(key);
     }
   }
-  if (!grew) return;
+  if (added.length === 0) return;
   try {
     const raw = JSON.stringify([...next].sort());
     localStorage.setItem(STORAGE_KEY, raw);
     cachedRaw = raw;
     cachedSet = next;
   } catch {
-    // Unwritable storage means the badge is re-learned on the next fetch rather
-    // than remembered. Still the safe direction; never a reason to fail a load.
+    // Storage refused the write. Keep the badge in memory for the rest of this
+    // run and let the next successful fetch persist it — never a reason to fail
+    // a load, and never a reason to let the next document lower it.
+    for (const key of added) unpersisted.add(key);
   }
 }
