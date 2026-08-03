@@ -642,8 +642,22 @@ mod tests {
     /// The proof-of-user is a cross-crate `pub` constructor, because the only
     /// caller lives in `biorouter-server` and `pub(in …)` cannot cross a crate
     /// boundary. Rust therefore cannot restrict it to one call site on its own —
-    /// this test is what does, by pinning the set of files that so much as name
-    /// the type.
+    /// this test is what does.
+    ///
+    /// It pins two things, and it takes both. The set of FILES that so much as
+    /// name the type must be exactly `{routes/session.rs}`; and within them the
+    /// number of times the constructor is actually CALLED must be exactly one.
+    /// The file set alone is not enough: a second handler added to that same
+    /// file could mint the proof with no `is_user_action` check and this audit
+    /// would not notice, because the file is already a permitted member.
+    /// `auth::tests::the_declassify_route_consults_the_user_action_guard` closes
+    /// the loop from the other side, asserting that the one call sits inside the
+    /// body of the handler that consults the guard.
+    ///
+    /// Both assertions fail closed. They are exact equalities against a computed
+    /// map, so a needle that stopped matching — a renamed constructor, a
+    /// reformatted call — yields an empty map and a red build, never a silent
+    /// pass.
     #[test]
     fn the_proof_of_user_is_constructed_in_exactly_one_place() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -653,6 +667,7 @@ mod tests {
             .unwrap()
             .to_path_buf();
         let mut naming: Vec<String> = vec![];
+        let mut constructions: std::collections::BTreeMap<String, usize> = Default::default();
         let mut scanned = 0usize;
         for entry in walkdir::WalkDir::new(root.join("crates")) {
             let entry = entry.expect("the audit must not silently skip an unreadable directory");
@@ -666,13 +681,28 @@ mod tests {
                 .to_string_lossy()
                 .replace('\\', "/");
             scanned += 1;
+            // This file declares the constructor and names it throughout its own
+            // prose; counting it would make every number below one larger and
+            // indistinguishable from a real second site.
             if rel == "crates/biorouter/src/privacy/declassify.rs" {
                 continue;
             }
             let src = std::fs::read_to_string(p)
                 .unwrap_or_else(|e| panic!("the audit could not read {rel}: {e}"));
             if src.contains("UserConfirmation") {
-                naming.push(rel);
+                naming.push(rel.clone());
+            }
+            for line in src.lines() {
+                let code = line.trim_start();
+                if code.starts_with("//") {
+                    continue;
+                }
+                let hits = code
+                    .matches("UserConfirmation::from_typed_confirmation(")
+                    .count();
+                if hits > 0 {
+                    *constructions.entry(rel.clone()).or_default() += hits;
+                }
             }
         }
         assert!(scanned >= 400, "only {scanned} .rs files were scanned");
@@ -680,9 +710,20 @@ mod tests {
         assert_eq!(
             naming,
             vec!["crates/biorouter-server/src/routes/session.rs".to_string()],
-            "a second construction site for the proof-of-user appeared. The whole claim \
+            "a second file naming the proof-of-user appeared. The whole claim \
              that an agent cannot declassify a chat rests on this set having one member, \
              and that member being a route behind the user-action header."
+        );
+        let called: Vec<(String, usize)> = constructions.into_iter().collect();
+        assert_eq!(
+            called,
+            vec![(
+                "crates/biorouter-server/src/routes/session.rs".to_string(),
+                1
+            )],
+            "the proof-of-user is minted more than once. A second construction site is a \
+             second way to lower a classification, and only the one inside \
+             `declassify_session` is known to sit behind the user-action guard."
         );
     }
 }

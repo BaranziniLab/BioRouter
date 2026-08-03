@@ -334,19 +334,47 @@ mod tests {
     /// reach the exemption — and with nothing in `check_token` to change either,
     /// the ONLY thing standing between the model and this route is the line this
     /// asserts is present.
+    ///
+    /// It also pins WHERE the proof-of-user is minted, which is the half its
+    /// sibling in `privacy::declassify` cannot see.
+    /// `the_proof_of_user_is_constructed_in_exactly_one_place` counts the
+    /// constructor across the tree and requires exactly one call, in this file;
+    /// this requires that call to be inside the body of the handler asserted
+    /// above to consult the guard. Neither alone is enough — a count of one says
+    /// nothing about which function holds it, and a guarded handler says nothing
+    /// about a second, unguarded one next to it — and together they say the
+    /// proof is minted once, behind the guard.
     #[test]
     fn the_declassify_route_consults_the_user_action_guard() {
         let session_rs = include_str!("routes/session.rs");
+        let handler = body_of(session_rs, "async fn declassify_session");
         assert!(
-            body_of(session_rs, "async fn declassify_session").contains("is_user_action("),
+            handler.contains("is_user_action("),
             "the declassify route does not consult the user-action guard"
         );
-        // Same negative control as above, in the same file: a handler that has no
-        // guard must come back without one, or `body_of` is over-reading past a
-        // function end and the assertion above is passing on someone else's body.
+        // Split across two literals so this file does not itself become a place
+        // that names the proof-of-user: its sibling audit asserts the set of
+        // files containing that name is exactly {routes/session.rs}, and a
+        // spelled-out needle here would make this test break that one.
+        let mint = concat!("User", "Confirmation::from_typed_confirmation(");
         assert!(
-            !body_of(session_rs, "async fn get_session_extensions").contains("is_user_action("),
+            handler.contains(mint),
+            "the proof-of-user is no longer minted inside the handler that checks the guard"
+        );
+        // Same negative control as above, in the same file: a handler that has
+        // neither must come back with neither, or `body_of` is over-reading past
+        // a function end and both assertions above are passing on someone else's
+        // body. The mint is the one that needs this most — it sits at the very
+        // bottom of `declassify_session`, so a scan that ran long would find it
+        // no matter which function it was asked about.
+        let unguarded = body_of(session_rs, "async fn get_session_extensions");
+        assert!(
+            !unguarded.contains("is_user_action("),
             "the body scan is over-reading: a handler with no guard reported one"
+        );
+        assert!(
+            !unguarded.contains(mint),
+            "the body scan is over-reading: a handler that mints nothing reported the proof"
         );
     }
 
