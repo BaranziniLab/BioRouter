@@ -88,6 +88,17 @@ loader() { awk '/fn load_privacy_tiers_from_config/,/^}/' "$ROOT/crates/bioroute
 #     this scan looks for. The external file is scanned in its own right, so
 #     nothing is lost by not skipping the declaration; what the skip is FOR is an
 #     inline `mod tests { … }`, and those do not end in a semicolon.
+#
+# (e) **The skip has to DISARM as well as end**, which is (c) once more at one
+#     line's remove. The declaration branch consumed the `mod …;` line and left
+#     `pending` set, so the NEXT `mod` line — an ordinary, inline, non-test one —
+#     was skipped as though the attribute had been on it, taking everything
+#     inside it with it. `privacy/mod.rs` and `providers/mod.rs` both happen to
+#     follow their declaration lists with something other than a `mod` line, so
+#     the tree does not reach it today; that is luck, not a property. The same
+#     armed-forever shape is why a `#[cfg(test)] mod x;` written on ONE line no
+#     longer arms the skip at all: it has no body, and the `mod` after it is not
+#     its business.
 # ─────────────────────────────────────────────────────────────────────────────
 scan() {
   grep -rlE "$1" --include='*.rs' "$ROOT"/crates/*/src/ 2>/dev/null | while read -r f; do
@@ -96,9 +107,10 @@ scan() {
       intest { next }
       pending && /^[[:space:]]*(pub[^ ]*[[:space:]]+)?mod[[:space:]]/ {
         if ($0 !~ /;[[:space:]]*$/) intest = 1
+        pending = 0
         next
       }
-      { pending = ($0 ~ /^[[:space:]]*#\[cfg\(test\)\]/) }
+      { pending = ($0 ~ /^[[:space:]]*#\[cfg\(test\)\]/ && $0 !~ /;[[:space:]]*$/) }
       /^[[:space:]]*(pub([(][a-z()]+[)])?[[:space:]]+)?(async[[:space:]]+)?fn[[:space:]]+[A-Za-z_]/ {
         match($0, /fn[[:space:]]+[A-Za-z_][A-Za-z0-9_]*/)
         cur = substr($0, RSTART, RLENGTH); sub(/^fn[[:space:]]+/, "", cur)
