@@ -44,10 +44,12 @@ const registry = JSON.parse(landing('registry.json'));
 // extension missing from the compiled-in set is simply classified Public and
 // admitted to a public session.
 //
-// `--check` runs THIS check and nothing else, which is what lets it be wired
-// into `just check-everything` and the landing deploy: the landing-copy checks
-// below track a published site that legitimately lags the app's main branch, so
-// a mode that ran them too could never be a gate.
+// `--check` runs the privacy checks and nothing else — this one and the
+// docs.html table check below it — which is what lets it be wired into `just
+// check-everything` and the landing deploy: the landing-copy checks further
+// down track a published site that legitimately lags the app's main branch, so
+// a mode that ran them too could never be a gate. Anything added to `--check`
+// has to hold that property: it may read only files in this repo.
 const PRIVACY_ONLY = process.argv.slice(2).includes('--check');
 
 // The form `classify_extension` reduces its argument to before the lookup —
