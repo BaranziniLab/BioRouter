@@ -20,11 +20,22 @@ export interface RegistryExtension {
    * Registry v2. All three are optional so a v1 document cached before the
    * upgrade still parses — a stale snapshot must degrade, never throw.
    *
-   * `extension_name` is the name the installed config entry carries, in
-   * `name_to_key` form. It exists because `id` is derived from the download
-   * filename and agrees with the installed name only by luck (`spokeagent-0.4.1`
-   * already diverges), and a suffix-stripping heuristic in a security path is
-   * right until it isn't. The generator hard-fails on a private entry without one.
+   * `extension_name` is the name the installed config entry carries, reduced to
+   * its lookup **key**: whitespace stripped and lowercased, so the card's
+   * `CDWAgent` is published here as `cdwagent`. That substitution is the
+   * contract, not an accident of the generator — treat it as one.
+   *
+   * The key is always `/^[a-z0-9_-]+$/`. That character set is exactly where
+   * `config::extensions::name_to_key` (which `classify_extension` applies) and
+   * `agents::extension_manager::normalize` (which the manager applies to the
+   * installed config name) provably agree; outside it they diverge, so the
+   * generator refuses the name rather than publishing a key the running app
+   * would never produce.
+   *
+   * It exists because `id` is derived from the download filename and agrees with
+   * the installed name only by luck (`spokeagent-0.4.1` already diverges), and a
+   * suffix-stripping heuristic in a security path is right until it isn't. The
+   * generator hard-fails on a private entry without one.
    */
   extension_name?: string;
   /** Absent on a v1 document; the generator emits it for every v2 entry. */

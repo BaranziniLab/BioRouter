@@ -54,6 +54,18 @@ if (INPUT !== DEFAULT_INPUT && OUTPUT === DEFAULT_OUTPUT) {
 // private set holding two invented names.
 const IS_REAL_RUN = OUTPUT === DEFAULT_OUTPUT;
 
+// `--emit-rust <path>` renders the compiled-in private set for a FIXTURE run.
+// Without it, the one output that is a security artifact could only ever be
+// produced from the real baam.html, where every private entry happens to have
+// id == extension_name — so a generator keyed on the wrong field looked
+// identical from outside. A real run always writes the canonical path, so the
+// flag would only mean "somewhere else", which is not a thing anyone wants.
+const EMIT_RUST = flag('--emit-rust', null);
+if (EMIT_RUST !== null && IS_REAL_RUN) {
+  console.error('registry: --emit-rust is for fixture runs; a real run always writes the crate path');
+  process.exit(1);
+}
+
 // Collect every violation and report them together, then exit non-zero. One
 // `throw` per violation would hide the second and third problems behind the
 // first, which is how a publisher ends up fixing this file three times.
@@ -78,13 +90,31 @@ const CLINICAL_KEYWORDS = [
   'de-identified clinical',
 ];
 
-// The key form `name_to_key` reduces an extension name to before it looks up a
-// tier (crates/biorouter/src/config/extensions.rs): whitespace stripped,
-// lowercased. Emitting the key form into BOTH the JSON and the Rust const is
-// what makes the two impossible to disagree about. It is not a heuristic — no
-// suffix is stripped and no character is invented; it is the same reduction the
-// resolver already applies to whatever the installed config entry is called.
+// A declared extension name has to survive TWO reductions, in two different
+// crates, and land on the same key both times. Both are written out here so the
+// generator can assert they agree on each name rather than assume it:
+//
+//   name_to_key   (crates/biorouter/src/config/extensions.rs) — the reduction
+//                 `classify_extension` applies before the private-set lookup:
+//                 whitespace stripped, lowercased.
+//   normalize     (crates/biorouter/src/agents/extension_manager.rs) — the
+//                 reduction the manager applies to the config entry's name
+//                 before storing it: whitespace stripped, every character
+//                 outside [A-Za-z0-9_-] replaced by "_", lowercased.
+//
+// They agree exactly on ASCII letters, digits, "_" and "-". Outside that set
+// they diverge — `Private.Agent` becomes "private.agent" here and
+// "private_agent" in the running app — so the compiled-in set would hold a key
+// the app never produces and the extension would classify Public. Where they
+// disagree the name is REFUSED, not guessed at: a suffix-stripping or
+// punctuation-folding heuristic in a security path is right until it isn't.
 const nameToKey = (s) => s.replace(/\s+/g, '').toLowerCase();
+const normalizeLikeTheManager = (s) =>
+  [...s]
+    .filter((c) => !/\s/.test(c))
+    .map((c) => (/[A-Za-z0-9_-]/.test(c) ? c : '_'))
+    .join('')
+    .toLowerCase();
 
 const html = readFileSync(INPUT, 'utf8');
 
@@ -362,11 +392,30 @@ const extensions = extCards.map(({ attrs, inner: card }, index) => {
   } else if (privacy !== 'private' && privacy !== 'public') {
     fail(`${label}: data-privacy must be "private" or "public", got "${privacy}"`);
   }
-  if (privacy === 'private' && !extensionName) {
+  // The join key between this catalog and the installed config entry. Validate
+  // the KEY, not the raw attribute: `data-extension-name="   "` is truthy and
+  // reduces to "", which would be published as extension_name:"" and compiled
+  // into the private set as an empty string — leaving the real extension
+  // classified Public, which is the outcome this rule exists to prevent.
+  const extensionKey = nameToKey(extensionName);
+  if (extensionName && !extensionKey) {
+    fail(
+      `${label}: data-extension-name is only whitespace, which reduces to an empty key — ` +
+        `the tier lookup would be keyed on a name nobody can type`
+    );
+  } else if (privacy === 'private' && !extensionKey) {
     // No suffix-stripping heuristic. `spokeagent-0.4.1` proves ids and
     // manifest names diverge, and a heuristic in a security path is right
     // until it isn't.
     fail(`${label}: a private extension must declare data-extension-name`);
+  }
+  if (extensionKey && normalizeLikeTheManager(extensionName) !== extensionKey) {
+    fail(
+      `${label}: data-extension-name "${extensionName}" reduces to "${extensionKey}" here but ` +
+        `"${normalizeLikeTheManager(extensionName)}" in the extension manager — a name must be ` +
+        `ASCII letters, digits, "_" or "-" only, or the registry and the installed ` +
+        `extension disagree about which extension this is`
+    );
   }
   // Forces the medcp/msbaseagent revisit AT PUBLISH TIME rather than relying on
   // someone remembering: the private badge is granted by publishing to BAAM.
@@ -385,13 +434,13 @@ const extensions = extCards.map(({ attrs, inner: card }, index) => {
   if (affiliation !== null) {
     if (privacy !== 'private') {
       fail(
-        `${id}: data-affiliation is meaningless on a ${privacy} extension — ` +
+        `${label}: data-affiliation is meaningless on a ${privacy} extension — ` +
           `affiliation asks under whose agreements, which only arises once data is private`
       );
     }
     if (affiliation.length === 0) {
       fail(
-        `${id}: data-affiliation is present but empty — absent means unconstrained, ` +
+        `${label}: data-affiliation is present but empty — absent means unconstrained, ` +
           `so an empty list would turn a typo into a granted flow`
       );
     }
@@ -418,10 +467,32 @@ const extensions = extCards.map(({ attrs, inner: card }, index) => {
     filename: download.split('/').pop(),
     license,
     privacy,
-    ...(extensionName ? { extension_name: nameToKey(extensionName) } : {}),
+    ...(extensionKey ? { extension_name: extensionKey } : {}),
     ...(affiliation !== null ? { affiliation } : {}),
   };
 });
+
+// Two cards claiming the same join key means the tier lookup cannot tell the
+// two extensions apart, and whichever one a user installed they get the other
+// one's answer. Duplicate ids are the same failure one field over.
+const seenKey = new Map();
+const seenId = new Map();
+for (const e of extensions) {
+  if (e.extension_name) {
+    if (seenKey.has(e.extension_name)) {
+      fail(
+        `${seenKey.get(e.extension_name)} and ${e.id} both declare data-extension-name ` +
+          `"${e.extension_name}" — the tier lookup cannot tell them apart`
+      );
+    } else {
+      seenKey.set(e.extension_name, e.id);
+    }
+  }
+  if (e.id) {
+    if (seenId.has(e.id)) fail(`two cards publish the same id "${e.id}"`);
+    else seenId.set(e.id, true);
+  }
+}
 
 // ---- The compiled-in private set -----------------------------------------
 // Rendered as Rust source rather than JSON because there is no network path to
@@ -536,6 +607,13 @@ if (violations.length) {
 
 const out = JSON.stringify(registry, null, 2) + '\n';
 writeFileSync(OUTPUT, out);
+
+if (EMIT_RUST !== null) {
+  // A fixture run asked to see the security artifact. Same renderer, same
+  // input, so a test can assert what the compiled-in set would hold for a
+  // catalog the real baam.html does not contain.
+  writeFileSync(EMIT_RUST, renderPrivateSet(extensions));
+}
 
 if (IS_REAL_RUN) {
   // The desktop app bundles a snapshot so Browse works offline. It is the same
