@@ -483,7 +483,7 @@
         </div>
         <p class="ext-desc">Multimodal access to the UCSF Clinical Data Warehouse through natural language. One-call cohort building across diagnoses, medications, procedures, labs, radiology/imaging, immunizations, allergies, and vitals; clinical-notes/NLP search; read-only queries, schema discovery, and structured results. Requires UCSF network credentials (CAMPUS\username and password).</p>
         <div class="ext-footer">
-          <div class="ext-tags"><span class="tag ucsf">UCSF</span><span class="tag mcp">MCP</span><span class="tag">CDW</span><span class="tag">Clinical</span></div>
+          <div class="ext-tags"><span class="tag private">Private</span><span class="tag ucsf">UCSF</span><span class="tag mcp">MCP</span><span class="tag">CDW</span><span class="tag">Clinical</span></div>
           <a href="https://github.com/BaranziniLab/CDWAgent/releases/download/v0.5.1-brxt/cdwagent.brxt" class="brxt-chip">
             <svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
             .brxt
@@ -507,7 +507,7 @@
         </div>
         <p class="ext-desc">Natural language SQL on the UCSF OMOP de-identified clinical database. Read-only access to standardized EHR data under the OMOP Common Data Model. v0.2.0 adds built-in OMOP/SQL-Server context plus concept-search, lab-finder, and live schema tools so the agent reaches the right data faster and more reliably. Requires UCSF credentials.</p>
         <div class="ext-footer">
-          <div class="ext-tags"><span class="tag ucsf">UCSF</span><span class="tag mcp">MCP</span><span class="tag">OMOP</span><span class="tag">EHR</span></div>
+          <div class="ext-tags"><span class="tag private">Private</span><span class="tag ucsf">UCSF</span><span class="tag mcp">MCP</span><span class="tag">OMOP</span><span class="tag">EHR</span></div>
           <a href="https://github.com/BaranziniLab/UCSFOMOPAgent/releases/download/v0.2.0-brxt/ucsfomopagent.brxt" class="brxt-chip">
             <svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
             .brxt
@@ -3802,8 +3802,19 @@ extensions: []</pre>
   let adaptersManualOpen = false;
 
   function extCardHtml(extension, featured) {
+    // Anything but an explicit "private" is public — the same fail-safe default
+    // the registry generator applies to an un-annotated card.
+    const privacy = extension.privacy === 'private' ? 'private' : 'public';
+    const privacyLabel = privacy === 'private' ? 'Private' : 'Public';
+    // BOTH states are labelled. A badge shown only on private extensions teaches
+    // a visitor nothing about its absence — an unbadged card would read as "not
+    // yet reviewed" rather than "public".
+    const privacyBadge = `<span class="tag ${privacy}">${privacyLabel}</span>`;
+    // .ext-tags is `max-height: 22px; overflow: hidden`, i.e. exactly one row.
+    // The badge takes a slot, so only TWO real tags can follow it; slicing at 3
+    // here would silently clip the third on every card.
     const rawTags = (extension.tags || []).filter(t => !/^apache/i.test(t));
-    const tags = rawTags.slice(0, 3).map(tag => {
+    const tags = privacyBadge + rawTags.slice(0, 2).map(tag => {
       const low = tag.toLowerCase();
       const cls = low === 'ucsf' ? 'tag ucsf' : low === 'mcp' ? 'tag mcp' : 'tag';
       return `<span class="${cls}">${escapeHtml(tag)}</span>`;
@@ -3818,9 +3829,10 @@ extensions: []</pre>
     const orgStr = extension.organization || '';
     const orgToken = /BRXT/i.test(orgStr) ? 'brxt' : /UCSF/i.test(orgStr) ? 'ucsf' : '';
     const keywords = escapeHtml([extension.name, extension.organization, extension.version, extension.description, ...(extension.tags || [])].join(' '));
+    const extName = escapeHtml(extension.extension_name || '');
     const featCls = featured ? ' is-feat' : '';
     const eyebrow = featured ? '<div class="feat-eyebrow">Featured</div>' : '';
-    return `<div class="ext-card${featCls}" data-tags="${keywords}" data-license="${license}" data-org="${orgToken}">
+    return `<div class="ext-card${featCls}" data-tags="${keywords}" data-license="${license}" data-org="${orgToken}" data-privacy="${privacy}" data-extension-name="${extName}">
       ${eyebrow}
       <div class="ext-card-header">
         <div class="icon-tile"><svg class="icon" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg></div>
@@ -3853,12 +3865,34 @@ extensions: []</pre>
     html += '<span class="chip-sep"></span>';
     html += '<button class="fchip" type="button" data-facet="org" data-match="ucsf">UCSF</button>';
     html += '<button class="fchip" type="button" data-facet="org" data-match="brxt">Community</button>';
+    html += '<span class="chip-sep"></span>';
+    html += '<button class="fchip" type="button" data-facet="privacy" data-match="private">Private</button>';
+    html += '<button class="fchip" type="button" data-facet="privacy" data-match="public">Public</button>';
     if (tags.length) {
       html += '<span class="chip-sep"></span>';
       html += tags.map(t => `<button class="fchip" type="button" data-facet="tag" data-match="${escapeHtml(t.toLowerCase())}">${escapeHtml(t)}</button>`).join('');
     }
     bar.innerHTML = html;
     bar.querySelectorAll('.fchip').forEach(btn => btn.addEventListener('click', () => onChipClick(bar, btn)));
+  }
+
+  // `.ext-tags` is ONE 22px row with `overflow: hidden`, so a chip that wraps is
+  // not merely cramped — it is deleted from view, and the reader cannot tell it
+  // ever existed. A fixed tag budget cannot prevent that, because tag text is
+  // arbitrary: "Code Intelligence" alone is wider than three short tags, so the
+  // badge + two tags that fit on CDWAgent overflow on CodeGraphAgent. Measure
+  // after layout instead and drop the chips that did not fit, keeping the
+  // privacy badge (index 0) always. Re-run whenever the row's width can change.
+  function trimTagRows() {
+    document.querySelectorAll('#extensions-section .ext-tags').forEach(row => {
+      const chips = row.querySelectorAll('span');
+      // `hidden` is a UA rule and loses to `.tag { display: inline-flex }`.
+      chips.forEach(c => { c.style.display = ''; });
+      for (let i = chips.length - 1; i > 0; i--) {
+        if (row.scrollHeight <= row.clientHeight) break;
+        chips[i].style.display = 'none';
+      }
+    });
   }
 
   function renderExtensions(extensions) {
@@ -3885,6 +3919,7 @@ extensions: []</pre>
 
     buildExtChips(extensions);
     updateCounts();
+    trimTagRows();
   }
 
   function applyAdapterVisibility(filtering) {
@@ -3921,7 +3956,10 @@ extensions: []</pre>
       if (show) {
         for (let i = 0; i < facets.length; i++) {
           const f = facets[i], vals = active[f];
-          const ok = (f === 'org') ? vals.indexOf(c.dataset.org || '') !== -1 : vals.some(v => hay.indexOf(v) !== -1);
+          // `org` and `privacy` are exact-value facets: they match the card's own
+          // dataset entry, not a substring of its prose. A privacy substring match
+          // would make every card mentioning "private" answer the Private chip.
+          const ok = (f === 'org' || f === 'privacy') ? vals.indexOf(c.dataset[f] || '') !== -1 : vals.some(v => hay.indexOf(v) !== -1);
           if (!ok) { show = false; break; }
         }
       }
@@ -3936,6 +3974,10 @@ extensions: []</pre>
     }
     const nr = document.getElementById('extensions-no-results');
     if (nr) nr.style.display = (visible === 0) ? '' : 'none';
+    // A row inside a hidden container measures zero and cannot be trimmed, so
+    // re-run once every card's final display is set — this is where the adapters
+    // grid and the featured wrap have just been revealed.
+    trimTagRows();
   }
 
   async function loadRegistryExtensions() {
@@ -4077,8 +4119,9 @@ extensions: []</pre>
     initSkills();
     document.querySelectorAll('.baam-tab').forEach(t => t.addEventListener('click', () => setShelf(t.dataset.shelf, true)));
     const tgl = document.getElementById('ext-adapters-toggle');
-    if (tgl) tgl.addEventListener('click', () => { adaptersManualOpen = !adaptersManualOpen; applyAdapterVisibility(false); });
+    if (tgl) tgl.addEventListener('click', () => { adaptersManualOpen = !adaptersManualOpen; applyAdapterVisibility(false); trimTagRows(); });
     window.addEventListener('hashchange', () => { const s = shelfFromHash(); if (s) setShelf(s, false); });
+    window.addEventListener('resize', trimTagRows);
     updateCounts();
     setShelf(shelfFromHash() || 'extensions', false);
     loadRegistryExtensions();

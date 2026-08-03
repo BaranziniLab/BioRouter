@@ -410,12 +410,19 @@ const first = (re, s) => {
   return m ? m[1] : '';
 };
 
+// `.tag private` / `.tag public` are the PRIVACY BADGE, not a subject tag. The
+// badge lives inside .ext-tags so it reads as the first chip of the row, and the
+// row is also this generator's tag source — so without this filter the word
+// "Private" would be published as a topic of the two private extensions, and
+// then re-rendered as a second chip beside the badge the shelf already prepends.
+// The card's real annotation is `data-privacy`; the badge is only its picture.
+const PRIVACY_BADGE_CLASS = /(?:^|\s)(?:private|public)(?:\s|$)/;
 const allTags = (containerRe, s) => {
   const block = first(containerRe, s);
   if (!block) return [];
-  return [...block.matchAll(/<span class="tag[^"]*">([^<]+)<\/span>/g)].map((m) =>
-    stripTags(m[1])
-  );
+  return [...block.matchAll(/<span class="(tag[^"]*)">([^<]+)<\/span>/g)]
+    .filter((m) => !PRIVACY_BADGE_CLASS.test(m[1]))
+    .map((m) => stripTags(m[2]));
 };
 
 // ---- Extensions ----------------------------------------------------------

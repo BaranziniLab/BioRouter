@@ -413,6 +413,16 @@ pre code { background: none; padding: 0; color: inherit; font-size: inherit; }
 .tag.ucsf { background: rgba(5,32,73,0.07); color: var(--ucsf); }
 .tag.mcp { background: var(--accent-soft); color: var(--accent); }
 .tag.federated { background: rgba(5,32,73,0.07); color: var(--ucsf); }
+/* Privacy badges. Private uses the NAVY ramp: institutional in tone, visually
+   distinct from the coral MCP tag. No new red — the palette has exactly one
+   accent (coral #b85a32 text, #cf6d47 bars-only) and no semantic danger colour;
+   inventing one breaks the Apple-deck reskin. Both states are labelled, so a
+   visitor learns something from Public rather than from a card's silence.
+   Dark needs no override: every value here is a token that :root.dark rebinds
+   (--ucsf flips to a light steel blue, --bg-3/--text-3 to their dark ramp),
+   exactly as .tag.ucsf above already relies on. */
+.tag.private { background: rgba(5,32,73,0.07); color: var(--ucsf); }
+.tag.public  { background: var(--bg-3);        color: var(--text-3); }
 
 /* ─── Footer ─────────────────────────────────────────────────── */
 footer {
