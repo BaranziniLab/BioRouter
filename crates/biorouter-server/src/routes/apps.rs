@@ -815,6 +815,15 @@ fn capability_report(cfg: &AgentConfig, caller_is_private: bool) -> CapabilityRe
 
 /// Configure the main agent's requested provider, falling back to the global
 /// provider so a missing app credential does not leave the agent unusable.
+///
+/// ⚠ Issue #56, open question 26 — site (1) of three. `cfg.model` comes from the
+/// manifest, which `agent_drafter__declare_profiles` writes from tool arguments,
+/// so the `update_provider` below can raise a LIVE app session's capability from
+/// data the app's own agent authored. Nothing here proves a human and there is
+/// no request on this path to carry a proof. The requirement, and why
+/// `X-User-Action` cannot be lifted to cover it, are in the `#[ignore]`d
+/// `agent_authored_data_cannot_raise_a_live_app_sessions_capability` below.
+/// Unclosed by decision; disclosed rather than gated.
 async fn configure_main_provider(
     agent: &biorouter::agents::Agent,
     session_id: &str,
@@ -2612,6 +2621,14 @@ async fn route_start_warnings(cfg: &AgentConfig) -> Vec<(String, String)> {
 /// a `model` frame (`ok:true`) so the UI shows which model answered — or a `model`
 /// error frame and no switch when the route is unknown / blocked / unavailable.
 /// Returns the PREVIOUS provider so the caller can restore it after the turn.
+///
+/// ⚠ Issue #56, open question 26 — site (2) of three, and H4's own sequence. The
+/// route is a manifest pin, which the app's agent can write, so binding it can
+/// raise a LIVE app session's capability with nothing proving a human; the plan
+/// narrates this as "Gate A allows the bind → Gate B ratchets" and has never
+/// authorised it. See the `#[ignore]`d
+/// `agent_authored_data_cannot_raise_a_live_app_sessions_capability` for the
+/// requirement and why `X-User-Action` cannot be lifted here.
 async fn apply_route_for_turn(
     agent: &biorouter::agents::Agent,
     session_id: &str,
@@ -3989,6 +4006,16 @@ async fn handle_agent_socket(
             }
             ClientFrame::ModelSelect { provider, model } => {
                 // Live-switch the session's provider/model (BRSDK model surface).
+                //
+                // ⚠ Issue #56, open question 26 — site (3) of three, and the
+                // sharpest. This frame arrives on `GET /apps/{id}/agent`, which
+                // `is_public_app_get` exempts from secret-key auth, from a page
+                // whose TypeScript the model itself authored: a raise over a
+                // channel needing no credential at all. The socket does carry a
+                // `HeaderMap`, but an unauthenticated one, where a header proves
+                // nothing — so Task 18A's proof cannot simply be required here.
+                // See the `#[ignore]`d
+                // `agent_authored_data_cannot_raise_a_live_app_sessions_capability`.
                 let model_name = model.unwrap_or_default();
                 let provider_name = provider.unwrap_or_default();
                 let ok = if provider_name.is_empty() || model_name.is_empty() {
@@ -8879,6 +8906,90 @@ mod tests {
             assert_eq!(
                 notice["timeoutMs"], 0,
                 "the notice must be click-to-dismiss, not a 4-second toast: {notice}"
+            );
+        }
+
+        /// Open question 26, as a red test parked where the answer will land.
+        ///
+        /// **The requirement: agent-authored data may not raise a LIVE app
+        /// session's capability.** Three sites supply a provider from something
+        /// a public model can write, and all three end in the same in-process
+        /// bind, `Agent::update_provider`:
+        ///
+        /// 1. `configure_main_provider` binds the manifest's `model`, which
+        ///    `agent_drafter__declare_profiles` wrote from tool arguments, and
+        ///    the manifest is agent-writable (`store.rs`).
+        /// 2. `apply_route_for_turn` binds a manifest route pin — H4's own
+        ///    sequence, which the plan narrates as "Gate A allows the bind →
+        ///    Gate B ratchets" and has never authorised.
+        /// 3. `ClientFrame::ModelSelect` arrives on `GET /apps/{id}/agent`,
+        ///    which `is_public_app_get` exempts from secret-key auth — a raise
+        ///    over a channel needing no credential at all, from a page whose
+        ///    TypeScript the model itself authored.
+        ///
+        /// Task 18A's `X-User-Action` cannot be lifted to cover them: (1) and
+        /// (2) are in-process calls with no `HeaderMap` at all, and (3) has one
+        /// but on an unauthenticated socket, where a header proves nothing.
+        /// What a proof-of-user *is* for a bind that has no request is the
+        /// question, and it is unanswered — so this asserts the requirement at
+        /// the bind the three share, and fails.
+        ///
+        /// ⚠ An `#[ignore]`d test is exactly the shape this feature warns about
+        /// elsewhere: a filter that prints green having run nothing. It is NOT
+        /// the guard. Until 26 is ruled on the exposure is live and belongs to
+        /// Task 30A's disclosure; this is only where the answer lands instead of
+        /// on a blank page.
+        ///
+        /// ⚠ Do NOT delete it, and do NOT make it pass by inventing a grant
+        /// mechanism. DR-19 says a confirmation compiled into the source is a UX
+        /// guard and not a human, and a grant stored where the agent writes is
+        /// not a grant — which rules out both a confirmation phrase and a
+        /// manifest boolean.
+        #[tokio::test]
+        #[ignore = "open question 26: states the requirement, awaiting the operator's ruling on \
+                    what a proof-of-user is for a bind that has no request. Un-ignore when 26 is \
+                    answered; do NOT delete it, and do NOT satisfy it by inventing a grant."]
+        async fn agent_authored_data_cannot_raise_a_live_app_sessions_capability() {
+            let dir = tempfile::TempDir::new().unwrap();
+            let session_manager = Arc::new(SessionManager::new(dir.path().to_path_buf()));
+            let agent = agent_over(session_manager.clone(), dir.path());
+            let session = session_manager
+                .create_session(
+                    dir.path().to_path_buf(),
+                    "app".to_string(),
+                    biorouter::session::session_manager::SessionType::User,
+                )
+                .await
+                .unwrap();
+
+            // A LIVE app session, already bound to a public model. "Live" is the
+            // whole point: DR-16 guards raises on sessions that already exist,
+            // and this is one — it simply never reaches DR-16, because none of
+            // the three sites goes through `POST /agent/update_provider`.
+            agent
+                .update_provider(tiered("anthropic", ProviderTier::Public), &session.id)
+                .await
+                .unwrap();
+
+            // The bind all three sites end in, carrying nothing that proves a
+            // human — because on these paths there is nothing that could.
+            let raised = agent
+                .update_provider(tiered("versa_azure", ProviderTier::Private), &session.id)
+                .await;
+
+            assert!(
+                raised.is_err(),
+                "a public app session was raised to private capability by data the app's own \
+                 agent can write"
+            );
+            assert_eq!(
+                session_manager
+                    .get_session(&session.id, false)
+                    .await
+                    .unwrap()
+                    .privacy_tier,
+                SessionClassification::Public,
+                "no path may leave this session private-capable"
             );
         }
 
