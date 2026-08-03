@@ -112,7 +112,7 @@ At most **four** children *running at the same time* get a tab from one parent (
 
 The cap counts *live* children, so a slot frees when a child finishes. Spawn four, wait, spawn four more, and you get tabs both times. It bounds the burst, not the running total.
 
-Tabs are not the only cap on a fan-out, though, and the other two are what actually decide how fast ten pieces of work get done. Only **eight** subagents run at a time (`SUBAGENT_SEMAPHORE`, `crates/biorouter/src/agents/subagent_tool.rs:52`): numbers nine and ten *queue* on that semaphore and do not start — no session, no tab — until a slot frees. The cap is per process, one daemon shared by every conversation in it, where the four-tab cap is per parent. And past **64** subagents in flight, queued and running counted together, a spawn is not queued but **refused**, with *Subagent limit reached: N already in flight (max 64)* (`subagent_tool.rs:709`). Both bounds, and the caveat about changing one of them, are in [the limits table](#the-limits-you-will-actually-meet).
+Tabs are not the only cap on a fan-out, though, and the other two are what actually decide how fast ten pieces of work get done. Only **eight** subagents run at a time (`SUBAGENT_SEMAPHORE`, `crates/biorouter/src/agents/subagent_tool.rs:52`): numbers nine and ten *queue* on that semaphore and do not start until a slot frees. With background handles off — the default — a queued child has no session and no tab yet; with `BIOROUTER_SUBAGENT_BACKGROUND` on, the session is created and the tab announced *before* the semaphore is acquired, so a queued child is visible but idle. The cap is per process, one daemon shared by every conversation in it, where the four-tab cap is per parent. And past **64** subagents in flight, queued and running counted together, a spawn is not queued but **refused**, with *Subagent limit reached: N already in flight (max 64)* (`subagent_tool.rs:709`). Both bounds, and the caveat about changing one of them, are in [the limits table](#the-limits-you-will-actually-meet).
 
 ### Long jobs
 
@@ -192,14 +192,14 @@ These are ordinary shell commands, and they split in two. The first three touch 
 | What you want | Command | Needs a daemon |
 |---|---|---|
 | See what exists, including subagent runs nested under their parents | `biorouter session list --subagents` | no |
-| Read a conversation | `biorouter session export --id <id>` (or `--name <name>`; `--format markdown\|json\|yaml`) | no |
+| Read a conversation | `biorouter session export --session-id <id>` (or `--name <name>`; `--format markdown\|json\|yaml`) | no |
 | Start or name a session | `biorouter session --name <name>` | no |
 | Send a prompt into a session and stream its turn | `biorouter session send <id> "<text>"` (`--no-wait` to return as soon as the turn starts) | yes |
 | Wait for a turn to end | `biorouter session watch <id>` (exits on finish or error; `--follow` keeps watching past it) | yes |
 | Join a live session, follow it, and steer it | `biorouter session attach <id>` — `--name` to pick it by name, `--of <parent>` to attach to that parent's running subagent, `--read-only` to observe without participating | yes |
 | Stop the turn a session is running | `biorouter session cancel <id>` | yes |
 
-Give `session export` an identifier. With neither `--id` nor `--name` it drops into an interactive session picker instead of exporting the conversation you meant — which is a surprise in a script.
+Give `session export` an identifier. With neither `--session-id` nor `--name` it drops into an interactive session picker instead of exporting the conversation you meant — which is a surprise in a script.
 
 `session list --subagents` reads the store for the rows but has to ask the daemon who is still live, so it marks each run `● live`, `○ done`, or — when it could not ask — `· state unknown`. It deliberately does *not* blame a missing daemon for that third state: a stripped `BIOROUTER_SERVER__SECRET_KEY` (which is what an agent-spawned shell gets) produces it with a daemon running perfectly well. The actual reason is printed once on stderr, so `--format json` on stdout stays clean.
 
