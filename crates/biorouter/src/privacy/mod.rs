@@ -53,8 +53,11 @@ pub use refusal::{raise_needs_user_action, PrivacyRefusal};
 /// to consult and reads this directly.
 pub use biorouter_mcp::privacy_toggle::privacy_tiers_enabled;
 
-/// Load the master switch from the user's configuration. Called ONCE, from
-/// `biorouterd`'s startup, after the config is available.
+/// Load the master switch from the user's configuration. Called ONCE per
+/// process, at startup, after the config is available — by BOTH hosts of this
+/// library: `biorouterd` (`commands/agent.rs`) and the `biorouter` CLI (its
+/// `main`). A host that skips it enforces, which is safe and is exactly why the
+/// CLI's omission went a whole round unnoticed.
 ///
 /// The value is read straight from the loaded config values, **never** through
 /// [`crate::config::Config::get_param`], whose middle branch resolves an

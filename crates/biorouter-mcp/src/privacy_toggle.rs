@@ -26,8 +26,13 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Fail-safe default: protection is ON until something explicitly turns it off.
-/// A daemon that never gets as far as loading its config, or a `biorouter` CLI
-/// that loads none, enforces.
+/// A process that never gets as far as loading its config enforces.
+///
+/// Both hosts of the agent library load it — `biorouterd` in `commands/agent.rs`
+/// and the `biorouter` CLI in its `main`. For one round only the daemon did,
+/// which meant a user who turned privacy tiers off in Settings still met every
+/// gate in the terminal. Fail-safe, and therefore invisible; DR-15's promise is
+/// "nothing will be impacted", not "nothing except the CLI".
 static TIERS_ENABLED: AtomicBool = AtomicBool::new(true);
 
 /// `true` — the default — means every gate, the classification ratchet and the
@@ -42,10 +47,12 @@ pub fn privacy_tiers_enabled() -> bool {
 
 /// The **one** writer.
 ///
-/// Called from `biorouterd`'s startup, after the config is loaded, and from
-/// `POST /config/upsert`'s gated arm. Nothing else may call it — that is what
+/// Called from `biorouter::privacy::load_privacy_tiers_from_config` — which both
+/// hosts run at startup, after the config is available — and from
+/// `POST /config/upsert`'s gated arm. Nothing else may call it: that is what
 /// makes "one switch, one name" true across the crate boundary, and Task 30's
-/// Step 5 (2) is the check that says so.
+/// Step 5 (2) is the check that says so. A second host calling the LOADER is not
+/// a third writer, which is why the count stays at two.
 pub fn set_privacy_tiers_enabled(on: bool) {
     TIERS_ENABLED.store(on, Ordering::Relaxed);
 }
