@@ -48,7 +48,14 @@ export function PrivacyBadge({ tier, dense = false, className }: PrivacyBadgePro
         role="img"
         aria-label="Private chat"
         title="Private — only private models can read this chat"
-        className={cn('h-1.5 w-1.5 rounded-full bg-text-default', className)}
+        // `inline-block`, not the default `inline`: width and height do not
+        // apply to a non-replaced inline element, so `h-1.5 w-1.5` on a bare
+        // span paints NOTHING unless the parent that mounts it happens to be a
+        // flex or grid container. `shrink-0` because dense surfaces are tight
+        // by definition and a flex child with no shrink guard is the first
+        // thing squeezed away. Both belong here, not in each caller: an
+        // indicator whose whole job is to be seen cannot delegate being visible.
+        className={cn('inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-text-default', className)}
       />
     );
   }

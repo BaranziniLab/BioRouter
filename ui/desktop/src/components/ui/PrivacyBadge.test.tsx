@@ -182,6 +182,23 @@ describe('PrivacyBadge', () => {
 
   // ── The dense dot ──
 
+  it('gives the dense dot a box, so it cannot render at zero size', () => {
+    const classes = badgeOf(<PrivacyBadge tier="private" dense />)!.className.split(/\s+/);
+    // `width` and `height` do not apply to a non-replaced INLINE element, and a
+    // `<span>` is inline by default. `h-1.5 w-1.5` on its own therefore paints
+    // nothing at all unless whichever parent mounts it happens to be a flex or
+    // grid container that blockifies it. That is this component's own failure
+    // mode — an indicator that is silently invisible, passing every screenshot
+    // review — handed to its callers to get right.
+    expect(classes).toContain('inline-block');
+    expect(classes).toContain('h-1.5');
+    expect(classes).toContain('w-1.5');
+    // Dense surfaces are tight by definition — that is why they are dense. A
+    // flex child with no shrink guard is the first thing squeezed to nothing,
+    // and these are exactly the rows the dot was made for.
+    expect(classes).toContain('shrink-0');
+  });
+
   it('marks a dense Private row with a dot that carries its own name', () => {
     const dot = badgeOf(<PrivacyBadge tier="private" dense />)!;
     expect(dot.getAttribute('data-privacy')).toBe('private');
