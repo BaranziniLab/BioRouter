@@ -16989,6 +16989,67 @@ git commit -m "feat(privacy): spawn inheritance - resolve the tier before the ro
 
 ### Task 24: The two shipped features the gates break
 
+> ⚠ **AMENDED by [DR-19](#dr-19--a-warning-for-the-user-a-wall-for-the-agent), 2026-08-02 — H4's
+> sequence NARRATES a tier raise this plan never authorises, and Task 18A explicitly blesses the
+> path it takes.** Read this before Step 1. It adds a requirement and one open question; it does
+> **not** invent a mechanism, because the plan does not have one.
+>
+> **What H4 actually says.** *"public app session, route pinned to `versa_azure` → Gate A allows the
+> bind → Gate B ratchets."* That is a **Public → Private capability raise on a live session**, which
+> [DR-16](#decisions-of-record) reserves to the user and DR-19 restates as the general rule. And the
+> route that supplies `versa_azure` is **agent-authored**: `configure_main_provider`
+> (`routes/apps.rs:809`, called `:1259`) reads `AgentConfig.model` — a `{provider, model}` pair —
+> out of the app's stored manifest (`agent_drafter/store.rs:76-79`), and
+> `agent_drafter__declare_profiles` (`agent_drafter/mod.rs:2497-2528`) takes that per-profile
+> `model` straight from `ProfileParam` (`:699-712`), i.e. from tool arguments a model writes.
+> `agent_drafter` is **Public** by design (Task 8). So the sequence is: a public model writes a
+> provider name into a file, and the app runtime binds it, raising the session it is running in.
+>
+> **Task 18A does not cover this — it exempts it, in so many words.** Step 3(g) reads: *"Sideways
+> and downward binds are untouched **for every caller**, which is what keeps Gate A's
+> `agent_on(private_provider())` path, the CLI, `restore_provider_from_session`, and every
+> `routes/apps.rs` bind working exactly as before."* Read literally that is true of *sideways and
+> downward* binds and false as a blanket statement about `routes/apps.rs`, because
+> `configure_main_provider` and `apply_route_for_turn` (`:2211`) also bind **upward**. The exemption
+> is the whole of what makes H4's first arrow legal, and it is the sentence this amendment narrows.
+>
+> **A second site, not previously named, and it is the sharper one.** Step 3 of this task says
+> `ClientFrame::ModelSelect` (`:3409-3428`, bind at `:3418`) *"is fixed with **zero new code** — it
+> goes through `Agent::update_provider`, so Gate A covers it."* Gate A covers the **downward**
+> direction (a public provider onto a private session). It does not cover the **raise**, which is
+> Task 18A's subject and which Task 18A guards only on HTTP routes. `ModelSelect` arrives on
+> `GET /apps/{id}/agent`, which is **exempt from secret-key auth** (`auth.rs:52-77`,
+> `is_public_app_get` matching the tail `["agent"]` at `:76`) — this task's own Step 3 says so, as
+> the reason Gate A must carry it. So a `ModelSelect` naming `llamacpp` or `versa_azure` raises an
+> app session's capability from a channel that needs **no credential at all**, and the page that
+> sends it is **agent-authored TypeScript** (Agent Drafter apps are built by the model). That is
+> both halves of DR-19's agent row on one frame.
+>
+> **The requirement, stated.** A bind that raises a live app session's capability from Public to
+> Private must not proceed on the strength of agent-authored data alone — not from a manifest
+> `model`, not from a manifest route pin, not from a `ClientFrame::ModelSelect`. The predicate is
+> the one Task 18A already defines, `raise_needs_user_action(current, new.tier())`; the guard sites
+> are `configure_main_provider` before `agent.update_provider` at `:820`, `apply_route_for_turn`
+> before its bind at `:2211`, and the `ModelSelect` arm at `:3418`.
+>
+> **What is NOT claimed, so the next reviewer does not re-derive it.** A worker profile gets its own
+> session (`worker_session_key` → `app:{id}:{cid}:{profile}`, `:1450-1452`), so an unpinned worker
+> binding a private provider *creates* a session at a tier rather than raising one — the same shape
+> as any new session, and [Open question 25](#open-questions) already says so. Step 3(d) of this
+> task, which teaches `configure_worker_provider` to inherit the main agent's provider, is
+> unaffected and stays as written. Step 3(b)'s ratchet-aware restore is also unaffected — but note
+> what it is and is not: it makes the *consequence* of the raise visible; it is not, and must not be
+> read as, the authorisation for the raise that preceded it.
+>
+> **Why this task states the requirement and stops.** The proof DR-19 names is a request header, and
+> `configure_main_provider` / `apply_route_for_turn` are **in-process** calls with no request to
+> carry one; `ModelSelect` arrives on an unauthenticated socket, so a header there proves nothing.
+> [Open question 25](#open-questions) assigned this to Tasks 22 and 23 — **checked, and neither
+> answers it**: measured over both tasks' full text, neither mentions apps, manifests,
+> per-connection re-derivation, or session-capability lifetime at all. Inventing the mechanism here
+> would be inventing the *scoped-permission* concept DR-16 deliberately left unbuilt. So it is
+> [Open question 26](#open-questions).
+
 **C2 — a scheduled job created from a private session becomes permanently, silently broken.**
 `scheduler.rs:846-850` builds its provider from `Config::global()` **only**, `:867` binds. Under
 Gate A that bind is refused and `run_workflow_job` returns `Err` on every cron tick forever, with no
@@ -17051,6 +17112,32 @@ fn provider_class_is_not_inverted_any_more() {
 }
 
 #[tokio::test]
+#[ignore = "DR-19 / open question 26: states the requirement, awaiting the operator's ruling on \
+            what a proof-of-user is on an in-process bind. Un-ignore when 26 is answered; do NOT \
+            delete it, and do NOT satisfy it by inventing a grant mechanism."]
+async fn agent_authored_data_cannot_raise_a_live_app_sessions_capability() {
+    // DR-19 + DR-16. Three sites, one rule. Each starts from a PUBLIC app
+    // session that already exists, and each supplies the private provider from
+    // something a public model can write.
+    let app = public_app_session().await;
+
+    // (1) the manifest's own model, written by agent_drafter__declare_profiles.
+    declare_profile_model(&app, "main", "versa_azure").await;
+    assert!(reconnect(&app).await.is_err(), "configure_main_provider raised on a manifest edit");
+
+    // (2) a manifest route pin — H4's own sequence, which this plan narrates.
+    pin_route(&app, "versa_azure").await;
+    assert!(run_turn(&app).await.is_err(), "apply_route_for_turn raised on a route pin");
+
+    // (3) a ClientFrame::ModelSelect on the UNAUTHENTICATED app socket, sent by
+    //     the app's own agent-authored page.
+    assert!(send_model_select(&app, "llamacpp").await.is_err());
+
+    assert_eq!(row(&app.session_id).await.privacy_tier, SessionClassification::Public,
+               "no path may leave this session private-capable");
+}
+
+#[tokio::test]
 async fn an_unpinned_worker_profile_inherits_the_main_agents_provider() {
     // R5. configure_worker_provider has NO branch that reads the main agent's
     // provider (:1480-1516), so an unpinned profile falls to Config::global()
@@ -17061,7 +17148,13 @@ async fn an_unpinned_worker_profile_inherits_the_main_agents_provider() {
 }
 ```
 
-- [ ] **Step 2: Run** → all four **FAIL** (test 3 fails on the first two assertions).
+- [ ] **Step 2: Run** → all four **FAIL** (test 3 fails on the first two assertions). The fifth,
+`agent_authored_data_cannot_raise_a_live_app_sessions_capability`, is `#[ignore]`d and reports
+`1 ignored` — deliberately, and it stays that way until [Open question 26](#open-questions) is
+ruled on. ⚠ **An `#[ignore]`d test is exactly the shape this plan warns about elsewhere** (a filter
+that prints green having run nothing), so it is not a substitute for the guard: the *requirement*
+lives in the banner and in open question 26, and the test is there so that answering 26 has a place
+to land rather than a blank page.
 
 - [ ] **Step 3: Implement**
 
@@ -17090,6 +17183,13 @@ through `Agent::update_provider`, so Gate A covers it. Note that `GET /apps/{id}
 from secret-key auth (`auth.rs:52-77`, `is_public_app_get` matching the tail `["agent"]` at `:76`),
 which is exactly why it must be covered by the bind gate rather than by a route check. Lock it in
 with a test rather than adding one.
+
+⚠ **"Zero new code" is true of the DOWNWARD direction only** (DR-19; see this task's banner). Gate A
+refuses a **public** provider on a **private** session. A `ModelSelect` naming a **private** provider
+on a **public** session is the opposite arrow — a capability raise — and Gate A passes it by design,
+Task 18A guards it only on HTTP routes, and this socket carries no credential at all. The frame is
+therefore **not** fixed by this task; it is the third guard site named in the banner and it is part
+of [Open question 26](#open-questions). Do not read the paragraph above as clearing it.
 
 - [ ] **Step 4: Run**
 
@@ -20407,7 +20507,8 @@ and is a scope question the ruling does not reach.
 |---|---|---|
 | **23** | **What should a daemon that was handed no user-action key do?** DR-16's refusal is conditioned on a per-launch key the Electron main process mints and hands `biorouterd` on stdin ([Task 18A](#task-18a-the-two-http-channels-that-raise-a-sessions-own-tier-and-the-user-proof-neither-of-them-has)). Four shipping ways to start the daemon supply no such key: `just run-server`, `just debug-server` (the external backend `just debug-ui` talks to), a hand-run `biorouterd agent`, and any headless/server deployment. In all four the raise is refused **for every caller, including the human at the keyboard** — a private model cannot be bound to a session over HTTP at all. That is the only direction consistent with DR-16 ("the model may never do it" cannot be relaxed by *how the daemon was started*, which a model can influence), and it is a real ergonomic loss on the dev path that this repo's own `just debug-ui` workflow uses daily. The alternative — an env-var escape hatch — is not an alternative: the daemon's environment is exactly what [AR-11](#ar-11--amended-by-dr-17--the-daemons-own-api-secret-is-recoverable) measured to be recoverable, so a key delivered that way is a key the model has. | **Answered in part by [Task 18A](#task-18a-the-two-http-channels-that-raise-a-sessions-own-tier-and-the-user-proof-neither-of-them-has) Step 3(a) and 3(f); the last third stays open.** **Closed:** *fail closed* is now specified, not merely preferred — `read_user_action_digest` returns `None` when stdin is a terminal or carries no digest, `install_user_action_digest(None)` is a legal state, and `user_action_matches(_, None)` is `false` for every caller, asserted by `a_daemon_with_no_user_action_key_refuses_every_raise`. **Closed:** the dev path, by *supplying a key* rather than by opening a hatch — `just debug-server` pipes `sha256('biorouter-dev-user-action')` on stdin and `getUserActionKey` returns the same published constant under `BIOROUTER_EXTERNAL_BACKEND`, mirroring `getServerSecret`'s `'test'` branch (`main.ts:906-908`). That key is deliberately public: a daemon's user-proof is whatever the person who launched it chose, and on that path the launcher *is* the developer. It weakens nothing shipped, where the key is 32 random bytes per launch that never leave the Electron main process. `just run-server` is left keyless on purpose, so the fail-closed path stays reachable by hand, and the gate asserts it stays that way. **Still open, and needing an operator ruling rather than an implementation: the headless deployment.** A server install has no GUI, so there is no process that can mint a key on the user's behalf and no picker for the proof to come from; deciding what "the user" means there is the same shape as [Open question 8](#open-questions) and is not something Task 18A can invent. Until it is ruled on, a headless daemon cannot bind a private model over HTTP at all. |
 | **24** | **Does DR-16 extend to the config routes that set the *default* provider?** The ruling names two routes. Two more reach the same outcome one step later and are not covered: `POST /config/set_provider` (`config_management.rs:876-889`, registered `:923`) writes `BIOROUTER_PROVIDER`/`BIOROUTER_MODEL`, and `POST /config/upsert` (`:183-193`) writes **any** key including `BIOROUTER_PROVIDER`, both with nothing but the secret. `restore_provider_from_session` (`agent.rs:5682-5688`) falls back to `config.get_biorouter_provider()` for a row with no `provider_name`, so a session started after such a write comes up private-capability with no `/agent/update_provider` call at all. ⚠ **DR-14 does not cover this.** It makes `<config>/config.yaml` deny entry #5 on the *filesystem* channel precisely because *"a master switch a public model can edit is not a switch"* — and `POST /config/upsert` is the **HTTP** channel to the same file, which no layer of DR-14 sees. By DR-14's own argument, a default provider a public model can edit is a tier raise. It is a raise of every *future* session rather than of the caller's own, which is why it is a scope question and not a bug report. | **Answered by [Task 18A](#task-18a-the-two-http-channels-that-raise-a-sessions-own-tier-and-the-user-proof-neither-of-them-has) Step 3(d).** **Ruled:** the `X-User-Action` requirement extends to both handlers, for a **named key set only** — a blanket rule on `/config/upsert` would make every programmatic config write a user act, and a rule that fires constantly is one people route around. The set is `CAPABILITY_CONFIG_KEYS` in the new `crates/biorouter/src/privacy/config_keys.rs`, and it is five: `BIOROUTER_PROVIDER` (the default itself, read through `config_value!` at `config/base.rs:1147`); `BIOROUTER_LEAD_MODEL` (its mere presence diverts `create()` to the lead/worker path at `factory.rs:142-146`, **before** the registry lookup, changing the tier of every provider name rather than of one); `BIOROUTER_LEAD_PROVIDER` (names the lead half, one of the two tiers `least()` takes); and `OLLAMA_HOST` + `LLAMACPP_EXTERNAL_HOST` (Task 5's third test makes a self-hosted provider Private only while its base URL is loopback, so these two keys *are* that boundary). `set_config_provider` is guarded unconditionally, since it writes `BIOROUTER_PROVIDER` by construction; `upsert_config` is guarded by `is_capability_key(&query.key)`. `/config/remove` is deliberately unguarded — deleting the key cannot raise anything, because `restore_provider_from_session` then fails with *"Could not configure agent: missing provider"* (`agent.rs:5686`). **How a future capability-determining key avoids being forgotten:** not by a rule someone must remember, but by `every_config_key_the_tier_resolver_reads_is_classified`, which scans the five files Task 5 touches to define `tier()` for `get_param("KEY")` literals — 22 today — and fails unless each appears in **exactly one** of `CAPABILITY_CONFIG_KEYS` or `NOT_CAPABILITY_CONFIG_KEYS`, the latter carrying a one-line reason per key. Adding a config read to any of those files fails the test until someone classifies it. A companion test forbids computed keys (`get_param(&format!(..))`), which the scan could not see; measured, there are none today. Related: Task 30's `/config/upsert` confirmation phrase, which is a UX guard and not an authorization boundary, and which Task 18A's key now can promote to one. |
-| **25** | **Does DR-16 reach the app runtime, which binds a provider the model itself authored?** Measured while writing Task 18A, and not covered by it. `configure_main_provider` (`routes/apps.rs:809`, called `:1259`) and `configure_worker_provider` (`:1480`, called `:1553`) both read `AgentConfig.model` — a `{provider, model}` pair — out of the app's stored manifest (`agent_drafter/store.rs:76-79`) and bind it with `agent.update_provider` **in process**, at `:820` and `:1492`, never through `POST /agent/update_provider`. That manifest is agent-authored: `agent_drafter__declare_profiles` (`agent_drafter/mod.rs:2497-2528`) takes a per-profile `model` straight from `ProfileParam` (`:699-712`) — tool arguments the model writes — and `agent_drafter` is **Public** by design. So a public model can name `llamacpp` in a profile and the app runtime will bind it, with Task 18A's guard nowhere on that path. **What is NOT claimed:** a worker profile gets its own session (`worker_session_key` → `app:{id}:{cid}:{profile}`, `:1450-1452`), so that is a session *created* at a tier, which is the same shape as any new session and not a raise. The sharp case is the app's **main** session, which is long-lived: a manifest edit followed by a reconnect re-runs `configure_main_provider` against a session that already exists. | Nothing in this plan. **The question is scope, not mechanism:** whether an app session's capability is fixed for its lifetime or re-derived per connection is [Task 22](#task-22-session-copy--three-hand-rolled-builders-become-one-derived-session-helper)'s and [Task 23](#task-23-spawn--reorder-stamp-filter-and-the-spawn-matrix)' to answer, and the answer decides whether this is a raise at all. Extending Task 18A here is not mechanical the way open question 24 was: these are in-process calls with no HTTP request to carry a header, so the proof would have to be a manifest-level grant rather than a request-level one — the *scoped permission* shape DR-16 names as the right answer if the local-model handoff turns out to be a routine agent step. |
+| **25** | **Does DR-16 reach the app runtime, which binds a provider the model itself authored?** Measured while writing Task 18A, and not covered by it. `configure_main_provider` (`routes/apps.rs:809`, called `:1259`) and `configure_worker_provider` (`:1480`, called `:1553`) both read `AgentConfig.model` — a `{provider, model}` pair — out of the app's stored manifest (`agent_drafter/store.rs:76-79`) and bind it with `agent.update_provider` **in process**, at `:820` and `:1492`, never through `POST /agent/update_provider`. That manifest is agent-authored: `agent_drafter__declare_profiles` (`agent_drafter/mod.rs:2497-2528`) takes a per-profile `model` straight from `ProfileParam` (`:699-712`) — tool arguments the model writes — and `agent_drafter` is **Public** by design. So a public model can name `llamacpp` in a profile and the app runtime will bind it, with Task 18A's guard nowhere on that path. **What is NOT claimed:** a worker profile gets its own session (`worker_session_key` → `app:{id}:{cid}:{profile}`, `:1450-1452`), so that is a session *created* at a tier, which is the same shape as any new session and not a raise. The sharp case is the app's **main** session, which is long-lived: a manifest edit followed by a reconnect re-runs `configure_main_provider` against a session that already exists. | ⚠ **The referral in this column was checked and does not hold — see [Open question 26](#open-questions), which is where the live half now lives.** Neither [Task 22](#task-22-session-copy--three-hand-rolled-builders-become-one-derived-session-helper) nor [Task 23](#task-23-spawn--reorder-stamp-filter-and-the-spawn-matrix) answers it: measured over both tasks' full text on 2026-08-02, neither mentions apps, manifests, per-connection re-derivation or session-capability lifetime at all, so the answer this row waits on was never going to arrive from there. [DR-19](#dr-19--a-warning-for-the-user-a-wall-for-the-agent) also settles the *scope* half the row called undecided: a bind that raises a **live** session is a raise whatever re-derives it, because the rule is about who initiated it and not about when it is recomputed. [Task 24](#task-24-the-two-shipped-features-the-gates-break)'s banner states the requirement and names the three guard sites. Original text: **Nothing in this plan. The question is scope, not mechanism:** whether an app session's capability is fixed for its lifetime or re-derived per connection is Task 22's and Task 23's to answer, and the answer decides whether this is a raise at all. Extending Task 18A here is not mechanical the way open question 24 was: these are in-process calls with no HTTP request to carry a header, so the proof would have to be a manifest-level grant rather than a request-level one — the *scoped permission* shape DR-16 names as the right answer if the local-model handoff turns out to be a routine agent step. |
+| **26** | **What is a proof-of-user for a bind that has no request?** [Task 24](#task-24-the-two-shipped-features-the-gates-break)'s banner establishes the requirement — agent-authored data may not raise a live app session's capability — and there are **three** sites, of which only the first two were previously known. (a) `configure_main_provider` (`routes/apps.rs:809`, bind `:820`) binds the manifest's `model`, which `agent_drafter__declare_profiles` wrote from tool arguments. (b) `apply_route_for_turn` (`:2181-2229`, bind `:2211`) binds a manifest route pin — **this is H4's own sequence**, which this plan narrates as *"Gate A allows the bind → Gate B ratchets"* and has never authorised. (c) **New, and the sharpest:** `ClientFrame::ModelSelect` (`:3409-3428`, bind `:3418`) arrives on `GET /apps/{id}/agent`, which is exempt from secret-key auth (`auth.rs:52-77`, `is_public_app_get` at `:76`), from a page whose TypeScript the model itself authored — so it is a raise over a channel needing **no credential at all**, and Task 24's *"fixed with zero new code — Gate A covers it"* is true of the downward arrow only. **Why the mechanism cannot be lifted from Task 18A:** (a) and (b) are in-process calls with no `HeaderMap`, and (c) has one but on an unauthenticated socket, where a header proves nothing. **The decision needed:** does an app that declares a private-tier provider require a one-time user grant, and if so where is it recorded? It cannot be the manifest (`store.rs:76-79`, agent-writable, which is the whole defect) and it cannot be an env var ([AR-11](#ar-11--amended-by-dr-17--the-daemons-own-api-secret-is-recoverable)). This is the *scoped permission* shape DR-16 names and deliberately did not build. | **Nothing is built.** [Task 24](#task-24-the-two-shipped-features-the-gates-break) carries the requirement in its banner, the three sites in its text, and one `#[ignore]`d test, `agent_authored_data_cannot_raise_a_live_app_sessions_capability`, that asserts all three — placed so that answering this question has somewhere to land. **Until it is answered the exposure is live and belongs to [Task 30A](#task-30a-the-non-private-model-disclosure)'s disclosure**, not to a gate. ⚠ Do **not** close it by adding a confirmation phrase or a manifest boolean: DR-19 says a confirmation compiled into the source is a UX guard and not a human, and a grant stored where the agent writes is not a grant. |
 
 ---
 
