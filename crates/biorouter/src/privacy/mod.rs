@@ -346,7 +346,11 @@ mod tests {
             // Task 13: Gate B's ratchet, in `Agent::reply`. The ONE place a
             // capability establishes a classification.
             ("crates/biorouter/src/agents/agent.rs", 1),
-            // ("crates/biorouter/src/agents/subagent_tool.rs", 1),  // uncomment in Task 23
+            // Task 23: the spawn stamp, in `apply_settings_overrides`. The
+            // child's CAPABILITY establishes the CLASSIFICATION its row is born
+            // with. The extension filter beside it deliberately does NOT cross:
+            // it compares two `ProviderTier`s through Gate C's own predicate.
+            ("crates/biorouter/src/agents/subagent_tool.rs", 1),
         ];
 
         // CARGO_MANIFEST_DIR is <workspace>/crates/biorouter; go up twice.

@@ -139,9 +139,33 @@ pub enum PrivacyRefusal {
         ASK_THE_USER_TO_SWITCH
     )]
     CapabilityConfigNeedsUser { key: String },
+
+    /// R4 / §8.2: a public-capability session may never gain private reach, not
+    /// even through a child it spawns. A subagent is an extension of the chat
+    /// that started it, so letting one reach further would make the boundary a
+    /// formality — spawn a child on a private model, have it read what the
+    /// parent may not, and hand the answer back as a summary.
+    ///
+    /// `requested` is the CHILD's tier, never the parent's, so the message can
+    /// say what was asked for without naming the parent's provider (R10's
+    /// disclosure bound: a refusal must not become a classification oracle).
+    #[error(
+        "This chat is running on a public model, so it cannot delegate to a private one: a \
+         subagent may never reach further than the chat that started it. No subagent was \
+         started and this chat is unchanged. Do not retry — the same call will be refused \
+         again. If this task genuinely needs a private model, stop and {}",
+        ASK_THE_USER_TO_SWITCH
+    )]
+    PrivateChildOfPublicParent { requested: ProviderTier },
 }
 
 impl PrivacyRefusal {
+    /// R4: the child a public parent asked for was private. Named here, and
+    /// nowhere before, because Task 23's spawn gate is its only caller.
+    pub fn spawn_upgrade(requested: ProviderTier) -> Self {
+        Self::PrivateChildOfPublicParent { requested }
+    }
+
     /// The classification of the session that refused. Half of the pair the
     /// GUI's card names ("this chat is **private**, that model is **public**").
     ///
@@ -155,7 +179,11 @@ impl PrivacyRefusal {
             Self::PublicModelOnPrivateSession { .. } => Some(SessionClassification::Private),
             Self::TierRaiseNeedsUser { .. }
             | Self::PrivateExtensionOverHttp { .. }
-            | Self::CapabilityConfigNeedsUser { .. } => None,
+            | Self::CapabilityConfigNeedsUser { .. }
+            // A spawn refusal is about the CAPABILITY the parent has, not about
+            // a session whose stored contents collided with a model. Inventing a
+            // classification for it would put a fabricated pair on the GUI card.
+            | Self::PrivateChildOfPublicParent { .. } => None,
         }
     }
 
@@ -163,6 +191,8 @@ impl PrivacyRefusal {
     pub fn provider_tier(&self) -> Option<ProviderTier> {
         match self {
             Self::PublicModelOnPrivateSession { .. } => Some(ProviderTier::Public),
+            // The child's tier — what was asked for, which is what was refused.
+            Self::PrivateChildOfPublicParent { requested } => Some(*requested),
             Self::TierRaiseNeedsUser { .. }
             | Self::PrivateExtensionOverHttp { .. }
             | Self::CapabilityConfigNeedsUser { .. } => None,
@@ -177,7 +207,8 @@ impl PrivacyRefusal {
             Self::PublicModelOnPrivateSession { session_id, .. } => Some(session_id),
             Self::TierRaiseNeedsUser { .. }
             | Self::PrivateExtensionOverHttp { .. }
-            | Self::CapabilityConfigNeedsUser { .. } => None,
+            | Self::CapabilityConfigNeedsUser { .. }
+            | Self::PrivateChildOfPublicParent { .. } => None,
         }
     }
 }
@@ -471,6 +502,7 @@ mod tests {
                 key: "BIOROUTER_PROVIDER".into(),
             }
             .to_string(),
+            PrivacyRefusal::spawn_upgrade(ProviderTier::Private).to_string(),
         ] {
             assert!(msg.contains(ASK_THE_USER_TO_SWITCH), "{msg}");
             assert!(
@@ -478,6 +510,35 @@ mod tests {
                 "a refusal the model will retry is a loop: {msg}"
             );
         }
+    }
+
+    /// R4's refusal, which Task 23's spawn gate is the only caller of. §14.4:
+    /// it reaches the model's context, so it may name the boundary and nothing
+    /// else — not the parent's provider (which would tell a public model which
+    /// providers are private), not a session id.
+    #[test]
+    fn the_spawn_refusal_names_the_boundary_and_no_provider() {
+        let refusal = PrivacyRefusal::spawn_upgrade(ProviderTier::Private);
+        let msg = refusal.to_string();
+        assert!(msg.contains("public model"), "{msg}");
+        assert!(msg.contains("subagent"), "{msg}");
+        // It is a refusal, not a warning: nothing was started.
+        assert!(msg.contains("No subagent was started"), "{msg}");
+        for leak in [
+            "versa_azure",
+            "versa_bedrock",
+            "ollama",
+            "llamacpp",
+            "anthropic",
+            "20260801_7",
+        ] {
+            assert!(!msg.contains(leak), "spawn refusal leaked {leak}: {msg}");
+        }
+        // The child's tier is carried for the handler, and the refusal is about
+        // a capability rather than about a stored session.
+        assert_eq!(refusal.provider_tier(), Some(ProviderTier::Private));
+        assert_eq!(refusal.session_classification(), None);
+        assert_eq!(refusal.session_id(), None);
     }
 
     /// The two refusals the desktop renderer can receive from the model picker

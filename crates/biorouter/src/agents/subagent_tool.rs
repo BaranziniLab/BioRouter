@@ -720,14 +720,18 @@ async fn execute_subagent(
     // BR-40: detached run — create the child session (so the handle can name it),
     // register the handle, and hand it straight back to the parent.
     if params.background && subagent_handle::background_enabled() {
+        // Issue #56: resolve the child's provider and tier BEFORE creating its
+        // row. A refusal must not leave a durable `SubAgent` session behind, and
+        // this path runs the whole stretch in a detached `tokio::spawn`.
+        let task_config = overridden_task_config(task_config, &params).await?;
         let session = create_subagent_session(
             &config,
             working_dir,
             &task_config.parent_session_id,
             &params,
+            task_config.privacy_tier,
         )
         .await?;
-        let task_config = overridden_task_config(task_config, &params).await?;
         return Ok(spawn_background_subagent(
             config,
             workflow,
@@ -745,28 +749,34 @@ async fn execute_subagent(
     })?;
     let _inflight = inflight;
 
+    // Issue #56: resolve the child's provider and tier BEFORE creating its row,
+    // exactly as on the background path above. `overridden_task_config` can
+    // fail with `?` — an unknown provider, a model that will not construct, and
+    // now R4's spawn refusal — and a row created first is a durable orphan
+    // `SubAgent` session with no provider and no run.
+    //
+    // It also stays ahead of the announce, for the older reason: announcing
+    // first would leave a tab open — and one of the four cap slots claimed until
+    // the guard drops — for a child that never runs a turn. The override never
+    // touches `parent_session_id`, so it reads the same either way.
+    let task_config = overridden_task_config(task_config, &params).await?;
+
     let session = create_subagent_session(
         &config,
         working_dir,
         &task_config.parent_session_id,
         &params,
+        task_config.privacy_tier,
     )
     .await?;
-
-    // Settings overrides are resolved BEFORE the announce, matching the
-    // background path's order. `overridden_task_config` can fail with `?` (an
-    // unknown provider, a model that will not construct), and announcing first
-    // would leave a tab open — and one of the four cap slots claimed until the
-    // guard drops — for a child that never runs a turn. `apply_settings_overrides`
-    // touches only `provider` and `extensions`, so `parent_session_id` below is
-    // the same value either way.
-    let task_config = overridden_task_config(task_config, &params).await?;
 
     // BR-71 decision 24: glass-box by default. The guard lives for the child's
     // whole run, so the slot is released exactly when the child finishes.
     let (visibility, _visible_guard) =
         announce_subagent_tab(&session.id, &task_config.parent_session_id, &params);
     let visibility_note = visibility.parent_note(&session.id);
+    // Taken before `task_config` is moved into the run below.
+    let privacy_note = dropped_extension_note(&task_config.dropped_private_extensions);
 
     // The result envelope encodes success, an incomplete (tool-call-ending)
     // run, or a failure — all as structured content — so this always returns a
@@ -784,6 +794,12 @@ async fn execute_subagent(
     let mut call_result = result.into_call_tool_result();
     if !visibility_note.is_empty() {
         call_result.content.push(Content::text(visibility_note));
+    }
+    // Issue #56: a capability the child was denied is reported, never dropped
+    // silently — the model delegated on the strength of a tool list it believes
+    // the child holds.
+    if let Some(note) = privacy_note {
+        call_result.content.push(Content::text(note));
     }
     Ok(call_result)
 }
@@ -854,6 +870,7 @@ async fn create_subagent_session(
     working_dir: PathBuf,
     parent_session_id: &str,
     params: &SubagentParams,
+    privacy_tier: crate::privacy::SessionClassification,
 ) -> Result<crate::session::Session, ErrorData> {
     let internal = |e: &dyn std::fmt::Display| ErrorData {
         code: ErrorCode::INTERNAL_ERROR,
@@ -875,13 +892,50 @@ async fn create_subagent_session(
         .session_manager
         .update(&session.id)
         .parent_session_id(Some(parent_session_id.to_string()))
+        // Issue #56 §8.2: the child's classification is stamped in the SAME
+        // statement as its parent link, and `privacy_tier` reaches here already
+        // decided — `apply_settings_overrides` runs before this function on both
+        // spawn paths, so a refused spawn never gets as far as a row.
+        //
+        // `raise_privacy` rather than a plain set, because the storage layer is
+        // what refuses a downgrade; on a row created two statements up it is
+        // always a raise from `public`, so the stamp is exact.
+        .raise_privacy(privacy_tier, &format!("inherited:{parent_session_id}"))
         .apply()
         .await
         .map_err(|e| internal(&e))?;
     // Keep the in-memory copy honest with the row we just wrote.
     session.parent_session_id = Some(parent_session_id.to_string());
+    session.privacy_tier = privacy_tier;
 
     Ok(session)
+}
+
+/// Issue #56 §8.2: what the parent is told when its child was denied one of the
+/// parent's own private extensions.
+///
+/// A dropped capability MUST be reported. The model chose to delegate on the
+/// strength of the tool list it believes the child holds; a silent removal
+/// leaves it planning around a tool the child will answer "unknown tool" to, and
+/// re-spawning to work around it. §14.4 bounds the text: it names the extensions
+/// (which the parent already holds, so nothing is disclosed) and the boundary,
+/// and no session content.
+///
+/// `None` when nothing was dropped, so the call sites read as
+/// `if let Some(note) = …`.
+fn dropped_extension_note(dropped: &[String]) -> Option<String> {
+    if dropped.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "Note: this subagent is running on a public model, so it was NOT given these private \
+         extensions of yours: {}. They reach data held inside the institution, so only a private \
+         model may call them. Do not ask the subagent to use them, and do not re-spawn it to try \
+         again — the boundary is the same every time. If the task needs them, do it in this chat \
+         instead, or {}",
+        dropped.join(", "),
+        crate::privacy::refusal::ASK_THE_USER_TO_SWITCH
+    ))
 }
 
 async fn overridden_task_config(
@@ -931,6 +985,8 @@ fn spawn_background_subagent(
     // function returns (which is immediately).
     let (visibility, visible_guard) =
         announce_subagent_tab(&child_session_id, &task_config.parent_session_id, params);
+    // Taken before `task_config` moves into the detached task below.
+    let privacy_note = dropped_extension_note(&task_config.dropped_private_extensions);
 
     let task_handle = handle.clone();
     tokio::spawn(async move {
@@ -959,11 +1015,18 @@ fn spawn_background_subagent(
         task_handle.complete(result);
     });
 
-    let text = background_started_message(
+    let mut text = background_started_message(
         &handle.id,
         &handle.child_session_id,
         &visibility.parent_note(&handle.child_session_id),
     );
+    // Issue #56: same disclosure as the blocking path. It has to ride this
+    // message, because the background path returns before any `SubagentResult`
+    // exists.
+    if let Some(note) = privacy_note {
+        text.push_str("\n\n");
+        text.push_str(&note);
+    }
 
     CallToolResult {
         content: vec![Content::text(text)],
@@ -1118,6 +1181,13 @@ async fn apply_settings_overrides(
     mut task_config: TaskConfig,
     params: &SubagentParams,
 ) -> Result<TaskConfig> {
+    // Issue #56 §8.2. The PARENT's capability, read before any override below
+    // can replace the instance it is a property of.
+    //
+    // `tier()` on a composite is `least()` over its components, so a lead/worker
+    // parent contributes the reach it actually has, not the reach of its lead.
+    let parent_cap = task_config.provider.tier();
+
     if let Some(settings) = &params.settings {
         if settings.provider.is_some() || settings.model.is_some() || settings.temperature.is_some()
         {
@@ -1142,6 +1212,33 @@ async fn apply_settings_overrides(
         }
     }
 
+    // The CHILD's capability, read off the CONSTRUCTED INSTANCE rather than off
+    // the name that was requested. `providers::create` can return something
+    // else entirely — the `BIOROUTER_LEAD_MODEL` intercept in `factory.rs` fires
+    // BEFORE the registry lookup — and when only `model` is given, the code
+    // above keeps the parent's provider name and swaps the model string. Both
+    // are harmless here precisely because the tier is a property of the
+    // instance and never of a model id.
+    let child_tier = task_config.provider.tier();
+
+    // R4, refused: a public-capability session may never gain private reach,
+    // not even through a child. Refusing (rather than silently downgrading the
+    // child) is the point — a subagent is an extension of the chat that started
+    // it, so "spawn a private child and hand the answer back" would make the
+    // boundary a formality.
+    if child_tier.is_private() && !parent_cap.is_private() {
+        return Err(crate::privacy::PrivacyRefusal::spawn_upgrade(child_tier).into());
+    }
+    // R4, permitted but disclosed: a private parent MAY delegate to a public
+    // model. The child inherits none of the parent's conversation, so the task
+    // prompt is the entire disclosure — which is what the confirmation shows.
+    if !child_tier.is_private() && parent_cap.is_private() {
+        task_config.requires_downgrade_confirmation = true;
+    }
+    // The ONE crossing this task adds: the child's CAPABILITY establishes the
+    // CLASSIFICATION its row is born with.
+    task_config.privacy_tier = crate::privacy::floor(child_tier);
+
     if let Some(extension_names) = &params.extensions {
         if extension_names.is_empty() {
             task_config.extensions = Vec::new();
@@ -1151,6 +1248,37 @@ async fn apply_settings_overrides(
                 .retain(|ext| extension_names.contains(&ext.name()));
         }
     }
+
+    // The TIER filter the name-only narrowing above does not do. Without it a
+    // session holding `ucsfomopagent` could spawn a public-model child that
+    // inherited it verbatim, leaving Gate C as the only thing between a public
+    // model and the clinical warehouse.
+    //
+    // It runs AFTER the name narrowing so `dropped_private_extensions` names
+    // only what the child would otherwise actually have held: a caller that
+    // asked for `extensions: []` lost nothing to privacy and must not be told
+    // that it did.
+    //
+    // NOT `visible_to(child_tier, floor(<the extension's tier>))`: both sides of
+    // that comparison are `ProviderTier`s, so `floor` has no business in it, and
+    // writing it that way would add a SECOND crossing here. This is Gate C's own
+    // predicate, which is also what Gate E uses, so all three agree by
+    // construction rather than by three people reading the same paragraph.
+    //
+    // ⚠ The classifier is named exactly ONCE in this function, and a gate greps
+    // for that: do not repeat its name in prose here.
+    let (kept, dropped): (Vec<_>, Vec<_>) = std::mem::take(&mut task_config.extensions)
+        .into_iter()
+        .partition(|e| {
+            crate::privacy::refusal::privacy_refusal(
+                &e.name(),
+                crate::privacy::classify_extension(&e.name()),
+                child_tier,
+            )
+            .is_none()
+        });
+    task_config.extensions = kept;
+    task_config.dropped_private_extensions = dropped.iter().map(|e| e.name()).collect();
 
     Ok(task_config)
 }
@@ -1365,8 +1493,13 @@ mod tests {
 
         // …and nothing was created on the way to the refusal: a child session
         // would be an orphan the parent is never told about.
-        assert!(
-            sm.list_sessions().await.unwrap().is_empty(),
+        //
+        // `COUNT(*)` rather than `list_sessions()`: the latter filters to
+        // `User | Scheduled` and therefore cannot see a `SubAgent` row, which
+        // is the only kind this path creates.
+        assert_eq!(
+            sm.count_all_sessions().await.unwrap(),
+            0,
             "the refusal must precede session creation"
         );
     }
@@ -1841,10 +1974,15 @@ mod tests {
             "instructions": "stamp the parent at birth"
         }))
         .unwrap();
-        let session =
-            create_subagent_session(&config, temp.path().to_path_buf(), "parent-99", &params)
-                .await
-                .expect("session creation succeeds");
+        let session = create_subagent_session(
+            &config,
+            temp.path().to_path_buf(),
+            "parent-99",
+            &params,
+            crate::privacy::SessionClassification::Public,
+        )
+        .await
+        .expect("session creation succeeds");
 
         // The handle the caller gets back agrees with the row (the background
         // path returns this value and never re-reads).
@@ -1938,5 +2076,440 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(subagent_session_label(&blank), "Subagent task");
+    }
+
+    // -----------------------------------------------------------------------
+    // Issue #56, Task 23: SPAWN INHERITANCE (design §8.2).
+    //
+    // A subagent is an extension of the chat that started it, so its reach and
+    // the classification its row is born with are decided BEFORE the row
+    // exists. Everything below drives the real `apply_settings_overrides` — and,
+    // where the ordering is the whole point, the real tool entry point — rather
+    // than a second copy of the rule.
+    // -----------------------------------------------------------------------
+
+    use crate::privacy::{PrivacyRefusal, ProviderTier, SessionClassification};
+
+    /// A parent provider whose only interesting property is its tier — the same
+    /// shape `agent::gate_a_bind_tests::TieredProvider` uses.
+    ///
+    /// `complete_with_model` returns `Authentication`, the one error class the
+    /// tree documents as never worth retrying, so a test that accidentally
+    /// reaches a turn fails fast instead of backing off.
+    struct TieredParent {
+        tier: ProviderTier,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::providers::base::Provider for TieredParent {
+        fn metadata() -> crate::providers::base::ProviderMetadata {
+            crate::providers::base::ProviderMetadata::new(
+                "tiered-parent",
+                "Tiered parent",
+                "",
+                "tiered-model",
+                vec![],
+                "",
+                vec![],
+            )
+        }
+
+        fn get_name(&self) -> &str {
+            "tiered-parent"
+        }
+
+        fn tier(&self) -> ProviderTier {
+            self.tier
+        }
+
+        fn get_model_config(&self) -> crate::model::ModelConfig {
+            crate::model::ModelConfig::new_or_fail("tiered-model")
+        }
+
+        async fn complete_with_model(
+            &self,
+            _model_config: &crate::model::ModelConfig,
+            _system: &str,
+            _messages: &[crate::conversation::message::Message],
+            _tools: &[Tool],
+        ) -> std::result::Result<
+            (
+                crate::conversation::message::Message,
+                crate::providers::base::ProviderUsage,
+            ),
+            crate::providers::errors::ProviderError,
+        > {
+            Err(crate::providers::errors::ProviderError::Authentication(
+                "the spawn matrix never runs a real turn".to_string(),
+            ))
+        }
+    }
+
+    /// What the spawning model asked for, in the vocabulary of §8.2's matrix.
+    #[derive(Clone, Copy, Debug)]
+    enum Ask {
+        /// No `settings` at all — the child runs the parent's own provider
+        /// instance, which is what makes R5 (same lead/worker mode) free.
+        Inherit,
+        /// A named provider that resolves PRIVATE.
+        Private,
+        /// A named provider that resolves PUBLIC.
+        Public,
+    }
+
+    /// The requested NAME is `ollama` for BOTH tiered asks, deliberately.
+    ///
+    /// §8.2 is validated on the CONSTRUCTED INSTANCE, never on the name:
+    /// `providers::create` can hand back something other than what was asked for
+    /// (the `BIOROUTER_LEAD_MODEL` intercept fires before the registry lookup),
+    /// and when only `model` is given today's code keeps the parent's provider
+    /// name and swaps the model string. `ollama` is the one registry entry that
+    /// constructs with no credential and no network *and* reads its tier off the
+    /// resolved base URL — so one real `providers::create` call yields a Private
+    /// instance pointed at this machine and a Public one pointed off it, under
+    /// the identical requested name.
+    fn ask_params(ask: Ask) -> SubagentParams {
+        let body = match ask {
+            Ask::Inherit => json!({ "instructions": "do the thing" }),
+            Ask::Private | Ask::Public => json!({
+                "instructions": "do the thing",
+                "settings": { "provider": "ollama" }
+            }),
+        };
+        serde_json::from_value(body).unwrap()
+    }
+
+    /// Task-local config for one ask. `with_config_overrides` beats both the
+    /// environment and the config file, and touches neither, so these tests can
+    /// run in parallel with everything else in this binary.
+    fn ask_overrides(ask: Ask) -> HashMap<String, String> {
+        match ask {
+            Ask::Public => HashMap::from([(
+                "OLLAMA_HOST".to_string(),
+                "https://ollama.example.com".to_string(),
+            )]),
+            // The shipped default is `localhost`, i.e. loopback, i.e. Private.
+            Ask::Inherit | Ask::Private => HashMap::new(),
+        }
+    }
+
+    fn builtin_extension(name: &str) -> crate::agents::ExtensionConfig {
+        crate::agents::ExtensionConfig::Builtin {
+            name: name.to_string(),
+            display_name: Some(name.to_string()),
+            description: String::new(),
+            timeout: Some(30),
+            bundled: Some(true),
+            available_tools: Vec::new(),
+        }
+    }
+
+    fn parent_task_config(
+        parent: ProviderTier,
+        extensions: Vec<crate::agents::ExtensionConfig>,
+    ) -> TaskConfig {
+        let provider: std::sync::Arc<dyn crate::providers::base::Provider> =
+            std::sync::Arc::new(TieredParent { tier: parent });
+        TaskConfig::new(provider, "parent-1", std::path::Path::new("."), extensions)
+    }
+
+    /// One row of the matrix, through the real resolver.
+    async fn resolve_child(
+        parent: ProviderTier,
+        ask: Ask,
+        extensions: Vec<crate::agents::ExtensionConfig>,
+    ) -> Result<TaskConfig> {
+        let task_config = parent_task_config(parent, extensions);
+        let params = ask_params(ask);
+        crate::config::with_config_overrides(
+            ask_overrides(ask),
+            apply_settings_overrides(task_config, &params),
+        )
+        .await
+    }
+
+    /// Design §8.2, row by row.
+    #[tokio::test]
+    async fn the_spawn_matrix_holds() {
+        use ProviderTier::{Private, Public};
+        for (parent, ask, tier, prompt) in [
+            (Private, Ask::Inherit, SessionClassification::Private, false),
+            (Private, Ask::Private, SessionClassification::Private, false),
+            (Private, Ask::Public, SessionClassification::Public, true),
+            (Public, Ask::Inherit, SessionClassification::Public, false),
+            (Public, Ask::Public, SessionClassification::Public, false),
+        ] {
+            let child = resolve_child(parent, ask, vec![])
+                .await
+                .unwrap_or_else(|e| panic!("{parent:?} + {ask:?} must be permitted: {e}"));
+            assert_eq!(
+                child.privacy_tier, tier,
+                "{parent:?} + {ask:?} must be born {tier:?}"
+            );
+            assert_eq!(
+                child.requires_downgrade_confirmation, prompt,
+                "{parent:?} + {ask:?} confirmation"
+            );
+        }
+
+        // R4: a public session may never gain private reach. Hard refusal.
+        let err = resolve_child(Public, Ask::Private, vec![])
+            .await
+            .expect_err("a public parent may not spawn a private child");
+        assert!(
+            matches!(
+                err.downcast_ref::<PrivacyRefusal>(),
+                Some(PrivacyRefusal::PrivateChildOfPublicParent { .. })
+            ),
+            "expected R4's typed refusal, got: {err}"
+        );
+    }
+
+    /// A downgraded child is born PUBLIC, not inheriting the parent's private —
+    /// otherwise it starts life in the stuck residual state where its
+    /// classification outranks the only model it can run.
+    ///
+    /// The private half is in the same test on purpose: "born public" passes
+    /// vacuously against an implementation that stamps nothing at all, because
+    /// `sessions.privacy_tier` already defaults to `'public'`.
+    #[tokio::test]
+    async fn a_downgraded_child_is_born_public_not_inheriting_the_parents_private() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let sm = std::sync::Arc::new(crate::session::SessionManager::new(
+            temp.path().to_path_buf(),
+        ));
+        let config = AgentConfig::new(
+            sm.clone(),
+            crate::config::permission::PermissionManager::instance(),
+            None,
+            crate::config::BioRouterMode::Auto,
+        );
+        let params = ask_params(Ask::Inherit);
+
+        for (ask, expected) in [
+            (Ask::Public, SessionClassification::Public),
+            (Ask::Inherit, SessionClassification::Private),
+        ] {
+            let child_config = resolve_child(ProviderTier::Private, ask, vec![])
+                .await
+                .unwrap();
+            let session = create_subagent_session(
+                &config,
+                temp.path().to_path_buf(),
+                "parent-1",
+                &params,
+                child_config.privacy_tier,
+            )
+            .await
+            .unwrap();
+
+            let row = sm.get_session(&session.id, false).await.unwrap();
+            assert_eq!(row.privacy_tier, expected, "{ask:?}");
+            assert_eq!(session.privacy_tier, expected, "{ask:?} in-memory handle");
+            assert_eq!(
+                row.privacy_reason.as_deref(),
+                Some("inherited:parent-1"),
+                "the provenance names the spawn, so §12.4 can grade it"
+            );
+            // It receives only the task prompt — none of the parent's history,
+            // which is exactly why the downgrade confirmation shows the prompt:
+            // the prompt is the entire disclosure.
+            assert_eq!(row.message_count, 0, "no parent conversation is carried");
+            assert_eq!(row.diverged_from, None, "a spawn is not a branch");
+            assert_eq!(row.parent_session_id.as_deref(), Some("parent-1"));
+        }
+    }
+
+    /// THE ORDERING BUG. `create_subagent_session` used to run BEFORE
+    /// `overridden_task_config` on both paths, so a refusal left a durable
+    /// `SubAgent` row with no provider and no run — and on the background path
+    /// the whole stretch runs inside a detached `tokio::spawn`.
+    ///
+    /// Both paths, because the fix has to be applied twice and a single-path
+    /// test would pass with one of them still inverted.
+    #[tokio::test]
+    async fn a_refused_spawn_leaves_no_orphan_row() {
+        for background in [false, true] {
+            let temp = tempfile::TempDir::new().unwrap();
+            let sm = std::sync::Arc::new(crate::session::SessionManager::new(
+                temp.path().to_path_buf(),
+            ));
+            let config = AgentConfig::new(
+                sm.clone(),
+                crate::config::permission::PermissionManager::instance(),
+                None,
+                crate::config::BioRouterMode::Auto,
+            );
+            let provider: std::sync::Arc<dyn crate::providers::base::Provider> =
+                std::sync::Arc::new(TieredParent {
+                    tier: ProviderTier::Public,
+                });
+            let task_config = TaskConfig::new(provider, "parent-1", temp.path(), vec![]);
+
+            let mut overrides = ask_overrides(Ask::Private);
+            overrides.insert(
+                "BIOROUTER_SUBAGENT_BACKGROUND".to_string(),
+                background.to_string(),
+            );
+
+            let err = crate::config::with_config_overrides(overrides, async {
+                handle_subagent_tool(
+                    &config,
+                    json!({
+                        "instructions": "read the clinical warehouse for me",
+                        "settings": { "provider": "ollama" },
+                        "background": background,
+                    }),
+                    task_config,
+                    HashMap::new(),
+                    temp.path().to_path_buf(),
+                    None,
+                )
+                .result
+                .await
+            })
+            .await
+            .expect_err(&format!(
+                "a public parent may not spawn a private child (background={background})"
+            ));
+
+            assert_eq!(
+                err.code,
+                ErrorCode::INVALID_PARAMS,
+                "background={background}"
+            );
+            assert!(
+                err.message.contains("subagent"),
+                "background={background}, got: {}",
+                err.message
+            );
+            // `COUNT(*)`, NOT `list_sessions()`. `list_sessions` filters to
+            // `User | Scheduled`, so it cannot see a `SubAgent` row at all —
+            // asserting on it passes just as happily against the orphan this
+            // test exists to catch.
+            assert_eq!(
+                sm.count_all_sessions().await.unwrap(),
+                0,
+                "a refused spawn must leave no session behind (background={background})"
+            );
+        }
+    }
+
+    /// `apply_settings_overrides` narrowed by NAME only, never by tier — so a
+    /// session holding `ucsfomopagent` could spawn a public-model child that
+    /// inherited it verbatim, and Gate C would then be the only thing between a
+    /// public model and the clinical warehouse.
+    #[tokio::test]
+    async fn a_public_child_does_not_inherit_its_parents_private_extensions() {
+        let child = resolve_child(
+            ProviderTier::Private,
+            Ask::Public,
+            vec![
+                builtin_extension("ucsfomopagent"),
+                builtin_extension("developer"),
+            ],
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            child
+                .extensions
+                .iter()
+                .map(crate::agents::ExtensionConfig::name)
+                .collect::<Vec<_>>(),
+            vec!["developer".to_string()]
+        );
+        assert_eq!(
+            child.dropped_private_extensions,
+            vec!["ucsfomopagent".to_string()],
+            "the drop must be recorded so the model can be told"
+        );
+        let note = dropped_extension_note(&child.dropped_private_extensions)
+            .expect("a drop that happened is a drop that is reported");
+        assert!(note.contains("ucsfomopagent"), "got: {note}");
+
+        // A child that stays private keeps it, and is told nothing.
+        let kept = resolve_child(
+            ProviderTier::Private,
+            Ask::Inherit,
+            vec![builtin_extension("ucsfomopagent")],
+        )
+        .await
+        .unwrap();
+        assert_eq!(kept.extensions.len(), 1);
+        assert!(kept.dropped_private_extensions.is_empty());
+        assert!(dropped_extension_note(&kept.dropped_private_extensions).is_none());
+    }
+
+    /// The CALL SITE for the sentence above: the drop has to reach the parent's
+    /// tool result, or the model silently loses a capability it will keep
+    /// planning around. A pure test of the note passes against a note nothing
+    /// ever appends.
+    ///
+    /// Driven through the real tool with a provider that fails on its first
+    /// completion (the `empty.json` cassette pattern `subagent_handler`'s tests
+    /// use), so the child's run ends immediately and the envelope this asserts
+    /// on is the real one.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn the_parent_is_told_which_private_extensions_its_child_lost() {
+        // This is the one test here that drives a REAL spawn, so it reaches
+        // `announce_subagent_tab` and `begin_turn`. The `FakeGui` above is
+        // installed process-wide by `set_for_tests`, and its `begin_turn` is an
+        // `unreachable!` — so this must both take the `workspace_services`
+        // serial token and pin itself headless rather than inherit whatever a
+        // panicking neighbour left behind.
+        crate::workspace_services::set_for_tests(None);
+        let temp = tempfile::TempDir::new().unwrap();
+        let sm = std::sync::Arc::new(crate::session::SessionManager::new(
+            temp.path().to_path_buf(),
+        ));
+        let config = AgentConfig::new(
+            sm.clone(),
+            crate::config::permission::PermissionManager::instance(),
+            None,
+            crate::config::BioRouterMode::Auto,
+        );
+        let cassette = temp.path().join("empty.json");
+        std::fs::write(&cassette, "{}").unwrap();
+        // `TestProvider` takes the fail-safe default tier, Public — which is the
+        // parent shape this covers: a public chat that still holds a private
+        // extension in its list (Gate C refuses the CALL, it does not unload the
+        // extension). The child inherits the list and must not inherit that one.
+        let provider: std::sync::Arc<dyn crate::providers::base::Provider> = std::sync::Arc::new(
+            crate::providers::testprovider::TestProvider::new_replaying(cassette.to_str().unwrap())
+                .unwrap(),
+        );
+        let task_config = TaskConfig::new(
+            provider,
+            "parent-1",
+            temp.path(),
+            vec![builtin_extension("ucsfomopagent")],
+        );
+
+        let result = handle_subagent_tool(
+            &config,
+            json!({ "instructions": "summarise the cohort" }),
+            task_config,
+            HashMap::new(),
+            temp.path().to_path_buf(),
+            None,
+        )
+        .result
+        .await
+        .expect("the spawn itself is permitted — only the extension is dropped");
+
+        let text = result
+            .content
+            .iter()
+            .filter_map(|c| c.as_text().map(|t| t.text.clone()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            text.contains("ucsfomopagent"),
+            "the parent must be told which capability its child lost: {text}"
+        );
+        crate::workspace_services::clear_test_override();
     }
 }
