@@ -2710,13 +2710,24 @@ async fn restore_route_provider(
             previous = %previous,
             "this chat became private during a routed turn, so it stays on the route's model"
         );
+        // `emit_frame` is the RAW send — unlike `UiBridge::emit` it stamps
+        // neither `type` nor `v`, so this envelope is built by hand. `v` is the
+        // shared `CATALOG_VERSION` rather than a literal `1`: the two agree
+        // today, and a literal would silently disagree the day the catalog
+        // bumps, leaving an SDK to feature-detect against a stale version.
+        //
+        // `timeoutMs: 0` is deliberate. `applyNotify` in `sdk.ts` defaults to
+        // 4000 ms, and a notice saying the chat is permanently on a different
+        // model is not something to show for four seconds — 0 is the SDK's
+        // sticky/click-to-dismiss shape.
         ui_bridge.emit_frame(json!({
             "type":"ui","cmd":"notify","level":"warn",
             "message": format!(
                 "This chat is now private, so it cannot be switched back to \"{previous}\", \
                  which is a public model. It stays on the route's private model."
             ),
-            "v":1,
+            "timeoutMs": 0,
+            "v": CATALOG_VERSION,
         }));
         return;
     }
@@ -8666,6 +8677,7 @@ mod tests {
     mod privacy_task24 {
         use super::super::{
             configure_worker_provider, provider_is_private_for_app, restore_route_provider,
+            CATALOG_VERSION,
         };
         use biorouter::agents::{Agent, AgentConfig as BrAgentConfig};
         use biorouter::config::permission::PermissionManager;
@@ -8756,10 +8768,12 @@ mod tests {
         }
 
         /// Every frame the bridge has emitted since `attach`.
-        fn drain(rx: &mut tokio::sync::mpsc::UnboundedReceiver<serde_json::Value>) -> Vec<String> {
+        fn drain(
+            rx: &mut tokio::sync::mpsc::UnboundedReceiver<serde_json::Value>,
+        ) -> Vec<serde_json::Value> {
             let mut out = Vec::new();
             while let Ok(frame) = rx.try_recv() {
-                out.push(frame.to_string());
+                out.push(frame);
             }
             out
         }
@@ -8818,11 +8832,28 @@ mod tests {
                 "restore was refused, so the route provider must remain — deliberately, not silently"
             );
             let frames = drain(&mut rx);
+            let notice = frames
+                .iter()
+                .find(|f| f["cmd"] == "notify")
+                .unwrap_or_else(|| panic!("the user is told: {frames:?}"));
             assert!(
-                frames
-                    .iter()
-                    .any(|f| f.contains("notify") && f.contains("private")),
-                "the user is told: {frames:?}"
+                notice["message"]
+                    .as_str()
+                    .is_some_and(|m| m.contains("private")),
+                "the notice says why: {notice}"
+            );
+            // `emit_frame` stamps nothing, so the envelope is asserted here.
+            assert_eq!(notice["type"], "ui", "{notice}");
+            assert_eq!(
+                notice["v"],
+                serde_json::json!(CATALOG_VERSION),
+                "the notice carries the shared catalog version, not a literal: {notice}"
+            );
+            // Sticky. `applyNotify` in `sdk.ts` defaults to 4000 ms, and a
+            // notice about a permanent model change must not auto-dismiss.
+            assert_eq!(
+                notice["timeoutMs"], 0,
+                "the notice must be click-to-dismiss, not a 4-second toast: {notice}"
             );
         }
 
