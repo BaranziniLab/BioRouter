@@ -289,4 +289,54 @@ if (!existsSync(PLAYWRIGHT)) {
     }
     await ctx.close();
   });
+
+  /** The shelf after `registry.json` has been rewritten in flight. */
+  async function shelfWithRegistry(mutate) {
+    const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    await page.route('**/registry.json', async (route) => {
+      const body = await (await route.fetch()).json();
+      mutate(body);
+      await route.fulfill({ json: body });
+    });
+    await page.goto(`${BASE}/baam.html`);
+    // Either outcome has cards in the DOM: rendering empties #extensions-grid,
+    // refusing to render leaves the authored cards exactly where they were.
+    await page.waitForSelector('#extensions-section .ext-card');
+    return page;
+  }
+
+  const renderedFromRegistry = (page) =>
+    page.$$eval('#extensions-grid .ext-card', (els) => els.length === 0);
+
+  test('a registry entry with an unreadable tier keeps the static fallback', async () => {
+    // `privacy === 'private' ? 'private' : 'public'` reads every value it does
+    // not recognise as Public, so one unparseable field paints a reassuring
+    // label nobody computed — on a shelf whose whole point is which extensions
+    // touch private data. The generator refuses to PUBLISH such a value; the
+    // renderer has to refuse to DISPLAY it, because the file it renders is
+    // fetched at runtime and the page it is fetched into cannot re-validate the
+    // source. The correct answer already exists: the authored cards underneath.
+    const page = await shelfWithRegistry((r) => {
+      r.extensions[0].privacy = 'privte';
+    });
+    assert.equal(
+      await renderedFromRegistry(page),
+      false,
+      'a registry with an unreadable tier must not reach the DOM'
+    );
+    // …and the fallback is intact, not a blank shelf.
+    assert.equal(
+      await page.locator('.ext-card[data-privacy="private"] .tag.private').count(),
+      2
+    );
+    await page.close();
+  });
+
+  test('a well-formed registry still renders', async () => {
+    // Without this, "refuse to render" is satisfiable by never rendering, and
+    // every other test in this file would be reading static markup.
+    const page = await shelfWithRegistry(() => {});
+    assert.equal(await renderedFromRegistry(page), true);
+    await page.close();
+  });
 }

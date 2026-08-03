@@ -3801,10 +3801,38 @@ extensions: []</pre>
   const isAdapterExt = ext => /BRXT/i.test(ext.organization || '');
   let adaptersManualOpen = false;
 
+  // An entry may omit `privacy` — an un-annotated card is public by construction,
+  // and the generator resolves it that way — but an entry that STATES a tier must
+  // state one of the two that exist. Absent and unreadable are different things:
+  // the first is a default nobody has to have written down, the second is a value
+  // whose meaning is unknown, and calling it "public" is a reassurance nobody
+  // computed. See readableTiers() for what happens then.
+  const tierOf = (extension) => {
+    if (!('privacy' in extension) || extension.privacy === undefined || extension.privacy === null) {
+      return 'public';
+    }
+    return extension.privacy === 'private' || extension.privacy === 'public' ? extension.privacy : null;
+  };
+
+  // registry.json is fetched at runtime from a server this page cannot re-run the
+  // generator against, so the generator's refusals do not protect the renderer.
+  // One unreadable tier discards the whole payload rather than rendering a shelf
+  // that is right about 36 extensions and silently wrong about the 37th — and the
+  // fallback is not a blank page, it is the authored static cards the shelf is
+  // rendered over, which carry their own badges and their own data-privacy.
+  function readableTiers(extensions) {
+    const bad = extensions.filter(e => tierOf(e) === null);
+    if (bad.length === 0) return true;
+    console.warn(
+      'baam: keeping the static extension shelf — ' + bad.length +
+      ' registry entr' + (bad.length === 1 ? 'y states a tier that is neither' : 'ies state a tier that is neither') +
+      ' "private" nor "public": ' + bad.map(e => e.id + '=' + JSON.stringify(e.privacy)).join(', ')
+    );
+    return false;
+  }
+
   function extCardHtml(extension, featured) {
-    // Anything but an explicit "private" is public — the same fail-safe default
-    // the registry generator applies to an un-annotated card.
-    const privacy = extension.privacy === 'private' ? 'private' : 'public';
+    const privacy = tierOf(extension);
     const privacyLabel = privacy === 'private' ? 'Private' : 'Public';
     // BOTH states are labelled. A badge shown only on private extensions teaches
     // a visitor nothing about its absence — an unbadged card would read as "not
@@ -3991,6 +4019,10 @@ extensions: []</pre>
       if (!res.ok) throw new Error('registry fetch failed');
       const registry = await res.json();
       if (!Array.isArray(registry.extensions) || registry.extensions.length === 0) return;
+      // Validated BEFORE anything is written to the DOM: renderExtensions()
+      // empties the static grid as its last step, so a half-applied render has
+      // already destroyed the fallback it would need to fall back to.
+      if (!readableTiers(registry.extensions)) return;
       renderExtensions(registry.extensions);
       if (activeShelf === 'extensions') runFilter();
     } catch (e) { /* keep the static no-JS fallback grid */ }
