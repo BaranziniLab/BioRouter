@@ -107,43 +107,177 @@ const slugFromUrl = (url) => {
 const absolutize = (url) =>
   /^https?:\/\//i.test(url) ? url : SITE_BASE + url.replace(/^\.?\//, '');
 
-// Extract the inner HTML of the first element with the given id (div-level).
-function sliceById(id) {
-  const open = html.indexOf(`id="${id}"`);
-  if (open === -1) return '';
-  // Walk forward to the matching close of this <div>.
-  const start = html.lastIndexOf('<div', open);
-  let depth = 0;
-  let i = start;
-  const re = /<\/?div\b[^>]*>/g;
-  re.lastIndex = start;
-  let m;
-  while ((m = re.exec(html))) {
-    if (m[0].startsWith('</')) depth--;
-    else depth++;
-    if (depth === 0) {
-      i = m.index + m[0].length;
-      break;
+// ---- A small, strict reader for element start tags ------------------------
+// Not a full HTML parser, and it does not need to be. Everything the privacy
+// rules depend on is (1) which element is the card and (2) that element's OWN
+// attributes, so this reads start tags the way HTML actually defines them: any
+// attribute order, optional whitespace around `=`, single or double quotes,
+// unquoted values, valueless attributes, case-insensitive names.
+//
+// The previous reader searched the card's whole fragment for the literal string
+// `data-privacy="…"`. Three legal spellings therefore read as an un-annotated —
+// i.e. PUBLIC — card: `data-privacy = "private"`, `data-privacy='private'`, and
+// a `class` attribute that was not written first (which hid the card entirely).
+// A fourth, a `data-privacy` on a CHILD of the card, read as the card's own.
+// Every one of those fails in the open direction.
+
+const ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", '#39': "'" };
+const decodeEntities = (s) => s.replace(/&(amp|lt|gt|quot|apos|#39);/g, (_, e) => ENTITIES[e]);
+
+const isSpace = (c) => c === ' ' || c === '\t' || c === '\n' || c === '\r' || c === '\f';
+
+/** Read the tag beginning at `src[at]` (which must be `<`), or null if none. */
+function readTag(src, at) {
+  if (src[at] !== '<') return null;
+  let i = at + 1;
+  const closing = src[i] === '/';
+  if (closing) i++;
+  const nameStart = i;
+  while (i < src.length && /[a-zA-Z0-9:_-]/.test(src[i])) i++;
+  if (i === nameStart) return null; // `<!--`, `<!doctype`, or a stray `<`
+  const name = src.slice(nameStart, i).toLowerCase();
+  const attrs = Object.create(null);
+  while (i < src.length) {
+    while (i < src.length && isSpace(src[i])) i++;
+    if (src[i] === '>') return { name, attrs, closing, selfClosing: false, end: i + 1 };
+    if (src[i] === '/' && src[i + 1] === '>') {
+      return { name, attrs, closing, selfClosing: true, end: i + 2 };
+    }
+    const attrStart = i;
+    while (i < src.length && !isSpace(src[i]) && src[i] !== '/' && src[i] !== '>' && src[i] !== '=') {
+      i++;
+    }
+    if (i === attrStart) {
+      i++; // a character that cannot start an attribute name; step over it
+      continue;
+    }
+    const attrName = src.slice(attrStart, i).toLowerCase();
+    let j = i;
+    while (j < src.length && isSpace(src[j])) j++;
+    if (src[j] !== '=') {
+      // A valueless (boolean) attribute. `null`, never `''` — "declared with no
+      // value" and "declared empty" are different mistakes and get different
+      // messages.
+      attrs[attrName] = null;
+      continue;
+    }
+    i = j + 1;
+    while (i < src.length && isSpace(src[i])) i++;
+    const quote = src[i];
+    if (quote === '"' || quote === "'") {
+      const close = src.indexOf(quote, i + 1);
+      if (close === -1) return null; // unterminated value: not a tag we can trust
+      attrs[attrName] = decodeEntities(src.slice(i + 1, close));
+      i = close + 1;
+    } else {
+      const valueStart = i;
+      while (i < src.length && !isSpace(src[i]) && src[i] !== '>') i++;
+      attrs[attrName] = decodeEntities(src.slice(valueStart, i));
     }
   }
-  return html.slice(start, i);
+  return null; // ran off the end of the source mid-tag
 }
 
-function pickCards(scope, cardClass) {
-  // Split on the card boundary; each fragment after the first starts inside a card.
+/**
+ * Every start/end tag in `src`, with comments, doctypes and the raw-text
+ * elements skipped. A `<div id="extensions-section">` written inside a comment
+ * or a script string is text, not a section — the old reader's `indexOf` could
+ * not tell the difference, which is why happy.html carries a paragraph warning
+ * its own author not to spell the wrapper out in its comment.
+ */
+function* scanTags(src) {
+  let i = 0;
+  while (i < src.length) {
+    const lt = src.indexOf('<', i);
+    if (lt === -1) return;
+    if (src.startsWith('<!--', lt)) {
+      const close = src.indexOf('-->', lt + 4);
+      i = close === -1 ? src.length : close + 3;
+      continue;
+    }
+    if (src.startsWith('<!', lt) || src.startsWith('<?', lt)) {
+      const close = src.indexOf('>', lt);
+      i = close === -1 ? src.length : close + 1;
+      continue;
+    }
+    const tag = readTag(src, lt);
+    if (!tag) {
+      i = lt + 1;
+      continue;
+    }
+    yield { ...tag, start: lt };
+    if (!tag.closing && !tag.selfClosing && (tag.name === 'script' || tag.name === 'style')) {
+      const m = new RegExp(`</${tag.name}\\s*>`, 'i').exec(src.slice(tag.end));
+      i = m ? tag.end + m.index + m[0].length : src.length;
+      continue;
+    }
+    i = tag.end;
+  }
+}
+
+const tagCache = new Map();
+const tagsOf = (src) => {
+  if (!tagCache.has(src)) tagCache.set(src, [...scanTags(src)]);
+  return tagCache.get(src);
+};
+
+/**
+ * The inner HTML of the element whose start tag is `all[k]`, or null when that
+ * element is never closed. Depth is counted over elements of the same name, so
+ * nested `<div>`s inside a card do not end it early.
+ */
+function innerOf(src, all, k) {
+  const open = all[k];
+  if (open.selfClosing) return '';
+  let depth = 1;
+  for (let n = k + 1; n < all.length; n++) {
+    const t = all[n];
+    if (t.name !== open.name || t.selfClosing) continue;
+    depth += t.closing ? -1 : 1;
+    if (depth === 0) return src.slice(open.end, t.start);
+  }
+  return null;
+}
+
+/**
+ * The first element carrying `id`, as `{ attrs, inner }` — `inner: null` when
+ * the element is never closed. `null` when there is no such element at all.
+ * Both are failures at the call site; they are distinguished because the fix
+ * differs.
+ */
+function elementById(src, id) {
+  const all = tagsOf(src);
+  const k = all.findIndex((t) => !t.closing && t.attrs.id === id);
+  if (k === -1) return null;
+  return { attrs: all[k].attrs, inner: innerOf(src, all, k) };
+}
+
+const classList = (tag) => String(tag.attrs.class ?? '').split(/\s+/).filter(Boolean);
+
+/** Every element in `src` whose class list contains `cardClass`, in order. */
+function pickCards(src, cardClass) {
+  const all = tagsOf(src);
   const cards = [];
-  // Match the card class exactly — followed by a space (more classes) or the
-  // closing quote — so we don't also match `${cardClass}-header` etc.
-  const re = new RegExp(`<div class="${cardClass}(?: [^"]*)?"([^>]*)>`, 'g');
-  let m;
-  const indices = [];
-  while ((m = re.exec(scope))) indices.push({ start: m.index, attrStart: m.index });
-  for (let k = 0; k < indices.length; k++) {
-    const from = indices[k].start;
-    const to = k + 1 < indices.length ? indices[k + 1].start : scope.length;
-    cards.push(scope.slice(from, to));
+  for (let k = 0; k < all.length; k++) {
+    const t = all[k];
+    if (t.closing || !classList(t).includes(cardClass)) continue;
+    cards.push({ attrs: t.attrs, inner: innerOf(src, all, k) ?? '' });
   }
   return cards;
+}
+
+// Metadata a card declares about itself. Read from the card element's own
+// attributes and nowhere else; found on a descendant, it is a build failure
+// rather than a value, because the two readings disagree and resolving that
+// silently — in either direction — is how a tier gets decided by accident.
+const CARD_METADATA_ATTRS = ['data-privacy', 'data-extension-name', 'data-affiliation'];
+function nestedMetadataAttr(inner) {
+  for (const t of scanTags(inner)) {
+    if (t.closing) continue;
+    const hit = CARD_METADATA_ATTRS.find((a) => a in t.attrs);
+    if (hit) return hit;
+  }
+  return null;
 }
 
 const first = (re, s) => {
@@ -160,40 +294,79 @@ const allTags = (containerRe, s) => {
 };
 
 // ---- Extensions ----------------------------------------------------------
-const extScope = sliceById('extensions-section');
-const extensions = pickCards(extScope, 'ext-card').map((card) => {
+// A missing or unclosed section, or a section with no cards, is a FAILURE and
+// not an empty catalog. On a real run an empty catalog rewrites the compiled-in
+// private set to `&[]`, which classifies every private extension as Public —
+// the largest possible fail-open, produced by markup that merely got renamed.
+const extSection = elementById(html, 'extensions-section');
+if (!extSection) {
+  fail(`no element with id="extensions-section" in ${INPUT} — there is nothing to read`);
+} else if (extSection.inner === null) {
+  fail(`the element with id="extensions-section" is never closed`);
+}
+const extScope = extSection && extSection.inner !== null ? extSection.inner : '';
+const extCards = extScope ? pickCards(extScope, 'ext-card') : [];
+if (extScope && extCards.length === 0) {
+  fail(
+    `the element with id="extensions-section" holds no ext-card elements — ` +
+      `a catalog of nothing is a parse failure, not a result`
+  );
+}
+
+const extensions = extCards.map(({ attrs, inner: card }, index) => {
   const name = stripTags(first(/<h3>([\s\S]*?)<\/h3>/, card));
   const org = stripTags(first(/<div class="ext-org">([\s\S]*?)<\/div>/, card));
   const description = stripTags(first(/<p class="ext-desc">([\s\S]*?)<\/p>/, card));
   const github = first(/<a href="([^"]+)"[^>]*class="ext-gh-link"/, card);
   const download = first(/<a href="([^"]+)"[^>]*class="brxt-chip"/, card);
   const tags = allTags(/<div class="ext-tags">([\s\S]*?)<\/div>/, card);
-  const license = first(/data-license="([^"]+)"/, card) || 'Apache-2.0';
+  const license = attrs['data-license'] || 'Apache-2.0';
   const id = slugFromUrl(download);
+  // Every message below is prefixed with something a human can find in the
+  // page. `id` is derived from the download filename, so it is exactly the
+  // field that is missing in the one case where it would be most needed.
+  const label = id || name || `ext-card #${index + 1}`;
+
+  if (!download) {
+    fail(`${label}: no .brxt download link, so there is no id to publish it under`);
+  }
 
   // The DEFAULT matters more than the extraction: an un-annotated card is
   // public by construction, so R11(ii)'s fail-open direction is enforced by the
   // tool rather than by reviewer discipline. An annotation that is PRESENT but
   // unparseable is a different thing and must not collapse into the default —
-  // hence the `[^"]*`, which lets `data-privacy=""` reach the check below.
-  const declaresPrivacy = /data-privacy=/.test(card);
-  const privacy = declaresPrivacy ? first(/data-privacy="([^"]*)"/, card) : 'public';
-  const extensionName = first(/data-extension-name="([^"]+)"/, card) || '';
+  // hence reading `in attrs` rather than the value's truthiness.
+  const declaresPrivacy = 'data-privacy' in attrs;
+  const privacy = declaresPrivacy ? (attrs['data-privacy'] ?? '') : 'public';
+  const extensionName = attrs['data-extension-name'] ?? '';
   // null = absent = unconstrained, which is the right default: most extensions
   // carry no institutional constraint and must not all become mismatches on the
   // day this ships. An empty list is NOT the same thing — see below.
-  const affiliation = /data-affiliation=/.test(card)
-    ? first(/data-affiliation="([^"]*)"/, card).split(/\s+/).filter(Boolean)
-    : null;
+  const affiliation =
+    'data-affiliation' in attrs
+      ? String(attrs['data-affiliation'] ?? '')
+          .split(/\s+/)
+          .filter(Boolean)
+      : null;
 
-  if (privacy !== 'private' && privacy !== 'public') {
-    fail(`${id}: data-privacy must be "private" or "public", got "${privacy}"`);
+  const nested = nestedMetadataAttr(card);
+  if (nested) {
+    fail(
+      `${label}: ${nested} is set on an element inside the card, not on the card — ` +
+        `card metadata (${CARD_METADATA_ATTRS.join(', ')}) must be declared on ` +
+        `the card element itself, or the card and its contents disagree about the tier`
+    );
+  }
+  if (declaresPrivacy && attrs['data-privacy'] === null) {
+    fail(`${label}: data-privacy is present with no value; it must be "private" or "public"`);
+  } else if (privacy !== 'private' && privacy !== 'public') {
+    fail(`${label}: data-privacy must be "private" or "public", got "${privacy}"`);
   }
   if (privacy === 'private' && !extensionName) {
     // No suffix-stripping heuristic. `spokeagent-0.4.1` proves ids and
     // manifest names diverge, and a heuristic in a security path is right
     // until it isn't.
-    fail(`${id}: a private extension must declare data-extension-name`);
+    fail(`${label}: a private extension must declare data-extension-name`);
   }
   // Forces the medcp/msbaseagent revisit AT PUBLISH TIME rather than relying on
   // someone remembering: the private badge is granted by publishing to BAAM.
@@ -203,7 +376,7 @@ const extensions = pickCards(extScope, 'ext-card').map((card) => {
     // message can see it.
     const hit = CLINICAL_KEYWORDS.find((k) => description.toLowerCase().includes(k));
     if (hit) {
-      fail(`${id}: description matches "${hit}" but the card declares no data-privacy`);
+      fail(`${label}: description matches "${hit}" but the card declares no data-privacy`);
     }
   }
   // DR-26 — affiliation is a third axis. HIPAA compliance does not transfer
@@ -224,7 +397,7 @@ const extensions = pickCards(extScope, 'ext-card').map((card) => {
     }
     for (const inst of affiliation) {
       if (!Object.prototype.hasOwnProperty.call(INSTITUTIONS, inst)) {
-        fail(`${id}: data-affiliation names "${inst}", which is not in the institutions map`);
+        fail(`${label}: data-affiliation names "${inst}", which is not in the institutions map`);
       }
     }
   }
@@ -303,16 +476,27 @@ function renderPrivateSet(exts) {
 }
 
 // ---- Skills --------------------------------------------------------------
+// The three grids are required on a REAL run only: the fixtures beside this
+// script carry extension cards and no skills, and a fixture that had to restate
+// the whole page would stop being readable at a glance.
 function parseSkillGrid(id, category) {
-  const scope = sliceById(id);
-  return pickCards(scope, 'skill-card').map((card) => {
+  const section = elementById(html, id);
+  if (!section || section.inner === null) {
+    if (IS_REAL_RUN) fail(`no usable element with id="${id}" — the catalog is missing a skill grid`);
+    return [];
+  }
+  const cards = pickCards(section.inner, 'skill-card');
+  if (IS_REAL_RUN && cards.length === 0) {
+    fail(`the element with id="${id}" holds no skill-card elements`);
+  }
+  return cards.map(({ attrs, inner: card }) => {
     const name = stripTags(first(/<h3>([\s\S]*?)<\/h3>/, card));
     const type = stripTags(first(/<div class="skill-type">([\s\S]*?)<\/div>/, card));
     const description = stripTags(first(/<p class="skill-desc">([\s\S]*?)<\/p>/, card));
     const download = first(/<a href="([^"]+)"[^>]*class="skill-dl-btn"/, card);
     const tags = allTags(/<div class="skill-tags">([\s\S]*?)<\/div>/, card);
-    const license = first(/data-license="([^"]+)"/, card) || 'Apache-2.0';
-    const dataTags = first(/<div class="skill-card[^"]*" data-tags="([^"]*)"/, card)
+    const license = attrs['data-license'] || 'Apache-2.0';
+    const dataTags = String(attrs['data-tags'] ?? '')
       .split(/\s+/)
       .filter(Boolean);
     return {

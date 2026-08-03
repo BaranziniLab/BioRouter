@@ -62,6 +62,20 @@ const REJECTED = [
   ['unknown-institution', /^registry: .*data-affiliation names "atlantis"/m],
   ['public-with-affiliation', /^registry: .*data-affiliation is meaningless/m],
   ['empty-affiliation', /^registry: .*data-affiliation is present but empty/m],
+
+  // Attribute syntax HTML allows and the card-fragment substring search did
+  // not. Each of these read as an un-annotated (public) card, which is the
+  // fail-open direction.
+  ['spaced-attribute', /^registry: .*must declare data-extension-name/m],
+  ['single-quoted-attribute', /^registry: .*must declare data-extension-name/m],
+  ['boolean-attribute', /^registry: .*data-privacy is present with no value/m],
+  ['nested-metadata', /^registry: .*data-privacy.*must be declared on the card element itself/m],
+
+  // A catalog of nothing is never a legitimate result — on a real run it
+  // rewrites the compiled-in private set to empty.
+  ['missing-section', /^registry: .*no element with id="extensions-section"/m],
+  ['empty-section', /^registry: .*holds no ext-card/m],
+  ['no-download-link', /^registry: .*no \.brxt download link/m],
 ];
 
 for (const [name, rule] of REJECTED) {
@@ -100,6 +114,18 @@ test('the happy fixture parses, so the refusals above are not "zero cards"', () 
   assert.equal(priv.privacy, 'private');
   assert.equal(priv.extension_name, 'privatefixtureagent', 'emitted in name_to_key form');
   assert.deepEqual(priv.affiliation, ['ucsf']);
+});
+
+test('attribute order does not decide whether a card exists', () => {
+  // A card that reads perfectly in a browser must not be invisible to the
+  // generator: an invisible private card is an empty compiled-in private set.
+  const out = outPath();
+  const r = run({ input: fixture('reordered-attributes'), out });
+  assert.equal(r.code, 0, r.both);
+  const reg = JSON.parse(readFileSync(out, 'utf8'));
+  assert.equal(reg.extensions.length, 1, 'the card must be found with class last');
+  assert.equal(reg.extensions[0].privacy, 'private');
+  assert.equal(reg.extensions[0].extension_name, 'reorderedagent');
 });
 
 test('--input without --out is refused rather than defaulted', () => {
