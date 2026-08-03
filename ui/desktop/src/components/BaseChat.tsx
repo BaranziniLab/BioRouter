@@ -2339,7 +2339,9 @@ function BaseChatContent({
 
       {/*
         Issue #56, DR-17 requirement 3 — the one-time disclosure of what a
-        non-private model can reach, shown BEFORE the first turn on it.
+        non-private model can reach, shown before the first turn on it. Once it
+        is up it is modal and nothing can be sent behind it; the gate's own doc
+        comment states exactly how far "before" reaches and why it stops there.
 
         ⚠ `session?.provider_name`, never `session?.privacy_tier`. The tier is
         the chat's ratcheted CLASSIFICATION and starts `public` on every fresh

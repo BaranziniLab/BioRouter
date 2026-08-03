@@ -26,10 +26,22 @@ interface ResolvedProvider {
  * Shows the disclosure the first time a public-tier provider is bound on this
  * install, before the first turn on it (issue #56, DR-17 requirement 3).
  *
- * ⚠ **Before, not after.** The dialog is modal — Radix traps focus and marks the
- * rest of the page `aria-hidden` — so the composer behind it cannot be reached
- * while it is up. An acknowledgement collected once the transcript already went
- * out is a receipt, not a disclosure.
+ * ⚠ **Before, not after — and precisely how far before.** Once the dialog is up
+ * it is modal: Radix traps focus and marks the rest of the page `aria-hidden`,
+ * so the composer behind it cannot be reached and nothing can be sent. An
+ * acknowledgement collected once the transcript already went out is a receipt,
+ * not a disclosure.
+ *
+ * What it does NOT do is *sequence* the composer. Between this mounting and the
+ * daemon answering — one round trip, since the two fetches are parallel and the
+ * store usually already holds the copy — the composer is live, so a user who
+ * types and sends inside that interval sends before reading. The interval is
+ * reachable only on the very first public bind of an install (afterwards the
+ * record says acknowledged and no dialog is due at all), and the alternative —
+ * holding the composer inert until a network answer arrives — would freeze the
+ * app for every user on every chat against a daemon that is slow or gone. That
+ * is a worse failure than the one it prevents, so the residual is written down
+ * here rather than traded for it.
  *
  * ⚠ **Once per install, not once per session.** A confirmation a user sees daily
  * is a confirmation they stop reading, and this one has no *action* to gate. So
@@ -77,10 +89,14 @@ export function NonPrivateModelDisclosureGate({
     };
   }, [providerName, getProviders]);
 
-  // The copy is fetched only once there is something to disclose, so a machine
-  // that only ever runs local models never asks for it.
+  // ⚠ Keyed on "a provider is bound", NOT on "it turned out to need this", so
+  // the two fetches run in PARALLEL. Gating the copy on the registry lookup made
+  // them serial and doubled the interval between mounting and being able to say
+  // anything — see this component's doc comment on what that interval is. The
+  // cost is one small GET on a machine that only ever runs local models, and the
+  // store makes it once per app rather than once per pane.
   const { copy, acknowledged, acknowledge, acknowledgeError } = useDisclosure(
-    resolved?.required === true
+    Boolean(providerName)
   );
 
   // Set only when the daemon REFUSED to record the acknowledgement. There is
