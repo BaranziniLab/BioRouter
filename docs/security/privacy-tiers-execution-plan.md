@@ -31,6 +31,14 @@
 > legitimate. Everything below DR-17's section still describes the wider feature; where a task, an
 > accepted risk or an open question is affected, it says so in place.
 
+> ⚠ **Governing ruling, 2026-08-02 — read [DR-19 — a warning for the user, a wall for the agent](#dr-19--a-warning-for-the-user-a-wall-for-the-agent) before designing any refusal or override.**
+> For every privacy or security control in this feature: an operation the **user** explicitly
+> initiates is **warned about and then allowed if they insist** — never hard-blocked; the same
+> operation initiated **automatically by an agent** is **never** allowed — it escalates to a human or
+> it does not happen. DR-16 and DR-18 are instances of this rule. A task that changes privacy state
+> and does not say *who may initiate it* is defective, because an unstated initiator becomes whatever
+> the implementer assumes.
+
 > **For agentic workers:** follow the subagent-driven-development or executing-plans skill and
 > work task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. Work in the worktree
 > `/Users/wgu/Desktop/BioRouter-privacy` on branch `feat/privacy-tiers` (forked from `main` at
@@ -584,6 +592,89 @@ ingest ratchets it (CP2/CP3), and a public model cannot read it after that.
 - **No per-page tier.** Pages are markdown in a git tree; per-page classification is a storage
   redesign and DR-18 does not ask for one. Publicizing releases the whole base, which is why (d)'s
   confirmation counts pages.
+
+---
+
+## DR-19 — a warning for the user, a wall for the agent
+
+**This is the governing asymmetry for every privacy and security control in this feature**, and it
+is the one ruling that is not about a particular control. It decides the *shape* of all of them.
+[DR-16](#decisions-of-record) (the user-only tier raise) and
+[DR-18](#dr-18--the-knowledge-base-tier-is-user-controllable-and-a-private-session-creates-a-private-base)
+(the user-only knowledge-base publicize / privatize) are two instances of it that happened to be
+ruled on first; this is the rule they are instances of. Read it before designing any refusal,
+confirmation, override or escape hatch in this plan.
+
+### The ruling, verbatim
+
+Operator, 2026-08-02:
+
+> if there are things that the users are explicitly doing (not done by the agents) that are iffy in
+> terms of privacy and security, biorouter need to give warning and will allow the operation to be
+> carried on if the user insists. however, an agent will never automatically do these things
+
+### What it settles
+
+| Who initiates | An iffy privacy/security operation |
+|---|---|
+| **The user, explicitly** | **Warn, then allow if they insist.** Never a hard block. |
+| **An agent, automatically** | **Never.** It escalates to a human or it does not happen. |
+
+Both halves are load-bearing, and neither is sound without the other.
+
+**Why the user's half is a warning and not a wall.** A control that hard-blocks the user is a
+control they route around — by turning the feature off, or by leaving the product. DR-15's master
+toggle exists precisely because that pressure is real, and every hard block added to a user's path
+is a reason to reach for it. A wall in front of the user therefore does not buy safety; it trades a
+narrow refusal for a machine-wide one. What the warning buys instead is an *informed* decision,
+which is the thing actually being protected.
+
+**Why the agent's half is a wall and not a warning.** An agent that can proceed after a warning is
+an agent for which the warning is a log line. There is no one at the keyboard to read it, no one to
+decline it, and — because the model writes the next tool call — nothing stops it from retrying. A
+control an agent can satisfy by continuing is not a control. So the agent's path is not "warn and
+proceed"; it is "stop, and tell the user what to do", which is what every refusal string in this
+feature already ends on.
+
+**What makes the permissive half legitimate:
+[Task 30A](#task-30a-the-non-private-model-disclosure).** *"Allow if they insist"* is only
+defensible if the user was told what they are accepting — a user can accept a risk that was stated
+to them and cannot accept one that was not. This is the same dependency
+[DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store) already carries: the disclosure
+is the term on which its accepted risks are acceptable. DR-19 extends that from the feature's
+overall scope to every individual control inside it. That is also why Task 30A must not be gated on
+the master toggle — with enforcement off the exposure is *larger*, and a disclosure that disappears
+in that configuration fails exactly when the "allow if they insist" half is doing all the work.
+
+### Where it came from
+
+The operator was reviewing the `BindOutcome::NoSuchSession` deviation in **Gate A (Task 12)**. The
+plan specifies a hard error there — `BindOutcome::NoSuchSession => return Err(anyhow!("No such
+session: {session_id}"))` — and the implementer warned and continued instead. The operator endorsed
+warn-and-continue **and stated the general rule the endorsement is an instance of**, which is what
+is recorded here. The specific deviation is accepted; the rule is what governs.
+
+### What this does and does not change
+
+- **It does not weaken a single gate.** Gates A, B, C, D, E, F, G and H all refuse a **model**.
+  They are the agent half of this table and they stay hard refusals with no override. Nothing in
+  DR-19 authorises softening one, and *"the user could have done this"* is not a reason to let a
+  model do it.
+- **It does not require a user override on a control that only a model can trigger.** Where the
+  only initiator is an agent, there is no user half to build. `POST /agent/add_extension`'s
+  outright refusal ([Task 18A](#task-18a-the-two-http-channels-that-raise-a-sessions-own-tier-and-the-user-proof-neither-of-them-has)
+  step 3(c)) is correct as written: the user's route is to switch the model first, which is two
+  steps, not a wall.
+- **It raises the bar on "who can initiate this?" from an implementation detail to a design
+  question every task must answer.** Silence is now a defect, not a gap: an unstated initiator
+  becomes whatever the implementer assumes, and the assumption that ships is the permissive one.
+  A task that changes privacy state must say, in its own text, who may trigger it and what the
+  other party gets instead.
+- **The mechanism for "the user did this" is [Task 18A](#task-18a-the-two-http-channels-that-raise-a-sessions-own-tier-and-the-user-proof-neither-of-them-has)'s
+  `X-User-Action` proof, and there is exactly one of it.** DR-18 already said so for knowledge
+  bases; DR-19 makes it general. A confirmation phrase compiled into the source is a UX guard
+  against an accidental write, not a proof of a human — anything holding the daemon secret replays
+  it. Where a task still names a second, undefined proof, that task is wrong and not the mechanism.
 
 ---
 
@@ -20111,6 +20202,7 @@ the implementation is wrong.
 | **DR-16** | **Raising a session's capability to Private is the user's act alone. A model may never do it.** This is DR-8 made symmetric: *lowering* a session's classification was already user-only, and *raising* its capability now matches. Concretely — `POST /agent/update_provider` refuses a bind that would take a session from public capability to private unless the request carries a proof-of-user the daemon issued to its own UI, and `POST /agent/add_extension` refuses attaching a private-classified extension to a public-capability session outright. A bind that **keeps or lowers** the tier is untouched, on both routes and for every caller. [Task 18A](#task-18a-the-two-http-channels-that-raise-a-sessions-own-tier-and-the-user-proof-neither-of-them-has). **The operator was shown the cost and took it.** Three costs, each named before the ruling: it inverts a settled plan test (Task 12's `a_private_provider_binds_to_anything_and_a_public_session_accepts_anything`, whose `// upward: fine` comment is now `// upward: user-only`); it can break an agent workflow that switches itself to a local model mid-run; and it turns *"switch this chat to a private model"* — step 1 of the two-ways-out message in **every** refusal this feature ships — into an instruction the model must hand to the user rather than follow. **Two alternatives were rejected.** *Allow-but-ratchet* (permit the raise, stamp the session private) was rejected because a public model then chooses when to become private, which is exactly the classification it is supposed to be bound by. *Treat identity-free routes as public* — the [Task 14C](#task-14c-the-other-door--the-daemons-own-http-api-pinned-rather-than-assumed) (2) posture, which refuses every raise unconditionally because the route has no principal — was rejected because it removes the **user's** model picker along with the model's, which is the one control the whole refusal vocabulary points at. Choosing neither is what forces Task 18A to build a user-proof that does not exist today; the design has assumed one twice (§12.1, and Task 29's `secret_key_and_capability_token()`) and defined it neither time. **What would justify revisiting:** real evidence from use that the local-model handoff is a routine, legitimate agent step — an agent that switches to `llamacpp` to process something it should not send out, and which now stops and asks. If that pattern appears in practice, the answer is a *scoped* permission (a user-granted, per-session "this agent may switch to a local model" grant) rather than reopening the bind, because the failure being prevented is the model choosing its own tier and a scoped grant leaves the choosing with the user. |
 | **DR-17** | **The feature is narrowed to the session store, and the general filesystem barrier is descoped for v1.** In scope and non-negotiable: (1) session logs and histories are locked against a public-capability model; (2) a public model may neither raise its own tier (DR-16) nor reach the private-only extensions `ucsfomopagent` / `cdwagent`; (3) **the user is told** that a model which is not HIPAA-compliant, not on-premise and not local can reach what is on their machine ([Task 30A](#task-30a-the-non-private-model-disclosure)). Accepted as risk, and disclosed rather than mechanised: files a private session produced elsewhere on disk, encryption at rest, and **DR-14's Layer A / Layer B read-deny** — *"we don't have to enforce and encrypt every single step along the way. for now."* Tasks 14A–14F are **DEFERRED, not deleted**; AR-6, AR-9 and AR-10 are retired with them, so a public session on Windows or bubblewrap-less Linux **keeps the shell**. Requirement 3 is what makes accepting the rest a considered tradeoff rather than an oversight, which is why it ships as a task with a gate. Full text in [Scope ruling — DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store). |
 | **DR-18** | **A knowledge base is a first-class BioRouter component: it carries a tier, every guardrail applies to it, and the *user* — never a model — decides that tier.** Confirmed and extended by the operator on 2026-07-30: *"knowledge bases should also be able to be deemed private - as it is also a piece of biorouter component . please make sure that users can change the kb to be private or public and the private model generated kb will automatically be private until the user publicize it, and all the other guardrails will apply as well."* Four parts. (a) **DR-13's ratchet stays** — Tasks 10A–10D unchanged, and a public-capability session may neither read nor write a private base. (b) **Tier at creation, not only on ingest**: a base a private-capability model creates is private from birth. (c) **The user may publicize or privatize a base**, from the Knowledge view, **user-only** and routed through the same user-proof DR-16 requires — a model may never do it, in either direction. (d) **Publicizing is graded and irreversible for content already released**, so its confirmation names the page count and says so; privatizing is single-click, because nothing is disclosed by it. [Task 29A](#task-29a-knowledge-base-publicize--privatize--user-only-graded-audited). This **resolves [AR-1](#ar-1--resolved-by-dr-18--a-knowledge-base-that-one-private-session-touched-becomes-unreadable-from-every-public-chat-including-the-users-own-ordinary-work)** and answers half (a) of [Open question 15](#open-questions). Full text in [DR-18 — the knowledge-base tier](#dr-18--the-knowledge-base-tier-is-user-controllable-and-a-private-session-creates-a-private-base). |
+| **DR-19** | **A warning for the user, a wall for the agent — the governing asymmetry for every privacy and security control in this feature.** Ruled by the operator on 2026-08-02: *"if there are things that the users are explicitly doing (not done by the agents) that are iffy in terms of privacy and security, biorouter need to give warning and will allow the operation to be carried on if the user insists. however, an agent will never automatically do these things."* Two halves. **The user, explicitly → warn, then allow if they insist; never a hard block**, because a control that walls the user is one they route around — by disabling the feature (DR-15's toggle exists for that pressure) or by leaving the product. **An agent, automatically → never**; it escalates to a human or it does not happen, because a warning an agent can proceed past is a log line and a control it can satisfy by continuing is not a control. [DR-16](#decisions-of-record) and [DR-18](#dr-18--the-knowledge-base-tier-is-user-controllable-and-a-private-session-creates-a-private-base) are **instances** of this rule, not separate rules. **[Task 30A](#task-30a-the-non-private-model-disclosure) is what legitimises the permissive half** — a user can only accept a risk that was stated to them — which is also why that disclosure is not gated on the master toggle. **It weakens no gate:** Gates A–H refuse a *model* and are the agent half; *"the user could have done this"* is never a reason to let a model do it. **It makes silence a defect:** every task that changes privacy state must say who may initiate it, because an unstated initiator becomes whatever the implementer assumes. **One proof of user, not two:** [Task 18A](#task-18a-the-two-http-channels-that-raise-a-sessions-own-tier-and-the-user-proof-neither-of-them-has)'s `X-User-Action`; a confirmation phrase compiled into the source is a UX guard, not a human. Provenance: the operator stated it while reviewing the `BindOutcome::NoSuchSession` deviation in Gate A (Task 12), endorsing warn-and-continue there and naming the general rule it instances. Full text in [DR-19 — a warning for the user, a wall for the agent](#dr-19--a-warning-for-the-user-a-wall-for-the-agent). |
 
 ---
 
