@@ -16482,6 +16482,63 @@ git commit -m "feat(privacy): the capability matrix as one predicate per verb (#
 
 ### Task 22: Session copy — three hand-rolled builders become one derived-session helper
 
+> ⚠ **AMENDED by [DR-19](#dr-19--a-warning-for-the-user-a-wall-for-the-agent), 2026-08-02 — this
+> task never says who may copy a session, and under DR-19 that silence is itself the defect.** Read
+> this before Step 3. Nothing below is reversed; a requirement and a guard site are added.
+>
+> **The direction of the fix is right and stays.** Carrying the tier forward is the safe half —
+> without it a branch of a private chat runs private history on a public model, which is the bug
+> this task exists to close — and `import_session`'s raise-only rule is DR-19-correct as written:
+> an import of unknown provenance becomes Private whatever the file claims, so it can only ever
+> *withhold* capability, never mint it. Neither is touched.
+>
+> **What the silence hides.** The word "user" appears twice in this task, both times inside the
+> phrase *"the user's default public model"* — i.e. never about who acts. And
+> `create_derived_session` carries `provider_name` **and** `model_config` as well as
+> `privacy_tier`, which means a diverge of a private session does not merely copy a label: it
+> **mints a new session that is already bound to a private provider**, i.e. a new
+> private-**capability** session. [DR-16](#decisions-of-record) and
+> [Task 18A](#task-18a-the-two-http-channels-that-raise-a-sessions-own-tier-and-the-user-proof-neither-of-them-has)
+> guard *raises on sessions that already exist* — `raise_needs_user_action(current, new)` compares
+> an existing agent's bound provider against a requested one — so a session created already-private
+> passes no gate at all: it never calls `POST /agent/update_provider`, and Gate A only ever sees the
+> already-correct pairing.
+>
+> **And the route has no principal.** `POST /sessions/{session_id}/diverge`
+> (`routes/session.rs:1029`, registered at the route table beside it) sits behind `check_token` and
+> nothing else, which [AR-15](#ar-15--a-caller-holding-the-daemon-secret-can-raise-its-own-sessions-capability-with-no-credentials)
+> and [AR-11](#ar-11--amended-by-dr-17--the-daemons-own-api-secret-is-recoverable) between them
+> establish is not a proof of a human. So on the plan as written, a model that recovers the daemon
+> secret can hand itself a private-capability session by diverging one — no `X-User-Action`, no
+> confirmation, no gate — and every gate downstream then reads that session as legitimately private.
+>
+> **The requirement, stated in DR-19's two halves.**
+>
+> - **Who may initiate a copy: the user, and only the user.** All three paths are user surfaces
+>   today and there is no model-facing tool for any of them — measured in this worktree at
+>   `6b4a26ba`: `diverge_session` is reached from `POST /sessions/{id}/diverge` and from the CLI
+>   (`biorouter-cli/src/commands/session.rs:419`, `session/mod.rs:736`); `diverge_session_for_edit`
+>   from `POST /sessions/{id}/edit_message` (`routes/session.rs:746`); and **`copy_session` has no
+>   production caller at all** (`grep -rn --include='*.rs' "copy_session(" crates/ | grep -v
+>   session_manager.rs` → 0 hits). ⚠ **"No tool exposes it" is not the same as "no model can reach
+>   it"** — that is the AR-15 shape, and stating the initiator without stating the proof is exactly
+>   the assumption DR-19 says ships permissive.
+> - **What the copy of a private session requires: the same one proof, on the same header.** When
+>   the **source** session's tier is Private, the HTTP paths require `X-User-Action` — the mechanism
+>   [Task 18A](#task-18a-the-two-http-channels-that-raise-a-sessions-own-tier-and-the-user-proof-neither-of-them-has)
+>   builds, reused, not re-invented (DR-19: *"one proof of user, not two"*). Both routes are real
+>   HTTP handlers with a request to carry it, so this is the mechanical extension open question 24
+>   was, and not the undecidable one open question 26 is. A public source needs nothing: copying a
+>   public chat mints no capability.
+> - **What a refusal says.** The user's route is not blocked, it is redirected: *"This chat is
+>   private. Branch it from the chat window."* DR-19's user half is untouched — the human at the
+>   keyboard clicks diverge and it works, because the renderer holds the key.
+>
+> **The one part that needs a ruling: the CLI.** `biorouter session` runs in a terminal with no
+> renderer to mint a header, and it is also runnable by any agent holding `developer__shell`. That
+> is the same shape as [Open question 23](#open-questions)'s keyless daemon and it is deliberately
+> **not** decided here — see [Open question 29](#open-questions).
+
 Three copy paths carry the conversation and not the provider, so a branch of a private chat resolves
 through `restore_provider_from_session`'s `Config::global()` fallback (`agent.rs:5685`) and runs
 private history on the user's default public model, with no prompt.
@@ -16495,7 +16552,7 @@ three hand-rolled builders into one shared helper is a better trade and closes t
 | Action | Path | Anchor (re-verified at `9558c346`) |
 |---|---|---|
 | Modify | `crates/biorouter/src/session/session_manager.rs` | `copy_session` `:4710-4741` (`create_session` `:4718-4724`, builder `:4726-4733`, `replace_conversation` `:4736`); `diverge_session_for_edit` `:4743-4773`; `diverge_session` `:4776-4841` (**the primary GUI diverge, and it does NOT call `copy_session`** — `create_session` `:4816-4822`, builder `:4824-4836`, `replace_conversation` `:4838`); `import_session` `:4668-4707` (builder `:4683-4700`, `replace_conversation` `:4703`); the two builder setters this helper must use correctly — `provider_name(impl Into<String>)` `:972-975` and `model_config(ModelConfig)` `:977-980`, **both taking values, not `Option`s** |
-| Reference | `crates/biorouter-server/src/routes/session.rs` | `POST /sessions/{id}/diverge` at `:1029`. ⚠ **the filter `routes::session` reports 29 tests** (measured by Task 4b at `fd14ef9a`): `mod diverge_tests` (15) and `mod edit_message_tests` (9) in this file — neither named `tests`, both picked up by the module-path filter — **plus 5 in `routes::session_events::tests`, a different file the substring also reaches**. So Step 4's `cargo test -p biorouter-server --lib routes::session` prints **`29 passed`** before this task, not `0 passed` and not the 20 an earlier hand count claimed. A previous version of this row said the module was empty. **Re-measure and record the pre-count, then assert `pre + N`** — `mod diverge_tests` is also exactly where this task's route test belongs |
+| **Modify** (was Reference, changed by DR-19) | `crates/biorouter-server/src/routes/session.rs` | `POST /sessions/{id}/diverge` at `:1029` and `POST /sessions/{id}/edit_message` (`diverge_session_for_edit` call at `:746`) — **both gain a `HeaderMap` before `Json`** and one `is_user_action` condition each, fired only when the SOURCE session's tier is Private. Same header, same helper, same file as [Task 18A](#task-18a-the-two-http-channels-that-raise-a-sessions-own-tier-and-the-user-proof-neither-of-them-has) — do not add a second. `POST /sessions/{id}/copy` does not exist and no production caller of `copy_session` does either (measured at `6b4a26ba`), so there is no third handler to guard. ⚠ **Do Task 18A first**; without `is_user_action` this row does not compile. ⚠ **the filter `routes::session` reports 29 tests** (measured by Task 4b at `fd14ef9a`): `mod diverge_tests` (15) and `mod edit_message_tests` (9) in this file — neither named `tests`, both picked up by the module-path filter — **plus 5 in `routes::session_events::tests`, a different file the substring also reaches**. So Step 4's `cargo test -p biorouter-server --lib routes::session` prints **`29 passed`** before this task, not `0 passed` and not the 20 an earlier hand count claimed. A previous version of this row said the module was empty. **Re-measure and record the pre-count, then assert `pre + N`** — `mod diverge_tests` is also exactly where this task's route test belongs |
 | Reference | `crates/biorouter/src/session/session_manager.rs` | `diverge_session_at` `:1562` — checked, and it is a thin wrapper onto the same storage `diverge_session` at `:4776`, so the three-path coverage below really is complete. Say so, or the next reviewer re-derives it |
 
 - [ ] **Step 1: Write the failing tests — one per path, and one that enumerates**
@@ -16527,6 +16584,33 @@ async fn an_import_with_no_tier_is_private_and_one_with_a_tier_is_only_raised_by
     assert_eq!(import_json_with("public").await.privacy_tier, SessionClassification::Private);
 }
 
+#[tokio::test]
+async fn diverging_a_private_chat_needs_the_user_and_diverging_a_public_one_does_not() {
+    // DR-19. The copy carries `provider_name`, so a diverge of a private source
+    // MINTS a new private-CAPABILITY session — and DR-16 guards raises on
+    // sessions that already exist, so nothing downstream ever sees this one as
+    // a raise. `X-User-Action` is Task 18A's header, reused; there is exactly
+    // one proof of user in this feature and this is not a second.
+    let priv_src = private_session_on("versa_azure").await;
+    assert_eq!(post_diverge(&priv_src, secret_key_only()).await.status(), 403);
+    assert_eq!(post_diverge(&priv_src, secret_key_and_user_action()).await.status(), 200);
+
+    // A public source mints no capability, so it needs no proof — a gate that
+    // fires on every branch is one people route around (DR-19's user half).
+    let pub_src = public_session().await;
+    assert_eq!(post_diverge(&pub_src, secret_key_only()).await.status(), 200);
+
+    // Both HTTP paths, not just the one the GUI menu uses: `edit_message`
+    // reaches `diverge_session_for_edit` (routes/session.rs:746) and is the
+    // path a test written against `/diverge` alone would miss — the same
+    // omission shape as the parameterised loop above.
+    assert_eq!(post_edit_message(&priv_src, secret_key_only()).await.status(), 403);
+    assert_eq!(post_edit_message(&priv_src, secret_key_and_user_action()).await.status(), 200);
+
+    // And a refusal must not have branched anything.
+    assert_eq!(children_of(&priv_src).await.len(), 2);
+}
+
 #[test]
 fn no_copy_path_hand_rolls_its_own_builder_any_more() {
     // The design's enumeration test, aimed at the three functions that matter
@@ -16540,7 +16624,9 @@ fn no_copy_path_hand_rolls_its_own_builder_any_more() {
 }
 ```
 
-- [ ] **Step 2: Run** → tests 1 and 3 **FAIL**, test 2 **FAIL**.
+- [ ] **Step 2: Run** → tests 1 and 3 **FAIL**, test 2 **FAIL**, and the DR-19 route test **FAILS**
+(it is a route test and belongs in `mod diverge_tests`, per the Files table's third row — re-measure
+that module's pre-count and assert `pre + 1`, not a bare `tail -3`).
 
 - [ ] **Step 3: Implement**
 
@@ -16626,6 +16712,18 @@ awk '/async fn import_session/,/^    }/' crates/biorouter/src/session/session_ma
 # defect this plan exists to avoid. Assert the count.
 cargo test -p biorouter --lib -- every_copy_path_carries_the_tier_and_the_provider \
   | grep "test result:" ; echo "expect: 1 passed; 0 failed"
+# DR-19: both HTTP copy handlers ask who is calling when the SOURCE is private.
+# The condition is on the source's tier, not on the request — a handler that
+# demands the header unconditionally is a wall in front of the user (DR-19's
+# permissive half) and would fire on every branch of every public chat.
+for f in diverge_session edit_message; do
+  echo -n "$f: "
+  awk "/async fn $f/,/^}/" crates/biorouter-server/src/routes/session.rs \
+    | grep -c "is_user_action(&headers)"
+done ; echo "expect: 1 each — a CONDITION, not an unconditional refusal"
+cargo test -p biorouter-server --lib -- \
+  diverging_a_private_chat_needs_the_user_and_diverging_a_public_one_does_not \
+  | grep "test result:" ; echo "expect: 1 passed; 0 failed"
 ```
 
 **What this catches.** A test on `copy_session` alone — the only path the design's §9.3 B1 originally
@@ -16637,7 +16735,7 @@ impossible to miss.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add crates/biorouter/src/session/session_manager.rs
+git add crates/biorouter/src/session/session_manager.rs crates/biorouter-server/src/routes/session.rs
 git commit -m "fix(session): carry tier, provider and model config across all three copy paths (#56)"
 ```
 
@@ -20693,6 +20791,20 @@ answer either without inventing an operator ruling, so it states what it does me
 both are now answered in part or in full and say so. The third was **measured while writing Task 18A**
 and is a scope question the ruling does not reach.
 
+**Four more came out of [DR-19](#dr-19--a-warning-for-the-user-a-wall-for-the-agent) (2026-08-02),
+and they share one shape: a privacy-state change whose initiator the plan never named.** Auditing
+every such task against DR-19 produced five defects; one ([Task 23](#task-23-spawn--reorder-stamp-filter-and-the-spawn-matrix)'s
+spawn downgrade) DR-19 answers outright, and the other four need an operator decision rather than an
+implementation — **26** (a bind with no request to prove a user on), **27** (a config file the agent
+can write), **28** (an extension tier keyed on a mutable name), **29** (a CLI with no request at
+all). ⚠ **Do not read the count as a backlog.** DR-19's own text is what makes each of these
+*findable*: three of the four were already in the plan as measured facts and were simply not framed
+as "who may initiate this?" — 26's manifest path is [open question 25](#open-questions)'s own
+subject, 27's file channel is DR-14's deny entry #5 with DR-14 deferred, and 28's rename is a
+sentence Task 37 already wrote down as a naming quirk. Only 29 is new. The pattern to carry into any
+future task: the mechanism (`X-User-Action`) is settled and reusable, and every one of these is open
+because the *channel* cannot carry it, never because the proof is undecided.
+
 | # | Question | Blocks |
 |---|---|---|
 | **23** | **What should a daemon that was handed no user-action key do?** DR-16's refusal is conditioned on a per-launch key the Electron main process mints and hands `biorouterd` on stdin ([Task 18A](#task-18a-the-two-http-channels-that-raise-a-sessions-own-tier-and-the-user-proof-neither-of-them-has)). Four shipping ways to start the daemon supply no such key: `just run-server`, `just debug-server` (the external backend `just debug-ui` talks to), a hand-run `biorouterd agent`, and any headless/server deployment. In all four the raise is refused **for every caller, including the human at the keyboard** — a private model cannot be bound to a session over HTTP at all. That is the only direction consistent with DR-16 ("the model may never do it" cannot be relaxed by *how the daemon was started*, which a model can influence), and it is a real ergonomic loss on the dev path that this repo's own `just debug-ui` workflow uses daily. The alternative — an env-var escape hatch — is not an alternative: the daemon's environment is exactly what [AR-11](#ar-11--amended-by-dr-17--the-daemons-own-api-secret-is-recoverable) measured to be recoverable, so a key delivered that way is a key the model has. | **Answered in part by [Task 18A](#task-18a-the-two-http-channels-that-raise-a-sessions-own-tier-and-the-user-proof-neither-of-them-has) Step 3(a) and 3(f); the last third stays open.** **Closed:** *fail closed* is now specified, not merely preferred — `read_user_action_digest` returns `None` when stdin is a terminal or carries no digest, `install_user_action_digest(None)` is a legal state, and `user_action_matches(_, None)` is `false` for every caller, asserted by `a_daemon_with_no_user_action_key_refuses_every_raise`. **Closed:** the dev path, by *supplying a key* rather than by opening a hatch — `just debug-server` pipes `sha256('biorouter-dev-user-action')` on stdin and `getUserActionKey` returns the same published constant under `BIOROUTER_EXTERNAL_BACKEND`, mirroring `getServerSecret`'s `'test'` branch (`main.ts:906-908`). That key is deliberately public: a daemon's user-proof is whatever the person who launched it chose, and on that path the launcher *is* the developer. It weakens nothing shipped, where the key is 32 random bytes per launch that never leave the Electron main process. `just run-server` is left keyless on purpose, so the fail-closed path stays reachable by hand, and the gate asserts it stays that way. **Still open, and needing an operator ruling rather than an implementation: the headless deployment.** A server install has no GUI, so there is no process that can mint a key on the user's behalf and no picker for the proof to come from; deciding what "the user" means there is the same shape as [Open question 8](#open-questions) and is not something Task 18A can invent. Until it is ruled on, a headless daemon cannot bind a private model over HTTP at all. |
@@ -20701,6 +20813,7 @@ and is a scope question the ruling does not reach.
 | **26** | **What is a proof-of-user for a bind that has no request?** [Task 24](#task-24-the-two-shipped-features-the-gates-break)'s banner establishes the requirement — agent-authored data may not raise a live app session's capability — and there are **three** sites, of which only the first two were previously known. (a) `configure_main_provider` (`routes/apps.rs:809`, bind `:820`) binds the manifest's `model`, which `agent_drafter__declare_profiles` wrote from tool arguments. (b) `apply_route_for_turn` (`:2181-2229`, bind `:2211`) binds a manifest route pin — **this is H4's own sequence**, which this plan narrates as *"Gate A allows the bind → Gate B ratchets"* and has never authorised. (c) **New, and the sharpest:** `ClientFrame::ModelSelect` (`:3409-3428`, bind `:3418`) arrives on `GET /apps/{id}/agent`, which is exempt from secret-key auth (`auth.rs:52-77`, `is_public_app_get` at `:76`), from a page whose TypeScript the model itself authored — so it is a raise over a channel needing **no credential at all**, and Task 24's *"fixed with zero new code — Gate A covers it"* is true of the downward arrow only. **Why the mechanism cannot be lifted from Task 18A:** (a) and (b) are in-process calls with no `HeaderMap`, and (c) has one but on an unauthenticated socket, where a header proves nothing. **The decision needed:** does an app that declares a private-tier provider require a one-time user grant, and if so where is it recorded? It cannot be the manifest (`store.rs:76-79`, agent-writable, which is the whole defect) and it cannot be an env var ([AR-11](#ar-11--amended-by-dr-17--the-daemons-own-api-secret-is-recoverable)). This is the *scoped permission* shape DR-16 names and deliberately did not build. | **Nothing is built.** [Task 24](#task-24-the-two-shipped-features-the-gates-break) carries the requirement in its banner, the three sites in its text, and one `#[ignore]`d test, `agent_authored_data_cannot_raise_a_live_app_sessions_capability`, that asserts all three — placed so that answering this question has somewhere to land. **Until it is answered the exposure is live and belongs to [Task 30A](#task-30a-the-non-private-model-disclosure)'s disclosure**, not to a gate. ⚠ Do **not** close it by adding a confirmation phrase or a manifest boolean: DR-19 says a confirmation compiled into the source is a UX guard and not a human, and a grant stored where the agent writes is not a grant. |
 | **27** | **What stops an agent from disabling the master switch by writing `config.yaml`?** [Task 30](#task-30-settings--privacy--the-master-toggle-its-three-hardening-measures-and-the-badge-it-does-not-hide)'s amendment closes the HTTP channel — `POST /config/upsert` now needs [Task 18A](#task-18a-the-two-http-channels-that-raise-a-sessions-own-tier-and-the-user-proof-neither-of-them-has)'s `X-User-Action` on the disabling arm — but the value's home is a **file**, and [DR-14](#decisions-of-record) made `<config>/config.yaml` deny entry #5 for exactly this reason (*"a master switch a public model can edit is not a switch"*). [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store) defers DR-14, so in v1 that file is an ordinary file and `developer__shell` / `developer__text_editor` can write `BIOROUTER_PRIVACY_TIERS: off` into it. **What limits it today, and it is a real limit rather than a fix:** hardening measure (3) holds the authoritative value in the daemon's memory from startup, so a file write is a **next-launch** disable and not an immediate one — the running daemon keeps enforcing, and the badge keeps reading `Private`, until someone restarts the app. **The decision needed** is which of three: (a) revive the *one file* of DR-14 for this key alone — a single deny path, not the deferred four-root barrier, and the cheapest of the three; (b) move the switch out of `config.yaml` into a store the agent cannot write (the OS credential store already used for secrets, per `docs/security/secret-storage.md`); or (c) accept it, in which case it belongs in [Accepted risks](#accepted-risks) with the next-launch limitation stated, and in [Task 30A](#task-30a-the-non-private-model-disclosure)'s disclosure. | **Nothing is built beyond the narrowing.** Task 30's amendment banner states it; the immediate HTTP path is closed. ⚠ Do not close this by re-enabling `get_param`'s env branch for the key, or by reading the file per gate — measure (1) forbids the first (`BIOROUTER_PRIVACY_TIERS=off biorouterd` is a one-token disable) and measure (3) forbids the second. |
 | **28** | **Who may write an extension config entry's `name`, and what enforces it?** [DR-19](#dr-19--a-warning-for-the-user-a-wall-for-the-agent) makes an unstated initiator a defect, and this is the one object in the feature that has none. A session's tier has exactly one lowering writer (`privacy::declassify`, asserted by [Task 40](#task-40-final-release-gate) Step 3: `privacy_tier = 'public'` appears **once** in the tree); a knowledge base's has exactly one (`knowledge/tier_user.rs::set_unlocked` + a ZST no model can construct, [Task 29A](#task-29a-knowledge-base-publicize--privatize--user-only-graded-audited)); an **extension's has none**. `classify_extension` (Task 8) keys on `name_to_key(name)` — the config entry's name, written from `manifest.name` by `BrxtInstallModal.tsx:152-161`, which [Task 37](#task-37-the-in-app-registry--freshness-that-raises-and-never-lowers) records as carrying *"no provenance whatsoever"* — and `config.yaml` is agent-writable with `text_editor` (§9.3 C1), with [DR-14](#decisions-of-record)'s deny entry #5 deferred by [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store). ⚠ **This is not a badge bug.** `classify_extension` stamps `Extension.tier` at all three admission points, and Gates C (dispatch), E (discovery) and F (enable) all read it — so a rename makes a public model able to **call** `ucsfomopagent`, and `add_extension`'s early `contains_key -> Ok(())` (`:678`) means it lands silently on the next admission. Task 37's union rule protects the registry *document* and not the *key* it is looked up by. **The decision needed:** does a `.brxt` install record provenance (registry id + source URL + hash) so the tier is derived from where an extension came from rather than from a mutable local string — and if so, does that provenance live on `ExtensionConfig` (which [Task 8](#task-8-classify_extension-and-the-generated-private-set)'s OpenAPI gate deliberately freezes) or beside it? The alternative is to accept it and say so in [Accepted risks](#accepted-risks) and in [Task 30A](#task-30a-the-non-private-model-disclosure)'s disclosure. | **Nothing is built.** Task 37's banner states the requirement and withdraws the *"already the accepted direction under R11(ii)"* clause that made this look ruled-on when it was not. ⚠ Do **not** close it by letting `config.yaml` declare a tier — that is R11(i) inverted, and Task 8's OpenAPI-diff gate exists to catch exactly that implementation. Do not close it by adding aliases to `PRIVATE_EXTENSIONS` either: a rename can pick any string. |
+| **29** | **What is a proof-of-user on the CLI, for an operation that mints capability?** [Task 22](#task-22-session-copy--three-hand-rolled-builders-become-one-derived-session-helper)'s amendment requires `X-User-Action` when the *source* of a copy is private, because the copy carries `provider_name` and therefore **mints a new private-capability session** that [DR-16](#decisions-of-record) never sees (DR-16 guards raises on sessions that already exist). Both HTTP handlers can carry the header. `biorouter session` cannot: it calls `diverge_session` in process (`biorouter-cli/src/commands/session.rs:419`, `session/mod.rs:736`), there is no renderer to mint a key, and the same binary is runnable by any agent holding `developer__shell` — so *"the person who ran the command is the user"* is true of a human at a terminal and false of a model that spawned one. This is the same shape as [Open question 23](#open-questions)'s headless third, and probably has the same answer; it is listed separately because 23's subject is a *daemon started without a key* and this one's is a *binary with no request at all*. ⚠ **This is not a reason to leave the HTTP half ungated** — closing two of three doors is worth doing, and the CLI is the door with a human standing at it in every shipped workflow. | **Nothing is built.** Task 22 guards the two HTTP paths and its banner states the CLI is undecided. The interim posture is the honest one: the CLI diverge stays unguarded and is inside [Task 30A](#task-30a-the-non-private-model-disclosure)'s disclosure, alongside [AR-11](#ar-11--amended-by-dr-17--the-daemons-own-api-secret-is-recoverable) and [AR-15](#ar-15--a-caller-holding-the-daemon-secret-can-raise-its-own-sessions-capability-with-no-credentials), which already say a same-machine caller is not distinguishable from the user. |
 
 ---
 
