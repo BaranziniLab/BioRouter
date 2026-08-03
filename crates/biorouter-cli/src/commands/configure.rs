@@ -583,6 +583,11 @@ pub async fn configure_provider_dialog() -> anyhow::Result<bool> {
         .find(|(p, _)| &p.name == provider_name)
         .expect("Selected provider must exist in metadata");
 
+    // Issue #56, DR-17 requirement 3. Before the keys are collected, so the user
+    // reads it while they can still pick something else — and unconditionally on
+    // the master privacy switch, which turns off enforcement and not the truth.
+    print_non_private_model_disclosure(provider_meta)?;
+
     // Configure required provider keys
     for key in &provider_meta.config_keys {
         if !key.required {
@@ -2188,4 +2193,76 @@ fn print_config_file_saved() -> anyhow::Result<()> {
         config.path()
     ))?;
     Ok(())
+}
+
+/// Issue #56, DR-17 requirement 3: what a non-private model can reach, for the
+/// terminal.
+///
+/// R10 makes the CLI a required surface, not an optional one — a user who never
+/// opens the desktop app must still be told. Non-blocking by design: there is no
+/// action to gate here, only a fact to convey, and a terminal prompt the user
+/// has to dismiss to configure a provider is a prompt they learn to skip.
+///
+/// ⚠ Three properties, each with a Step 5 gate:
+///   * the words come from `biorouter::privacy::disclosure`, never from a
+///     literal here — one definition, four surfaces;
+///   * the predicate is the provider's TIER, so a fourth private provider stops
+///     triggering it with no edit in this file;
+///   * it does **not** consult the master privacy switch. DR-15 turns off gates,
+///     the ratchet and refusals; it does not turn off the truth, and with
+///     enforcement off the exposure is larger, not smaller.
+fn non_private_model_disclosure(
+    provider_meta: &biorouter::providers::base::ProviderMetadata,
+) -> Option<String> {
+    use biorouter::privacy::disclosure;
+    if !disclosure::required_for(provider_meta) {
+        return None;
+    }
+    Some(format!(
+        "{}\n{}",
+        disclosure::title_for(&provider_meta.display_name),
+        disclosure::COPY_SHORT
+    ))
+}
+
+/// Print it, if this provider needs it. Separated from the predicate above so
+/// the predicate is testable without a terminal.
+fn print_non_private_model_disclosure(
+    provider_meta: &biorouter::providers::base::ProviderMetadata,
+) -> anyhow::Result<()> {
+    if let Some(note) = non_private_model_disclosure(provider_meta) {
+        cliclack::log::warning(note)?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod privacy_disclosure_tests {
+    use super::non_private_model_disclosure;
+    use biorouter::privacy::disclosure;
+    use biorouter::providers::providers;
+
+    async fn meta(name: &str) -> biorouter::providers::base::ProviderMetadata {
+        providers()
+            .await
+            .into_iter()
+            .find(|(m, _)| m.name == name)
+            .map(|(m, _)| m)
+            .unwrap_or_else(|| panic!("no registry entry for `{name}`"))
+    }
+
+    #[tokio::test]
+    async fn the_cli_tells_a_public_provider_and_stays_quiet_for_a_private_one() {
+        let public = non_private_model_disclosure(&meta("openai").await)
+            .expect("a public provider must be disclosed in the terminal too");
+        // The served constants, not a fourth hand-written copy.
+        assert!(public.contains(disclosure::COPY_SHORT), "{public}");
+        assert!(
+            public.contains("not hosted by your institution"),
+            "{public}"
+        );
+
+        assert!(non_private_model_disclosure(&meta("llamacpp").await).is_none());
+        assert!(non_private_model_disclosure(&meta("versa_azure").await).is_none());
+    }
 }

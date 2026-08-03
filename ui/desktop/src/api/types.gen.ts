@@ -1568,6 +1568,40 @@ export type PrivacyBarrierBody = {
     session_classification: SessionClassification;
 };
 
+/**
+ * What `GET /privacy/disclosure` serves (issue #56, DR-17 requirement 3).
+ *
+ * ⚠ **The copy is on the wire on purpose.** The sentence exists in the GUI
+ * dialog, the settings panel, the provider grid, the model chip, the CLI,
+ * `docs/` and the landing site; four hand-written copies drift within one
+ * release and the drifted one is always the one a user reads. One definition
+ * lives in `biorouter::privacy::disclosure` and the renderer renders what it is
+ * handed — a hardcoded English string in a component is the failure this shape
+ * exists to prevent, and it is invisible until the two disagree.
+ */
+export type PrivacyDisclosureResponse = {
+    /**
+     * Has the user acknowledged on this install? Once per install, not once per
+     * session — a dialog on every chat is a dialog nobody reads.
+     */
+    acknowledged: boolean;
+    /**
+     * The long form: the blocking dialog and the settings panel.
+     */
+    long: string;
+    /**
+     * The one-line form: the model chip's tooltip and the provider grid's
+     * Commercial section.
+     */
+    short: string;
+    /**
+     * The dialog heading, with `{provider}` still in it — the renderer
+     * substitutes the display name of the provider it is warning about, and so
+     * never has to know the English around it.
+     */
+    title_template: string;
+};
+
 export type ProvenanceKind = 'agent_injection' | 'user_direct' | 'spawn_context';
 
 export type ProviderDetails = {
@@ -4934,6 +4968,47 @@ export type MemoryInventoryResponses = {
 };
 
 export type MemoryInventoryResponse2 = MemoryInventoryResponses[keyof MemoryInventoryResponses];
+
+export type GetPrivacyDisclosureData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/privacy/disclosure';
+};
+
+export type GetPrivacyDisclosureResponses = {
+    /**
+     * The one copy of the non-private-model disclosure, plus whether this install has acknowledged it
+     */
+    200: PrivacyDisclosureResponse;
+};
+
+export type GetPrivacyDisclosureResponse = GetPrivacyDisclosureResponses[keyof GetPrivacyDisclosureResponses];
+
+export type AckPrivacyDisclosureData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/privacy/disclosure/ack';
+};
+
+export type AckPrivacyDisclosureErrors = {
+    /**
+     * Refused: acknowledging the disclosure is a user act, and this request carried no proof it came from the user
+     */
+    403: unknown;
+    /**
+     * The acknowledgement could not be written
+     */
+    500: unknown;
+};
+
+export type AckPrivacyDisclosureResponses = {
+    /**
+     * Acknowledged
+     */
+    200: unknown;
+};
 
 export type ReplyData = {
     body: ChatRequest;

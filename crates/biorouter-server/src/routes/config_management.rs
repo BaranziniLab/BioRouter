@@ -1088,9 +1088,96 @@ pub async fn set_config_provider(
     Ok(())
 }
 
+/// What `GET /privacy/disclosure` serves (issue #56, DR-17 requirement 3).
+///
+/// ⚠ **The copy is on the wire on purpose.** The sentence exists in the GUI
+/// dialog, the settings panel, the provider grid, the model chip, the CLI,
+/// `docs/` and the landing site; four hand-written copies drift within one
+/// release and the drifted one is always the one a user reads. One definition
+/// lives in `biorouter::privacy::disclosure` and the renderer renders what it is
+/// handed — a hardcoded English string in a component is the failure this shape
+/// exists to prevent, and it is invisible until the two disagree.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct PrivacyDisclosureResponse {
+    /// The dialog heading, with `{provider}` still in it — the renderer
+    /// substitutes the display name of the provider it is warning about, and so
+    /// never has to know the English around it.
+    pub title_template: String,
+    /// The long form: the blocking dialog and the settings panel.
+    pub long: String,
+    /// The one-line form: the model chip's tooltip and the provider grid's
+    /// Commercial section.
+    pub short: String,
+    /// Has the user acknowledged on this install? Once per install, not once per
+    /// session — a dialog on every chat is a dialog nobody reads.
+    pub acknowledged: bool,
+}
+
+/// The disclosure copy, and whether it has been acknowledged.
+///
+/// ⚠ **Deliberately does NOT consult the master privacy switch.** DR-15 turns
+/// off gates, the ratchet and refusals; it does not turn off the truth, and with
+/// enforcement off the exposure is *larger*. Every other privacy route in this
+/// file reads the switch, which is exactly why wiring this one the same way is
+/// the plausible mistake.
+#[utoipa::path(
+    get,
+    path = "/privacy/disclosure",
+    responses(
+        (status = 200, description = "The one copy of the non-private-model disclosure, plus \
+                                      whether this install has acknowledged it",
+         body = PrivacyDisclosureResponse),
+    )
+)]
+pub async fn get_privacy_disclosure() -> Json<PrivacyDisclosureResponse> {
+    use biorouter::privacy::disclosure;
+    Json(PrivacyDisclosureResponse {
+        title_template: disclosure::COPY_TITLE_TEMPLATE.to_string(),
+        long: disclosure::COPY_LONG.to_string(),
+        short: disclosure::COPY_SHORT.to_string(),
+        acknowledged: disclosure::is_acknowledged(),
+    })
+}
+
+/// Record that the user has read the disclosure.
+///
+/// ⚠ **DR-16's proof-of-user, unconditionally.** This is the one thing making
+/// DR-17's accepted risks acceptable, so a caller holding nothing but the daemon
+/// secret — which AR-11 measured to be recoverable from inside the daemon, i.e.
+/// the model — must not be able to acknowledge on the user's behalf. Unlike
+/// `upsert_config`'s guard this is NOT additionally gated on the master privacy
+/// switch: turning enforcement off must not hand the model the dismiss button.
+#[utoipa::path(
+    post,
+    path = "/privacy/disclosure/ack",
+    responses(
+        (status = 200, description = "Acknowledged"),
+        (status = 403, description = "Refused: acknowledging the disclosure is a user act, and \
+                                      this request carried no proof it came from the user"),
+        (status = 500, description = "The acknowledgement could not be written"),
+    )
+)]
+pub async fn ack_privacy_disclosure(headers: http::HeaderMap) -> Result<(), (StatusCode, String)> {
+    if !is_user_action(&headers) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "Acknowledging the non-private-model disclosure is a user action. This request \
+             carried no proof that it came from the person at the keyboard."
+                .to_string(),
+        ));
+    }
+    biorouter::privacy::disclosure::record_acknowledgement()
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/config", get(read_all_config))
+        // Issue #56 DR-17 req. 3. Beside the master-switch routes because the
+        // panel that shows the switch also shows this, and NOT behind the switch
+        // for the reason each handler's doc comment gives.
+        .route("/privacy/disclosure", get(get_privacy_disclosure))
+        .route("/privacy/disclosure/ack", post(ack_privacy_disclosure))
         .route("/config/upsert", post(upsert_config))
         .route("/config/remove", post(remove_config))
         .route("/config/read", post(read_config))
@@ -1193,5 +1280,87 @@ mod tests {
         assert_eq!(actual.output_token_cost, expected.output_token_cost);
         assert_eq!(actual.cache_read_cost, expected.cache_read_cost);
         assert_eq!(actual.cache_write_cost, expected.cache_write_cost);
+    }
+}
+
+/// Task 30A (issue #56, DR-17 requirement 3): `GET /privacy/disclosure` and
+/// `POST /privacy/disclosure/ack`.
+///
+/// ⚠ **Handlers, not `oneshot` over a `Router`.** These two routes take no
+/// `AppState`, and building one opens the developer's REAL session database
+/// (`routes::agent::working_dir_lock_tests`). Calling the handlers directly is
+/// how the rest of this file's tests reach `read_config` and
+/// `get_detectable_providers`, and it exercises the same guard the router would.
+#[cfg(test)]
+mod privacy_disclosure_tests {
+    use super::*;
+    use crate::routes::session::diverge_tests::{
+        install_test_user_action_key, TEST_USER_ACTION_KEY,
+    };
+    use serial_test::serial;
+
+    /// A request holding the daemon secret and, optionally, DR-16's proof of
+    /// user. `None` is the caller AR-11/AR-15 establish is indistinguishable
+    /// from the model.
+    fn headers_with(user_action: Option<&str>) -> http::HeaderMap {
+        let mut headers = http::HeaderMap::new();
+        headers.insert("X-Secret-Key", "test".parse().unwrap());
+        if let Some(key) = user_action {
+            headers.insert("X-User-Action", key.parse().unwrap());
+        }
+        headers
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn the_acknowledgement_is_recorded_once_and_is_not_agent_writable() {
+        // Its own config root, or this test writes the acknowledgement into the
+        // developer's real `~/.config/biorouter` and every later run of it
+        // starts already-acknowledged.
+        let dir = tempfile::TempDir::new().unwrap();
+        let _env = env_lock::lock_env([(
+            "BIOROUTER_PATH_ROOT",
+            Some(dir.path().to_str().expect("utf-8 temp path")),
+        )]);
+        install_test_user_action_key();
+
+        // Once per install, not once per session: a dialog on every chat is
+        // clicked through, which is exactly the outcome this task exists to
+        // avoid.
+        assert!(!get_privacy_disclosure().await.0.acknowledged);
+
+        // And it is a USER act. A model that could acknowledge on the user's
+        // behalf would silently remove the only thing making DR-17's accepted
+        // risks acceptable.
+        let refused = ack_privacy_disclosure(headers_with(None))
+            .await
+            .expect_err("a caller holding only the daemon secret must be refused");
+        assert_eq!(refused.0, StatusCode::FORBIDDEN);
+        assert!(!get_privacy_disclosure().await.0.acknowledged);
+
+        ack_privacy_disclosure(headers_with(Some(TEST_USER_ACTION_KEY)))
+            .await
+            .expect("the user's own acknowledgement is recorded");
+        assert!(get_privacy_disclosure().await.0.acknowledged);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn the_route_serves_the_one_copy_rather_than_a_second_one() {
+        // The renderer holds no English of its own; this is the wire it gets it
+        // over. Compared against the constants themselves, so a second copy
+        // written into this handler fails here rather than in a screenshot.
+        let dir = tempfile::TempDir::new().unwrap();
+        let _env = env_lock::lock_env([(
+            "BIOROUTER_PATH_ROOT",
+            Some(dir.path().to_str().expect("utf-8 temp path")),
+        )]);
+        let served = get_privacy_disclosure().await.0;
+        assert_eq!(served.long, biorouter::privacy::disclosure::COPY_LONG);
+        assert_eq!(served.short, biorouter::privacy::disclosure::COPY_SHORT);
+        assert_eq!(
+            served.title_template,
+            biorouter::privacy::disclosure::COPY_TITLE_TEMPLATE
+        );
     }
 }

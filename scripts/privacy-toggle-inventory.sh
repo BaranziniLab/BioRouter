@@ -75,13 +75,29 @@ loader() { awk '/fn load_privacy_tiers_from_config/,/^}/' "$ROOT/crates/bioroute
 #     to reject, one level up. A column-0 `}` closes the enclosing top-level
 #     item, so it is where the skip ends: rustfmt indents everything inside a
 #     `mod`, so the only unindented `}` in a test module is its own last line.
+#
+# (d) **A `mod foo;` DECLARATION has no body to skip**, and treating it as one is
+#     the same defect as (c) wearing a different hat. `crates/biorouter/src/
+#     privacy/mod.rs` declares `#[cfg(test)] mod disclosure_tests;` in its module
+#     list, thirty lines above `load_privacy_tiers_from_config` — so the skip
+#     swallowed the loader and this script reported ONE writer of the toggle
+#     where the tree has two, i.e. it lost sight of the startup load, which is
+#     the more important of the two. `providers/mod.rs` has had the identical
+#     shape (`#[cfg(test)] mod tier_tests;`) since Task 5 and was blinding
+#     everything below it silently, because that file happens to hold nothing
+#     this scan looks for. The external file is scanned in its own right, so
+#     nothing is lost by not skipping the declaration; what the skip is FOR is an
+#     inline `mod tests { … }`, and those do not end in a semicolon.
 # ─────────────────────────────────────────────────────────────────────────────
 scan() {
   grep -rlE "$1" --include='*.rs' "$ROOT"/crates/*/src/ 2>/dev/null | while read -r f; do
     awk -v F="${f#"$ROOT"/}" -v RE="$1" '
       intest && /^\}/ { intest = 0; next }
       intest { next }
-      pending && /^[[:space:]]*(pub[^ ]*[[:space:]]+)?mod[[:space:]]/ { intest = 1; next }
+      pending && /^[[:space:]]*(pub[^ ]*[[:space:]]+)?mod[[:space:]]/ {
+        if ($0 !~ /;[[:space:]]*$/) intest = 1
+        next
+      }
       { pending = ($0 ~ /^[[:space:]]*#\[cfg\(test\)\]/) }
       /^[[:space:]]*(pub([(][a-z()]+[)])?[[:space:]]+)?(async[[:space:]]+)?fn[[:space:]]+[A-Za-z_]/ {
         match($0, /fn[[:space:]]+[A-Za-z_][A-Za-z0-9_]*/)

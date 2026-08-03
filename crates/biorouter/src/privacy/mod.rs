@@ -21,6 +21,9 @@ pub mod alt_provider;
 pub mod capability;
 pub mod config_keys;
 pub mod declassify;
+pub mod disclosure;
+#[cfg(test)]
+mod disclosure_tests;
 pub mod extensions;
 pub mod refusal;
 mod registry_private;

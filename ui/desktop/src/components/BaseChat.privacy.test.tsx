@@ -51,4 +51,24 @@ describe('the chat header — the privacy marker', () => {
     expect(pill, 'BaseChat no longer renders SessionNamePill').not.toBeNull();
     expect(pill![0]).toMatch(/privacyTier=\{session\?\.privacy_tier\}/);
   });
+
+  /**
+   * Task 30A (issue #56, DR-17 requirement 3). Same constraint as above —
+   * BaseChat cannot be mounted in jsdom — and the same checkable obligation: the
+   * chat surface must mount the disclosure gate, and must hand it the chat's
+   * BOUND PROVIDER rather than the chat's classification.
+   *
+   * ⚠ `session?.provider_name`, never `session?.privacy_tier`. The tier is the
+   * chat's ratcheted classification; a fresh chat on a private model is
+   * classified `public`, and a gate keyed on that would show a "this model is
+   * not hosted by your institution" dialog over Versa. The gate's own suite
+   * proves the predicate; this proves the argument.
+   */
+  it('BaseChat mounts the non-private-model disclosure gate on the bound provider', () => {
+    const source = read('src', 'components', 'BaseChat.tsx');
+    const gate = /<NonPrivateModelDisclosureGate\b[\s\S]*?\/>/.exec(source);
+    expect(gate, 'BaseChat does not mount the disclosure gate').not.toBeNull();
+    expect(gate![0]).toMatch(/providerName=\{session\?\.provider_name\}/);
+    expect(gate![0]).not.toMatch(/privacy_tier/);
+  });
 });

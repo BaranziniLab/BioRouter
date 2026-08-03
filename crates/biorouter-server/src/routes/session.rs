@@ -1409,8 +1409,13 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .with_state(state)
 }
 
+// `pub(crate)` for [`install_test_user_action_key`] alone: the digest lives in a
+// process-global `OnceLock` shared by every test in this binary, so a second
+// module that installed its own key would turn whichever ran second into a wall
+// of 403s reported as policy results. Task 30A's disclosure-ack test is that
+// second module and takes this one instead.
 #[cfg(test)]
-mod diverge_tests {
+pub(crate) mod diverge_tests {
     use super::*;
     use axum::body::{to_bytes, Body};
     use axum::http::Request;
@@ -1434,9 +1439,9 @@ mod diverge_tests {
     /// than a second one: the digest lives in a `OnceLock`, so whichever module
     /// ran first would win and every authorised arm in the other would report a
     /// 403 as though it were a policy result.
-    pub(super) const TEST_USER_ACTION_KEY: &str = "task-22-diverge-route-user-action-key";
+    pub(crate) const TEST_USER_ACTION_KEY: &str = "task-22-diverge-route-user-action-key";
 
-    pub(super) fn install_test_user_action_key() {
+    pub(crate) fn install_test_user_action_key() {
         let digest: [u8; 32] =
             <sha2::Sha256 as sha2::Digest>::digest(TEST_USER_ACTION_KEY.as_bytes()).into();
         biorouter_server::auth::install_user_action_digest(Some(digest));

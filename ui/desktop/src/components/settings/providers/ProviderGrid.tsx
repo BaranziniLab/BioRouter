@@ -12,6 +12,7 @@ import CustomProviderForm from './modal/subcomponents/forms/CustomProviderForm';
 import { SwitchModelModal } from '../models/subcomponents/SwitchModelModal';
 import type { View } from '../../../utils/navigationUtils';
 import { getOrderedProviderGroups } from './providerOrdering';
+import { NonPrivateModelDisclosureNote } from '../../privacy/NonPrivateModelDisclosureNote';
 
 const GridLayout = memo(function GridLayout({ children }: { children: React.ReactNode }) {
   return <div className="flex flex-col">{children}</div>;
@@ -220,6 +221,17 @@ function ProviderCards({
                 {section.label}
               </h2>
               <p className="text-xs text-text-muted mb-3">{section.note}</p>
+              {/*
+                Issue #56, DR-17 requirement 3. The Commercial section — and only
+                it — carries the standing one-line disclosure of what a model
+                there can reach. The words come from the daemon, never from a
+                literal here, for exactly the reason the block above exists: a
+                second copy of a sentence is a sentence that goes stale in one
+                of its two homes and stays wrong.
+              */}
+              {alwaysVisible && (
+                <NonPrivateModelDisclosureNote className="text-xs text-text-muted mb-3" />
+              )}
               <div className="divide-y divide-border-subtle">
                 {section.cards}
                 {alwaysVisible && (

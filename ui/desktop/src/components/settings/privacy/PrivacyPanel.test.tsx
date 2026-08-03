@@ -7,11 +7,28 @@ const mocks = vi.hoisted(() => ({
   value: undefined as unknown,
   read: vi.fn(),
   upsert: vi.fn(),
+  getPrivacyDisclosure: vi.fn(),
+  ackPrivacyDisclosure: vi.fn(),
 }));
 
 vi.mock('../../ConfigContext', () => ({
   useConfig: () => ({ read: mocks.read, upsert: mocks.upsert }),
 }));
+
+// Task 30A: the panel's permanent statement is SERVED, so the test serves it.
+// ⚠ The fixture is deliberately not the product's sentence — Step 5's gate (1)
+// counts definitions of that sentence across `ui/desktop/src/` and expects one,
+// and a test file is not exempt from a `--include='*.tsx'` grep.
+vi.mock('../../../api', () => ({
+  getPrivacyDisclosure: mocks.getPrivacyDisclosure,
+  ackPrivacyDisclosure: mocks.ackPrivacyDisclosure,
+}));
+vi.mock('../../../utils/userAction', () => ({
+  userActionHeaders: async () => ({ 'X-User-Action': 'test-key' }),
+}));
+
+const SERVED_LONG =
+  'SERVED-COPY-MARKER — this model can read files on this computer.\n\nBiorouter does stop three things.';
 
 describe('Settings > Privacy', () => {
   beforeEach(() => {
@@ -19,6 +36,15 @@ describe('Settings > Privacy', () => {
     mocks.value = undefined;
     mocks.read.mockImplementation(async () => mocks.value);
     mocks.upsert.mockImplementation(async () => undefined);
+    mocks.getPrivacyDisclosure.mockResolvedValue({
+      data: {
+        title_template: '{provider} is not hosted by your institution.',
+        long: SERVED_LONG,
+        short: 'SERVED-SHORT-MARKER',
+        acknowledged: false,
+      },
+    });
+    mocks.ackPrivacyDisclosure.mockResolvedValue({ data: undefined });
   });
 
   it('defaults to on when the key is absent', async () => {
@@ -98,5 +124,53 @@ describe('Settings > Privacy', () => {
 
     await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('403'));
     expect(screen.getByRole('switch', { name: /Privacy tiers/ })).toBeChecked();
+  });
+
+  /**
+   * Task 30A (issue #56, DR-17 requirement 3). The panel is the surface anyone
+   * can go back to, so it carries the disclosure permanently — in BOTH toggle
+   * positions, because DR-15 turns off enforcement and not the truth.
+   */
+  describe('the non-private-model disclosure', () => {
+    it('states what a public model can reach, above the switch, with enforcement ON', async () => {
+      render(<PrivacyPanel />);
+      const statement = await screen.findByTestId('non-private-model-statement');
+      expect(statement).toHaveTextContent(/can read files on this computer/i);
+
+      // Above the switch, not below it: a user who reads the first thing on the
+      // screen must meet the limit before the control.
+      const row = screen.getByRole('switch', { name: /Privacy tiers/ }).closest('div');
+      expect(
+        statement.compareDocumentPosition(row!) & Node.DOCUMENT_POSITION_FOLLOWING
+      ).toBeTruthy();
+    });
+
+    it('the panel states the limit even when enforcement is off', async () => {
+      mocks.value = 'off';
+      render(<PrivacyPanel />);
+
+      expect(await screen.findByText(/enforcement off/i)).toBeInTheDocument();
+      expect(await screen.findByTestId('non-private-model-statement')).toHaveTextContent(
+        /can read files on this computer/i
+      );
+    });
+
+    it('with the feature off, it does not repeat the guarantee as though it still held', async () => {
+      // The served copy says Biorouter "does stop three things". With the master
+      // switch off it stops none of them, so a panel that reprinted that
+      // paragraph unqualified would be making a false statement on the very
+      // screen the user just used to turn it off.
+      mocks.value = 'off';
+      render(<PrivacyPanel />);
+      const statement = await screen.findByTestId('non-private-model-statement');
+      expect(statement).toHaveTextContent(/not being stopped/i);
+    });
+
+    it('renders nothing rather than inventing prose when the copy cannot be fetched', async () => {
+      mocks.getPrivacyDisclosure.mockRejectedValue(new Error('offline'));
+      render(<PrivacyPanel />);
+      await waitFor(() => screen.getByRole('switch', { name: /Privacy tiers/ }));
+      expect(screen.queryByTestId('non-private-model-statement')).toBeNull();
+    });
   });
 });

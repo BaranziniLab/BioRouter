@@ -3,6 +3,7 @@ import { Switch } from '../../ui/switch';
 import { Button } from '../../ui/button';
 import { Input } from '../../ui/input';
 import { useConfig } from '../../ConfigContext';
+import { useDisclosure } from '../../privacy/disclosureCopy';
 import { DISABLE_PHRASE, PRIVACY_TIERS_KEY, privacyTiersEnabledFromConfig } from './privacyTiers';
 
 // Re-exported so the panel stays the name every existing importer already
@@ -29,6 +30,11 @@ export { DISABLE_PHRASE, PRIVACY_TIERS_KEY, privacyTiersEnabledFromConfig };
  */
 export default function PrivacyPanel() {
   const { read, upsert } = useConfig();
+  // Task 30A (DR-17 req. 3). ⚠ Unconditional — the copy is fetched and shown in
+  // BOTH toggle positions. Passing `enabled` here would be the plausible wrong
+  // implementation: it would take the disclosure away in exactly the
+  // configuration where the exposure is largest.
+  const { copy: disclosure } = useDisclosure();
   const [enabled, setEnabled] = useState<boolean | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [typed, setTyped] = useState('');
@@ -90,7 +96,49 @@ export default function PrivacyPanel() {
         >
           <strong>Privacy tiers are off.</strong> Nothing on this machine is separating private
           chats, extensions or knowledge bases from public models, and Biorouter is not recording
-          which conversations touch private material.
+          which conversations touch private material. Every badge in the app reads{' '}
+          <em>enforcement off</em> while this is the case.
+        </div>
+      )}
+
+      {/*
+        Issue #56, DR-17 requirement 3 — the permanent statement of what a
+        non-private model can reach.
+
+        ⚠ Three things about this block are load-bearing.
+
+        1. It is ABOVE the switch. A user who reads only the first thing on the
+           screen has to meet the limit before the control.
+        2. It renders in BOTH toggle positions. DR-15 turns off gates, the
+           ratchet and refusals; it does not turn off the truth, and with
+           enforcement off the exposure is larger, not smaller.
+        3. Every word comes from the daemon. There is no fallback string — if
+           the copy cannot be fetched this renders nothing, because inventing
+           prose here is the drift the one-definition rule exists to prevent.
+      */}
+      {disclosure && (
+        <div
+          data-testid="non-private-model-statement"
+          className="rounded-lg border border-borderStandard px-3 py-3 space-y-2 text-sm text-text-default"
+        >
+          {disclosure.long.split('\n\n').map((paragraph) => (
+            <p key={paragraph.slice(0, 48)} className="min-w-0 [overflow-wrap:anywhere]">
+              {paragraph}
+            </p>
+          ))}
+          {!enabled && (
+            // The served copy names three things Biorouter "does stop". With
+            // the master switch off it stops none of them, so reprinting that
+            // paragraph unqualified would be a false statement on the very
+            // screen the user turned it off from.
+            <p className="min-w-0 text-text-muted">
+              <strong>
+                Those three are not being stopped right now — privacy tiers are off on this
+                machine.
+              </strong>{' '}
+              Turning them back on restores them for what is already marked private.
+            </p>
+          )}
         </div>
       )}
 

@@ -2885,6 +2885,49 @@
         ]
       }
     },
+    "/privacy/disclosure": {
+      "get": {
+        "tags": [
+          "super::routes::config_management"
+        ],
+        "summary": "The disclosure copy, and whether it has been acknowledged.",
+        "description": "⚠ **Deliberately does NOT consult the master privacy switch.** DR-15 turns\noff gates, the ratchet and refusals; it does not turn off the truth, and with\nenforcement off the exposure is *larger*. Every other privacy route in this\nfile reads the switch, which is exactly why wiring this one the same way is\nthe plausible mistake.",
+        "operationId": "get_privacy_disclosure",
+        "responses": {
+          "200": {
+            "description": "The one copy of the non-private-model disclosure, plus whether this install has acknowledged it",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PrivacyDisclosureResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/privacy/disclosure/ack": {
+      "post": {
+        "tags": [
+          "super::routes::config_management"
+        ],
+        "summary": "Record that the user has read the disclosure.",
+        "description": "⚠ **DR-16's proof-of-user, unconditionally.** This is the one thing making\nDR-17's accepted risks acceptable, so a caller holding nothing but the daemon\nsecret — which AR-11 measured to be recoverable from inside the daemon, i.e.\nthe model — must not be able to acknowledge on the user's behalf. Unlike\n`upsert_config`'s guard this is NOT additionally gated on the master privacy\nswitch: turning enforcement off must not hand the model the dismiss button.",
+        "operationId": "ack_privacy_disclosure",
+        "responses": {
+          "200": {
+            "description": "Acknowledged"
+          },
+          "403": {
+            "description": "Refused: acknowledging the disclosure is a user act, and this request carried no proof it came from the user"
+          },
+          "500": {
+            "description": "The acknowledgement could not be written"
+          }
+        }
+      }
+    },
     "/reply": {
       "post": {
         "tags": [
@@ -8408,6 +8451,34 @@
           },
           "session_classification": {
             "$ref": "#/components/schemas/SessionClassification"
+          }
+        }
+      },
+      "PrivacyDisclosureResponse": {
+        "type": "object",
+        "description": "What `GET /privacy/disclosure` serves (issue #56, DR-17 requirement 3).\n\n⚠ **The copy is on the wire on purpose.** The sentence exists in the GUI\ndialog, the settings panel, the provider grid, the model chip, the CLI,\n`docs/` and the landing site; four hand-written copies drift within one\nrelease and the drifted one is always the one a user reads. One definition\nlives in `biorouter::privacy::disclosure` and the renderer renders what it is\nhanded — a hardcoded English string in a component is the failure this shape\nexists to prevent, and it is invisible until the two disagree.",
+        "required": [
+          "title_template",
+          "long",
+          "short",
+          "acknowledged"
+        ],
+        "properties": {
+          "acknowledged": {
+            "type": "boolean",
+            "description": "Has the user acknowledged on this install? Once per install, not once per\nsession — a dialog on every chat is a dialog nobody reads."
+          },
+          "long": {
+            "type": "string",
+            "description": "The long form: the blocking dialog and the settings panel."
+          },
+          "short": {
+            "type": "string",
+            "description": "The one-line form: the model chip's tooltip and the provider grid's\nCommercial section."
+          },
+          "title_template": {
+            "type": "string",
+            "description": "The dialog heading, with `{provider}` still in it — the renderer\nsubstitutes the display name of the provider it is warning about, and so\nnever has to know the English around it."
           }
         }
       },

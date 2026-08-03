@@ -36,6 +36,40 @@ Different providers have fundamentally different data handling policies:
 - **Local models** (Ollama) — data is processed entirely on your own device. Nothing is
   transmitted to any external service.
 
+## What a non-private model can reach
+
+Biorouter shows this to you the first time you bind a model that is not private, and keeps it in
+front of you afterwards on the model chip, in Settings → Privacy, and above the Commercial section
+of the provider grid. **It is shown whether or not privacy tiers are enabled** — turning the
+feature off removes the enforcement, not the exposure, so with it off this is larger rather than
+smaller.
+
+> **{Provider} is not hosted by your institution.**
+>
+> It is not HIPAA-compliant, is not hosted on-premise, and does not run on this machine. It can
+> read files on this computer — anything a chat on this model can reach, it can send there: the
+> contents of your working directory, and whatever a command you approve prints.
+>
+> Biorouter does stop three things: this model cannot read another chat's transcript, cannot read
+> a knowledge base marked private, and cannot use the private data extensions (UCSF OMOP, CDW) or
+> switch this chat to a private model to reach them.
+>
+> It does not stop it reading ordinary files on this computer through the shell — including files
+> an earlier private chat wrote outside Biorouter's own storage. If the work involves patient
+> data, use a local model or an institutional one.
+
+The one-line form, which appears on the model chip and in `biorouter configure`:
+
+> Not HIPAA-compliant, not on-premise, not local — this model can read files on this computer.
+> Private chats and private knowledge bases stay out of its reach.
+
+> **Maintenance.** These are the exact words of `COPY_LONG` and `COPY_SHORT` in
+> [`crates/biorouter/src/privacy/disclosure.rs`](../../crates/biorouter/src/privacy/disclosure.rs),
+> which is the single definition every surface renders. Quote them; do not paraphrase them. The
+> app fetches them over `GET /privacy/disclosure` rather than shipping a second copy in the
+> renderer, for the same reason: four hand-written copies drift within one release, and the
+> drifted one is always the one somebody reads.
+
 ## Patient data and sensitive research data
 
 > **Warning.** If you need to work with patient data, PHI, clinical records, genomic data

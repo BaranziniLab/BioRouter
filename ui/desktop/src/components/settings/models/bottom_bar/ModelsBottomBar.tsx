@@ -17,6 +17,10 @@ import { Alert } from '../../../alerts';
 import BottomMenuAlertPopover from '../../../bottom_menu/BottomMenuAlertPopover';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../../../ui/Tooltip';
 import { PrivacyBadge } from '../../../ui/PrivacyBadge';
+import {
+  disclosureRequiredForTier,
+  useDisclosure,
+} from '../../../privacy/disclosureCopy';
 import type { SessionClassification } from '../../../../api/types.gen';
 
 interface ModelsBottomBarProps {
@@ -70,6 +74,20 @@ export default function ModelsBottomBar({
   const [isLeadWorkerModalOpen, setIsLeadWorkerModalOpen] = useState(false);
   const [isLeadWorkerActive, setIsLeadWorkerActive] = useState(false);
   const [providerDefaultModel, setProviderDefaultModel] = useState<string | null>(null);
+  /**
+   * Task 30A (issue #56, DR-17 requirement 3). Does the model bound to this
+   * chat need the one-line disclosure?
+   *
+   * ⚠ It hangs off the bound PROVIDER's tier, never off {@link privacyTier}.
+   * That prop is the chat's ratcheted CLASSIFICATION, and a fresh chat on Versa
+   * is classified `public` while its model is emphatically not a public model —
+   * so a line keyed on it would tell the user something false about the one
+   * provider this whole feature exists to make safe to use.
+   *
+   * `null` while unresolved: say nothing rather than guess, in a chip that is
+   * re-rendered on every keystroke in the composer.
+   */
+  const [needsDisclosure, setNeedsDisclosure] = useState<boolean | null>(null);
 
   // Check if lead/worker mode is active
   useEffect(() => {
@@ -184,6 +202,34 @@ export default function ModelsBottomBar({
     })();
   }, [currentModel, getCurrentModelDisplayName]);
 
+  // Task 30A. The bound provider's own tier, resolved from the registry the
+  // daemon serves — never a list kept here.
+  useEffect(() => {
+    if (!currentProvider) {
+      setNeedsDisclosure(null);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const metadata = await getProviderMetadata(currentProvider, getProviders);
+        if (!cancelled) setNeedsDisclosure(disclosureRequiredForTier(metadata.tier));
+      } catch {
+        // A provider Biorouter cannot classify is one it cannot vouch for.
+        // Fail-safe here means fail towards telling the user.
+        if (!cancelled) setNeedsDisclosure(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [currentProvider, getProviders]);
+
+  // ⚠ Unconditional on the master privacy switch — DR-15 turns off enforcement,
+  // not the truth. See `privacy/disclosureCopy.ts`.
+  const { copy: disclosure } = useDisclosure(needsDisclosure === true);
+  const disclosureLine = needsDisclosure === true ? (disclosure?.short ?? null) : null;
+
   // §14.2's line for the chat's tier. A "Private" PILL cannot fit in this chip
   // — the trigger is `max-w-[120px]` and the label is already truncated at 24
   // characters — so the chip carries the dense dot and the WORD goes where
@@ -215,6 +261,11 @@ export default function ModelsBottomBar({
           <TooltipContent side="top">
             Model: {fullModelLabel}
             {privacyLine && ` · ${privacyLine}`}
+            {disclosureLine && (
+              <span className="mt-1 block max-w-[280px] [overflow-wrap:anywhere]">
+                {disclosureLine}
+              </span>
+            )}
           </TooltipContent>
         </Tooltip>
         <DropdownMenuContent side="top" align="center" className="w-64 p-0 font-sans">
@@ -226,6 +277,20 @@ export default function ModelsBottomBar({
             </div>
             {privacyLine && (
               <div className="mt-1 text-[11px] leading-4 text-text-muted">{privacyLine}</div>
+            )}
+            {/*
+              Issue #56, DR-17 requirement 3 — the standing one-line disclosure,
+              in the one place on this chip with room for a sentence. The words
+              come from the daemon; a literal here would be a second definition
+              and would be the one that shipped stale.
+            */}
+            {disclosureLine && (
+              <div
+                data-testid="non-private-model-chip-note"
+                className="mt-1 text-[11px] leading-4 text-text-muted [overflow-wrap:anywhere]"
+              >
+                {disclosureLine}
+              </div>
             )}
           </div>
           <div className="p-1.5">

@@ -37,6 +37,7 @@ import { isRunningState } from '../hooks/chatStreamStore';
 import { useNavigation } from '../hooks/useNavigation';
 import { WorkflowHeader } from './WorkflowHeader';
 import { WorkflowWarningModal } from './ui/WorkflowWarningModal';
+import { NonPrivateModelDisclosureGate } from './privacy/NonPrivateModelDisclosureGate';
 import { scanWorkflow } from '../workflow';
 import { useCostTracking } from '../hooks/useCostTracking';
 import { useDiverge } from '../hooks/useDiverge';
@@ -2335,6 +2336,22 @@ function BaseChatContent({
           />
         )}
       </MainPanelLayout>
+
+      {/*
+        Issue #56, DR-17 requirement 3 — the one-time disclosure of what a
+        non-private model can reach, shown BEFORE the first turn on it.
+
+        ⚠ `session?.provider_name`, never `session?.privacy_tier`. The tier is
+        the chat's ratcheted CLASSIFICATION and starts `public` on every fresh
+        chat, including one bound to Versa; a gate keyed on it would put a
+        "this model is not hosted by your institution" dialog over the one
+        provider this feature exists to make safe to use.
+
+        ⚠ It is NOT behind the master privacy switch. DR-15 turns off gates, the
+        ratchet and refusals; it does not turn off the truth, and with
+        enforcement off the exposure is larger, not smaller.
+      */}
+      <NonPrivateModelDisclosureGate providerName={session?.provider_name} />
 
       {workflow && (
         <WorkflowWarningModal

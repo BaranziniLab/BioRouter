@@ -4,7 +4,22 @@ import ModelsBottomBar from './ModelsBottomBar';
 
 const mocks = vi.hoisted(() => ({
   read: vi.fn(async () => ''),
-  getProviders: vi.fn(async () => []),
+  getProviders: vi.fn(async () => [] as unknown[]),
+  // Task 30A: mutable, because the disclosure line depends on the tier of the
+  // PROVIDER bound to the chat, not on the chat's own classification — a fresh
+  // chat on Versa is classified `public` and its model is emphatically not.
+  currentProvider: 'versa_azure',
+  getPrivacyDisclosure: vi.fn(),
+  ackPrivacyDisclosure: vi.fn(),
+}));
+
+vi.mock('../../../../api', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  getPrivacyDisclosure: mocks.getPrivacyDisclosure,
+  ackPrivacyDisclosure: mocks.ackPrivacyDisclosure,
+}));
+vi.mock('../../../../utils/userAction', () => ({
+  userActionHeaders: async () => ({ 'X-User-Action': 'test-key' }),
 }));
 
 // ⚠ `usePrivacyTiersEnabled` as well as `useConfig`. `PrivacyBadge` reads the
@@ -21,7 +36,7 @@ vi.mock('../../../ConfigContext', () => ({
 vi.mock('../../../ModelAndProviderContext', () => ({
   useModelAndProvider: () => ({
     currentModel: 'claude-opus-4',
-    currentProvider: 'versa_azure',
+    currentProvider: mocks.currentProvider,
     getCurrentModelAndProviderForDisplay: async () => ({
       model: 'claude-opus-4',
       provider: 'Versa',
@@ -54,8 +69,30 @@ function renderBar(privacyTier?: 'public' | 'private') {
   );
 }
 
+const providerEntry = (name: string, tier: 'private' | 'public') => ({
+  name,
+  is_configured: true,
+  provider_type: 'Builtin',
+  metadata: { name, display_name: name, tier, runs_locally: tier === 'private' },
+});
+
 describe('ModelsBottomBar — the chip carries a dot, never a pill', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.currentProvider = 'versa_azure';
+    mocks.getProviders.mockResolvedValue([
+      providerEntry('versa_azure', 'private'),
+      providerEntry('openai', 'public'),
+    ]);
+    mocks.getPrivacyDisclosure.mockResolvedValue({
+      data: {
+        title_template: '{provider} is not hosted by your institution.',
+        long: 'SERVED-LONG-MARKER',
+        short: 'SERVED-SHORT-MARKER — this model can read files on this computer.',
+        acknowledged: true,
+      },
+    });
+  });
 
   it('marks a private chat with the dense badge and no added text', () => {
     renderBar('private');
@@ -80,5 +117,32 @@ describe('ModelsBottomBar — the chip carries a dot, never a pill', () => {
     });
 
     expect(await screen.findByText(/Private chat/i)).toBeInTheDocument();
+  });
+
+  /**
+   * Task 30A (issue #56, DR-17 requirement 3). The chip is where a user looks
+   * to see which model they are talking to, so it is where the one-line
+   * disclosure belongs.
+   *
+   * ⚠ It hangs off the bound PROVIDER's tier, never off `privacyTier`. That
+   * prop is the chat's ratcheted CLASSIFICATION: a fresh chat on Versa is
+   * classified `public` and its model is emphatically not a public model, so a
+   * line keyed on it would tell the user something false about Versa.
+   */
+  it('a public model gets the one-line disclosure in the dropdown', async () => {
+    mocks.currentProvider = 'openai';
+    renderBar('public');
+    fireEvent.pointerDown(screen.getByLabelText(/Current model/), { button: 0, ctrlKey: false });
+    expect(await screen.findByTestId('non-private-model-chip-note')).toHaveTextContent(
+      /SERVED-SHORT-MARKER/
+    );
+  });
+
+  it('an institutional model does NOT, even while the chat itself is still public', async () => {
+    mocks.currentProvider = 'versa_azure';
+    renderBar('public');
+    fireEvent.pointerDown(screen.getByLabelText(/Current model/), { button: 0, ctrlKey: false });
+    await screen.findByText(/Current model/);
+    expect(screen.queryByTestId('non-private-model-chip-note')).toBeNull();
   });
 });

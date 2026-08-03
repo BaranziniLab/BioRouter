@@ -1,7 +1,25 @@
 import { render, screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProviderDetails, ProviderTier } from '../../../api';
 import ProviderGrid from './ProviderGrid';
+
+// Task 30A: the Commercial section carries the served one-line disclosure.
+// ⚠ The fixture is deliberately not the product's sentence — Step 5's gate (1)
+// counts definitions of that sentence across `ui/desktop/src/` and expects one,
+// and a `--include='*.tsx'` grep does not skip test files.
+const mocks = vi.hoisted(() => ({
+  getPrivacyDisclosure: vi.fn(),
+  ackPrivacyDisclosure: vi.fn(),
+}));
+
+vi.mock('../../../api', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  getPrivacyDisclosure: mocks.getPrivacyDisclosure,
+  ackPrivacyDisclosure: mocks.ackPrivacyDisclosure,
+}));
+vi.mock('../../../utils/userAction', () => ({
+  userActionHeaders: async () => ({ 'X-User-Action': 'test-key' }),
+}));
 
 /**
  * §14.5 — the two taxonomies must be the same words in the same place.
@@ -43,6 +61,18 @@ const all = [
 ];
 
 describe('ProviderGrid — the privacy taxonomy, on screen', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.getPrivacyDisclosure.mockResolvedValue({
+      data: {
+        title_template: '{provider} is not hosted by your institution.',
+        long: 'SERVED-LONG-MARKER',
+        short: 'SERVED-SHORT-MARKER — this model can read files on this computer.',
+        acknowledged: true,
+      },
+    });
+  });
+
   it('the provider grid headers name the two taxonomies with the same words', () => {
     render(<ProviderGrid providers={all} isOnboarding={false} />);
 
@@ -68,5 +98,25 @@ describe('ProviderGrid — the privacy taxonomy, on screen', () => {
     // itself, so that wording would claim something the configuration
     // contradicts.
     expect(screen.getByText(/can't verify where/i)).toHaveTextContent(/endpoint points/i);
+  });
+
+  /**
+   * Task 30A (issue #56, DR-17 requirement 3). The Commercial section is one of
+   * the surfaces that carries the disclosure permanently — it reads no
+   * acknowledgement and never goes quiet, which is what makes "shown once,
+   * forcefully" a defensible design rather than a one-off popup.
+   */
+  it('the Commercial section says what a model there can reach, in the served words', async () => {
+    render(<ProviderGrid providers={all} isOnboarding={false} />);
+    const note = await screen.findByTestId('non-private-model-note');
+    expect(note).toHaveTextContent(/SERVED-SHORT-MARKER/);
+    expect(note).toHaveTextContent(/can read files on this computer/i);
+  });
+
+  it('renders nothing there rather than inventing prose when the copy cannot be fetched', async () => {
+    mocks.getPrivacyDisclosure.mockRejectedValue(new Error('offline'));
+    render(<ProviderGrid providers={all} isOnboarding={false} />);
+    expect(await screen.findByText(/Public · Commercial/)).toBeInTheDocument();
+    expect(screen.queryByTestId('non-private-model-note')).toBeNull();
   });
 });
