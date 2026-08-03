@@ -332,6 +332,53 @@ if (!existsSync(PLAYWRIGHT)) {
     await page.close();
   });
 
+  test('both badges are a visible pill in dark as well as light', async () => {
+    // `.tag.private` is the navy ramp: `background: rgba(5,32,73,0.07)`, a 7%
+    // tint that reads as a soft chip on a white card. `landing/theme.js` sets
+    // `.dark` pre-paint and rebinds `--ucsf` to a light steel blue, so the TEXT
+    // survives — but the background is a literal, not a token, and 7% navy over
+    // a #1e1811 card composites to within four counts of the card itself. The
+    // Private badge lost its pill in dark while Public kept one, which is
+    // exactly backwards: private is the tier that has to stand out.
+    for (const scheme of ['light', 'dark']) {
+      const ctx = await browser.newContext({ colorScheme: scheme, viewport: { width: 1280, height: 900 } });
+      const page = await ctx.newPage();
+      await page.goto(`${BASE}/baam.html`);
+      await page.waitForSelector('#ext-featured .ext-card');
+      const seen = await page.evaluate(() => {
+        // Rasterise rather than parse. A computed background can come back as
+        // `rgba(5,32,73,0.07)` or as `color(srgb 0.56 0.7 0.87 / 0.18)`, and a
+        // regex that assumes 0-255 reads the second one as almost no colour at
+        // all — which looks exactly like the bug being tested for. Painting the
+        // chip over the card and reading the pixel back asks the browser to do
+        // both the parsing and the alpha compositing.
+        const cv = document.createElement('canvas');
+        cv.width = cv.height = 1;
+        const ctx2d = cv.getContext('2d', { willReadFrequently: true });
+        const paint = (...layers) => {
+          ctx2d.clearRect(0, 0, 1, 1);
+          for (const css of layers) {
+            ctx2d.fillStyle = css;
+            ctx2d.fillRect(0, 0, 1, 1);
+          }
+          return [...ctx2d.getImageData(0, 0, 1, 1).data].slice(0, 3);
+        };
+        const card = getComputedStyle(document.querySelector('.ext-card')).backgroundColor;
+        const base = paint(card);
+        // The largest per-channel gap between the chip and the card under it.
+        const chip = (sel) => {
+          const on = paint(card, getComputedStyle(document.querySelector(sel)).backgroundColor);
+          return Math.max(...on.map((c, i) => Math.abs(c - base[i])));
+        };
+        return { dark: document.documentElement.classList.contains('dark'), private: chip('.tag.private'), public: chip('.tag.public') };
+      });
+      assert.equal(seen.dark, scheme === 'dark', 'theme.js did not follow the colour scheme');
+      assert.ok(seen.private >= 8, `the Private badge is ${seen.private.toFixed(1)}/255 from the card in ${scheme} — no visible pill`);
+      assert.ok(seen.public >= 8, `the Public badge is ${seen.public.toFixed(1)}/255 from the card in ${scheme} — no visible pill`);
+      await ctx.close();
+    }
+  });
+
   test('a well-formed registry still renders', async () => {
     // Without this, "refuse to render" is satisfiable by never rendering, and
     // every other test in this file would be reading static markup.
