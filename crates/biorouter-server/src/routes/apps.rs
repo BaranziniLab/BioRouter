@@ -8876,5 +8876,93 @@ mod tests {
                 "versa_azure"
             );
         }
+
+        /// Step 3(d)'s closing instruction. `ClientFrame::ModelSelect` needs no
+        /// new code, because its bind goes through `Agent::update_provider` and
+        /// Gate A lives inside that call — "lock it in with a test rather than
+        /// adding one".
+        ///
+        /// It is the binding path where that matters most. `GET
+        /// /apps/{id}/agent` is exempt from secret-key auth (`auth.rs`
+        /// `is_public_app_get` matches the tail `["agent"]`), so a `ModelSelect`
+        /// frame arrives over an UNAUTHENTICATED socket and the bind gate is the
+        /// only thing standing between it and a provider swap on a private app
+        /// session. There is no route check to fall back on.
+        ///
+        /// Both halves are pinned, because a regression can satisfy either one
+        /// alone:
+        ///
+        /// 1. the arm really does bind through `Agent::update_provider`. Gate
+        ///    B''s doc comment in `agent.rs` notes that `SharedProvider` is a
+        ///    clonable `Arc<Mutex<_>>` and that three production sites hold one
+        ///    and go straight to the binding; a refactor moving `ModelSelect`
+        ///    onto one of those would reopen the hole with every other test
+        ///    still green.
+        /// 2. that call really does refuse a public provider on a private row.
+        #[tokio::test]
+        async fn a_model_select_frame_cannot_move_a_private_app_session_to_a_public_model() {
+            // (1) The arm binds through the gate. Read off this file's own
+            // source: the property is structural — "this path goes through that
+            // call" — and the socket it lives on cannot be driven from a unit
+            // test without a live provider and a browser.
+            //
+            // The needle is split so it does not appear contiguously in this
+            // test's own text; otherwise deleting the real arm would leave
+            // `split_once` matching here instead.
+            let src = include_str!("apps.rs");
+            let needle = concat!("ClientFrame::ModelSel", "ect { provider, model } => {");
+            let arm = src
+                .split_once(needle)
+                .expect("the ModelSelect arm still exists")
+                .1
+                .split_once("\n            ClientFrame::")
+                .expect("...and is still followed by another frame arm")
+                .0;
+            assert!(
+                arm.contains("agent.update_provider("),
+                "ModelSelect must bind through Agent::update_provider — that call IS Gate A, and \
+                 this socket is exempt from secret-key auth, so nothing else guards it. The arm \
+                 reads:\n{arm}"
+            );
+
+            // (2) That call refuses a public provider on a private row.
+            let dir = tempfile::TempDir::new().unwrap();
+            let session_manager = Arc::new(SessionManager::new(dir.path().to_path_buf()));
+            let agent = agent_over(session_manager.clone(), dir.path());
+            let session = session_manager
+                .create_session(
+                    dir.path().to_path_buf(),
+                    "app".to_string(),
+                    biorouter::session::session_manager::SessionType::User,
+                )
+                .await
+                .unwrap();
+            agent
+                .update_provider(tiered("task24-private", ProviderTier::Private), &session.id)
+                .await
+                .unwrap();
+            session_manager
+                .update(&session.id)
+                .raise_privacy(SessionClassification::Private, "turn:task24-private")
+                .apply()
+                .await
+                .unwrap();
+
+            // Exactly what the arm does with the frame's provider, and it is the
+            // `is_ok()` the arm reports back as `{"type":"model","ok":…}`.
+            let ok = agent
+                .update_provider(tiered("task24-public", ProviderTier::Public), &session.id)
+                .await
+                .is_ok();
+            assert!(
+                !ok,
+                "an unauthenticated ModelSelect must not move a private app session to a public model"
+            );
+            let row = session_manager
+                .get_session(&session.id, false)
+                .await
+                .unwrap();
+            assert_eq!(row.provider_name.as_deref(), Some("task24-private"));
+        }
     }
 }
