@@ -57,6 +57,26 @@ const COPY_OF_PRIVATE_NEEDS_USER: &str =
      will be refused again. If this task genuinely needs the branch, stop and ask the user to \
      branch the chat from the chat window.";
 
+/// The substring the RENDERER keys on to tell [`COPY_OF_PRIVATE_NEEDS_USER`]
+/// from any other plain-text failure of the same route.
+///
+/// A substring is all it has: under `throwOnError` the generated client throws
+/// the parsed BODY rather than the response, so the 403 never reaches the catch
+/// arm, and a 500 from this route carries plain text too. Without the match the
+/// hook falls to `err instanceof Error ? err.message : …` — and a thrown string
+/// is not an `Error`, so the whole refusal was replaced by "Could not branch
+/// this conversation", which names neither the cause nor the way out.
+///
+/// Deliberately NOT `USER_ACTION_REFUSAL_MARKER`. That one marks the model
+/// picker's refusal, whose remedy is "switch this chat's model"; this one's is
+/// "branch it from the chat window". One toast answering for both would send the
+/// user somewhere that cannot help.
+///
+/// ⚠ Mirrored verbatim in `ui/desktop/src/utils/userAction.ts`, and pinned by
+/// `the_copy_refusal_carries_the_marker_the_renderer_keys_on`. The message above
+/// is model-facing prose and gets reworded; the marker is the contract.
+const COPY_OF_PRIVATE_REFUSAL_MARKER: &str = "only the person at the keyboard may do it";
+
 /// Issue #56 DR-19's **second** read: did the copy that just ran mint a
 /// private-capability session for a request that proved no human?
 ///
@@ -1996,6 +2016,28 @@ mod diverge_tests {
         ] {
             manager.delete_session(&id).await.unwrap();
         }
+    }
+
+    /// Issue #56 DR-19. The renderer cannot read the 403: under `throwOnError`
+    /// the generated client throws the parsed BODY, so the status never reaches
+    /// the catch arm and a substring is all there is to go on. A reword that
+    /// dropped the marker would put every refused branch back on the generic
+    /// "Could not branch this conversation" with nothing failing.
+    #[test]
+    fn the_copy_refusal_carries_the_marker_the_renderer_keys_on() {
+        assert!(
+            COPY_OF_PRIVATE_NEEDS_USER.contains(COPY_OF_PRIVATE_REFUSAL_MARKER),
+            "the renderer cannot tell this refusal from a 500: {COPY_OF_PRIVATE_NEEDS_USER}"
+        );
+        // And deliberately NOT the model picker's marker. The two refusals are
+        // different acts with different remedies — one is "switch this chat's
+        // model", the other is "branch this chat" — and a toast that answered
+        // for both would tell the user to do the wrong thing.
+        assert!(
+            !COPY_OF_PRIVATE_NEEDS_USER
+                .contains(biorouter::privacy::refusal::USER_ACTION_REFUSAL_MARKER),
+            "the copy refusal is claiming to be the model picker's refusal"
+        );
     }
 
     /// Issue #56 DR-19, the window the gate above leaves open.

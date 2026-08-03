@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
-import { useDiverge } from './useDiverge';
+import { useDiverge, PRIVATE_COPY_TOAST_TITLE, PRIVATE_COPY_TOAST_MSG } from './useDiverge';
+import { COPY_OF_PRIVATE_REFUSAL_MARKER, isPrivateCopyRefusal } from '../utils/userAction';
 
 const mockDivergeSession = vi.fn();
 vi.mock('../api', () => ({
@@ -91,5 +92,44 @@ describe('useDiverge', () => {
     expect(returned).toBeNull();
     expect(mockCreateDivergedChatWindow).not.toHaveBeenCalled();
     expect(mockToastError).toHaveBeenCalled();
+  });
+
+  // Issue #56 DR-19. The daemon's 403 body is the ONLY explanation the user can
+  // get here, and it was being thrown away: under `throwOnError` the generated
+  // client throws the PARSED BODY — a plain string — so `err instanceof Error`
+  // is false and the generic fallback answered instead. On a backend started
+  // outside the app (open question 23) that made the Diverge button on a private
+  // chat fail with no reason given.
+  const REFUSAL_BODY =
+    'This chat is private, and branching it creates a new chat that inherits its private ' +
+    `model — so ${COPY_OF_PRIVATE_REFUSAL_MARKER}, and this request carried no proof it ` +
+    'came from them.';
+
+  it('names the private-copy refusal instead of falling back to the generic message', async () => {
+    mockDivergeSession.mockRejectedValue(REFUSAL_BODY);
+    const { result } = renderHook(() => useDiverge());
+
+    let returned: string | null = 'unset';
+    await act(async () => {
+      returned = await result.current.diverge('orig');
+    });
+
+    expect(returned).toBeNull();
+    expect(mockCreateDivergedChatWindow).not.toHaveBeenCalled();
+    expect(mockToastError).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: PRIVATE_COPY_TOAST_TITLE,
+        msg: PRIVATE_COPY_TOAST_MSG,
+      })
+    );
+  });
+
+  it('leaves every other failure on the generic message', () => {
+    // The negative control. A 500 from the same route carries plain text too,
+    // and reporting one as a privacy refusal would be a confident lie.
+    expect(isPrivateCopyRefusal(REFUSAL_BODY)).toBe(true);
+    expect(isPrivateCopyRefusal('internal server error')).toBe(false);
+    expect(isPrivateCopyRefusal(new Error(REFUSAL_BODY))).toBe(false);
+    expect(isPrivateCopyRefusal(undefined)).toBe(false);
   });
 });

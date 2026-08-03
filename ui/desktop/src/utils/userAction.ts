@@ -47,6 +47,39 @@ export const USER_ACTION_REFUSAL_MARKER = "is the user's decision, not yours";
 export const isUserActionRefusal = (error: unknown): boolean =>
   typeof error === 'string' && error.includes(USER_ACTION_REFUSAL_MARKER);
 
+/**
+ * Issue #56 DR-19. The substring that marks a 403 from a COPY handler
+ * (`/sessions/{id}/diverge`, `/sessions/{id}/edit_message`) as *"branching this
+ * private chat would mint another private-capability chat, and nothing proved
+ * this came from you"*.
+ *
+ * ⚠ Mirrored verbatim from `COPY_OF_PRIVATE_REFUSAL_MARKER` in
+ * `crates/biorouter-server/src/routes/session.rs`, where a unit test asserts the
+ * refusal carries it. Change both together. The refusal itself is model-facing
+ * prose and gets reworded; the marker is the contract.
+ *
+ * Deliberately a DIFFERENT marker from {@link USER_ACTION_REFUSAL_MARKER}, and
+ * the Rust test asserts the two messages do not share one. The picker's refusal
+ * is answered by "switch this chat's model"; this one by "branch it from the
+ * chat window". A single toast for both would send the user somewhere that
+ * cannot help.
+ */
+export const COPY_OF_PRIVATE_REFUSAL_MARKER = 'only the person at the keyboard may do it';
+
+/**
+ * Was this thrown value the daemon refusing to branch a private chat for want of
+ * a user-proof?
+ *
+ * Same constraint as {@link isUserActionRefusal}: under `throwOnError` the
+ * generated client throws the PARSED BODY, not the response, so the 403 status
+ * never reaches the catch arm and a substring is all there is to go on. The
+ * `typeof === 'string'` test is load-bearing in both directions — a 500 from the
+ * same route also carries a plain-text body, and a real `Error` (a network
+ * failure, a thrown assertion) is not a policy refusal however it reads.
+ */
+export const isPrivateCopyRefusal = (error: unknown): boolean =>
+  typeof error === 'string' && error.includes(COPY_OF_PRIVATE_REFUSAL_MARKER);
+
 export const userActionHeaders = async (): Promise<Record<string, string>> => {
   try {
     return { 'X-User-Action': await window.electron.getUserActionKey() };
