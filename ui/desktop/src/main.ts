@@ -88,6 +88,11 @@ import {
   wrapArtifactForBrowser,
 } from './utils/artifactSecurity';
 import { readGitArtifactTree } from './utils/artifactGit';
+import {
+  isRegistryDocument,
+  readLastGoodRegistry,
+  writeLastGoodRegistry,
+} from './utils/registryCache';
 import { readArtifactDirectoryTree } from './utils/artifactDirectory';
 import {
   diagnosticsArchiveBytes,
@@ -2920,73 +2925,10 @@ function registryCachePath(): string {
   return path.join(app.getPath('userData'), 'registry-last-good.json');
 }
 
-/**
- * A document is only worth caching if it is actually a catalogue.
- *
- * ⚠ **Element-wise, not just array-shaped.** `{"extensions":[null],"skills":[]}`
- * satisfies `Array.isArray` on both members and is nonetheless not a catalogue;
- * admitting it wrote it to the cache, where it was re-admitted on every launch
- * thereafter and blew up the renderer's classifier on a `null.privacy`. The
- * cache is precisely what turns one bad response into a permanent one, so the
- * validation that guards it has to look at what is IN the arrays. Only
- * "is a plain object" is checked — a v1 document's entries carry different
- * fields from a v2 document's, and rejecting on a missing field would refuse
- * catalogues the site legitimately publishes.
- */
-function isRegistryDocument(json: unknown): boolean {
-  if (!json || typeof json !== 'object') return false;
-  const doc = json as { extensions?: unknown; skills?: unknown };
-  if (!Array.isArray(doc.extensions) || !Array.isArray(doc.skills)) return false;
-  const isEntry = (e: unknown) => !!e && typeof e === 'object' && !Array.isArray(e);
-  return doc.extensions.every(isEntry) && doc.skills.every(isEntry);
-}
-
-/**
- * Write-to-temp-then-rename, because two writers of this file is the NORMAL
- * case, not a rare one: `ExtensionsSection` calls `loadRegistry()` on mount and
- * it also renders `BrowseExtensionsModal`, which calls it again — two
- * `registry:fetch` handlers in flight at once. A plain `writeFile` truncates and
- * then writes, so two payloads of different lengths can interleave into a file
- * that is neither. `rename` within a directory is atomic, so a reader sees the
- * old document or the new one and never a splice of both.
- */
-async function writeLastGoodRegistry(registry: unknown, fetchedAt: string): Promise<void> {
-  const target = registryCachePath();
-  const scratch = `${target}.${crypto.randomBytes(6).toString('hex')}.tmp`;
-  try {
-    await fs.writeFile(scratch, JSON.stringify({ fetchedAt, registry }), 'utf8');
-    await fs.rename(scratch, target);
-  } catch (err) {
-    // A cache that cannot be written costs freshness on the next offline run,
-    // never the fetch that just succeeded.
-    await fs.rm(scratch, { force: true }).catch(() => {});
-    log.warn('Could not write the last-good registry cache:', err);
-  }
-}
-
-/**
- * A cache entry is only usable if it can say HOW OLD it is.
- *
- * The renderer's freshness line reads a missing date as "showing bundled
- * catalog (offline)" — the one thing it can safely conclude, since the bundled
- * snapshot is the only source with no fetch to date. Returning a cached
- * document without one would make that sentence name the wrong catalogue, on
- * the screen where the user decides whether to trust the entries below it. So
- * an undated entry is treated as no cache at all, which falls back to the
- * snapshot the line would have claimed anyway.
- */
-async function readLastGoodRegistry(): Promise<{ registry: unknown; fetchedAt: string } | null> {
-  try {
-    const raw = await fs.readFile(registryCachePath(), 'utf8');
-    const parsed = JSON.parse(raw) as { registry?: unknown; fetchedAt?: unknown };
-    if (!isRegistryDocument(parsed.registry)) return null;
-    const fetchedAt = parsed.fetchedAt;
-    if (typeof fetchedAt !== 'string' || Number.isNaN(Date.parse(fetchedAt))) return null;
-    return { registry: parsed.registry, fetchedAt };
-  } catch {
-    return null;
-  }
-}
+// Validation, the atomic write and the dated read live in `utils/registryCache`
+// — Electron-free on purpose, because this file cannot be unit-tested and the
+// renderer's tests stop at the IPC boundary, so inline here an implementation
+// with no disk cache at all passed every test this feature has.
 
 ipcMain.handle('registry:fetch', async () => {
   const controller = new AbortController();
@@ -3002,10 +2944,11 @@ ipcMain.handle('registry:fetch', async () => {
     // caching it would poison every subsequent offline launch.
     if (!isRegistryDocument(json)) throw new Error('Response was not a marketplace catalog');
     const fetchedAt = new Date().toISOString();
-    await writeLastGoodRegistry(json, fetchedAt);
+    const writeError = await writeLastGoodRegistry(registryCachePath(), json, fetchedAt);
+    if (writeError) log.warn('Could not write the last-good registry cache:', writeError);
     return { registry: json, fetchedAt, stale: false };
   } catch (err) {
-    const cached = await readLastGoodRegistry();
+    const cached = await readLastGoodRegistry(registryCachePath());
     if (cached) {
       return { registry: cached.registry, fetchedAt: cached.fetchedAt, stale: true };
     }
