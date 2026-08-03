@@ -7,8 +7,11 @@ use super::ProviderTier;
 ///     `config.yaml` and never from the `.brxt` bundle — which self-declares
 ///     nothing the resolver reads, and whose install records no provenance at
 ///     all (`BrxtInstallModal.tsx` writes name/cmd/args/envs and no registry
-///     id, source URL or hash). That baseline is hand-maintained, **not**
-///     generated; see that module's header for the drift hazard it creates.
+///     id, source URL or hash). That baseline is a **generated** file:
+///     `landing/scripts/build-registry.mjs` writes it from the `data-privacy` /
+///     `data-extension-name` annotations on the BAAM cards, in the same run as
+///     `landing/registry.json` and the desktop fallback snapshot, and its
+///     `--check` mode fails CI when the three disagree.
 /// (ii) **Anything not on BAAM is PUBLIC.** Fail-open, operator ruling. This is
 ///     the opposite fail direction from `Provider::tier`'s default and the
 ///     asymmetry is deliberate: an unknown model is a place data might *go*
@@ -53,6 +56,50 @@ pub fn private_extension_ids() -> impl Iterator<Item = &'static str> {
 mod tests {
     use super::*;
     use crate::privacy::ProviderTier;
+
+    /// The set itself, stated once where a human reads it.
+    ///
+    /// The test below asserts two members and a list of non-members, which an
+    /// **extra** private entry passes — a generator bug that swept, say,
+    /// `playwrightagent` into the set would go unnoticed there, and so would a
+    /// hand edit. The set is small, deliberate and reviewed by name, so its
+    /// exact value belongs in an assertion rather than in a comment.
+    #[test]
+    fn the_generated_set_is_exactly_these_two_keys() {
+        assert_eq!(
+            private_extension_ids().collect::<Vec<_>>(),
+            vec!["cdwagent", "ucsfomopagent"],
+            "the compiled-in private set changed. It is generated from the \
+             data-privacy annotations in landing/baam.html by \
+             landing/scripts/build-registry.mjs — if that change is intended, \
+             say so here; if it is not, the generator or the page is wrong"
+        );
+    }
+
+    /// The key has to survive both reductions on the way in and come out the
+    /// same, or the set holds a spelling the running app never produces.
+    ///
+    /// `classify_extension` applies `name_to_key`; the extension manager applies
+    /// `normalize` to the installed config entry's name before storing it. The
+    /// two agree only on ASCII letters, digits, `_` and `-`. The generator
+    /// refuses a name outside that set — this is the same invariant asserted
+    /// from the consuming side, so a hand-edited key cannot reintroduce it.
+    #[test]
+    fn every_key_survives_both_reductions_unchanged() {
+        for key in private_extension_ids() {
+            assert_eq!(
+                crate::config::extensions::name_to_key(key),
+                key,
+                "{key} is not already in name_to_key form, so classify_extension can never match it"
+            );
+            assert_eq!(
+                crate::agents::normalize(key),
+                key,
+                "the extension manager would store {key} under a different name, \
+                 so the tier lookup would miss it and the extension would classify Public"
+            );
+        }
+    }
 
     #[test]
     fn the_private_set_is_exactly_the_two_the_registry_publishes() {
