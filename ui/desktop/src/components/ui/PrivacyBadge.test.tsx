@@ -37,7 +37,11 @@ const DECLARED_TOKENS = new Set(
  */
 const PRIVACY_ASSERTION_LINES = read('scripts', 'check-contrast.mjs')
   .split('\n')
-  .filter((l) => l.includes('privacy '));
+  // `assert(` as well as the label, so prose cannot widen the allowed set. The
+  // block's own explanatory comment says "privacy pills" and would otherwise be
+  // read as an assertion — harmless today, but a comment that happened to quote
+  // a token would have silently permitted it.
+  .filter((l) => l.includes('privacy ') && l.trimStart().startsWith('assert('));
 const MEASURED_TOKENS = new Set(
   PRIVACY_ASSERTION_LINES.flatMap((l) => [...l.matchAll(/'(--[\w-]+)'/g)].map((m) => m[1]))
 );
