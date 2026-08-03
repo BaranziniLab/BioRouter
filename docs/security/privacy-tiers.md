@@ -870,8 +870,18 @@ the user's own UI, not a model."
 > `X-Secret-Key` — is designed as the `X-User-Action` digest in
 > [Task 18A](privacy-tiers-execution-plan.md#task-18a-the-two-http-channels-that-raise-a-sessions-own-tier-and-the-user-proof-neither-of-them-has),
 > with the residual local-caller half carried by
-> [Open question 20](privacy-tiers-execution-plan.md#open-questions). It is why Task 29's R9 property
-> is "only a human *through the GUI*", not "only a human".
+> [Open question 20](privacy-tiers-execution-plan.md#open-questions). ~~It is why Task 29's R9
+> property is "only a human *through the GUI*", not "only a human".~~
+>
+> ⚠ **(3) is CLOSED by [R18](#3-settled-requirements) / [DR-20](privacy-tiers-execution-plan.md#dr-20--declassification-is-gated-by-a-system-authentication-and-that-is-what-lets-an-agent-ask),
+> and closed by something stronger than the token this finding asked for.** The gate is an
+> **operating-system authentication**, so the property is no longer "only a human *through the GUI*"
+> — it is *only a human, on any surface*, including the CLI, which is why
+> [Task 31](privacy-tiers-execution-plan.md#task-31-the-cli-is-a-required-r10-surface)'s subcommand
+> is legitimate. The `X-User-Action` digest remains the **carrier** on the HTTP path — the Electron
+> main process presents it *after* the prompt it raised — and DR-20 states plainly what the daemon
+> can and cannot verify: that a process holding the per-launch key asserts an authentication
+> succeeded, never that a prompt occurred. Open question 20's local-caller residual is unchanged.
 
 Three fixes were called for. (1) **Done** — strip the daemon's credentials from every child spawned
 on an agent's behalf, on the extension spawn path as well as the shell one. (2) **Open** — stop
@@ -885,9 +895,11 @@ would pass straight through. The same list is also only consulted for names that
 `doomed_env_keys` filters on `key.to_str().is_some_and(..)` (`environment.rs:85`), so a non-UTF-8
 key is never even offered to it. That is out of reach for any name BioRouter sets itself, but it is
 a second reason the guarantee is "we filter this list" rather than "there is nothing to filter".
-(3) **Open** — bind declassify to a one-shot capability token minted by
-the renderer, not to `X-Secret-Key`, or R9's "only a human" property is documentation rather than
-mechanism.
+(3) ~~**Open**~~ **CLOSED by [R18](#3-settled-requirements)** — the original wording asked to bind
+declassify to a one-shot capability token minted by the renderer rather than to `X-Secret-Key`, *or
+R9's "only a human" property is documentation rather than mechanism*. That property is now mechanism,
+and by a stronger route than a token: an **operating-system authentication** per operation, with the
+`X-User-Action` digest as the HTTP carrier. See the ⚠ in the amendment banner above.
 
 **A2 — `sessions.db` is a plain file.** `sqlite3 <db> "select text from messages_fts"` returns
 every message of every session, no JSON parsing needed, because `messages_fts` is a **contentful**
