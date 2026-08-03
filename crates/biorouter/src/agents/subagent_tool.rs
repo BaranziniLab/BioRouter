@@ -1260,11 +1260,22 @@ async fn apply_settings_overrides(
     // `the_spawn_refusal_cannot_be_unlocked_by_anything_the_agent_can_write`
     // drives a real spawn under every such unlock at once.
     //
-    // ⚠ This fires ONLY on an explicit request, and needs no extra term to say
-    // so. An inheriting child is handed the parent's SAME `Arc<dyn Provider>`
-    // (the fact R5 rides on), so `child_tier == parent_cap` identically and the
-    // comparison cannot be true. The two can differ only when the request named
-    // a provider or a model and `providers::create` above built something else.
+    // ⚠ This fires ONLY on a request that carried a `settings` override, and
+    // needs no extra term to say so. An inheriting child is handed the parent's
+    // SAME `Arc<dyn Provider>` (the fact R5 rides on), so
+    // `child_tier == parent_cap` identically and the comparison cannot be true.
+    //
+    // The two can differ whenever the rebuild branch above ran — which is on
+    // `provider`, on `model`, **and on `temperature`**. Temperature is not a
+    // harmless third term: the rebuild calls `providers::create` with
+    // `task_config.provider.get_name()`, and on a `LeadWorker` parent that name
+    // is the LEAD's alone (`lead_worker.rs`, `get_name`) while `parent_cap` is
+    // `least(lead, worker)` (`tier`). A temperature-only spawn under a
+    // private-lead / public-worker parent therefore reads `parent_cap = Public`
+    // and rebuilds a lead-only `child_tier = Private`, and R4 above refuses it —
+    // a genuine reach increase, correctly caught, for a request that named no
+    // model. The collapse is fail-closed in both directions, so it is left as
+    // is; what is NOT acceptable is a comment that says it cannot happen.
     if !child_tier.is_private() && parent_cap.is_private() {
         return Err(crate::privacy::PrivacyRefusal::spawn_downgrade(child_tier).into());
     }
@@ -2317,6 +2328,82 @@ mod tests {
                 Some(PrivacyRefusal::PublicChildOfPrivateParent { .. })
             ),
             "expected DR-19's typed refusal, got: {err}"
+        );
+    }
+
+    /// The `settings.temperature` term of the rebuild branch, which review
+    /// found the R4/DR-19 comment claiming was inert.
+    ///
+    /// It is not inert on a **composite** parent. `apply_settings_overrides`
+    /// rebuilds on `provider || model || temperature`, and the rebuild passes
+    /// `task_config.provider.get_name()` — which `LeadWorkerProvider` answers
+    /// with the LEAD's name alone, while its `tier()` is `least(lead, worker)`.
+    /// So a spawn that named nothing but a temperature can hand the child MORE
+    /// reach than the parent had, and R4 refuses it.
+    ///
+    /// The parent here is a private-lead / public-worker pair, i.e. `parent_cap
+    /// = Public`: a loopback `ollama` lead (the one registry entry that
+    /// constructs with no credential and no network, and reads its tier off the
+    /// resolved base URL) over a Public mock worker. Pinned so the comment
+    /// cannot quietly become wrong again — deleting the `temperature` term makes
+    /// this test fail, which is how it was checked.
+    #[tokio::test]
+    async fn a_temperature_only_spawn_is_not_inert_on_a_composite_parent() {
+        use crate::providers::lead_worker::LeadWorkerProvider;
+        use std::sync::Arc;
+
+        let params: SubagentParams = serde_json::from_value(json!({
+            "instructions": "do the thing",
+            "settings": { "temperature": 0.25 }
+        }))
+        .unwrap();
+
+        let err = crate::config::with_config_overrides(
+            HashMap::from([(
+                "OLLAMA_HOST".to_string(),
+                "http://localhost:11434".to_string(),
+            )]),
+            async move {
+                let lead = crate::providers::create(
+                    "ollama",
+                    crate::model::ModelConfig::new_or_fail("llama3"),
+                )
+                .await
+                .expect("ollama constructs with no credential and no network");
+                assert!(
+                    lead.tier().is_private(),
+                    "the lead must be Private for this test to be about anything"
+                );
+
+                let worker: Arc<dyn crate::providers::base::Provider> = Arc::new(TieredParent {
+                    tier: ProviderTier::Public,
+                });
+                let parent: Arc<dyn crate::providers::base::Provider> =
+                    Arc::new(LeadWorkerProvider::new(lead, worker, None));
+                assert!(
+                    !parent.tier().is_private(),
+                    "parent_cap is least(lead, worker), so the pair reads Public"
+                );
+                assert_eq!(
+                    parent.get_name(),
+                    "ollama",
+                    "get_name answers for the LEAD alone — this is the whole mechanism"
+                );
+
+                let task_config =
+                    TaskConfig::new(parent, "parent-1", std::path::Path::new("."), vec![]);
+                apply_settings_overrides(task_config, &params).await
+            },
+        )
+        .await
+        .expect_err("a temperature-only spawn collapsed the pair to its private lead");
+
+        assert!(
+            matches!(
+                err.downcast_ref::<PrivacyRefusal>(),
+                Some(PrivacyRefusal::PrivateChildOfPublicParent { .. })
+            ),
+            "expected R4's typed refusal, got: {err}"
         );
     }
 
