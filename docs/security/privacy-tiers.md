@@ -6,7 +6,8 @@
 > boundary at five choke points in the agent loop.
 > **Status:** Proposed — **narrowed by operator ruling on 2026-07-30 ([DR-17](privacy-tiers-execution-plan.md#scope-ruling--dr-17-narrows-this-plan-to-the-session-store)); read §1 before
 > anything else.** The general filesystem read-deny of §9.5 is **descoped for v1** and this document
-> no longer claims it. §17 still needs rulings.
+> no longer claims it. §17 still needs rulings. **§3's R17 (added 2026-08-02) governs the shape of
+> every control here** — warn the user and let them proceed, never let an agent proceed at all.
 > **Audience:** developers working on the agent loop, `biorouter-server`, the session store, and
 > the desktop GUI.
 
@@ -185,6 +186,28 @@ Each verified by reading the code, each fixed as a by-product of this design:
 | R14 | The registry is trusted (only the Baranzini Lab can publish) and the classification ships on the landing site and in `registry.json`. |
 | **R15** | **Users are told what a non-private model can reach.** A model that is not HIPAA-compliant, not hosted on-premise and not local can read what is on the machine; the product says so, in the GUI, in the CLI and in the docs, from one shared copy. Added by [DR-17](privacy-tiers-execution-plan.md#scope-ruling--dr-17-narrows-this-plan-to-the-session-store), which is also what makes its accepted risks acceptable. |
 | **R16** | **A knowledge base is a first-class tiered object, and the *user* owns its tier.** It takes a tier at creation from the model that created it, ratchets on ingest, is unreadable and unwritable to a public-capability session when private — and the user, never a model, may publicize or privatize it. Added by [DR-18](privacy-tiers-execution-plan.md#dr-18--the-knowledge-base-tier-is-user-controllable-and-a-private-session-creates-a-private-base). |
+| **R17** | **A warning for the user, a wall for the agent.** For every privacy- or security-sensitive operation in this design: an operation the **user explicitly initiates** is **warned about and then allowed if they insist** — never hard-blocked; the same operation **initiated automatically by an agent** is **never** permitted — it escalates to a human or it does not happen. Added by [DR-19](privacy-tiers-execution-plan.md#dr-19--a-warning-for-the-user-a-wall-for-the-agent). |
+
+⚠ **R17 is the shape of R9 and of every user-only control here, stated once.** R9 (only the user may
+deprivatise a session) and R16 (only the user may move a base's tier) are **instances** of R17, not
+separate rules — as are DR-16's user-only tier raise and DR-18's user-only publicize / privatize.
+Read R17 first when designing any refusal, confirmation or override, and answer its question — *who
+can initiate this?* — for every control. A design that does not say is defective: an unstated
+initiator becomes whatever the implementer assumes, and the assumption that ships is the permissive
+one.
+
+Both halves are load-bearing. A control that **walls the user** is one they route around — by
+turning the whole feature off (R7's master switch exists because that pressure is real) or by
+leaving the product — so it trades a narrow refusal for a machine-wide one and buys nothing. A
+control an **agent** can proceed past after a warning is not a control: there is nobody at the
+keyboard to decline it, and the model writes the next tool call. §14.6's *"warned rather than
+walled"* is R17's user half; §12.2's *"why no agent can invoke it"* is its agent half. **R15 is what
+makes the permissive half legitimate** — a user can only accept a risk that was stated to them —
+which is why R7's ⚠ holds: turning enforcement off must never turn the disclosure off with it.
+
+⚠ **R17 weakens no gate.** The five gates of §9.1 refuse a **model**; they are its agent half and
+stay hard refusals with no override. *"The user could have done this"* is never a reason to let a
+model do it.
 
 ⚠ **R8 is unchanged in words and narrowed in reach.** *"A public model must never reach a private
 session"* remains the invariant every gate is written against. What [DR-17](privacy-tiers-execution-plan.md#scope-ruling--dr-17-narrows-this-plan-to-the-session-store) descoped is the
@@ -1614,6 +1637,11 @@ for one idea is how the two confirmations diverge**, so a `POST /knowledge/bases
 accepts the secret key alone, or a `kb_set_tier` MCP tool, is the wrong implementation of §5.4 and
 not a shortcut. [Task 29A](privacy-tiers-execution-plan.md#task-29a-knowledge-base-publicize--privatize--user-only-graded-audited).
 
+**This section is R17's agent half, and §12.3–§12.4 are its user half.** Declassification is the
+clearest instance of the pair: a model may never invoke it under any circumstances, and the user is
+never *refused* it — they are shown what they are about to expose, graded by how it became private,
+and then allowed to proceed. Neither half is negotiable independently of the other.
+
 ### 12.2 Why no agent can invoke it
 
 ```rust
@@ -2006,6 +2034,15 @@ focused session — **"Enabled · unavailable in this chat (public model)"** wit
 than omitting them. Omission is what produces "the OMOP tool is broken".
 
 ### 14.6 The opt-out surface, and warned-rather-than-walled
+
+**"Warned rather than walled" is R17's user half, and this section is where it is most visible.**
+Every control on this page states a consequence and then lets the user proceed; none of them refuses
+a person. The agent half is that **none of these surfaces may be reachable by a model** — the master
+toggle in particular, whose typed phrase is a UX guard against an accidental or model-composed
+config write and *not* a proof of a human, since a fixed string compiled into the source is
+replayable by anything holding the daemon secret. The proof of a human is the one
+[DR-16](privacy-tiers-execution-plan.md#decisions-of-record) requires, and there is exactly one of
+it.
 
 **Settings → Privacy**, one switch, **on** by default:
 
