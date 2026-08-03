@@ -23,6 +23,7 @@ import {
   ProviderType,
   type LlamaCppModel,
   type ProviderDetails,
+  type SessionClassification,
 } from '../../../../api';
 
 // Return the first concrete model from the provider's list. The list is
@@ -126,9 +127,24 @@ const llamaModelOption = (
 const modelOptionSearchText = (option: ModelOption) =>
   [option.value, option.label, option.detail].filter(Boolean).join(' ').toLowerCase();
 
-const renderModelOptionLabel = (rawOption: unknown, meta: { context: 'menu' | 'value' }) => {
+/**
+ * §14.2's pre-flight reason, rendered ON the row rather than after the attempt.
+ *
+ * Deliberately not a truncated hint: this is the whole explanation, and the way
+ * forward it names ("make the chat public") is the only one that exists.
+ */
+const PUBLIC_MODEL_IN_PRIVATE_CHAT =
+  'Unavailable — this is a private chat, so only private models may run in it';
+
+const renderModelOptionLabel = (
+  rawOption: unknown,
+  meta: { context: 'menu' | 'value' },
+  blockedReason?: string | null
+) => {
   const option = rawOption as ModelOption;
-  if (option.provider !== 'llamacpp' || !option.detail) {
+  const detail = meta.context === 'menu' && blockedReason ? blockedReason : option.detail;
+
+  if (!detail) {
     return option.label;
   }
 
@@ -140,7 +156,7 @@ const renderModelOptionLabel = (rawOption: unknown, meta: { context: 'menu' | 'v
     <div className="min-w-0 py-0.5">
       <div className="truncate text-sm font-medium text-current">{option.label}</div>
       <div className="mt-0.5 line-clamp-2 text-xs leading-relaxed text-current opacity-70">
-        {option.detail}
+        {detail}
       </div>
     </div>
   );
@@ -154,6 +170,17 @@ type SwitchModelModalProps = {
   initialProvider?: string | null;
   initialModel?: string | null;
   titleOverride?: string;
+  /**
+   * The tier of the chat being switched (issue #56, §14.2) — "pre-flight, not
+   * post-refusal". A public model in a private chat is rendered disabled with
+   * the reason inline, instead of being offered, accepted, and then refused by
+   * Gate A with a 409.
+   *
+   * `undefined` judges nothing: the settings grid opens this modal with no
+   * session at all (`sessionId={null}`), and a modal that greyed out every
+   * public model there would be wrong on every machine.
+   */
+  privacyTier?: SessionClassification;
 };
 export const SwitchModelModal = ({
   sessionId,
@@ -163,6 +190,7 @@ export const SwitchModelModal = ({
   initialProvider,
   initialModel,
   titleOverride,
+  privacyTier,
 }: SwitchModelModalProps) => {
   const { getProviders, getProviderModels, read } = useConfig();
   const { changeModel, currentModel, currentProvider } = useModelAndProvider();
@@ -200,6 +228,38 @@ export const SwitchModelModal = ({
   const [modelInputValue, setModelInputValue] = useState('');
   const loadedProvidersRef = useRef(false);
 
+  /**
+   * The providers this chat may not be switched to (§14.2, Gate A's pre-flight).
+   *
+   * Keyed on `metadata.tier === 'public'` — the same field the daemon's own
+   * `available_private_providers` filters on when it builds the repair card, so
+   * this list can never disagree with what a refusal would offer.
+   *
+   * The one way the two tiers can differ is a provider whose shipped metadata
+   * claims Private while its bound instance resolves Public (an `ollama`
+   * re-pointed by `OLLAMA_HOST`). That case stays *offered* here and is refused
+   * by Gate A with the 409 — a missing warning, never a false one. The reverse,
+   * a metadata-Public provider that is really Private, cannot occur, so nothing
+   * this greys out was ever selectable.
+   */
+  const publicProviderNames = useMemo(
+    () =>
+      new Set(
+        activeProviders
+          .filter((provider) => provider.metadata.tier === 'public')
+          .map((provider) => provider.name)
+      ),
+    [activeProviders]
+  );
+
+  const blockedReasonFor = useCallback(
+    (providerName: string | undefined | null) =>
+      privacyTier === 'private' && providerName && publicProviderNames.has(providerName)
+        ? PUBLIC_MODEL_IN_PRIVATE_CHAT
+        : null,
+    [privacyTier, publicProviderNames]
+  );
+
   // Validate form data
   const validateForm = useCallback(() => {
     const errors = {
@@ -223,12 +283,21 @@ export const SwitchModelModal = ({
         errors.model = 'Please select or enter a model';
         formIsValid = false;
       }
+
+      // The custom-model field bypasses the option list entirely, so the same
+      // rule has to be asked again here or "Enter a model not listed…" would be
+      // the one way around the pre-flight.
+      const blocked = blockedReasonFor(provider);
+      if (blocked && model) {
+        errors.model = blocked;
+        formIsValid = false;
+      }
     }
 
     setValidationErrors(errors);
     setIsValid(formIsValid);
     return formIsValid;
-  }, [model, provider, usePredefinedModels, selectedPredefinedModel]);
+  }, [model, provider, usePredefinedModels, selectedPredefinedModel, blockedReasonFor]);
 
   const handleClose = () => {
     onClose();
@@ -627,7 +696,16 @@ export const SwitchModelModal = ({
                         onInputChange={handleInputChange}
                         inputValue={modelInputValue}
                         value={modelSelectValue}
-                        formatOptionLabel={renderModelOptionLabel}
+                        formatOptionLabel={(rawOption: unknown, meta) =>
+                          renderModelOptionLabel(
+                            rawOption,
+                            meta,
+                            blockedReasonFor((rawOption as ModelOption).provider)
+                          )
+                        }
+                        isOptionDisabled={(rawOption: unknown) =>
+                          blockedReasonFor((rawOption as ModelOption).provider) !== null
+                        }
                         placeholder={
                           loadingModels ? 'Loading models…' : 'Select a model, type to search'
                         }

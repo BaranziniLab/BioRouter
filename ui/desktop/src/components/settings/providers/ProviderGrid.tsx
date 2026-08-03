@@ -161,11 +161,24 @@ function ProviderCards({
     [refreshProviders]
   );
 
-  const { institutionalCards, localCards, commercialCards } = useMemo(() => {
+  /**
+   * §14.5 — the heading, the accent and the one line of card copy all come from
+   * `getOrderedProviderGroups`, never from literals here.
+   *
+   * This file used to import that function for its ORDERING and then print
+   * three hardcoded headings of its own, with its own dots. Relabelling
+   * `providerOrdering.ts` therefore changed nothing a user could see — which is
+   * the exact failure this rewrite removes, and why
+   * `ProviderGrid.privacy.test.tsx` asserts against the rendered screen rather
+   * than against the data. (The task's gate greps this file for the three old
+   * headings and expects none, so do not quote them back in here either.)
+   */
+  const sections = useMemo(() => {
     const providersArray = Array.isArray(providers) ? providers : [];
 
-    const makeCards = (subset: ProviderDetails[]) =>
-      subset.map((provider) => (
+    return getOrderedProviderGroups(providersArray).map((group) => ({
+      ...group,
+      cards: group.providers.map((provider) => (
         <ProviderCard
           key={provider.name}
           provider={provider}
@@ -173,18 +186,8 @@ function ProviderCards({
           onLaunch={() => handleProviderLaunchWithModelSelection(provider)}
           isOnboarding={isOnboarding}
         />
-      ));
-
-    const groups = getOrderedProviderGroups(providersArray);
-    const institutional = groups.find((group) => group.key === 'institutional')?.providers ?? [];
-    const local = groups.find((group) => group.key === 'local')?.providers ?? [];
-    const commercial = groups.find((group) => group.key === 'commercial')?.providers ?? [];
-
-    return {
-      institutionalCards: makeCards(institutional),
-      localCards: makeCards(local),
-      commercialCards: makeCards(commercial),
-    };
+      )),
+    }));
   }, [providers, isOnboarding, configureProviderViaModal, handleProviderLaunchWithModelSelection]);
 
   const initialData = editingProvider && {
@@ -201,36 +204,31 @@ function ProviderCards({
   return (
     <>
       <div className="space-y-8">
-        {localCards.length > 0 && (
-          <div>
-            <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-3 flex items-center gap-2">
-              <span className="w-1.5 h-1.5 bg-background-success rounded-full flex-shrink-0" />
-              Local Models
-            </h2>
-            <div className="divide-y divide-border-subtle">{localCards}</div>
-          </div>
-        )}
+        {sections.map((section) => {
+          // The commercial section always renders: it hosts "Add Custom
+          // Provider", which must stay reachable on a machine that has only
+          // private providers configured.
+          const alwaysVisible = section.key === 'commercial';
+          if (section.cards.length === 0 && !alwaysVisible) return null;
 
-        {institutionalCards.length > 0 && (
-          <div>
-            <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-3 flex items-center gap-2">
-              <span className="w-1.5 h-1.5 bg-background-info rounded-full flex-shrink-0" />
-              Institutional Models
-            </h2>
-            <div className="divide-y divide-border-subtle">{institutionalCards}</div>
-          </div>
-        )}
-
-        <div>
-          <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-3 flex items-center gap-2">
-            <span className="w-1.5 h-1.5 bg-background-warning rounded-full flex-shrink-0" />
-            Commercial Models
-          </h2>
-          <div className="divide-y divide-border-subtle">
-            {commercialCards}
-            <CustomProviderCard onClick={() => setShowCustomProviderModal(true)} />
-          </div>
-        </div>
+          return (
+            <div key={section.key}>
+              <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-1 flex items-center gap-2">
+                <span
+                  className={`w-1.5 h-1.5 ${section.accentClassName} rounded-full flex-shrink-0`}
+                />
+                {section.label}
+              </h2>
+              <p className="text-xs text-text-muted mb-3">{section.note}</p>
+              <div className="divide-y divide-border-subtle">
+                {section.cards}
+                {alwaysVisible && (
+                  <CustomProviderCard onClick={() => setShowCustomProviderModal(true)} />
+                )}
+              </div>
+            </div>
+          );
+        })}
       </div>
       <Dialog open={showCustomProviderModal} onOpenChange={handleCloseModal}>
         <DialogContent className="sm:max-w-[600px]">

@@ -16,6 +16,8 @@ import { getProviderMetadata } from '../modelInterface';
 import { Alert } from '../../../alerts';
 import BottomMenuAlertPopover from '../../../bottom_menu/BottomMenuAlertPopover';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../../../ui/Tooltip';
+import { PrivacyBadge } from '../../../ui/PrivacyBadge';
+import type { SessionClassification } from '../../../../api/types.gen';
 
 interface ModelsBottomBarProps {
   sessionId: string | null;
@@ -25,6 +27,22 @@ interface ModelsBottomBarProps {
   /** Hide the inline alert green-dot when the context window indicator is
    * surfaced separately (e.g. in the picker popover's dedicated row). */
   hideAlertPopover?: boolean;
+  /**
+   * The focused chat's privacy tier (issue #56, R10 / §14.2).
+   *
+   * ⚠ This is the SESSION's ratcheted classification, not the bound provider's
+   * `metadata.tier`. `providerOrdering.ts` records why, and it is not a
+   * preference: `GET /config/providers` serves the *type-level* tier, so an
+   * `ollama` re-pointed off this machine by `OLLAMA_HOST` still arrives here
+   * claiming `private` while its instance resolves `public`. A badge hung on
+   * that field would read Private in exactly the demotion case the tier exists
+   * to catch. The session classification is computed server-side from the
+   * instance and only ever ratchets upward, so it can be asserted.
+   *
+   * `undefined` — a chat whose session has not loaded — renders nothing rather
+   * than asserting Public, matching `SessionNamePill`.
+   */
+  privacyTier?: SessionClassification;
 }
 
 const MAX_INLINE_MODEL_LABEL_CHARS = 24;
@@ -35,6 +53,7 @@ export default function ModelsBottomBar({
   setView,
   alerts,
   hideAlertPopover = false,
+  privacyTier,
 }: ModelsBottomBarProps) {
   const {
     currentModel,
@@ -165,6 +184,17 @@ export default function ModelsBottomBar({
     })();
   }, [currentModel, getCurrentModelDisplayName]);
 
+  // §14.2's line for the chat's tier. A "Private" PILL cannot fit in this chip
+  // — the trigger is `max-w-[120px]` and the label is already truncated at 24
+  // characters — so the chip carries the dense dot and the WORD goes where
+  // there is room for it: the tooltip and the dropdown header.
+  const privacyLine =
+    privacyTier === 'private'
+      ? 'Private chat — only private models can read it'
+      : privacyTier === 'public'
+        ? 'Public chat'
+        : null;
+
   return (
     <div className="relative flex items-center" ref={dropdownRef}>
       {!hideAlertPopover && <BottomMenuAlertPopover alerts={alerts} />}
@@ -172,16 +202,20 @@ export default function ModelsBottomBar({
         <Tooltip>
           <TooltipTrigger asChild>
             <DropdownMenuTrigger
-              aria-label={`Current model: ${fullModelLabel}`}
+              aria-label={`Current model: ${fullModelLabel}${privacyLine ? ` (${privacyLine})` : ''}`}
               className="flex h-7 min-w-0 max-w-[120px] flex-shrink-0 items-center rounded-md px-0.5 hover:cursor-pointer text-text-default/70 hover:bg-background-medium hover:text-text-default transition-colors"
             >
               <div className="flex min-w-0 max-w-full items-center gap-0.5 truncate">
                 <Brain className="size-[18px] flex-shrink-0" />
                 <span className="truncate text-xs">{inlineModelLabel}</span>
+                {privacyTier && <PrivacyBadge tier={privacyTier} dense className="ml-1" />}
               </div>
             </DropdownMenuTrigger>
           </TooltipTrigger>
-          <TooltipContent side="top">Model: {fullModelLabel}</TooltipContent>
+          <TooltipContent side="top">
+            Model: {fullModelLabel}
+            {privacyLine && ` · ${privacyLine}`}
+          </TooltipContent>
         </Tooltip>
         <DropdownMenuContent side="top" align="center" className="w-64 p-0 font-sans">
           <div className="border-b border-border-subtle px-3 py-2.5">
@@ -190,6 +224,9 @@ export default function ModelsBottomBar({
               {displayModelName}
               {displayProvider && ` · ${displayProvider}`}
             </div>
+            {privacyLine && (
+              <div className="mt-1 text-[11px] leading-4 text-text-muted">{privacyLine}</div>
+            )}
           </div>
           <div className="p-1.5">
             <DropdownMenuItem
@@ -213,6 +250,7 @@ export default function ModelsBottomBar({
       {isAddModelModalOpen ? (
         <SwitchModelModal
           sessionId={sessionId}
+          privacyTier={privacyTier}
           setView={setView}
           onClose={() => setIsAddModelModalOpen(false)}
         />

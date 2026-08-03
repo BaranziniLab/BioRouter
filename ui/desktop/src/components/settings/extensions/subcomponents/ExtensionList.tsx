@@ -2,6 +2,7 @@ import ExtensionItem from './ExtensionItem';
 import builtInExtensionsData from '../../../../built-in-extensions.json';
 import { ExtensionConfig } from '../../../../api';
 import { FixedExtensionEntry } from '../../../ConfigContext';
+import type { DefaultProvider } from '../ExtensionsSection';
 
 interface ExtensionListProps {
   extensions: FixedExtensionEntry[];
@@ -10,6 +11,12 @@ interface ExtensionListProps {
   isStatic?: boolean;
   disableConfiguration?: boolean;
   searchTerm?: string;
+  /**
+   * Pass-through only (issue #56, §14.5). Resolved once in `ExtensionsSection`
+   * — a per-row lookup would be one config read and one provider fetch per
+   * extension, on a screen that routinely lists twenty.
+   */
+  defaultProvider?: DefaultProvider | null;
 }
 
 export default function ExtensionList({
@@ -19,6 +26,7 @@ export default function ExtensionList({
   isStatic,
   disableConfiguration: _disableConfiguration,
   searchTerm = '',
+  defaultProvider,
 }: ExtensionListProps) {
   const matchesSearch = (extension: FixedExtensionEntry): boolean => {
     if (!searchTerm) return true;
@@ -62,6 +70,7 @@ export default function ExtensionList({
                 onToggle={onToggle}
                 onConfigure={onConfigure}
                 isStatic={isStatic}
+                defaultProvider={defaultProvider}
               />
             ))}
           </div>
@@ -82,6 +91,7 @@ export default function ExtensionList({
                 onToggle={onToggle}
                 onConfigure={onConfigure}
                 isStatic={isStatic}
+                defaultProvider={defaultProvider}
               />
             ))}
           </div>
