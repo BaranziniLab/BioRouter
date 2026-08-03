@@ -158,6 +158,27 @@ pub struct ScheduledJob {
     /// forever. `None` = unbounded (durable `/schedule` jobs).
     #[serde(default)]
     pub max_runs: Option<u32>,
+    /// Issue #56 (§9.3 C2). The chat this schedule was created from, when there
+    /// was one — `/loop` and `/schedule` always have one; a workflow scheduled
+    /// from the CLI or the schedules route does not.
+    ///
+    /// A scheduled run resolves its provider from THIS session's recorded
+    /// `provider_name` before falling back to the global default (see
+    /// [`resolve_scheduled_provider`]). Without it a job created from a chat on
+    /// a private model silently runs on the user's commercial default — R5 —
+    /// and, once the design's §6.3 rule that a `Scheduled` session inherits its
+    /// creator's classification lands, Gate A would refuse the bind on every
+    /// tick forever.
+    #[serde(default)]
+    pub creator_session_id: Option<String>,
+    /// The last run's failure, kept ON THE JOB so the schedules UI can show it.
+    ///
+    /// A cron tick that returns `Err` used to leave nothing behind but a log
+    /// line, and a scheduled run mints a fresh session each time, so there was
+    /// no surface anywhere that a repeating job had been failing since the day
+    /// it was created. Cleared by the next successful run.
+    #[serde(default)]
+    pub last_error: Option<String>,
 }
 
 /// Decide, under one lock, whether a fired cron job should actually run, and
@@ -341,6 +362,15 @@ impl Scheduler {
                         job.currently_running = false;
                         job.current_session_id = None;
                         job.process_start_time = None;
+                        // Issue #56 (§9.3 C2). A failing tick leaves a
+                        // job-level error the schedules UI can show, instead of
+                        // only a log line nobody reads — a scheduled run mints
+                        // a new session each time, so the failure has no other
+                        // durable home. Cleared by the next run that succeeds.
+                        job.last_error = match &result {
+                            Ok(_) => None,
+                            Err(e) => Some(format!("{e:#}")),
+                        };
                     }
                 }
 
@@ -445,6 +475,9 @@ impl Scheduler {
                         process_start_time: None,
                         run_count: 0,
                         max_runs: None,
+                        // A workflow scheduled by path has no creating chat.
+                        creator_session_id: None,
+                        last_error: None,
                     };
                     self.add_scheduled_job(job, false).await
                 }
@@ -676,6 +709,13 @@ impl Scheduler {
                 job.current_session_id = None;
                 job.process_start_time = None;
                 job.last_run = Some(Utc::now());
+                // Issue #56 (§9.3 C2), same rule as the cron path: the failure
+                // is recorded on the schedule, not only returned to whoever
+                // pressed "run now".
+                job.last_error = match &result {
+                    Ok(_) => None,
+                    Err(e) => Some(format!("{e:#}")),
+                };
             }
         }
 
@@ -813,6 +853,69 @@ impl Scheduler {
     }
 }
 
+/// The `(provider_name, model_config)` a scheduled run binds.
+///
+/// Issue #56 (§9.3 C2). This used to read `Config::global()` and nothing else,
+/// which is wrong twice over:
+///
+/// * **R5.** A `/loop` or `/schedule` created from a chat running on a private
+///   model produced runs on the user's *commercial* default — the schedule
+///   quietly does its work somewhere the chat that asked for it would not.
+/// * **C2.** Under §6.3 a `Scheduled` session inherits its creator's
+///   classification, and Gate A refuses a public provider on a private row. A
+///   job created from a private chat would therefore fail on *every* tick,
+///   forever, with no repair affordance — a fresh session is minted per run, so
+///   there is nothing for the user to switch.
+///
+/// The creating session is consulted first and the global default is the
+/// fallback, so a job with no creator (a workflow scheduled from the CLI or the
+/// schedules route) behaves exactly as it did before. A creator row that is
+/// gone, or that records no provider, also falls back rather than failing: the
+/// chat may legitimately have been deleted long after the schedule was made.
+async fn resolve_scheduled_provider(
+    job: &ScheduledJob,
+    session_manager: &SessionManager,
+) -> Result<(String, crate::model::ModelConfig)> {
+    if let Some(creator_id) = job.creator_session_id.as_deref() {
+        match session_manager.get_session(creator_id, false).await {
+            Ok(creator) => match creator.provider_name.clone() {
+                Some(provider_name) => {
+                    // A row with a provider but no model config is a legacy row;
+                    // `Agent::update_provider` has always written both together.
+                    // Fall back for the model alone, exactly as
+                    // `Agent::rebind_from_row` does, rather than discarding a
+                    // perfectly good provider.
+                    let model_config = match creator.model_config.clone() {
+                        Some(model_config) => model_config,
+                        None => {
+                            let model_name = Config::global().get_biorouter_model()?;
+                            crate::model::ModelConfig::new(&model_name)?
+                        }
+                    };
+                    return Ok((provider_name, model_config));
+                }
+                None => tracing::warn!(
+                    job = %job.id,
+                    session = %creator_id,
+                    "the chat this schedule was created from records no provider; \
+                     using the global default"
+                ),
+            },
+            Err(e) => tracing::warn!(
+                job = %job.id,
+                session = %creator_id,
+                "the chat this schedule was created from could not be read ({e}); \
+                 using the global default"
+            ),
+        }
+    }
+
+    let config = Config::global();
+    let provider_name = config.get_biorouter_provider()?;
+    let model_name = config.get_biorouter_model()?;
+    Ok((provider_name, crate::model::ModelConfig::new(&model_name)?))
+}
+
 #[allow(clippy::too_many_lines)]
 async fn execute_job(
     job: ScheduledJob,
@@ -842,10 +945,10 @@ async fn execute_job(
 
     let agent = Agent::new();
 
-    let config = Config::global();
-    let provider_name = config.get_biorouter_provider()?;
-    let model_name = config.get_biorouter_model()?;
-    let model_config = crate::model::ModelConfig::new(&model_name)?;
+    // Issue #56 (§9.3 C2 / R5). The creating chat's model first, the global
+    // default only as a fallback — see [`resolve_scheduled_provider`].
+    let (provider_name, model_config) =
+        resolve_scheduled_provider(&job, agent.config.session_manager.as_ref()).await?;
 
     let agent_provider = create(&provider_name, model_config).await?;
 
@@ -1058,6 +1161,8 @@ mod tests {
             process_start_time: None,
             run_count: 0,
             max_runs: None,
+            creator_session_id: None,
+            last_error: None,
         };
 
         scheduler.add_scheduled_job(job, true).await.unwrap();
@@ -1086,6 +1191,8 @@ mod tests {
             process_start_time: None,
             run_count: 0,
             max_runs: None,
+            creator_session_id: None,
+            last_error: None,
         };
 
         scheduler.add_scheduled_job(job, true).await.unwrap();
@@ -1117,6 +1224,8 @@ mod tests {
             process_start_time: Some(Utc::now()),
             run_count: 0,
             max_runs: None,
+            creator_session_id: None,
+            last_error: None,
         }];
         fs::write(&storage_path, serde_json::to_string(&stored).unwrap()).unwrap();
 
@@ -1136,6 +1245,249 @@ mod tests {
         assert!(
             jobs[0].process_start_time.is_none(),
             "stale process_start_time should be cleared on load"
+        );
+    }
+}
+
+/// Issue #56, Task 24 (§9.3 C2 / R5): a scheduled job created from a private
+/// chat.
+///
+/// ⚠ SCOPE, because the plan's sketch of the first test reads
+/// `tick(&job).await` and this one does not. `execute_job` builds its agent with
+/// `Agent::new()`, whose session manager is the process-wide
+/// `SessionManager::instance()` — the developer's REAL `~/.config/biorouter`
+/// store — and then drives a real `Agent::reply` against a real provider built
+/// from the registry (`versa_azure` needs a UCSF credential). A unit test cannot
+/// tick a job without writing sessions into the user's own history and calling a
+/// paid endpoint. What it CAN do, and what C2 is actually about, is the two
+/// steps that used to be wrong: which provider a run resolves, and whether
+/// binding it to the fresh `Scheduled` row is admitted by Gate A.
+#[cfg(test)]
+mod privacy_c2_tests {
+    use super::*;
+    use crate::agents::AgentConfig as BioRouterAgentConfig;
+    use crate::config::permission::PermissionManager;
+    use crate::config::BioRouterMode;
+    use crate::conversation::message::Message as ConversationMessage;
+    use crate::model::ModelConfig;
+    use crate::privacy::{ProviderTier, SessionClassification};
+    use crate::providers::base::{Provider, ProviderMetadata, ProviderUsage, Usage};
+    use crate::providers::errors::ProviderError;
+    use crate::session::session_manager::SessionType;
+    use async_trait::async_trait;
+    use rmcp::model::Tool;
+    use std::path::PathBuf;
+    use tempfile::tempdir;
+
+    /// A real `Provider` whose only interesting property is its tier — the same
+    /// fixture shape `agents::agent::gate_a_bind_tests` uses, and for the same
+    /// reason: the gates read `tier()`, `get_name()` and `get_model_config()`
+    /// and nothing here ever completes a turn.
+    struct TieredProvider {
+        name: &'static str,
+        model: &'static str,
+        tier: ProviderTier,
+    }
+
+    #[async_trait]
+    impl Provider for TieredProvider {
+        fn metadata() -> ProviderMetadata {
+            ProviderMetadata::new("tiered", "Tiered", "", "tiered-model", vec![], "", vec![])
+        }
+
+        fn get_name(&self) -> &str {
+            self.name
+        }
+
+        fn tier(&self) -> ProviderTier {
+            self.tier
+        }
+
+        async fn complete_with_model(
+            &self,
+            _model_config: &ModelConfig,
+            _system: &str,
+            _messages: &[ConversationMessage],
+            _tools: &[Tool],
+        ) -> Result<(ConversationMessage, ProviderUsage), ProviderError> {
+            Ok((
+                ConversationMessage::assistant().with_text("ok"),
+                ProviderUsage::new(self.model.to_string(), Usage::default()),
+            ))
+        }
+
+        fn get_model_config(&self) -> ModelConfig {
+            ModelConfig::new_or_fail(self.model)
+        }
+    }
+
+    fn versa_azure() -> Arc<dyn Provider> {
+        Arc::new(TieredProvider {
+            name: "versa_azure",
+            model: "gpt-5.5",
+            tier: ProviderTier::Private,
+        })
+    }
+
+    /// A job with only the fields these tests care about set.
+    fn job_named(id: &str, source: &str, cron: &str) -> ScheduledJob {
+        ScheduledJob {
+            id: id.to_string(),
+            source: source.to_string(),
+            cron: cron.to_string(),
+            last_run: None,
+            currently_running: false,
+            paused: false,
+            current_session_id: None,
+            process_start_time: None,
+            run_count: 0,
+            max_runs: None,
+            creator_session_id: None,
+            last_error: None,
+        }
+    }
+
+    /// An agent over `session_manager`, so a test can bind a provider to a row
+    /// the way production does — through Gate A — instead of hand-writing the
+    /// columns and asserting against its own fixture.
+    fn agent_over(session_manager: Arc<SessionManager>, dir: &Path) -> Agent {
+        Agent::with_config(BioRouterAgentConfig::new(
+            session_manager,
+            Arc::new(PermissionManager::new(dir.to_path_buf())),
+            None,
+            BioRouterMode::Auto,
+        ))
+    }
+
+    #[tokio::test]
+    async fn a_scheduled_job_from_a_private_session_still_runs() {
+        let temp_dir = tempdir().unwrap();
+        let session_manager = Arc::new(SessionManager::new(temp_dir.path().to_path_buf()));
+        let agent = agent_over(session_manager.clone(), temp_dir.path());
+
+        // The creating chat: on a private model, and ratcheted private by the
+        // turn that ran there.
+        let creator = session_manager
+            .create_session(PathBuf::from("."), "creator".to_string(), SessionType::User)
+            .await
+            .unwrap();
+        agent
+            .update_provider(versa_azure(), &creator.id)
+            .await
+            .unwrap();
+        session_manager
+            .update(&creator.id)
+            .raise_privacy(SessionClassification::Private, "turn:versa_azure")
+            .apply()
+            .await
+            .unwrap();
+
+        let mut job = job_named("loop-abc", "/does/not/matter.yaml", "0 0 0 1 1 *");
+        job.creator_session_id = Some(creator.id.clone());
+
+        // 1. The run resolves the creating chat's model, not the global default.
+        let (provider_name, model_config) =
+            resolve_scheduled_provider(&job, session_manager.as_ref())
+                .await
+                .unwrap();
+        assert_eq!(provider_name, "versa_azure");
+        assert_eq!(model_config.model_name, "gpt-5.5");
+
+        // 2. ...and that name really is a private provider, so the bind below is
+        //    not passing for the wrong reason. This is the registry's own
+        //    metadata — the same value every UI surface reads.
+        let registry_tier = crate::providers::providers()
+            .await
+            .into_iter()
+            .find(|(metadata, _)| metadata.name == provider_name)
+            .map(|(metadata, _)| metadata.tier)
+            .unwrap_or_default();
+        assert_eq!(
+            registry_tier,
+            ProviderTier::Private,
+            "{provider_name} must be a private provider for this test to mean anything"
+        );
+
+        // 3. Binding it to the run's fresh `Scheduled` session is admitted. This
+        //    is the step that used to fail forever, once the row a scheduled run
+        //    is born with carries its creator's classification.
+        let run_session = session_manager
+            .create_session(
+                PathBuf::from("."),
+                format!("Scheduled job: {}", job.id),
+                SessionType::Scheduled,
+            )
+            .await
+            .unwrap();
+        session_manager
+            .update(&run_session.id)
+            .raise_privacy(SessionClassification::Private, "scheduled:creator")
+            .apply()
+            .await
+            .unwrap();
+        let bind = agent.update_provider(versa_azure(), &run_session.id).await;
+        assert!(bind.is_ok(), "{bind:?}");
+
+        let row = session_manager
+            .get_session(&run_session.id, false)
+            .await
+            .unwrap();
+        assert_eq!(row.provider_name.as_deref(), Some("versa_azure"));
+    }
+
+    #[tokio::test]
+    async fn a_job_with_no_creating_chat_is_unchanged() {
+        // The fallback is the whole of the old behaviour, so a workflow
+        // scheduled from the CLI or the schedules route must not start
+        // depending on a session that does not exist. Asserted through a
+        // creator id that names NO row — the shape a deleted chat leaves — so
+        // the assertion does not depend on what this machine's config.yaml says
+        // the global provider is.
+        let temp_dir = tempdir().unwrap();
+        let session_manager = Arc::new(SessionManager::new(temp_dir.path().to_path_buf()));
+
+        let mut job = job_named("orphan", "/does/not/matter.yaml", "0 0 0 1 1 *");
+        job.creator_session_id = Some("no-such-session".to_string());
+        let from_missing = resolve_scheduled_provider(&job, session_manager.as_ref()).await;
+
+        job.creator_session_id = None;
+        let from_global = resolve_scheduled_provider(&job, session_manager.as_ref()).await;
+
+        match (from_missing, from_global) {
+            (Ok((a, _)), Ok((b, _))) => assert_eq!(a, b),
+            (Err(_), Err(_)) => {}
+            (a, b) => {
+                panic!("a missing creator must fall back to the global default: {a:?} vs {b:?}")
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_failed_run_leaves_a_job_level_error_on_the_schedule() {
+        // The other half of C2: a repeating job that fails every tick used to
+        // leave nothing but a log line, and a fresh session per run means there
+        // is no chat to carry the error either.
+        let temp_dir = tempdir().unwrap();
+        let storage_path = temp_dir.path().join("schedule.json");
+        let session_manager = Arc::new(SessionManager::new(temp_dir.path().to_path_buf()));
+        let scheduler = Scheduler::new(storage_path, session_manager).await.unwrap();
+
+        // A cron that will not fire during the test, so the only run is the
+        // explicit one below, and a source that does not exist so the run fails
+        // before it can reach a provider or the real session store.
+        let job = job_named(
+            "broken",
+            &temp_dir.path().join("gone.yaml").to_string_lossy(),
+            "0 0 0 1 1 *",
+        );
+        scheduler.add_scheduled_job(job, false).await.unwrap();
+
+        assert!(scheduler.run_now("broken").await.is_err());
+
+        let jobs = scheduler.list_scheduled_jobs().await;
+        assert!(
+            jobs[0].last_error.is_some(),
+            "a failed run must leave a job-level error the schedules UI can show"
         );
     }
 }

@@ -8956,6 +8956,11 @@
           "cron"
         ],
         "properties": {
+          "creator_session_id": {
+            "type": "string",
+            "description": "Issue #56 (§9.3 C2). The chat this schedule was created from, when there\nwas one — `/loop` and `/schedule` always have one; a workflow scheduled\nfrom the CLI or the schedules route does not.\n\nA scheduled run resolves its provider from THIS session's recorded\n`provider_name` before falling back to the global default (see\n[`resolve_scheduled_provider`]). Without it a job created from a chat on\na private model silently runs on the user's commercial default — R5 —\nand, once the design's §6.3 rule that a `Scheduled` session inherits its\ncreator's classification lands, Gate A would refuse the bind on every\ntick forever.",
+            "nullable": true
+          },
           "cron": {
             "type": "string"
           },
@@ -8968,6 +8973,11 @@
           },
           "id": {
             "type": "string"
+          },
+          "last_error": {
+            "type": "string",
+            "description": "The last run's failure, kept ON THE JOB so the schedules UI can show it.\n\nA cron tick that returns `Err` used to leave nothing behind but a log\nline, and a scheduled run mints a fresh session each time, so there was\nno surface anywhere that a repeating job had been failing since the day\nit was created. Cleared by the next successful run.",
+            "nullable": true
           },
           "last_run": {
             "type": "string",

@@ -1796,10 +1796,33 @@ export type ScheduleWorkflowRequest = {
 };
 
 export type ScheduledJob = {
+    /**
+     * Issue #56 (§9.3 C2). The chat this schedule was created from, when there
+     * was one — `/loop` and `/schedule` always have one; a workflow scheduled
+     * from the CLI or the schedules route does not.
+     *
+     * A scheduled run resolves its provider from THIS session's recorded
+     * `provider_name` before falling back to the global default (see
+     * [`resolve_scheduled_provider`]). Without it a job created from a chat on
+     * a private model silently runs on the user's commercial default — R5 —
+     * and, once the design's §6.3 rule that a `Scheduled` session inherits its
+     * creator's classification lands, Gate A would refuse the bind on every
+     * tick forever.
+     */
+    creator_session_id?: string | null;
     cron: string;
     current_session_id?: string | null;
     currently_running?: boolean;
     id: string;
+    /**
+     * The last run's failure, kept ON THE JOB so the schedules UI can show it.
+     *
+     * A cron tick that returns `Err` used to leave nothing behind but a log
+     * line, and a scheduled run mints a fresh session each time, so there was
+     * no surface anywhere that a repeating job had been failing since the day
+     * it was created. Cleared by the next successful run.
+     */
+    last_error?: string | null;
     last_run?: string | null;
     /**
      * Optional cap on total firings. When `Some(n)`, the job auto-pauses once

@@ -213,6 +213,8 @@ mod tests {
             process_start_time: running.then(Utc::now),
             run_count: 1,
             max_runs: None,
+            creator_session_id: None,
+            last_error: None,
         }
     }
 

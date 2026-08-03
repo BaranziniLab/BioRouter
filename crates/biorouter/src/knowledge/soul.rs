@@ -151,6 +151,9 @@ pub async fn ensure_meditation_schedule(
         process_start_time: None,
         run_count: 0,
         max_runs: None,
+        // A machine-wide meditation schedule belongs to no chat.
+        creator_session_id: None,
+        last_error: None,
     };
     scheduler
         .add_scheduled_job(job, true)

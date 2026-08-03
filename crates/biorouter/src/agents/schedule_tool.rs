@@ -161,6 +161,10 @@ impl Agent {
             process_start_time: None,
             run_count: 0,
             max_runs: None,
+            // The agent's `schedule_management` tool schedules a workflow file
+            // by path; it carries no session id of its own.
+            creator_session_id: None,
+            last_error: None,
         };
 
         match scheduler.add_scheduled_job(job, true).await {
