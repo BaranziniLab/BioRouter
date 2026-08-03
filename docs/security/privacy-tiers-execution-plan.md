@@ -19912,6 +19912,254 @@ and is a scope question the ruling does not reach.
 
 ---
 
+## Operator rulings DR-21 – DR-25 — the five open questions, answered
+
+> **Ruled 2026-08-03.** Open questions 25/26, 27, 28, 29 and 30 accumulated across Phases 3 and 4
+> because each needed a scope decision no implementer was entitled to make. All five are now
+> answered. Four become Tasks 41–44 below; the fifth is a decision that creates no work.
+>
+> These rulings are **binding and narrowing in the same sense as [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store)**: no implementer may
+> reinterpret one to widen or shrink what it names.
+
+### DR-21 — an app session's capability is fixed when the session is created
+
+**Answers open question 25/26.** An app session's capability tier is decided at session creation and
+**cannot be changed** by a later manifest edit, a reconnect, or a client frame. A manifest naming a
+more private provider than the session already carries is **refused**, not silently honoured and not
+silently ignored.
+
+This closes both channels with one rule, which is why it is the strong form. The agent-authored
+manifest path (`configure_main_provider` reading `AgentConfig.model` out of a manifest that
+`agent_drafter__declare_profiles` lets a **Public** model write) and the `ClientFrame::ModelSelect`
+frame — which reaches the same bind over `GET /apps/{id}/agent`, a route **exempt from secret-key
+auth entirely** — are both *"change an existing session's tier"*. [DR-16](#decisions-of-record) already makes that
+user-only. DR-21 says only that app sessions are sessions.
+
+⚠ **What this deliberately costs.** An app that wants to move to a local model mid-run cannot. It
+must declare the tier at creation. That is accepted, and Task 41 must not add an escape hatch for it:
+a per-manifest grant is exactly the *"scoped permission"* shape open question 25 floated, and
+inventing one here would re-open the channel the ruling closes.
+
+### DR-22 — the master switch does not live in `config.yaml`
+
+**Answers open question 27.** The privacy-tier master toggle moves out of `config.yaml` into a
+location only the authenticated path writes. [DR-20](#decisions-of-record)'s password gates the *act of disabling*
+wherever it happens, not only when it arrives over HTTP.
+
+Task 30's `X-User-Action` guard closed the immediate channel, but [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store) had descoped the
+filesystem barrier, so `config.yaml` stayed agent-writable and the file channel remained a
+*next-launch* disable. "Only on restart" is not a control — daemons restart routinely, and a model
+can simply wait. This is [DR-14](#dr-14-is-two-layers-and-the-os-sandbox-is-the-second-one)'s own
+sentence applied to itself: *a master switch a public model can edit is not a switch*.
+
+⚠ **What this costs.** A new storage location to design, back up and migrate, and users who hand-edit
+`config.yaml` lose a knob they may reasonably expect to find there. Task 42 owes them a
+`config.yaml` key that is **read once at migration and ignored forever after** — ignored, not merely
+unused, or re-adding it re-opens the channel.
+
+### DR-23 — an extension's tier is re-derived from the registry, never stored locally
+
+**Answers open question 28.** The tier is resolved from the BAAM registry at read time, keyed on a
+stable identifier. It is **not** written onto the local config entry, so there is no stored value
+that would need a gated writer.
+
+The bug this closes is sharper than a wrong badge. The badge is a lookup on the extension's *config
+name*, written from `manifest.name` with no provenance — and Gates C, E and F **read that tier**. So
+renaming a private extension locally removed **enforcement**, not a label. Sessions have exactly one
+gated writer; extensions had none. Re-deriving removes the problem instead of guarding it.
+
+⚠ **Prerequisite, and the reason this is not free.** Both the registry and the installed extension
+need a stable id; the *name* is what exists today. Task 43 therefore lands **after** Task 33, which
+is where the registry schema is already being revised.
+
+⚠ **And the failure mode Task 43 must gate.** A read now depends on registry freshness, which means
+an unreachable registry must never downgrade anything. [Task 37](#task-37-the-in-app-registry--freshness-that-raises-and-never-lowers)'s
+"raises and never lowers" rule governs here too: no registry, or a registry missing the entry, means
+the last known tier is retained — never defaulted to public.
+
+### DR-24 — all three platforms get a real system-authentication prompt
+
+**Answers open question 30.** [DR-20](#decisions-of-record)'s user-proof ships on macOS, Windows and Linux
+together. No platform is second-class.
+
+| Platform | Mechanism |
+|---|---|
+| macOS | `LAContext.evaluatePolicy(.deviceOwnerAuthentication)` |
+| Windows | `UserConsentVerifier` (`Windows.Security.Credentials.UI`) |
+| Linux | polkit |
+
+⚠ **`systemPreferences.promptTouchID()` is NOT the macOS answer** and must not be substituted for it.
+It is Touch-ID-only: it fails outright on a Mac with no sensor and offers no password fallback, which
+is precisely the fallback DR-20's ruling names ("*typing in the password*").
+
+⚠ **The ruling is that we build all three, not that we pretend a prompter exists where none does.**
+polkit is inconsistent across distributions and absent in some containers. Where it is genuinely
+unavailable the honest outcome is unchanged: `AuthOutcome::Unavailable` → refuse, **naming the
+platform**, so it reads as a missing capability rather than a bug. A silently-approving build is the
+worst outcome available and Task 44 may not produce one on any platform.
+
+Nothing in this tree uses any platform authentication API today — a repo-wide search for
+`LocalAuthentication`, `LAContext`, `promptTouchID` and `systemPreferences` returns zero hits — so
+all three are new integrations, not extensions of something existing.
+
+### DR-25 — CLI diverge stays ungated, and that is a decision
+
+**Answers open question 29, and creates no task.** Diverging a private chat from the CLI needs no
+user-proof.
+
+Diverge mints a **private** child from a private parent: nothing is disclosed, and [DR-19](#decisions-of-record)'s
+own logic — privatize needs no prompt because privatizing discloses nothing — applies unchanged. The
+Phase 3 implementer left it ungated and said so explicitly rather than inventing an operator ruling;
+that instinct was right and the outcome is now ratified rather than merely tolerated.
+
+The residual concern was that diverge mints a new *private-capability* session. Creating more private
+state is not the direction the barrier guards. **Revisit only if** a later task gives a
+private-capability session some power a public one lacks *beyond reading private content* — at which
+point minting one becomes an escalation and this ruling expires.
+
+---
+
+### Task 41: The app runtime's three binds — DR-21's fixed-at-creation tier
+
+Implements [DR-21](#dr-21--an-app-sessions-capability-is-fixed-when-the-session-is-created).
+
+- [ ] **Step 1: Route every app bind through Gate A's existing predicate**
+
+Three sites bind a provider to an app session in-process, never through `POST /agent/update_provider`
+and so never past Task 18A's guard:
+
+| Site | File | Reaches |
+|---|---|---|
+| `configure_main_provider` | `routes/apps.rs:809`, called `:1259` | the app's **long-lived main** session |
+| `configure_worker_provider` | `routes/apps.rs:1480`, called `:1553` | a per-profile worker session |
+| `ClientFrame::ModelSelect` | `routes/apps.rs:3418` | the main session, over an **unauthenticated** route |
+
+Do **not** add a third bind path. Route all three through the `BindOutcome` predicate Task 12 already
+built in `session::session_manager` — the atomic `UPDATE … WHERE id = ? AND (privacy_tier = 'public'
+OR ? = 1)`. A bind that would raise an existing session's capability returns the refusing variant and
+the caller surfaces it; a bind at creation is unaffected.
+
+⚠ `ClientFrame::ModelSelect` is the sharpest of the three and the easiest to miss, because the other
+two are named "configure". Its route carries no secret-key check at all, so it is the one site where
+the *only* thing standing between an agent-authored page and a private bind is this task.
+
+- [ ] **Step 2: Make a fourth site impossible, don't just fix three**
+
+`agent.update_provider` must not be reachable from `routes/apps.rs` except through the guarded
+helper. Use the visibility trick Task 66's `persisted_ordering` module proved out: a bare call fails
+to **compile** (`E0603`), rather than failing a grep someone can forget to run. A comment asking
+future authors to be careful is not this step.
+
+- [ ] **Step 3: The gate — and it must fail a plausible wrong implementation**
+
+```bash
+cargo test -p biorouter-server --lib routes::apps 2>&1 | grep "test result:"
+```
+
+Baseline is **~54 passed**; expect strictly more. Required cases:
+
+1. For **each of the three sites**: an existing *public* app session, a bind naming a private
+   provider → refused, and the session's tier **unchanged** afterwards. Three tests, not one
+   parametrised over a single code path — the point is that three call sites are covered.
+2. **Anti-vacuity:** a bind at session *creation* naming a private provider **succeeds**. Without
+   this, an implementation that refuses every app bind passes case 1 and ships an app platform that
+   cannot use a local model at all.
+3. **Refused, not ignored:** after a refused bind the caller sees an error. An implementation that
+   silently falls back to the public default also passes case 1, and is the failure mode this
+   campaign has now found four times.
+
+### Task 42: The master switch's storage — DR-22
+
+Implements [DR-22](#dr-22--the-master-switch-does-not-live-in-configyaml). Depends on Task 30.
+
+- [ ] **Step 1: Move the value**
+
+The toggle moves out of `config.yaml` to a location written only by the DR-20-authenticated path.
+Task 30's `X-User-Action` guard and password prompt stay exactly as they are — this task changes
+*where the answer is recorded*, not who may give it.
+
+- [ ] **Step 2: Migrate once, then ignore forever**
+
+An existing `config.yaml` value is read **once**, at migration, and the key is removed. Thereafter
+the key is *ignored* — not read-and-overridden, not honoured "for compatibility". A reader that still
+consults it has not closed the channel, it has added a second one.
+
+- [ ] **Step 3: The gate**
+
+The test that matters writes `privacy_tiers: off` into `config.yaml` by hand, restarts the daemon,
+and asserts **tiers are still on**. That single test fails the most plausible wrong implementation —
+the compatibility reader that consults both locations — which no amount of testing the happy path
+would catch. Add the mirror: disabling *through* the authenticated path survives a restart.
+
+### Task 43: Extension tiers re-derived from the registry — DR-23
+
+Implements [DR-23](#dr-23--an-extensions-tier-is-re-derived-from-the-registry-never-stored-locally).
+⚠ **Sequence after [Task 33](#task-33-registryjson-v2-and-the-generators-first-hard-failures)** — the
+stable id belongs in the registry schema revision already happening there, not in a second one.
+
+- [ ] **Step 1: Stop storing the tier**
+
+`classify_extension` no longer writes `Extension.tier`. The field is resolved at read time by stable
+id. Delete the stored field rather than leaving it unread: a stale value that nothing writes is a
+value something will eventually read.
+
+- [ ] **Step 2: Unreachable registry retains, never downgrades**
+
+No registry, a stale registry, or a registry with no entry for this id → the last known tier is
+**retained**. Never default to public. This is [Task 37](#task-37-the-in-app-registry--freshness-that-raises-and-never-lowers)'s
+"raises and never lowers" rule, and Task 43 inherits it rather than restating a weaker version.
+
+- [ ] **Step 3: The gate**
+
+1. Install a private extension, **rename it** in `config.yaml`, and assert Gates C, E and F still
+   refuse. This is the actual bug: assert on *enforcement*, not on the badge the UI renders.
+2. Take the registry away entirely and assert the private extension is **still** private.
+3. Structural: assert no persisted `tier` survives on the config entry, so a future reader cannot
+   resurrect the shadowing path.
+
+### Task 44: Windows Hello and polkit — DR-24
+
+Implements [DR-24](#dr-24--all-three-platforms-get-a-real-system-authentication-prompt). Depends on
+Task 29's `privacy::system_auth`.
+
+- [ ] **Step 1: Three prompters behind the one `AuthOutcome`**
+
+macOS `LAContext.evaluatePolicy(.deviceOwnerAuthentication)`; Windows `UserConsentVerifier`; Linux
+polkit. Task 29's `AuthOutcome` enum is the seam — this task adds implementations behind it and
+changes no caller.
+
+⚠ Not `systemPreferences.promptTouchID()` on macOS. See DR-24 for why.
+
+- [ ] **Step 2: Unavailable stays unavailable**
+
+Where polkit is genuinely absent, `AuthOutcome::Unavailable` → refuse, naming the platform. Do not
+fall back to a weaker proof on any platform: a typed phrase is replayable and an agent shell has a
+TTY, so a fallback would ship two security levels for one operation with the weaker one
+undiscoverable from the UI.
+
+- [ ] **Step 3: The test bypass must be compiled out of shipped builds**
+
+Task 29 built a programmatic message in place of the prompt, per the operator's ruling, so testing
+does not require typing a password repeatedly. That bypass must not exist in a release binary.
+
+⚠ **An environment variable is not sufficient to gate it.** [AR-11](#ar-11--amended-by-dr-17--the-daemons-own-api-secret-is-recoverable)
+measured the daemon's own environment to be recoverable, so a bypass an env var unlocks is a bypass
+the model can unlock. Gate it on `#[cfg(debug_assertions)]` or a dedicated non-default feature, and
+assert with a test that a release build has no path to it.
+
+- [ ] **Step 4: The gate**
+
+```bash
+cargo test -p biorouter --lib privacy::system_auth 2>&1 | grep "test result:"
+cargo build --release -p biorouter-server 2>&1 | tail -3
+```
+
+Per platform: an approve, a deny, and an unavailable, each mapping to the right `AuthOutcome`. Plus
+the compile-out assertion from Step 3 — which is the one that fails the plausible wrong
+implementation, since every functional test passes just as well with the bypass still reachable.
+
+---
+
 ## Related documentation
 
 - [Privacy tiers](privacy-tiers.md) — the design this plan executes, and the specification each task is reviewed against.
