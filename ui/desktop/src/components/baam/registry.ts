@@ -309,12 +309,26 @@ export function marketplaceEntryFor(
  * string).
  */
 export function extensionProvenance(registry: BaamRegistry, name: string): string {
+  const listed = marketplaceEntryFor(registry, name);
   if (effectivePrivacy(registry, name) === 'private') {
-    // Reachable only through the union above, every branch of which is a
-    // marketplace source — so naming the marketplace here is always true.
-    return 'Private — published on the Biorouter marketplace';
+    // ⚠ "Published" is a claim about the CATALOGUE, so it is only made when the
+    // catalogue in hand backs it. The union has branches that do not: a key
+    // learned from an earlier document that no longer lists it, and the
+    // compiled baseline read against any document that does not. The previous
+    // version of this asserted publication unconditionally, on the reasoning
+    // that "every branch of the union is a marketplace source" — which is true
+    // of where the KEY came from and false of the sentence it produced.
+    //
+    // What neither string can fix is that the whole lookup is by name: a
+    // hand-installed bundle that adopts a published private name is
+    // indistinguishable from the real one here, because the install records no
+    // provenance to compare against. That is open question 28, not a wording
+    // problem.
+    return listed
+      ? 'Private — published on the Biorouter marketplace'
+      : 'Private — the Biorouter marketplace publishes this name as private';
   }
-  if (marketplaceEntryFor(registry, name)) {
+  if (listed) {
     return 'Public — published on the Biorouter marketplace';
   }
   return 'Public — installed from a file, not on the marketplace. Any model can call it.';
@@ -327,9 +341,15 @@ export function extensionProvenance(registry: BaamRegistry, name: string): strin
  */
 export function catalogFreshnessLine(load: { live: boolean; fetchedAt?: string }): string | null {
   if (load.live) return null;
+  // No date means the bundled snapshot, and that is an invariant rather than an
+  // assumption: `readLastGoodRegistry` in `main.ts` rejects a cache entry whose
+  // `fetchedAt` is missing or unparseable, so a dateless non-live load can only
+  // be the fallback. Guess wrong here and the line names the wrong catalogue —
+  // and this sentence is what the user reads to decide whether to trust the
+  // entries under it.
   if (!load.fetchedAt) return 'showing bundled catalog (offline)';
   const when = new Date(load.fetchedAt);
-  if (Number.isNaN(when.getTime())) return 'showing bundled catalog (offline)';
+  if (Number.isNaN(when.getTime())) return 'showing a cached catalog of unknown age';
   return `catalogue last updated ${when.toLocaleDateString()}`;
 }
 

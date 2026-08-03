@@ -2964,12 +2964,25 @@ async function writeLastGoodRegistry(registry: unknown, fetchedAt: string): Prom
   }
 }
 
-async function readLastGoodRegistry(): Promise<{ registry: unknown; fetchedAt?: string } | null> {
+/**
+ * A cache entry is only usable if it can say HOW OLD it is.
+ *
+ * The renderer's freshness line reads a missing date as "showing bundled
+ * catalog (offline)" — the one thing it can safely conclude, since the bundled
+ * snapshot is the only source with no fetch to date. Returning a cached
+ * document without one would make that sentence name the wrong catalogue, on
+ * the screen where the user decides whether to trust the entries below it. So
+ * an undated entry is treated as no cache at all, which falls back to the
+ * snapshot the line would have claimed anyway.
+ */
+async function readLastGoodRegistry(): Promise<{ registry: unknown; fetchedAt: string } | null> {
   try {
     const raw = await fs.readFile(registryCachePath(), 'utf8');
-    const parsed = JSON.parse(raw) as { registry?: unknown; fetchedAt?: string };
+    const parsed = JSON.parse(raw) as { registry?: unknown; fetchedAt?: unknown };
     if (!isRegistryDocument(parsed.registry)) return null;
-    return { registry: parsed.registry, fetchedAt: parsed.fetchedAt };
+    const fetchedAt = parsed.fetchedAt;
+    if (typeof fetchedAt !== 'string' || Number.isNaN(Date.parse(fetchedAt))) return null;
+    return { registry: parsed.registry, fetchedAt };
   } catch {
     return null;
   }

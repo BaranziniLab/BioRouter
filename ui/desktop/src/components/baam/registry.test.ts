@@ -1,5 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { effectivePrivacy, loadRegistry, REGISTRY_LOAD_BUDGET_MS } from './registry';
+import {
+  catalogFreshnessLine,
+  effectivePrivacy,
+  extensionProvenance,
+  loadRegistry,
+  REGISTRY_LOAD_BUDGET_MS,
+  type BaamRegistry,
+} from './registry';
 
 /**
  * Issue #56, §10.2 — `private_set = PRIVATE_EXTENSIONS ∪ private(last_good_fetch)`.
@@ -130,5 +137,48 @@ describe('loadRegistry — freshness that raises and never lowers', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('the prose the badge travels with', () => {
+  const empty: BaamRegistry = { version: 2, source: 'test', extensions: [], skills: [] };
+
+  /**
+   * §13.5's private string asserts *publication*, and the union has a branch
+   * where that is simply not true: a key learned from a catalogue that no longer
+   * lists it, or the compiled baseline read against a document that does not.
+   * The old comment claimed "every branch of which is a marketplace source — so
+   * naming the marketplace here is always true", which this is the
+   * counterexample to.
+   */
+  it('does not claim publication for a name the catalogue in hand does not list', () => {
+    const line = extensionProvenance(empty, 'cdwagent');
+    expect(line).toMatch(/^Private/);
+    expect(line).not.toMatch(/published on the Biorouter marketplace/);
+  });
+
+  it('still uses §13.5 verbatim when the catalogue does list it', () => {
+    const listed: BaamRegistry = {
+      ...empty,
+      extensions: [{ extension_name: 'cdwagent', privacy: 'private' } as never],
+    };
+    expect(extensionProvenance(listed, 'cdwagent')).toBe(
+      'Private — published on the Biorouter marketplace'
+    );
+  });
+
+  /**
+   * "Showing bundled catalog (offline)" names WHICH catalogue is on screen. Said
+   * over a cached one it is a false statement about the thing the user is
+   * looking at, and it is the sentence they would use to decide whether to
+   * trust the entries.
+   */
+  it('never calls a catalogue bundled unless it is the bundled one', () => {
+    expect(catalogFreshnessLine({ live: false })).toMatch(/bundled/i);
+    expect(catalogFreshnessLine({ live: false, fetchedAt: '2026-01-02T03:04:05Z' })).not.toMatch(
+      /bundled/i
+    );
+    expect(catalogFreshnessLine({ live: false, fetchedAt: 'not-a-date' })).not.toMatch(/bundled/i);
+    expect(catalogFreshnessLine({ live: true })).toBeNull();
   });
 });
