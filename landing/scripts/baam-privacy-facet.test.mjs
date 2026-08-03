@@ -2,14 +2,26 @@
 //
 //     node --test landing/scripts/baam-privacy-facet.test.mjs
 //
-// Why a real browser and not jsdom. Two of the three things this file asserts
-// are LAYOUT facts, and jsdom has no layout — every getBoundingClientRect() it
-// returns is zeros, so a clipped tag row and a perfect one are indistinguishable
-// there. `.ext-tags` is `max-height: 22px; overflow: hidden`, which means an
-// extra chip does not push the row taller, it silently deletes the last tag from
-// view. That failure is invisible in a diff and invisible in a screenshot of any
-// card that happened to have two tags. Only a browser that lays the row out can
-// see it.
+// Why a real browser and not jsdom. Half of what this file asserts are LAYOUT
+// facts, and jsdom has no layout — every getBoundingClientRect() it returns is
+// zeros, so a clipped tag row and a perfect one are indistinguishable there.
+// `.ext-tags` is `max-height: 22px; overflow: hidden`, which means an extra chip
+// does not push the row taller, it silently deletes the last tag from view. That
+// failure is invisible in a diff and invisible in a screenshot of any card that
+// happened to have two tags. Only a browser that lays the row out can see it.
+//
+// Two mutants this suite is built to kill, both of which an earlier version of
+// it let through:
+//
+//   * `filterExtensions` matching the privacy facet on a SUBSTRING of the card's
+//     prose instead of `dataset.privacy`. The card text now contains the badge
+//     word "Private", so the naive "does the Private chip show exactly cdwagent
+//     and ucsfomopagent" assertion passes either way. Planting the word on a
+//     public card is what separates them.
+//   * `trimTagRows` hiding more than overflowed. "No chip is clipped" is
+//     trivially satisfiable by hiding every chip, so the trim is asserted as a
+//     property — surviving chips are a prefix, and re-showing the first dropped
+//     chip must overflow the row — rather than as a bound on how many are left.
 //
 // Playwright is not a landing/ dependency — it is resolved out of
 // ui/desktop/node_modules, and the browser is whatever this machine already has
@@ -96,22 +108,73 @@ if (!existsSync(PLAYWRIGHT)) {
     server.close();
   });
 
+  const PRIVATE = '#ext-chips .fchip[data-facet="privacy"][data-match="private"]';
+  const PUBLIC = '#ext-chips .fchip[data-facet="privacy"][data-match="public"]';
+
   /** A page with the registry-rendered shelf already in the DOM. */
-  async function shelfPage() {
-    const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+  async function shelfPage(width = 1280) {
+    const page = await browser.newPage({ viewport: { width, height: 900 } });
     await page.goto(`${BASE}/baam.html`);
     // renderExtensions() empties the static grid once the registry lands.
     await page.waitForSelector('#ext-featured .ext-card');
     return page;
   }
 
+  /** Every card the shelf is currently showing, named the way a human would. */
+  const shownCards = (page) =>
+    page.$$eval('#extensions-section .ext-card:visible', (els) =>
+      els.map((e) => e.dataset.extensionName || e.querySelector('h3').textContent).sort()
+    );
+
   test('the privacy facet filters the shelf down to the two private extensions', async () => {
     const page = await shelfPage();
-    await page.click('#ext-chips .fchip[data-facet="privacy"][data-match="private"]');
-    const visible = await page.$$eval('#extensions-section .ext-card:visible', (els) =>
-      els.map((e) => e.dataset.extensionName)
+    await page.click(PRIVATE);
+    assert.deepEqual(await shownCards(page), ['cdwagent', 'ucsfomopagent']);
+    await page.close();
+  });
+
+  test('the privacy facet matches the card’s tier, not the word "private" in its prose', async () => {
+    // The discrimination this facet exists for, and the one assertion the
+    // previous version of this file could not make. `filterExtensions` builds a
+    // `hay` string out of the card's textContent — which now CONTAINS the badge
+    // word "Private" — so restoring the old substring branch still returns
+    // exactly these two extensions and every other test here still passes.
+    // Plant the word on a public card and the two branches finally disagree.
+    const page = await shelfPage();
+    const planted = await page.evaluate(() => {
+      const card = document.querySelector('#ext-primary .ext-card[data-privacy="public"]');
+      card.querySelector('.ext-desc').textContent += ' Runs against a private clone of the index.';
+      card.dataset.tags = `${card.dataset.tags || ''} private`;
+      return card.querySelector('h3').textContent;
+    });
+    await page.click(PRIVATE);
+    const shown = await shownCards(page);
+    assert.equal(
+      shown.includes(planted),
+      false,
+      `"${planted}" is public and answered the Private chip on a substring of its prose`
     );
-    assert.deepEqual(visible.sort(), ['cdwagent', 'ucsfomopagent']);
+    assert.deepEqual(shown, ['cdwagent', 'ucsfomopagent']);
+    await page.close();
+  });
+
+  test('the Public facet is the complement, and both chips together are the whole shelf', async () => {
+    const page = await shelfPage();
+    const all = await page.evaluate(() =>
+      [...document.querySelectorAll('#extensions-section .ext-card')].map(
+        (e) => e.dataset.extensionName || e.querySelector('h3').textContent
+      )
+    );
+
+    await page.click(PUBLIC);
+    const pub = await shownCards(page);
+    assert.equal(pub.includes('cdwagent'), false, 'a private extension answered the Public chip');
+    assert.equal(pub.includes('ucsfomopagent'), false);
+    assert.equal(pub.length, all.length - 2, 'Public must be exactly everything that is not private');
+
+    // Both selected is a union inside one facet, not an impossible AND.
+    await page.click(PRIVATE);
+    assert.deepEqual(await shownCards(page), all.slice().sort());
     await page.close();
   });
 
@@ -119,10 +182,15 @@ if (!existsSync(PLAYWRIGHT)) {
     const page = await shelfPage();
     const chips = await page.$$eval(
       '.ext-card[data-extension-name="cdwagent"] .ext-tags > span',
-      (els) => els.map((e) => e.textContent)
+      (els) =>
+        els
+          .filter((e) => e.getBoundingClientRect().width > 0)
+          .map((e) => e.textContent)
     );
-    assert.equal(chips[0], 'Private');
-    assert.ok(chips.length <= 3, `expected at most 3 chips, got ${chips.length}: ${chips}`);
+    // EXACT, not "at most 3". `chips.length <= 3` is satisfied by a row that
+    // shows nothing but the badge, which is precisely the over-trimming this
+    // file has to be able to fail on.
+    assert.deepEqual(chips, ['Private', 'UCSF', 'MCP']);
 
     // The clip test: every laid-out chip must sit inside the 22px row. A chip
     // that wrapped is not "a bit cramped", it is invisible — and the row's
@@ -134,18 +202,43 @@ if (!existsSync(PLAYWRIGHT)) {
         .map((e) => `${e.closest('.ext-card').querySelector('h3').textContent}: ${e.textContent}`)
     );
     assert.deepEqual(clipped, [], 'these chips fell outside the clipped .ext-tags row');
-
-    // …and the row is kept inside its 22px by dropping OVERFLOW, never the
-    // badge. Without this the previous assertion is satisfiable by hiding
-    // everything, privacy label included.
-    const badgeless = await page.$$eval('#extensions-section .ext-card:visible', (els) =>
-      els
-        .map((e) => e.querySelector('.ext-tags > span'))
-        .filter((s) => !s || s.getBoundingClientRect().height === 0)
-        .map((s) => (s ? s.textContent : '<no chips at all>'))
-    );
-    assert.deepEqual(badgeless, [], 'the privacy badge must survive the tag-row trim');
     await page.close();
+  });
+
+  test('the tag row is trimmed by exactly what does not fit, and never further', async () => {
+    // `trimTagRows()` keeps the row inside its 22px by HIDING chips, so "nothing
+    // is clipped" is trivially satisfiable by hiding everything. Hiding chips
+    // that would have fitted is the same silent deletion the clip test exists to
+    // catch, one mechanism over — so assert the property directly: the surviving
+    // chips are a prefix, and re-showing the first dropped chip must overflow the
+    // row. `slice(0, 0)`, "hide everything after the badge", and an off-by-one in
+    // the trim loop all fail here and nowhere else.
+    for (const width of [1280, 390]) {
+      const page = await shelfPage(width);
+      const bad = await page.$$eval('#extensions-section .ext-card:visible .ext-tags', (rows) =>
+        rows
+          .filter((row) => row.clientHeight > 0)
+          .map((row) => {
+            const name = row.closest('.ext-card').querySelector('h3').textContent;
+            const chips = [...row.querySelectorAll('span')];
+            const isHidden = (c) => c.style.display === 'none';
+            const firstHidden = chips.findIndex(isHidden);
+            if (firstHidden !== -1 && chips.slice(firstHidden).some((c) => !isHidden(c))) {
+              return `${name}: a hidden chip sits before a visible one — the row is not a prefix`;
+            }
+            if (firstHidden === -1) return null;
+            if (firstHidden === 0) return `${name}: the privacy badge itself was trimmed away`;
+            const chip = chips[firstHidden];
+            chip.style.display = '';
+            const overflows = row.scrollHeight > row.clientHeight;
+            chip.style.display = 'none';
+            return overflows ? null : `${name}: "${chip.textContent}" was dropped but fits`;
+          })
+          .filter(Boolean)
+      );
+      assert.deepEqual(bad, [], `over-trimmed tag rows at ${width}px`);
+      await page.close();
+    }
   });
 
   test('the no-JS view is badged too', async () => {
