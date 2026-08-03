@@ -3751,7 +3751,7 @@ impl Agent {
                 .map(Value::Object)
                 .unwrap_or(Value::Object(serde_json::Map::new()));
             let result = self
-                .handle_schedule_management(arguments, request_id.clone())
+                .handle_schedule_management(arguments, request_id.clone(), &session.id)
                 .await;
             let wrapped_result = result.map(|content| CallToolResult {
                 content,

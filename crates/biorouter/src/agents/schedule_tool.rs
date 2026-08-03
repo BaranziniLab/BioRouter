@@ -14,11 +14,18 @@ use crate::scheduler_trait::SchedulerTrait;
 use crate::workflow::Workflow;
 
 impl Agent {
-    /// Handle schedule management tool calls
+    /// Handle schedule management tool calls.
+    ///
+    /// `creator_session_id` is the chat this tool call is running inside, taken
+    /// from `dispatch_tool_call`'s own `session` argument. `create` records it on
+    /// the job so a scheduled run resolves the *creating chat's* model rather
+    /// than the global default (issue #56, R5) — see
+    /// `scheduler::resolve_scheduled_provider`.
     pub async fn handle_schedule_management(
         &self,
         arguments: serde_json::Value,
         _request_id: String,
+        creator_session_id: &str,
     ) -> ToolResult<Vec<Content>> {
         let scheduler = self.config.scheduler_service.clone().ok_or_else(|| {
             ErrorData::new(
@@ -41,7 +48,10 @@ impl Agent {
 
         match action {
             "list" => self.handle_list_jobs(scheduler).await,
-            "create" => self.handle_create_job(scheduler, arguments).await,
+            "create" => {
+                self.handle_create_job(scheduler, arguments, creator_session_id)
+                    .await
+            }
             "run_now" => self.handle_run_now(scheduler, arguments).await,
             "pause" => self.handle_pause_job(scheduler, arguments).await,
             "unpause" => self.handle_unpause_job(scheduler, arguments).await,
@@ -80,6 +90,7 @@ impl Agent {
         &self,
         scheduler: Arc<dyn SchedulerTrait>,
         arguments: serde_json::Value,
+        creator_session_id: &str,
     ) -> ToolResult<Vec<Content>> {
         let workflow_path = arguments
             .get("workflow_path")
@@ -161,9 +172,18 @@ impl Agent {
             process_start_time: None,
             run_count: 0,
             max_runs: None,
-            // The agent's `schedule_management` tool schedules a workflow file
-            // by path; it carries no session id of its own.
-            creator_session_id: None,
+            // Issue #56 (R5), the third creation surface after `/loop` and
+            // `/schedule`. A schedule the agent makes on the user's behalf from
+            // a private chat must run on that chat's model, not the user's
+            // commercial default — `resolve_scheduled_provider` needs the id to
+            // do it.
+            //
+            // ⚠ Not `session_context::current_session_id()`. That task-local is
+            // scoped around a scheduled run and a subagent run and nowhere
+            // else — in particular not around `Agent::reply` on the ordinary
+            // chat path — so it reads `None` in exactly the case this closes.
+            // `dispatch_tool_call` holds the real `Session`; it is passed down.
+            creator_session_id: Some(creator_session_id.to_string()),
             last_error: None,
         };
 
