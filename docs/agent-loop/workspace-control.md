@@ -53,10 +53,23 @@ What you can do by hand:
 | New chat tab | `Cmd`/`Ctrl`+`T` |
 | New window | `Cmd`+`N` (macOS) / `Ctrl`+`N` |
 | Split a pane | Drag a tab onto the **outer quarter** of a pane — left, right, top or bottom edge. Dropping in the middle half moves the tab into that pane instead of splitting |
+| Reorder tabs within a pane | Drag a tab sideways inside its own tab strip. A drag is only promoted after 5 px of movement, so an ordinary click still just selects the tab (`useTabDragReorder.ts`) |
+| Resize two panes | Drag the divider between them. Only the two panes either side of the divider move — the rest of the window stays put — and neither can be squeezed below 12% of the pair (`ChatGroupSplitter.tsx`) |
 | Close the tab | `Cmd`/`Ctrl`+`W` |
 | Close the window | `Shift`+`Cmd`/`Ctrl`+`W` |
 
 The six-pane ceiling is the edge of what was measured, not a hard limit of the renderer — panes are cheap, but a pane holding a long transcript is not, so it was left where the evidence stopped.
+
+### Whether a layout comes back
+
+A layout survives a **reload** of the window and does not survive a **quit**. Worth knowing before you spend five minutes arranging six panes.
+
+The arrangement — the pane tree, which tabs sit in which pane, where the dividers are — is written to `localStorage` on every change (`saveChatGroups`, `ui/desktop/src/components/chatGroups/chatGroupsStorage.ts:57`). But the key it is written under is scoped per window, `biorouter.chatgroups.v1:<windowId>`, and that window id is minted into **`sessionStorage`** (`getWindowId`, same file, line 21). `sessionStorage` belongs to one `BrowserWindow` and goes away when that window closes. So:
+
+- **Reloading the window** — same window, same id, `loadChatGroups` finds the record and the panes come back. (A tab whose session never finished being created is dropped on the way in, and a pane left with no tabs at all is folded away, so a reload can tidy as well as restore.)
+- **Quitting and relaunching**, or closing the window and opening a new one — a fresh id is minted, nothing matches it, and you get the cold-boot single pane. The old record stays behind in `localStorage` as unreachable residue.
+
+The per-window scoping is deliberate rather than an oversight: two windows share one origin, so a single unscoped key would have them clobbering each other's layout. It is the *lifetime* of the id, not the scoping, that ends at quit, and nothing restores a closed window's panes. Treat a multi-pane layout as an arrangement for the sitting you are in; the conversations themselves are durable and reopen from History.
 
 ### Asking for a layout in words
 
@@ -99,9 +112,18 @@ At most **four** children *running at the same time* get a tab from one parent (
 
 The cap counts *live* children, so a slot frees when a child finishes. Spawn four, wait, spawn four more, and you get tabs both times. It bounds the burst, not the running total.
 
+Tabs are not the only cap on a fan-out, though, and the other two are what actually decide how fast ten pieces of work get done. Only **eight** subagents run at a time (`SUBAGENT_SEMAPHORE`, `crates/biorouter/src/agents/subagent_tool.rs:52`): numbers nine and ten *queue* on that semaphore and do not start — no session, no tab — until a slot frees. The cap is per process, one daemon shared by every conversation in it, where the four-tab cap is per parent. And past **64** subagents in flight, queued and running counted together, a spawn is not queued but **refused**, with *Subagent limit reached: N already in flight (max 64)* (`subagent_tool.rs:709`). Both bounds, and the caveat about changing one of them, are in [the limits table](#the-limits-you-will-actually-meet).
+
 ### Long jobs
 
-When background handles are enabled (`BIOROUTER_SUBAGENT_BACKGROUND`), a subagent can be started with `background: true`: the parent gets the child's session id straight back and keeps working. The right way to collect the result later is to **wait**, not poll — the agent parks on `workspace_watch` until one (or all) of up to 32 named conversations finishes, up to a 600-second bound. A timeout there is not an error; the conversations keep running and it can wait again.
+**`background: true` is off by default,** which is the first thing to check if a request for a detached child quietly blocks anyway. `BIOROUTER_SUBAGENT_BACKGROUND` resolves through `Config::get_param` and falls back to `false` (`crates/biorouter/src/agents/subagent_handle.rs:53`), and while it is off the `background` argument is not advertised on the `subagent` tool at all — a model that sends it regardless is ignored and the call blocks like any other.
+
+It is a **config parameter**, not an env var only, so either of these turns it on:
+
+- a line in `~/.config/biorouter/config.yaml` — `BIOROUTER_SUBAGENT_BACKGROUND: true`
+- the environment — `BIOROUTER_SUBAGENT_BACKGROUND=true`, which wins over the config file (`Config::get_param`, `crates/biorouter/src/config/base.rs:755`)
+
+With it on, a subagent started with `background: true` hands the parent the child's session id straight back and the parent keeps working. The right way to collect the result later is to **wait**, not poll — the agent parks on `workspace_watch` until one (or all) of up to 32 named conversations finishes, up to a 600-second bound. A timeout there is not an error; the conversations keep running and it can wait again.
 
 ## Checking on what is running
 
@@ -139,6 +161,8 @@ Every one of these is a real, named bound rather than a guideline.
 |---|---|---|
 | Panes in one window | 6 | not configurable |
 | Subagent tabs per parent, at once | 4 | `BIOROUTER_WORKSPACE_MAX_VISIBLE_CHILD_TABS` |
+| Subagents *running* at once, per process | 8 | `BIOROUTER_SUBAGENT_MAX_CONCURRENT` (see the caveat below) |
+| Subagents *in flight* at once — queued plus running, per process | 64 | `BIOROUTER_SUBAGENT_MAX_INFLIGHT` |
 | Turns one conversation may inject into others at once | 4 | `BIOROUTER_WORKSPACE_MAX_INJECTED_TURNS` |
 | Conversations one wait may watch | 32 | not configurable |
 | Wait / injected-reply timeout | 120 s default, 600 s maximum | per call |
@@ -146,6 +170,10 @@ Every one of these is a real, named bound rather than a guideline.
 | Characters per conversation read | 20,000 default, 200,000 maximum | per call |
 
 The injected-turn cap is the one that surfaces as a puzzling message. If the agent reports that *this session already has 4 injected turns in flight*, it means this conversation is already driving four others and is being made to wait rather than saturate the daemon. A slot is released when the turn it started actually ends.
+
+The two subagent caps look alike and behave in opposite ways at the boundary, which is the point of having both. At eight concurrent, the ninth spawn **queues** and runs when a slot frees — slower, never lost. At 64 in flight, the next spawn is **refused**, with an error the model has to handle. One is a throttle; the other is the hard stop on a runaway. The second sits so far above the first because it is a whole-process ceiling: it counts every conversation's children together, not one parent's.
+
+One caveat on raising the concurrency cap: the semaphore is a `LazyLock` sized on first use (`subagent_tool.rs:52`), so `BIOROUTER_SUBAGENT_MAX_CONCURRENT` is read exactly once — at the **first** spawn in that process — and the size is fixed for its lifetime. Set it before you launch the app or start `biorouterd`; exporting it into a shell after a subagent has already run there changes nothing, with no error to say so. `BIOROUTER_SUBAGENT_MAX_INFLIGHT` is re-read on every spawn and has no such caveat. Both are read straight from the environment (`subagent_tool.rs:38-51`), so unlike `BIOROUTER_SUBAGENT_BACKGROUND` neither can be set in `config.yaml`.
 
 ## Doing all of this from the terminal
 
@@ -159,7 +187,7 @@ What changes without a daemon is not the tool list but what the handlers can rea
 
 ### As subcommands you type
 
-These are ordinary shell commands, and they split in two. The first three touch only the session store on disk and work with nothing else running. The last four — `send`, `watch`, `attach`, `cancel` — drive a live turn through a running `biorouterd` over HTTP and SSE, and fail without one.
+These are ordinary shell commands, and they split in two. The first three touch only the session store on disk and work with nothing else running. The last four — `send`, `watch`, `attach`, `cancel` — drive a live turn through a running `biorouterd` over HTTP and SSE, and fail without one. Having the desktop app open does **not** satisfy that requirement, which surprises nearly everyone: see [The desktop app's daemon is not the one your terminal finds](#the-desktop-apps-daemon-is-not-the-one-your-terminal-finds).
 
 | What you want | Command | Needs a daemon |
 |---|---|---|
@@ -184,6 +212,44 @@ BIOROUTER_SERVER__SECRET_KEY=<key> biorouterd agent
 It listens on `127.0.0.1:3000` unless `BIOROUTER_PORT` says otherwise, and `send`, `watch`, `attach` and `cancel` authenticate with the same `BIOROUTER_SERVER__SECRET_KEY`. `biorouterd` invents a random key when that variable is unset, in which case no client can authenticate — so set it on both sides. A mismatch shows up as HTTP 401.
 
 Use `session attach` rather than `session --resume` on a session that is running right now: resuming opens a second agent on the same conversation, and the two do not share the daemon's turn lock.
+
+### The desktop app's daemon is not the one your terminal finds
+
+This is the single likeliest way those four commands fail, and the mental model almost everyone arrives with — *the app is open, so a daemon is running, so the CLI can talk to it* — is precisely the wrong one. Read this before concluding the commands are broken.
+
+The desktop app does start a `biorouterd`. It starts it somewhere your shell cannot find and with a key your shell cannot know:
+
+- **An ephemeral port.** `startBiorouterd` calls `findAvailablePort()` and passes the result to the child as `BIOROUTER_PORT` (`ui/desktop/src/biorouterd.ts:283`, `:305`). It is a different port every launch, recorded only in the app's log.
+- **A per-launch random secret.** `GENERATED_SECRET = crypto.randomBytes(32).toString('hex')` is minted once per Electron process (`ui/desktop/src/main.ts:900`) and handed to the daemon as `BIOROUTER_SERVER__SECRET_KEY` (`biorouterd.ts:306`). It is never written to disk.
+
+The CLI reads neither of those. `configured_port()` takes `BIOROUTER_PORT` from *your* environment and otherwise assumes 3000 (`crates/biorouter-cli/src/commands/apps.rs:210`), and `secret_key()` takes `BIOROUTER_SERVER__SECRET_KEY` from *your* environment or refuses with an actionable error rather than guessing (`crates/biorouter-cli/src/commands/session_watch.rs:38`). So with the app open and mid-conversation, `send`, `watch`, `attach` and `cancel` fail one of two ways: nothing is listening on 3000, or something is and the key does not match, which is an HTTP 401.
+
+**Starting your own `biorouterd agent` does not connect you to the app.** It gives you a *second, separate* daemon, and the distinction is the part worth internalising:
+
+- **The session store is shared**, because it is a directory on disk. `biorouter session list` and `session export` see the app's conversations, and always did — that is why they need no daemon at all.
+- **Live turns are not shared**, because they are process memory. `GET /sessions/running` answers from that daemon's own state (`state.active_turn_session_ids()`, `crates/biorouter-server/src/routes/session.rs:1065`), so a turn running in an app tab is invisible to your daemon: `watch` streams nothing, and `cancel` has no agent to stop.
+
+Nor is two daemons over one store a configuration to *write* from. The lock that stops two agents trampling one conversation lives in the daemon that holds it, which is the same reason [`attach` beats `--resume`](#as-subcommands-you-type) on a live session — one daemon, one turn lock, or neither.
+
+#### Making the app and the terminal share one daemon
+
+There is a supported way to have both halves talk to the same process, and it works by turning the ownership around: *you* run the daemon, on a port and key you chose, and the app connects to it instead of spawning its own. Two hooks in the main process implement it, both keyed off `settings.externalBiorouterd`:
+
+- `startBiorouterd` returns `connectToExternalBackend(dir, url)` — spawning nothing — when `enabled` and a `url` are both set (`biorouterd.ts:271`).
+- `getServerSecret` returns `settings.externalBiorouterd.secret` in preference to the generated one when `enabled` and a `secret` are set (`main.ts:902`).
+
+To use it:
+
+1. Start the daemon yourself and keep it running: `BIOROUTER_SERVER__SECRET_KEY=<key> biorouterd agent` (prefix `BIOROUTER_PORT=<port>` for anything other than 3000).
+2. Add `"externalBiorouterd": { "enabled": true, "url": "http://127.0.0.1:3000", "secret": "<key>" }` to the app's `settings.json`, which lives in Electron's `userData` directory (`ui/desktop/src/utils/settings.ts:26`) — on macOS `~/Library/Application Support/Biorouter/settings.json`.
+3. Restart the app. The setting is read once at launch.
+4. Export the same `BIOROUTER_SERVER__SECRET_KEY` (and `BIOROUTER_PORT`, if not 3000) in the terminal you run `biorouter session` from.
+
+The app's tabs and your `send`/`watch`/`attach`/`cancel` are then the same process, and you can steer from the terminal a conversation you are watching in the GUI. Two costs: the daemon is yours to keep alive — if it is unreachable at launch the app offers only *Disable External Backend & Retry* or *Quit* (`main.ts:1131`) — and the shared secret now sits in a plain settings file.
+
+> **Note on step 2.** There *is* a settings component for this, `ui/desktop/src/components/settings/app/ExternalBackendSection.tsx`, rendering a "Biorouter Server" card with an enable switch, a URL field and a secret field. In this build it is not imported by `SettingsView` or anything else, so it does not appear anywhere in the app — hand-editing the file is currently the only way in. Everything it would have written is read normally by the main process, so the mechanism itself works; only its front door is missing.
+
+Developers have a shortcut worth knowing and not shipping: with `BIOROUTER_EXTERNAL_BACKEND` set, the app skips its own daemon and connects to `http://127.0.0.1:3000` with the literal secret `test` (`biorouterd.ts:275`, `main.ts:906`) — which is what `just debug-ui` and `just debug-server` pair up. Convenient on a dev machine, and a fixed, published key everywhere else.
 
 ### What has no terminal equivalent
 
