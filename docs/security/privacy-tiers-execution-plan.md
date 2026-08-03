@@ -2387,6 +2387,21 @@ would most change its confidence.
 Task 4 is the first commit that produces a `privacy::` module, so this is the earliest point at which
 that command can be run. It is docs-only: it changes this file and nothing else.
 
+> ⚠ **These tables' COUNTS are stale from Task 20 onwards — re-measure before asserting `pre + N`.**
+> Task 20's Phase 2 gate re-ran this audit at the end of Phase 2. The assertion the audit exists for
+> still holds (**0 MISSING**: no filter in this plan names a test path that resolves to nothing).
+> But **39 rows had drifted** — 32 of the 46 resolved rows had grown, every one upward, and 7 more
+> resolve with no recorded pre-count at all. Task 4b's own rule is that the task which grows a count
+> re-baselines the row in the same commit; Tasks 5-19 grew counts and did not, and Task 20 is a gate
+> that records rather than rewrites.
+>
+> **So the numbers below are a floor, not a baseline.** Any later task that computes an expected
+> count as "the number in this table plus N" is doing arithmetic on a stale base, and a shortfall
+> then reads as a pass — the exact failure this task was written to prevent. Re-run
+> `cargo test -p <pkg> -- --list` for the filter you are about to assert on and use *that* number;
+> a re-baselined table would simply go stale again by the next phase. Task 20's record carries the
+> values as measured at `71075ab8` if a diff is wanted, but re-measurement is the rule.
+
 ⚠ **Do this task even if — especially if — the filters look fine.** The two errors this catches are
 both silent: a filter that matches nothing is green, and a filter that matches *more* than intended
 is also green. §[Which test filters are validated](#which-test-filters-are-validated-and-which-are-not)
