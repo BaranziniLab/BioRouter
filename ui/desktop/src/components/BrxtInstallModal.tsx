@@ -7,6 +7,7 @@ import { PrivacyBadge } from './ui/PrivacyBadge';
 import { BrxtEnvVar, BrxtManifest } from '../types/brxt';
 import { useConfig } from './ConfigContext';
 import { activateExtensionDefault } from './settings/extensions';
+import { classifyExtension } from './settings/extensions/extensionPrivacy';
 import { upsertConfig } from '../api';
 import { userActionHeaders } from '../utils/userAction';
 import { toastService } from '../toasts';
@@ -194,19 +195,38 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath }: Pr
    * Issue #56 §13.5. The badge this install is going to produce, said out loud
    * before the user commits.
    *
-   * An extension installed from a file is Public under R11(ii) — the install
-   * records no provenance whatsoever, so there is nothing for the daemon to
-   * treat as private — and that consequence is invisible unless it is stated.
-   * It renders on BOTH steps because it is a property of the install *route*,
-   * not of the bundle: a user who has not yet chosen a file should already know
-   * what dropping one in here will mean. Only one step is mounted at a time.
+   * ⚠ **The disclosure is about the RESULT, not about the route.** §13.5's
+   * sentence is written for the file-drop case and is true there — an extension
+   * installed from a file is Public under R11(ii), because the install records
+   * no provenance for the daemon to treat as private. But this component is not
+   * only the file-drop case:
+   *
+   *   - `BrowseExtensionsModal` downloads a marketplace `.brxt` and renders THIS
+   *     component with `preloadedFilePath`, so a row badged Private led straight
+   *     into a confirmation that said "always Public";
+   *   - and the task's own Step 3 records that a bundle merely NAMED
+   *     `ucsfomopagent` inherits the private badge — "fail-closed, and fine",
+   *     which it only is if the last screen before Install did not promise the
+   *     opposite.
+   *
+   * Three screens with two answers is worse than either answer alone, so once a
+   * manifest is in hand the modal states the tier the install will actually
+   * produce, resolved through `classifyExtension` — the same union the Settings
+   * card, the Browse row and the composer all read, so they cannot disagree.
+   *
+   * Before a file is chosen there is no name to classify and the route IS the
+   * only fact available, so §13.5's sentence stands verbatim: a user who has not
+   * yet picked a bundle should already know what dropping one in here means.
    *
    * One sentence, one element: the assertions match on the normalised text of a
    * single node, and splitting a phrase into a nested `<strong>` would take it
    * out of that node.
    */
-  const publicNotice =
-    'Extensions installed from a file are always Public. Any model, including commercial models hosted outside UCSF, will be able to call this extension.';
+  const resultingTier = manifest ? classifyExtension(manifest.name) : 'public';
+  const badgeNotice =
+    resultingTier === 'private'
+      ? 'The Biorouter marketplace publishes this name as private, so this extension will be Private: only private models will be able to call it.'
+      : 'Extensions installed from a file are always Public. Any model, including commercial models hosted outside UCSF, will be able to call this extension.';
 
   const requiredVars = envEntries.filter((e) => e.required);
   const optionalVars = envEntries.filter((e) => !e.required);
@@ -232,8 +252,8 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath }: Pr
             </p>
 
             <div className="biorouter-modal-panel rounded-lg p-3">
-              <PrivacyBadge tier="public" />
-              <p className="text-xs text-text-muted mt-1.5 leading-relaxed">{publicNotice}</p>
+              <PrivacyBadge tier={resultingTier} />
+              <p className="text-xs text-text-muted mt-1.5 leading-relaxed">{badgeNotice}</p>
             </div>
 
             {/* Drop zone */}
@@ -409,8 +429,8 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath }: Pr
 
             {/* §13.5: the resulting badge, above the Install button. */}
             <div className="biorouter-modal-panel rounded-lg p-3">
-              <PrivacyBadge tier="public" />
-              <p className="text-xs text-text-muted mt-1.5 leading-relaxed">{publicNotice}</p>
+              <PrivacyBadge tier={resultingTier} />
+              <p className="text-xs text-text-muted mt-1.5 leading-relaxed">{badgeNotice}</p>
             </div>
 
             <DialogFooter>
