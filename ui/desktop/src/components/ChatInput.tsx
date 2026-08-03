@@ -276,18 +276,34 @@ export default function ChatInput({
   const [sessionPrivacyTier, setSessionPrivacyTier] = useState<SessionClassification | undefined>(
     undefined
   );
+  /**
+   * Which read is allowed to win. Two reads can be in flight at once — the
+   * mount fetch and a `message-stream-finished` refresh — and they settle in
+   * whatever order the daemon answers, so "last to land" is not "newest". Only
+   * the most recently *issued* one may write.
+   */
+  const tierReadGeneration = useRef(0);
 
   useEffect(() => {
+    // Clear FIRST, on every rebind and not only on the no-session case.
+    // `BaseChat` is keyed by tab rather than by session, so this component
+    // survives a move from one chat to another; keeping the old value until the
+    // new read lands (or forever, if it throws) makes both consumers assert the
+    // previous chat's tier about this one. In the private -> public direction
+    // that greys out every model the new chat may legitimately run, and in the
+    // reverse it paints a Private dot on a chat with no such guarantee.
+    setSessionPrivacyTier(undefined);
+    const generation = ++tierReadGeneration.current;
+
     if (!sessionId) {
-      setSessionPrivacyTier(undefined);
       return;
     }
 
-    let cancelled = false;
     const readTier = async () => {
+      const issued = ++tierReadGeneration.current;
       try {
         const response = await getSession({ path: { session_id: sessionId } });
-        if (!cancelled && response.data?.privacy_tier) {
+        if (issued === tierReadGeneration.current && response.data?.privacy_tier) {
           setSessionPrivacyTier(response.data.privacy_tier);
         }
       } catch (error) {
@@ -298,7 +314,11 @@ export default function ChatInput({
     void readTier();
     window.addEventListener('message-stream-finished', readTier);
     return () => {
-      cancelled = true;
+      // Retire this effect's whole generation, so a response still in flight
+      // for the session we just left cannot write into the one we moved to.
+      if (tierReadGeneration.current >= generation) {
+        tierReadGeneration.current++;
+      }
       window.removeEventListener('message-stream-finished', readTier);
     };
   }, [sessionId]);
