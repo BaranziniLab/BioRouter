@@ -2509,6 +2509,17 @@ fn conflicting_args(
 /// gateway, an `ollama` pointed off this machine). Callers that hold a
 /// constructed provider must ask the instance instead — [`apply_route_for_turn`]
 /// does, on the provider it just built.
+///
+/// ⚠ The registry includes the user's own declarative providers, and
+/// `ProviderRegistry::entries` is a `HashMap` keyed by name — so a declared
+/// provider named `databricks` *replaces* the built-in entry and supplies the
+/// tier read here. That is deliberate rather than a leak: the whole point of
+/// reading one registry is that a provider the user defined answers about
+/// itself, the same way the settings grid describes it. The consequence to know
+/// is that `provider_tier_table` and `provider_tier_is_not_inverted_any_more`
+/// assert on the *shipped* built-ins, so a machine that shadows one of the names
+/// they list will fail them — correctly, because that name now means something
+/// else there.
 async fn provider_is_private_for_app(provider: &str) -> bool {
     let wanted = provider.trim();
     biorouter::providers::providers()
