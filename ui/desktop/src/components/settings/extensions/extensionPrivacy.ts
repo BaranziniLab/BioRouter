@@ -44,6 +44,26 @@ export const PRIVATE_EXTENSION_KEYS: readonly string[] = ['cdwagent', 'ucsfomopa
  *
  * The learned half is read synchronously off persisted storage rather than
  * awaited, because every caller is a render.
+ *
+ * ⚠ **The learned half can disagree with Rust, and in the over-marking
+ * direction.** Rust's `classify_extension` reads the compiled baseline alone —
+ * deliberately, and at length, in `crates/biorouter/src/privacy/extensions.rs`:
+ * the last-good fetch is written and read entirely on the Electron side, and an
+ * always-empty reader in Rust would read as enforcement that does not exist. So
+ * the moment the site publishes a NEW private extension, this function badges it
+ * Private and the daemon still treats it Public — until the app updates and the
+ * generator rewrites the baseline. That is §15.4's first-run-after-upgrade
+ * window, seen from the GUI side.
+ *
+ * The direction matters and is not the same as the constant's drift documented
+ * above. That one under-marks: no warning, then a refusal, and the user is never
+ * misled about what the daemon will do. This one over-marks: the user is told
+ * about a wall that is not there yet. It is the safer direction for the user's
+ * *behaviour* — they avoid pasting a cohort into a public chat, which is the
+ * point of the badge — but it is still a promise the daemon is not yet keeping,
+ * and it should not be discovered by someone puzzled that a Private-badged
+ * extension answered a public model. Closing it means giving Rust a reader for
+ * the last-good document, which is a one-line change at the `||` there.
  */
 export function classifyExtension(name: string): ProviderTier {
   const key = nameToKey(name);

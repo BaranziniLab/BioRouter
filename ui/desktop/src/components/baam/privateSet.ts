@@ -22,6 +22,31 @@
  * It is a *mirror*, not enforcement. Nothing here grants or revokes access —
  * Gates C/E/F key on the Rust `PRIVATE_EXTENSIONS` baseline, which no renderer
  * can widen. This exists only so the GUI can say what the daemon will do.
+ *
+ * ## What "only ever grows" costs, stated rather than left implicit
+ *
+ * This is persistent local state that a remote document writes to. One
+ * successful fetch of a `registry.json` marking arbitrary extensions private
+ * adds those keys here permanently, and `classifyExtension` consults it — so
+ * `extensionPairingRefused` will mark them "unavailable in new chats" on every
+ * public-model chat, and `BottomMenuExtensionSelection` drops them from its
+ * Enable-all count, with no UI to undo it. Three things keep that a nuisance
+ * rather than a lockout, and all three are load-bearing:
+ *
+ *   - the rows are still rendered and the extensions still enabled — this
+ *     changes what the GUI *says*, never what it permits;
+ *   - the Rust gates are untouched, so nothing here can actually wall a tool;
+ *   - the document is fetched over HTTPS from one pinned host, validated in the
+ *     main process before it is believed, and the only field read is
+ *     `privacy === 'private'`.
+ *
+ * That is the accepted cost of "never lowers": a badge that a hostile document
+ * can *add* is strictly better than one it can *remove*, and only the second is
+ * a safety failure. There is deliberately no cap and no clear, because both are
+ * a lowering mechanism wearing a different name. The set is bounded in practice
+ * by the catalogue's size (tens of entries); an unbounded array would eventually
+ * hit the storage quota, at which point `rememberPrivateExtensionKeys` holds the
+ * key in memory instead of dropping it.
  */
 
 const STORAGE_KEY = 'biorouter.baam.privateExtensionKeys';
