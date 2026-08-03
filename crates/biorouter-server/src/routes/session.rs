@@ -57,6 +57,31 @@ const COPY_OF_PRIVATE_NEEDS_USER: &str =
      will be refused again. If this task genuinely needs the branch, stop and ask the user to \
      branch the chat from the chat window.";
 
+/// Issue #56 DR-19's **second** read: did the copy that just ran mint a
+/// private-capability session for a request that proved no human?
+///
+/// Both copy handlers gate on the SOURCE's tier before calling into
+/// `SessionManager`, which then reads the source again inside the copy. Gate
+/// B's turn ratchet can raise the source between those two reads, so a
+/// header-less request that passed the gate on a public row can copy a
+/// now-private one — and `create_derived_session` carries `provider_name` and
+/// `model_config`, so the child is not labelled private, it is *bound* to a
+/// private provider with nothing downstream ever seeing a raise. That is
+/// exactly the mint DR-19 blocks, arrived at through the back of the gate.
+///
+/// The window is two database reads wide and takes racing a turn in the source
+/// chat, so it is not the likely path. It is closed anyway because the answer
+/// costs nothing: the tier the child was born with is already in hand, so the
+/// gate can be applied to the thing it is actually about (the capability that
+/// now exists) rather than only to the evidence that predicted it.
+///
+/// The pre-check stays in front of the copy — it is what keeps the ordinary
+/// refusal from doing the work of a full conversation copy first — and this is
+/// the one that decides.
+fn minted_capability_without_proof(child: SessionClassification, had_user_action: bool) -> bool {
+    child == SessionClassification::Private && !had_user_action
+}
+
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct SidebarSessionsQuery {
     #[serde(default = "default_sidebar_session_limit")]
@@ -785,17 +810,37 @@ async fn edit_message(
                 .await
                 .map(|session| session.privacy_tier == SessionClassification::Private)
                 .unwrap_or(true);
-            if source_is_private && !is_user_action(&headers) {
+            let had_user_action = is_user_action(&headers);
+            if source_is_private && !had_user_action {
                 return (StatusCode::FORBIDDEN, COPY_OF_PRIVATE_NEEDS_USER).into_response();
             }
             match manager
                 .diverge_session_for_edit(&session_id, request.timestamp)
                 .await
             {
-                Ok(new_session) => Json(EditMessageResponse {
-                    session_id: new_session.id,
-                })
-                .into_response(),
+                Ok(new_session) => {
+                    // The gate again, on the capability that now exists rather
+                    // than on the read that predicted it — see
+                    // `minted_capability_without_proof`. This arm is the second
+                    // copy handler, so it takes the second read as well; a fix
+                    // applied to `/diverge` alone would leave the same window
+                    // open here, which is the omission shape that shipped last
+                    // time.
+                    if minted_capability_without_proof(new_session.privacy_tier, had_user_action) {
+                        if let Err(e) = manager.delete_session(&new_session.id).await {
+                            tracing::error!(
+                                session_id = %new_session.id,
+                                error = %e,
+                                "dr19_unproven_branch_not_removed",
+                            );
+                        }
+                        return (StatusCode::FORBIDDEN, COPY_OF_PRIVATE_NEEDS_USER).into_response();
+                    }
+                    Json(EditMessageResponse {
+                        session_id: new_session.id,
+                    })
+                    .into_response()
+                }
                 Err(e) => {
                     tracing::error!("Failed to diverge session for message edit: {}", e);
                     StatusCode::INTERNAL_SERVER_ERROR.into_response()
@@ -1042,7 +1087,8 @@ async fn diverge_session(
     // 18A's `X-User-Action`, reused — one proof of user in this feature, not
     // two — and the renderer holds the key, so the person at the keyboard
     // clicks Diverge and it works.
-    if source.privacy_tier == SessionClassification::Private && !is_user_action(&headers) {
+    let had_user_action = is_user_action(&headers);
+    if source.privacy_tier == SessionClassification::Private && !had_user_action {
         return Err((StatusCode::FORBIDDEN, COPY_OF_PRIVATE_NEEDS_USER).into_response());
     }
 
@@ -1063,6 +1109,23 @@ async fn diverge_session(
             tracing::error!("Failed to diverge session {}: {}", session_id, e);
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         })?;
+
+    // The gate again, on the capability that now exists rather than on the read
+    // that predicted it. Reached only when the source was raised between the two
+    // reads — see `minted_capability_without_proof`.
+    if minted_capability_without_proof(new_session.privacy_tier, had_user_action) {
+        if let Err(e) = manager.delete_session(&new_session.id).await {
+            // Loud, and still refused: the caller gets nothing back either way,
+            // but a row that survives this is a private-capability session no
+            // human authorised, and the only trace of it would be this line.
+            tracing::error!(
+                session_id = %new_session.id,
+                error = %e,
+                "dr19_unproven_branch_not_removed",
+            );
+        }
+        return Err((StatusCode::FORBIDDEN, COPY_OF_PRIVATE_NEEDS_USER).into_response());
+    }
 
     Ok(Json(DivergeSessionResponse {
         session_id: new_session.id,
@@ -1933,6 +1996,95 @@ mod diverge_tests {
         ] {
             manager.delete_session(&id).await.unwrap();
         }
+    }
+
+    /// Issue #56 DR-19, the window the gate above leaves open.
+    ///
+    /// The gate reads the SOURCE's tier; `diverge_session*` then reads the
+    /// source again inside the copy. Between those two reads Gate B's turn
+    /// ratchet can raise the source — so a request that passed the gate on a
+    /// public row walks out holding a private-capability child that no human
+    /// ever proved. Two database reads wide and it takes racing a turn in the
+    /// source chat, so it is not the likely path; "unlikely" is simply not the
+    /// standard a capability gate is held to, and the tier the CHILD was born
+    /// with is already in hand — `create_derived_session` copies it.
+    ///
+    /// The decision is a pure function so it can be pinned at every corner
+    /// rather than only at the corner a race happens to produce.
+    #[test]
+    fn a_child_born_private_without_proof_is_undone() {
+        use biorouter::privacy::SessionClassification::{Private, Public};
+
+        assert!(
+            minted_capability_without_proof(Private, false),
+            "this is the race: the source went private between the gate and the copy"
+        );
+        assert!(
+            !minted_capability_without_proof(Private, true),
+            "the user's own branch of their own private chat is the supported act"
+        );
+        assert!(
+            !minted_capability_without_proof(Public, false),
+            "branching a public chat mints no capability and needs no proof — a gate \
+             that fires on every branch is one people route around"
+        );
+        assert!(!minted_capability_without_proof(Public, true));
+    }
+
+    /// The body of the FIRST `fn <name>(` in `src`. Both handlers are defined
+    /// well above this test module, so the first hit is the real one and not
+    /// the literal in the test below.
+    fn fn_body(src: &str, signature: &str) -> String {
+        let start = src
+            .find(signature)
+            .unwrap_or_else(|| panic!("no `{signature}` in the file"));
+        let onwards = src.get(start..).expect("find returns a char boundary");
+        let open = onwards
+            .find('{')
+            .unwrap_or_else(|| panic!("no body for {signature}"));
+        let body = onwards.get(open..).expect("find returns a char boundary");
+        let mut depth = 0usize;
+        for (offset, ch) in body.char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return body
+                            .get(..offset + ch.len_utf8())
+                            .expect("char_indices yields char boundaries")
+                            .to_string();
+                    }
+                }
+                _ => {}
+            }
+        }
+        panic!("unbalanced braces in {signature}");
+    }
+
+    /// Both copy handlers, not one. `/edit_message`'s diverge arm performs the
+    /// same carry-over and a gate written against `/diverge` alone would miss
+    /// exactly the half that shipped broken last time — which is the omission
+    /// shape this whole task exists to close. A race is not drivable from a
+    /// route test, so the structural assertion is what stands in for it.
+    #[test]
+    fn both_copy_handlers_take_the_second_read() {
+        let src = std::fs::read_to_string("src/routes/session.rs").unwrap();
+        for signature in ["async fn diverge_session(", "async fn edit_message("] {
+            assert!(
+                fn_body(&src, signature).contains("minted_capability_without_proof"),
+                "{signature} gates on the source it read before the copy and never \
+                 re-checks the child it minted"
+            );
+        }
+        // The negative control, without which `fn_body` returning the whole file
+        // — or the wrong function — would satisfy the loop above vacuously.
+        // `edit_in_place` truncates the LIVE session and copies nothing, so it
+        // mints no capability and must not be carrying this gate.
+        assert!(
+            !fn_body(&src, "async fn edit_in_place(").contains("minted_capability_without_proof"),
+            "fn_body is not returning one function's body"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
