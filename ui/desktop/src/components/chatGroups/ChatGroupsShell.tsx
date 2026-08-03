@@ -19,6 +19,8 @@ import { useIsMobile } from '../../hooks/use-mobile';
 import { useSidebar } from '../ui/sidebar';
 import { SIDEBAR_COMPACT_TITLE_WIDTH } from '../Layout/TitlebarControls';
 import { setFocusedChatSession } from '../../utils/extensionErrorUtils';
+import { getCachedSessionList, subscribeSessionList } from '../../utils/sessionListCache';
+import type { SessionClassification } from '../../api';
 
 interface ChatGroupsShellProps {
   /** Mirrors the focused chat up to App's hubChat, so AppSidebar's recents
@@ -57,9 +59,52 @@ function renderLayout(
   return renderBranch(layout, path, children);
 }
 
+/**
+ * Privacy tier per session id, for the tab strips (issue #56, R10).
+ *
+ * READ from the shared session-list cache; this hook never fetches. AppSidebar
+ * already calls `preloadSessionList()` at module scope, so in the running app
+ * the cache is warm before any strip renders, and every list refresh (create,
+ * diverge, delete, import, another window's change) re-emits through
+ * `subscribeSessionList`. In jsdom, where nothing has fetched, the cache is
+ * null and every tab is simply unmarked — silence, never an assertion of
+ * Public.
+ *
+ * A stale cache can only fail in the safe direction for the tier it holds and
+ * the unsafe one for a session it has never seen; the authoritative marker is
+ * the header pill, which reads the live session object. The strip's dot is the
+ * peripheral answer, not the record.
+ */
+function useSessionPrivacyTiers(): Record<string, SessionClassification> {
+  const [tiers, setTiers] = useState<Record<string, SessionClassification>>({});
+
+  useEffect(() => {
+    const read = () => {
+      const next: Record<string, SessionClassification> = {};
+      for (const session of getCachedSessionList() ?? []) {
+        if (session.privacy_tier) next[session.id] = session.privacy_tier;
+      }
+      // Identity-stable when nothing changed, so a list refresh that touched
+      // no tier does not re-render every strip in every pane.
+      setTiers((prev) => {
+        const prevKeys = Object.keys(prev);
+        const same =
+          prevKeys.length === Object.keys(next).length &&
+          prevKeys.every((id) => prev[id] === next[id]);
+        return same ? prev : next;
+      });
+    };
+    read();
+    return subscribeSessionList(read);
+  }, []);
+
+  return tiers;
+}
+
 export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
   const groups = useChatGroups();
   const terminalDock = useTerminalDock();
+  const privacyTiers = useSessionPrivacyTiers();
 
   const isMobile = useIsMobile();
   const { state: sidebarState } = useSidebar();
@@ -283,6 +328,7 @@ export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
         groupActive={isActiveGroup}
         runningSessionIds={groups.runningSessionIds}
         tabAnnotations={groups.tabAnnotations}
+        privacyTiers={privacyTiers}
         onSelect={handleSelect}
         onClose={handleClose}
         onReorder={handleReorder}
@@ -325,7 +371,9 @@ export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
         // message that created its session forever and re-sent it on every
         // remount (BR duplicate-submission bug, 2026-07-18).
         onInitialMessageConsumed={
-          activeTab ? () => dispatch?.({ type: 'consumePending', tabId: activeTab.tabId }) : undefined
+          activeTab
+            ? () => dispatch?.({ type: 'consumePending', tabId: activeTab.tabId })
+            : undefined
         }
         renderSessionTitle={() => strip}
         onChatChange={onChatChange}

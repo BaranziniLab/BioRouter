@@ -6,12 +6,27 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from './ui/dropdown-menu';
+import { PrivacyBadge } from './ui/PrivacyBadge';
+import type { SessionClassification } from '../api';
 
 interface Props {
   name: string;
   onRename: (newName: string) => void;
   onDiverge?: () => void | Promise<void>;
   canDiverge?: boolean;
+  /**
+   * The chat's privacy tier, shown as a pill beside the title (issue #56, R10).
+   *
+   * Optional and UNDEFINED-SILENT: a chat whose tier is not known yet says
+   * nothing rather than claiming Public, because "we have not loaded it" and
+   * "it is public" are different facts and only one of them is safe to assert.
+   *
+   * It is a LABEL here, not a control. Declassification does not belong in this
+   * component's overflow menu (§12.1) — that menu is rename/diverge, one
+   * careless click from the title, and lowering a chat's tier is a decision
+   * that owes its own confirmed surface.
+   */
+  privacyTier?: SessionClassification;
   className?: string;
 }
 
@@ -20,6 +35,7 @@ export const SessionNamePill: React.FC<Props> = ({
   onRename,
   onDiverge,
   canDiverge = false,
+  privacyTier,
   className,
 }) => {
   const [editing, setEditing] = useState(false);
@@ -83,6 +99,7 @@ export const SessionNamePill: React.FC<Props> = ({
           >
             <span className="truncate no-drag">{name}</span>
           </span>
+          {privacyTier && <PrivacyBadge tier={privacyTier} className="no-drag" />}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <button

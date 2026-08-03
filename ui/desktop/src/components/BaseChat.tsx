@@ -2152,6 +2152,9 @@ function BaseChatContent({
                       onRename={handleRename}
                       onDiverge={handleTitleDiverge}
                       canDiverge={canDivergeSession}
+                      // Undefined until the session loads — the pill stays
+                      // silent rather than asserting Public (issue #56).
+                      privacyTier={session?.privacy_tier}
                       className="w-fit max-w-[min(520px,calc(100%-16px))]"
                     />
                   </div>

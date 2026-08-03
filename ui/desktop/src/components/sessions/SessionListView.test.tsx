@@ -478,3 +478,45 @@ describe('SessionListView row actions', () => {
     });
   });
 });
+
+// This block deliberately never names the badge component: Task 27's gate greps
+// src/components for that name and expects an exact file list.
+describe('SessionListView privacy markers', () => {
+  it('marks a private conversation in the list', async () => {
+    mocks.listSessions.mockResolvedValue({
+      data: {
+        sessions: [row({ id: 'session-1', name: 'Patient cohort', privacy_tier: 'private' })],
+      },
+    });
+
+    render(
+      <MemoryRouter>
+        <SessionListView onSelectSession={vi.fn()} />
+      </MemoryRouter>
+    );
+
+    await screen.findByText('Patient cohort');
+    expect(screen.getByTestId('privacy-badge')).toHaveAttribute('data-privacy', 'private');
+  });
+
+  it('leaves public conversations unmarked, so the marker keeps meaning something', async () => {
+    mocks.listSessions.mockResolvedValue({
+      data: {
+        sessions: [
+          row({ id: 'session-1', name: 'Patient cohort', privacy_tier: 'private' }),
+          row({ id: 'session-2', name: 'Public notes', privacy_tier: 'public' }),
+          row({ id: 'session-3', name: 'Untiered chat' }),
+        ],
+      },
+    });
+
+    render(
+      <MemoryRouter>
+        <SessionListView onSelectSession={vi.fn()} />
+      </MemoryRouter>
+    );
+
+    await screen.findByText('Patient cohort');
+    expect(screen.getAllByTestId('privacy-badge')).toHaveLength(1);
+  });
+});

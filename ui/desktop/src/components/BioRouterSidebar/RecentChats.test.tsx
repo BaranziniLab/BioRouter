@@ -303,4 +303,33 @@ describe('RecentChats', () => {
     fireEvent.scroll(scrollContainer);
     expect(onLoadMore).toHaveBeenCalledOnce();
   });
+
+  // This block deliberately never names the badge component: Task 27's gate
+  // greps src/components for that name and expects an exact file list.
+  it('marks a private chat in the sidebar rail', () => {
+    renderRecentChats({
+      sessions: [{ ...makeSession(0), privacy_tier: 'private' }],
+    });
+    expect(screen.getByTestId('privacy-badge')).toHaveAttribute('data-privacy', 'private');
+  });
+
+  it('leaves public and untiered chats unmarked on this 32px row', () => {
+    renderRecentChats({
+      sessions: [
+        { ...makeSession(0), privacy_tier: 'public' },
+        { ...makeSession(1) },
+        { ...makeSession(2), privacy_tier: 'private' },
+      ],
+    });
+    expect(screen.getAllByTestId('privacy-badge')).toHaveLength(1);
+  });
+
+  it('shows the privacy marker and the running indicator on the same row', () => {
+    renderRecentChats({
+      sessions: [{ ...makeSession(1), privacy_tier: 'private' }],
+      runningSessionIds: new Set(['session-1']),
+    });
+    expect(screen.getByTestId('running-chat-indicator-session-1')).toBeInTheDocument();
+    expect(screen.getByTestId('privacy-badge')).toHaveAttribute('data-privacy', 'private');
+  });
 });

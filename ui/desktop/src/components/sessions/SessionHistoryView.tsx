@@ -32,6 +32,7 @@ import { SearchView } from '../conversation/SearchView';
 import BackButton from '../ui/BackButton';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
 import { Message, Session } from '../../api';
+import { PrivacyBadge } from '../ui/PrivacyBadge';
 import { useNavigation } from '../../hooks/useNavigation';
 import { ReadableContent } from '../Layout/ReadableContent';
 
@@ -60,14 +61,26 @@ const SessionHeader: React.FC<{
   onBack: () => void;
   children: React.ReactNode;
   title: string;
+  /**
+   * Sits beside the title, NOT in the metadata row below it.
+   *
+   * The metadata row renders only once the conversation has loaded; the title
+   * renders immediately. A privacy marker that appears a beat after the page
+   * does is a marker you can miss by reading fast, which is precisely the
+   * failure R10 exists to prevent.
+   */
+  titleAdornment?: React.ReactNode;
   actionButtons?: React.ReactNode;
-}> = ({ onBack, children, title, actionButtons }) => {
+}> = ({ onBack, children, title, titleAdornment, actionButtons }) => {
   return (
     <div className="biorouter-page-header -mx-8 flex flex-col px-8 pb-8">
       <div className="flex items-center pt-0 mb-1">
         <BackButton onClick={onBack} />
       </div>
-      <h1 className="text-2xl font-semibold tracking-tight mb-4 pt-6">{title}</h1>
+      <div className="flex min-w-0 items-center gap-2 mb-4 pt-6">
+        <h1 className="text-2xl font-semibold tracking-tight min-w-0 break-words">{title}</h1>
+        {titleAdornment}
+      </div>
       <div className="flex items-center">{children}</div>
       {actionButtons && <div className="flex items-center space-x-3 mt-4">{actionButtons}</div>}
     </div>
@@ -274,6 +287,11 @@ const SessionHistoryView: React.FC<SessionHistoryViewProps> = ({
           <SessionHeader
             onBack={onBack}
             title={session.name}
+            // The full pill, not the dense dot: this page has room, and it is
+            // the surface a user opens to answer "what is in this chat?".
+            titleAdornment={
+              session.privacy_tier ? <PrivacyBadge tier={session.privacy_tier} /> : null
+            }
             actionButtons={!isLoading ? actionButtons : null}
           >
             <div className="flex flex-col">

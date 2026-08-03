@@ -47,6 +47,7 @@ import { getSearchShortcutText } from '../../utils/keyboardShortcuts';
 import { ReadableContent } from '../Layout/ReadableContent';
 import { Dialog, DialogContent, DialogTitle } from '../ui/dialog';
 import { EmptyState } from '../ui/empty-state';
+import { PrivacyBadge } from '../ui/PrivacyBadge';
 import {
   getCachedSessionList,
   refreshSessionList,
@@ -774,7 +775,16 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
             className="flex-1 min-w-0 cursor-pointer rounded-sm text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus"
             aria-label={`Open session ${session.name}`}
           >
-            <h3 className="text-sm font-medium truncate">{session.name}</h3>
+            {/* This row's SessionItem SHADOWS the exported
+                components/sessions/SessionItem.tsx — same name, different
+                component, both reachable from History. They are badged
+                identically and to the same rule (dense dot, Private only), or
+                the marker would depend on which of the two a surface happened
+                to mount. */}
+            <div className="flex min-w-0 items-center gap-1.5">
+              <h3 className="text-sm font-medium truncate">{session.name}</h3>
+              {session.privacy_tier && <PrivacyBadge tier={session.privacy_tier} dense />}
+            </div>
             {session.diverged_from && (
               <div className="flex items-center gap-1 mt-0.5 text-text-muted text-xs min-w-0">
                 <GitBranch className="w-3 h-3 flex-shrink-0" />

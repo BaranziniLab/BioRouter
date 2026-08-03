@@ -10,6 +10,7 @@ import {
   type LucideProps,
 } from '../icons/app-icons';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
+import { PrivacyBadge } from '../ui/PrivacyBadge';
 
 const LOAD_MORE_THRESHOLD_PX = 64;
 const RECENTS_EXPANDED_STORAGE_KEY = 'biorouter:sidebar-recents-expanded';
@@ -209,6 +210,11 @@ function RecentChatRow({ session, isActive, isRunning, onOpen }: RecentChatRowPr
             className={`h-3.5 w-3.5 shrink-0 ${isActive ? 'text-accent-bar' : 'text-text-subtle'}`}
           />
           <span className="min-w-0 flex-1 truncate leading-5">{title}</span>
+          {/* Dense by necessity — the row is 32px and D-12 says the glyph must
+              not change sidebar density. Private only; Public and "no tier"
+              stay silent. It sits BEFORE the running indicator so the two never
+              swap places as a turn starts and stops. */}
+          {session.privacy_tier && <PrivacyBadge tier={session.privacy_tier} dense />}
           {isRunning && <ActiveChatIndicator sessionId={session.id} />}
         </button>
       </TooltipTrigger>
