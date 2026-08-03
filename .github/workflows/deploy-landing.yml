@@ -48,6 +48,13 @@ jobs:
         with:
           node-version: '24'
 
+      # The mutant suite first, then the checker it grades. Order matters: the
+      # live `--check` below passes against a `checkDocsPrivacy` rewritten to
+      # `return []`, so on its own it cannot tell "the table agrees" from "the
+      # check stopped asking". The suite is what refuses the second reading.
+      - name: Check the docs privacy checker still catches what it must
+        run: node --test landing/scripts/check-docs-privacy.test.mjs
+
       - name: Check the BAAM private set agrees in all three committed copies
         run: node landing/scripts/check-consistency.mjs --check
 
