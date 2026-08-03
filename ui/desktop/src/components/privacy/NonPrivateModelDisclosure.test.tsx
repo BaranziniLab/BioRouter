@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -41,6 +41,7 @@ vi.mock('../../utils/userAction', () => ({
 
 import { NonPrivateModelDisclosure } from './NonPrivateModelDisclosure';
 import { NonPrivateModelDisclosureGate } from './NonPrivateModelDisclosureGate';
+import { __resetDisclosureStoreForTests } from './disclosureCopy';
 
 /** A provider entry shaped like `GET /config/providers` serves one. */
 const provider = (name: string, tier: 'private' | 'public') => ({
@@ -64,6 +65,10 @@ afterEach(cleanup);
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // The disclosure is a property of the install, so the copy and the
+  // acknowledgement live in module state that outlives `cleanup()`. Without this
+  // one test's acknowledgement would decide the next one's starting position.
+  __resetDisclosureStoreForTests();
   mocks.getPrivacyDisclosure.mockResolvedValue({
     data: {
       title_template: SERVED.titleTemplate,
@@ -261,6 +266,69 @@ describe('NonPrivateModelDisclosureGate — when it is shown', () => {
     await user.click(screen.getByRole('button', { name: /continue/i }));
 
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  });
+
+  it('two chat panes on a public model get ONE dialog, not one each', async () => {
+    // `ChatGroupsShell` mounts one `BaseChat` per chat group and the split view
+    // caps at six, so a two-pane split mounted two of these gates. Each held its
+    // own state, so the user got two stacked un-dismissible modals — and
+    // acknowledging one left the other's copy of `acknowledged` at false. The
+    // disclosure is once per INSTALL; the panes have to agree about it.
+    render(
+      <>
+        <NonPrivateModelDisclosureGate providerName="openai" />
+        <NonPrivateModelDisclosureGate providerName="openai" />
+      </>
+    );
+    // Deliberately NOT `findByRole('dialog')`: two stacked modals aria-hide each
+    // other, so with the defect present neither is in the accessibility tree at
+    // all and the role query merely times out. The test id counts what is
+    // actually on the page.
+    await screen.findAllByTestId('non-private-model-disclosure');
+    expect(screen.getAllByTestId('non-private-model-disclosure')).toHaveLength(1);
+    // …and they asked the daemon once between them, rather than once each.
+    expect(mocks.getPrivacyDisclosure).toHaveBeenCalledTimes(1);
+  });
+
+  it('acknowledging in one pane settles it for all of them', async () => {
+    const user = userEvent.setup();
+    render(
+      <>
+        <NonPrivateModelDisclosureGate providerName="openai" />
+        <NonPrivateModelDisclosureGate providerName="openai" />
+      </>
+    );
+    const [dialog] = await screen.findAllByTestId('non-private-model-disclosure');
+
+    await user.click(within(dialog).getByRole('button', { name: /I understand/i }));
+
+    // No second dialog takes the first one's place: the acknowledgement is a
+    // property of the install, not of the pane that happened to show it.
+    await waitFor(() =>
+      expect(screen.queryAllByTestId('non-private-model-disclosure')).toHaveLength(0)
+    );
+    expect(mocks.ackPrivacyDisclosure).toHaveBeenCalledTimes(1);
+  });
+
+  it('closing the pane that showed it hands the dialog to another, not to nobody', async () => {
+    // The other half of "one dialog, not six". If the pane holding it goes away
+    // — the user closes that split — the disclosure must not vanish with it and
+    // wait for the next launch, because nothing has been acknowledged yet.
+    const { rerender } = render(
+      <>
+        <NonPrivateModelDisclosureGate key="pane-a" providerName="openai" />
+        <NonPrivateModelDisclosureGate key="pane-b" providerName="openai" />
+      </>
+    );
+    expect(await screen.findAllByTestId('non-private-model-disclosure')).toHaveLength(1);
+
+    rerender(
+      <>
+        <NonPrivateModelDisclosureGate key="pane-b" providerName="openai" />
+      </>
+    );
+
+    expect(await screen.findAllByTestId('non-private-model-disclosure')).toHaveLength(1);
   });
 
   it('a provider it cannot classify is disclosed, not waved through', async () => {

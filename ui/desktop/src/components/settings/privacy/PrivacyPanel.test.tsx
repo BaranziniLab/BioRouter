@@ -2,6 +2,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import PrivacyPanel, { DISABLE_PHRASE, PRIVACY_TIERS_KEY } from './PrivacyPanel';
+import { __resetDisclosureStoreForTests } from '../../privacy/disclosureCopy';
 
 const mocks = vi.hoisted(() => ({
   value: undefined as unknown,
@@ -33,6 +34,9 @@ const SERVED_LONG =
 describe('Settings > Privacy', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // The served copy is held in module state (one install, one disclosure), so
+    // it outlives `cleanup()` and has to be dropped between tests.
+    __resetDisclosureStoreForTests();
     mocks.value = undefined;
     mocks.read.mockImplementation(async () => mocks.value);
     mocks.upsert.mockImplementation(async () => undefined);

@@ -2,6 +2,7 @@ import { render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProviderDetails, ProviderTier } from '../../../api';
 import ProviderGrid from './ProviderGrid';
+import { __resetDisclosureStoreForTests } from '../../privacy/disclosureCopy';
 
 // Task 30A: the Commercial section carries the served one-line disclosure.
 // ⚠ The fixture is deliberately not the product's sentence — Step 5's gate (1)
@@ -63,6 +64,9 @@ const all = [
 describe('ProviderGrid — the privacy taxonomy, on screen', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // The served copy is held in module state (one install, one disclosure), so
+    // it outlives `cleanup()` and has to be dropped between tests.
+    __resetDisclosureStoreForTests();
     mocks.getPrivacyDisclosure.mockResolvedValue({
       data: {
         title_template: '{provider} is not hosted by your institution.',

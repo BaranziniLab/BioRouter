@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { ackPrivacyDisclosure, getPrivacyDisclosure } from '../../api';
 import type { ProviderTier } from '../../api';
 import { userActionHeaders } from '../../utils/userAction';
@@ -105,7 +105,127 @@ export function disclosureRequiredForTier(tier: ProviderTier | null | undefined)
 }
 
 /**
- * Fetch the copy and the acknowledgement state once per mount.
+ * The disclosure is a property of the INSTALL, so it is held once for the app
+ * rather than once per component (issue #56, DR-17 requirement 3).
+ *
+ * ⚠ **Module-scoped on purpose.** `ChatGroupsShell` mounts one `BaseChat` per
+ * chat group and the split view caps at six, so per-hook state gave a two-pane
+ * split two independent gates: two stacked un-dismissible modals, each wanting
+ * its own click, and acknowledging one left the other's `acknowledged` at
+ * `false`. The panes have to agree about a fact that is true of the machine.
+ * {@link useSoleDisclosurePresenter} then decides which single gate shows it.
+ *
+ * Consequences worth knowing: the copy is fetched once for the whole app rather
+ * than once per surface, and a surface that mounts later gets the answer the
+ * first one already has, with no round trip.
+ */
+interface DisclosureStore {
+  copy: DisclosureCopy | null;
+  acknowledged: boolean | null;
+  acknowledgeError: string | null;
+  /** The gate currently showing the blocking dialog, if any. */
+  presenter: symbol | null;
+}
+
+let store: DisclosureStore = {
+  copy: null,
+  acknowledged: null,
+  acknowledgeError: null,
+  presenter: null,
+};
+const listeners = new Set<() => void>();
+const subscribe = (listener: () => void) => {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+};
+const readStore = () => store;
+function patch(next: Partial<DisclosureStore>) {
+  store = { ...store, ...next };
+  // A copy, because a listener may claim the presenter and so patch again.
+  for (const listener of [...listeners]) listener();
+}
+
+/** In flight, so N surfaces mounting together make one request between them. */
+let fetching: Promise<void> | null = null;
+
+function ensureFetched() {
+  if (fetching || store.copy) return;
+  fetching = (async () => {
+    try {
+      const result = await getPrivacyDisclosure();
+      const served = result?.data;
+      if (!served) return;
+      patch({
+        copy: {
+          titleTemplate: served.title_template,
+          long: served.long,
+          short: served.short,
+        },
+        acknowledged: served.acknowledged,
+      });
+    } catch {
+      // Leave both null. See `useDisclosure`'s doc comment. `fetching` is
+      // cleared below, so a surface mounting later tries again.
+    } finally {
+      fetching = null;
+    }
+  })();
+}
+
+/**
+ * Drop everything this module remembers.
+ *
+ * ⚠ **Tests only.** The store outlives a `cleanup()` because it is module state,
+ * so without this one test's acknowledgement would decide the next one's
+ * starting position — the kind of order dependence that makes a suite pass in
+ * isolation and fail in a run.
+ */
+export function __resetDisclosureStoreForTests() {
+  store = { copy: null, acknowledged: null, acknowledgeError: null, presenter: null };
+  fetching = null;
+  listeners.clear();
+}
+
+/**
+ * Which single gate may show the blocking dialog.
+ *
+ * First claimant wins and holds it until it stops wanting it or unmounts; the
+ * others wait. `wants` is the gate's own answer to "should this be up at all",
+ * so a pane bound to a local model never joins the queue.
+ */
+export function useSoleDisclosurePresenter(wants: boolean): boolean {
+  const tokenRef = useRef<symbol | null>(null);
+  if (tokenRef.current === null) tokenRef.current = Symbol('disclosure-presenter');
+  const token = tokenRef.current;
+  const [isPresenter, setIsPresenter] = useState(false);
+
+  useEffect(() => {
+    if (!wants) {
+      setIsPresenter(false);
+      return;
+    }
+    const attempt = () => {
+      if (store.presenter === null) patch({ presenter: token });
+      setIsPresenter(store.presenter === token);
+    };
+    attempt();
+    // Subscribed, so that when the holder unmounts — a pane closed with the
+    // dialog still up — a waiting gate takes it over rather than the disclosure
+    // disappearing until the next launch.
+    const unsubscribe = subscribe(attempt);
+    return () => {
+      unsubscribe();
+      if (store.presenter === token) patch({ presenter: null });
+    };
+  }, [wants, token]);
+
+  return isPresenter;
+}
+
+/**
+ * Fetch the copy and the acknowledgement state, once for the whole app.
  *
  * A failed fetch leaves `copy` null and `acknowledged` null, and every surface
  * renders nothing rather than inventing prose. That is the one honest answer:
@@ -113,31 +233,10 @@ export function disclosureRequiredForTier(tier: ProviderTier | null | undefined)
  * away from the user.
  */
 export function useDisclosure(enabled: boolean = true): DisclosureState {
-  const [copy, setCopy] = useState<DisclosureCopy | null>(null);
-  const [acknowledged, setAcknowledged] = useState<boolean | null>(null);
-  const [acknowledgeError, setAcknowledgeError] = useState<string | null>(null);
+  const { copy, acknowledged, acknowledgeError } = useSyncExternalStore(subscribe, readStore);
 
   useEffect(() => {
-    if (!enabled) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const result = await getPrivacyDisclosure();
-        const served = result?.data;
-        if (cancelled || !served) return;
-        setCopy({
-          titleTemplate: served.title_template,
-          long: served.long,
-          short: served.short,
-        });
-        setAcknowledged(served.acknowledged);
-      } catch {
-        // Leave both null. See this function's doc comment.
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
+    if (enabled) ensureFetched();
   }, [enabled]);
 
   const acknowledge = useCallback(async () => {
@@ -160,11 +259,10 @@ export function useDisclosure(enabled: boolean = true): DisclosureState {
       refusal = thrown;
     }
     if (refusal !== undefined && refusal !== null) {
-      setAcknowledgeError(describeAckFailure(refusal));
+      patch({ acknowledgeError: describeAckFailure(refusal) });
       return false;
     }
-    setAcknowledgeError(null);
-    setAcknowledged(true);
+    patch({ acknowledgeError: null, acknowledged: true });
     return true;
   }, []);
 

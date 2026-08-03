@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import ModelsBottomBar from './ModelsBottomBar';
+import { __resetDisclosureStoreForTests } from '../../../privacy/disclosureCopy';
 
 const mocks = vi.hoisted(() => ({
   read: vi.fn(async () => ''),
@@ -79,6 +80,9 @@ const providerEntry = (name: string, tier: 'private' | 'public') => ({
 describe('ModelsBottomBar — the chip carries a dot, never a pill', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // The served copy is held in module state (one install, one disclosure), so
+    // it outlives `cleanup()` and has to be dropped between tests.
+    __resetDisclosureStoreForTests();
     mocks.currentProvider = 'versa_azure';
     mocks.getProviders.mockResolvedValue([
       providerEntry('versa_azure', 'private'),

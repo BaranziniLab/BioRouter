@@ -1,7 +1,11 @@
 import { useEffect, useState } from 'react';
 import { useConfig } from '../ConfigContext';
 import { NonPrivateModelDisclosure } from './NonPrivateModelDisclosure';
-import { disclosureRequiredForTier, useDisclosure } from './disclosureCopy';
+import {
+  disclosureRequiredForTier,
+  useDisclosure,
+  useSoleDisclosurePresenter,
+} from './disclosureCopy';
 
 export interface NonPrivateModelDisclosureGateProps {
   /**
@@ -85,11 +89,19 @@ export function NonPrivateModelDisclosureGate({
   // are let past — and, because nothing was written, told again next launch.
   const [dismissedUnrecorded, setDismissedUnrecorded] = useState(false);
 
-  const open =
+  const wantsDialog =
     resolved?.required === true &&
     acknowledged === false &&
     copy !== null &&
     !dismissedUnrecorded;
+  // ⚠ ONE dialog, however many panes are open. `ChatGroupsShell` mounts one
+  // `BaseChat` — and so one of these — per chat group, six at a time; without
+  // this a two-pane split stacked two un-dismissible modals. The store makes the
+  // panes agree about the acknowledgement; this makes exactly one of them show
+  // it. Hooks are unconditional: this is called on every render, wanting or not.
+  const isPresenter = useSoleDisclosurePresenter(wantsDialog);
+
+  const open = wantsDialog && isPresenter;
   if (!open || !resolved || !copy) return null;
 
   return (
