@@ -50,7 +50,14 @@ check-registry:
 # question that survives a generator change — do all three name the same private
 # set, and does that set have anything in it at all. An extension missing from
 # the compiled-in copy is not a build error, it is silently classified Public.
+#
+# The mutant suite runs FIRST, and for the same reason `check-registry` has one:
+# a checker earns its invocation only by failing when it should. The live
+# `--check` below passes against a `checkDocsPrivacy` rewritten to `return []` —
+# the suite is what refuses that, by requiring 20 ways of being wrong to each
+# produce a failure. No npm install: node:test ships with the runtime.
 check-privacy-registry:
+    node --test landing/scripts/check-docs-privacy.test.mjs
     node landing/scripts/check-consistency.mjs --check
 
 # The BAAM shelf's privacy badges and Private/Public facet, in a real browser.

@@ -123,6 +123,19 @@ jobs:
         if: ${{ !cancelled() }}
         run: node landing/scripts/build-registry.mjs --check
 
+      # docs.html's agents table is the one privacy surface with no generator.
+      # Its checker runs in the Pages deploy — which is AFTER merge, i.e. too
+      # late to stop the drift landing. These two steps are the pre-merge half:
+      # the mutant suite (a checker that cannot fail is not a gate) and then the
+      # live join against registry.json.
+      - name: The docs privacy checker still catches what it must
+        if: ${{ !cancelled() }}
+        run: node --test landing/scripts/check-docs-privacy.test.mjs
+
+      - name: docs.html's agents table agrees with the registry
+        if: ${{ !cancelled() }}
+        run: node landing/scripts/check-consistency.mjs --check
+
   # ── The BAAM shelf in a real browser ──────────────────────────────────────
   # The generator job above proves the CATALOG is right. This proves the PAGE
   # is: that the privacy facet matches a card's declared tier rather than a
