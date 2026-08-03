@@ -228,7 +228,18 @@ chat to a private model and try again.";
 /// Gate G's predicate, and the **one** place `visible_to` is consulted for a
 /// conversation ingest (issue #56).
 fn readable(caller: crate::privacy::ProviderTier, session: &Session) -> bool {
-    crate::privacy::visible_to(caller, session.privacy_tier)
+    // DR-15's master opt-out, read INSIDE the gate. A direct read, not a
+    // `CallCapability`: an ingest is not a tool dispatch and has no admitted
+    // capability to inherit — the CLI and the HTTP route both arrive here with
+    // nothing but a tier.
+    //
+    // It is folded in HERE rather than at each of the two callers so both
+    // `ingest_conversation` (the barrier a `grep` counts) and
+    // `refuses_every_session` (the same question one layer up, for the route's
+    // status code) answer identically. `visible_to` itself stays PURE — a
+    // toggle read there would be a second read on `chatrecall`'s tool-call path.
+    !crate::privacy::privacy_tiers_enabled()
+        || crate::privacy::visible_to(caller, session.privacy_tier)
 }
 
 /// Would Gate G refuse **every** one of these sessions?

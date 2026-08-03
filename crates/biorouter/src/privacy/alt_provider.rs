@@ -61,7 +61,10 @@ pub fn assert_alt_provider_allowed(
     session: SessionClassification,
     env_key_to_name: &str,
 ) -> Result<()> {
-    if bind_allowed(provider.tier(), session) {
+    // DR-15's master opt-out, read INSIDE the gate. A direct read, not a
+    // `CallCapability`: this gate fires where nothing is bound, so there is no
+    // admitted tool call whose capability it could inherit.
+    if !super::privacy_tiers_enabled() || bind_allowed(provider.tier(), session) {
         return Ok(());
     }
     Err(anyhow!(

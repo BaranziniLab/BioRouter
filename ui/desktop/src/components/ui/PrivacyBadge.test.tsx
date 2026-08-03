@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import type { ReactElement } from 'react';
-import { cleanup, render } from '@testing-library/react';
+import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 import { PrivacyBadge } from './PrivacyBadge';
 import type { SessionClassification } from '../../api';
@@ -222,6 +222,44 @@ describe('PrivacyBadge', () => {
     expect(badgeOf(<PrivacyBadge tier="public" className="ml-2" />)!.className).toContain('ml-2');
     expect(badgeOf(<PrivacyBadge tier="private" dense className="ml-2" />)!.className).toContain(
       'ml-2'
+    );
+  });
+
+  // ── DR-15: the badge does not hide itself when nothing enforces it ──
+
+  it('badges stay visible while enforcement is off, and say so', () => {
+    render(<PrivacyBadge tier="private" enforcementOff />);
+    // Still there. Hiding it is the tidy-looking answer and the worst one: it
+    // makes an UNPROTECTED machine indistinguishable from a machine with no
+    // private material on it, at exactly the moment the distinction matters.
+    expect(screen.getByText(/Private/)).toBeInTheDocument();
+    // And it no longer states something untrue. A pill reading plain "Private"
+    // while nothing enforces it is worse than no badge, because the user acts
+    // on it.
+    expect(screen.getByText(/enforcement off/i)).toBeInTheDocument();
+  });
+
+  it('says it on the Public pill too, and on the dense dot where there is no room for words', () => {
+    // Public is a tier claim as much as Private is; with enforcement off it is
+    // no more true than the other one.
+    const pill = badgeOf(<PrivacyBadge tier="public" enforcementOff />)!;
+    expect(pill.getAttribute('data-enforcement')).toBe('off');
+    expect(pill.textContent).toMatch(/enforcement off/i);
+
+    // The dot has no words, so the accessible name carries it.
+    const dot = badgeOf(<PrivacyBadge tier="private" dense enforcementOff />)!;
+    expect(dot.getAttribute('data-enforcement')).toBe('off');
+    expect(dot.getAttribute('aria-label')).toBe('Private chat — enforcement off');
+  });
+
+  it('says nothing about enforcement when enforcement is on', () => {
+    // The default must not be the loud state, or the suffix stops meaning
+    // anything on the surface where it matters.
+    const pill = badgeOf(<PrivacyBadge tier="private" />)!;
+    expect(pill.getAttribute('data-enforcement')).toBe('on');
+    expect(pill.textContent).not.toMatch(/enforcement/i);
+    expect(badgeOf(<PrivacyBadge tier="private" dense />)!.getAttribute('data-enforcement')).toBe(
+      'on'
     );
   });
 });

@@ -1036,7 +1036,14 @@ impl KnowledgeServer {
         // The tier is read BEFORE `dest_path` is honoured — a write-then-move
         // would leave a complete copy of a private knowledge base at the path
         // the model chose for however long the copy takes.
-        let dest = if crate::knowledge::tier::is_private(self.service.root(), &p.kb_id) {
+        //
+        // DR-15's master opt-out. A direct read of the process-global rather
+        // than a `CallCapability` (this crate cannot see `biorouter`), and its
+        // own read rather than one inherited from `assert_reachable`: forcing
+        // the location is a decision over `is_private` directly, not a barrier.
+        let dest = if crate::privacy_toggle::privacy_tiers_enabled()
+            && crate::knowledge::tier::is_private(self.service.root(), &p.kb_id)
+        {
             crate::knowledge::paths::model_export_dir(self.service.root())
                 .join(format!("{}.brkb", p.kb_id))
         } else {

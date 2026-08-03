@@ -307,8 +307,22 @@ pub fn is_private(root: &Path, kb_id: &str) -> bool {
 }
 
 /// The single refusal for CP1..CP4. `Ok(())` permits.
+///
+/// DR-15's master opt-out is read HERE, at the choke point, and nowhere above
+/// it. Every caller — the three knowledge macros, `KnowledgeServer`'s own
+/// `assert_kb_reachable`, the `/knowledge/*` routes, the apps runtime's KB frame
+/// — delegates the whole decision to this function, so one read governs all of
+/// them and none of them needs a second. A caller that read the toggle itself
+/// *and* called this would be the two-reads race in miniature.
+///
+/// A direct read of the process-global rather than a `CallCapability`: this
+/// crate cannot see `biorouter`, which is exactly why the atomic lives in
+/// `crate::privacy_toggle` (see that module).
 pub fn assert_reachable(root: &Path, kb_id: &str, caller_is_private: bool) -> Result<()> {
-    if caller_is_private || !is_private(root, kb_id) {
+    if !crate::privacy_toggle::privacy_tiers_enabled()
+        || caller_is_private
+        || !is_private(root, kb_id)
+    {
         return Ok(());
     }
     anyhow::bail!(KB_PRIVATE_REFUSAL)
@@ -329,7 +343,16 @@ pub fn assert_reachable(root: &Path, kb_id: &str, caller_is_private: bool) -> Re
 /// that reads private is refused before it can reach this function.
 /// **10C must keep that ordering**; a raise placed above the barrier at any
 /// choke point re-opens it.
+///
+/// DR-15 / AR-7: with the master toggle off, nothing ratchets. What stops is the
+/// **raise**; registering an absent base at PUBLIC continues, because that is the
+/// fail-open default (AR-2) and skipping it would leave a base created while the
+/// feature was off reading PRIVATE the moment it is turned back on — a
+/// classification nobody asked for, written by the absence of a write. Collapsing
+/// the caller to public is the whole of the change, so the monotonicity argument
+/// above is untouched: an existing private entry is still never lowered.
 pub fn raise_unlocked(root: &Path, kb_id: &str, caller_is_private: bool) -> Result<()> {
+    let caller_is_private = caller_is_private && crate::privacy_toggle::privacy_tiers_enabled();
     let mut store = load_for_write(root)?;
     match store.bases.get(kb_id) {
         // Anything that is not the exact word `public` already reads private

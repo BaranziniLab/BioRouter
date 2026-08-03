@@ -2544,6 +2544,23 @@ export type UpdateWorkingDirRequest = {
 };
 
 export type UpsertConfigQuery = {
+    /**
+     * Issue #56 Task 30. The typed confirmation Settings → Privacy sends with a
+     * write to `BIOROUTER_PRIVACY_TIERS`, and nothing else sends at all.
+     *
+     * ⚠ **What this is and what it is not.** It is a **UX guard against an
+     * accidental or model-composed config write**, not an authorization
+     * boundary: the phrase is a fixed string in the shipped source, so a caller
+     * holding the daemon secret replays it. It is accepted for the same reason
+     * AR-15 is — `check_token` has no principal, so the daemon cannot tell
+     * Settings → Privacy from any other loopback caller, and a caller that
+     * already holds the secret can raise its own session to private capability
+     * anyway. What the guard actually buys is that the flip cannot be a side
+     * effect of an ordinary `/config/upsert`, which is the reachable path: a
+     * model *can* compose one of those through a tool and cannot compose the
+     * daemon secret out of thin air on macOS without a shell.
+     */
+    confirm?: string | null;
     is_secret: boolean;
     key: string;
     value: unknown;
@@ -3784,6 +3801,10 @@ export type UpsertConfigData = {
 };
 
 export type UpsertConfigErrors = {
+    /**
+     * Refused: `BIOROUTER_PRIVACY_TIERS` is the master privacy switch and may only be written from Settings > Privacy, with its typed confirmation
+     */
+    403: unknown;
     /**
      * Refused by a privacy boundary (issue #56, DR-16): the key decides what privacy capability new chats start at, so writing it requires proof the request came from the user
      */

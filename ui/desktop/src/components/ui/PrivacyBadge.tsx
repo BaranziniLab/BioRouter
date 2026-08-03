@@ -11,6 +11,28 @@ export interface PrivacyBadgeProps {
    * row: render a single dot for Private and nothing at all for Public.
    */
   dense?: boolean;
+  /**
+   * The master switch (`BIOROUTER_PRIVACY_TIERS`) is OFF, so nothing enforces
+   * this tier (issue #56, DR-15).
+   *
+   * The badge stays VISIBLE and says so. The two rejected alternatives, and why:
+   *
+   * - **Hide it.** It reads as the tidy answer — the feature is off, so its
+   *   ornament goes — and it is the worst one. The badge is the only place the
+   *   tier is ever stated; removing it makes an *unprotected* machine
+   *   indistinguishable from a machine with no private material on it, at
+   *   exactly the moment (picking a model, pasting a cohort) when the
+   *   distinction matters. The person who needs the reminder is the person who
+   *   turned it off and forgot.
+   * - **Leave it unchanged.** A pill that reads plain "Private" while nothing
+   *   enforces it is not information, it is a false statement, and it is worse
+   *   than no badge because the user acts on it.
+   *
+   * The suffix is on the badge itself rather than only in the settings strip
+   * because badges appear on surfaces the strip does not — the session list, the
+   * model chip, the extension rows.
+   */
+  enforcementOff?: boolean;
   className?: string;
 }
 
@@ -78,7 +100,12 @@ const TIER: Record<
  * type scale are never restated here, which is the drift `badge.tsx`'s own
  * doc-comment exists to prevent.
  */
-export function PrivacyBadge({ tier, dense = false, className }: PrivacyBadgeProps) {
+export function PrivacyBadge({
+  tier,
+  dense = false,
+  enforcementOff = false,
+  className,
+}: PrivacyBadgeProps) {
   const spec = TIER[tier];
 
   if (dense && !spec.markedWhenDense) return null; // no dot means public
@@ -87,6 +114,7 @@ export function PrivacyBadge({ tier, dense = false, className }: PrivacyBadgePro
     return (
       <span
         data-testid="privacy-badge"
+        data-enforcement={enforcementOff ? 'off' : 'on'}
         // `{tier}`, never the literal `"private"`. The dense branch is reachable
         // only for a tier with `markedWhenDense`, which today is Private alone —
         // so this is not observably different yet, and no test can discriminate
@@ -99,8 +127,12 @@ export function PrivacyBadge({ tier, dense = false, className }: PrivacyBadgePro
         // does not take an accessible name, so `title` alone would leave the
         // dot silent to a screen reader — invisible AND unannounced.
         role="img"
-        aria-label="Private chat"
-        title="Private — only private models can read this chat"
+        aria-label={enforcementOff ? 'Private chat — enforcement off' : 'Private chat'}
+        title={
+          enforcementOff
+            ? 'Private — but privacy tiers are turned off, so nothing enforces this'
+            : 'Private — only private models can read this chat'
+        }
         // `inline-block`, not the default `inline`: width and height do not
         // apply to a non-replaced inline element, so `h-1.5 w-1.5` on a bare
         // span paints NOTHING unless the parent that mounts it happens to be a
@@ -117,10 +149,21 @@ export function PrivacyBadge({ tier, dense = false, className }: PrivacyBadgePro
     <Badge
       data-testid="privacy-badge"
       data-privacy={tier}
-      className={cn('bg-background-muted', spec.ink, className)}
+      data-enforcement={enforcementOff ? 'off' : 'on'}
+      // Muted ink for BOTH tiers when nothing enforces them, and the suffix
+      // below carries the meaning. The fill is unchanged: it is contrast for the
+      // ink, not the signal (see this component's doc comment), and swapping it
+      // for a status colour would say "danger" on a surface where the honest
+      // word is "off".
+      className={cn(
+        'bg-background-muted',
+        enforcementOff ? 'text-text-muted' : spec.ink,
+        className
+      )}
     >
       {spec.glyph ? <ShieldIcon className="h-3 w-3" aria-hidden="true" /> : null}
       {spec.label}
+      {enforcementOff ? <span className="text-text-muted">&nbsp;— enforcement off</span> : null}
     </Badge>
   );
 }

@@ -1382,6 +1382,9 @@
               }
             }
           },
+          "403": {
+            "description": "Refused: `BIOROUTER_PRIVACY_TIERS` is the master privacy switch and may only be written from Settings > Privacy, with its typed confirmation"
+          },
           "409": {
             "description": "Refused by a privacy boundary (issue #56, DR-16): the key decides what privacy capability new chats start at, so writing it requires proof the request came from the user"
           },
@@ -10768,6 +10771,11 @@
           "is_secret"
         ],
         "properties": {
+          "confirm": {
+            "type": "string",
+            "description": "Issue #56 Task 30. The typed confirmation Settings → Privacy sends with a\nwrite to `BIOROUTER_PRIVACY_TIERS`, and nothing else sends at all.\n\n⚠ **What this is and what it is not.** It is a **UX guard against an\naccidental or model-composed config write**, not an authorization\nboundary: the phrase is a fixed string in the shipped source, so a caller\nholding the daemon secret replays it. It is accepted for the same reason\nAR-15 is — `check_token` has no principal, so the daemon cannot tell\nSettings → Privacy from any other loopback caller, and a caller that\nalready holds the secret can raise its own session to private capability\nanyway. What the guard actually buys is that the flip cannot be a side\neffect of an ordinary `/config/upsert`, which is the reachable path: a\nmodel *can* compose one of those through a tool and cannot compose the\ndaemon secret out of thin air on macOS without a shell.",
+            "nullable": true
+          },
           "is_secret": {
             "type": "boolean"
           },

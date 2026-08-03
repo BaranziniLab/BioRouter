@@ -32,45 +32,88 @@ pub use config_keys::is_capability_key;
 pub use extensions::{classify_extension, private_extension_ids};
 pub use refusal::{raise_needs_user_action, PrivacyRefusal};
 
-/// The master opt-out (DR-15), read **inside** a gate rather than through an
-/// `is_enabled()` wrapper, so a mid-session change is honoured and the opt-out
-/// is one auditable line rather than an absent gate.
+/// The master privacy-tier switch (R7, DR-15). `true` — the default — means
+/// every gate and the classification ratchet are live. `false` means none of
+/// them are: nothing is refused, and nothing ratchets.
 ///
-/// It is read exactly once per tool call, by [`CallCapability::sample`], and
-/// carried with the tier — the two are halves of one decision and reading them
-/// at two different instants is the same class of race the capability itself
-/// exists to close.
+/// A **re-export**, not a wrapper: the storage is
+/// [`biorouter_mcp::privacy_toggle`], because several enforcement points are in
+/// `biorouter-mcp` and that crate cannot see this one. Re-export rather than
+/// `fn privacy_tiers_enabled() { biorouter_mcp::…() }` so the token at every
+/// call site is identical in both crates and Task 30's audit is one pattern.
 ///
-/// ⚠ **Not every gate consults it, and this doc used to say "every gate".**
-/// Gate C (both halves — the dispatch refusal and O5's ratchet) and Gate D go
-/// through [`CallCapability`] and so honour it; Gate A (the conditional bind in
-/// `Agent::update_provider`), Gate B (the turn barrier in `Agent::reply`) and
-/// Gate B' (the assertion in `Agent::provider`) do not — they call
-/// [`bind_allowed`] directly. There is no behavioural difference while this is
-/// a `const fn … { true }`, which is why it went unnoticed. The divergence
-/// becomes real the day Task 30 makes the toggle an atomic: the opt-out would
-/// silence tool-dispatch refusals while still refusing turns and completions.
-/// Whoever lands Task 30 has to route these three through it too, or state on
-/// purpose that the opt-out does not cover the bind lattice.
+/// ⚠ **Where it is read, and where it deliberately is not.** A gate on a
+/// TOOL-CALL path must not read it: [`CallCapability::sample`] reads the
+/// provider tier and this flag together, at one instant, and threads the pair,
+/// so those gates ask [`CallCapability::enforced`] /
+/// [`CallCapability::restricts_private_data`] instead. A second read there is
+/// the race the capability exists to close — pass Gate C with tiers on, then
+/// relax a later barrier with tiers off. Every gate that is NOT on a tool-call
+/// path (a provider bind, a turn, a spawn, a search, a route) has no capability
+/// to consult and reads this directly.
+pub use biorouter_mcp::privacy_toggle::privacy_tiers_enabled;
+
+/// Load the master switch from the user's configuration. Called ONCE, from
+/// `biorouterd`'s startup, after the config is available.
 ///
-/// ⚠ **One of those three is not merely a refusal, and AR-7 names it.** Gate B
-/// also carries DR-4's *other* ratchet (`raise_privacy(floor(tier), "turn:…")`
-/// in `Agent::reply`), and that write is likewise unconditional today. AR-7 is
-/// explicit that the toggle "stops the classification ratchet along with the
-/// gates", and Task 30's own matrix asserts it from the other end
-/// (`nothing_ratchets_while_the_toggle_is_off_and_re_enabling_does_not_backfill`
-/// drives a turn as well as a tool call). Gate C's ratchet was corrected to
-/// honour the toggle when Task 14 was reviewed; Gate B's is the remaining half,
-/// and it must be gated before Task 30 can pass — a classification written
-/// while the user believes the feature is off is permanent, because
-/// `privacy_tier` is monotone and re-enabling never revisits a row.
+/// The value is read straight from the loaded config values, **never** through
+/// [`crate::config::Config::get_param`], whose middle branch resolves an
+/// environment variable. The threat this closes is specific and cheap: the agent
+/// has `developer__shell`, so if the value were env-readable then
+/// `BIOROUTER_PRIVACY_TIERS=off biorouterd` — or a line in the user's shell
+/// profile — is a one-token disable of the control the agent is subject to.
+/// Because the authoritative value then lives in daemon memory, every gate's
+/// read is a relaxed atomic load and is safe on a hot path.
 ///
-/// A `const fn … { true }` stub until Task 30 turns it into a `pub use` of the
-/// `biorouter-mcp` atomic. Task 30's own file table calls it a stub "since
-/// Task 14"; it lands here instead because Task 10's `CallCapability::sample`
-/// is its first caller and comes first.
-pub const fn privacy_tiers_enabled() -> bool {
-    true
+/// A load error resolves to ON, for the same reason absence does: the failure of
+/// the loader must not be a way to disable the control.
+pub fn load_privacy_tiers_from_config() {
+    // ⚠ The loader returns `Result<HashMap<String, Value>, ConfigError>`, not a
+    // map: an earlier draft called `.get(..)` straight off it and does not
+    // compile. Its NAME is deliberately not repeated in this comment — a Step 5
+    // gate counts the token inside this function and expects exactly one, and a
+    // mention in prose is indistinguishable from a second read.
+    let on = crate::config::Config::global()
+        .all_values()
+        .ok()
+        .and_then(|m| m.get(PRIVACY_TIERS_CONFIG_KEY).cloned())
+        .and_then(|v| privacy_tiers_value_is_on(&v))
+        .unwrap_or(true); // absent OR unreadable => on
+    biorouter_mcp::privacy_toggle::set_privacy_tiers_enabled(on);
+}
+
+/// The config key that holds the master switch. One spelling, shared by the
+/// loader, by `/config/upsert`'s gated arm and by the Settings panel.
+pub const PRIVACY_TIERS_CONFIG_KEY: &str = "BIOROUTER_PRIVACY_TIERS";
+
+/// The typed phrase Settings → Privacy sends with the flip. A **UX guard against
+/// an accidental or model-composed config write**, not an authorization
+/// boundary: the phrase is a fixed string in the shipped source, so a caller
+/// holding the daemon secret replays it. What it buys is that the flip cannot be
+/// a side effect of an ordinary `/config/upsert` — which is the reachable path,
+/// because a model *can* compose one of those through a tool.
+pub const PRIVACY_TIERS_DISABLE_PHRASE: &str = "DISABLE PRIVACY TIERS";
+
+/// `Some(false)` for a YAML `false` or for the words `off` / `false` / `no`
+/// (case-insensitively); `Some(true)` for any other bool or string. A shape that
+/// is neither gives `None`, which the caller resolves to ON.
+///
+/// The three words rather than only `off`, and the bool as well as the string,
+/// because the alternative is worse in one specific direction: a user who
+/// hand-edited `config.yaml` to `BIOROUTER_PRIVACY_TIERS: false` and was told
+/// nothing would believe the feature is off while it is on. Over-reading an
+/// "off" costs protection the user asked to drop; under-reading one costs them
+/// a belief that is false.
+pub fn privacy_tiers_value_is_on(value: &serde_json::Value) -> Option<bool> {
+    match value {
+        serde_json::Value::Bool(b) => Some(*b),
+        serde_json::Value::String(s) => Some(
+            !(s.eq_ignore_ascii_case("off")
+                || s.eq_ignore_ascii_case("false")
+                || s.eq_ignore_ascii_case("no")),
+        ),
+        _ => None,
+    }
 }
 
 /// CAPABILITY — the least-privileged model currently bound to a session.

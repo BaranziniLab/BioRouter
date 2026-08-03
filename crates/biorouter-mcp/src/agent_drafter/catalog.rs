@@ -159,7 +159,17 @@ fn discover_kbs(caller_is_private: bool) -> Vec<KbEntry> {
                 // would leave `has_kb` true, so a public session could still
                 // configure an app against a private base and have its KB tools
                 // armed.
-                .filter(|m| caller_is_private || !crate::knowledge::tier::is_private(&root, &m.id))
+                // DR-15's master opt-out, read INSIDE the filter. A direct read
+                // of the process-global rather than a `CallCapability`: this
+                // crate cannot see `biorouter`, which is why the atomic lives in
+                // `crate::privacy_toggle`. Unlike the KB barrier there is no
+                // `assert_reachable` choke point to inherit it from — this is
+                // its own decision, over `is_private` directly.
+                .filter(|m| {
+                    !crate::privacy_toggle::privacy_tiers_enabled()
+                        || caller_is_private
+                        || !crate::knowledge::tier::is_private(&root, &m.id)
+                })
                 .map(|m| KbEntry {
                     id: m.id,
                     name: m.name,

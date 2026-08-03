@@ -868,7 +868,13 @@ async fn update_agent_provider(
         .await
         .map(|p| p.tier())
         .unwrap_or(ProviderTier::Public);
-    if raise_needs_user_action(current, new_provider.tier()) && !is_user_action(&headers) {
+    // DR-15's master opt-out, read INSIDE the gate. A direct read, not a
+    // `CallCapability`: a provider raise over HTTP is not a tool call and has no
+    // admitted capability to inherit.
+    if biorouter::privacy::privacy_tiers_enabled()
+        && raise_needs_user_action(current, new_provider.tier())
+        && !is_user_action(&headers)
+    {
         return Err((
             StatusCode::CONFLICT,
             PrivacyRefusal::TierRaiseNeedsUser {
@@ -929,7 +935,11 @@ async fn agent_add_extension(
         .map(|p| p.tier())
         .unwrap_or(ProviderTier::Public);
     let extension_name = request.config.name();
-    if biorouter::privacy::classify_extension(&extension_name).is_private()
+    // DR-15's master opt-out, read INSIDE the gate. A direct read, not a
+    // `CallCapability`: `/agent/add_extension` is not a tool dispatch and has no
+    // admitted capability to inherit.
+    if biorouter::privacy::privacy_tiers_enabled()
+        && biorouter::privacy::classify_extension(&extension_name).is_private()
         && capability == ProviderTier::Public
     {
         return Err(ErrorResponse {

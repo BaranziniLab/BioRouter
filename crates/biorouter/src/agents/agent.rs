@@ -3317,7 +3317,12 @@ impl Agent {
         // optimisation, and the synchronous fallback at the top of the next
         // `reply` runs AFTER Gate B has repaired or refused the session, so
         // skipping here loses nothing but a round-trip.
-        if !crate::privacy::bind_allowed(provider.tier(), self.cached_classification.load()) {
+        //
+        // DR-15's master opt-out. Read directly: eager compaction is not a tool
+        // call and has no admitted capability to inherit.
+        if crate::privacy::privacy_tiers_enabled()
+            && !crate::privacy::bind_allowed(provider.tier(), self.cached_classification.load())
+        {
             tracing::warn!(
                 session_id = session_config.id,
                 provider = provider.get_name(),
@@ -3532,8 +3537,14 @@ impl Agent {
         // loop, and a database round-trip on each would be a real cost for a
         // value `reply` has just read. See [`CachedClassification`] for why the
         // cache is sound and why it fails closed.
+        //
+        // DR-15's master opt-out. Read directly: this accessor serves the
+        // non-`reply` completion paths, none of which is a tool call with an
+        // admitted capability to inherit.
         let cached = self.cached_classification.load();
-        if !crate::privacy::bind_allowed(provider.tier(), cached) {
+        if crate::privacy::privacy_tiers_enabled()
+            && !crate::privacy::bind_allowed(provider.tier(), cached)
+        {
             return Err(PrivacyRefusal::PublicModelOnPrivateSession {
                 session_id: self.cached_classification.session_id(),
                 provider: provider.get_name().to_string(),
@@ -4728,6 +4739,18 @@ impl Agent {
             .await
             .ok();
         let mut privacy_refusal: Option<String> = None;
+        // DR-15's master opt-out. ONE read for this seam, used by both halves —
+        // the turn barrier below and DR-4's turn ratchet under it — so the two
+        // cannot be observed at different instants and a turn cannot be refused
+        // while its classification write is skipped, or the reverse.
+        //
+        // A direct read, not a `CallCapability`: a turn is not a tool call and
+        // has no admitted capability to inherit. AR-7 is explicit that the
+        // toggle stops the classification ratchet along with the gates — a
+        // classification written while the user believes the feature is off is
+        // permanent, because `privacy_tier` is monotone and re-enabling never
+        // revisits a row.
+        let privacy_enforced = crate::privacy::privacy_tiers_enabled();
         if let Some(row) = privacy_row.as_ref() {
             let bound = self.bound_provider_unchecked().await;
             // No provider bound at all reads as Public — the fail-SAFE side.
@@ -4737,7 +4760,7 @@ impl Agent {
                 .as_ref()
                 .map(|provider| provider.tier())
                 .unwrap_or(ProviderTier::Public);
-            if !crate::privacy::bind_allowed(bound_tier, row.privacy_tier) {
+            if privacy_enforced && !crate::privacy::bind_allowed(bound_tier, row.privacy_tier) {
                 match self.rebind_from_row(row).await {
                     // 2. The row still names a provider whose tier satisfies
                     //    the classification: rebind and continue silently.
@@ -4761,7 +4784,7 @@ impl Agent {
             // "ratchet on the turn" rather than on the bind, which is O5's
             // deliberate trade, and recorded here because it was not.
             let mut classification = row.privacy_tier;
-            if privacy_refusal.is_none() {
+            if privacy_enforced && privacy_refusal.is_none() {
                 if let Some(provider) = self.bound_provider_unchecked().await {
                     let f = crate::privacy::floor(provider.tier());
                     if f > row.privacy_tier {
@@ -7340,7 +7363,18 @@ impl Agent {
                 // A successful PRIVATE bind teaches nothing: it is admitted
                 // against either classification. The cache is left alone, and a
                 // private provider satisfies Gate B' whatever it says.
-                if !tier.is_private() {
+                //
+                // ⚠ DR-15's master opt-out belongs in this condition, and it is
+                // not a refusal — it is what keeps the sentence above TRUE. With
+                // the toggle off the `WHERE` clause admits every bind, so an
+                // accepted public bind is no longer an observation about the
+                // row, and storing `Public` would leave the cache asserting
+                // something the gate never checked. Turning the feature back on
+                // would then hand Gate B' a stale `Public` for a row that is
+                // still marked private, until the next `reply` re-read it.
+                // Skipping the store instead leaves the fail-closed `Private`
+                // default, which `reply` repairs on the next turn.
+                if !tier.is_private() && crate::privacy::privacy_tiers_enabled() {
                     self.cached_classification
                         .store(session_id, SessionClassification::Public);
                 }

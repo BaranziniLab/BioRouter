@@ -8,8 +8,10 @@ import ConfigSettings from './config/ConfigSettings';
 import { ExtensionConfig } from '../../api';
 import { MainPanelLayout } from '../Layout/MainPanelLayout';
 import { Brain, Monitor, MessageSquare } from '../icons/app-icons';
+import { ShieldIcon } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import ChatSettingsSection from './chat/ChatSettingsSection';
+import PrivacyPanel from './privacy/PrivacyPanel';
 import { CONFIGURATION_ENABLED } from '../../updates';
 import { ReadableContent } from '../Layout/ReadableContent';
 
@@ -46,6 +48,7 @@ export default function SettingsView({
         tools: 'chat',
         app: 'app',
         chat: 'chat',
+        privacy: 'privacy',
       };
 
       const targetTab = sectionToTab[viewOptions.section];
@@ -105,6 +108,14 @@ export default function SettingsView({
                     Chat
                   </TabsTrigger>
                   <TabsTrigger
+                    value="privacy"
+                    className="flex gap-2 text-sm"
+                    data-testid="settings-privacy-tab"
+                  >
+                    <ShieldIcon className="h-4 w-4" />
+                    Privacy
+                  </TabsTrigger>
+                  <TabsTrigger
                     value="app"
                     className="flex gap-2 text-sm"
                     data-testid="settings-app-tab"
@@ -122,6 +133,9 @@ export default function SettingsView({
                   </TabsContent>
                   <TabsContent value="chat" className="mt-0">
                     <ChatSettingsSection />
+                  </TabsContent>
+                  <TabsContent value="privacy" className="mt-0">
+                    <PrivacyPanel />
                   </TabsContent>
                   <TabsContent value="app" className="mt-0">
                     <div>

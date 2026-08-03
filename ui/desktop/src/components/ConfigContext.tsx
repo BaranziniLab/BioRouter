@@ -47,7 +47,7 @@ interface ConfigContextType {
   providersList: ProviderDetails[];
   extensionsList: FixedExtensionEntry[];
   extensionWarnings: string[];
-  upsert: (key: string, value: unknown, is_secret: boolean) => Promise<void>;
+  upsert: (key: string, value: unknown, is_secret: boolean, confirm?: string) => Promise<void>;
   /**
    * Re-read the whole config from the daemon.
    *
@@ -164,11 +164,17 @@ export const ConfigProvider: React.FC<ConfigProviderProps> = ({ children }) => {
   }, [reloadConfig]);
 
   const upsert = useCallback(
-    async (key: string, value: unknown, isSecret: boolean = false) => {
+    async (key: string, value: unknown, isSecret: boolean = false, confirm?: string) => {
       const query: UpsertConfigQuery = {
         key: key,
         value: value,
         is_secret: isSecret,
+        // Issue #56 Task 30: the typed confirmation Settings > Privacy sends
+        // with a write to `BIOROUTER_PRIVACY_TIERS`. Absent for every other
+        // caller, which is the whole point — the daemon refuses a bare upsert of
+        // that key, so a model composing an ordinary config write cannot flip
+        // the master switch.
+        ...(confirm === undefined ? {} : { confirm }),
       };
       await upsertConfig({
         body: query,

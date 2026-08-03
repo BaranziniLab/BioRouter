@@ -1198,6 +1198,22 @@ async fn apply_settings_overrides(
     // prompt was composed under, which is the worse of the two.
     let parent_cap = task_config.provider.tier();
 
+    // DR-15's master opt-out. ONE read for this whole function, taken beside the
+    // parent capability it qualifies, and used by all three decisions below —
+    // R4's refusal, DR-19's refusal and the private-extension filter — so a
+    // spawn cannot be refused on one rule while another silently keeps applying.
+    //
+    // A direct read, not a `CallCapability`: `apply_settings_overrides` runs on
+    // the spawn path, which builds a whole new agent rather than dispatching a
+    // tool, and has no admitted capability to inherit.
+    //
+    // ⚠ `task_config.privacy_tier` is NOT gated. That is the child's row being
+    // born carrying its parent's stamp — column propagation, the same invariant
+    // as a session copy — and a spawn that laundered a private parent's tier to
+    // public while the feature was off would write that permanently, because
+    // re-enabling never revisits a row (AR-7).
+    let privacy_enforced = crate::privacy::privacy_tiers_enabled();
+
     if let Some(settings) = &params.settings {
         if settings.provider.is_some() || settings.model.is_some() || settings.temperature.is_some()
         {
@@ -1236,7 +1252,7 @@ async fn apply_settings_overrides(
     // child) is the point — a subagent is an extension of the chat that started
     // it, so "spawn a private child and hand the answer back" would make the
     // boundary a formality.
-    if child_tier.is_private() && !parent_cap.is_private() {
+    if privacy_enforced && child_tier.is_private() && !parent_cap.is_private() {
         return Err(crate::privacy::PrivacyRefusal::spawn_upgrade(child_tier).into());
     }
     // DR-19, refused. This branch used to raise a downgrade-confirmation flag
@@ -1276,7 +1292,7 @@ async fn apply_settings_overrides(
     // a genuine reach increase, correctly caught, for a request that named no
     // model. The collapse is fail-closed in both directions, so it is left as
     // is; what is NOT acceptable is a comment that says it cannot happen.
-    if !child_tier.is_private() && parent_cap.is_private() {
+    if privacy_enforced && !child_tier.is_private() && parent_cap.is_private() {
         return Err(crate::privacy::PrivacyRefusal::spawn_downgrade(child_tier).into());
     }
     // The ONE crossing this task adds: the child's CAPABILITY establishes the
@@ -1314,12 +1330,13 @@ async fn apply_settings_overrides(
     let (kept, dropped): (Vec<_>, Vec<_>) = std::mem::take(&mut task_config.extensions)
         .into_iter()
         .partition(|e| {
-            crate::privacy::refusal::privacy_refusal(
-                &e.name(),
-                crate::privacy::classify_extension(&e.name()),
-                child_tier,
-            )
-            .is_none()
+            !privacy_enforced
+                || crate::privacy::refusal::privacy_refusal(
+                    &e.name(),
+                    crate::privacy::classify_extension(&e.name()),
+                    child_tier,
+                )
+                .is_none()
         });
     task_config.extensions = kept;
     task_config.dropped_private_extensions = dropped.iter().map(|e| e.name()).collect();

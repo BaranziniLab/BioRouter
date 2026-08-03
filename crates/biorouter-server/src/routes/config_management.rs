@@ -51,6 +51,22 @@ pub struct UpsertConfigQuery {
     pub key: String,
     pub value: Value,
     pub is_secret: bool,
+    /// Issue #56 Task 30. The typed confirmation Settings → Privacy sends with a
+    /// write to `BIOROUTER_PRIVACY_TIERS`, and nothing else sends at all.
+    ///
+    /// ⚠ **What this is and what it is not.** It is a **UX guard against an
+    /// accidental or model-composed config write**, not an authorization
+    /// boundary: the phrase is a fixed string in the shipped source, so a caller
+    /// holding the daemon secret replays it. It is accepted for the same reason
+    /// AR-15 is — `check_token` has no principal, so the daemon cannot tell
+    /// Settings → Privacy from any other loopback caller, and a caller that
+    /// already holds the secret can raise its own session to private capability
+    /// anyway. What the guard actually buys is that the flip cannot be a side
+    /// effect of an ordinary `/config/upsert`, which is the reachable path: a
+    /// model *can* compose one of those through a tool and cannot compose the
+    /// daemon secret out of thin air on macOS without a shell.
+    #[serde(default)]
+    pub confirm: Option<String>,
 }
 
 #[derive(Deserialize, Serialize, ToSchema)]
@@ -180,6 +196,9 @@ pub struct DetectableProvidersResponse {
     request_body = UpsertConfigQuery,
     responses(
         (status = 200, description = "Configuration value upserted successfully", body = String),
+        (status = 403, description = "Refused: `BIOROUTER_PRIVACY_TIERS` is the master privacy \
+                                      switch and may only be written from Settings > Privacy, \
+                                      with its typed confirmation"),
         (status = 409, description = "Refused by a privacy boundary (issue #56, DR-16): the key \
                                       decides what privacy capability new chats start at, so \
                                       writing it requires proof the request came from the user"),
@@ -191,6 +210,30 @@ pub async fn upsert_config(
     headers: http::HeaderMap,
     Json(query): Json<UpsertConfigQuery>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
+    // Issue #56 Task 30, hardening measure (2). The master switch is the ONE key
+    // this route will not write as an ordinary config value.
+    //
+    // ⚠ These two arms look contradictory and are not. `/config/upsert` MUST be
+    // one of the toggle's two writers — it is the channel Settings > Privacy
+    // uses — and a BARE upsert of this key MUST be refused. What separates them
+    // is the confirmation field, which is what the panel sends and what a tool
+    // call composing an ordinary config write does not.
+    if query.key == biorouter::privacy::PRIVACY_TIERS_CONFIG_KEY {
+        // Exact comparison, deliberately: a case-insensitive or trimmed match
+        // would let "disable privacy tiers" through, and the phrase exists to be
+        // typed rather than guessed.
+        if query.confirm.as_deref() != Some(biorouter::privacy::PRIVACY_TIERS_DISABLE_PHRASE) {
+            return Err((
+                StatusCode::FORBIDDEN,
+                format!(
+                    "'{}' is the master privacy switch. It cannot be written as an ordinary \
+                     configuration value: change it in Settings > Privacy, which asks the user \
+                     to type the confirmation phrase and explains what turning it off exposes.",
+                    query.key
+                ),
+            ));
+        }
+    }
     // Issue #56 DR-16, open question 24. `/config/upsert` writes ANY key, and a
     // handful of them decide what capability the next session comes up with —
     // `restore_provider_from_session` falls back to the config provider, so a
@@ -201,7 +244,13 @@ pub async fn upsert_config(
     // Key-scoped, NOT blanket: the GUI writes config on nearly every settings
     // interaction, and a rule that fires constantly is a rule people route
     // around.
-    if biorouter::privacy::is_capability_key(&query.key) && !is_user_action(&headers) {
+    // DR-15's master opt-out, read INSIDE the gate. A direct read, not a
+    // `CallCapability`: an HTTP config write is not a tool call and has no
+    // admitted capability to inherit.
+    if biorouter::privacy::privacy_tiers_enabled()
+        && biorouter::privacy::is_capability_key(&query.key)
+        && !is_user_action(&headers)
+    {
         return Err((
             StatusCode::CONFLICT,
             PrivacyRefusal::CapabilityConfigNeedsUser {
@@ -215,7 +264,20 @@ pub async fn upsert_config(
     let result = config.set(&query.key, &query.value, query.is_secret);
 
     match result {
-        Ok(_) => Ok(Json(Value::String(format!("Upserted key {}", query.key)))),
+        Ok(_) => {
+            // Hardening measure (3): the authoritative value lives in daemon
+            // memory, so the write to disk is not enough — this is the SECOND of
+            // the toggle's two writers (the first is startup's
+            // `load_privacy_tiers_from_config`). Re-deriving it from the value
+            // just written, through the same parser the loader uses, so the
+            // running daemon and the next start-up can never disagree.
+            if query.key == biorouter::privacy::PRIVACY_TIERS_CONFIG_KEY {
+                let on =
+                    biorouter::privacy::privacy_tiers_value_is_on(&query.value).unwrap_or(true);
+                biorouter_mcp::privacy_toggle::set_privacy_tiers_enabled(on);
+            }
+            Ok(Json(Value::String(format!("Upserted key {}", query.key))))
+        }
         Err(_) => Err((
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("Failed to upsert key {}", query.key),
@@ -260,7 +322,13 @@ pub async fn remove_config(
     // `restore_provider_from_session` finds no provider at all, which is a
     // failure rather than a raise), and an argument that holds for one key in
     // five is not a rule. One predicate, both verbs.
-    if biorouter::privacy::is_capability_key(&query.key) && !is_user_action(&headers) {
+    // DR-15's master opt-out, read INSIDE the gate. A direct read, not a
+    // `CallCapability`: an HTTP config write is not a tool call and has no
+    // admitted capability to inherit.
+    if biorouter::privacy::privacy_tiers_enabled()
+        && biorouter::privacy::is_capability_key(&query.key)
+        && !is_user_action(&headers)
+    {
         return Err((
             StatusCode::CONFLICT,
             PrivacyRefusal::CapabilityConfigNeedsUser {
@@ -956,10 +1024,11 @@ pub async fn set_config_provider(
     headers: http::HeaderMap,
     Json(SetProviderRequest { provider, model }): Json<SetProviderRequest>,
 ) -> Result<(), (StatusCode, String)> {
-    // Issue #56 DR-16. Unconditional, unlike `upsert_config`'s key-scoped guard:
-    // this route writes BIOROUTER_PROVIDER by construction, so there is no
-    // tier-irrelevant call to exempt.
-    if !is_user_action(&headers) {
+    // Issue #56 DR-16. Unconditional on the KEY, unlike `upsert_config`'s
+    // key-scoped guard — this route writes BIOROUTER_PROVIDER by construction,
+    // so there is no tier-irrelevant call to exempt — but still subject to
+    // DR-15's master opt-out, read here inside the gate.
+    if biorouter::privacy::privacy_tiers_enabled() && !is_user_action(&headers) {
         return Err((
             StatusCode::CONFLICT,
             PrivacyRefusal::CapabilityConfigNeedsUser {

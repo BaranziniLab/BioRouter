@@ -2239,6 +2239,18 @@ impl SessionStorage {
         incoming_is_private: bool,
     ) -> Result<BindOutcome> {
         let pool = self.pool().await?;
+        // DR-15's master opt-out, read INSIDE the gate rather than through an
+        // `is_enabled()` wrapper, so a mid-session change is honoured and the
+        // opt-out is one auditable line rather than an absent gate.
+        //
+        // It is folded into the bound parameter rather than branching around the
+        // statement, so the toggle cannot change WHICH statement runs — the
+        // atomicity argument in this function's doc comment is about that one
+        // `UPDATE … WHERE`, and a second code path would need its own.
+        //
+        // A direct read, not a `CallCapability`: a provider bind is not a tool
+        // call and has no admitted capability to inherit.
+        let admits_anything = incoming_is_private || !crate::privacy::privacy_tiers_enabled();
         let write = sqlx::query(
             r#"
             UPDATE sessions
@@ -2250,7 +2262,7 @@ impl SessionStorage {
         .bind(provider_name)
         .bind(model_config_json)
         .bind(session_id)
-        .bind(i64::from(incoming_is_private));
+        .bind(i64::from(admits_anything));
         // ⚠ The last statement before the write, and test-only. Read the ⚠ in
         //    this function's doc comment before moving it.
         #[cfg(test)]

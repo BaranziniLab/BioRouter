@@ -75,6 +75,25 @@ pub async fn run() -> Result<()> {
 
     let settings = configuration::Settings::new()?;
 
+    // Issue #56 Task 30, hardening measure (3): the master privacy switch is
+    // read ONCE, here, straight out of the user's `config.yaml`, and the
+    // authoritative value then lives in daemon memory for the life of the
+    // process. The FIRST of the toggle's exactly two writers; the second is
+    // `/config/upsert`'s gated arm, which is the channel Settings > Privacy
+    // uses.
+    //
+    // It is deliberately not read through `Config::get_param`, whose middle
+    // branch resolves an environment variable: the agent holds
+    // `developer__shell`, so an env-readable value would make
+    // `BIOROUTER_PRIVACY_TIERS=off biorouterd` — or a line in the user's shell
+    // profile — a one-token disable of the control the agent is subject to. See
+    // `biorouter::privacy::load_privacy_tiers_from_config`.
+    //
+    // Before `AppState::new()` and before any route is mounted, so no request
+    // can be served against the fail-safe default when the user turned the
+    // feature off, and none against `off` when they did not.
+    biorouter::privacy::load_privacy_tiers_from_config();
+
     let secret_key = std::env::var("BIOROUTER_SERVER__SECRET_KEY").unwrap_or_else(|_| {
         let bytes: [u8; 16] = rand::random();
         let key = hex::encode(bytes);

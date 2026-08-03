@@ -87,6 +87,18 @@ impl<'a> ChatHistorySearch<'a> {
         }
     }
 
+    /// DR-15's master opt-out for Gate D.
+    ///
+    /// Read here rather than only at the chatrecall SEARCH arm because `execute`
+    /// has other callers — `SessionManager::search_chat_history` serves the HTTP
+    /// search route and the CLI, neither of which holds a `CallCapability`.
+    /// It is not a second read on the chatrecall path: that arm collapses the
+    /// TIER to `Private` when the capability says the feature is off, so this
+    /// predicate is already false there whichever way it reads the flag.
+    fn filters_private_sessions(&self) -> bool {
+        self.caller_capability == ProviderTier::Public && crate::privacy::privacy_tiers_enabled()
+    }
+
     pub async fn execute(self) -> Result<ChatRecallResults> {
         let empty = || ChatRecallResults {
             results: vec![],
@@ -172,7 +184,7 @@ impl<'a> ChatHistorySearch<'a> {
         // rows even when private rows would have outranked them. A Rust-side
         // post-filter after `execute()` returns is the same one-liner and is
         // wrong for exactly that reason.
-        if self.caller_capability == ProviderTier::Public {
+        if self.filters_private_sessions() {
             sql.push_str(" AND s.privacy_tier = 'public'");
         }
 
@@ -273,7 +285,7 @@ impl<'a> ChatHistorySearch<'a> {
         // Issue #56 Gate D — the same clause on the `LIKE` fallback. `execute`
         // branches on a `sqlite_master` probe for `messages_fts`, so filtering
         // only the FTS builder leaks on every un-migrated profile.
-        if self.caller_capability == ProviderTier::Public {
+        if self.filters_private_sessions() {
             sql.push_str(" AND s.privacy_tier = 'public'");
         }
 
