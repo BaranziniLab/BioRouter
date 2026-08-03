@@ -2,11 +2,31 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import type { ReactElement } from 'react';
 import { cleanup, render, screen } from '@testing-library/react';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PrivacyBadge } from './PrivacyBadge';
 import type { SessionClassification } from '../../api';
 
+/**
+ * The badge reads the master switch itself (issue #56, DR-15) rather than
+ * making nine call sites remember a prop. Mounting a real `ConfigProvider`
+ * here would drag in the daemon client, the provider list and the extension
+ * sync; the hook is the seam, so the hook is what is stubbed.
+ */
+const configMocks = vi.hoisted(() => ({ enforced: true }));
+vi.mock('../ConfigContext', () => ({
+  usePrivacyTiersEnabled: () => configMocks.enforced,
+}));
+
+/** What the daemon currently says, for the two tests that care. */
+const withPrivacyTiers = (enforced: boolean) => {
+  configMocks.enforced = enforced;
+};
+
 afterEach(cleanup);
+// Every other test in this file was written against an enforcing machine, which
+// is the shipped default; pinning it here keeps the two tests that move it from
+// leaking into the rest.
+beforeEach(() => withPrivacyTiers(true));
 
 /** vitest runs with `ui/desktop` as its root — same idiom as MentionPopover.test.tsx. */
 const read = (...p: string[]) => readFileSync(path.join(process.cwd(), ...p), 'utf8');
@@ -261,5 +281,47 @@ describe('PrivacyBadge', () => {
     expect(badgeOf(<PrivacyBadge tier="private" dense />)!.getAttribute('data-enforcement')).toBe(
       'on'
     );
+  });
+
+  /**
+   * The finding this closes: `enforcementOff` shipped once with NO production
+   * consumer. All nine call sites render the badge with no such prop, so the
+   * presentation above was reachable only from this file — the person the
+   * suffix is for, the one who turned the feature off in March, would never
+   * have seen it on any surface in the app.
+   *
+   * So the badge asks. These two assert the ASKING, not the presentation: a
+   * badge with no prop at all must follow the daemon's value in both
+   * directions.
+   */
+  it('with no prop at all, takes its answer from the daemon', () => {
+    withPrivacyTiers(false);
+    const off = badgeOf(<PrivacyBadge tier="private" />)!;
+    expect(off.getAttribute('data-enforcement')).toBe('off');
+    expect(off.textContent).toMatch(/enforcement off/i);
+
+    cleanup();
+    withPrivacyTiers(true);
+    const on = badgeOf(<PrivacyBadge tier="private" />)!;
+    expect(on.getAttribute('data-enforcement')).toBe('on');
+    expect(on.textContent).not.toMatch(/enforcement/i);
+  });
+
+  it('an explicit prop still wins, in both directions', () => {
+    // `??`, not `||`: a caller that means "enforcement is on, whatever the
+    // daemon says" — a settings screen previewing both states — must not have
+    // its `false` swallowed.
+    withPrivacyTiers(false);
+    expect(
+      badgeOf(<PrivacyBadge tier="private" enforcementOff={false} />)!.getAttribute(
+        'data-enforcement'
+      )
+    ).toBe('on');
+
+    cleanup();
+    withPrivacyTiers(true);
+    expect(
+      badgeOf(<PrivacyBadge tier="private" enforcementOff />)!.getAttribute('data-enforcement')
+    ).toBe('off');
   });
 });

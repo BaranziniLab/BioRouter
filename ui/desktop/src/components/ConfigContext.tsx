@@ -25,6 +25,7 @@ import {
   shouldDefaultEnableAgentDrafter,
   shouldDefaultEnablePromotedCapability,
 } from './settings/capabilities/capabilities';
+import { PRIVACY_TIERS_KEY, privacyTiersEnabledFromConfig } from './settings/privacy/privacyTiers';
 import type {
   ConfigResponse,
   UpsertConfigQuery,
@@ -462,3 +463,25 @@ export const useConfig = () => {
   }
   return context;
 };
+
+/**
+ * Whether the daemon is enforcing privacy tiers (issue #56, DR-15).
+ *
+ * Read off the config cache rather than fetched, because the caller is
+ * `PrivacyBadge` and there are a dozen of those on a session list. The cache is
+ * refreshed on mount and after every write, including Settings → Privacy's own,
+ * so a flip repaints every badge in the app on the next render.
+ *
+ * ⚠ **Returns `true` — enforcing — outside a `ConfigProvider`, rather than
+ * throwing.** Same shape as `useResolvedTheme`, and for a sharper reason: the
+ * fallback decides what a badge SAYS. A hook that threw would make the badge
+ * unmountable outside the provider; one that fell back to `false` would print
+ * "enforcement off" on a machine that is enforcing, which is the same class of
+ * false statement DR-15 rejects the unchanged pill for. The safe fallback is the
+ * one that claims nothing.
+ */
+export function usePrivacyTiersEnabled(): boolean {
+  const context = useContext(ConfigContext);
+  if (context === undefined) return true;
+  return privacyTiersEnabledFromConfig(context.config[PRIVACY_TIERS_KEY]);
+}

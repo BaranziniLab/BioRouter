@@ -3,32 +3,13 @@ import { Switch } from '../../ui/switch';
 import { Button } from '../../ui/button';
 import { Input } from '../../ui/input';
 import { useConfig } from '../../ConfigContext';
+import { DISABLE_PHRASE, PRIVACY_TIERS_KEY, privacyTiersEnabledFromConfig } from './privacyTiers';
 
-/**
- * The config key that holds the master switch. One spelling, shared with the
- * daemon's `biorouter::privacy::PRIVACY_TIERS_CONFIG_KEY`.
- */
-export const PRIVACY_TIERS_KEY = 'BIOROUTER_PRIVACY_TIERS';
-
-/**
- * The phrase the user must type to turn the feature off, byte-for-byte the
- * daemon's `PRIVACY_TIERS_DISABLE_PHRASE`. The daemon compares it EXACTLY, so a
- * panel that lower-cased or trimmed it would produce a 403 the user cannot
- * explain.
- */
-export const DISABLE_PHRASE = 'DISABLE PRIVACY TIERS';
-
-/**
- * `off` is the only value that disables; anything else, including an absent key,
- * is on. Mirrors `biorouter::privacy::privacy_tiers_value_is_on` — the daemon is
- * the authority and this is only what the panel renders before the next read.
- */
-export function privacyTiersEnabledFromConfig(value: unknown): boolean {
-  if (typeof value === 'boolean') return value;
-  if (typeof value !== 'string') return true;
-  const v = value.trim().toLowerCase();
-  return !(v === 'off' || v === 'false' || v === 'no');
-}
+// Re-exported so the panel stays the name every existing importer already
+// reaches for; the definitions live in `privacyTiers.ts` because
+// `ConfigContext` and `PrivacyBadge` read them too and must not import a
+// settings screen.
+export { DISABLE_PHRASE, PRIVACY_TIERS_KEY, privacyTiersEnabledFromConfig };
 
 /**
  * Settings → Privacy (issue #56, DR-15).

@@ -1,6 +1,7 @@
 import { ShieldIcon } from 'lucide-react';
 import { Badge } from './badge';
 import { cn } from '../../utils';
+import { usePrivacyTiersEnabled } from '../ConfigContext';
 import type { SessionClassification } from '../../api';
 
 export interface PrivacyBadgeProps {
@@ -14,6 +15,16 @@ export interface PrivacyBadgeProps {
   /**
    * The master switch (`BIOROUTER_PRIVACY_TIERS`) is OFF, so nothing enforces
    * this tier (issue #56, DR-15).
+   *
+   * ⚠ **Leave it undefined and the badge asks.** Every one of this component's
+   * nine call sites is a surface — a session row, a tab, a model chip, a KB row
+   * — that knows a tier and has no business knowing whether the daemon is
+   * enforcing it, and a prop nine callers must remember to pass is a prop that
+   * ships unpassed: it did, for one round, and the presentation below was
+   * reachable only from its own unit test. So the default comes from
+   * `usePrivacyTiersEnabled()`, and this prop exists to OVERRIDE that — which is
+   * what the tests below the fold do, and what a surface documenting the two
+   * states (a settings preview) would do.
    *
    * The badge stays VISIBLE and says so. The two rejected alternatives, and why:
    *
@@ -103,9 +114,14 @@ const TIER: Record<
 export function PrivacyBadge({
   tier,
   dense = false,
-  enforcementOff = false,
+  enforcementOff,
   className,
 }: PrivacyBadgeProps) {
+  // Before the early return below, because a hook must be called
+  // unconditionally — and `??`, not `||`, so an explicit `enforcementOff={false}`
+  // means what it says instead of falling through to the daemon's answer.
+  const enforced = usePrivacyTiersEnabled();
+  const off = enforcementOff ?? !enforced;
   const spec = TIER[tier];
 
   if (dense && !spec.markedWhenDense) return null; // no dot means public
@@ -114,7 +130,7 @@ export function PrivacyBadge({
     return (
       <span
         data-testid="privacy-badge"
-        data-enforcement={enforcementOff ? 'off' : 'on'}
+        data-enforcement={off ? 'off' : 'on'}
         // `{tier}`, never the literal `"private"`. The dense branch is reachable
         // only for a tier with `markedWhenDense`, which today is Private alone —
         // so this is not observably different yet, and no test can discriminate
@@ -127,9 +143,9 @@ export function PrivacyBadge({
         // does not take an accessible name, so `title` alone would leave the
         // dot silent to a screen reader — invisible AND unannounced.
         role="img"
-        aria-label={enforcementOff ? 'Private chat — enforcement off' : 'Private chat'}
+        aria-label={off ? 'Private chat — enforcement off' : 'Private chat'}
         title={
-          enforcementOff
+          off
             ? 'Private — but privacy tiers are turned off, so nothing enforces this'
             : 'Private — only private models can read this chat'
         }
@@ -149,21 +165,17 @@ export function PrivacyBadge({
     <Badge
       data-testid="privacy-badge"
       data-privacy={tier}
-      data-enforcement={enforcementOff ? 'off' : 'on'}
+      data-enforcement={off ? 'off' : 'on'}
       // Muted ink for BOTH tiers when nothing enforces them, and the suffix
       // below carries the meaning. The fill is unchanged: it is contrast for the
       // ink, not the signal (see this component's doc comment), and swapping it
       // for a status colour would say "danger" on a surface where the honest
       // word is "off".
-      className={cn(
-        'bg-background-muted',
-        enforcementOff ? 'text-text-muted' : spec.ink,
-        className
-      )}
+      className={cn('bg-background-muted', off ? 'text-text-muted' : spec.ink, className)}
     >
       {spec.glyph ? <ShieldIcon className="h-3 w-3" aria-hidden="true" /> : null}
       {spec.label}
-      {enforcementOff ? <span className="text-text-muted">&nbsp;— enforcement off</span> : null}
+      {off ? <span className="text-text-muted">&nbsp;— enforcement off</span> : null}
     </Badge>
   );
 }
