@@ -276,14 +276,6 @@ export default function ChatInput({
   const [sessionPrivacyTier, setSessionPrivacyTier] = useState<SessionClassification | undefined>(
     undefined
   );
-  /**
-   * Which read is allowed to win. Two reads can be in flight at once — the
-   * mount fetch and a `message-stream-finished` refresh — and they settle in
-   * whatever order the daemon answers, so "last to land" is not "newest". Only
-   * the most recently *issued* one may write.
-   */
-  const tierReadGeneration = useRef(0);
-
   useEffect(() => {
     // Clear FIRST, on every rebind and not only on the no-session case.
     // `BaseChat` is keyed by tab rather than by session, so this component
@@ -293,17 +285,26 @@ export default function ChatInput({
     // that greys out every model the new chat may legitimately run, and in the
     // reverse it paints a Private dot on a chat with no such guarantee.
     setSessionPrivacyTier(undefined);
-    const generation = ++tierReadGeneration.current;
 
     if (!sessionId) {
       return;
     }
 
+    // Both of this effect's readers — the mount fetch and every
+    // `message-stream-finished` refresh — share this closure, so plain locals
+    // are enough and no ref is needed. `cancelled` retires the whole effect
+    // when the session rebinds; `latestIssued` orders the reads within it,
+    // because two can be in flight at once and they settle in whatever order
+    // the daemon answers. "Last to land" is not "newest": without this a slow
+    // first read overwrites the fresher answer that already arrived.
+    let cancelled = false;
+    let latestIssued = 0;
+
     const readTier = async () => {
-      const issued = ++tierReadGeneration.current;
+      const issued = ++latestIssued;
       try {
         const response = await getSession({ path: { session_id: sessionId } });
-        if (issued === tierReadGeneration.current && response.data?.privacy_tier) {
+        if (!cancelled && issued === latestIssued && response.data?.privacy_tier) {
           setSessionPrivacyTier(response.data.privacy_tier);
         }
       } catch (error) {
@@ -314,11 +315,7 @@ export default function ChatInput({
     void readTier();
     window.addEventListener('message-stream-finished', readTier);
     return () => {
-      // Retire this effect's whole generation, so a response still in flight
-      // for the session we just left cannot write into the one we moved to.
-      if (tierReadGeneration.current >= generation) {
-        tierReadGeneration.current++;
-      }
+      cancelled = true;
       window.removeEventListener('message-stream-finished', readTier);
     };
   }, [sessionId]);
