@@ -39,7 +39,11 @@ vi.mock('../predefinedModelsUtils', () => ({
 // `role="option"` and `aria-disabled` are react-select's own output, and they
 // are exactly what the pre-flight state has to produce.
 
-function provider(name: string, tier: ProviderTier, displayName = name): ProviderDetails {
+function provider(
+  name: string,
+  tier: ProviderTier | undefined,
+  displayName = name
+): ProviderDetails {
   return {
     name,
     is_configured: true,
@@ -112,6 +116,59 @@ describe('SwitchModelModal — pre-flight, not post-refusal', () => {
   // public: the settings grid opens this modal with no session at all.
   it('judges nothing when the chat tier is unknown', async () => {
     render(<SwitchModelModal sessionId={null} onClose={vi.fn()} setView={vi.fn()} />);
+
+    await openModelMenu();
+    const row = await screen.findByRole('option', { name: /Claude Opus/ });
+    expect(row).toHaveAttribute('aria-disabled', 'false');
+  });
+
+  // ⚠ An ABSENT tier is not an unknown one — it is Public, and it has to be
+  // read that way here or the pre-flight silently stops covering it.
+  //
+  // `ProviderMetadata::tier` is `#[serde(default)]` over a `ProviderTier` whose
+  // `Default` is deliberately `Public` ("fail-safe, not fail-open: a provider
+  // module that forgets `tier()` gets less reach, never more"), which is why
+  // the generated client types the field as optional. A daemon predating the
+  // field, or any provider whose metadata omits it, therefore arrives here with
+  // `tier === undefined` while the daemon resolves it to Public and
+  // `available_private_providers` — which filters on `is_private()` — declines
+  // to offer it. A `=== 'public'` test would leave that row selectable, then
+  // hand the user a Gate A 409: the false-negative this whole task exists to
+  // replace.
+  it('treats a provider with no declared tier as public, exactly as the daemon does', async () => {
+    mocks.getProviders.mockResolvedValue([
+      provider('mystery', undefined, 'Mystery'),
+      provider('versa_azure', 'private', 'Versa'),
+    ]);
+
+    render(
+      <SwitchModelModal
+        sessionId="s1"
+        privacyTier="private"
+        initialProvider="mystery"
+        onClose={vi.fn()}
+        setView={vi.fn()}
+      />
+    );
+
+    await openModelMenu();
+    const row = await screen.findByRole('option', { name: /Claude Opus/ });
+    expect(row).toHaveAttribute('aria-disabled', 'true');
+    expect(row).toHaveTextContent(/private chat/i);
+  });
+
+  // The other half of the same predicate: a declared-private provider stays
+  // selectable, so the change above cannot have been "block everything".
+  it('leaves a declared-private provider selectable in a private chat', async () => {
+    render(
+      <SwitchModelModal
+        sessionId="s1"
+        privacyTier="private"
+        initialProvider="versa_azure"
+        onClose={vi.fn()}
+        setView={vi.fn()}
+      />
+    );
 
     await openModelMenu();
     const row = await screen.findByRole('option', { name: /Claude Opus/ });

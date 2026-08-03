@@ -231,22 +231,35 @@ export const SwitchModelModal = ({
   /**
    * The providers this chat may not be switched to (§14.2, Gate A's pre-flight).
    *
-   * Keyed on `metadata.tier === 'public'` — the same field the daemon's own
+   * Keyed on the same `metadata.tier` field the daemon's own
    * `available_private_providers` filters on when it builds the repair card, so
-   * this list can never disagree with what a refusal would offer.
+   * this list can never disagree with what a refusal would offer — and with the
+   * same POLARITY. The daemon asks `metadata.tier.is_private()` and offers
+   * nothing else, so the mirror here is `!== 'private'` rather than
+   * `=== 'public'`.
    *
-   * The one way the two tiers can differ is a provider whose shipped metadata
-   * claims Private while its bound instance resolves Public (an `ollama`
-   * re-pointed by `OLLAMA_HOST`). That case stays *offered* here and is refused
-   * by Gate A with the 409 — a missing warning, never a false one. The reverse,
-   * a metadata-Public provider that is really Private, cannot occur, so nothing
+   * That distinction is load-bearing today, not just under a future third tier.
+   * `ProviderMetadata::tier` is `#[serde(default)]` over a `ProviderTier` whose
+   * `Default` is deliberately `Public` ("a provider module that forgets
+   * `tier()` gets less reach, never more"), which is why the generated client
+   * types it optional. A provider whose metadata omits the field therefore
+   * arrives here as `undefined` while the daemon has already resolved it to
+   * Public — `=== 'public'` would leave that row selectable and then let Gate A
+   * refuse it with a 409, which is the post-refusal failure this pre-flight
+   * exists to replace.
+   *
+   * The one way the two tiers can still differ is a provider whose shipped
+   * metadata claims Private while its bound instance resolves Public (an
+   * `ollama` re-pointed by `OLLAMA_HOST`). That case stays *offered* here and is
+   * refused by Gate A — a missing warning, never a false one. The reverse, a
+   * metadata-Public provider that is really Private, cannot occur, so nothing
    * this greys out was ever selectable.
    */
   const publicProviderNames = useMemo(
     () =>
       new Set(
         activeProviders
-          .filter((provider) => provider.metadata.tier === 'public')
+          .filter((provider) => provider.metadata.tier !== 'private')
           .map((provider) => provider.name)
       ),
     [activeProviders]
