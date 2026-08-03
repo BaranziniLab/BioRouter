@@ -20527,6 +20527,34 @@ file Task 8 created.
 
 ### Task 33: `registry.json` v2 and the generator's first hard failures
 
+> ⚠ **AMENDED 2026-08-03 by [DR-26](#dr-26--affiliation-is-a-third-axis-and-hipaa-compliance-does-not-transfer-between-institutions).
+> Read that ruling before starting.** v2 carries **affiliation** as well as privacy, because HIPAA
+> compliance does not transfer between institutions and a UCSF model reaching another institution's
+> private connector must warn. Two schema revisions for one release would be the avoidable mistake,
+> so it lands here.
+>
+> **What v2 gains, on top of everything below:**
+>
+> 1. **A top-level `institutions` map**, id → display name, e.g. `{"ucsf": "UCSF"}`. The warning copy
+>    renders from this; Task 49 asserts against it rather than hardcoding names.
+> 2. **An optional per-extension `affiliation`.** Absent means *any private model may use this*, which
+>    is the correct default — most extensions carry no institutional constraint and must not all
+>    become mismatches on day one. Present, it names one or more institution ids.
+> 3. **Two more hard failures in the generator**, in the same spirit as the ones this task already
+>    adds: an `affiliation` naming an id absent from the `institutions` map is a **build failure**,
+>    and so is an `affiliation` present on a `public` entry, which is meaningless and signals a
+>    mis-tagged card.
+> 4. **`cdwagent` and `ucsfomopagent` are tagged `ucsf`** — the operator named both. Do **not** sweep
+>    every UCSF-authored extension into it: `spokeagent` serves public biomedical graph data and
+>    carries no PHI, so tagging it would fire a compliance warning on a flow that has no compliance
+>    question. Affiliation marks *whose data this is*, not who wrote the code.
+> 5. **A fixture for each new failure**, wrapped in `<div id="extensions-section">` like the others —
+>    `unknown-institution.html` and `public-with-affiliation.html`.
+>
+> ⚠ **An empty `affiliation: []` must NOT behave like "absent".** Absent means *unconstrained*; an
+> empty list means *nothing is permitted*, and conflating them turns a registry typo into a granted
+> flow. The generator should reject the empty list outright so the ambiguity never reaches a reader.
+
 ⚠ **The join key is right by luck today.** `id` is derived from the download filename by
 `slugFromUrl` (`build-registry.mjs:33-36`), and `spokeagent-0.4.1` is the **only** version-suffixed
 id among the 37 (verified). `cdwagent` and `ucsfomopagent` happen to be un-suffixed and happen to
@@ -21733,6 +21761,628 @@ because the *channel* cannot carry it, never because the proof is undecided.
 | **28** | **Who may write an extension config entry's `name`, and what enforces it?** [DR-19](#dr-19--a-warning-for-the-user-a-wall-for-the-agent) makes an unstated initiator a defect, and this is the one object in the feature that has none. A session's tier has exactly one lowering writer (`privacy::declassify`, asserted by [Task 40](#task-40-final-release-gate) Step 3: `privacy_tier = 'public'` appears **once** in the tree); a knowledge base's has exactly one (`knowledge/tier_user.rs::set_unlocked` + a ZST no model can construct, [Task 29A](#task-29a-knowledge-base-publicize--privatize--user-only-graded-audited)); an **extension's has none**. `classify_extension` (Task 8) keys on `name_to_key(name)` — the config entry's name, written from `manifest.name` by `BrxtInstallModal.tsx:152-161`, which [Task 37](#task-37-the-in-app-registry--freshness-that-raises-and-never-lowers) records as carrying *"no provenance whatsoever"* — and `config.yaml` is agent-writable with `text_editor` (§9.3 C1), with [DR-14](#decisions-of-record)'s deny entry #5 deferred by [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store). ⚠ **This is not a badge bug.** `classify_extension` stamps `Extension.tier` at all three admission points, and Gates C (dispatch), E (discovery) and F (enable) all read it — so a rename makes a public model able to **call** `ucsfomopagent`, and `add_extension`'s early `contains_key -> Ok(())` (`:678`) means it lands silently on the next admission. Task 37's union rule protects the registry *document* and not the *key* it is looked up by. **The decision needed:** does a `.brxt` install record provenance (registry id + source URL + hash) so the tier is derived from where an extension came from rather than from a mutable local string — and if so, does that provenance live on `ExtensionConfig` (which [Task 8](#task-8-classify_extension-and-the-generated-private-set)'s OpenAPI gate deliberately freezes) or beside it? The alternative is to accept it and say so in [Accepted risks](#accepted-risks) and in [Task 30A](#task-30a-the-non-private-model-disclosure)'s disclosure. | **Nothing is built.** Task 37's banner states the requirement and withdraws the *"already the accepted direction under R11(ii)"* clause that made this look ruled-on when it was not. ⚠ Do **not** close it by letting `config.yaml` declare a tier — that is R11(i) inverted, and Task 8's OpenAPI-diff gate exists to catch exactly that implementation. Do not close it by adding aliases to `PRIVATE_EXTENSIONS` either: a rename can pick any string. |
 | **29** | ⚠ **NARROWED by [DR-20](#dr-20--declassification-is-gated-by-a-system-authentication-and-that-is-what-lets-an-agent-ask), 2026-08-02 — answered for the operation that *releases content* and still open for the one that *mints capability*, which is the one the question is about.** DR-20 supplies a CLI proof-of-user that does not need a request: an **OS authentication prompt raised by the `biorouter` process itself**, which is what [Task 31](#task-31-the-cli-is-a-required-r10-surface)'s `session declassify` is gated on. That answers *"is there any proof-of-user available at a terminal"* — yes — without answering this row, because DR-20's relaxation reaches only operations where an unforgeable human act stands between request and effect, and the CLI diverge below has none built. ⚠ **Do not close this row by pointing at DR-20**: the fix it implies is *build the same prompt on the diverge path*, which is a decision (a prompt on every CLI diverge is a wall on a routine command, exactly what DR-19's user half forbids), not an implementation detail. Original text: **What is a proof-of-user on the CLI, for an operation that mints capability?** [Task 22](#task-22-session-copy--three-hand-rolled-builders-become-one-derived-session-helper)'s amendment requires `X-User-Action` when the *source* of a copy is private, because the copy carries `provider_name` and therefore **mints a new private-capability session** that [DR-16](#decisions-of-record) never sees (DR-16 guards raises on sessions that already exist). Both HTTP handlers can carry the header. `biorouter session` cannot: it calls `diverge_session` in process (`biorouter-cli/src/commands/session.rs:419`, `session/mod.rs:736`), there is no renderer to mint a key, and the same binary is runnable by any agent holding `developer__shell` — so *"the person who ran the command is the user"* is true of a human at a terminal and false of a model that spawned one. This is the same shape as [Open question 23](#open-questions)'s headless third, and probably has the same answer; it is listed separately because 23's subject is a *daemon started without a key* and this one's is a *binary with no request at all*. ⚠ **This is not a reason to leave the HTTP half ungated** — closing two of three doors is worth doing, and the CLI is the door with a human standing at it in every shipped workflow. | **Nothing is built.** Task 22 guards the two HTTP paths and its banner states the CLI is undecided. The interim posture is the honest one: the CLI diverge stays unguarded and is inside [Task 30A](#task-30a-the-non-private-model-disclosure)'s disclosure, alongside [AR-11](#ar-11--amended-by-dr-17--the-daemons-own-api-secret-is-recoverable) and [AR-15](#ar-15--a-caller-holding-the-daemon-secret-can-raise-its-own-sessions-capability-with-no-credentials), which already say a same-machine caller is not distinguishable from the user. |
 | **30** | **What raises the [DR-20](#dr-20--declassification-is-gated-by-a-system-authentication-and-that-is-what-lets-an-agent-ask) system-authentication prompt on Windows and on Linux?** DR-20 requires an operating-system authentication before any declassification, on every platform BioRouter ships to — and **this tree has no cross-platform story for one**. A repo-wide grep for `LocalAuthentication`, `LAContext`, `promptTouchID` and `systemPreferences` across `crates/` and `ui/desktop/src/` returns **zero hits**: nothing in the product has ever raised an OS auth prompt, and the Keychain prompt the operator's ruling compares this to is raised by *macOS* as a side effect of the `keyring` crate reading a secret, not by BioRouter calling an API. macOS has a credible path (`LAContext.evaluatePolicy(.deviceOwnerAuthentication)`, with Authorization Services as the fallback; ⚠ **not** Electron's `systemPreferences.promptTouchID()`, which is Touch ID only with no password fallback and therefore fails on any Mac without a sensor). **Windows** would need `Windows.Security.Credentials.UI.UserConsentVerifier` (Windows Hello, which covers PIN and password) or a `CredUIPromptForWindowsCredentials` + `LogonUser` pair — neither verified, neither present, and the second is a password-handling path DR-20 point 3 forbids outright. **Linux** would need polkit (`pkexec` or a polkit agent), which is **absent on the headless hosts this product already ships CLI-only deb and rpm packages for** (`scripts/build-cli-linux-packages.sh`), so on that platform the answer is likely "there is no prompter" rather than "here is the API". ⚠ **Do not close this by inventing a prompt BioRouter draws itself.** An in-app password box is the thing DR-20 point 3 exists to forbid: it would put a password inside the process, which is precisely the property the ruling buys by staying out of the OS's way. | **Nothing is built, and the posture is fail-closed and stated.** [Task 29](#task-29-declassification--the-system-authentication-the-batch-and-the-audit) specifies `AuthOutcome::Unavailable` as a first-class outcome and Task 29 / [Task 31](#task-31-the-cli-is-a-required-r10-surface) both **refuse** on it, with a message naming the platform and pointing at a machine that has a prompter. macOS is the platform the implementation is specified against; a Windows or Linux build whose declassification refuses is a missing feature, and one whose declassification silently approves is the worst outcome this feature can produce. Until this is ruled on, the refusal belongs in [Task 30A](#task-30a-the-non-private-model-disclosure)'s disclosure and in the user-facing docs of [Task 39](#task-39-docs--user-facing-and-the-designs-status-closure). |
+
+---
+
+## DR-26 — affiliation is a third axis, and HIPAA compliance does not transfer between institutions
+
+> **Ruled 2026-08-03**, from the operator, after checking how a HIPAA-compliant LLM at one
+> institution may treat another institution's PHI. This adds a **third axis** to the model and a
+> **Phase 6** (Tasks 45–51) to this plan. It amends [Task 33](#task-33-registryjson-v2-and-the-generators-first-hard-failures)'s
+> schema, which is why that task must not ship before this section is read.
+
+### The gap, stated plainly
+
+Today the plan treats **Private** as one undifferentiated bucket: local models and UCSF's Versa
+providers sit in it together, and every private extension is reachable from every private model. That
+is wrong in a way no tier gate can see.
+
+A "HIPAA-compliant LLM" approved at Institution A has **no** blanket permission over PHI controlled by
+Institution B. Compliance is established per data flow — by BAAs, subcontractor chains, IRB approvals,
+Data Use Agreements and the purpose of the disclosure — and **it does not transfer** because both
+endpoints happen to be called "private". The operator's case: UCSF's Versa reaching the UCSF OMOP and
+CDW agents is exactly the arrangement everyone has approved; the same Versa model reaching *another*
+institution's private connector is a cross-institutional linkage nobody has papered.
+
+That pair passes every gate this plan has built. Both endpoints are Private, so Gates C, E and F all
+say yes.
+
+### The axis
+
+**Affiliation answers a different question from tier.** Tier asks *how sensitive is this?*
+Affiliation asks *under whose agreements?* Two things can be equally Private and still be
+incompatible, which is precisely why this cannot be expressed by subdividing the tier lattice.
+
+**A model's affiliation:**
+
+| Value | Meaning |
+|---|---|
+| `Local` | Runs on this machine; the data never leaves it |
+| `Institution(id)` | Covered by that institution's agreements — `Institution("ucsf")` for both Versa providers |
+| *(none)* | A public model. The tier gates already keep it away from private data; affiliation never applies |
+
+**An extension's affiliation:**
+
+| Value | Meaning |
+|---|---|
+| `Any` | Safe for **any** private model. The default for a private extension with no institutional constraint |
+| `Institution(id)` | Its data belongs to that institution — `Institution("ucsf")` for the OMOP and CDW agents |
+| `Institutions([…])` | An explicit allowlist, for an extension that permits a named set |
+
+### The compatibility rule
+
+For a bound model **M** and an extension **E**, both Private:
+
+| M | E | Outcome |
+|---|---|---|
+| `Local` | **anything** | ✅ compatible |
+| `Institution(X)` | `Any` | ✅ compatible |
+| `Institution(X)` | `Institution(X)` | ✅ compatible |
+| `Institution(X)` | `Institutions([… X …])` | ✅ compatible |
+| `Institution(X)` | `Institution(Y)`, X ≠ Y | ⚠ **mismatch** |
+| `Institution(X)` | `Institutions([…])` without X | ⚠ **mismatch** |
+
+⚠ **The inversion an implementer will get wrong.** `Local` is the **most** permissive affiliation, not
+a peer of the institutions. The natural implementation — an equality test, or set membership that
+happens to include `Local` — makes the local model match only itself and breaks the single most
+important case. A local model may reach **everything private**, because no transfer occurs at all:
+there is no disclosure, so there is nothing for a BAA to govern. Write it as an explicit early return
+with that reason in a comment, not as a comparison.
+
+The operator's words: *"the local llm should be completely private, as in it can just access
+anything."*
+
+### A mismatch warns — it does not block, and an agent can never clear it
+
+This is [DR-19](#decisions-of-record) applied to the third axis, and it is why the operator framed it
+as *"instead of blocking these actions, we should be able to spot those cross linking mismatch and pop
+up a warning and ask for users strict manual approval before proceeding just so that the user know the
+risks."*
+
+- **The user, explicitly** — warn, **naming both institutions** and the specific flow at risk, and
+  proceed if they insist.
+- **An agent, automatically** — never. It escalates to the user or the call does not happen.
+
+A blocked-outright design is one researchers route around by turning the feature off, and legitimate
+cross-institutional work under a real DUA does exist. A silently-allowed design is not a control. The
+warning is the product.
+
+⚠ **The warning must be specific enough to act on.** "This may be a compliance risk" is not a warning,
+it is a shrug. It must name the institution that owns the extension, the institution whose model is
+bound, and what will be sent where. The user can only accept a risk that was stated to them — the same
+requirement [Task 30A](#task-30a) exists to satisfy.
+
+### The grant
+
+Approval is recorded as a **cross-affiliation grant** scoped to the triple
+**(session, extension, model affiliation)**.
+
+- **Once per triple, not per turn.** A control that fires constantly is one people click through, which
+  is the prompt fatigue DR-19 warns about. This follows the operator's earlier ruling on approval
+  propagation: *"users only need to approve once in either place, and then the approval for that very
+  specific ask will be propagated throughout."*
+- **Never machine-wide.** The risk statement was about *this* data flow. A grant given in one chat must
+  not silently cover another.
+- **Re-binding to a different institution's model invalidates it** — the triple changed, so the
+  approved flow no longer exists.
+- **A subagent inherits its parent's grants and can never exceed them**, which is BR-71 Task 36b's
+  shape: a child may act only within authority the parent already holds.
+
+### Discovery lists, dispatch refuses
+
+Gate E hides private tools from a public model because the tool's *existence* is the secret. **That
+reasoning does not carry here** — in a mismatch both endpoints are Private and the user is entitled to
+know the connector exists. Hiding it would also let the agent silently route around a tool it cannot
+see, with no one told why.
+
+So: a mismatched extension's tools are **listed and marked**, and **refused at dispatch** with the
+warning that offers the approval. The refusal is where the user meets the decision.
+
+### Where this is checked — structurally, not by enumeration
+
+The operator asked that this be *"checked in all scenarios where this need to be checked."* ⚠ **That
+sentence is the enumeration trap this campaign has already lost to three times** in this very feature
+(tool name → tool list → argument shape). A list of call sites is not the answer, because the next call
+site will not be on it.
+
+The answer is that affiliation resolves **in the same place tier already resolves**: it becomes a field
+on **`CallCapability`**, which is sampled once per call and threaded through the gates. Any path that
+reaches an extension without going through the extended `CallCapability` is itself the defect, and
+Task 51 is the audit that proves none does.
+
+The surfaces that must consult it: Gates **C** (dispatch), **E** (discovery, to mark), **F** (extension
+channels); the **bind** and the **extension-enablement** paths, which are the same mismatch discovered
+from opposite ends and must both warn; **knowledge bases**, whose affiliation is the union of what they
+ingested and ratchets like classification; **subagent spawn**; and **chat recall / cross-session
+ingest**.
+
+---
+
+## Operator rulings DR-21 – DR-25 — the five open questions, answered
+
+> **Ruled 2026-08-03.** Open questions 25/26, 27, 28, 29 and 30 accumulated across Phases 3 and 4
+> because each needed a scope decision no implementer was entitled to make. All five are now
+> answered. Four become Tasks 41–44 below; the fifth is a decision that creates no work.
+>
+> These rulings are **binding and narrowing in the same sense as [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store)**: no implementer may
+> reinterpret one to widen or shrink what it names.
+
+### DR-21 — an app session's capability is fixed when the session is created
+
+**Answers open question 25/26.** An app session's capability tier is decided at session creation and
+**cannot be changed** by a later manifest edit, a reconnect, or a client frame. A manifest naming a
+more private provider than the session already carries is **refused**, not silently honoured and not
+silently ignored.
+
+This closes both channels with one rule, which is why it is the strong form. The agent-authored
+manifest path (`configure_main_provider` reading `AgentConfig.model` out of a manifest that
+`agent_drafter__declare_profiles` lets a **Public** model write) and the `ClientFrame::ModelSelect`
+frame — which reaches the same bind over `GET /apps/{id}/agent`, a route **exempt from secret-key
+auth entirely** — are both *"change an existing session's tier"*. [DR-16](#decisions-of-record) already makes that
+user-only. DR-21 says only that app sessions are sessions.
+
+⚠ **What this deliberately costs.** An app that wants to move to a local model mid-run cannot. It
+must declare the tier at creation. That is accepted, and Task 41 must not add an escape hatch for it:
+a per-manifest grant is exactly the *"scoped permission"* shape open question 25 floated, and
+inventing one here would re-open the channel the ruling closes.
+
+### DR-22 — the master switch does not live in `config.yaml`
+
+**Answers open question 27.** The privacy-tier master toggle moves out of `config.yaml` into a
+location only the authenticated path writes. [DR-20](#decisions-of-record)'s password gates the *act of disabling*
+wherever it happens, not only when it arrives over HTTP.
+
+Task 30's `X-User-Action` guard closed the immediate channel, but [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store) had descoped the
+filesystem barrier, so `config.yaml` stayed agent-writable and the file channel remained a
+*next-launch* disable. "Only on restart" is not a control — daemons restart routinely, and a model
+can simply wait. This is [DR-14](#dr-14-is-two-layers-and-the-os-sandbox-is-the-second-one)'s own
+sentence applied to itself: *a master switch a public model can edit is not a switch*.
+
+⚠ **What this costs.** A new storage location to design, back up and migrate, and users who hand-edit
+`config.yaml` lose a knob they may reasonably expect to find there. Task 42 owes them a
+`config.yaml` key that is **read once at migration and ignored forever after** — ignored, not merely
+unused, or re-adding it re-opens the channel.
+
+### DR-23 — an extension's tier is re-derived from the registry, never stored locally
+
+**Answers open question 28.** The tier is resolved from the BAAM registry at read time, keyed on a
+stable identifier. It is **not** written onto the local config entry, so there is no stored value
+that would need a gated writer.
+
+The bug this closes is sharper than a wrong badge. The badge is a lookup on the extension's *config
+name*, written from `manifest.name` with no provenance — and Gates C, E and F **read that tier**. So
+renaming a private extension locally removed **enforcement**, not a label. Sessions have exactly one
+gated writer; extensions had none. Re-deriving removes the problem instead of guarding it.
+
+⚠ **Prerequisite, and the reason this is not free.** Both the registry and the installed extension
+need a stable id; the *name* is what exists today. Task 43 therefore lands **after** Task 33, which
+is where the registry schema is already being revised.
+
+⚠ **And the failure mode Task 43 must gate.** A read now depends on registry freshness, which means
+an unreachable registry must never downgrade anything. [Task 37](#task-37-the-in-app-registry--freshness-that-raises-and-never-lowers)'s
+"raises and never lowers" rule governs here too: no registry, or a registry missing the entry, means
+the last known tier is retained — never defaulted to public.
+
+### DR-24 — all three platforms get a real system-authentication prompt
+
+**Answers open question 30.** [DR-20](#decisions-of-record)'s user-proof ships on macOS, Windows and Linux
+together. No platform is second-class.
+
+| Platform | Mechanism |
+|---|---|
+| macOS | `LAContext.evaluatePolicy(.deviceOwnerAuthentication)` |
+| Windows | `UserConsentVerifier` (`Windows.Security.Credentials.UI`) |
+| Linux | polkit |
+
+⚠ **`systemPreferences.promptTouchID()` is NOT the macOS answer** and must not be substituted for it.
+It is Touch-ID-only: it fails outright on a Mac with no sensor and offers no password fallback, which
+is precisely the fallback DR-20's ruling names ("*typing in the password*").
+
+⚠ **The ruling is that we build all three, not that we pretend a prompter exists where none does.**
+polkit is inconsistent across distributions and absent in some containers. Where it is genuinely
+unavailable the honest outcome is unchanged: `AuthOutcome::Unavailable` → refuse, **naming the
+platform**, so it reads as a missing capability rather than a bug. A silently-approving build is the
+worst outcome available and Task 44 may not produce one on any platform.
+
+Nothing in this tree uses any platform authentication API today — a repo-wide search for
+`LocalAuthentication`, `LAContext`, `promptTouchID` and `systemPreferences` returns zero hits — so
+all three are new integrations, not extensions of something existing.
+
+### DR-25 — CLI diverge stays ungated, and that is a decision
+
+**Answers open question 29, and creates no task.** Diverging a private chat from the CLI needs no
+user-proof.
+
+Diverge mints a **private** child from a private parent: nothing is disclosed, and [DR-19](#decisions-of-record)'s
+own logic — privatize needs no prompt because privatizing discloses nothing — applies unchanged. The
+Phase 3 implementer left it ungated and said so explicitly rather than inventing an operator ruling;
+that instinct was right and the outcome is now ratified rather than merely tolerated.
+
+The residual concern was that diverge mints a new *private-capability* session. Creating more private
+state is not the direction the barrier guards. **Revisit only if** a later task gives a
+private-capability session some power a public one lacks *beyond reading private content* — at which
+point minting one becomes an escalation and this ruling expires.
+
+---
+
+### Task 41: The app runtime's three binds — DR-21's fixed-at-creation tier
+
+Implements [DR-21](#dr-21--an-app-sessions-capability-is-fixed-when-the-session-is-created).
+
+- [ ] **Step 1: Route every app bind through Gate A's existing predicate**
+
+Three sites bind a provider to an app session in-process, never through `POST /agent/update_provider`
+and so never past Task 18A's guard:
+
+| Site | File | Reaches |
+|---|---|---|
+| `configure_main_provider` | `routes/apps.rs:809`, called `:1259` | the app's **long-lived main** session |
+| `configure_worker_provider` | `routes/apps.rs:1480`, called `:1553` | a per-profile worker session |
+| `ClientFrame::ModelSelect` | `routes/apps.rs:3418` | the main session, over an **unauthenticated** route |
+
+Do **not** add a third bind path. Route all three through the `BindOutcome` predicate Task 12 already
+built in `session::session_manager` — the atomic `UPDATE … WHERE id = ? AND (privacy_tier = 'public'
+OR ? = 1)`. A bind that would raise an existing session's capability returns the refusing variant and
+the caller surfaces it; a bind at creation is unaffected.
+
+⚠ `ClientFrame::ModelSelect` is the sharpest of the three and the easiest to miss, because the other
+two are named "configure". Its route carries no secret-key check at all, so it is the one site where
+the *only* thing standing between an agent-authored page and a private bind is this task.
+
+- [ ] **Step 2: Make a fourth site impossible, don't just fix three**
+
+`agent.update_provider` must not be reachable from `routes/apps.rs` except through the guarded
+helper. Use the visibility trick Task 66's `persisted_ordering` module proved out: a bare call fails
+to **compile** (`E0603`), rather than failing a grep someone can forget to run. A comment asking
+future authors to be careful is not this step.
+
+- [ ] **Step 3: The gate — and it must fail a plausible wrong implementation**
+
+```bash
+cargo test -p biorouter-server --lib routes::apps 2>&1 | grep "test result:"
+```
+
+Baseline is **~54 passed**; expect strictly more. Required cases:
+
+1. For **each of the three sites**: an existing *public* app session, a bind naming a private
+   provider → refused, and the session's tier **unchanged** afterwards. Three tests, not one
+   parametrised over a single code path — the point is that three call sites are covered.
+2. **Anti-vacuity:** a bind at session *creation* naming a private provider **succeeds**. Without
+   this, an implementation that refuses every app bind passes case 1 and ships an app platform that
+   cannot use a local model at all.
+3. **Refused, not ignored:** after a refused bind the caller sees an error. An implementation that
+   silently falls back to the public default also passes case 1, and is the failure mode this
+   campaign has now found four times.
+
+### Task 42: The master switch's storage — DR-22
+
+Implements [DR-22](#dr-22--the-master-switch-does-not-live-in-configyaml). Depends on Task 30.
+
+- [ ] **Step 1: Move the value**
+
+The toggle moves out of `config.yaml` to a location written only by the DR-20-authenticated path.
+Task 30's `X-User-Action` guard and password prompt stay exactly as they are — this task changes
+*where the answer is recorded*, not who may give it.
+
+- [ ] **Step 2: Migrate once, then ignore forever**
+
+An existing `config.yaml` value is read **once**, at migration, and the key is removed. Thereafter
+the key is *ignored* — not read-and-overridden, not honoured "for compatibility". A reader that still
+consults it has not closed the channel, it has added a second one.
+
+- [ ] **Step 3: The gate**
+
+The test that matters writes `privacy_tiers: off` into `config.yaml` by hand, restarts the daemon,
+and asserts **tiers are still on**. That single test fails the most plausible wrong implementation —
+the compatibility reader that consults both locations — which no amount of testing the happy path
+would catch. Add the mirror: disabling *through* the authenticated path survives a restart.
+
+### Task 43: Extension tiers re-derived from the registry — DR-23
+
+Implements [DR-23](#dr-23--an-extensions-tier-is-re-derived-from-the-registry-never-stored-locally).
+⚠ **Sequence after [Task 33](#task-33-registryjson-v2-and-the-generators-first-hard-failures)** — the
+stable id belongs in the registry schema revision already happening there, not in a second one.
+
+- [ ] **Step 1: Stop storing the tier**
+
+`classify_extension` no longer writes `Extension.tier`. The field is resolved at read time by stable
+id. Delete the stored field rather than leaving it unread: a stale value that nothing writes is a
+value something will eventually read.
+
+- [ ] **Step 2: Unreachable registry retains, never downgrades**
+
+No registry, a stale registry, or a registry with no entry for this id → the last known tier is
+**retained**. Never default to public. This is [Task 37](#task-37-the-in-app-registry--freshness-that-raises-and-never-lowers)'s
+"raises and never lowers" rule, and Task 43 inherits it rather than restating a weaker version.
+
+- [ ] **Step 3: The gate**
+
+1. Install a private extension, **rename it** in `config.yaml`, and assert Gates C, E and F still
+   refuse. This is the actual bug: assert on *enforcement*, not on the badge the UI renders.
+2. Take the registry away entirely and assert the private extension is **still** private.
+3. Structural: assert no persisted `tier` survives on the config entry, so a future reader cannot
+   resurrect the shadowing path.
+
+### Task 44: Windows Hello and polkit — DR-24
+
+Implements [DR-24](#dr-24--all-three-platforms-get-a-real-system-authentication-prompt). Depends on
+Task 29's `privacy::system_auth`.
+
+- [ ] **Step 1: Three prompters behind the one `AuthOutcome`**
+
+macOS `LAContext.evaluatePolicy(.deviceOwnerAuthentication)`; Windows `UserConsentVerifier`; Linux
+polkit. Task 29's `AuthOutcome` enum is the seam — this task adds implementations behind it and
+changes no caller.
+
+⚠ Not `systemPreferences.promptTouchID()` on macOS. See DR-24 for why.
+
+- [ ] **Step 2: Unavailable stays unavailable**
+
+Where polkit is genuinely absent, `AuthOutcome::Unavailable` → refuse, naming the platform. Do not
+fall back to a weaker proof on any platform: a typed phrase is replayable and an agent shell has a
+TTY, so a fallback would ship two security levels for one operation with the weaker one
+undiscoverable from the UI.
+
+- [ ] **Step 3: The test bypass must be compiled out of shipped builds**
+
+Task 29 built a programmatic message in place of the prompt, per the operator's ruling, so testing
+does not require typing a password repeatedly. That bypass must not exist in a release binary.
+
+⚠ **An environment variable is not sufficient to gate it.** [AR-11](#ar-11--amended-by-dr-17--the-daemons-own-api-secret-is-recoverable)
+measured the daemon's own environment to be recoverable, so a bypass an env var unlocks is a bypass
+the model can unlock. Gate it on `#[cfg(debug_assertions)]` or a dedicated non-default feature, and
+assert with a test that a release build has no path to it.
+
+- [ ] **Step 4: The gate**
+
+```bash
+cargo test -p biorouter --lib privacy::system_auth 2>&1 | grep "test result:"
+cargo build --release -p biorouter-server 2>&1 | tail -3
+```
+
+Per platform: an approve, a deny, and an unavailable, each mapping to the right `AuthOutcome`. Plus
+the compile-out assertion from Step 3 — which is the one that fails the plausible wrong
+implementation, since every functional test passes just as well with the bypass still reachable.
+
+---
+
+## Phase 6 — affiliation (Tasks 45–51)
+
+Implements [DR-26](#dr-26--affiliation-is-a-third-axis-and-hipaa-compliance-does-not-transfer-between-institutions).
+Strictly ordered: 45 defines the vocabulary 46–48 consume, and 48 is the single resolver 49–51 depend on.
+
+### Task 45: The affiliation vocabulary and the one compatibility function
+
+- [ ] **Step 1: The types**
+
+In `crates/biorouter/src/privacy/affiliation.rs`:
+
+```rust
+/// Whose compliance regime covers this? Orthogonal to `Tier` — see DR-26.
+pub enum ModelAffiliation { Local, Institution(InstitutionId) }
+pub enum ExtensionAffiliation { Any, Institutions(BTreeSet<InstitutionId>) }
+```
+
+`InstitutionId` is a newtype over a lowercase ASCII slug, normalised at construction. `"UCSF"`,
+`"ucsf"` and `" ucsf "` must be the same institution — a case-sensitive comparison here would make a
+mismatch appear between an institution and itself, which fails **open** in the worst way: it trains
+users to click through the warning.
+
+Represent `Institution(x)` on the extension side as `Institutions({x})`; one shape, not two.
+
+- [ ] **Step 2: The one compatibility function**
+
+```rust
+pub fn compatible(model: &ModelAffiliation, ext: &ExtensionAffiliation) -> bool
+```
+
+⚠ **`Local` returns `true` before any comparison happens.** Write it as an explicit early return
+carrying its reason — *the data never leaves this machine, so no disclosure occurs and there is
+nothing for an agreement to govern*. Do not express it as membership in a set that happens to contain
+`Local`; see DR-26 for why that is the failure this task exists to prevent.
+
+There must be exactly **one** such function. No gate may hand-compare affiliations.
+
+- [ ] **Step 3: The gate**
+
+```bash
+cargo test -p biorouter --lib privacy::affiliation 2>&1 | grep "test result:"
+```
+
+Every row of DR-26's compatibility table, as a named test. Plus the four that catch the real mistakes:
+
+1. `local_reaches_every_institutions_extension` — `Local` vs `Institutions({"stanford"})` → **true**.
+   This is the one an equality-based implementation fails, and every other test still passes.
+2. `institution_ids_compare_case_insensitively` — `Institution("UCSF")` vs `Institutions({"ucsf"})`
+   → **true**.
+3. `any_accepts_every_institution` and its mirror, an empty `Institutions({})`, which must **not**
+   silently behave like `Any`. An extension that names an empty allowlist permits nothing; conflating
+   the two turns a typo in the registry into a granted flow.
+4. A property test over generated pairs asserting `compatible` is total and never panics.
+
+### Task 46: Provider affiliations — Versa is UCSF, local is Local
+
+- [ ] **Step 1: Extend the tier resolver, do not add a second one**
+
+Task 5's provider tier resolver gains an affiliation alongside the tier it already returns, in the
+same function and from the same data. A separate resolver would be a second thing to keep in sync,
+and the two would drift on the first provider added after this task.
+
+- [ ] **Step 2: The assignments**
+
+- **Both Versa providers → `Institution("ucsf")`.** They are UCSF's MuleSoft-proxied gateway and
+  covered by UCSF's agreements.
+- **`llamacpp` → `Local`.** Bundled sidecar, on-machine.
+- **`ollama` → `Local` only when its base URL is loopback.** Task 5 already makes it Private on
+  exactly that condition; a remote `OLLAMA_HOST` is someone else's server, so it is neither `Local`
+  nor `Institution` and must not inherit `Local`'s blanket permission. ⚠ **This is the sharp one** —
+  reusing Task 5's loopback predicate is required, and reimplementing it here is a defect.
+- Public providers get **no** affiliation. Affiliation never applies to them; the tier gates already
+  hold.
+
+- [ ] **Step 3: A new provider cannot be forgotten**
+
+Not a rule someone must remember. Mirror the mechanism Task 18A built for `CAPABILITY_CONFIG_KEYS`:
+a test that enumerates every provider the factory registers and fails unless each appears in exactly
+one of the affiliation tables, private or explicitly-not-applicable, with a one-line reason. Adding a
+provider then fails the suite until someone classifies it.
+
+- [ ] **Step 4: The gate**
+
+```bash
+cargo test -p biorouter --lib privacy:: 2>&1 | grep "test result:"
+cargo test -p biorouter --lib providers::factory 2>&1 | grep "test result:"
+```
+
+Assert both Versa providers resolve to `ucsf`; assert `ollama` on a **remote** host is not `Local`;
+assert the completeness test fails when a provider is removed from the table (verify by temporarily
+deleting an entry, watching it fail, and restoring it — a completeness test that has never been seen
+to fail is not known to work).
+
+### Task 47: Extension affiliations, resolved from the registry
+
+⚠ **Sequence with [Task 43](#task-43-extension-tiers-re-derived-from-the-registry--dr-23)** — DR-23
+already re-derives the extension *tier* from the registry at read time. Affiliation rides the **same**
+resolution, on the same stable id, in the same call. Two lookups would let tier and affiliation
+disagree about the same extension.
+
+- [ ] **Step 1: Read the field Task 33 added**
+
+`registry.json` v2 carries `affiliation` per extension and an `institutions` display-name map
+(see the amendment to Task 33). Resolve `ExtensionAffiliation` from it.
+
+- [ ] **Step 2: Absent means `Any`, and unknown means mismatch**
+
+- A private extension with **no** `affiliation` → `Any`. Most extensions carry no institutional
+  constraint and must not all become mismatches on the day this ships.
+- An `affiliation` naming an institution **not** in the `institutions` map → treat as a mismatch and
+  surface the raw id in the warning. Failing open on a typo is how a real constraint disappears.
+- Registry unreachable → **retain** the last known affiliation, exactly as DR-23 requires for tier.
+  Never fall back to `Any`.
+
+- [ ] **Step 3: The gate**
+
+Install a UCSF-tagged extension, take the registry away, and assert it is **still** `ucsf`. Assert an
+untagged private extension resolves `Any`. Assert an extension naming `"atlantis"` (absent from the
+map) is a mismatch whose warning contains the string `atlantis`.
+
+### Task 48: The gate — affiliation on `CallCapability`, resolved once
+
+This is the structural half of DR-26 and the task the others depend on.
+
+- [ ] **Step 1: One field, one sampling**
+
+`CallCapability` — already sampled once per call and threaded, replacing four independent samples —
+gains the bound model's affiliation. Every surface that asks "may this model reach this extension?"
+answers it from that value through Task 45's `compatible`.
+
+- [ ] **Step 2: The surfaces**
+
+| Surface | Behaviour on mismatch |
+| --- | --- |
+| Gate C — dispatch | **Refuse**, with the warning that offers the grant |
+| Gate E — discovery | **List and mark.** Do not hide; see DR-26 |
+| Gate F — extension channels | Refuse, same as C |
+| Bind | Warn: this model is incompatible with N enabled extensions |
+| Extension enablement | Warn: this extension is incompatible with the bound model |
+
+Bind and enablement are the same mismatch found from opposite ends. Both warn; neither blocks.
+
+- [ ] **Step 3: The gate**
+
+```bash
+cargo test -p biorouter --lib privacy:: 2>&1 | grep "test result:"
+cargo test -p biorouter --test mcp_integration_test
+```
+
+⚠ The test that matters is **not** "a mismatch is refused". It is that a mismatch is refused **on
+every surface in the table**, each as its own named test, with a local model passing all of them.
+
+### Task 49: The grant, and a warning specific enough to act on
+
+- [ ] **Step 1: Reuse the proof-of-user; do not invent a second one**
+
+The grant is a user act, so it rides Task 18A's `X-User-Action` key and Task 29's `UserConfirmation`.
+⚠ A second proof-of-user mechanism is forbidden — DR-18 already refused one for the same reason: two
+mechanisms mean two things to get right and one to forget.
+
+- [ ] **Step 2: The scope**
+
+Keyed on **(session, extension, model affiliation)**. Persisted with the session. Re-binding to a
+different institution's model does not match the key, so it does not reuse the grant. A subagent
+reads its parent's grants and cannot create its own.
+
+- [ ] **Step 3: The copy**
+
+One constant, like Task 30A's. It must name: the institution owning the extension, the institution
+whose model is bound, and what data would flow where. ⚠ Generic risk language fails this step —
+"this may be a compliance risk" is a shrug, and a user cannot accept a risk that was not stated.
+
+- [ ] **Step 4: The gate**
+
+1. A granted triple permits the call; the **same** extension after re-binding to another institution's
+   model does **not**.
+2. An agent cannot create a grant — assert the tool-facing surface has no path to one, the way
+   Task 29 pinned its proof-of-user to a single call site.
+3. The warning contains both institution display names, asserted against the registry's map rather
+   than hardcoded strings.
+
+### Task 50: Knowledge bases, subagents, and chat recall
+
+- [ ] **Step 1: A knowledge base's affiliation is the union of what it ingested, and it ratchets**
+
+Same shape as classification: once a KB holds Institution-B content it carries that affiliation
+permanently. A KB may therefore carry **several** institutions, and a model matching only one of them
+is a mismatch — do not stop at the first match.
+
+- [ ] **Step 2: Subagents inherit and cannot exceed**
+
+A spawned agent gets its parent's affiliation and grants. It can never widen either.
+
+- [ ] **Step 3: Chat recall and cross-session ingest**
+
+A private chat carries the affiliation of the extensions it touched. Recalling it into a session bound
+to a different institution's model is a mismatch and warns.
+
+- [ ] **Step 4: The gate**
+
+```bash
+cargo test -p biorouter-mcp --lib knowledge:: 2>&1 | grep "test result:"
+cargo test -p biorouter --test subagent_delegation
+```
+
+Assert a two-institution KB mismatches a model matching only one. Assert a child cannot hold a grant
+its parent lacks.
+
+### Task 51: The Phase 6 audit — no path reaches an extension without the resolver
+
+The task that answers *"checked in all scenarios where this need to be checked"* structurally.
+
+- [ ] **Step 1: Prove the choke point**
+
+A repo-walk test asserting every extension-reaching path resolves affiliation through
+`CallCapability`. A path that samples independently, or compares affiliations by hand, fails it. This
+is the same shape as Task 18A's `every_config_key_the_tier_resolver_reads_is_classified` and
+Task 29's single-call-site pin — both of which caught real omissions.
+
+- [ ] **Step 2: Anti-vacuity**
+
+Add a deliberately non-conforming path, watch the audit **fail**, then remove it. Record the observed
+failure in the commit message. An audit never seen to fail is not known to work — this plan has
+already shipped a grep gate, a file-exists check and a filter matching nothing, each of which passed
+by accident.
+
+- [ ] **Step 3: The gate**
+
+```bash
+cargo test --workspace --no-fail-fast 2>&1 | tail -20
+cargo test -p biorouter --lib privacy:: 2>&1 | grep "test result:"
+```
+
+Plus the end-to-end case in one test, because it is the operator's actual scenario: a Versa model
+bound, the UCSF OMOP agent reachable, a hypothetical Stanford connector refused with a warning naming
+both institutions, that warning granted by a user act, the call then permitted — and the same grant
+**not** honoured after re-binding to a different institution's model.
 
 ---
 

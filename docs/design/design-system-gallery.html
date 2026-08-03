@@ -376,7 +376,8 @@
     .tab[aria-selected="true"]::after { content:""; position:absolute; inset:auto 0 -1px; height:2px; background:var(--accent-bar); }
 
     .list { display:grid; }
-    .list-row { min-height:40px; display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:10px; padding:8px 10px; border-bottom:1px solid var(--border-subtle); border-radius:var(--radius-md); }
+    /* D-12·C (2026-08-02, Astryx A-03) — content row rhythm, was 40px. */
+    .list-row { min-height:36px; display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:10px; padding:8px 10px; border-bottom:1px solid var(--border-subtle); border-radius:var(--radius-md); }
     .list-row:last-child { border-bottom-color:transparent; }
     .list-row:hover { background:var(--background-muted); }
     .status-dot { width:8px; height:8px; border-radius:50%; background:var(--text-subtle); }
@@ -777,7 +778,7 @@
                 <tr><td>Page gutter</td><td><code>32px</code></td><td>Page top space</td><td><code>48px</code></td></tr>
                 <tr><td>Expanded sidebar</td><td><code>240px</code></td><td>Collapsed sidebar</td><td><code>60px</code></td></tr>
                 <tr><td>Responsive sidebar overlay</td><td><code>240px fixed</code></td><td>Long recent title</td><td>Single-line ellipsis + full hover summary</td></tr>
-                <tr><td>Content list / table row</td><td><code>40px</code></td><td>Input / default button</td><td><code>36px</code></td></tr>
+                <tr><td>Content list / table row</td><td><code>36px</code></td><td>Input / default button</td><td><code>36px</code></td></tr>
                 <tr><td>Sidebar navigation / recent session</td><td><code>32px</code></td><td>New Session action</td><td><code>32px</code>, standard navigation treatment</td></tr>
                 <tr><td>Compact titlebar controls</td><td>Three <code>32px</code> non-drag buttons</td><td>Title clearance</td><td><code>8px</code> after controls or expanded sidebar edge</td></tr>
               </tbody>
@@ -847,7 +848,7 @@
                 </div>
               </div>
               <div class="specimen">
-                <div class="specimen-head"><span>Rows</span><span>40px rhythm</span></div>
+                <div class="specimen-head"><span>Rows</span><span>36px rhythm</span></div>
                 <div class="specimen-body" style="padding:12px">
                   <div class="list">
                     <div class="list-row"><span class="status-dot success"></span><div class="row-copy"><strong>SPOKE Agent</strong><span>Knowledge graph query</span></div><span class="row-meta">active</span></div>
