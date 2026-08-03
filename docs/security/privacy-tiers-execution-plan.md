@@ -1290,7 +1290,10 @@ crates/biorouter-mcp/src/privacy_open.rs               Task 14D — safe_open: r
 crates/biorouter/src/privacy/refusal.rs                Task 12 — PrivacyRefusal; Tasks 13/14/23 add to it
 crates/biorouter/src/privacy/alt_provider.rs           Task 19 — assert_alt_provider_allowed
 crates/biorouter/src/privacy/visibility.rs             Task 21 — the §7 matrix as one predicate
-crates/biorouter/src/privacy/declassify.rs             Task 29 — UserConfirmation + declassify()
+crates/biorouter/src/privacy/declassify.rs             Task 29 — the ONE lowering writer; consumes UserConfirmation
+crates/biorouter/src/privacy/system_auth.rs            Task 29 — the OS prompt + UserConfirmation, its ONLY constructor (DR-20)
+crates/biorouter/src/privacy/system_auth_macos.rs      Task 29 — the real prompter, macOS only (DR-20; Open question 30 for the rest)
+crates/biorouter/src/privacy/system_auth_seam.rs       Task 29 — the test seam; cfg(all(debug_assertions, feature="privacy-test-auth")) (DR-20)
 crates/biorouter-mcp/src/knowledge/tier_user.rs        Task 29A — UserKbTierChange; the ONE lowering writer (DR-18)
 crates/biorouter/src/privacy/disclosure.rs             Task 30A — the ONE copy constant + required_for() (DR-17 req. 3)
 ui/desktop/src/components/ui/PrivacyBadge.tsx          Task 26
@@ -2893,7 +2896,7 @@ the owning task must build its `pre + N` on:**
 | `biorouter-server` | `routes::config_management` | 3 |
 | `biorouter-server` | `routes::session` | **29** — `::diverge_tests` 15 + `::edit_message_tests` 9, plus 5 in `routes::session_events::tests`, which the substring catches from a *different module* |
 
-**Deferred — 12 pairs, each with the task that creates it. A filter in neither list is the defect:**
+**Deferred — 13 pairs, each with the task that creates it. A filter in neither list is the defect:**
 
 | Package | Filter | Created by | Pre-count today |
 |---|---|---|---|
@@ -2907,8 +2910,16 @@ the owning task must build its `pre + N` on:**
 | `biorouter` | `privacy::visibility` | Task 21 | **0** ✓ |
 | `biorouter` | `every_copy_path_carries_the_tier_and_the_provider` | Task 22 | **0** ✓ — a bare **test name**, not a module; it is in the `--lib -- …` form and is invisible to an audit of only the plain form |
 | `biorouter` | `privacy::declassify` | Task 29 | **0** ✓ |
+| `biorouter` | `privacy::system_auth` | Task 29 | **0** ✓ — added by [DR-20](#dr-20--declassification-is-gated-by-a-system-authentication-and-that-is-what-lets-an-agent-ask). ⚠ **Its tests need `--features privacy-test-auth`**, so this row's command is `cargo test -p biorouter --features privacy-test-auth --lib privacy::system_auth` — the only row here whose filter does not run under a bare `cargo test` |
 | `biorouter-mcp` | `knowledge::tier_user` | Task 29A | **0** ✓ — added by [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store) |
 | `biorouter` | `privacy::disclosure` | Task 30A | **0** ✓ — added by [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store) |
+
+⚠ **A thirteenth row was added on 2026-08-02 by [DR-20](#dr-20--declassification-is-gated-by-a-system-authentication-and-that-is-what-lets-an-agent-ask)** — `privacy::system_auth`, the module
+Task 29 gained when declassification moved behind a system authentication. It is recorded here
+rather than left to be discovered, because an unregistered filter is exactly what this section's
+UNRECORDED check exists to catch, and Task 40 Step 2b demands an **empty** deferred set at the
+release gate. Re-derive the totals below from the table rather than from the sentence: the "12" it
+records is a measurement of *that run*.
 
 ⚠ **This table was 18 rows before this run and is 12 after: five out, two in, three resolved.** Fix
 it in the same commit as the change that moves a row, not later. Task 4b's own gate asserts that
@@ -3105,10 +3116,17 @@ biorouter|privacy::alt_provider|19|crates/biorouter/src/privacy/alt_provider.rs
 biorouter|privacy::visibility|21|crates/biorouter/src/privacy/visibility.rs
 biorouter|every_copy_path_carries_the_tier_and_the_provider|22|fn every_copy_path_carries_the_tier_and_the_provider
 biorouter|privacy::declassify|29|crates/biorouter/src/privacy/declassify.rs
+biorouter|privacy::system_auth|29|crates/biorouter/src/privacy/system_auth.rs
 biorouter-mcp|knowledge::tier_user|29A|crates/biorouter-mcp/src/knowledge/tier_user.rs
 biorouter|privacy::disclosure|30A|crates/biorouter/src/privacy/disclosure.rs
 ROWS
-# ⚠ TWELVE, not eighteen, and the difference is two rulings and one landed task.
+# ⚠ THIRTEEN. It was TWELVE when this table was measured — not eighteen, and
+# that difference was two rulings and one landed task — and DR-20 added the
+# thirteenth on 2026-08-02: `privacy::system_auth`, the module Task 29 gained
+# when declassification moved behind a system authentication. ⚠ Its filter is
+# the one row here that does NOT run under a bare `cargo test`: it needs
+# `--features privacy-test-auth`, so a harvest that runs the plain command reads
+# 0 and calls it deferred for ever.
 # Five rows left with the deferred barrier — `private_roots` (14B),
 # `privacy::private_roots` (14B), `privacy::path_policy` (14B),
 # `agent_drafter::tier` (14E) and `call_tool_dispatches_through_the_barrier`
@@ -3120,7 +3138,7 @@ ROWS
 # `privacy::tests` are 3 apiece now that Task 4 has landed, and they moved to the
 # resolved table. If this number moves again, the table three sections up moved
 # with it or one of them is wrong.
-want "deferred rows" 12 "$(wc -l < /tmp/56-filters/deferred.txt | tr -d ' ')"
+want "deferred rows" 13 "$(wc -l < /tmp/56-filters/deferred.txt | tr -d ' ')"
 # ⚠ AND THE OTHER 46. Step 3's first table claims an EXACT measured count for
 # every filter that resolves, and every `pre + N` assertion in this plan is
 # arithmetic on one of those numbers. Until this round the loop below treated
@@ -3294,12 +3312,15 @@ echo "  NO module called tests. That filter is unresolvable as written."
 awk -F'|' 'NF == 4 && $0 !~ /^\|/ && $1 ~ /^biorouter(-[a-z]+)?$/ { next } { print }' \
   "$PLAN" > /tmp/56-filters/plan-minus-table.txt
 d=$(( $(wc -l < "$PLAN") - $(wc -l < /tmp/56-filters/plan-minus-table.txt) ))
-# Self-check on the stripper: exactly the 12 deferred rows, and NOTHING else.
-# MEASURED against this plan. If this number moves, the awk filter has started
-# eating prose and every UNBACKED verdict below is unsound — which is the failure
-# mode where a too-greedy strip makes real evidence vanish and the gate turns
-# into a wall of false UNBACKEDs that the next reader "fixes" by deleting it.
-want "rows stripped before the evidence search" 12 "$d"
+# Self-check on the stripper: exactly the 13 deferred rows, and NOTHING else.
+# MEASURED against this plan (12 when measured; DR-20 added privacy::system_auth
+# on 2026-08-02 and the heredoc above grew with it — this number tracks the
+# heredoc's line count and nothing else). If it moves for any OTHER reason, the
+# awk filter has started eating prose and every UNBACKED verdict below is
+# unsound — the failure mode where a too-greedy strip makes real evidence vanish
+# and the gate turns into a wall of false UNBACKEDs that the next reader "fixes"
+# by deleting it.
+want "rows stripped before the evidence search" 13 "$d"
 unbacked=0
 while IFS='|' read -r pkg filter task evidence; do
   n=$(grep -c -- "$evidence" /tmp/56-filters/plan-minus-table.txt) || n=0
@@ -16524,24 +16545,27 @@ curl -s -X POST http://127.0.0.1:3000/agent/call_tool -H 'X-Secret-Key: test' \
 - [ ] **Step 4b: Re-run Task 4b's filter audit with a shrunk deferred set**
 
 ```bash
-# Seven of Task 4b's TWELVE deferred rows are created by Tasks 5-19, so exactly
-# five may still be deferred here. Re-run Task 4b Steps 1 and 5, deleting the
-# seven landed ROWS from /tmp/56-filters/deferred.txt and keeping these five —
+# Seven of Task 4b's THIRTEEN deferred rows are created by Tasks 5-19, so exactly
+# six may still be deferred here. Re-run Task 4b Steps 1 and 5, deleting the
+# seven landed ROWS from /tmp/56-filters/deferred.txt and keeping these six —
 # named by (package, filter, task) ONLY, with the evidence column deliberately
 # omitted; copy each row's fourth field from Task 4b's own heredoc, do not
 # retype it here:
 #   biorouter                privacy::visibility                              21
 #   biorouter                every_copy_path_carries_the_tier_and_the_provider 22
 #   biorouter                privacy::declassify                              29
+#   biorouter                privacy::system_auth                             29
 #   biorouter-mcp            knowledge::tier_user                             29A
 #   biorouter                privacy::disclosure                              30A
+# ⚠ `privacy::system_auth` was added by DR-20 on 2026-08-02 and is the SIXTH.
+# A re-run that keeps five is reading a pre-DR-20 copy of Task 4b's table.
 # ⚠ THE OMISSION IS THE POINT, and it is Task 4b's own rule ("do not write a
 # deferred row's evidence string into prose"). The UNBACKED check greps each
 # row's evidence over the plan MINUS the deferred heredoc, and the stripper that
 # removes that heredoc keys on a line whose first `|`-field is exactly a package
 # name. A `#`-prefixed copy has `#   biorouter` in that field, so it is NOT
 # stripped — it survives into the searched text and witnesses the very row it
-# is a copy of. Five rows reproduced in full here would each gain a witness that
+# is a copy of. Six rows reproduced in full here would each gain a witness that
 # is nothing but themselves, which is exactly the self-witnessing defect Round 3
 # §7 found and the strip exists to remove. Reintroducing it in a re-run of the
 # audit that removed it is the shape of bug this plan keeps catching.
@@ -16557,7 +16581,7 @@ curl -s -X POST http://127.0.0.1:3000/agent/call_tool -H 'X-Secret-Key: test' \
 # main may have moved under the branch as well; the rule is Task 10D's — the
 # commit that grows a count re-baselines its row. A count you cannot NAME the
 # source of is the defect.
-# Expect: 0 MISSING, 5 DEFER, 0 UNBACKED, 0 DRIFT after re-baselining, and OK
+# Expect: 0 MISSING, 6 DEFER, 0 UNBACKED, 0 DRIFT after re-baselining, and OK
 # with a non-zero count for all seven of privacy::extensions, privacy::refusal,
 # privacy::alt_provider, providers::tier_tests, knowledge::tier,
 # agents::chatrecall_extension and session::chat_history_search.
