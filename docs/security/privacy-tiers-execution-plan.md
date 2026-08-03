@@ -12,9 +12,11 @@
 > implementation code, a run step, a gate that fails a plausible wrong implementation, and one commit.
 > **Status:** Proposed — ready to execute. The design's rulings are settled (see
 > [Decisions of record](#decisions-of-record)); the costs the operator knowingly accepted are in
-> [Accepted risks](#accepted-risks); **nineteen** questions remain open (see
+> [Accepted risks](#accepted-risks); **twenty** questions remain open (see
 > [Open questions](#open-questions)) — the design's eleven minus the one the fifth-round ruling
-> closed (question 3), plus nine this plan surfaced — and none of them blocks Phase 0–3.
+> closed (question 3), plus ten this plan surfaced, the newest being question 30, the Windows and
+> Linux system-authentication prompter [DR-20](#dr-20--declassification-is-gated-by-a-system-authentication-and-that-is-what-lets-an-agent-ask)
+> requires and this tree has no API for — and none of them blocks Phase 0–3.
 > **One dependency is stated rather than closed:** #56's tool-channel barrier holds on
 > `POST /agent/call_tool` either way, but a caller holding the daemon secret can still run tools
 > inside another session (issue #47) and can raise its own session's capability with no credentials
@@ -38,6 +40,15 @@
 > it does not happen. DR-16 and DR-18 are instances of this rule. A task that changes privacy state
 > and does not say *who may initiate it* is defective, because an unstated initiator becomes whatever
 > the implementer assumes.
+
+> ⚠ **Governing ruling, 2026-08-02 — read [DR-20 — declassification is gated by a system authentication](#dr-20--declassification-is-gated-by-a-system-authentication-and-that-is-what-lets-an-agent-ask)
+> before touching Task 29 or Task 31.** Declassification requires an **operating-system**
+> authentication — the same class of prompt as the Keychain authorization at app start — raised once
+> **per operation**, naming the exact chats it covers, with the password verified by the OS and never
+> seen by BioRouter. **Either the agent or the UI may initiate it**, which is DR-19's agent-initiation
+> prohibition relaxed *only* where an unforgeable human act stands between the request and the effect.
+> The test seam that stands in for the prompt is gated at **compile time** and defaults to **refuse**;
+> it is the one component of this feature whose failure mode is a bypass in a shipped binary.
 
 > **For agentic workers:** follow the subagent-driven-development or executing-plans skill and
 > work task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. Work in the worktree
@@ -675,6 +686,270 @@ is recorded here. The specific deviation is accepted; the rule is what governs.
   bases; DR-19 makes it general. A confirmation phrase compiled into the source is a UX guard
   against an accidental write, not a proof of a human — anything holding the daemon secret replays
   it. Where a task still names a second, undefined proof, that task is wrong and not the mechanism.
+
+---
+
+## DR-20 — declassification is gated by a system authentication, and that is what lets an agent ask
+
+**Read this with [Task 29](#task-29-declassification--the-system-authentication-the-batch-and-the-audit)
+and [Task 31](#task-31-the-cli-is-a-required-r10-surface), which implement it, and with
+[DR-19](#dr-19--a-warning-for-the-user-a-wall-for-the-agent), which it **refines** rather than
+replaces.** DR-19 asked *who initiated this?* and made silence about the answer a defect. DR-20
+answers a different question for one class of operation — *what stands between the request and the
+effect?* — and rules that where the answer is an act only a human at the machine can perform, the
+initiator stops being the control.
+
+### The ruling, verbatim
+
+Operator, 2026-08-02:
+
+> please make the user type in their system password (like in the beginning of the app starting,
+> typing in the password to get to the keychain) and for each declassify operation, they need to do
+> the password varification (through system means, so the app or the agent will never know the
+> password (unless the user give the agent password, which is not the app/agents problem to worry).
+> and each declassification action can declassify multiple chats (in batch) if the user so wants it.
+> both the agent or through ui can user initiate this process, but either way password will be
+> prompted. to test it, please set up this process so that when password is asked, a programatic msg
+> is sent but in the actual production (which you dont need to check, this msg will be the actual
+> system modal to ask to password) taht way i dont need to be constantly putting in password to test
+> this.
+
+### What it settles — six points
+
+1. **Declassification requires a system-level authentication.** The same *class* of prompt as the
+   Keychain authorization the user answers when BioRouter first reads a secret at app start
+   ([`docs/security/secret-storage.md`](secret-storage.md)) — an **OS** prompt, drawn by the
+   operating system, not by BioRouter. Not an in-app dialog. Not a typed phrase. Not a checkbox.
+2. **Per operation.** No session, no cached grant, no "remember for five minutes", no
+   authenticate-once-per-launch. Every declassification action raises its own prompt.
+3. **The app and the agent never see the password.** It is verified by the OS; BioRouter receives a
+   boolean. The operator states the residual and accepts it: a user who hands their password to an
+   agent is outside the threat model — *"which is not the app/agents problem to worry"*. Nothing in
+   this feature may read, transport, cache or log a password, and there is no code path in which one
+   could, because no BioRouter process is ever handed one.
+4. **Batch is supported.** One authentication may cover several chats named in **that one action** —
+   *"each declassification action can declassify multiple chats (in batch) if the user so wants
+   it."* The set must be **fixed before the prompt is raised and stated inside it**. An
+   authentication is spendable on exactly the ids it named and on no others; adding an id after the
+   prompt returns is a new operation and a new prompt.
+5. **Either the agent or the UI may INITIATE.** *"both the agent or through ui can user initiate this
+   process, but either way password will be prompted."* This is the refinement of DR-19: an agent
+   may **ask**, precisely because it cannot **satisfy**. The gate is the OS prompt, not the caller's
+   identity.
+6. **A test seam replaces the OS prompt with a programmatic answer**, so the operator is not typing
+   a password on every test run. The operator explicitly does not ask for the production modal to be
+   demonstrated — *"in the actual production (which you dont need to check, this msg will be the
+   actual system modal)"*. **The seam is the security-critical part of this ruling** and is
+   specified below at length, because it is the one component whose failure mode is a bypass in a
+   shipped binary.
+
+### Why an OS prompt, and not the three things it replaces
+
+Each of the three alternatives was available and each is weaker in a *different* way, which is why
+none of them is a partial substitute.
+
+- **A TTY check is not a human check.** *"Is a person at a terminal"* is not a question a terminal
+  can answer. `developer__shell` runs commands under a pty, this repo's own launcher documentation
+  records wrapping processes in `script` to fake one
+  ([`docs/desktop-ui/launching-the-dev-gui.md`](../desktop-ui/launching-the-dev-gui.md)), and an
+  agent shell has a controlling terminal in the ordinary case. A TTY predicate is satisfied by the
+  exact caller it is meant to exclude.
+- **A typed phrase gates the accident, never the adversary.**
+  [Task 30](#task-30-settings--privacy--the-master-toggle-its-three-hardening-measures-and-the-badge-it-does-not-hide)'s
+  own text concedes it — *"The phrase is a fixed string in the shipped source, so a caller holding
+  the daemon secret replays it"* — and DR-19 generalised the concession to a rule. A phrase is a UX
+  guard against a mis-click. It is worth keeping for that, and it is not authentication.
+- **`X-User-Action` is a proof about a process, and it does not reach two of the three callers.**
+  [Task 18A](#task-18a-the-two-http-channels-that-raise-a-sessions-own-tier-and-the-user-proof-neither-of-them-has)'s
+  per-launch key is real, it stays, and DR-19's *"one proof of user, not two"* still governs
+  **capability raises**. But it is an **HTTP request header**: `biorouter session` has no request to
+  put it on ([Open question 29](#open-questions)), and an in-process bind has no `HeaderMap` at all
+  ([Open question 26](#open-questions)). And what it proves is *possession of a key held by the
+  Electron main process* — a statement about a process, not about a person. An OS prompt is the only
+  proof in this design that is a statement about a person.
+
+**And only the OS prompt composes with point 5.** The other three are gates on *who is calling*, so
+each of them forbids agent initiation by construction. A gate on *what must happen before the
+effect* does not care who called, which is why this ruling can grant the agent a door that DR-19
+had to keep shut.
+
+### What DR-20 relaxes in DR-19, and exactly how far
+
+DR-19's agent half reads *"An agent, automatically → never; it escalates to a human or it does not
+happen."* DR-20 does not weaken that sentence — it observes that under an OS prompt an
+agent-initiated declassification **is** an escalation to a human. The request is the agent's; the
+effect is the human's. So the prohibition that moves is on **initiation**, and it moves only here.
+
+⚠ **The relaxation is conditioned, and the condition is the whole ruling: it reaches only operations
+where an unforgeable human act stands between the request and the effect.** It does **not** extend
+to:
+
+- **Gates A–H.** They refuse a *model* mid-turn. There is no user act to interpose and no user
+  present to interpose it; a prompt raised by a model at a moment of its own choosing is
+  prompt-fatigue engineering, not consent. DR-19: *"the user could have done this"* is never a
+  reason to let a model do it, and DR-20 adds nothing to that.
+- **The spawn-downgrade** ([Open question 2](#open-questions),
+  [Task 23](#task-23-spawn--reorder-stamp-filter-and-the-spawn-matrix)), for the same reason, and
+  for one more: the spawn happens inside a turn the user is not watching.
+- **`POST /agent/add_extension`** and the capability raises Task 18A guards. These are not
+  disclosures, they happen many times in ordinary use, and a system prompt on every model switch is
+  exactly the wall DR-19's user half forbids — the model picker is the control the entire refusal
+  vocabulary points at.
+- **Any operation a later task merely *confirms*.** A dialog is not a prompt. A task that wants this
+  relaxation must build the OS prompt first and say so; DR-19's prohibition is the default, and
+  DR-20 is an exception earned per operation, never inherited.
+
+⚠ **And it does not make an agent-initiated declassification *safe*; it makes it *gated*.** The
+residual is a prompt the user did not expect and approves out of habit. Point 4 is what limits it:
+the prompt names the exact chats, so an approval cannot be harvested for a set the user was not
+shown. A prompt that says *"BioRouter wants to make changes"* and nothing else would satisfy the
+letter of this ruling and defeat its purpose.
+
+### The mechanism, in one sentence
+
+**The process that owns the user's desktop session raises the prompt; the daemon never does.** Two
+carriers, one authenticated result type, one lowering writer.
+
+| Path | Who prompts | How the result reaches the writer |
+|---|---|---|
+| **GUI** | the Electron **main** process, which already owns the per-launch user-action key and the user's window server session | after an approval it calls `POST /sessions/declassify` carrying Task 18A's raw key plus the id set it named in the prompt; the handler verifies the key against the installed digest and mints the proof |
+| **CLI** | the `biorouter` process itself, in the terminal the user (or the agent) ran it in | it never uses the route: it opens the session store in process, exactly as `biorouter session` already does, and calls `privacy::declassify` directly |
+
+**What the daemon's guarantee is, stated exactly so no document may overstate it.** The daemon
+cannot observe an OS prompt. What it verifies is that *a process holding the per-launch user-action
+key asserts that a system authentication succeeded for this id set*. The strength comes from that
+process being the Electron main — whose heap [AR-11](#ar-11--amended-by-dr-17--the-daemons-own-api-secret-is-recoverable)
+does **not** measure as recoverable, unlike the daemon's own environment. A caller who can read the
+Electron main process, or who starts their own `biorouterd` with a key they chose, is unaffected by
+any of this; that is [Open question 20](#open-questions)'s same-machine-caller problem, unchanged
+and not made worse. On a daemon that was handed **no** digest — `just run-server`, a hand-run
+`biorouterd agent`, any headless deployment — the route fails closed for every caller, which is
+[Open question 23](#open-questions)'s answer applied to a second route.
+
+### The test seam — the part of this ruling that must never ship
+
+This is where this design fails if it fails. Everything above is defeated by one reachable bypass in
+a release binary, so the seam's gates are specified here rather than left to the task, and
+[Task 40](#task-40-final-release-gate) is where they are proven.
+
+**Five requirements, each with the mechanism that enforces it.**
+
+1. **Impossible to enable in a release build — at compile time, not at run time.** The seam module
+   is `#[cfg(all(debug_assertions, feature = "privacy-test-auth"))]`, and both halves are load-bearing:
+   - `debug_assertions` is **off in every profile this workspace ships**. `[profile.release]` does
+     not set `debug-assertions`, so it defaults to false, and `release-dist` and `quick` both
+     `inherits = "release"` (root `Cargo.toml:43-62`). Every path in `scripts/release.sh` and every
+     `just release-*` recipe builds one of those three.
+   - `privacy-test-auth` is a **non-default** cargo feature on `biorouter`, re-exported by
+     `biorouter-server` and `biorouter-cli` as `privacy-test-auth = ["biorouter/privacy-test-auth"]`.
+     Tests reach it through `[dev-dependencies]` only — under `resolver = "2"` (root
+     `Cargo.toml:3`) a dev-dependency's features unify into the lib build when a test target is
+     being built and **not** into a plain `cargo build`, which is precisely the shape wanted.
+   - ⚠ **An environment variable alone is not sufficient and must not be the boundary.**
+     [AR-11](#ar-11--amended-by-dr-17--the-daemons-own-api-secret-is-recoverable) measured the
+     daemon's environment to be recoverable *in process* by any tool that reads a caller-named path
+     (`/proc/self/environ` on Linux; `KERN_PROCARGS2` on macOS, which is not a path and which no
+     sandbox profile gates). An env-gated bypass is a bypass a compromised agent sets for itself. An
+     env var may select *which* canned answer the seam gives — it may never be what makes the seam
+     exist.
+   - ⚠ **`#[cfg(test)]` alone was considered and rejected**, not because it is weaker but because it
+     cannot carry the requirement: it is set only for a crate's own unit-test build, so an
+     integration test in `crates/biorouter-server/tests/`, a Playwright run against a dev daemon,
+     and the operator driving the dev GUI would all still meet the production prompt. The seam
+     exists to serve exactly those, and point 6 is the operator asking for them.
+
+2. **A gate that fails the BUILD if the seam is reachable from a release profile.** In
+   `crates/biorouter/src/lib.rs`, unconditionally compiled:
+
+   ```rust
+   // DR-20. `privacy-test-auth` compiles a seam that answers the declassification
+   // system prompt without an operating system prompt. It exists for tests and for
+   // driving the dev GUI. It may never be compiled with debug assertions off —
+   // which is every profile this workspace ships (release, release-dist, quick).
+   #[cfg(all(feature = "privacy-test-auth", not(debug_assertions)))]
+   compile_error!(
+       "privacy-test-auth is a TEST SEAM that bypasses the DR-20 declassification \
+        prompt and must never be compiled into a release profile. Drop the feature \
+        from this build; do not relax this guard."
+   );
+   ```
+
+   This is a compiler error, not a script that a release path could skip — the strongest gate
+   available in a Rust tree, and stronger than the `scripts/check-*.sh` convention `just
+   check-everything` uses for everything else, which only runs when someone runs it.
+   [Task 29](#task-29-declassification--the-system-authentication-the-batch-and-the-audit) Step 5
+   proves it fires by running a build that must **fail**.
+
+3. **The seam's default is REFUSE.** Unarmed, `authenticate` returns `Denied`, never `Approved`. A
+   test that forgets to arm it fails **closed** and reads as *"the user cancelled"*, which is the
+   correct thing for it to read as. Arming is **one-shot** — the canned answer is consumed by the
+   prompt it answers, so a test cannot approve a second, unexpected declassification it did not
+   intend to authorise. That is DR-20 point 2 (no cached grant) expressed in the seam, so the seam
+   cannot be *weaker* than the thing it stands in for.
+
+4. **The seam records what it was asked and says so out loud.** It captures the `AuthRequest` — the
+   reason string and the exact id set — so a test asserts that the prompt named the right chats
+   (point 4 is untestable otherwise), and it emits a `warn!` with the stable event name
+   `privacy_test_auth_used` on every use, plus a one-line `[TEST-AUTH]` banner on the CLI. A live
+   seam must be obvious in a log at a glance; that visibility is itself a safety property, and it is
+   the operator's *"a programatic msg is sent"* taken literally.
+
+5. **The Electron half has its own gate, because TypeScript has no `cfg`.** The main process's
+   prompter is the other place an approval can be fabricated, and the Rust `compile_error!` does not
+   reach it. Its seam is gated by `import.meta.env.DEV && !app.isPackaged` — the first is replaced
+   with `false` and dead-code-eliminated when Vite builds the main bundle for packaging (verify this
+   on a packaged build rather than assuming it), the second is this tree's own established
+   convention for exactly this kind of switch (`biorouterd.ts:333` decides the **keyring** default
+   that way). Because neither is a compiler error, the packaged **artifact** is checked directly:
+   the seam's env literal must not appear in `app.asar`. That grep is a real gate on a real
+   artifact, and it is the one release check the Rust side does not need.
+
+**What the production prompt is on each platform — and it is the implementer's job to verify every
+line of this before writing it.** No BioRouter code calls any of these APIs today; a repo-wide grep
+for `LocalAuthentication`, `LAContext`, `promptTouchID` and `systemPreferences` returns nothing. So
+this is a list of candidates with the reason each is named, not a settled design:
+
+- **macOS.** `LAContext.evaluatePolicy` with `.deviceOwnerAuthentication` is the right policy —
+  it accepts Touch ID **and falls back to the login password**, which is what the operator asked for.
+  ⚠ Electron's `systemPreferences.promptTouchID()` is **not** sufficient on its own: it is Touch ID
+  only, with no password fallback, so it fails on any Mac without a sensor. Authorization Services
+  (`AuthorizationCreate` with `kAuthorizationRuleAuthenticateAsSessionUser`) is the older API that
+  produces the password dialog and is the fallback to check. Whether an `LAContext` prompt can be
+  raised from `biorouter` running in a terminal — not an app bundle — is the specific thing to test
+  first, because the CLI path in Task 31 depends on it.
+- **Windows and Linux have no answer in this tree, and one is not invented here.**
+  `Windows.Security.Credentials.UI.UserConsentVerifier` (Windows Hello, which covers PIN and
+  password) and polkit (`pkexec` / a polkit agent) are the obvious candidates on each, and neither
+  is verified, neither is present, and polkit in particular is absent on the headless Linux hosts
+  this product already ships CLI packages for. **This is [Open question 30](#open-questions).**
+  Until it is answered, the honest posture is the fail-closed one: on a platform with no prompter,
+  declassification **refuses**, with a message naming the platform and pointing at the GUI on a
+  machine that has one. Shipping a Windows build whose declassification silently approves would be
+  the worst outcome available, and a build whose declassification refuses is merely a missing
+  feature.
+
+### What this changes in the plan
+
+- **[Task 29](#task-29-declassification--the-system-authentication-the-batch-and-the-audit) is
+  rewritten** around `system_auth`, batch, and the seam. Its `UserConfirmation` ZST **stays** and
+  earns its place: it is now the *return type* of a successful authentication, so a type the
+  compiler will not let an agent-reachable path construct complements the prompt instead of
+  substituting for it. Its `secret_key_and_capability_token()` — named twice in this campaign and
+  defined neither time (DR-16's row says so) — is **gone**.
+- **[Task 31](#task-31-the-cli-is-a-required-r10-surface) is rewritten**: `biorouter session
+  declassify` is legitimate under DR-20 and takes a batch of ids. Task 29's *"no CLI subcommand can
+  construct one"* was correct under DR-19 and is wrong under DR-20; it is replaced by an enumeration
+  of the callers, which is the same shape as
+  [Task 29A](#task-29a-knowledge-base-publicize--privatize--user-only-graded-audited)'s gate (2).
+- **The design's §12.6 *"No general bulk declassification"* is superseded.** That paragraph allowed
+  one exception, for `backfill:*` rows. Point 4 makes batch the general case. §12.1's
+  *"bind it to a one-shot token minted by the renderer over Electron IPC"* is likewise replaced —
+  that is the second of the two places DR-16 records the design assuming a proof it never defined.
+- **[Open question 29](#open-questions) is answered for this operation and stays open for the
+  other.** *"What is a proof-of-user on the CLI"* now has an answer for declassification — an OS
+  prompt raised by the CLI itself — and none for `biorouter session`'s in-process diverge, which
+  mints capability rather than releasing content and is not in DR-20's class.
+- **[Open question 30](#open-questions) is opened**: the Windows and Linux prompter.
 
 ---
 
@@ -20741,6 +21016,7 @@ the implementation is wrong.
 | **DR-17** | **The feature is narrowed to the session store, and the general filesystem barrier is descoped for v1.** In scope and non-negotiable: (1) session logs and histories are locked against a public-capability model; (2) a public model may neither raise its own tier (DR-16) nor reach the private-only extensions `ucsfomopagent` / `cdwagent`; (3) **the user is told** that a model which is not HIPAA-compliant, not on-premise and not local can reach what is on their machine ([Task 30A](#task-30a-the-non-private-model-disclosure)). Accepted as risk, and disclosed rather than mechanised: files a private session produced elsewhere on disk, encryption at rest, and **DR-14's Layer A / Layer B read-deny** — *"we don't have to enforce and encrypt every single step along the way. for now."* Tasks 14A–14F are **DEFERRED, not deleted**; AR-6, AR-9 and AR-10 are retired with them, so a public session on Windows or bubblewrap-less Linux **keeps the shell**. Requirement 3 is what makes accepting the rest a considered tradeoff rather than an oversight, which is why it ships as a task with a gate. Full text in [Scope ruling — DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store). |
 | **DR-18** | **A knowledge base is a first-class BioRouter component: it carries a tier, every guardrail applies to it, and the *user* — never a model — decides that tier.** Confirmed and extended by the operator on 2026-07-30: *"knowledge bases should also be able to be deemed private - as it is also a piece of biorouter component . please make sure that users can change the kb to be private or public and the private model generated kb will automatically be private until the user publicize it, and all the other guardrails will apply as well."* Four parts. (a) **DR-13's ratchet stays** — Tasks 10A–10D unchanged, and a public-capability session may neither read nor write a private base. (b) **Tier at creation, not only on ingest**: a base a private-capability model creates is private from birth. (c) **The user may publicize or privatize a base**, from the Knowledge view, **user-only** and routed through the same user-proof DR-16 requires — a model may never do it, in either direction. (d) **Publicizing is graded and irreversible for content already released**, so its confirmation names the page count and says so; privatizing is single-click, because nothing is disclosed by it. [Task 29A](#task-29a-knowledge-base-publicize--privatize--user-only-graded-audited). This **resolves [AR-1](#ar-1--resolved-by-dr-18--a-knowledge-base-that-one-private-session-touched-becomes-unreadable-from-every-public-chat-including-the-users-own-ordinary-work)** and answers half (a) of [Open question 15](#open-questions). Full text in [DR-18 — the knowledge-base tier](#dr-18--the-knowledge-base-tier-is-user-controllable-and-a-private-session-creates-a-private-base). |
 | **DR-19** | **A warning for the user, a wall for the agent — the governing asymmetry for every privacy and security control in this feature.** Ruled by the operator on 2026-08-02: *"if there are things that the users are explicitly doing (not done by the agents) that are iffy in terms of privacy and security, biorouter need to give warning and will allow the operation to be carried on if the user insists. however, an agent will never automatically do these things."* Two halves. **The user, explicitly → warn, then allow if they insist; never a hard block**, because a control that walls the user is one they route around — by disabling the feature (DR-15's toggle exists for that pressure) or by leaving the product. **An agent, automatically → never**; it escalates to a human or it does not happen, because a warning an agent can proceed past is a log line and a control it can satisfy by continuing is not a control. [DR-16](#decisions-of-record) and [DR-18](#dr-18--the-knowledge-base-tier-is-user-controllable-and-a-private-session-creates-a-private-base) are **instances** of this rule, not separate rules. **[Task 30A](#task-30a-the-non-private-model-disclosure) is what legitimises the permissive half** — a user can only accept a risk that was stated to them — which is also why that disclosure is not gated on the master toggle. **It weakens no gate:** Gates A–H refuse a *model* and are the agent half; *"the user could have done this"* is never a reason to let a model do it. **It makes silence a defect:** every task that changes privacy state must say who may initiate it, because an unstated initiator becomes whatever the implementer assumes. **One proof of user, not two:** [Task 18A](#task-18a-the-two-http-channels-that-raise-a-sessions-own-tier-and-the-user-proof-neither-of-them-has)'s `X-User-Action`; a confirmation phrase compiled into the source is a UX guard, not a human. Provenance: the operator stated it while reviewing the `BindOutcome::NoSuchSession` deviation in Gate A (Task 12), endorsing warn-and-continue there and naming the general rule it instances. Full text in [DR-19 — a warning for the user, a wall for the agent](#dr-19--a-warning-for-the-user-a-wall-for-the-agent). |
+| **DR-20** | **Declassification is gated by a system authentication, and that is what lets an agent ask.** Ruled by the operator on 2026-08-02: *"please make the user type in their system password (like in the beginning of the app starting, typing in the password to get to the keychain) and for each declassify operation, they need to do the password varification (through system means, so the app or the agent will never know the password … and each declassification action can declassify multiple chats (in batch) if the user so wants it. both the agent or through ui can user initiate this process, but either way password will be prompted. to test it, please set up this process so that when password is asked, a programatic msg is sent…"* Six points. **(1)** An **OS** prompt — the class of the Keychain authorization at app start — not an in-app dialog and not a typed phrase. **(2)** **Per operation**; no session, no cached grant. **(3)** The password is verified by the OS and never seen by BioRouter; a user who hands their password to an agent is explicitly outside the threat model. **(4)** **Batch**: one authentication may cover several chats, fixed before the prompt and named inside it, spendable on those ids and no others. **(5)** **Either the agent or the UI may initiate** — an agent may *ask* because it cannot *satisfy*; the gate is the prompt, not the caller. **(6)** A **test seam** stands in for the prompt, gated at **compile time** (`#[cfg(all(debug_assertions, feature = "privacy-test-auth"))]` plus a `compile_error!` that fails any build with the feature on and debug assertions off) and defaulting to **refuse**. **This refines DR-19 and does not repeal it:** the agent-initiation prohibition is relaxed **only** where an unforgeable human act stands between the request and the effect — never for Gates A–H, the spawn-downgrade, `add_extension`, the Task 18A capability raises, or any operation a task merely *confirms*. **It retires two undefined proofs:** Task 29's `secret_key_and_capability_token()` and the design §12.1 *"one-shot token minted by the renderer over Electron IPC"*, the two places DR-16 recorded this design assuming a proof it never defined. **It supersedes the design's §12.6 *"No general bulk declassification"***. Tasks [29](#task-29-declassification--the-system-authentication-the-batch-and-the-audit) and [31](#task-31-the-cli-is-a-required-r10-surface). Full text in [DR-20 — declassification is gated by a system authentication, and that is what lets an agent ask](#dr-20--declassification-is-gated-by-a-system-authentication-and-that-is-what-lets-an-agent-ask). |
 
 ---
 
@@ -20821,7 +21097,8 @@ because the *channel* cannot carry it, never because the proof is undecided.
 | **26** | **What is a proof-of-user for a bind that has no request?** [Task 24](#task-24-the-two-shipped-features-the-gates-break)'s banner establishes the requirement — agent-authored data may not raise a live app session's capability — and there are **three** sites, of which only the first two were previously known. (a) `configure_main_provider` (`routes/apps.rs:809`, bind `:820`) binds the manifest's `model`, which `agent_drafter__declare_profiles` wrote from tool arguments. (b) `apply_route_for_turn` (`:2181-2229`, bind `:2211`) binds a manifest route pin — **this is H4's own sequence**, which this plan narrates as *"Gate A allows the bind → Gate B ratchets"* and has never authorised. (c) **New, and the sharpest:** `ClientFrame::ModelSelect` (`:3409-3428`, bind `:3418`) arrives on `GET /apps/{id}/agent`, which is exempt from secret-key auth (`auth.rs:52-77`, `is_public_app_get` at `:76`), from a page whose TypeScript the model itself authored — so it is a raise over a channel needing **no credential at all**, and Task 24's *"fixed with zero new code — Gate A covers it"* is true of the downward arrow only. **Why the mechanism cannot be lifted from Task 18A:** (a) and (b) are in-process calls with no `HeaderMap`, and (c) has one but on an unauthenticated socket, where a header proves nothing. **The decision needed:** does an app that declares a private-tier provider require a one-time user grant, and if so where is it recorded? It cannot be the manifest (`store.rs:76-79`, agent-writable, which is the whole defect) and it cannot be an env var ([AR-11](#ar-11--amended-by-dr-17--the-daemons-own-api-secret-is-recoverable)). This is the *scoped permission* shape DR-16 names and deliberately did not build. | **Nothing is built.** [Task 24](#task-24-the-two-shipped-features-the-gates-break) carries the requirement in its banner, the three sites in its text, and one `#[ignore]`d test, `agent_authored_data_cannot_raise_a_live_app_sessions_capability`, that asserts all three — placed so that answering this question has somewhere to land. **Until it is answered the exposure is live and belongs to [Task 30A](#task-30a-the-non-private-model-disclosure)'s disclosure**, not to a gate. ⚠ Do **not** close it by adding a confirmation phrase or a manifest boolean: DR-19 says a confirmation compiled into the source is a UX guard and not a human, and a grant stored where the agent writes is not a grant. |
 | **27** | **What stops an agent from disabling the master switch by writing `config.yaml`?** [Task 30](#task-30-settings--privacy--the-master-toggle-its-three-hardening-measures-and-the-badge-it-does-not-hide)'s amendment closes the HTTP channel — `POST /config/upsert` now needs [Task 18A](#task-18a-the-two-http-channels-that-raise-a-sessions-own-tier-and-the-user-proof-neither-of-them-has)'s `X-User-Action` on the disabling arm — but the value's home is a **file**, and [DR-14](#decisions-of-record) made `<config>/config.yaml` deny entry #5 for exactly this reason (*"a master switch a public model can edit is not a switch"*). [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store) defers DR-14, so in v1 that file is an ordinary file and `developer__shell` / `developer__text_editor` can write `BIOROUTER_PRIVACY_TIERS: off` into it. **What limits it today, and it is a real limit rather than a fix:** hardening measure (3) holds the authoritative value in the daemon's memory from startup, so a file write is a **next-launch** disable and not an immediate one — the running daemon keeps enforcing, and the badge keeps reading `Private`, until someone restarts the app. **The decision needed** is which of three: (a) revive the *one file* of DR-14 for this key alone — a single deny path, not the deferred four-root barrier, and the cheapest of the three; (b) move the switch out of `config.yaml` into a store the agent cannot write (the OS credential store already used for secrets, per `docs/security/secret-storage.md`); or (c) accept it, in which case it belongs in [Accepted risks](#accepted-risks) with the next-launch limitation stated, and in [Task 30A](#task-30a-the-non-private-model-disclosure)'s disclosure. | **Nothing is built beyond the narrowing.** Task 30's amendment banner states it; the immediate HTTP path is closed. ⚠ Do not close this by re-enabling `get_param`'s env branch for the key, or by reading the file per gate — measure (1) forbids the first (`BIOROUTER_PRIVACY_TIERS=off biorouterd` is a one-token disable) and measure (3) forbids the second. |
 | **28** | **Who may write an extension config entry's `name`, and what enforces it?** [DR-19](#dr-19--a-warning-for-the-user-a-wall-for-the-agent) makes an unstated initiator a defect, and this is the one object in the feature that has none. A session's tier has exactly one lowering writer (`privacy::declassify`, asserted by [Task 40](#task-40-final-release-gate) Step 3: `privacy_tier = 'public'` appears **once** in the tree); a knowledge base's has exactly one (`knowledge/tier_user.rs::set_unlocked` + a ZST no model can construct, [Task 29A](#task-29a-knowledge-base-publicize--privatize--user-only-graded-audited)); an **extension's has none**. `classify_extension` (Task 8) keys on `name_to_key(name)` — the config entry's name, written from `manifest.name` by `BrxtInstallModal.tsx:152-161`, which [Task 37](#task-37-the-in-app-registry--freshness-that-raises-and-never-lowers) records as carrying *"no provenance whatsoever"* — and `config.yaml` is agent-writable with `text_editor` (§9.3 C1), with [DR-14](#decisions-of-record)'s deny entry #5 deferred by [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store). ⚠ **This is not a badge bug.** `classify_extension` stamps `Extension.tier` at all three admission points, and Gates C (dispatch), E (discovery) and F (enable) all read it — so a rename makes a public model able to **call** `ucsfomopagent`, and `add_extension`'s early `contains_key -> Ok(())` (`:678`) means it lands silently on the next admission. Task 37's union rule protects the registry *document* and not the *key* it is looked up by. **The decision needed:** does a `.brxt` install record provenance (registry id + source URL + hash) so the tier is derived from where an extension came from rather than from a mutable local string — and if so, does that provenance live on `ExtensionConfig` (which [Task 8](#task-8-classify_extension-and-the-generated-private-set)'s OpenAPI gate deliberately freezes) or beside it? The alternative is to accept it and say so in [Accepted risks](#accepted-risks) and in [Task 30A](#task-30a-the-non-private-model-disclosure)'s disclosure. | **Nothing is built.** Task 37's banner states the requirement and withdraws the *"already the accepted direction under R11(ii)"* clause that made this look ruled-on when it was not. ⚠ Do **not** close it by letting `config.yaml` declare a tier — that is R11(i) inverted, and Task 8's OpenAPI-diff gate exists to catch exactly that implementation. Do not close it by adding aliases to `PRIVATE_EXTENSIONS` either: a rename can pick any string. |
-| **29** | **What is a proof-of-user on the CLI, for an operation that mints capability?** [Task 22](#task-22-session-copy--three-hand-rolled-builders-become-one-derived-session-helper)'s amendment requires `X-User-Action` when the *source* of a copy is private, because the copy carries `provider_name` and therefore **mints a new private-capability session** that [DR-16](#decisions-of-record) never sees (DR-16 guards raises on sessions that already exist). Both HTTP handlers can carry the header. `biorouter session` cannot: it calls `diverge_session` in process (`biorouter-cli/src/commands/session.rs:419`, `session/mod.rs:736`), there is no renderer to mint a key, and the same binary is runnable by any agent holding `developer__shell` — so *"the person who ran the command is the user"* is true of a human at a terminal and false of a model that spawned one. This is the same shape as [Open question 23](#open-questions)'s headless third, and probably has the same answer; it is listed separately because 23's subject is a *daemon started without a key* and this one's is a *binary with no request at all*. ⚠ **This is not a reason to leave the HTTP half ungated** — closing two of three doors is worth doing, and the CLI is the door with a human standing at it in every shipped workflow. | **Nothing is built.** Task 22 guards the two HTTP paths and its banner states the CLI is undecided. The interim posture is the honest one: the CLI diverge stays unguarded and is inside [Task 30A](#task-30a-the-non-private-model-disclosure)'s disclosure, alongside [AR-11](#ar-11--amended-by-dr-17--the-daemons-own-api-secret-is-recoverable) and [AR-15](#ar-15--a-caller-holding-the-daemon-secret-can-raise-its-own-sessions-capability-with-no-credentials), which already say a same-machine caller is not distinguishable from the user. |
+| **29** | ⚠ **NARROWED by [DR-20](#dr-20--declassification-is-gated-by-a-system-authentication-and-that-is-what-lets-an-agent-ask), 2026-08-02 — answered for the operation that *releases content* and still open for the one that *mints capability*, which is the one the question is about.** DR-20 supplies a CLI proof-of-user that does not need a request: an **OS authentication prompt raised by the `biorouter` process itself**, which is what [Task 31](#task-31-the-cli-is-a-required-r10-surface)'s `session declassify` is gated on. That answers *"is there any proof-of-user available at a terminal"* — yes — without answering this row, because DR-20's relaxation reaches only operations where an unforgeable human act stands between request and effect, and the CLI diverge below has none built. ⚠ **Do not close this row by pointing at DR-20**: the fix it implies is *build the same prompt on the diverge path*, which is a decision (a prompt on every CLI diverge is a wall on a routine command, exactly what DR-19's user half forbids), not an implementation detail. Original text: **What is a proof-of-user on the CLI, for an operation that mints capability?** [Task 22](#task-22-session-copy--three-hand-rolled-builders-become-one-derived-session-helper)'s amendment requires `X-User-Action` when the *source* of a copy is private, because the copy carries `provider_name` and therefore **mints a new private-capability session** that [DR-16](#decisions-of-record) never sees (DR-16 guards raises on sessions that already exist). Both HTTP handlers can carry the header. `biorouter session` cannot: it calls `diverge_session` in process (`biorouter-cli/src/commands/session.rs:419`, `session/mod.rs:736`), there is no renderer to mint a key, and the same binary is runnable by any agent holding `developer__shell` — so *"the person who ran the command is the user"* is true of a human at a terminal and false of a model that spawned one. This is the same shape as [Open question 23](#open-questions)'s headless third, and probably has the same answer; it is listed separately because 23's subject is a *daemon started without a key* and this one's is a *binary with no request at all*. ⚠ **This is not a reason to leave the HTTP half ungated** — closing two of three doors is worth doing, and the CLI is the door with a human standing at it in every shipped workflow. | **Nothing is built.** Task 22 guards the two HTTP paths and its banner states the CLI is undecided. The interim posture is the honest one: the CLI diverge stays unguarded and is inside [Task 30A](#task-30a-the-non-private-model-disclosure)'s disclosure, alongside [AR-11](#ar-11--amended-by-dr-17--the-daemons-own-api-secret-is-recoverable) and [AR-15](#ar-15--a-caller-holding-the-daemon-secret-can-raise-its-own-sessions-capability-with-no-credentials), which already say a same-machine caller is not distinguishable from the user. |
+| **30** | **What raises the [DR-20](#dr-20--declassification-is-gated-by-a-system-authentication-and-that-is-what-lets-an-agent-ask) system-authentication prompt on Windows and on Linux?** DR-20 requires an operating-system authentication before any declassification, on every platform BioRouter ships to — and **this tree has no cross-platform story for one**. A repo-wide grep for `LocalAuthentication`, `LAContext`, `promptTouchID` and `systemPreferences` across `crates/` and `ui/desktop/src/` returns **zero hits**: nothing in the product has ever raised an OS auth prompt, and the Keychain prompt the operator's ruling compares this to is raised by *macOS* as a side effect of the `keyring` crate reading a secret, not by BioRouter calling an API. macOS has a credible path (`LAContext.evaluatePolicy(.deviceOwnerAuthentication)`, with Authorization Services as the fallback; ⚠ **not** Electron's `systemPreferences.promptTouchID()`, which is Touch ID only with no password fallback and therefore fails on any Mac without a sensor). **Windows** would need `Windows.Security.Credentials.UI.UserConsentVerifier` (Windows Hello, which covers PIN and password) or a `CredUIPromptForWindowsCredentials` + `LogonUser` pair — neither verified, neither present, and the second is a password-handling path DR-20 point 3 forbids outright. **Linux** would need polkit (`pkexec` or a polkit agent), which is **absent on the headless hosts this product already ships CLI-only deb and rpm packages for** (`scripts/build-cli-linux-packages.sh`), so on that platform the answer is likely "there is no prompter" rather than "here is the API". ⚠ **Do not close this by inventing a prompt BioRouter draws itself.** An in-app password box is the thing DR-20 point 3 exists to forbid: it would put a password inside the process, which is precisely the property the ruling buys by staying out of the OS's way. | **Nothing is built, and the posture is fail-closed and stated.** [Task 29](#task-29-declassification--the-system-authentication-the-batch-and-the-audit) specifies `AuthOutcome::Unavailable` as a first-class outcome and Task 29 / [Task 31](#task-31-the-cli-is-a-required-r10-surface) both **refuse** on it, with a message naming the platform and pointing at a machine that has a prompter. macOS is the platform the implementation is specified against; a Windows or Linux build whose declassification refuses is a missing feature, and one whose declassification silently approves is the worst outcome this feature can produce. Until this is ruled on, the refusal belongs in [Task 30A](#task-30a-the-non-private-model-disclosure)'s disclosure and in the user-facing docs of [Task 39](#task-39-docs--user-facing-and-the-designs-status-closure). |
 
 ---
 
