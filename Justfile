@@ -39,6 +39,7 @@ check-versions:
 # need a gate of their own. No npm install: node:test ships with the runtime.
 check-registry:
     node --test landing/scripts/build-registry.test.mjs
+    node landing/scripts/build-registry.mjs --check
 
 # Default release command
 release-binary:

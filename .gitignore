@@ -28,6 +28,10 @@ ui/desktop/src/bin/
 # Hermit toolchain environment
 .hermit/
 
+# Registry generator: the lock a real run holds while it renames its three
+# outputs into place. Removed in a `finally`; only a crash can leave one behind.
+landing/.registry-build.lock
+
 # Claude
 .claude
 

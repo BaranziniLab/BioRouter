@@ -114,6 +114,15 @@ jobs:
       - name: Generator regression suite
         run: node --test landing/scripts/build-registry.test.mjs
 
+      # The published registry, the desktop fallback snapshot and the
+      # compiled-in private set are one catalog in three forms. Being written by
+      # one command is not the same as being in sync — an interrupted run, a
+      # hand edit or a rebase that took one side of a conflict all leave a
+      # published catalog the app does not enforce.
+      - name: The three generated outputs match baam.html
+        if: ${{ !cancelled() }}
+        run: node landing/scripts/build-registry.mjs --check
+
   # ── Unit tests ────────────────────────────────────────────────────────────
   unit:
     name: Unit tests (vitest)

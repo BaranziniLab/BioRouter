@@ -11,9 +11,14 @@
 //! here (the only fetch is the Electron `main.ts` `registry:fetch` handler), so
 //! without this file the CLI and the daemon can enforce nothing.
 //!
-//! ⚠ Nothing fails CI when this file and the registry disagree. One command
-//! rewrites both from one source, so the only way to drift is to hand-edit this
-//! file — which is what the first line asks you not to do.
+//! Drift between the three is detectable, not merely discouraged:
+//!
+//!     node landing/scripts/build-registry.mjs --check
+//!
+//! regenerates all three in memory and fails if any committed copy differs. It
+//! runs in CI (the Frontend workflow) and in `just check-everything`, so a hand
+//! edit here — or an interrupted run that updated only some of the three — is
+//! caught rather than trusted not to happen.
 
 /// The BAAM extensions whose cards declare `data-privacy="private"`, and which
 /// so must never be admitted to a public session.

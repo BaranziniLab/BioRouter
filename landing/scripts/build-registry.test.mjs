@@ -259,3 +259,46 @@ test('a flag with no value is refused by name, not by a stack trace', () => {
   assert.equal(r.code, 1, r.both);
   assert.match(r.stderr, /^registry: --out needs a value/m);
 });
+
+// ---- Drift between the three outputs is detectable ------------------------
+// They are written by one command from one source, which is not the same as
+// being in sync: an interrupted run, a hand edit or a rebase that took one side
+// of a conflict all leave a published catalog the app does not enforce. Nothing
+// could tell before `--check`.
+test('--check passes on the committed tree', () => {
+  const r = run({ args: ['--check'] });
+  assert.equal(r.code, 0, r.both);
+  assert.match(r.stdout, /all three outputs are current/);
+});
+
+for (const [what, path] of Object.entries(PROTECTED)) {
+  test(`--check notices ${what} drifting`, () => {
+    protectingArtifacts(() => {
+      writeFileSync(path, readFileSync(path, 'utf8') + '\n// drifted\n');
+      const r = run({ args: ['--check'] });
+      assert.equal(r.code, 1, r.both);
+      assert.match(r.stderr, new RegExp(path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    });
+  });
+}
+
+test('--check refuses to pretend a fixture is the real input', () => {
+  const r = run({ input: fixture('happy'), out: outPath(), args: ['--check'] });
+  assert.equal(r.code, 1, r.both);
+  assert.match(r.stderr, /--check/);
+});
+
+test('a held generation lock is refused by name', () => {
+  // Two generators interleaving is how the three outputs end up describing
+  // different worlds. The message has to name the file, because a crash is the
+  // one way a stale lock can outlive its run.
+  const lock = join(LANDING, '.registry-build.lock');
+  writeFileSync(lock, 'held by the test suite\n');
+  try {
+    const r = run({ args: [] });
+    assert.equal(r.code, 1, r.both);
+    assert.match(r.stderr, /\.registry-build\.lock/);
+  } finally {
+    rmSync(lock, { force: true });
+  }
+});

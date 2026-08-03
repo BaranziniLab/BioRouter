@@ -17,13 +17,24 @@
 //   ui/desktop/src/components/baam/registry.fallback.json  — the bundled snapshot
 //   crates/biorouter/src/privacy/registry_private.rs       — the compiled-in set
 //
-// Two flags exist so the validations below can be exercised against the
-// fixtures in scripts/fixtures/ without touching any of that:
+// They are written together, staged and renamed into place under a lock, so a
+// reader never sees a half-written catalog and two generators cannot interleave.
+//
+//   node scripts/build-registry.mjs --check
+//
+// regenerates all three in memory and fails if any committed copy differs,
+// which is how CI and `just check-everything` establish that they agree.
+//
+// Flags exist so the validations below can be exercised against the fixtures in
+// scripts/fixtures/ without touching any of that. `--out` is mandatory
+// alongside `--input`, and no run but the full one may write a published
+// artifact — under any spelling of its path:
 //
 //   node scripts/build-registry.mjs --input scripts/fixtures/happy.html \
-//                                   --out /tmp/happy-registry.json
+//                                   --out /tmp/happy-registry.json \
+//                                   --emit-rust /tmp/happy-private.rs
 
-import { readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { closeSync, openSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { basename, dirname, join, resolve } from 'node:path';
 
@@ -114,6 +125,40 @@ if (EMIT_RUST !== null && isPublished(EMIT_RUST)) {
       `${canonical(EMIT_RUST)}, one of the three published artifacts`
   );
   process.exit(1);
+}
+
+// `--check` regenerates in memory and compares, writing nothing. It is what
+// makes "these three files agree with baam.html" a fact CI can establish rather
+// than a claim the generated header used to make on its own behalf.
+const CHECK = argv.includes('--check');
+if (CHECK && !IS_REAL_RUN) {
+  console.error('registry: --check reads the real baam.html and the three real outputs; it takes no --input/--out');
+  process.exit(1);
+}
+
+// Two generators that read baam.html at different moments can interleave their
+// writes and leave the three outputs from two different generations. Held only
+// for the writes of a real run.
+const LOCK = join(ROOT, '.registry-build.lock');
+function withGenerationLock(body) {
+  let fd;
+  try {
+    fd = openSync(LOCK, 'wx');
+  } catch (err) {
+    if (err.code !== 'EEXIST') throw err;
+    console.error(
+      `registry: another generator holds ${LOCK}. ` +
+        `If none is running (a crash can outlive its run), delete that file.`
+    );
+    process.exit(1);
+  }
+  try {
+    writeFileSync(fd, `${process.pid}\n`);
+    body();
+  } finally {
+    closeSync(fd);
+    rmSync(LOCK, { force: true });
+  }
 }
 
 // Collect every violation and report them together, then exit non-zero. One
@@ -580,9 +625,14 @@ function renderPrivateSet(exts) {
       '//! here (the only fetch is the Electron `main.ts` `registry:fetch` handler), so',
       '//! without this file the CLI and the daemon can enforce nothing.',
       '//!',
-      '//! ⚠ Nothing fails CI when this file and the registry disagree. One command',
-      '//! rewrites both from one source, so the only way to drift is to hand-edit this',
-      '//! file — which is what the first line asks you not to do.',
+      '//! Drift between the three is detectable, not merely discouraged:',
+      '//!',
+      '//!     node landing/scripts/build-registry.mjs --check',
+      '//!',
+      '//! regenerates all three in memory and fails if any committed copy differs. It',
+      '//! runs in CI (the Frontend workflow) and in `just check-everything`, so a hand',
+      '//! edit here — or an interrupted run that updated only some of the three — is',
+      '//! caught rather than trusted not to happen.',
       '',
       '/// The BAAM extensions whose cards declare `data-privacy="private"`, and which',
       '/// so must never be admitted to a public session.',
@@ -655,33 +705,85 @@ if (violations.length) {
   process.exit(1);
 }
 
+// Render EVERYTHING before writing anything. The three outputs are one catalog
+// in three forms, and a failure between them leaves a published registry the
+// app does not enforce.
 const out = JSON.stringify(registry, null, 2) + '\n';
-writeFileSync(OUTPUT, out);
+const rustSource = renderPrivateSet(extensions);
+const tally =
+  `${extensions.length} extensions, ${skills.length} skills ` +
+  `(${skills.filter((s) => s.category === 'Core').length} core, ` +
+  `${skills.filter((s) => s.category === 'Developer').length} developer, ` +
+  `${skills.filter((s) => s.category === 'Biomedical').length} biomedical)`;
 
-if (EMIT_RUST !== null) {
-  // A fixture run asked to see the security artifact. Same renderer, same
-  // input, so a test can assert what the compiled-in set would hold for a
-  // catalog the real baam.html does not contain.
-  writeFileSync(EMIT_RUST, renderPrivateSet(extensions));
+// ---- --check: are the three committed outputs what baam.html generates? ----
+// "Written by one command from one source" is not the same as "in sync": an
+// interrupted run, a hand edit, or a rebase that took one side of a conflict
+// all leave a published catalog the app does not enforce, and until this mode
+// existed nothing could tell.
+if (CHECK) {
+  const drift = [];
+  const compare = (path, want) => {
+    let have = null;
+    try {
+      have = readFileSync(path, 'utf8');
+    } catch {
+      /* absent counts as drift */
+    }
+    if (have !== want) drift.push(path);
+  };
+  compare(DEFAULT_OUTPUT, out);
+  compare(FALLBACK_OUTPUT, out);
+  compare(RUST_OUTPUT, rustSource);
+  if (drift.length) {
+    for (const d of drift) console.error(`registry: ${d} is not what baam.html generates`);
+    console.error('registry: run `node landing/scripts/build-registry.mjs` to regenerate');
+    process.exit(1);
+  }
+  console.log(`registry: all three outputs are current (${tally})`);
+  process.exit(0);
 }
 
-if (IS_REAL_RUN) {
-  // The desktop app bundles a snapshot so Browse works offline. It is the same
-  // document; copying it here is what keeps "verified in sync, by luck" from
-  // being how that stays true.
-  writeFileSync(join(REPO, 'ui/desktop/src/components/baam/registry.fallback.json'), out);
-  // And the compiled-in private set, which is the only form of this catalog the
-  // CLI and the daemon can read at all — there is no network path to the
-  // registry from Rust.
-  writeFileSync(
-    join(REPO, 'crates/biorouter/src/privacy/registry_private.rs'),
-    renderPrivateSet(extensions)
-  );
+if (!IS_REAL_RUN) {
+  writeFileSync(OUTPUT, out);
+  if (EMIT_RUST !== null) {
+    // A fixture run asked to see the security artifact. Same renderer, same
+    // input, so a test can assert what the compiled-in set would hold for a
+    // catalog the real baam.html does not contain.
+    writeFileSync(EMIT_RUST, rustSource);
+  }
+} else {
+  // Stage all three beside their destinations, then rename them into place.
+  // A rename is atomic, so no reader ever sees a half-written catalog, and a
+  // failure while writing (a full disk, a permission fault) leaves all three
+  // real files untouched instead of one of them replaced.
+  //
+  // The lock closes the remaining window: two generators that read baam.html at
+  // different moments could otherwise interleave their renames and leave the
+  // three outputs from two different generations.
+  withGenerationLock(() => {
+    const staged = [
+      // The published catalog.
+      [DEFAULT_OUTPUT, out],
+      // The desktop app bundles a snapshot so Browse works offline. It is the
+      // same document; writing it here is what keeps "verified in sync, by
+      // luck" from being how that stays true.
+      [FALLBACK_OUTPUT, out],
+      // And the compiled-in private set, which is the only form of this catalog
+      // the CLI and the daemon can read at all — there is no network path to
+      // the registry from Rust.
+      [RUST_OUTPUT, rustSource],
+    ].map(([path, contents]) => {
+      const tmp = `${path}.tmp-${process.pid}`;
+      writeFileSync(tmp, contents);
+      return [tmp, path];
+    });
+    try {
+      for (const [tmp, path] of staged) renameSync(tmp, path);
+    } finally {
+      for (const [tmp] of staged) rmSync(tmp, { force: true });
+    }
+  });
 }
 
-console.log(
-  `registry.json written: ${extensions.length} extensions, ${skills.length} skills ` +
-    `(${skills.filter((s) => s.category === 'Core').length} core, ` +
-    `${skills.filter((s) => s.category === 'Developer').length} developer, ` +
-    `${skills.filter((s) => s.category === 'Biomedical').length} biomedical)`
-);
+console.log(`registry.json written: ${tally}`);
