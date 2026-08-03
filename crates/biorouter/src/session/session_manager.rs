@@ -5305,6 +5305,17 @@ impl SessionStorage {
         // of unknown provenance is sensitive: unlike migration, there is no
         // local evidence to reason from, so the imported field is read ONLY in
         // the raising direction (issue #56 §9.3 B1).
+        //
+        // ⚠ On today's two-element lattice that max COLLAPSES — `Private` is the
+        // top, so the result is `Private` whatever the file said, and `imported`
+        // decides nothing. Review flagged this as arithmetic that reads live and
+        // is not, and it is written down rather than simplified away for one
+        // reason: `max` is what the rule ACTUALLY is ("only ever raise"), so a
+        // third tier above Private would be honoured here instead of silently
+        // floored to Private by a hardcoded variant. The discriminating half of
+        // the rule is therefore the one its test asserts — an imported
+        // `"public"` cannot lower the row — and not the "raised by it" half,
+        // which no value in this enum can exercise.
         let imported = import.privacy_tier;
 
         let mut builder = session_manager
@@ -12447,6 +12458,18 @@ mod tests {
                 .unwrap()
         }
 
+        /// ⚠ Only the THIRD assertion discriminates, and the name overstates the
+        /// rest — review found it and it is written down rather than renamed,
+        /// because Task 25's gate greps for this name verbatim and a rename
+        /// there would silently drop a carrier from the count.
+        ///
+        /// `import_session` raises to `Private.max(imported)`, and `Private` is
+        /// the top of a two-element lattice, so the first two rows would pass
+        /// against an implementation that ignored the file's field entirely. The
+        /// "only raised BY it" half of the name cannot be exercised until a tier
+        /// above Private exists. What the third row rules out is the dangerous
+        /// implementation — `raise_privacy(imported, …)`, which would let a
+        /// hand-edited export declare itself public and be believed.
         #[tokio::test]
         async fn an_import_with_no_tier_is_private_and_one_with_a_tier_is_only_raised_by_it() {
             // Read the imported field ONLY in the raising direction — never as
