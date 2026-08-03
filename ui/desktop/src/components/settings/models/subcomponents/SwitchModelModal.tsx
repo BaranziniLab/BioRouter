@@ -285,6 +285,16 @@ export const SwitchModelModal = ({
       if (!selectedPredefinedModel) {
         errors.model = 'Please select a model';
         formIsValid = false;
+      } else {
+        // This branch swaps both selects for a flat radio list and reaches the
+        // same `changeModel`, so it bypasses the option list's pre-flight
+        // exactly the way the custom-model field below does. Guarding only that
+        // one would leave the identical hole open on the sibling path.
+        const blocked = blockedReasonFor(selectedPredefinedModel.provider);
+        if (blocked) {
+          errors.model = blocked;
+          formIsValid = false;
+        }
       }
     } else {
       if (!provider) {

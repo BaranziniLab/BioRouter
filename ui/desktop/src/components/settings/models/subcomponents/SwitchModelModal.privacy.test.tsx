@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProviderDetails, ProviderTier } from '../../../../api';
 import { SwitchModelModal } from './SwitchModelModal';
@@ -8,6 +8,11 @@ const mocks = vi.hoisted(() => ({
   getProviderModels: vi.fn(),
   read: vi.fn(),
   changeModel: vi.fn(),
+  // Mutable so the predefined-models branch can be exercised in the same file
+  // as the option-list one; `usePredefinedModels` is read once at mount, so
+  // flipping this before `render` is enough.
+  showPredefined: false,
+  predefinedModels: [] as { name: string; provider: string; subtext?: string }[],
 }));
 
 vi.mock('../../../ConfigContext', () => ({
@@ -29,8 +34,8 @@ vi.mock('../../../ModelAndProviderContext', () => ({
 }));
 
 vi.mock('../predefinedModelsUtils', () => ({
-  getPredefinedModelsFromEnv: () => [],
-  shouldShowPredefinedModels: () => false,
+  getPredefinedModelsFromEnv: () => mocks.predefinedModels,
+  shouldShowPredefinedModels: () => mocks.showPredefined,
 }));
 
 // ⚠ The sibling suite `SwitchModelModal.test.tsx` replaces `ui/Select` with a
@@ -86,6 +91,8 @@ describe('SwitchModelModal — pre-flight, not post-refusal', () => {
     mocks.getProviderModels.mockResolvedValue(['Claude Opus 4.8']);
     mocks.read.mockResolvedValue('');
     mocks.changeModel.mockResolvedValue(true);
+    mocks.showPredefined = false;
+    mocks.predefinedModels = [];
   });
 
   it('a public model is disabled with its reason in a private chat', async () => {
@@ -173,5 +180,59 @@ describe('SwitchModelModal — pre-flight, not post-refusal', () => {
     await openModelMenu();
     const row = await screen.findByRole('option', { name: /Claude Opus/ });
     expect(row).toHaveAttribute('aria-disabled', 'false');
+  });
+});
+
+/**
+ * `shouldShowPredefinedModels()` swaps the provider/model selects for a flat
+ * radio list, and that branch reaches the SAME `changeModel` call. The custom
+ * model field was guarded in `validateForm` precisely because it bypassed the
+ * option list; this list bypasses it in exactly the same way, so leaving it
+ * unguarded reopens the hole on the sibling path.
+ *
+ * Gate A still refuses the bind, so this is a missing warning rather than a
+ * leak — but a missing warning is the entire defect this task set out to fix.
+ */
+describe('SwitchModelModal — the predefined-model list is the same pre-flight', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.getProviders.mockResolvedValue([
+      provider('anthropic', 'public', 'Anthropic'),
+      provider('versa_azure', 'private', 'Versa'),
+    ]);
+    mocks.getProviderModels.mockResolvedValue(['Claude Opus 4.8']);
+    mocks.read.mockResolvedValue('');
+    mocks.changeModel.mockResolvedValue(true);
+    mocks.showPredefined = true;
+    mocks.predefinedModels = [
+      { name: 'claude-opus-4-8', provider: 'anthropic' },
+      { name: 'versa-gpt', provider: 'versa_azure' },
+    ];
+  });
+
+  it('refuses a public predefined model in a private chat, with the same reason', async () => {
+    render(
+      <SwitchModelModal sessionId="s1" privacyTier="private" onClose={vi.fn()} setView={vi.fn()} />
+    );
+
+    fireEvent.click(await screen.findByText('claude-opus-4-8'));
+    fireEvent.click(screen.getByRole('button', { name: 'Select model' }));
+
+    expect(await screen.findByText(/private chat/i)).toBeInTheDocument();
+    expect(mocks.changeModel).not.toHaveBeenCalled();
+  });
+
+  // The negative: the guard must key on the SELECTED model's provider, not
+  // simply refuse every submit while the chat is private.
+  it('accepts a private predefined model in the same private chat', async () => {
+    render(
+      <SwitchModelModal sessionId="s1" privacyTier="private" onClose={vi.fn()} setView={vi.fn()} />
+    );
+
+    fireEvent.click(await screen.findByText('versa-gpt'));
+    fireEvent.click(screen.getByRole('button', { name: 'Select model' }));
+
+    await waitFor(() => expect(mocks.changeModel).toHaveBeenCalled());
+    expect(screen.queryByText(/private chat/i)).toBeNull();
   });
 });
