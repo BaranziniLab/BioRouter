@@ -1,4 +1,5 @@
 import type { ProviderTier, SessionClassification } from '../../../api/types.gen';
+import { learnedPrivateExtensionKeys } from '../../baam/privateSet';
 import { nameToKey } from './utils';
 
 /**
@@ -20,9 +21,10 @@ import { nameToKey } from './utils';
  * enforced. That is the safe half — the user sees no warning and then sees the
  * refusal — but it is still drift, and the two lists must be edited together.
  *
- * Task 37 replaces this constant with `PRIVATE_EXTENSIONS ∪
- * private(last_good_fetch)` off the BAAM registry. When it does, this function
- * is the single seam it has to change.
+ * This constant is the compiled-in HALF of the private set. Task 37 made
+ * `classifyExtension` below the union `PRIVATE_EXTENSIONS ∪
+ * private(last_good_fetch)`, and this function stayed the single seam — the
+ * constant is still the floor nothing can lower.
  *
  * Keys are `nameToKey` keys — whitespace-stripped and lower-cased — which is the
  * same reduction `name_to_key` applies in Rust, so `UCSFOMOPAgent`,
@@ -30,9 +32,23 @@ import { nameToKey } from './utils';
  */
 export const PRIVATE_EXTENSION_KEYS: readonly string[] = ['cdwagent', 'ucsfomopagent'];
 
-/** R11(ii): anything not on the marketplace list is Public. Fail-open, by operator ruling. */
+/**
+ * R11(ii): anything not on the marketplace list is Public. Fail-open, by
+ * operator ruling.
+ *
+ * The list is `PRIVATE_EXTENSION_KEYS ∪ private(last_good_fetch)` (§10.2), so an
+ * extension marked private upstream after this build shipped is badged private
+ * here from the next successful catalogue fetch onward, permanently. The union
+ * only ever adds: a live document cannot take a badge off an extension this
+ * build names, and cannot take one off an extension a previous fetch learned.
+ *
+ * The learned half is read synchronously off persisted storage rather than
+ * awaited, because every caller is a render.
+ */
 export function classifyExtension(name: string): ProviderTier {
-  return PRIVATE_EXTENSION_KEYS.includes(nameToKey(name)) ? 'private' : 'public';
+  const key = nameToKey(name);
+  if (PRIVATE_EXTENSION_KEYS.includes(key)) return 'private';
+  return learnedPrivateExtensionKeys().has(key) ? 'private' : 'public';
 }
 
 /**

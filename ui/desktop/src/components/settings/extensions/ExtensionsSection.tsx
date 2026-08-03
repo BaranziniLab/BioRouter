@@ -23,6 +23,7 @@ import { toastService } from '../../../toasts';
 import type { ExtensionConfig, ProviderTier } from '../../../api/types.gen';
 import { BrxtInstallModal } from '../../BrxtInstallModal';
 import BrowseExtensionsModal from '../../baam/BrowseExtensionsModal';
+import { catalogFreshnessLine, loadRegistry, type RegistryLoad } from '../../baam/registry';
 
 /** The global default provider, as the extension cards need to describe it. */
 export interface DefaultProvider {
@@ -97,6 +98,24 @@ export default function ExtensionsSection({
       cancelled = true;
     };
   }, [read, getProviders]);
+  /**
+   * The marketplace catalogue, resolved once for the whole screen (issue #56
+   * §13.5). Each card needs to say where it came from — marketplace or a file —
+   * and that is a question only the catalogue answers; resolving it per row
+   * would be one IPC round-trip per extension on a screen that routinely lists
+   * twenty, which is exactly why `defaultProvider` above is passed through too.
+   */
+  const [catalog, setCatalog] = useState<RegistryLoad | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    loadRegistry().then((load) => {
+      if (!cancelled) setCatalog(load);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const [selectedExtension, setSelectedExtension] = useState<FixedExtensionEntry | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
@@ -323,6 +342,14 @@ export default function ExtensionsSection({
   return (
     <section id="extensions">
       <div className="">
+        {/* §10.2's staleness line. The provenance under every card below is only
+            as good as the catalogue it was read from, so how old that catalogue
+            is belongs on the same screen, once. */}
+        {catalog && catalogFreshnessLine(catalog) && (
+          <p className="text-xs text-text-subtle mb-3">
+            Marketplace catalogue · {catalogFreshnessLine(catalog)}
+          </p>
+        )}
         <ExtensionList
           extensions={extensions}
           onToggle={handleExtensionToggle}
@@ -330,6 +357,7 @@ export default function ExtensionsSection({
           disableConfiguration={disableConfiguration}
           searchTerm={searchTerm}
           defaultProvider={defaultProvider}
+          catalog={catalog}
         />
 
         {!hideButtons && (

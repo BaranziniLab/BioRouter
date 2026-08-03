@@ -3,6 +3,7 @@ import builtInExtensionsData from '../../../../built-in-extensions.json';
 import { ExtensionConfig } from '../../../../api';
 import { FixedExtensionEntry } from '../../../ConfigContext';
 import type { DefaultProvider } from '../ExtensionsSection';
+import type { RegistryLoad } from '../../../baam/registry';
 
 interface ExtensionListProps {
   extensions: FixedExtensionEntry[];
@@ -17,6 +18,8 @@ interface ExtensionListProps {
    * extension, on a screen that routinely lists twenty.
    */
   defaultProvider?: DefaultProvider | null;
+  /** Pass-through only, for the same reason (issue #56, §13.5). */
+  catalog?: RegistryLoad | null;
 }
 
 export default function ExtensionList({
@@ -27,6 +30,7 @@ export default function ExtensionList({
   disableConfiguration: _disableConfiguration,
   searchTerm = '',
   defaultProvider,
+  catalog,
 }: ExtensionListProps) {
   const matchesSearch = (extension: FixedExtensionEntry): boolean => {
     if (!searchTerm) return true;
@@ -71,6 +75,7 @@ export default function ExtensionList({
                 onConfigure={onConfigure}
                 isStatic={isStatic}
                 defaultProvider={defaultProvider}
+                catalog={catalog}
               />
             ))}
           </div>
@@ -92,6 +97,7 @@ export default function ExtensionList({
                 onConfigure={onConfigure}
                 isStatic={isStatic}
                 defaultProvider={defaultProvider}
+                catalog={catalog}
               />
             ))}
           </div>

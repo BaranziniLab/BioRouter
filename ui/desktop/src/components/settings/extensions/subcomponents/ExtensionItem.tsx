@@ -7,6 +7,7 @@ import BuiltInBadge from '../../../ui/BuiltInBadge';
 import { getSubtitle, getFriendlyTitle, isBuiltInExtension } from './ExtensionList';
 import { extensionPairingRefused } from '../extensionPrivacy';
 import type { DefaultProvider } from '../ExtensionsSection';
+import { extensionProvenance, type RegistryLoad } from '../../../baam/registry';
 
 interface ExtensionItemProps {
   extension: FixedExtensionEntry;
@@ -18,6 +19,12 @@ interface ExtensionItemProps {
    * can honestly judge against, since Settings has no session.
    */
   defaultProvider?: DefaultProvider | null;
+  /**
+   * The marketplace catalogue (issue #56, §13.5), resolved once by
+   * `ExtensionsSection`. `null` until it has loaded — the card simply says less
+   * until then, rather than guessing a provenance and correcting itself.
+   */
+  catalog?: RegistryLoad | null;
 }
 
 export default function ExtensionItem({
@@ -26,6 +33,7 @@ export default function ExtensionItem({
   onConfigure,
   isStatic,
   defaultProvider,
+  catalog,
 }: ExtensionItemProps) {
   const [visuallyEnabled, setVisuallyEnabled] = useState(extension.enabled);
   const [isToggling, setIsToggling] = useState(false);
@@ -71,6 +79,22 @@ export default function ExtensionItem({
       ? `${extension.enabled ? 'Enabled · u' : 'U'}navailable in new chats (default model is public) — judged against your default provider, ${defaultProvider.name}`
       : null;
 
+  /**
+   * §13.5's three strings. **How** an extension got here is the thing a user
+   * cannot otherwise see, and it is what decides the badge: an extension
+   * installed from a file is Public under R11(ii) because the install records no
+   * provenance at all, and nothing on this card said so.
+   *
+   * Built-ins are excluded rather than given a fourth string. They are neither
+   * on the marketplace nor installed from a file, so both marketplace strings
+   * would be false statements — and `BuiltInBadge`, already beside the title,
+   * answers the provenance question for them.
+   */
+  const provenance =
+    catalog && !isBuiltInExtension(extension)
+      ? extensionProvenance(catalog.registry, extension.name)
+      : null;
+
   return (
     <div
       id={`extension-${kebabCase(extension.name)}`}
@@ -87,6 +111,7 @@ export default function ExtensionItem({
           <p className="text-xs text-text-muted mt-0.5 line-clamp-1">{description}</p>
         )}
         {command && <p className="text-xs font-mono text-text-muted mt-0.5 truncate">{command}</p>}
+        {provenance && <p className="text-xs text-text-subtle mt-1">{provenance}</p>}
         {pairingNotice && <p className="text-xs text-text-muted mt-1">{pairingNotice}</p>}
       </div>
       <div className="flex items-center gap-2 flex-shrink-0">

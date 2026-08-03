@@ -358,8 +358,19 @@ type ElectronAPI = {
     extensionName: string
   ) => Promise<{ success: true; installDir: string } | { error: string }>;
   // BAAM registry (Browse Skills / Browse Extensions)
+  /**
+   * Issue #56 §10.2. `stale: true` means the main process could not reach the
+   * registry and answered from its last-good copy; `fetchedAt` dates whichever
+   * document came back, so the renderer can say how old the catalogue is instead
+   * of only that it is not live.
+   */
   fetchRegistry: () => Promise<
-    { registry: import('./components/baam/registry').BaamRegistry } | { error: string }
+    | {
+        registry: import('./components/baam/registry').BaamRegistry;
+        fetchedAt?: string;
+        stale?: boolean;
+      }
+    | { error: string }
   >;
   downloadRegistryAsset: (url: string) => Promise<{ path: string } | { error: string }>;
   // Dependency checker

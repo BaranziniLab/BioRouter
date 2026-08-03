@@ -2902,16 +2902,76 @@ function isAllowedRegistryUrl(rawUrl: string): URL | null {
   }
 }
 
+/**
+ * Issue #56 §10.2. The fetch had no timeout at all, so a registry host that
+ * accepted the connection and then said nothing left the Browse modal on
+ * "Loading catalog…" indefinitely — Node's fetch has no default timeout.
+ */
+const REGISTRY_FETCH_TIMEOUT_MS = 10_000;
+
+/**
+ * The last document that both fetched and parsed. Written on every success and
+ * read on every failure, so an offline launch still shows the catalogue the
+ * machine last saw rather than the snapshot frozen at build time — which is what
+ * makes "an offline laptop can fail to learn a new private badge, but never
+ * loses one" true across restarts rather than only within a session.
+ */
+function registryCachePath(): string {
+  return path.join(app.getPath('userData'), 'registry-last-good.json');
+}
+
+/** A document is only worth caching if it is actually a catalogue. */
+function isRegistryDocument(json: unknown): boolean {
+  if (!json || typeof json !== 'object') return false;
+  const doc = json as { extensions?: unknown; skills?: unknown };
+  return Array.isArray(doc.extensions) && Array.isArray(doc.skills);
+}
+
+async function writeLastGoodRegistry(registry: unknown, fetchedAt: string): Promise<void> {
+  try {
+    await fs.writeFile(registryCachePath(), JSON.stringify({ fetchedAt, registry }), 'utf8');
+  } catch (err) {
+    // A cache that cannot be written costs freshness on the next offline run,
+    // never the fetch that just succeeded.
+    log.warn('Could not write the last-good registry cache:', err);
+  }
+}
+
+async function readLastGoodRegistry(): Promise<{ registry: unknown; fetchedAt?: string } | null> {
+  try {
+    const raw = await fs.readFile(registryCachePath(), 'utf8');
+    const parsed = JSON.parse(raw) as { registry?: unknown; fetchedAt?: string };
+    if (!isRegistryDocument(parsed.registry)) return null;
+    return { registry: parsed.registry, fetchedAt: parsed.fetchedAt };
+  } catch {
+    return null;
+  }
+}
+
 ipcMain.handle('registry:fetch', async () => {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REGISTRY_FETCH_TIMEOUT_MS);
   try {
     const response = await fetch(REGISTRY_URL, {
       headers: { 'User-Agent': 'Biorouter', Accept: 'application/json' },
+      signal: controller.signal,
     });
-    if (!response.ok) return { error: `HTTP ${response.status}` };
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const json = await response.json();
-    return { registry: json };
+    // Validate BEFORE caching: a proxy's login page is a 200 with a body, and
+    // caching it would poison every subsequent offline launch.
+    if (!isRegistryDocument(json)) throw new Error('Response was not a marketplace catalog');
+    const fetchedAt = new Date().toISOString();
+    await writeLastGoodRegistry(json, fetchedAt);
+    return { registry: json, fetchedAt, stale: false };
   } catch (err) {
+    const cached = await readLastGoodRegistry();
+    if (cached) {
+      return { registry: cached.registry, fetchedAt: cached.fetchedAt, stale: true };
+    }
     return { error: (err as Error).message };
+  } finally {
+    clearTimeout(timer);
   }
 });
 

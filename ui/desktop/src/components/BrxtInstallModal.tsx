@@ -3,6 +3,7 @@ import { useState, useCallback, useRef, useEffect } from 'react';
 import { Package } from './icons/app-icons';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from './ui/dialog';
 import { Button } from './ui/button';
+import { PrivacyBadge } from './ui/PrivacyBadge';
 import { BrxtEnvVar, BrxtManifest } from '../types/brxt';
 import { useConfig } from './ConfigContext';
 import { activateExtensionDefault } from './settings/extensions';
@@ -189,6 +190,24 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath }: Pr
     }
   };
 
+  /**
+   * Issue #56 §13.5. The badge this install is going to produce, said out loud
+   * before the user commits.
+   *
+   * An extension installed from a file is Public under R11(ii) — the install
+   * records no provenance whatsoever, so there is nothing for the daemon to
+   * treat as private — and that consequence is invisible unless it is stated.
+   * It renders on BOTH steps because it is a property of the install *route*,
+   * not of the bundle: a user who has not yet chosen a file should already know
+   * what dropping one in here will mean. Only one step is mounted at a time.
+   *
+   * One sentence, one element: the assertions match on the normalised text of a
+   * single node, and splitting a phrase into a nested `<strong>` would take it
+   * out of that node.
+   */
+  const publicNotice =
+    'Extensions installed from a file are always Public. Any model, including commercial models hosted outside UCSF, will be able to call this extension.';
+
   const requiredVars = envEntries.filter((e) => e.required);
   const optionalVars = envEntries.filter((e) => !e.required);
   const requiredMissing = requiredVars.some((e) => !e.value.trim());
@@ -211,6 +230,11 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath }: Pr
             <p className="text-sm text-text-muted">
               Install a Biorouter extension bundle (.brxt file).
             </p>
+
+            <div className="biorouter-modal-panel rounded-lg p-3">
+              <PrivacyBadge tier="public" />
+              <p className="text-xs text-text-muted mt-1.5 leading-relaxed">{publicNotice}</p>
+            </div>
 
             {/* Drop zone */}
             <div
@@ -382,6 +406,12 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath }: Pr
                 <p className="text-sm text-text-danger">{error}</p>
               </div>
             )}
+
+            {/* §13.5: the resulting badge, above the Install button. */}
+            <div className="biorouter-modal-panel rounded-lg p-3">
+              <PrivacyBadge tier="public" />
+              <p className="text-xs text-text-muted mt-1.5 leading-relaxed">{publicNotice}</p>
+            </div>
 
             <DialogFooter>
               <Button

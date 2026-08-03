@@ -6,10 +6,13 @@ import { BrxtInstallModal } from '../BrxtInstallModal';
 import {
   loadRegistry,
   extensionMatches,
+  effectivePrivacy,
+  catalogFreshnessLine,
   type BaamRegistry,
   type RegistryExtension,
 } from './registry';
 import { Dialog, DialogContent, DialogTitle } from '../ui/dialog';
+import { PrivacyBadge } from '../ui/PrivacyBadge';
 
 interface Props {
   onClose: () => void;
@@ -21,6 +24,7 @@ interface Props {
 export default function BrowseExtensionsModal({ onClose, onInstalled, installedNames }: Props) {
   const [registry, setRegistry] = useState<BaamRegistry | null>(null);
   const [live, setLive] = useState(false);
+  const [fetchedAt, setFetchedAt] = useState<string | undefined>(undefined);
   const [loadError, setLoadError] = useState(false);
   const [search, setSearch] = useState('');
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
@@ -29,10 +33,11 @@ export default function BrowseExtensionsModal({ onClose, onInstalled, installedN
   useEffect(() => {
     let cancelled = false;
     loadRegistry()
-      .then(({ registry, live }) => {
+      .then(({ registry, live, fetchedAt }) => {
         if (cancelled) return;
         setRegistry(registry);
         setLive(live);
+        setFetchedAt(fetchedAt);
       })
       .catch(() => !cancelled && setLoadError(true));
     return () => {
@@ -97,8 +102,13 @@ export default function BrowseExtensionsModal({ onClose, onInstalled, installedN
             <p className="text-xs text-text-muted mt-0.5">
               Install MCP extensions from the Biorouter marketplace. Add one at a time. Most need
               credentials configured during install.
-              {!live && (
-                <span className="text-text-subtle"> · showing bundled catalog (offline)</span>
+              {/* §10.2: a last-good catalogue is dated rather than dismissed as
+                  "offline" — the entries are real, they are just not current. */}
+              {catalogFreshnessLine({ live, fetchedAt }) && (
+                <span className="text-text-subtle">
+                  {' '}
+                  · {catalogFreshnessLine({ live, fetchedAt })}
+                </span>
               )}
             </p>
           </div>
@@ -148,6 +158,13 @@ export default function BrowseExtensionsModal({ onClose, onInstalled, installedN
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className="text-sm font-semibold text-text-default">{ext.name}</span>
+                      {/* The union rule, not `ext.privacy`: a downgraded document
+                          must not be able to un-badge an entry here either. */}
+                      {registry && (
+                        <PrivacyBadge
+                          tier={effectivePrivacy(registry, ext.extension_name ?? ext.name)}
+                        />
+                      )}
                       <span className="text-[11px] text-text-subtle">
                         {[ext.organization, ext.version].filter(Boolean).join(' · ')}
                       </span>

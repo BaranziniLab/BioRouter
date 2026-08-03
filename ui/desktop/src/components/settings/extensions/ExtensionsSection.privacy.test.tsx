@@ -90,4 +90,38 @@ describe('ExtensionsSection — the pairing state Settings can actually compute'
     await screen.findByText(/SPOKE graph/);
     expect(screen.queryByText(/unavailable in new chats/i)).toBeNull();
   });
+
+  /**
+   * §13.5. Without this the whole catalogue pass-through — section → list →
+   * item — could break silently and every card would simply say less, which is
+   * indistinguishable from a slow load. The strings are asserted verbatim
+   * because they are the design's, not the implementation's.
+   *
+   * `window.electron` is absent here, so `loadRegistry` falls all the way
+   * through to the snapshot bundled with the app — which is the point: the
+   * provenance a user reads must not depend on the network being up.
+   */
+  it('every card says where it came from, in §13.5 strings', async () => {
+    render(<ExtensionsSection hideButtons />);
+
+    expect(
+      await screen.findByText('Private — published on the Biorouter marketplace')
+    ).toBeInTheDocument();
+    expect(screen.getByText('Public — published on the Biorouter marketplace')).toBeInTheDocument();
+    // The catalogue on screen is the bundled one, and the screen says so.
+    expect(screen.getByText(/showing bundled catalog \(offline\)/i)).toBeInTheDocument();
+  });
+
+  it('an extension the catalogue does not list is named as installed from a file', async () => {
+    mocks.extensionsList = [
+      { type: 'stdio', name: 'medcp', description: 'Local clinical MCP', enabled: true },
+    ];
+    render(<ExtensionsSection hideButtons />);
+
+    expect(
+      await screen.findByText(
+        'Public — installed from a file, not on the marketplace. Any model can call it.'
+      )
+    ).toBeInTheDocument();
+  });
 });
