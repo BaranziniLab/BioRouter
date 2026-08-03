@@ -26,6 +26,14 @@ interface ResolvedProvider {
  * Shows the disclosure the first time a public-tier provider is bound on this
  * install, before the first turn on it (issue #56, DR-17 requirement 3).
  *
+ * ⚠ **Whose provider is passed decides whether "before" is true.** This
+ * component only answers "given this provider, disclose?"; it is
+ * {@link AppNonPrivateModelDisclosureGate} — the app-level mount, keyed on the
+ * CONFIGURED provider — that makes the answer arrive before there is a chat at
+ * all. `BaseChat` also mounts one, keyed on the chat's bound provider, for a
+ * chat whose picker chose differently from the app default; a session row does
+ * not exist until the first turn, so that mount alone disclosed too late.
+ *
  * ⚠ **Before, not after — and precisely how far before.** Once the dialog is up
  * it is modal: Radix traps focus and marks the rest of the page `aria-hidden`,
  * so the composer behind it cannot be reached and nothing can be sent. An

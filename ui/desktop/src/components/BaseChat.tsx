@@ -2352,6 +2352,15 @@ function BaseChatContent({
         ⚠ It is NOT behind the master privacy switch. DR-15 turns off gates, the
         ratchet and refusals; it does not turn off the truth, and with
         enforcement off the exposure is larger, not smaller.
+
+        ⚠ This is the SECOND of two mounts, and on its own it was too late.
+        `session` is filled from `/agent/resume`, so on a fresh install there is
+        no row, no `provider_name` and no dialog until the first turn has already
+        gone out — a receipt. `App.tsx` mounts an `AppNonPrivateModelDisclosureGate`
+        keyed on the CONFIGURED provider, which lands before any chat exists;
+        this mount stays because a chat's own picker can bind a public provider
+        on a machine whose default is private. `useSoleDisclosurePresenter`
+        keeps the two to one dialog.
       */}
       <NonPrivateModelDisclosureGate providerName={session?.provider_name} />
 

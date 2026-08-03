@@ -41,6 +41,7 @@ import LauncherView from './components/LauncherView';
 import 'react-toastify/dist/ReactToastify.css';
 import { useConfig } from './components/ConfigContext';
 import { ModelAndProviderProvider } from './components/ModelAndProviderContext';
+import { AppNonPrivateModelDisclosureGate } from './components/privacy/AppNonPrivateModelDisclosureGate';
 import { ThemeProvider } from './contexts/ThemeContext';
 import PermissionSettingsView from './components/settings/permission/PermissionSetting';
 
@@ -697,6 +698,22 @@ export default function App() {
         </ImmediateHashRouter>
         <AnnouncementModal />
         <UpdateAvailableModal />
+        {/*
+          Issue #56, DR-17 requirement 3 — the one-time disclosure of what a
+          non-private model can reach, shown BEFORE the first turn.
+
+          ⚠ Mounted here, at the app level, and not only inside `BaseChat`. The
+          chat-level mount is keyed on the chat's bound provider, which does not
+          exist until a session row does — i.e. until the first turn has already
+          been sent. On a fresh install that made the disclosure a receipt. This
+          one is keyed on the configured provider, so it lands as soon as one is
+          bound, on whatever route the user is standing on.
+
+          ⚠ Inside `ModelAndProviderProvider` because it reads that context, and
+          outside the router because it belongs to the install, not to a view.
+          `useSoleDisclosurePresenter` keeps the two mounts to one dialog.
+        */}
+        <AppNonPrivateModelDisclosureGate />
       </ModelAndProviderProvider>
     </ThemeProvider>
   );
