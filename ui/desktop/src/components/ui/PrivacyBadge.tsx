@@ -42,6 +42,12 @@ export interface PrivacyBadgeProps {
    * The suffix is on the badge itself rather than only in the settings strip
    * because badges appear on surfaces the strip does not — the session list, the
    * model chip, the extension rows.
+   *
+   * ⚠ One consequence, stated so it is not rediscovered: a test that
+   * `vi.mock`s `ConfigContext` **and** renders a badge must stub
+   * `usePrivacyTiersEnabled` too. It fails loudly if it does not — "is not a
+   * function", at the line below — which is the right trade against a prop that
+   * ships unpassed on nine surfaces and fails nowhere.
    */
   enforcementOff?: boolean;
   className?: string;

@@ -7,8 +7,15 @@ const mocks = vi.hoisted(() => ({
   getProviders: vi.fn(async () => []),
 }));
 
+// ⚠ `usePrivacyTiersEnabled` as well as `useConfig`. `PrivacyBadge` reads the
+// master switch itself (issue #56, DR-15) rather than making its nine call
+// sites remember a prop, so any test that mocks this module AND renders a badge
+// owes both. Omitting it fails loudly — "usePrivacyTiersEnabled is not a
+// function" at the badge's own line — which is the failure mode to want; the
+// alternative was a prop that ships unpassed, and it did.
 vi.mock('../../../ConfigContext', () => ({
   useConfig: () => ({ read: mocks.read, getProviders: mocks.getProviders }),
+  usePrivacyTiersEnabled: () => true,
 }));
 
 vi.mock('../../../ModelAndProviderContext', () => ({
