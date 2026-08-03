@@ -4,6 +4,7 @@ use anyhow::{Context, Result};
 use crate::commands::session_grouping::{
     group_by_parent, listed_session_types, liveness_label, render_child, Liveness, SessionRow,
 };
+use biorouter::privacy::declassify::DeclassifyOutcome;
 use biorouter::session::{generate_diagnostics, Session, SessionManager};
 use biorouter::utils::safe_truncate;
 use cliclack::{confirm, multiselect, select};
@@ -429,6 +430,174 @@ pub async fn handle_session_diverge(session_id: &str, name: Option<String>) -> R
     Ok(())
 }
 
+/// Issue #56 Task 31 / §12.4 — declassify a chat from the terminal, by id.
+///
+/// **Why the CLI needs its own door.** `list_sessions` filters to (`user`,
+/// `scheduled`), so a private `Hidden`, `SubAgent` or `Terminal` chat has no GUI
+/// declassification surface at all: History cannot show it, and a control that
+/// cannot be selected is not a control. The obvious fix — a "System sessions"
+/// filter in History — surfaces 511 hidden sessions on this machine into a
+/// user-facing list, which is a regression traded for an edge case. So this
+/// works by **id** and consults no session type at all; a Step 5 gate greps this
+/// function's body for `SessionType` and expects none.
+///
+/// ⚠ **This is the second place in the tree that mints
+/// `privacy::declassify::UserConfirmation`**, and that is a deliberate widening
+/// of a claim `declassify.rs`'s audit used to make with one member. What the
+/// audit still guarantees is that the set is *closed and named*: adding a third
+/// door turns the build red. What it no longer says is "the only door is an HTTP
+/// route behind the user-action header". The honest statement of the residual is
+/// that an agent holding `developer__shell` can drive this command — and that
+/// same agent can already `sqlite3` the classification column directly, so the
+/// store was never protected from the shell in the first place. What the shell
+/// cannot do through this door is declassify *silently*: the ledger row
+/// [`biorouter::privacy::declassify::declassify`] writes is identical whichever
+/// door was used.
+pub async fn declassify_command(session_id: &str) -> Result<()> {
+    let session_manager = SessionManager::instance();
+    let outcome = declassify_by_id(&session_manager, session_id, &mut TerminalPrompt).await?;
+    println!("{}", render_declassify_outcome(session_id, outcome));
+    Ok(())
+}
+
+/// How the terminal asks §12.4's graded confirmation. A trait so the whole of
+/// [`declassify_by_id`] — the grading, the escalation, the writing — is testable
+/// without a tty, which is the only way the "a refused prompt writes nothing"
+/// assertion can exist at all.
+pub(crate) trait DeclassifyPrompt {
+    /// §12.4's weak control: one yes/no, for a chat that merely ran a turn
+    /// against a private endpoint.
+    fn confirm_single_click(&mut self, session_id: &str) -> Result<bool>;
+
+    /// §12.4's strong control: retype `phrase`. `None` means the user backed
+    /// out.
+    fn ask_phrase(&mut self, session_id: &str, phrase: &str) -> Result<Option<String>>;
+}
+
+/// The real one.
+struct TerminalPrompt;
+
+impl DeclassifyPrompt for TerminalPrompt {
+    fn confirm_single_click(&mut self, session_id: &str) -> Result<bool> {
+        Ok(confirm(format!(
+            "Declassify session {session_id}? It will no longer be restricted to private models."
+        ))
+        .initial_value(false)
+        .interact()?)
+    }
+
+    fn ask_phrase(&mut self, session_id: &str, phrase: &str) -> Result<Option<String>> {
+        println!(
+            "Session {session_id} reached a private data source, so declassifying it needs \
+             confirmation."
+        );
+        let typed: String = cliclack::input(format!(
+            "Type the last six characters of the session id ({phrase}) to confirm, or leave \
+             blank to cancel"
+        ))
+        .required(false)
+        .interact()?;
+        Ok(if typed.trim().is_empty() {
+            None
+        } else {
+            Some(typed)
+        })
+    }
+}
+
+/// The testable core of [`declassify_command`].
+///
+/// The read here decides which control to **show**; the writer decides, inside
+/// its own transaction, whether that was the right one — the check-then-act
+/// `privacy::declassify` documents. So a weak prompt that comes back
+/// `ConfirmationRequired` is not a bug and not a loop: the chat reached a
+/// private data source between the two, and the answer is to escalate to the
+/// strong control once, exactly as the desktop dialog does.
+///
+/// ⚠ The proof-of-user is minted in **one** place inside this function, at the
+/// top of the loop. Two call sites (one per grade) would read more naturally and
+/// would break `the_proof_of_user_is_constructed_in_exactly_two_places`, whose
+/// per-file count is what stops a second, unguarded mint from hiding in a file
+/// that is already a permitted member of the set.
+pub(crate) async fn declassify_by_id(
+    session_manager: &SessionManager,
+    session_id: &str,
+    prompt: &mut dyn DeclassifyPrompt,
+) -> Result<DeclassifyOutcome> {
+    use biorouter::privacy::declassify::{
+        confirmation_phrase, declassify, requires_typed_confirmation, UserConfirmation,
+    };
+    use biorouter::privacy::SessionClassification;
+
+    let session = session_manager
+        .get_session(session_id, false)
+        .await
+        .map_err(|e| anyhow::anyhow!("Session '{}' not found: {}", session_id, e))?;
+
+    // Answered before anything is asked: there is nothing to confirm about a
+    // no-op, and after a successful declassification the provenance reads
+    // `declassified_by_user`, which grades onto the STRONG control — so a second
+    // run would otherwise demand a phrase the first run never showed.
+    if session.privacy_tier == SessionClassification::Public {
+        return Ok(DeclassifyOutcome::AlreadyPublic);
+    }
+
+    let phrase = confirmation_phrase(session_id);
+    let mut typed: Option<String> =
+        if requires_typed_confirmation(session.privacy_reason.as_deref()) {
+            match prompt.ask_phrase(session_id, &phrase)? {
+                Some(typed) => Some(typed),
+                None => return Ok(DeclassifyOutcome::ConfirmationRequired),
+            }
+        } else if prompt.confirm_single_click(session_id)? {
+            None
+        } else {
+            return Ok(DeclassifyOutcome::ConfirmationRequired);
+        };
+
+    let mut escalated = false;
+    loop {
+        let outcome = declassify(
+            session_manager,
+            session_id,
+            typed.as_deref(),
+            UserConfirmation::from_typed_confirmation(),
+        )
+        .await?;
+        if outcome != DeclassifyOutcome::ConfirmationRequired || escalated {
+            return Ok(outcome);
+        }
+        // The grade moved under us. Ask once for the control it moved to; a
+        // second refusal is the user's answer, not a reason to ask again.
+        escalated = true;
+        typed = prompt.ask_phrase(session_id, &phrase)?;
+        if typed.is_none() {
+            return Ok(outcome);
+        }
+    }
+}
+
+/// What to print. Separated from the work so the wording is testable and so the
+/// three non-writing outcomes cannot be reported as a success.
+pub(crate) fn render_declassify_outcome(session_id: &str, outcome: DeclassifyOutcome) -> String {
+    match outcome {
+        DeclassifyOutcome::Declassified => format!(
+            "Session {session_id} is now public. It may run on any model, and the change is \
+             recorded in the classification ledger."
+        ),
+        DeclassifyOutcome::AlreadyPublic => {
+            format!("Session {session_id} is already public. Nothing changed.")
+        }
+        DeclassifyOutcome::ConfirmationRequired => format!(
+            "Session {session_id} was NOT declassified: the confirmation was not given. The chat \
+             is unchanged."
+        ),
+        DeclassifyOutcome::SessionNotFound => {
+            format!("Session {session_id} no longer exists. Nothing changed.")
+        }
+    }
+}
+
 pub async fn handle_diagnostics(session_id: &str, output_path: Option<PathBuf>) -> Result<()> {
     println!(
         "Generating diagnostics bundle for session '{}'...",
@@ -695,6 +864,215 @@ mod tests {
             None,
             "an unknown name is still not found"
         );
+    }
+
+    /// Issue #56 Task 31. A prompt that always gives the strongest answer the
+    /// terminal could give: yes to the single click, and the phrase when one is
+    /// asked for. It records what it was asked, so a test can tell the two
+    /// controls apart.
+    #[derive(Default)]
+    struct AlwaysConfirms {
+        single_clicks: usize,
+        phrases_asked: usize,
+    }
+
+    impl DeclassifyPrompt for AlwaysConfirms {
+        fn confirm_single_click(&mut self, _session_id: &str) -> Result<bool> {
+            self.single_clicks += 1;
+            Ok(true)
+        }
+
+        fn ask_phrase(&mut self, _session_id: &str, phrase: &str) -> Result<Option<String>> {
+            self.phrases_asked += 1;
+            Ok(Some(phrase.to_string()))
+        }
+    }
+
+    /// A prompt nobody answers: the user hit Ctrl-C, or said no.
+    struct Refuses;
+
+    impl DeclassifyPrompt for Refuses {
+        fn confirm_single_click(&mut self, _session_id: &str) -> Result<bool> {
+            Ok(false)
+        }
+
+        fn ask_phrase(&mut self, _session_id: &str, _phrase: &str) -> Result<Option<String>> {
+            Ok(None)
+        }
+    }
+
+    /// A private session of `kind`, carrying `reason` as its provenance.
+    async fn private_session_of_type(
+        sm: &SessionManager,
+        dir: &TempDir,
+        kind: SessionType,
+        reason: &str,
+    ) -> String {
+        let s = sm
+            .create_session(dir.path().to_path_buf(), "a cohort chat".to_string(), kind)
+            .await
+            .unwrap();
+        sm.add_message(&s.id, &Message::user().with_text("patient MRN 12345"))
+            .await
+            .unwrap();
+        sm.update(&s.id)
+            .raise_privacy(biorouter::privacy::SessionClassification::Private, reason)
+            .apply()
+            .await
+            .unwrap();
+        s.id
+    }
+
+    /// Issue #56 Task 31. `list_sessions` filters to (`user`, `scheduled`), so a
+    /// private `Hidden`, `SubAgent` or `Terminal` chat has NO GUI
+    /// declassification surface at all — the History list it would have to be
+    /// selected from cannot show it.
+    ///
+    /// The obvious fix is a "System sessions" filter in History, and it is the
+    /// wrong one: on this machine that surfaces 511 hidden sessions into a
+    /// user-facing list, a regression traded for an edge case. The CLI escape
+    /// hatch works by **id**, which is exactly why it does not need one.
+    #[tokio::test]
+    async fn declassify_works_by_id_regardless_of_session_type() {
+        use biorouter::privacy::declassify::DeclassifyOutcome;
+        use biorouter::privacy::SessionClassification;
+
+        for kind in [
+            SessionType::Hidden,
+            SessionType::SubAgent,
+            SessionType::Terminal,
+            SessionType::User,
+        ] {
+            let dir = TempDir::new().unwrap();
+            let sm = SessionManager::new(dir.path().to_path_buf());
+            let id = private_session_of_type(&sm, &dir, kind, "mcp:ucsfomopagent").await;
+
+            let mut prompt = AlwaysConfirms::default();
+            assert_eq!(
+                declassify_by_id(&sm, &id, &mut prompt).await.unwrap(),
+                DeclassifyOutcome::Declassified,
+                "a private {kind:?} chat must be declassifiable by id"
+            );
+            assert_eq!(
+                sm.get_session(&id, false).await.unwrap().privacy_tier,
+                SessionClassification::Public
+            );
+            // `mcp:*` provenance grades onto §12.4's STRONG control, whatever
+            // the session's type is.
+            assert_eq!(prompt.phrases_asked, 1, "{kind:?}");
+            assert_eq!(prompt.single_clicks, 0, "{kind:?}");
+        }
+    }
+
+    /// …and the reason the escape hatch has to exist: three of those four types
+    /// are invisible to every listing the GUI builds its History from.
+    #[tokio::test]
+    async fn three_of_those_four_types_have_no_listing_to_be_selected_from() {
+        let dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(dir.path().to_path_buf());
+        let mut hidden = vec![];
+        for kind in [
+            SessionType::Hidden,
+            SessionType::SubAgent,
+            SessionType::Terminal,
+        ] {
+            hidden.push(private_session_of_type(&sm, &dir, kind, "mcp:x").await);
+        }
+        let visible = private_session_of_type(&sm, &dir, SessionType::User, "mcp:x").await;
+
+        let listed = sm.list_sessions().await.unwrap();
+        assert!(listed.iter().any(|s| s.id == visible));
+        for id in &hidden {
+            assert!(
+                !listed.iter().any(|s| &s.id == id),
+                "{id} is listed after all — this test's premise is gone"
+            );
+        }
+    }
+
+    /// §12.4's grading, at the terminal. A chat that merely ran a turn gets the
+    /// single click; everything else gets the typed phrase.
+    #[tokio::test]
+    async fn the_terminal_shows_the_control_the_provenance_grades_onto() {
+        use biorouter::privacy::declassify::DeclassifyOutcome;
+
+        let dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(dir.path().to_path_buf());
+        let weak = private_session_of_type(&sm, &dir, SessionType::User, "turn:versa_azure").await;
+        let mut prompt = AlwaysConfirms::default();
+        assert_eq!(
+            declassify_by_id(&sm, &weak, &mut prompt).await.unwrap(),
+            DeclassifyOutcome::Declassified
+        );
+        assert_eq!(prompt.single_clicks, 1);
+        assert_eq!(prompt.phrases_asked, 0);
+
+        // A second call on the now-public row is a no-op and asks nothing.
+        let mut again = AlwaysConfirms::default();
+        assert_eq!(
+            declassify_by_id(&sm, &weak, &mut again).await.unwrap(),
+            DeclassifyOutcome::AlreadyPublic
+        );
+        assert_eq!(again.single_clicks, 0);
+        assert_eq!(again.phrases_asked, 0);
+    }
+
+    /// A refusal at the prompt writes nothing. Both controls, because a "no"
+    /// that declassified anyway is the one failure this whole surface exists to
+    /// prevent.
+    #[tokio::test]
+    async fn a_prompt_nobody_answers_leaves_the_chat_private() {
+        use biorouter::privacy::declassify::DeclassifyOutcome;
+        use biorouter::privacy::SessionClassification;
+
+        let dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(dir.path().to_path_buf());
+        for reason in ["turn:versa_azure", "mcp:ucsfomopagent"] {
+            let id = private_session_of_type(&sm, &dir, SessionType::User, reason).await;
+            assert_eq!(
+                declassify_by_id(&sm, &id, &mut Refuses).await.unwrap(),
+                DeclassifyOutcome::ConfirmationRequired
+            );
+            assert_eq!(
+                sm.get_session(&id, false).await.unwrap().privacy_tier,
+                SessionClassification::Private,
+                "a refused confirmation must leave the chat exactly as it was"
+            );
+        }
+    }
+
+    /// The three non-writing outcomes must not read as success. A user who is
+    /// told "declassified" and finds the chat still refusing has been lied to by
+    /// the one surface whose whole job is to be believed.
+    #[test]
+    fn only_the_writing_outcome_reports_a_declassification() {
+        assert!(
+            render_declassify_outcome("20260801_7", DeclassifyOutcome::Declassified)
+                .contains("now public")
+        );
+        for outcome in [
+            DeclassifyOutcome::AlreadyPublic,
+            DeclassifyOutcome::ConfirmationRequired,
+            DeclassifyOutcome::SessionNotFound,
+        ] {
+            let text = render_declassify_outcome("20260801_7", outcome);
+            assert!(
+                text.contains("Nothing changed") || text.contains("unchanged"),
+                "{outcome:?} reported as a change: {text}"
+            );
+            assert!(!text.contains("is now public"), "{outcome:?}: {text}");
+        }
+    }
+
+    /// An id that names no row is reported, not silently reported as success.
+    #[tokio::test]
+    async fn an_unknown_id_is_an_error_and_not_a_declassification() {
+        let dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(dir.path().to_path_buf());
+        let err = declassify_by_id(&sm, "29990101_000000", &mut AlwaysConfirms::default())
+            .await
+            .expect_err("an unknown id must not read as a successful declassification");
+        assert!(err.to_string().contains("29990101_000000"), "{err}");
     }
 
     /// The rule lives in exactly one place, so the listing and the `--name`

@@ -605,6 +605,21 @@ enum SessionCommand {
         )]
         branch_name: Option<String>,
     },
+    /// Issue #56 Task 31 / §12.4. By id, and only by id: `list_sessions`
+    /// filters to (`user`, `scheduled`), so a private `Hidden`, `SubAgent` or
+    /// `Terminal` chat cannot be picked from any listing the app builds — this
+    /// is the only surface that can reach one.
+    #[command(
+        about = "Declassify a private session so it may run on any model",
+        long_about = "Lower a session's privacy classification from private to public, after a \
+                      confirmation at the terminal. The change is recorded in the \
+                      classification ledger. Works by session id, including for sessions that \
+                      no listing shows (subagent runs, --no-session runs, terminal sessions)."
+    )]
+    Declassify {
+        /// Session id to declassify.
+        session_id: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -1242,6 +1257,15 @@ enum Command {
 
         #[command(flatten)]
         extension_opts: ExtensionOptions,
+
+        // Issue #56 Task 31. `biorouter run` has had these since forever;
+        // `biorouter session` did not, so `build_session`'s first precedence
+        // slot (`--provider`) was permanently `None` on the interactive path.
+        // That is the repair every privacy refusal in this crate now prints —
+        // "re-run with `--provider versa_azure`" — and a refusal that names a
+        // flag the command does not accept is worse than one that names none.
+        #[command(flatten)]
+        model_opts: ModelOptions,
     },
 
     /// Open the last project directory
@@ -1694,6 +1718,12 @@ async fn handle_session_subcommand(command: SessionCommand) -> Result<()> {
             };
             crate::commands::session::handle_session_diverge(&session_id, branch_name).await?;
         }
+        SessionCommand::Declassify { session_id } => {
+            // No `lookup_session_id`, no interactive picker: both go through
+            // `list_sessions*`, which is exactly the filter this subcommand
+            // exists to route around.
+            crate::commands::session::declassify_command(&session_id).await?;
+        }
     }
     Ok(())
 }
@@ -1704,6 +1734,7 @@ async fn handle_interactive_session(
     history: bool,
     session_opts: SessionOptions,
     extension_opts: ExtensionOptions,
+    model_opts: ModelOptions,
 ) -> Result<()> {
     let session_start = std::time::Instant::now();
     let session_type = if resume { "resumed" } else { "new" };
@@ -1737,8 +1768,8 @@ async fn handle_interactive_session(
         builtins: extension_opts.builtins,
         workflow: None,
         additional_system_prompt: None,
-        provider: None,
-        model: None,
+        provider: model_opts.provider,
+        model: model_opts.model,
         debug: session_opts.debug,
         max_tool_repetitions: session_opts.max_tool_repetitions,
         max_turns: session_opts.max_turns,
@@ -2221,9 +2252,17 @@ pub async fn cli() -> anyhow::Result<()> {
             history,
             session_opts,
             extension_opts,
+            model_opts,
         }) => {
-            handle_interactive_session(identifier, resume, history, session_opts, extension_opts)
-                .await
+            handle_interactive_session(
+                identifier,
+                resume,
+                history,
+                session_opts,
+                extension_opts,
+                model_opts,
+            )
+            .await
         }
         Some(Command::Project {}) => {
             handle_project_default()?;

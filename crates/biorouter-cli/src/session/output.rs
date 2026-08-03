@@ -1361,6 +1361,12 @@ pub fn display_session_info(
     model: &str,
     session_id: &Option<String>,
     provider_instance: Option<&Arc<dyn biorouter::providers::base::Provider>>,
+    // Issue #56 Task 31 / R10. The tier is a property of the CHAT, not of the
+    // provider row above it: a public model bound to a private chat is exactly
+    // the state the banner has to make visible, and reading it off
+    // `provider_instance` would report the model's tier instead and say
+    // "Private" for the one case that matters.
+    privacy: biorouter::privacy::SessionClassification,
 ) {
     let headline = if resume {
         "resuming session"
@@ -1398,6 +1404,8 @@ pub fn display_session_info(
     if let Some(id) = session_id {
         row("session", id.clone());
     }
+
+    row("privacy", super::privacy::tier_row(privacy));
 
     row(
         "workdir",
@@ -1616,7 +1624,14 @@ pub fn preview() {
 
     // Session info (single-model variant; no provider instance needed).
     let sid = Some("ab12cd34-ef56".to_string());
-    display_session_info(false, "versa_azure", "gpt-5.2", &sid, None);
+    display_session_info(
+        false,
+        "versa_azure",
+        "gpt-5.2",
+        &sid,
+        None,
+        biorouter::privacy::SessionClassification::Private,
+    );
 
     // Section rules for a few representative tools.
     print_section_rule("text_editor", "developer");

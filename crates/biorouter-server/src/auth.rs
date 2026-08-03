@@ -379,10 +379,12 @@ mod tests {
     ///
     /// It also pins WHERE the proof-of-user is minted, which is the half its
     /// sibling in `privacy::declassify` cannot see.
-    /// `the_proof_of_user_is_constructed_in_exactly_one_place` counts the
-    /// constructor across the tree and requires exactly one call, in this file;
-    /// this requires that call to be inside the body of the handler asserted
-    /// above to consult the guard. Neither alone is enough — a count of one says
+    /// `the_proof_of_user_is_constructed_in_exactly_two_places` counts the
+    /// constructor across the tree and requires exactly one call in this file
+    /// (the other permitted site being the CLI's `declassify` subcommand, which
+    /// has no route and no guard to assert about); this requires that call to be
+    /// inside the body of the handler asserted above to consult the guard.
+    /// Neither alone is enough — a count of one says
     /// nothing about which function holds it, and a guarded handler says nothing
     /// about a second, unguarded one next to it — and together they say the
     /// proof is minted once, behind the guard.

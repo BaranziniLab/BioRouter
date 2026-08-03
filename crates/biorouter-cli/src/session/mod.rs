@@ -5,6 +5,7 @@ mod export;
 mod input;
 pub mod markdown;
 pub mod output;
+pub mod privacy;
 mod prompt;
 mod stream_coalesce;
 mod task_execution_display;
@@ -53,6 +54,18 @@ use std::time::Instant;
 use tokio;
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
+
+/// Is this assistant message Gate B's turn refusal?
+///
+/// Keyed on [`biorouter::privacy::refusal::TURN_REFUSAL_MARKER`] — the constant
+/// that exists precisely so independent readers can tell a refusal from a
+/// completed turn — rather than on a phrase retyped here, which would go quietly
+/// false the first time the wording moved.
+pub(crate) fn is_privacy_turn_refusal(message: &Message) -> bool {
+    message
+        .as_concat_text()
+        .contains(biorouter::privacy::refusal::TURN_REFUSAL_MARKER)
+}
 
 /// Build the `biorouter://diverge` deeplink the CLI hands to the desktop app to
 /// open a diverged session in a fresh window. The session id and working dir
@@ -1378,6 +1391,22 @@ impl CliSession {
                                 } else if !is_json_mode {
                                     output::render_message(&message, self.debug);
                                 }
+
+                                // Issue #56 Gate B, at the terminal. The daemon's
+                                // refusal is written for the desktop app: it names
+                                // "Settings → Models" and "the model chip in the
+                                // composer", neither of which exists here. Follow
+                                // it with the two commands that do. On stderr, so a
+                                // `--output-format json` stdout stays a document.
+                                if is_privacy_turn_refusal(&message) {
+                                    eprintln!(
+                                        "{}",
+                                        privacy::repair_block(
+                                            &self.session_id,
+                                            &privacy::available_private_models().await,
+                                        )
+                                    );
+                                }
                             }
                         }
                         Some(Ok(AgentEvent::McpNotification((extension_id, notification)))) => {
@@ -2476,6 +2505,30 @@ mod tests {
                  (format={output_format})"
             );
         }
+    }
+
+    /// Issue #56 Task 31. The CLI has to recognise Gate B's refusal to follow it
+    /// with a terminal repair, and it recognises it by the shared marker rather
+    /// than by a phrase retyped here.
+    #[test]
+    fn a_gate_b_refusal_is_recognised_by_its_marker_and_ordinary_replies_are_not() {
+        let session = biorouter::session::session_manager::Session {
+            provider_name: Some("anthropic".into()),
+            privacy_tier: biorouter::privacy::SessionClassification::Private,
+            ..Default::default()
+        };
+        let refusal =
+            Message::assistant().with_text(biorouter::privacy::refusal::turn_refusal(&session));
+        assert!(is_privacy_turn_refusal(&refusal));
+
+        assert!(!is_privacy_turn_refusal(
+            &Message::assistant().with_text("Sure — here is the analysis you asked for.")
+        ));
+        // Not merely "mentions privacy": an assistant that talks ABOUT the
+        // feature must not have a repair block stapled to its answer.
+        assert!(!is_privacy_turn_refusal(&Message::assistant().with_text(
+            "This chat is private, so only a private model may run in it."
+        )));
     }
 
     /// Issue #56 Gate H. CLI plan mode is a documented first-class feature and

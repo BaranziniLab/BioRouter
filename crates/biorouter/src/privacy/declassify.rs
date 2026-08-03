@@ -88,22 +88,32 @@ pub fn confirmation_matches(session_id: &str, presented: Option<&str>) -> bool {
 ///
 /// ⚠ **What Rust enforces here, stated precisely, because the design overstates
 /// it.** §12.4 describes the constructor as `pub(in …)`, "invoked in exactly one
-/// place". It cannot be: the single caller is
-/// `biorouter-server::routes::session::declassify_session`, in a different
-/// crate, and `pub(in path)` does not cross a crate boundary. So the constructor
+/// place". It cannot be: the callers are
+/// `biorouter-server::routes::session::declassify_session` and
+/// `biorouter-cli::commands::session::declassify_by_id`, both in different
+/// crates, and `pub(in path)` does not cross a crate boundary. So the constructor
 /// is `pub`, and the language guarantees only that a caller cannot fabricate the
 /// proof by writing the struct literal — it does not, by itself, cap the number
-/// of call sites at one.
+/// of call sites.
 ///
-/// What caps it is `the_proof_of_user_is_constructed_in_exactly_one_place`
+/// What caps it is `the_proof_of_user_is_constructed_in_exactly_two_places`
 /// below: a repo walk asserting the set of files outside this one that so much
-/// as *name* `UserConfirmation` is exactly `{routes/session.rs}`. An MCP server,
-/// a `ToolRouter`, a `workspace_*` handler or a CLI subcommand that reached for
-/// this would have to name the type, and the build turns red. That is a weaker
-/// mechanism than the design claims and a stronger one than a route that is
-/// merely undocumented — and it is the strongest available without moving
-/// `declassify` into the server crate, where it would lose the `pub(crate)`
-/// storage access it needs.
+/// as *name* `UserConfirmation` is exactly `{routes/session.rs,
+/// cli/commands/session.rs}`. An MCP server, a `ToolRouter` or a `workspace_*`
+/// handler that reached for this would have to name the type, and the build
+/// turns red. That is a weaker mechanism than the design claims and a stronger
+/// one than a route that is merely undocumented — and it is the strongest
+/// available without moving `declassify` into the server crate, where it would
+/// lose the `pub(crate)` storage access it needs.
+///
+/// ⚠ **Two doors, and the second is a terminal, not a header.** Task 31 (R10)
+/// added the CLI subcommand because `list_sessions` filters to (`user`,
+/// `scheduled`): a private `Hidden`, `SubAgent` or `Terminal` chat has no GUI
+/// declassification control at all. Its proof-of-user is a confirmation typed at
+/// a tty, so an agent holding `developer__shell` can drive it — and that same
+/// agent can already write this column with `sqlite3`, so the store was never
+/// protected from the shell. Both doors write the same ledger row, which is the
+/// property the audit actually protects.
 pub struct UserConfirmation(());
 
 impl UserConfirmation {
@@ -353,13 +363,14 @@ mod tests {
 
     #[tokio::test]
     async fn only_a_user_confirmation_can_lower_the_tier() {
-        // UserConfirmation is a ZST whose only constructor is invoked in exactly
-        // one place: the HTTP handler, after it has matched the typed
-        // confirmation. No MCP server, no ToolRouter, no workspace_* handler and
-        // no CLI subcommand constructs one — the field is private, so the tuple
-        // literal is unavailable outside this module, and the named constructor
-        // is pinned to its single call site by
-        // [`the_proof_of_user_is_constructed_in_exactly_one_place`].
+        // UserConfirmation is a ZST whose constructor is invoked in exactly two
+        // places, both of which are surfaces a human has to act at: the HTTP
+        // handler, after it has matched the typed confirmation, and the CLI's
+        // `session declassify <id>`, after it has asked at the terminal. No MCP
+        // server, no ToolRouter and no workspace_* handler constructs one — the
+        // field is private, so the tuple literal is unavailable outside this
+        // module, and the named constructor is pinned to those two call sites by
+        // [`the_proof_of_user_is_constructed_in_exactly_two_places`].
         let temp = tempfile::TempDir::new().unwrap();
         let sm = SessionManager::new(temp.path().to_path_buf());
         let id = private_session_with_reason(&sm, "mcp:ucsfomopagent").await;
@@ -669,27 +680,40 @@ mod tests {
         );
     }
 
-    /// The proof-of-user is a cross-crate `pub` constructor, because the only
-    /// caller lives in `biorouter-server` and `pub(in …)` cannot cross a crate
-    /// boundary. Rust therefore cannot restrict it to one call site on its own —
-    /// this test is what does.
+    /// The proof-of-user is a cross-crate `pub` constructor, because its callers
+    /// live in `biorouter-server` and `biorouter-cli` and `pub(in …)` cannot
+    /// cross a crate boundary. Rust therefore cannot restrict it to a fixed set
+    /// of call sites on its own — this test is what does.
     ///
     /// It pins two things, and it takes both. The set of FILES that so much as
-    /// name the type must be exactly `{routes/session.rs}`; and within them the
-    /// number of times the constructor is actually CALLED must be exactly one.
-    /// The file set alone is not enough: a second handler added to that same
-    /// file could mint the proof with no `is_user_action` check and this audit
-    /// would not notice, because the file is already a permitted member.
+    /// name the type must be exactly the two below; and within them the number
+    /// of times the constructor is actually CALLED must be exactly one each. The
+    /// file set alone is not enough: a second handler added to one of those files
+    /// could mint the proof with no user check and this audit would not notice,
+    /// because the file is already a permitted member.
     /// `auth::tests::the_declassify_route_consults_the_user_action_guard` closes
-    /// the loop from the other side, asserting that the one call sits inside the
-    /// body of the handler that consults the guard.
+    /// the loop from the other side for the HTTP door, asserting that its one
+    /// call sits inside the body of the handler that consults the guard.
+    ///
+    /// ⚠ **The set grew to two at Task 31, and the claim it supports shrank.**
+    /// Until then this test could be read as "the only way to lower a
+    /// classification is an HTTP route behind the user-action header". R10 makes
+    /// the CLI a required surface — `list_sessions` filters to (`user`,
+    /// `scheduled`), so a private `Hidden`/`SubAgent`/`Terminal` chat has no GUI
+    /// declassification control at all — and `biorouter session declassify <id>`
+    /// is that surface. Its proof-of-user is a confirmation typed at a terminal
+    /// rather than a header, and the honest residual is written down at
+    /// `commands/session.rs`'s `declassify_command`: an agent holding
+    /// `developer__shell` can drive the CLI, and that same agent can already
+    /// write the column directly with `sqlite3`, so the store was never
+    /// protected from the shell. What both doors still share is the ledger row.
     ///
     /// Both assertions fail closed. They are exact equalities against a computed
     /// map, so a needle that stopped matching — a renamed constructor, a
     /// reformatted call — yields an empty map and a red build, never a silent
     /// pass.
     #[test]
-    fn the_proof_of_user_is_constructed_in_exactly_one_place() {
+    fn the_proof_of_user_is_constructed_in_exactly_two_places() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .unwrap()
@@ -739,21 +763,33 @@ mod tests {
         naming.sort();
         assert_eq!(
             naming,
-            vec!["crates/biorouter-server/src/routes/session.rs".to_string()],
-            "a second file naming the proof-of-user appeared. The whole claim \
-             that an agent cannot declassify a chat rests on this set having one member, \
-             and that member being a route behind the user-action header."
+            vec![
+                // Task 31: `biorouter session declassify <id>`, behind a
+                // confirmation typed at the terminal.
+                "crates/biorouter-cli/src/commands/session.rs".to_string(),
+                // `POST /sessions/{id}/declassify`, behind the user-action header.
+                "crates/biorouter-server/src/routes/session.rs".to_string(),
+            ],
+            "a third file naming the proof-of-user appeared. The claim that a model cannot \
+             declassify a chat rests on this set staying closed, and on every member being a \
+             surface a human has to act at."
         );
         let called: Vec<(String, usize)> = constructions.into_iter().collect();
         assert_eq!(
             called,
-            vec![(
-                "crates/biorouter-server/src/routes/session.rs".to_string(),
-                1
-            )],
-            "the proof-of-user is minted more than once. A second construction site is a \
-             second way to lower a classification, and only the one inside \
-             `declassify_session` is known to sit behind the user-action guard."
+            vec![
+                (
+                    "crates/biorouter-cli/src/commands/session.rs".to_string(),
+                    1
+                ),
+                (
+                    "crates/biorouter-server/src/routes/session.rs".to_string(),
+                    1
+                )
+            ],
+            "the proof-of-user is minted somewhere new, or twice in a file that is already a \
+             member. Each extra construction site is another way to lower a classification, and \
+             only these two are known to sit behind a human's confirmation."
         );
     }
 }

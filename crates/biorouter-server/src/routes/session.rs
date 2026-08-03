@@ -1280,9 +1280,11 @@ async fn declassify_session(
     // to grade it would be a check-then-act, and would also cost a second
     // round-trip to say what the transaction is about to read anyway.
     //
-    // The construction below is the single construction site of the
+    // The construction below is this file's only construction of the
     // proof-of-user, pinned by
-    // `privacy::declassify::tests::the_proof_of_user_is_constructed_in_exactly_one_place`.
+    // `privacy::declassify::tests::the_proof_of_user_is_constructed_in_exactly_two_places`
+    // — the other being `biorouter session declassify <id>` (issue #56 Task 31),
+    // which is the only surface that can reach a private chat no listing shows.
     match declassify(
         state.session_manager(),
         &session_id,
