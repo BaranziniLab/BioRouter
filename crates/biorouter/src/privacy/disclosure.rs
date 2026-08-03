@@ -139,6 +139,15 @@ pub fn is_acknowledged_in(config_dir: &Path) -> bool {
 
 /// Record the acknowledgement. Idempotent — re-acknowledging rewrites the
 /// timestamp and is not an error.
+///
+/// ⚠ **Staged and renamed, never written in place.** `fs::write` opens with
+/// `truncate`, so between the truncate and the write the record on disk is
+/// empty — and [`is_acknowledged_in`] reads an empty record as *not
+/// acknowledged*, which is the fail-safe polarity turning a written record into
+/// a false negative. Two panes acknowledging at once reach that window, and a
+/// process that dies inside it leaves a malformed record behind for good. A
+/// rename within one directory is atomic, so the record path is only ever absent
+/// or complete.
 pub fn record_acknowledgement_in(config_dir: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(config_dir)?;
     let record = Acknowledgement {
@@ -146,7 +155,18 @@ pub fn record_acknowledgement_in(config_dir: &Path) -> std::io::Result<()> {
     };
     let body = serde_json::to_string_pretty(&record)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    std::fs::write(ack_path_in(config_dir), body)
+    // Named per process, so two Biorouter processes acknowledging at the same
+    // moment stage into different files and each rename is a complete record.
+    let staging = config_dir.join(format!("{ACK_FILE_NAME}.{}.tmp", std::process::id()));
+    std::fs::write(&staging, body)?;
+    match std::fs::rename(&staging, ack_path_in(config_dir)) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            // Do not leave the staging file in the user's config directory.
+            let _ = std::fs::remove_file(&staging);
+            Err(e)
+        }
+    }
 }
 
 /// [`is_acknowledged_in`] against this install's real config directory.

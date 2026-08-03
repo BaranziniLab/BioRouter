@@ -125,6 +125,53 @@ fn the_acknowledgement_is_recorded_once_and_survives_a_restart() {
     assert!(disclosure::is_acknowledged_in(config_dir));
 }
 
+/// The record is swapped into place, never truncated in place.
+///
+/// `fs::write` opens with `truncate`, so between the truncate and the write the
+/// file on disk is empty — and `is_acknowledged_in` reads an empty file as *not
+/// acknowledged*, i.e. a record that WAS written momentarily reports the
+/// opposite. Two panes acknowledging at once (the split view mounts one gate
+/// each) is enough to reach it, and the same window is what leaves a malformed
+/// record behind if the process dies mid-write.
+///
+/// Staging in a sibling file and renaming closes it: within a directory a rename
+/// is atomic, so the record path is only ever *absent* or *complete*. The
+/// mechanism is asserted through the inode, because that is what distinguishes
+/// the two implementations without racing them — a truncate-in-place keeps the
+/// inode, a swap replaces it.
+#[cfg(unix)]
+#[test]
+fn the_record_is_swapped_into_place_not_truncated_in_place() {
+    use std::os::unix::fs::MetadataExt;
+
+    let dir = tempfile::TempDir::new().unwrap();
+    let config_dir = dir.path();
+    let record = config_dir.join(disclosure::ACK_FILE_NAME);
+
+    disclosure::record_acknowledgement_in(config_dir).unwrap();
+    let first = std::fs::metadata(&record).unwrap().ino();
+
+    disclosure::record_acknowledgement_in(config_dir).unwrap();
+    let second = std::fs::metadata(&record).unwrap().ino();
+
+    assert_ne!(
+        first, second,
+        "the acknowledgement was rewritten in place, so a reader can observe it \
+         empty between the truncate and the write"
+    );
+    assert!(disclosure::is_acknowledged_in(config_dir));
+
+    // …and the staging file does not outlive the write. It sits in the user's
+    // config directory, so one left behind per acknowledgement is litter in a
+    // directory the user reads.
+    let leftovers: Vec<String> = std::fs::read_dir(config_dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| name != disclosure::ACK_FILE_NAME)
+        .collect();
+    assert!(leftovers.is_empty(), "left behind: {leftovers:?}");
+}
+
 #[test]
 fn an_unreadable_record_reads_as_not_yet_acknowledged() {
     // Fail-safe here means fail TOWARDS disclosing. The cost of showing the
