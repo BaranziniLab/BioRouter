@@ -277,14 +277,36 @@ export function marketplaceEntryFor(
 }
 
 /**
- * §13.5's three strings, verbatim, as one total function.
+ * §13.5's strings, verbatim, as one total function.
  *
  * Two naming consequences, known rather than discovered:
+ *
  *   - a hand-installed extension *named* `ucsfomopagent` inherits the private
  *     badge. Fail-closed, and fine.
- *   - a genuinely private extension renamed locally becomes public. Already the
- *     accepted direction under R11(ii), and unavoidable: the install records no
- *     provenance at all, so the name is the only thing there is to key on.
+ *   - a genuinely private extension renamed locally becomes public.
+ *
+ * ⚠ **The second is NOT "already the accepted direction under R11(ii)."** That
+ * clause was here and is withdrawn by DR-19. R11(ii) rules that an extension
+ * **not on BAAM** is Public — a statement about *unknown* extensions. A
+ * **known** private extension losing its tier because a config entry was
+ * renamed is a different fact, and it was never ruled on.
+ *
+ * Nor is it merely a badge. `classify_extension` stamps `Extension.tier`, which
+ * Gates C (dispatch), E (discovery) and F (enable) all read, so the rename
+ * removes **enforcement**: a public model becomes able to *call* the extension.
+ * `config.yaml` is agent-writable with `text_editor`, and an extension is the
+ * one object in this feature whose tier has no single lowering writer — a
+ * session has `privacy::declassify`, a knowledge base has
+ * `tier_user.rs::set_unlocked`, an extension has anyone who can rename a line.
+ *
+ * "Unavoidable because the install records no provenance at all" is the accurate
+ * half, and is exactly why this is open question 28 rather than a fix here: the
+ * repair is to derive the tier from install provenance (registry id, source URL,
+ * hash) instead of from a mutable local string, and none of that is recorded to
+ * be read. Two repairs are ruled OUT in advance — letting `config.yaml` declare
+ * a tier (that is R11(i) inverted, and Task 8's OpenAPI-diff gate exists to
+ * catch it) and widening the private set with aliases (a rename can pick any
+ * string).
  */
 export function extensionProvenance(registry: BaamRegistry, name: string): string {
   if (effectivePrivacy(registry, name) === 'private') {
