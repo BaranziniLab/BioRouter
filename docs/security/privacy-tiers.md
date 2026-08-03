@@ -7,7 +7,10 @@
 > **Status:** Proposed — **narrowed by operator ruling on 2026-07-30 ([DR-17](privacy-tiers-execution-plan.md#scope-ruling--dr-17-narrows-this-plan-to-the-session-store)); read §1 before
 > anything else.** The general filesystem read-deny of §9.5 is **descoped for v1** and this document
 > no longer claims it. §17 still needs rulings. **§3's R17 (added 2026-08-02) governs the shape of
-> every control here** — warn the user and let them proceed, never let an agent proceed at all.
+> every control here** — warn the user and let them proceed, never let an agent proceed at all —
+> and **R18 (added the same day) refines it for declassification**: an operating-system
+> authentication per operation, which is what lets an agent *ask* for one. ⚠ **§12 is amended in
+> three places by R18**; read the banners in §12.1, §12.2 and §12.6 before implementing any of it.
 > **Audience:** developers working on the agent loop, `biorouter-server`, the session store, and
 > the desktop GUI.
 
@@ -187,6 +190,17 @@ Each verified by reading the code, each fixed as a by-product of this design:
 | **R15** | **Users are told what a non-private model can reach.** A model that is not HIPAA-compliant, not hosted on-premise and not local can read what is on the machine; the product says so, in the GUI, in the CLI and in the docs, from one shared copy. Added by [DR-17](privacy-tiers-execution-plan.md#scope-ruling--dr-17-narrows-this-plan-to-the-session-store), which is also what makes its accepted risks acceptable. |
 | **R16** | **A knowledge base is a first-class tiered object, and the *user* owns its tier.** It takes a tier at creation from the model that created it, ratchets on ingest, is unreadable and unwritable to a public-capability session when private — and the user, never a model, may publicize or privatize it. Added by [DR-18](privacy-tiers-execution-plan.md#dr-18--the-knowledge-base-tier-is-user-controllable-and-a-private-session-creates-a-private-base). |
 | **R17** | **A warning for the user, a wall for the agent.** For every privacy- or security-sensitive operation in this design: an operation the **user explicitly initiates** is **warned about and then allowed if they insist** — never hard-blocked; the same operation **initiated automatically by an agent** is **never** permitted — it escalates to a human or it does not happen. Added by [DR-19](privacy-tiers-execution-plan.md#dr-19--a-warning-for-the-user-a-wall-for-the-agent). |
+| **R18** | **Declassification is gated by a system authentication, and that is what lets an agent ask.** Every declassification — one chat or a batch — is authorised by an **operating-system** prompt of the same class as the Keychain authorization at app start: raised **once per operation** (no session, no cached grant), naming the **exact** set it covers, with the password verified by the OS and **never** seen by BioRouter. Because the gate is the prompt and not the caller, **either the agent or the UI may initiate** — an agent may *ask*, precisely because it cannot *satisfy*. Added by [DR-20](privacy-tiers-execution-plan.md#dr-20--declassification-is-gated-by-a-system-authentication-and-that-is-what-lets-an-agent-ask). |
+
+⚠ **R18 refines R17; it does not repeal it.** R17's agent half — *never automatically* — is intact:
+an agent-initiated declassification **is** an escalation to a human, because the request is the
+agent's and the effect is the human's. The relaxation reaches **only** operations where an
+unforgeable human act stands between the request and the effect, and it is earned per operation
+rather than inherited. It does **not** reach the five gates of §9.1, the spawn-downgrade, the
+capability raises of DR-16, or any control a task merely *confirms* — a dialog is not a prompt. R18
+also retires the two proofs this document assumed and never defined (§12.1's *"one-shot token minted
+by the renderer over Electron IPC"*, and the execution plan's `secret_key_and_capability_token()`),
+and supersedes §12.6's *"No general bulk declassification"*.
 
 ⚠ **R17 is the shape of R9 and of every user-only control here, stated once.** R9 (only the user may
 deprivatise a session) and R16 (only the user may move a base's tier) are **instances** of R17, not
@@ -1618,6 +1632,17 @@ asserting `s.privacy_tier` appears in **both** builders.
 
 ## 12. Declassification
 
+> ⚠ **AMENDED in three places by [R18](#3-settled-requirements) / [DR-20](privacy-tiers-execution-plan.md#dr-20--declassification-is-gated-by-a-system-authentication-and-that-is-what-lets-an-agent-ask), 2026-08-02.**
+> The **authorization** is now an operating-system authentication prompt, raised once per operation
+> and naming the exact chats it covers. §12.1's *"one-shot token minted by the renderer over Electron
+> IPC"* is retired unbuilt; §12.2's *"no CLI subcommand can construct one"* is withdrawn; §12.6's
+> *"No general bulk declassification"* is superseded — a batch is now the general case. §12.3's
+> wording, §12.4's grading and §12.5's audit are **unchanged in substance**: the grading now governs
+> the in-app review step that precedes the prompt, because DR-20 admits no grading of the prompt
+> itself. The implementation is
+> [Task 29](privacy-tiers-execution-plan.md#task-29-declassification--the-system-authentication-the-batch-and-the-audit)
+> and [Task 31](privacy-tiers-execution-plan.md#task-31-the-cli-is-a-required-r10-surface).
+
 ### 12.1 Where it lives
 
 **History → the session's own row → overflow menu → "Make this chat public…"**, shown only when the
@@ -1625,10 +1650,15 @@ chat is private, and the identical control on the session-detail header, sharing
 `DeclassifySessionDialog` so the two entry points cannot diverge. Not in Settings. Not in the chat
 header. Not anywhere an agent can reach.
 
-Route: **`POST /sessions/{session_id}/declassify`**. Not under `/config/*`, not a tool, not
-reachable from any `workspace_*` handler or MCP server, and explicitly not added to the public-GET
-exemption list. **Per §9.3 A1, secret-key auth alone is not sufficient** — bind it to a one-shot
-token minted by the renderer over Electron IPC.
+Route: ~~**`POST /sessions/{session_id}/declassify`**~~ → **`POST /sessions/declassify`** under R18,
+taking `{ "session_ids": [...] }`, because a per-id route cannot express one authentication over N.
+Not under `/config/*`, not a tool, not reachable from any `workspace_*` handler or MCP server, and
+explicitly not added to the public-GET exemption list. **Per §9.3 A1, secret-key auth alone is not
+sufficient** — ~~bind it to a one-shot token minted by the renderer over Electron IPC~~. **R18
+supplies what that sentence assumed and never defined:** the Electron **main** process raises the OS
+prompt and makes the call itself, presenting the per-launch user-action key
+[DR-16](privacy-tiers-execution-plan.md#decisions-of-record) already requires — one proof of user,
+not two. The renderer never calls this route.
 
 **The same mechanism, for knowledge bases.** [DR-18](privacy-tiers-execution-plan.md#dr-18--the-knowledge-base-tier-is-user-controllable-and-a-private-session-creates-a-private-base) adds a second user-only tier change —
 publicize / privatize a base (§5.4) — and it reuses this section's proof-of-user, this section's
@@ -1651,10 +1681,15 @@ pub struct UserConfirmation(());   // ZST; constructor is pub(in crate::…)
 pub async fn declassify(sm: &SessionManager, session_id: &str, ok: UserConfirmation) -> Result<()>
 ```
 
-`UserConfirmation`'s constructor is invoked in exactly one place — the HTTP handler, after it has
-matched the typed confirmation. No MCP server, no `ToolRouter`, no `workspace_*` handler, no CLI
-subcommand can construct one. "An agent cannot call this" is enforced by Rust's module privacy
-rather than by the route being undocumented.
+⚠ **Amended by R18.** `UserConfirmation` is no longer a ZST and its constructor is no longer the
+HTTP handler: it is a private-field newtype over the **authorised id set**, returned only by
+`privacy::system_auth::authenticate` after an approved OS prompt, and consumed **by value** — so a
+proof minted for one batch is not spendable on another and none is spendable twice. No MCP server,
+no `ToolRouter` and no `workspace_*` handler can construct one; **the CLI can**, and that is now
+correct, because what gates the operation is the prompt rather than the caller
+([Task 31](privacy-tiers-execution-plan.md#task-31-the-cli-is-a-required-r10-surface)). "An agent
+cannot *complete* this" is enforced by Rust's module privacy plus the operating system, rather than
+by the route being undocumented.
 
 It is also **the only writer in the tree permitted to lower `privacy_tier`.** Every other write
 goes through the session update builder, whose emission is the monotone `CASE WHEN` and physically
@@ -1761,7 +1796,15 @@ If a private model later runs a turn on it, the ratchet fires again and the user
 again. That is deliberate — declassification is an assertion about the contents *as they stood*,
 not a permanent exemption.
 
-**No general bulk declassification.** One exception, extended from the original design per §16:
+⚠ **SUPERSEDED by R18: bulk is now the general case.** The operator ruled that *"each
+declassification action can declassify multiple chats (in batch) if the user so wants it"* — one
+system authentication may cover any set the user assembles, provided the set is **fixed before the
+prompt and named inside it**. What survives from the paragraph below is its *reasoning*, which
+became the general design: a batch is presented as a review list naming every chat, and it applies
+as **one transaction** or not at all. The `backfill:*` case is now an instance rather than the sole
+exception.
+
+~~**No general bulk declassification.**~~ One exception, extended from the original design per §16:
 sessions whose reason is `backfill:*` get one grouped dialog with a review-by-provider list,
 because a backfill is a **guess made by the system from the last-used provider**, not a user
 assertion about content — and `provider_name` records only the *last* provider, so the guess is
