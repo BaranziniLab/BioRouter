@@ -4,7 +4,7 @@ import { cn } from '../../utils';
 import type { SessionClassification } from '../../api';
 
 export interface PrivacyBadgeProps {
-  /** The chat's tier. Same union the daemon sends, so a wire change breaks the build. */
+  /** The chat's tier — the generated union the daemon actually sends. */
   tier: SessionClassification;
   /**
    * Dense surfaces (History rows, tab strips) where a full pill would crowd the
@@ -13,6 +13,36 @@ export interface PrivacyBadgeProps {
   dense?: boolean;
   className?: string;
 }
+
+/**
+ * How each tier renders, as a total map rather than a chain of ternaries.
+ *
+ * `Record<SessionClassification, …>` is the whole point: a third tier on the
+ * wire is a COMPILE ERROR here, which is what this file used to claim and was
+ * not. Widening the generated union to `'public' | 'private' | 'restricted'`
+ * typechecked the entire desktop app with zero errors — `tier === 'private' ? a
+ * : b` never owes exhaustiveness — and the two branches then disagreed about
+ * the new tier: dense mode drew it a Private dot (it is not `'public'`) while
+ * the pill labelled it Public (it is not `'private'`). An unrecognised privacy
+ * tier rendered as BOTH, and the safer of the two readings was the accident.
+ */
+const TIER: Record<
+  SessionClassification,
+  { label: string; ink: string; glyph: boolean; markedWhenDense: boolean }
+> = {
+  private: {
+    label: 'Private',
+    ink: 'text-text-default',
+    glyph: true,
+    markedWhenDense: true,
+  },
+  public: {
+    label: 'Public',
+    ink: 'text-text-muted',
+    glyph: false,
+    markedWhenDense: false,
+  },
+};
 
 /**
  * The tier indicator (issue #56, R10).
@@ -35,7 +65,9 @@ export interface PrivacyBadgeProps {
  * doc-comment exists to prevent.
  */
 export function PrivacyBadge({ tier, dense = false, className }: PrivacyBadgeProps) {
-  if (dense && tier === 'public') return null; // no dot means public
+  const spec = TIER[tier];
+
+  if (dense && !spec.markedWhenDense) return null; // no dot means public
 
   if (dense) {
     return (
@@ -64,14 +96,10 @@ export function PrivacyBadge({ tier, dense = false, className }: PrivacyBadgePro
     <Badge
       data-testid="privacy-badge"
       data-privacy={tier}
-      className={cn(
-        'bg-background-muted',
-        tier === 'private' ? 'text-text-default' : 'text-text-muted',
-        className
-      )}
+      className={cn('bg-background-muted', spec.ink, className)}
     >
-      {tier === 'private' ? <ShieldIcon className="h-3 w-3" aria-hidden="true" /> : null}
-      {tier === 'private' ? 'Private' : 'Public'}
+      {spec.glyph ? <ShieldIcon className="h-3 w-3" aria-hidden="true" /> : null}
+      {spec.label}
     </Badge>
   );
 }
