@@ -270,7 +270,31 @@ async fn call_private_tool_via_agent_loop(agent: &Agent, session: &Session) -> S
     }
 }
 
-/// Rows 4/5's subject: what discovery — and therefore the SYSTEM PROMPT — is
+/// Row 4's subject: Gate C', which is a DIFFERENT function on a DIFFERENT path
+/// from Gate C — the resource surface, not tool dispatch — and was covered by
+/// nothing until review said so. `assert_extension_reachable` is private;
+/// `read_resource` is its production caller and is `pub`, and passing `None` for
+/// the admitted capability is what six of the eight real entries do, so the
+/// guard samples the toggle live exactly as it does for them.
+///
+/// Returns the error text, or the success shape, whichever came back.
+async fn read_private_resource(agent: &Agent) -> String {
+    match agent
+        .extension_manager
+        .read_resource(
+            "ui://cohort",
+            PRIVATE_EXTENSION,
+            None,
+            tokio_util::sync::CancellationToken::default(),
+        )
+        .await
+    {
+        Ok(ok) => format!("{ok:?}"),
+        Err(e) => e.message.to_string(),
+    }
+}
+
+/// Rows 5's subject: what discovery — and therefore the SYSTEM PROMPT — is
 /// allowed to name. `get_extensions_info` carries a private server's own
 /// instructions, so this covers Gate F2 as well as Gate E.
 async fn extension_names_and_instructions(agent: &Agent) -> String {
@@ -450,8 +474,17 @@ async fn the_master_toggle_governs_every_gate_in_both_directions() {
     assert!(gate_c_on.contains(PRIVATE_EXTENSION), "{gate_c_on}");
     assert!(gate_c_on.contains("private extension"), "{gate_c_on}");
 
-    // 4/5 C'+E+F2 (Tasks 15, 16, 18) — discovery, and a private server's
-    //          instructions in a public system prompt.
+    // 4  C'    (Task 15) — the RESOURCE surface. A different function on a
+    //          different path from Gate C above: `dispatch_tool_call` never
+    //          reaches `assert_extension_reachable`, so row 3 does not cover it.
+    let gate_c_prime_on = read_private_resource(&agent3).await;
+    assert!(
+        gate_c_prime_on.contains("private extension"),
+        "{gate_c_prime_on}"
+    );
+
+    // 5+12 E+F2 (Tasks 16, 18) — discovery, and a private server's instructions
+    //          in a public system prompt.
     assert!(!extension_names_and_instructions(&agent3)
         .await
         .contains(PRIVATE_EXTENSION));
@@ -646,6 +679,14 @@ async fn the_master_toggle_governs_every_gate_in_both_directions() {
     assert!(!call_private_tool_via_agent_loop(&agent3, &s3)
         .await
         .contains("private extension"));
+    // 4 C': the resource surface stops refusing too. It still fails — the
+    //   fixture server serves no resources — but on its OWN terms, not Gate C''s,
+    //   which is the distinction this pair exists to make.
+    let gate_c_prime_off = read_private_resource(&agent3).await;
+    assert!(
+        !gate_c_prime_off.contains("private extension"),
+        "{gate_c_prime_off}"
+    );
     assert!(extension_names_and_instructions(&agent3)
         .await
         .contains(PRIVATE_EXTENSION));
