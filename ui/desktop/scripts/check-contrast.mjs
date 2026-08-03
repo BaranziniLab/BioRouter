@@ -198,19 +198,35 @@ for (const [theme, scope] of Object.entries(SCOPES)) {
   assert(`${theme}: privacy dot on sidebar`, '--text-default', '--sidebar', 3.0, scope);
   assert(`${theme}: privacy dot on tab`, '--text-default', '--background-default', 3.0, scope);
 
-  // The row-hover ground (design.md's `biorouter-list-row`). Issue #56 needs it
-  // because both privacy pills sit on rows that paint it, and nothing has ever
-  // asserted a text ratio against it.
+  // `--background-medium`, which the guard has only ever looked at for the
+  // focus ring. Issue #56 needs it because both privacy pills sit on rows that
+  // shift to it, and nothing has ever asserted a text ratio against it.
   //
-  // ⚠ Two tokens, NOT the TEXT_GROUNDS triple. `--text-subtle` on
+  // It is asserted OPAQUE, which is the conservative reading of two different
+  // surfaces:
+  //   - Painted opaque for real, by the user bubble (`UserMessage`), inline
+  //     code chips and the `<biorouter-ref>` fallback (`MarkdownContent`), the
+  //     tab-strip overflow button, and popover hover rows. These render exactly
+  //     the ratio measured here.
+  //   - `biorouter-list-row:hover` — the History/extension/settings rows — is
+  //     NOT this token but `color-mix(in srgb, var(--background-medium) 42%,
+  //     transparent)` over the page ground (main.css). That mix measures
+  //     STRICTLY BETTER than the opaque token in all six scopes, so the floor
+  //     asserted here covers the rows too. Do not quote these numbers as a
+  //     row's rendered hover ratios; they are the harsher opaque case.
+  //
+  // ⚠ Two tokens, NOT the TEXT_GROUNDS triple. `--text-subtle` on opaque
   // `--background-medium` is sub-AA in three of the six scopes — parchment:dark
   // 3.75, alma-mater:light 4.45, alma-mater:dark 4.28 (measured with this
-  // script's own resolver). Those three are a PRE-EXISTING theme gap, not
-  // something #56 introduces: the app already paints subtle text on hover rows
-  // and CI has never looked. Adding `--background-medium` to TEXT_GROUNDS would
-  // therefore turn this feature red on arrival with only a theme edit to fix
-  // it. Audit the two tokens this feature actually uses, and leave the third to
-  // the a11y backlog that owns it.
+  // script's own resolver). That is a PRE-EXISTING theme gap, not something #56
+  // introduces, and it is real on the opaque surfaces above:
+  // `BrowseExtensionsModal` and `BrowseSkillsModal` both paint 10px
+  // `text-text-subtle` on a `bg-background-medium` chip today, and CI has never
+  // looked. It is NOT real on the hover rows — on their 42% mix `--text-subtle`
+  // measures 4.54–5.93 and clears AA everywhere. Folding the token in here
+  // would turn this feature red on arrival with only a theme edit, outside this
+  // change, to fix it. Audit the two tokens this feature actually uses, and
+  // leave the third to the a11y backlog that owns it.
   for (const t of ['--text-default', '--text-muted']) {
     assert(`${theme}: ${t.slice(2)} on --background-medium`, t, '--background-medium', 4.5, scope);
   }

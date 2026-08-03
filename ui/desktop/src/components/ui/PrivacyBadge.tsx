@@ -51,14 +51,28 @@ const TIER: Record<
  * everything trains people to stop seeing badges, which defeats R10's actual
  * goal — knowing which tier you are in BEFORE hitting a wall.
  *
- * Both states use a FILL, not an outline: measured across all six family × mode
- * scopes with `scripts/lib/theme-tokens.mjs`, no border token in this design
- * system reaches 3:1 against `--background-muted` or `--background-medium`
- * (`--border-subtle` is 1.00–1.38, `--border-strong` 1.35–1.58), so a hairline
- * Public pill would be invisible — literally identical colours in
- * parchment:dark, which measures exactly 1.00. The chosen pair instead measures
- * 12.91–15.13 (Private) and 5.50–7.26 (Public) and is asserted for every scope
- * in `scripts/check-contrast.mjs`.
+ * Both states use a FILL, not an outline. Measured across all six family × mode
+ * scopes with `scripts/lib/theme-tokens.mjs`, against `--background-muted` and
+ * `--background-medium`, every NEUTRAL RESTING border token in this system sits
+ * between 1.00 and 1.75 — `--border-subtle` 1.00–1.38, `--border-default`
+ * 1.00–1.38, `--border-strong` 1.00–1.58, `--border-input` 1.00–1.75 — nowhere
+ * near the 3:1 SC 1.4.11 asks of an affordance carrying meaning. A hairline
+ * Public pill would ship invisible: parchment:dark measures exactly 1.00, the
+ * hairline and its ground being literally the same colour.
+ *
+ * (Tokens that DO clear 3:1 on those grounds exist — `--border-focus` measures
+ * 3.75–5.60, and the status and accent borders 3.55–11.74 — but every one of
+ * them already means something: focused, dangerous, successful. Outlining a
+ * resting Public chip in one would not say "public".)
+ *
+ * The chosen pair instead measures 12.91–15.13 (Private) and 5.50–7.26 (Public)
+ * and is asserted for every scope in `scripts/check-contrast.mjs`.
+ *
+ * What the fill is NOT is the carrier of the meaning. `--background-muted`
+ * equals `--background-canvas` outright in three scopes and `--sidebar` in
+ * parchment:dark, so on those grounds the pill reads as its label rather than as
+ * a filled chip. That is why Private is a shield glyph AND the word, never a
+ * colour: the fill is contrast for the ink, not the signal.
  *
  * Geometry comes from `Badge` and only from `Badge` — the radius, padding and
  * type scale are never restated here, which is the drift `badge.tsx`'s own
