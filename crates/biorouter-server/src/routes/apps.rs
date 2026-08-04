@@ -9260,7 +9260,7 @@ mod tests {
         }
 
         /// Every frame the bridge has emitted since `attach`.
-        fn drain(
+        pub(super) fn drain(
             rx: &mut tokio::sync::mpsc::UnboundedReceiver<serde_json::Value>,
         ) -> Vec<serde_json::Value> {
             let mut out = Vec::new();
@@ -9633,12 +9633,17 @@ mod tests {
     /// binding whatever the developer has configured.
     mod privacy_dr21 {
         use super::super::app_provider_bind;
-        use super::super::{configure_main_provider, configure_worker_provider};
+        use super::super::{
+            apply_route_for_turn, configure_agent, configure_main_provider, configure_worker_agent,
+            configure_worker_provider,
+        };
         use super::privacy_capability::{lock_env_for, PRIVATE_HOST, PUBLIC_HOST};
-        use super::privacy_task24::{agent_over, tiered};
+        use super::privacy_task24::{agent_over, drain, tiered};
         use biorouter::privacy::{ProviderTier, SessionClassification};
         use biorouter::session::session_manager::SessionType;
         use biorouter::session::SessionManager;
+        use biorouter_mcp::agent_drafter::control::UiBridge;
+        use biorouter_mcp::agent_drafter::manifest::{ModelRoute, Orchestration};
         use biorouter_mcp::agent_drafter::store::{
             AgentConfig, ArtifactKind, Manifest, ModelSelection,
         };
@@ -10066,6 +10071,267 @@ mod tests {
                 "the fail-safe direction is DR-21's refusal, which stops the caller's rung chain; \
                  a plain failure does not: {refusal}"
             );
+        }
+
+        // ── "Refused, not ignored" — at the frame, not only at the `Result` ──
+        //
+        // The three tests above stop at the Rust `Result`. That is half of case
+        // 3: the caller RECEIVES the refusal there, but nothing yet pins that it
+        // SURFACES it. Delete all four `emit_frame` calls and every one of those
+        // tests still passes, while the page sees a model that silently never
+        // changed — which is the failure mode this campaign has found four
+        // times, one layer out.
+
+        /// A phrase unique to [`PrivacyRefusal::AppSessionTierFixed`]. Asserting
+        /// on it is what keeps these rows from being satisfied by *"that model
+        /// is unavailable"*, by a bad-route frame, or by Gate A's own refusal —
+        /// all of which are also `ok:false` on a `model` frame.
+        const DR21_PHRASE: &str = "no manifest field, frame or setting";
+
+        /// An `AppState`, a fresh session and its agent — what `configure_agent`
+        /// and `configure_worker_agent` need. The knowledge root is empty on
+        /// purpose: these rows are about the model frame, not a KB grant.
+        async fn state_session_agent(
+            dir: &std::path::Path,
+            name: &str,
+        ) -> (
+            Arc<crate::state::AppState>,
+            String,
+            Arc<biorouter::agents::Agent>,
+        ) {
+            let state = crate::state::AppState::new_with_knowledge_root(
+                dir.join("config").join("knowledge"),
+            )
+            .await
+            .unwrap();
+            let session = state
+                .session_manager()
+                .create_session(dir.to_path_buf(), name.to_string(), SessionType::User)
+                .await
+                .unwrap();
+            let agent = state.get_agent(session.id.clone()).await.unwrap();
+            (state, session.id, agent)
+        }
+
+        /// The `model` frame the page received, if any.
+        fn model_frame(frames: &[serde_json::Value]) -> Option<&serde_json::Value> {
+            frames.iter().find(|f| f["type"] == "model")
+        }
+
+        /// DR-21's refusal on a `model` frame, or a panic naming what arrived
+        /// instead. Deleting the `emit_frame` call this reads leaves nothing on
+        /// the bridge at all, which is the point.
+        fn refusal_frame<'a>(frames: &'a [serde_json::Value]) -> &'a serde_json::Value {
+            let frame = model_frame(frames)
+                .unwrap_or_else(|| panic!("the page must be told, on a model frame: {frames:?}"));
+            assert_eq!(frame["ok"].as_bool(), Some(false), "{frame}");
+            assert!(
+                frame["error"]
+                    .as_str()
+                    .is_some_and(|e| e.contains(DR21_PHRASE)),
+                "the frame must carry DR-21's own refusal, not a generic failure — \"unavailable\" \
+                 invites the retry this refusal exists to stop: {frame}"
+            );
+            frame
+        }
+
+        /// Site 1's refusal, as the page sees it. `configure_agent` is where the
+        /// `Result` becomes a frame, so an app whose manifest was edited to name
+        /// a more private model finds out it is still on the model it was created
+        /// with — instead of silently believing otherwise.
+        ///
+        /// Both hosts, because the frame must be a consequence of the refusal
+        /// and not of running at all: on the public host the very same manifest
+        /// is a legal bind and the page must get **no** error frame.
+        #[tokio::test]
+        #[serial_test::serial]
+        async fn a_refused_main_bind_reaches_the_page_as_a_model_error_frame() {
+            for (host, refused) in [(PRIVATE_HOST, true), (PUBLIC_HOST, false)] {
+                let _warm = crate::state::AppState::new().await.unwrap();
+                let dir = tempfile::TempDir::new().unwrap();
+                let _env = lock_env_for(dir.path(), host);
+
+                let (state, session, agent) =
+                    state_session_agent(dir.path(), "dr21-main-frame").await;
+                agent
+                    .update_provider(tiered("anthropic", ProviderTier::Public), &session)
+                    .await
+                    .unwrap();
+
+                let manifest = manifest_with_model(ollama("qwen3.5:4b"));
+                let bridge = UiBridge::new();
+                let (mut rx, _token) = bridge.attach();
+                let _report =
+                    configure_agent(&agent, &state, &session, &manifest, &bridge, false).await;
+
+                let frames = drain(&mut rx);
+                let bound = agent
+                    .provider()
+                    .await
+                    .map(|p| p.get_name().to_string())
+                    .ok();
+                if refused {
+                    refusal_frame(&frames);
+                    assert_eq!(
+                        bound,
+                        Some("anthropic".to_string()),
+                        "and the session really did not move"
+                    );
+                } else {
+                    assert!(
+                        model_frame(&frames).is_none(),
+                        "a legal bind must not report an error: {frames:?}"
+                    );
+                    assert_eq!(
+                        bound,
+                        Some("ollama".to_string()),
+                        "…and must actually happen"
+                    );
+                }
+            }
+        }
+
+        /// Site 2's refusal, on the MAIN bridge and stamped with the profile — a
+        /// worker has no page of its own, so an unstamped frame would read as the
+        /// app itself being refused.
+        ///
+        /// The main agent and session stand in for the worker's own pair (in
+        /// production `build_worker` mints one per profile); what this row pins
+        /// is the frame, and the refusal fires for the same reason either way.
+        #[tokio::test]
+        #[serial_test::serial]
+        async fn a_refused_worker_bind_reaches_the_page_stamped_with_the_profile() {
+            for (host, refused) in [(PRIVATE_HOST, true), (PUBLIC_HOST, false)] {
+                let _warm = crate::state::AppState::new().await.unwrap();
+                let dir = tempfile::TempDir::new().unwrap();
+                let _env = lock_env_for(dir.path(), host);
+
+                let (state, session, agent) =
+                    state_session_agent(dir.path(), "dr21-worker-frame").await;
+                agent
+                    .update_provider(tiered("anthropic", ProviderTier::Public), &session)
+                    .await
+                    .unwrap();
+
+                let manifest = manifest_with_model(None);
+                let profile = AgentConfig {
+                    model: ollama("qwen3.5:4b"),
+                    ..Default::default()
+                };
+                let bridge = UiBridge::new();
+                let (mut rx, _token) = bridge.attach();
+                configure_worker_agent(
+                    &agent,
+                    &state,
+                    &session,
+                    &manifest,
+                    "researcher",
+                    &profile,
+                    &bridge,
+                    None,
+                )
+                .await;
+
+                let frames = drain(&mut rx);
+                if refused {
+                    let frame = refusal_frame(&frames);
+                    assert_eq!(
+                        frame["agent"].as_str(),
+                        Some("researcher"),
+                        "an unstamped worker refusal reads as the app's own: {frame}"
+                    );
+                } else {
+                    assert!(
+                        model_frame(&frames).is_none(),
+                        "a legal worker bind must not report an error: {frames:?}"
+                    );
+                }
+            }
+        }
+
+        /// The **fourth** site, which Task 41's table does not list and which the
+        /// implementation guarded anyway: a manifest `orchestration.route` pin is
+        /// the same agent-authored channel as `cfg.model`, and once
+        /// `app_provider_bind` is the only path to the bind, carving out an
+        /// unguarded exception for it would reopen the channel by hand.
+        ///
+        /// It is also a behaviour change — a route pin that raises is now refused
+        /// rather than bound — so it gets a gate rather than an argument.
+        ///
+        /// The app holds no sensitive data source, so §3.7's own `ok:false`
+        /// cannot be what produces the refused frame; and `resolve_route`,
+        /// `ModelConfig::new` and `app_provider` all succeed on both rows, so
+        /// DR-21 is the only remaining source of a refusal. The public row is
+        /// what keeps routing usable: the same pin, on a host where it is not a
+        /// raise, still binds and still reports `ok:true`.
+        #[tokio::test]
+        #[serial_test::serial]
+        async fn a_manifest_route_pin_cannot_raise_a_live_app_session_and_says_so() {
+            for (host, refused) in [(PRIVATE_HOST, true), (PUBLIC_HOST, false)] {
+                let _warm = crate::state::AppState::new().await.unwrap();
+                let dir = tempfile::TempDir::new().unwrap();
+                let _env = lock_env_for(dir.path(), host);
+
+                let session_manager = Arc::new(SessionManager::new(dir.path().to_path_buf()));
+                let agent = agent_over(session_manager.clone(), dir.path());
+                let session = session_over(&session_manager, dir.path(), "dr21-route").await;
+                agent
+                    .update_provider(tiered("anthropic", ProviderTier::Public), &session)
+                    .await
+                    .unwrap();
+
+                let mut routes = std::collections::HashMap::new();
+                routes.insert(
+                    "deep".to_string(),
+                    ModelRoute {
+                        provider: Some("ollama".to_string()),
+                        model: Some("qwen3.5:4b".to_string()),
+                    },
+                );
+                let cfg = AgentConfig {
+                    orchestration: Orchestration {
+                        routes,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                };
+
+                let bridge = UiBridge::new();
+                let (mut rx, _token) = bridge.attach();
+                let prev = apply_route_for_turn(&agent, &session, &cfg, "deep", &bridge).await;
+                let frames = drain(&mut rx);
+                let row = session_manager.get_session(&session, false).await.unwrap();
+
+                if refused {
+                    assert!(
+                        prev.is_none(),
+                        "a route that never bound has nothing to restore, and a `prev` here would \
+                         make the caller restore a provider the turn never displaced"
+                    );
+                    let frame = refusal_frame(&frames);
+                    assert_eq!(frame["route"].as_str(), Some("deep"), "{frame}");
+                    assert_eq!(
+                        agent
+                            .provider()
+                            .await
+                            .map(|p| p.get_name().to_string())
+                            .ok(),
+                        Some("anthropic".to_string())
+                    );
+                    assert_eq!(row.provider_name.as_deref(), Some("anthropic"));
+                    assert_eq!(row.privacy_tier, SessionClassification::Public);
+                } else {
+                    assert!(
+                        prev.is_some(),
+                        "a route that DID bind must hand back what it displaced, or the session \
+                         never comes off the route"
+                    );
+                    let frame = model_frame(&frames)
+                        .unwrap_or_else(|| panic!("a bound route reports itself: {frames:?}"));
+                    assert_eq!(frame["ok"].as_bool(), Some(true), "{frame}");
+                    assert_eq!(row.provider_name.as_deref(), Some("ollama"));
+                }
+            }
         }
     }
 }
