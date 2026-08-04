@@ -53,6 +53,8 @@ pub use factory::{
 };
 pub use retry::{retry_operation, RetryConfig};
 
+use std::sync::LazyLock;
+
 use crate::privacy::affiliation::{InstitutionId, ModelAffiliation};
 use crate::privacy::ProviderTier;
 
@@ -133,12 +135,27 @@ pub(crate) fn self_hosted_tier(base_url: &str) -> ProviderTier {
 /// config edit away.
 pub(crate) fn ucsf_gateway_affiliation(endpoint: &str) -> Option<ModelAffiliation> {
     match ucsf_gateway_tier(endpoint) {
-        ProviderTier::Private => Some(ModelAffiliation::Institution(InstitutionId::new(
-            UCSF_INSTITUTION,
-        ))),
+        ProviderTier::Private => Some(ModelAffiliation::Institution(*UCSF_ID)),
         ProviderTier::Public => None,
     }
 }
+
+/// The two ids this module can produce, interned once each.
+///
+/// [`InstitutionId::new`] normalises and then takes the **process-wide** interner
+/// mutex (`privacy::affiliation::INTERNER`). That is fine for a cold constructor
+/// and wrong for a decider: Task 48 samples affiliation once per call, so under a
+/// parallel tool batch every provider in the process would queue on one lock to
+/// re-derive a constant. The value is identical either way — `InstitutionId`
+/// compares by string contents, not by pointer, which
+/// `ids_with_equal_contents_but_distinct_pointers_are_equal` pins — so this is a
+/// lock removed, not a semantic change, and the existing assertions against
+/// `InstitutionId::new("ucsf")` are what would catch a wrong one.
+static UCSF_ID: LazyLock<InstitutionId> = LazyLock::new(|| InstitutionId::new(UCSF_INSTITUTION));
+
+/// See [`UCSF_ID`]. Interned on the same terms, for the same reason.
+static SPANS_INSTITUTIONS_ID: LazyLock<InstitutionId> =
+    LazyLock::new(|| InstitutionId::new(SPANS_INSTITUTIONS));
 
 /// The affiliation of a provider whose inference is supposed to run on this
 /// machine. [`ModelAffiliation::Local`] exactly while [`self_hosted_tier`] says
@@ -229,9 +246,7 @@ pub(crate) fn composite_affiliation(
                 Some(ModelAffiliation::Institution(a))
             } else {
                 // Unreachable in this build — see `SPANS_INSTITUTIONS`.
-                Some(ModelAffiliation::Institution(InstitutionId::new(
-                    SPANS_INSTITUTIONS,
-                )))
+                Some(ModelAffiliation::Institution(*SPANS_INSTITUTIONS_ID))
             }
         }
     }
