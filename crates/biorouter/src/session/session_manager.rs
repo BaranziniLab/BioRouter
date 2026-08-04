@@ -2340,32 +2340,6 @@ pub enum BindOutcome {
 }
 
 impl SessionStorage {
-    /// Bind a provider, atomically refusing a public one on a private session
-    /// (issue #56, Gate A).
-    ///
-    /// The predicate is in the `WHERE`, not in Rust, so a concurrent ratchet
-    /// cannot interleave into "private session, public provider bound". The
-    /// natural implementation — `SELECT privacy_tier`, decide, `UPDATE` — has a
-    /// window between the read and the write that a ratchet fits inside, and
-    /// nothing about its shape says so.
-    ///
-    /// ⚠ **The test rendezvous belongs HERE, immediately before `.execute`, and
-    /// nowhere else.** Its contract is *"after every read this function
-    /// performs, before the statement that writes"*, and that is the only
-    /// position from which it can distinguish this implementation from the wrong
-    /// one. Called from `Agent::update_provider` instead — before this function
-    /// is even entered — a read-then-write helper passes: the forced ratchet
-    /// commits first and the helper's own read dutifully refuses. If a future
-    /// refactor gives this function a read of its own, the seam call moves down
-    /// below it; it never moves up.
-    ///
-    /// ⚠ `rows_affected == 0` is NOT the refusal on its own: an id that names no
-    /// row produces exactly the same zero. Returning `RefusedByPrivacy` there
-    /// would surface a stale or mistyped id as a 409 privacy refusal, and would
-    /// make Gate A's first test pass for the wrong reason against a stale
-    /// fixture id — the one way that test can lie. The two are distinguished
-    /// with a single follow-up read in the zero case, on a path that is already
-    /// an error.
     /// See [`SessionManager::record_session_affiliation`]. One statement, so a
     /// concurrent recorder cannot lose an institution between a read and a
     /// write.
@@ -2425,6 +2399,32 @@ impl SessionStorage {
             .collect())
     }
 
+    /// Bind a provider, atomically refusing a public one on a private session
+    /// (issue #56, Gate A).
+    ///
+    /// The predicate is in the `WHERE`, not in Rust, so a concurrent ratchet
+    /// cannot interleave into "private session, public provider bound". The
+    /// natural implementation — `SELECT privacy_tier`, decide, `UPDATE` — has a
+    /// window between the read and the write that a ratchet fits inside, and
+    /// nothing about its shape says so.
+    ///
+    /// ⚠ **The test rendezvous belongs HERE, immediately before `.execute`, and
+    /// nowhere else.** Its contract is *"after every read this function
+    /// performs, before the statement that writes"*, and that is the only
+    /// position from which it can distinguish this implementation from the wrong
+    /// one. Called from `Agent::update_provider` instead — before this function
+    /// is even entered — a read-then-write helper passes: the forced ratchet
+    /// commits first and the helper's own read dutifully refuses. If a future
+    /// refactor gives this function a read of its own, the seam call moves down
+    /// below it; it never moves up.
+    ///
+    /// ⚠ `rows_affected == 0` is NOT the refusal on its own: an id that names no
+    /// row produces exactly the same zero. Returning `RefusedByPrivacy` there
+    /// would surface a stale or mistyped id as a 409 privacy refusal, and would
+    /// make Gate A's first test pass for the wrong reason against a stale
+    /// fixture id — the one way that test can lie. The two are distinguished
+    /// with a single follow-up read in the zero case, on a path that is already
+    /// an error.
     pub(crate) async fn bind_provider_if_allowed(
         &self,
         session_id: &str,

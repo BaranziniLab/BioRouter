@@ -1212,19 +1212,16 @@ impl ServerHandler for KnowledgeServer {
                 // was inferring anyway. What it costs is a public caller's
                 // stamp landing on that litter, which discloses nothing because
                 // the failed write left no content.
-                self.service
-                    .raise_tier(&kb_id, caller_private)
-                    .map_err(into_err)?;
-                // Issue #56 DR-26 / Task 50 Step 1. BESIDE the tier raise, never
-                // instead of it and never without it: a write that raised the
-                // tier and not the affiliation would put an institution's
-                // content into a base no institution is recorded as owning,
-                // which reads as unclaimed and is therefore reachable from every
-                // other institution's model.
+                //
+                // Issue #56 DR-26 / Task 50 Step 1. BOTH axes, in one call under
+                // one lock: a write that raised the tier and not the affiliation
+                // would put an institution's content into a base no institution
+                // is recorded as owning, which reads as unclaimed and is
+                // therefore reachable from every other institution's model.
                 // `every_tool_that_ratchets_the_tier_also_records_the_callers_institution`
                 // drives every ratcheting tool through this seam and pins it.
                 self.service
-                    .raise_affiliation(&kb_id, &caller_affiliation)
+                    .raise_tier_and_affiliation(&kb_id, caller_private, &caller_affiliation)
                     .map_err(into_err)?;
             }
         }
@@ -1969,9 +1966,9 @@ mod tests {
         let svc = KnowledgeService::new(src_root.clone());
         svc.create_base("shipped", "Shipped", None).unwrap();
         seed_page(&src_root, "shipped", "knowledge/x.md", "SENTINEL");
-        crate::knowledge::tier::raise_unlocked(&src_root, "shipped", true).unwrap();
-        svc.raise_affiliation(
+        svc.raise_tier_and_affiliation(
             "shipped",
+            true,
             &CallerAffiliation::Institution(institution.to_string()),
         )
         .unwrap();
@@ -2301,8 +2298,9 @@ mod tests {
         assert!(refused.to_string().contains("Cross-institutional"));
 
         srv.service
-            .raise_affiliation(
+            .raise_tier_and_affiliation(
                 "shared",
+                true,
                 &CallerAffiliation::Institution("stanford".to_string()),
             )
             .unwrap();

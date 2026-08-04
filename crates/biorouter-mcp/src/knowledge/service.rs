@@ -436,30 +436,34 @@ impl KnowledgeService {
         FileLockGuard::acquire(&self.root_lock_path())
     }
 
-    /// Take the root lock and raise `kb_id` to the caller's tier (issue #56).
+    /// Take the root lock and raise `kb_id` on **both** of issue #56's axes: to
+    /// the caller's tier, and to the set of institutions whose content it holds
+    /// (DR-26 / Task 50 Step 1).
     ///
     /// For callers OUTSIDE this module. Inside it — `create_base`,
     /// `import_brkb`, `delete_base` — the lock is already held, so those call
-    /// `tier::*_unlocked` directly. Calling this from there deadlocks.
-    pub fn raise_tier(&self, kb_id: &str, caller_is_private: bool) -> Result<()> {
-        let _lock = self.lock_root()?;
-        crate::knowledge::tier::raise_unlocked(&self.root, kb_id, caller_is_private)
-    }
-
-    /// Take the root lock and record that this base now holds content belonging
-    /// to the caller's institution (issue #56, DR-26 / Task 50 Step 1).
+    /// `tier::*_unlocked` directly (through [`Self::stamp_new_base_unlocked`],
+    /// which is this function's unlocked twin). Calling this from there
+    /// deadlocks.
     ///
-    /// The affiliation twin of [`Self::raise_tier`], with its lock discipline
-    /// and its deadlock rule. ⚠ **Call it wherever `raise_tier` is called and
-    /// nowhere else**: the two axes ratchet together or a base gains an
-    /// institution's content without gaining its owner, which reads as unclaimed
-    /// and is reachable from every other institution's model.
-    pub fn raise_affiliation(
+    /// ⚠ **One method rather than two that callers are asked to pair.** It was
+    /// two, and review found the consequences: the five production call sites
+    /// paired them by convention, in two different orders (so a failure between
+    /// them left a *public* base carrying an owner at one site and a claimed
+    /// base at public tier at another), each taking and releasing the root lock
+    /// separately. And a caller that raised only the tier would put an
+    /// institution's content into a base no institution is recorded as owning —
+    /// which reads as unclaimed and is therefore reachable from every other
+    /// institution's model. Neither is expressible now: there is one call, one
+    /// lock, one order.
+    pub fn raise_tier_and_affiliation(
         &self,
         kb_id: &str,
+        caller_is_private: bool,
         caller: &crate::knowledge::affiliation::CallerAffiliation,
     ) -> Result<()> {
         let _lock = self.lock_root()?;
+        crate::knowledge::tier::raise_unlocked(&self.root, kb_id, caller_is_private)?;
         crate::knowledge::tier::raise_affiliation_unlocked(&self.root, kb_id, caller)
     }
 
@@ -2084,12 +2088,12 @@ mod tests {
     ///
     /// ⚠ **A tripwire over one spelling, not a proof** — the same shape as
     /// `tier_user::tests::exactly_one_writer_outside_the_ratchet_saves_the_tier_store`.
-    /// What it reliably catches is the realistic case: a fourth base-minting
-    /// path added here that stamps the tier and forgets the third axis. The two
-    /// permitted sites are `raise_tier` (whose caller pairs
-    /// `raise_affiliation`, pinned through production by
-    /// `server::tests::every_tool_that_ratchets_the_tier_also_records_the_callers_institution`)
-    /// and `stamp_new_base_unlocked`, which does both itself.
+    /// What it reliably catches is the realistic case: a third ratchet path
+    /// added here that stamps the tier and forgets the third axis. The two
+    /// permitted sites are [`KnowledgeService::raise_tier_and_affiliation`] (for
+    /// a base that already exists) and [`KnowledgeService::stamp_new_base_unlocked`]
+    /// (for one this call is minting); each does both raises itself, so there is
+    /// no third function that could do one.
     #[test]
     fn the_tier_ratchet_has_no_production_call_site_that_skips_the_affiliation() {
         let this =
@@ -2106,10 +2110,10 @@ mod tests {
             sites.len(),
             2,
             "the tier ratchet is called {} times in service.rs, not 2. Every \
-             production raise must be paired with the affiliation raise: use \
-             `stamp_new_base_unlocked` for a base this call is minting, or \
-             `raise_tier` + `raise_affiliation` for one that already exists. \
-             Sites found: {sites:#?}",
+             production raise must be paired with the affiliation raise in the \
+             same function: use `stamp_new_base_unlocked` for a base this call \
+             is minting, or `raise_tier_and_affiliation` for one that already \
+             exists. Sites found: {sites:#?}",
             sites.len()
         );
         assert_eq!(
@@ -2119,10 +2123,10 @@ mod tests {
                     .matches(concat!("tier::", "raise_affiliation_unlocked("))
                     .count(),
             2,
-            "the affiliation ratchet is reached from somewhere new. The two \
-             permitted reaches mirror the tier's exactly: `raise_affiliation` \
-             (the locked wrapper, twin of `raise_tier`) and \
-             `stamp_new_base_unlocked` (twin of the raise it pairs)."
+            "the affiliation ratchet is reached from somewhere new. It must be \
+             reached from exactly the two functions the tier ratchet is, and \
+             from the same line of each: `raise_tier_and_affiliation` and \
+             `stamp_new_base_unlocked`."
         );
     }
 
@@ -3523,7 +3527,14 @@ mod tests {
             std::time::Duration::from_secs(5),
             tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
                 svc.create_base("k", "K", None)?; // registers, inside the lock
-                svc.raise_tier("k", true)?; // the wrapper: takes the lock itself
+                                                  // the wrapper: takes the lock itself, once, for both axes
+                svc.raise_tier_and_affiliation(
+                    "k",
+                    true,
+                    &crate::knowledge::affiliation::CallerAffiliation::Institution(
+                        "ucsf".to_string(),
+                    ),
+                )?;
                 svc.delete_base("k") // forgets, inside the lock
             }),
         )

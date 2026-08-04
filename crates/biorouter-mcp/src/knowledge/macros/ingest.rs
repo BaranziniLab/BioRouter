@@ -72,10 +72,14 @@ pub async fn ingest(svc: &KnowledgeService, args: IngestArgs) -> Result<IngestRe
         args.caller_is_private,
         &args.caller_affiliation,
     )?;
-    svc.raise_tier(&args.kb_id, args.caller_is_private)?;
-    // Issue #56 DR-26 / Task 50 Step 1: beside the tier raise, never without
-    // it — see `KnowledgeService::raise_affiliation`.
-    svc.raise_affiliation(&args.kb_id, &args.caller_affiliation)?;
+    // Issue #56, both axes in one call under one lock — see
+    // `KnowledgeService::raise_tier_and_affiliation` for why they cannot be
+    // two.
+    svc.raise_tier_and_affiliation(
+        &args.kb_id,
+        args.caller_is_private,
+        &args.caller_affiliation,
+    )?;
     let kb_root = paths::kb_root(svc.root(), &args.kb_id);
 
     // Idempotently upgrade legacy schema.md files that pre-date the

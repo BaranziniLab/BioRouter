@@ -3572,16 +3572,17 @@ async fn handle_kb_frame(
             // no entry reads private (decision 3), so a public write is the one
             // path that could turn such a base explicitly public. That caller no
             // longer reaches this line.
-            // Issue #56 DR-26 / Task 50 Step 1: beside the tier raise, never
-            // without it — see `KnowledgeService::raise_affiliation`.
-            if let Err(e) = knowledge.raise_affiliation(
+            // Issue #56 DR-26 / Task 50 Step 1: both axes in one call under one
+            // lock — see `KnowledgeService::raise_tier_and_affiliation`. This
+            // site is the reason it is one method: it raised the affiliation
+            // FIRST and every other site raised the tier first, so a failure
+            // between the two left a *public* base carrying an owner here and a
+            // claimed base at public tier everywhere else.
+            if let Err(e) = knowledge.raise_tier_and_affiliation(
                 &kb_id,
+                caller.is_private,
                 &biorouter::privacy::affiliation::caller_affiliation(caller.affiliation),
             ) {
-                emit_kb_error(ui_bridge, req_id, &e.to_string());
-                return;
-            }
-            if let Err(e) = knowledge.raise_tier(&kb_id, caller.is_private) {
                 emit_kb_error(ui_bridge, req_id, &e.to_string());
                 return;
             }

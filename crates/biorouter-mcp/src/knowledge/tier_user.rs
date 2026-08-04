@@ -150,6 +150,19 @@ mod tests {
         tier_entry(svc.root(), kb_id).tier
     }
 
+    /// The ratchet, exercising the TIER only. There is one production wrapper
+    /// and it moves both of issue #56's axes under one lock
+    /// (`raise_tier_and_affiliation`); `Unstated` contributes no owner, so what
+    /// these rows assert is still the tier and nothing else.
+    fn raise_tier(svc: &KnowledgeService, kb_id: &str, caller_is_private: bool) {
+        svc.raise_tier_and_affiliation(
+            kb_id,
+            caller_is_private,
+            &crate::knowledge::affiliation::CallerAffiliation::Unstated,
+        )
+        .unwrap();
+    }
+
     fn entry(svc: &KnowledgeService, kb_id: &str) -> TierEntry {
         tier_entry(svc.root(), kb_id)
     }
@@ -162,8 +175,7 @@ mod tests {
         // path to one — pinned across the tree by
         // `the_proof_of_user_is_constructed_in_exactly_one_place`.
         let (_d, svc) = svc_with_base("omop");
-        svc.raise_tier("omop", /* caller_is_private */ true)
-            .unwrap();
+        raise_tier(&svc, "omop", /* caller_is_private */ true);
         assert_eq!(tier_of(&svc, "omop"), KbTier::Private);
 
         svc.set_tier_by_user("omop", KbTier::Public, &UserKbTierChange::for_test())
@@ -183,7 +195,7 @@ mod tests {
         // base they released from one that was never private, and neither can a
         // support conversation six months later.
         let (_d, svc) = svc_with_base("omop");
-        svc.raise_tier("omop", true).unwrap();
+        raise_tier(&svc, "omop", true);
         svc.set_tier_by_user("omop", KbTier::Public, &UserKbTierChange::for_test())
             .unwrap();
         let e = entry(&svc, "omop");
@@ -212,11 +224,10 @@ mod tests {
         // Publicizing is not an exemption. The next private write raises it again,
         // and the user is not silently left on a base that stopped ratcheting.
         let (_d, svc) = svc_with_base("omop");
-        svc.raise_tier("omop", true).unwrap();
+        raise_tier(&svc, "omop", true);
         svc.set_tier_by_user("omop", KbTier::Public, &UserKbTierChange::for_test())
             .unwrap();
-        svc.raise_tier("omop", /* caller_is_private */ true)
-            .unwrap();
+        raise_tier(&svc, "omop", /* caller_is_private */ true);
         assert_eq!(tier_of(&svc, "omop"), KbTier::Private);
 
         // …and the provenance goes with it. A row reading Private under
