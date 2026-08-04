@@ -477,6 +477,50 @@ async fn disabling_through_the_authenticated_path_survives_a_restart() {
     );
 }
 
+/// The fourth state, and the one the gate above cannot reach: a store that
+/// EXISTS but does not parse, with the retired key present and `off`.
+///
+/// ⚠ **Why the gate needs this beside it.** Every test above runs the migration
+/// first, so the store is always *readable* by the time the hand-edited key is
+/// read — which means one wrong implementation slips through all of them: the
+/// compatibility reader written as `read_for(..).or_else(|| the key)`, whose
+/// fallback arm is simply never taken. This is the state that takes it.
+/// `exists_in` holds the migration shut (deliberately — one corrupt byte must
+/// not make the retired key live again) while `read_for` answers `None`, so a
+/// reader with a fallback reaches the key and honours it. Nothing recorded and
+/// nothing readable both mean ON.
+#[tokio::test]
+#[serial_test::serial]
+async fn an_unreadable_store_falls_back_to_enforcing_and_never_to_the_retired_key() {
+    let _fixture = PrivacyToggleFixture::capture();
+    reset_switch_storage();
+
+    std::fs::write(config_dir().join("privacy-tiers.json"), "{ not json").unwrap();
+    Config::global()
+        .set(
+            biorouter::privacy::PRIVACY_TIERS_CONFIG_KEY,
+            &Value::String("off".to_string()),
+            false,
+        )
+        .unwrap();
+
+    biorouter_mcp::privacy_toggle::set_privacy_tiers_enabled(false);
+    biorouter::privacy::load_privacy_tiers_from_config();
+
+    assert!(
+        biorouter::privacy::privacy_tiers_enabled(),
+        "an unreadable store fell through to the retired `config.yaml` key — a \
+         record that does not parse must resolve to ON, never to whatever the \
+         key says"
+    );
+    assert_eq!(
+        retired_key_on_disk(),
+        Some(Value::String("off".to_string())),
+        "the migration ran against a store that already exists — one corrupt \
+         byte must not re-open it"
+    );
+}
+
 /// Step 2: the retired key is read **once**, at migration, and then ignored.
 ///
 /// The first half is what users who set the key before this version are owed —
