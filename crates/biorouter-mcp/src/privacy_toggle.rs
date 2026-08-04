@@ -19,9 +19,19 @@
 //! already uses for `private_roots`.
 //!
 //! This module knows nothing about configuration. Loading the value is
-//! `biorouter::privacy::load_privacy_tiers_from_config`, which reads the loaded
-//! config values map directly and never `Config::get_param` — see that function
-//! for the threat that closes.
+//! `biorouter::privacy::load_privacy_tiers_from_config`, which reads
+//! `privacy-tiers.json` — the record `biorouter::privacy::master_switch` owns,
+//! beside `config.yaml` in this install's configuration directory.
+//!
+//! ⚠ **Not `config.yaml`, and not the environment** (issue #56, DR-22). The
+//! value used to be a `config.yaml` key, `BIOROUTER_PRIVACY_TIERS`. That key is
+//! now *retired*: read once at migration, removed, and ignored for ever after.
+//! The agent holds `developer__shell`, so a value it could reach by writing a
+//! file or exporting a variable would be a control the agent switches off and
+//! waits one restart for — see `master_switch` for what the move does and does
+//! not buy, and `load_privacy_tiers_from_config` for why the read never goes
+//! through `Config::get_param`, whose middle branch resolves an environment
+//! variable.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 

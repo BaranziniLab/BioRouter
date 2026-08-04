@@ -269,6 +269,15 @@ pub fn write_for(config: &Config, enabled: bool) -> std::io::Result<()> {
 /// formatting to remove a key that was never there, and would make both hosts
 /// write that file at startup on that one launch through a staging path
 /// (`config.tmp`) that is not per process.
+///
+/// ⚠ **The residual, recorded here rather than left to be discovered.** The
+/// migration is closed by the STORE's existence, so deleting the store *and*
+/// writing the key back re-opens it — two coordinated writes in the
+/// configuration directory DR-17 leaves an agent holding `developer__shell` able
+/// to reach. It buys that agent nothing it did not already have: one write of
+/// `{"enabled": false}` into the store is shorter and does the same thing. The
+/// bound is the module header's — DR-22 closes the *documented key*, not the
+/// file channel — and this residual is inside it, not beside it.
 pub fn migrate_once(config: &Config) -> bool {
     let dir = dir_of(config);
     if exists_in(&dir) {
