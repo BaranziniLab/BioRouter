@@ -654,10 +654,11 @@ for (const e of extensions) {
 // `registry:fetch` handler. Without a compiled-in copy, Rust could enforce
 // nothing at all.
 //
-// Written to match what rustfmt would produce, so regenerating never leaves the
-// tree failing `cargo fmt --check`: a slice literal stays on one line while it
-// fits inside rustfmt's 100-column default, and wraps four-space-indented when
-// it does not.
+// This generator is the ONLY authority on how the file is laid out: the three
+// consts are emitted with `#[rustfmt::skip]`, and `--check` below is what holds
+// them to their expected text. Two authorities is a deadlock, not a nuisance —
+// see `renderSliceConst`, where the layout rule is still kept faithful to
+// rustfmt so the generated file reads like the rest of the tree.
 //
 // Three consts, not one, and all three are security artifacts:
 //
@@ -673,28 +674,65 @@ for (const e of extensions) {
 // and the CLI can never enforce, and a second hand-maintained list beside
 // PRIVATE_EXTENSIONS is exactly what Task 47 forbids.
 
+// rustfmt's two relevant defaults. `max_width` is the one everybody knows;
+// `array_width` is 60 and applies to what sits BETWEEN the brackets, and it is
+// the one that bites.
+const RUSTFMT_MAX_WIDTH = 100;
+const RUSTFMT_ARRAY_WIDTH = 60;
+
 /**
- * A slice-literal const, wrapped the way rustfmt would wrap it: on one line
- * while it fits in the 100-column default, then with the value moved to its own
- * indented line, then one element per line.
+ * A slice-literal const, wrapped the way rustfmt wraps one: on one line while
+ * the item fits `max_width` AND the bracket contents fit `array_width`, then
+ * with the value moved to its own indented line, then one element per line.
+ *
+ * ⚠ **Checking only the 100 columns is wrong, and it wedges the build rather
+ * than merely producing an ugly file.** Measured by bisection against the
+ * repo's rustfmt (1.92, `bin/rustfmt`): with 60 characters between the brackets
+ * rustfmt keeps the hanging form; at 61 it demands one element per line. A
+ * predictor that consulted `max_width` alone emitted the hanging form for any
+ * contents 61 characters or wider — which a third affiliated extension reaches
+ * — so `cargo fmt --check` rejected exactly the text `--check` below required.
+ * Running either formatter to satisfy its own gate broke the other, and no
+ * state satisfied both.
+ *
+ * That deadlock is now structurally impossible, not merely avoided: the consts
+ * are emitted with `#[rustfmt::skip]`, so rustfmt no longer holds an opinion
+ * about them at all and a miss here costs readability instead of a red CI. The
+ * widths are still honoured because the file is read by humans as a security
+ * artifact and should look like the code around it — and because rustfmt's
+ * handling of a *single* very wide element does not follow this rule at all,
+ * which is a shape no predictor short of rustfmt itself gets right.
  */
 function renderSliceConst(head, cells) {
-  const oneLine = `${head} = &[${cells.join(', ')}];`;
-  if (oneLine.length <= 100) return oneLine;
-  const hanging = `${head} =\n    &[${cells.join(', ')}];`;
-  if (hanging.split('\n').every((line) => line.length <= 100)) return hanging;
+  const contents = cells.join(', ');
+  const fitsArray = contents.length <= RUSTFMT_ARRAY_WIDTH;
+  const oneLine = `${head} = &[${contents}];`;
+  if (fitsArray && oneLine.length <= RUSTFMT_MAX_WIDTH) return oneLine;
+  const hanging = `${head} =\n    &[${contents}];`;
+  if (fitsArray && hanging.split('\n').every((line) => line.length <= RUSTFMT_MAX_WIDTH)) {
+    return hanging;
+  }
   return `${head} = &[\n${cells.map((c) => `    ${c},`).join('\n')}\n];`;
 }
+
+/**
+ * `#[rustfmt::skip]`, and why every generated const carries it.
+ *
+ * Layout needs exactly one owner. With rustfmt also holding an opinion, any
+ * shape `renderSliceConst` predicts wrongly is a deadlock between two gates
+ * that both run in `just check-everything` — and the file they are fighting
+ * over is the compiled-in privacy snapshot, so the tempting way out is to hand
+ * edit it, which is the one thing its header forbids.
+ */
+const SKIP_FMT = '#[rustfmt::skip]';
 
 function renderPrivateSet(exts) {
   const privateExts = exts.filter((e) => e.privacy === 'private');
   const keys = privateExts.map((e) => e.extension_name).sort();
-  const decl = 'pub const PRIVATE_EXTENSIONS: &[&str] = &[';
-  const inline = `${decl}${keys.map((k) => `"${k}"`).join(', ')}];`;
-  const body =
-    inline.length <= 100
-      ? inline
-      : `${decl}\n${keys.map((k) => `    "${k}",`).join('\n')}\n];`;
+  const body = renderSliceConst(
+    'pub const PRIVATE_EXTENSIONS: &[&str]',
+    keys.map((k) => `"${k}"`)
+  );
 
   // Only entries that DECLARE an affiliation get a row. An extension with no
   // declaration must produce no row at all, never a row with an empty list:
@@ -740,6 +778,13 @@ function renderPrivateSet(exts) {
       '//! runs in CI (the Frontend workflow) and in `just check-everything`, so a hand',
       '//! edit here — or an interrupted run that updated only some of the three — is',
       '//! caught rather than trusted not to happen.',
+      '//!',
+      '//! Each const carries `#[rustfmt::skip]` so that `--check` above is the only',
+      '//! authority on its layout. rustfmt wraps a slice literal by `array_width`',
+      '//! (60 columns between the brackets), not by `max_width`, and a generator that',
+      '//! predicted the wrong one produced text `cargo fmt --check` rejected and',
+      '//! `--check` demanded — two gates in `just check-everything` with no state',
+      '//! satisfying both, over the file whose header forbids the obvious way out.',
       '',
       '/// The BAAM extensions whose cards declare `data-privacy="private"`, and which',
       '/// so must never be admitted to a public session.',
@@ -748,6 +793,7 @@ function renderPrivateSet(exts) {
       '/// which is the form `classify_extension` reduces its argument to before the',
       '/// lookup. That makes the entry match either spelling the registry publishes:',
       '/// the id (`cdwagent`) or the bundle `manifest.name` (`CDWAgent`).',
+      SKIP_FMT,
       body,
       '',
       '/// Whose agreements each private extension\'s data is under — DR-26\'s third',
@@ -757,6 +803,7 @@ function renderPrivateSet(exts) {
       '/// Absent means unconstrained (`ExtensionAffiliation::Any`, reachable from any',
       '/// private model); an empty allowlist would mean the opposite — permits nothing',
       '/// — so the generator refuses `data-affiliation=""` rather than emitting one.',
+      SKIP_FMT,
       affiliations,
       '',
       '/// Institution id → display name, for the warning copy.',
@@ -766,6 +813,7 @@ function renderPrivateSet(exts) {
       '/// An id absent from this map has no display name, so the warning surfaces the',
       '/// raw id — and, being absent from every allowlist that does not literally spell',
       '/// it, it is a mismatch rather than a silent pass.',
+      SKIP_FMT,
       institutions,
     ].join('\n') + '\n'
   );

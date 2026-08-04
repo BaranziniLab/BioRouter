@@ -235,6 +235,90 @@ test('the compiled-in snapshot carries affiliation and the institution names', (
   );
 });
 
+/**
+ * The repo's own rustfmt, or whatever is on PATH — `null` when neither answers.
+ *
+ * Not a hard dependency: this suite runs in the frontend CI job, where the Rust
+ * toolchain is not installed. The assertion it guards is the *corroborating*
+ * one; the golden shape beside it always runs.
+ */
+function findRustfmt() {
+  for (const candidate of [join(REPO, 'bin', 'rustfmt'), 'rustfmt']) {
+    const probe = spawnSync(candidate, ['--version'], { encoding: 'utf8' });
+    if (!probe.error && probe.status === 0) return candidate;
+  }
+  return null;
+}
+
+test('a third affiliated extension wraps the way rustfmt wraps, not the way 100 columns would', () => {
+  // The bug this exists to prevent, measured: rustfmt wraps a slice literal by
+  // `array_width` (60 columns BETWEEN the brackets), not by the 100-column
+  // `max_width`. Two affiliated rows fit either way, so every fixture here
+  // passed while the generator emitted, for three rows, the hanging form
+  //
+  //     pub const EXTENSION_AFFILIATIONS: &[(&str, &[&str])] =
+  //         &[("alphawideagent", &["ucsf"]), ("betawideagent", ...)];
+  //
+  // which `cargo fmt --check` rejects and `--check` below demands — two gates
+  // in `just check-everything` with no state satisfying both.
+  const out = outPath();
+  const rs = rustPath();
+  const r = run({ input: fixture('three-affiliations'), out, args: ['--emit-rust', rs] });
+  assert.equal(r.code, 0, r.both);
+
+  const rust = readFileSync(rs, 'utf8');
+  assert.ok(
+    rust.includes(
+      'pub const EXTENSION_AFFILIATIONS: &[(&str, &[&str])] = &[\n' +
+        '    ("alphawideagent", &["ucsf"]),\n' +
+        '    ("betawideagent", &["ucsf"]),\n' +
+        '    ("gammawideagent", &["ucsf"]),\n' +
+        '];'
+    ),
+    `three rows must go one per line, not onto one indented line:\n${rust}`
+  );
+
+  // ...and that is not merely this generator agreeing with itself. Strip the
+  // `#[rustfmt::skip]` attributes — which exist so a miss here can never wedge
+  // the build — and rustfmt must leave the result alone.
+  const rustfmt = findRustfmt();
+  if (rustfmt === null) return;
+  const unskipped = join(scratch, `unskipped-${tmpSeq++}.rs`);
+  writeFileSync(
+    unskipped,
+    rust
+      .split('\n')
+      .filter((line) => line.trim() !== '#[rustfmt::skip]')
+      .join('\n')
+  );
+  const fmt = spawnSync(rustfmt, ['--edition', '2021', '--check', unskipped], {
+    encoding: 'utf8',
+  });
+  assert.equal(
+    fmt.status,
+    0,
+    `rustfmt would rewrite the generated file:\n${fmt.stdout}${fmt.stderr}`
+  );
+});
+
+test('the emitted consts are exempt from rustfmt, so the two gates cannot deadlock', () => {
+  // The structural half of the fix above. Predicting rustfmt is best-effort —
+  // its handling of a single very wide element follows no rule this generator
+  // implements — so rustfmt is removed as a second authority over the layout of
+  // a file whose own header forbids hand-editing it.
+  const out = outPath();
+  const rs = rustPath();
+  const r = run({ input: fixture('three-affiliations'), out, args: ['--emit-rust', rs] });
+  assert.equal(r.code, 0, r.both);
+
+  const rust = readFileSync(rs, 'utf8');
+  assert.equal(
+    (rust.match(/^#\[rustfmt::skip\]$/gm) ?? []).length,
+    3,
+    `all three consts must carry the attribute:\n${rust}`
+  );
+});
+
 test('--input without --out is refused rather than defaulted', () => {
   const r = run({ input: fixture('happy') });
   assert.equal(r.code, 1, r.both);
