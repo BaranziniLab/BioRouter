@@ -1177,14 +1177,13 @@ fn refuse_grant_unless_user(proof: UserActionProof) -> Result<(), ErrorResponse>
 /// the warning — never from the request. Re-binding to a different institution's
 /// model changes the triple, so the acceptance does not carry over.
 ///
-/// ⚠ **Nothing in the desktop UI calls this yet, and that is the missing half of
-/// the flow.** `agentCrossAffiliationGrant` exists in the generated client
-/// (`ui/desktop/src/api/sdk.gen.ts`) and nothing outside `src/api/` calls it, so
-/// the generated call also attaches no `X-User-Action` header — which this route
-/// requires. Until the dialog lands, the sequence DR-26 describes stops one step
-/// short: the model is refused and told to ask, and the person at the keyboard
-/// has no button. The backend half is complete and testable; the surface is the
-/// task that follows, and no comment here should be read as claiming otherwise.
+/// ⚠ **The desktop surface is the accept control on the refusal itself** (Task
+/// 57): `CrossAffiliationAcceptCard` renders inside the failed tool call that
+/// carries `privacy::refusal::CROSS_AFFILIATION_ACCEPT_MARKER`, and posts here
+/// with the `X-User-Action` header this route requires. The generated client
+/// attaches no header of its own, so every caller must supply one — which is the
+/// point: a call without it is refused, and only a surface the user gestured at
+/// has one to send.
 #[utoipa::path(
     post,
     path = "/agent/cross_affiliation_grant",

@@ -217,8 +217,14 @@ fn check_enable_allowed(
     // never clears a mismatch automatically" half of DR-26 undone by a lookup.
     // The route out is unchanged and is a user's: enable it from Settings
     // (`/agent/add_extension`, which warns and proceeds), then accept the flow.
+    //
+    // Task 57: `None` follows from that. An accept control here would let the
+    // model turn "the user accepted this flow" into "the user asked for this
+    // server to be started", which is the sentence above undone by a button.
     if let Some(warning) = cap.cross_affiliation_warning(extension_name, &class) {
-        return Err(crate::privacy::refusal::cross_affiliation_refusal(&warning));
+        return Err(crate::privacy::refusal::cross_affiliation_refusal(
+            &warning, None,
+        ));
     }
     Ok(entry.config)
 }

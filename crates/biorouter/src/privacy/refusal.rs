@@ -53,6 +53,36 @@ pub const ASK_THE_USER_TO_SWITCH: &str =
 /// toast, with nothing failing.
 pub const USER_ACTION_REFUSAL_MARKER: &str = "is the user's decision, not yours";
 
+/// The frame that marks a cross-affiliation refusal as one the user can **clear
+/// by accepting it**, and that carries the extension key they would be accepting
+/// (issue #56, DR-26 / Task 57).
+///
+/// It exists because DR-26's ruling is *warn, then allow if the user insists*,
+/// and until Task 57 the second half had no affordance: the refusal arrived, the
+/// model was told to ask, and the person at the keyboard had no button. Their
+/// only route past it was to switch the chat's model — a hard block wearing a
+/// warning's clothes, which is the control-people-route-around failure DR-19
+/// exists to prevent.
+///
+/// ⚠ **It is a frame, not a flag.** The renderer needs two things and the tool
+/// result carries only text: *is this refusal grantable*, and *which extension
+/// key does the grant name*. `ErrorData::data` cannot carry the second — the
+/// wire form of a failed tool call is `{status, error, error_kind, retryable}`
+/// (`conversation::tool_result_serde`), which keeps the message and drops the
+/// structured payload. So the key rides immediately after this marker, in
+/// backticks, and `only_the_refusal_a_grant_can_clear_offers_the_accept_marker`
+/// pins that shape rather than merely the marker's presence.
+///
+/// ⚠ **Present only where a grant would actually clear the call** — see
+/// [`cross_affiliation_refusal`]'s `acceptable` argument. A button on a refusal
+/// no grant is consulted for would record a real acceptance and leave the retry
+/// refused, which is the bug it fixes, inverted.
+///
+/// ⚠ Mirrored verbatim in `ui/desktop/src/utils/crossAffiliation.ts`. A reword
+/// that dropped it here would put the accept control back out of reach with
+/// nothing failing on this side.
+pub const CROSS_AFFILIATION_ACCEPT_MARKER: &str = "The flow they would be approving is ";
+
 /// DR-16's rule, as a predicate: raising a session's capability to Private is
 /// the user's act alone, and only an **upward** bind is a raise.
 ///
@@ -428,31 +458,40 @@ pub fn privacy_refusal(
 /// the institutions and nothing else — no session id, no title, no working
 /// directory.
 ///
-/// ⚠ **Both exits it offers are real in this build, and one of them is only
-/// half-wired.** "Switch this chat to a model covered by the same institution's
-/// agreements" is a bind, and the bind surface warns rather than refusing. "Ask
-/// them to approve this specific flow" is Task 49's cross-affiliation grant,
-/// scoped to (session, extension, model affiliation): it is recorded by
+/// ⚠ **Both exits it offers are real in this build, and reachable.** "Switch
+/// this chat to a model covered by the same institution's agreements" is a bind,
+/// and the bind surface warns rather than refusing. "Ask them to approve this
+/// specific flow" is Task 49's cross-affiliation grant, scoped to (session,
+/// extension, model affiliation): it is recorded by
 /// `POST /agent/cross_affiliation_grant` behind `X-User-Action`, and
 /// [`super::grant::is_granted`] is consulted by Gate C
 /// (`ExtensionManager::cross_affiliation_denial`) before this refusal is
-/// composed at all — so a granted triple never reaches here.
+/// composed at all — so a granted triple never reaches here. Task 57 gave the
+/// person at the keyboard the button: [`CROSS_AFFILIATION_ACCEPT_MARKER`] is
+/// what the desktop transcript keys on to render it.
 ///
-/// ⚠ **What is NOT wired yet, stated so nobody reads more into the sentence
-/// than the tree contains.** Two of the surfaces that produce this refusal do
-/// not consult the grant, both because they hold no session id to key one on:
-/// `assert_extension_reachable` (the eight non-tool-call entries — resource and
-/// prompt reads) and the agent's own enable path. Both fail CLOSED — a refusal
-/// the user meets again, never a disclosure they did not accept — and each
-/// carries the reason at its own site. And no UI surface calls the grant route
-/// yet, so today the human's route to it is an HTTP client; the button is the
-/// task that follows. Until it lands, a legitimate cross-institutional user
-/// under a real DUA has the model switch and a route nothing clicks — the
-/// "researchers route around it by turning the feature off" pressure DR-26
-/// warns about, arriving through the order the tasks ship in.
+/// ⚠ **Two of the surfaces that produce this refusal do not consult the grant,
+/// and they therefore pass `None` below.** `assert_extension_reachable` (the
+/// eight non-tool-call entries — resource and prompt reads) holds no session id
+/// to key a grant on; the agent's own `manage_extensions` enable path refuses
+/// deliberately, because a grant is the user's acceptance of a data flow through
+/// a connector the chat already has and not permission for the model to attach
+/// one. Both fail CLOSED — a refusal the user meets again, never a disclosure
+/// they did not accept — and each carries the reason at its own site.
 ///
 /// [`CallCapability::cross_affiliation_warning`]: super::CallCapability::cross_affiliation_warning
-pub fn cross_affiliation_refusal(warning: &str) -> ErrorData {
+pub fn cross_affiliation_refusal(warning: &str, acceptable: Option<&str>) -> ErrorData {
+    // ⚠ ONE text with an optional tail, never two refusals. The two spellings
+    // describe the same boundary and must not drift into two accounts of it;
+    // what differs is whether an acceptance exists that would clear THIS call.
+    let accept = match acceptable {
+        Some(extension) => {
+            format!(
+                " {CROSS_AFFILIATION_ACCEPT_MARKER}`{extension}`, on this chat's current model."
+            )
+        }
+        None => String::new(),
+    };
     ErrorData::new(
         ErrorCode::INVALID_REQUEST,
         format!(
@@ -460,7 +499,8 @@ pub fn cross_affiliation_refusal(warning: &str) -> ErrorData {
              risk, and only after it has been stated to them, so do not retry — not with a \
              different tool name, not through code execution, and not through a resource read. \
              Tell the user what you were trying to do and ask them to approve this specific flow \
-             or to switch this chat to a model covered by the same institution's agreements."
+             or to switch this chat to a model covered by the same institution's \
+             agreements.{accept}"
         ),
         None,
     )
@@ -665,7 +705,7 @@ mod tests {
         let warning = "Cross-institutional data flow. The extension `ucsfomopagent` holds data \
                        belonging to UCSF (ucsf), but this chat is bound to a model covered by \
                        Stanford's agreements.";
-        let msg = cross_affiliation_refusal(warning).message.to_string();
+        let msg = cross_affiliation_refusal(warning, None).message.to_string();
 
         assert!(msg.contains(warning), "the warning is the product: {msg}");
         assert!(msg.contains("do not retry"), "{msg}");
@@ -694,10 +734,78 @@ mod tests {
 
         // Deterministic: a model that sees a different string on retry concludes
         // the refusal is transient and loops.
-        assert_eq!(msg, cross_affiliation_refusal(warning).message.to_string());
         assert_eq!(
-            cross_affiliation_refusal(warning).code,
+            msg,
+            cross_affiliation_refusal(warning, None).message.to_string()
+        );
+        assert_eq!(
+            cross_affiliation_refusal(warning, None).code,
             ErrorCode::INVALID_REQUEST
+        );
+    }
+
+    /// Task 57. The desktop transcript turns this refusal into an **accept
+    /// control**, and it may only do so where pressing it actually clears the
+    /// call.
+    ///
+    /// Two of the three sites that compose this refusal do not consult the grant
+    /// — `assert_extension_reachable` (no session to key one on) and the agent's
+    /// own `manage_extensions` enable path (deliberately, DR-26's "an agent never
+    /// clears a mismatch automatically"). A button rendered on either would
+    /// record a real acceptance and leave the retry refused, which is the same
+    /// bug as having no button at all, wearing a fix's clothes. So the offer is
+    /// an argument, not a property of the text.
+    #[test]
+    fn only_the_refusal_a_grant_can_clear_offers_the_accept_marker() {
+        let warning = "Cross-institutional data flow. The extension `ucsfomopagent` holds data \
+                       belonging to UCSF (ucsf), but this chat is bound to a model covered by \
+                       Stanford's agreements.";
+
+        let offered = cross_affiliation_refusal(warning, Some("ucsfomopagent"))
+            .message
+            .to_string();
+        assert!(
+            offered.contains(CROSS_AFFILIATION_ACCEPT_MARKER),
+            "{offered}"
+        );
+        // The marker is a FRAME, not a flag: the renderer reads the extension
+        // key out of what follows it, so the name has to be there, in backticks,
+        // immediately after. Asserting only `contains(marker)` would pass
+        // against a refusal the renderer cannot act on.
+        let tail = offered
+            .split(CROSS_AFFILIATION_ACCEPT_MARKER)
+            .nth(1)
+            .expect("the marker is present, so there is a tail");
+        assert!(
+            tail.starts_with("`ucsfomopagent`"),
+            "the renderer parses the extension key out of the marker's tail: {tail}"
+        );
+
+        let bare = cross_affiliation_refusal(warning, None).message.to_string();
+        assert!(
+            !bare.contains(CROSS_AFFILIATION_ACCEPT_MARKER),
+            "a refusal no grant can clear must not offer one: {bare}"
+        );
+        // …and it is otherwise the SAME refusal. Two divergent texts for one
+        // boundary is what the one-composition rule exists to prevent.
+        assert!(bare.contains(warning), "{bare}");
+        assert!(offered.starts_with(&bare), "{offered}");
+
+        // Gate D's cross-affiliation refusal is about a chat history rather than
+        // an extension, and no grant is keyed on one — so it must never carry
+        // the marker either.
+        assert!(
+            !chatrecall_cross_affiliation_refusal(warning)
+                .contains(CROSS_AFFILIATION_ACCEPT_MARKER),
+            "a chat-recall refusal offered an acceptance nothing records"
+        );
+
+        // Deterministic, in both spellings.
+        assert_eq!(
+            offered,
+            cross_affiliation_refusal(warning, Some("ucsfomopagent"))
+                .message
+                .to_string()
         );
     }
 

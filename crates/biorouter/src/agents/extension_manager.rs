@@ -1978,7 +1978,15 @@ impl ExtensionManager {
         {
             return None;
         }
-        Some(crate::privacy::refusal::cross_affiliation_refusal(&warning))
+        // Task 57: `Some(client_name)` — this is the ONE site that consults the
+        // grant, so it is the one whose refusal may offer an accept control. The
+        // key handed over is the same `client_name` the lookup above used, so
+        // the acceptance the user records is keyed on exactly the triple that
+        // was refused.
+        Some(crate::privacy::refusal::cross_affiliation_refusal(
+            &warning,
+            Some(client_name),
+        ))
     }
 
     /// Record on the session row that this chat reached a private extension
@@ -2091,8 +2099,14 @@ impl ExtensionManager {
         // did not accept — which is why it ships this way rather than blocking
         // Task 49. Closing it means threading the session through all eight
         // entries, which is Task 50/51 territory, not a line to add here.
+        //
+        // Task 57: `None`, and for the same missing argument. This path never
+        // reads a grant, so a refusal that offered an accept control here would
+        // record a real acceptance and refuse the retry anyway.
         match cap.cross_affiliation_warning(name, &class) {
-            Some(warning) => Err(crate::privacy::refusal::cross_affiliation_refusal(&warning)),
+            Some(warning) => Err(crate::privacy::refusal::cross_affiliation_refusal(
+                &warning, None,
+            )),
             None => Ok(()),
         }
     }
