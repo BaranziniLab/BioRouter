@@ -2902,7 +2902,8 @@ the owning task must build its `pre + N` on:**
 | `biorouter-server` | `routes::config_management` | 3 |
 | `biorouter-server` | `routes::session` | **29** — `::diverge_tests` 15 + `::edit_message_tests` 9, plus 5 in `routes::session_events::tests`, which the substring catches from a *different module* |
 
-**Deferred — 13 pairs, each with the task that creates it. A filter in neither list is the defect:**
+**Deferred — 12 pairs (13 when this table was written; see the resolution note below), each with the
+task that creates it. A filter in neither list is the defect:**
 
 | Package | Filter | Created by | Pre-count today |
 |---|---|---|---|
@@ -2916,7 +2917,6 @@ the owning task must build its `pre + N` on:**
 | `biorouter` | `privacy::visibility` | Task 21 | **0** ✓ |
 | `biorouter` | `every_copy_path_carries_the_tier_and_the_provider` | Task 22 | **0** ✓ — a bare **test name**, not a module; it is in the `--lib -- …` form and is invisible to an audit of only the plain form |
 | `biorouter` | `privacy::declassify` | Task 29 | **0** ✓ |
-| `biorouter` | `privacy::system_auth` | Task 29 | **0** ✓ — added by [DR-20](#dr-20--declassification-is-gated-by-a-system-authentication-and-that-is-what-lets-an-agent-ask). ⚠ **Its tests need `--features privacy-test-auth`**, so this row's command is `cargo test -p biorouter --features privacy-test-auth --lib privacy::system_auth` — the only row here whose filter does not run under a bare `cargo test` |
 | `biorouter-mcp` | `knowledge::tier_user` | Task 29A | **0** ✓ — added by [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store) |
 | `biorouter` | `privacy::disclosure` | Task 30A | **0** ✓ — added by [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store) |
 
@@ -2926,6 +2926,24 @@ rather than left to be discovered, because an unregistered filter is exactly wha
 UNRECORDED check exists to catch, and Task 40 Step 2b demands an **empty** deferred set at the
 release gate. Re-derive the totals below from the table rather than from the sentence: the "12" it
 records is a measurement of *that run*.
+
+⚠ **And that thirteenth row RESOLVED on 2026-08-04, at Task 44's commit, leaving 12** — so the
+totals in the Task 4b and Task 19 command blocks below say **13** and are records of *their* runs,
+not of this table. `crates/biorouter/src/privacy/system_auth.rs` now exists. Measured at Task 44's
+implementation commit: `cargo test -p biorouter --features privacy-test-auth --lib
+privacy::system_auth` is **22**, and the bare `cargo test -p biorouter --lib privacy::system_auth`
+is **16** — the six-test difference is the seam's own behavioural tests, which are compiled out
+without the feature. Both spellings are live and they are different numbers, exactly like
+`memory` / `memory::` above; a `pre + N` assertion has to say which one it is arithmetic on.
+
+⚠ **The creating task in the row was wrong, and the row is not being moved into the resolved table
+above.** The row named Task 29, but Task 29's landed implementation predates its own DR-20 rewrite
+and never built this module (see [Task 29](#task-29-declassification--the-system-authentication-the-batch-and-the-audit)'s
+deviation note); [Task 44](#task-44-windows-hello-and-polkit--dr-24) built it, because Task 44's
+prompters have nowhere to live otherwise. And the resolved table above is explicitly *"measured
+2026-08-01 at `fd14ef9a`"*; a row measured three days later at a different commit does not belong in
+it, and putting it there would be the arithmetic-on-the-wrong-base error that whole section exists
+to catch. The numbers live here, dated and commit-anchored, which is what that section asks for.
 
 ⚠ **This table was 18 rows before this run and is 12 after: five out, two in, three resolved.** Fix
 it in the same commit as the change that moves a row, not later. Task 4b's own gate asserts that
@@ -18193,6 +18211,32 @@ git commit -m "feat(ui): tier badges and pre-flight states on every model and ex
 > [Task 29A](#task-29a-knowledge-base-publicize--privatize--user-only-graded-audited)'s gate (2),
 > and for the same reason a count would not do.
 
+> ⚠ **WHAT LANDED IS THE PRE-DR-20 DESIGN, AND NO COMMIT SAYS SO. Recorded 2026-08-04, by Task 44.**
+> This task was rewritten for DR-20 in `db1a741b` on 2026-08-02 and *implemented* in `c880daca` on
+> 2026-08-03 — the day **after** — yet what `c880daca` shipped is the design this box replaced.
+> `privacy/declassify.rs` carries `pub struct UserConfirmation(())`, a ZST, minted by
+> `from_typed_confirmation()`; the route is the per-id `POST /sessions/{session_id}/declassify`. None
+> of `system_auth.rs`, `system_auth_seam.rs`, the batch, the OS prompt or the `privacy-test-auth`
+> feature arrived with it, and its commit body does not mention the divergence. **A silent deviation
+> is how this survived two whole tasks**, and it was found only when
+> [Task 44](#task-44-windows-hello-and-polkit--dr-24) went looking for the `AuthOutcome` it was
+> specified to implement behind.
+>
+> **What Task 44 did about it, and what it deliberately did not.** Task 44 built
+> `privacy::system_auth` — the `AuthRequest`/`AuthOutcome`/`SystemAuthenticator` seam, the three
+> DR-24 prompters, the test seam and the `compile_error!` guard — because its own prompters have
+> nowhere to live otherwise, and Task 44's scope (*"adds implementations behind it and changes no
+> caller"*) is satisfied by exactly that. It did **not** write `authenticate()`, did not touch
+> `UserConfirmation`, and did not move the route, because those are this task's and doing them under
+> another task's name is what produced this box in the first place.
+>
+> **So this task is still owed, and its remaining scope is now smaller and sharper:** turn the
+> existing `AuthOutcome` into the proof `declassify` consumes, make that proof carry its authorised
+> id set, replace the per-id route with the collection route a batch needs, and re-point the two
+> existing callers. Until that lands, **declassification in this tree is still gated on a retypeable
+> typed phrase** — `confirmation_matches` — and DR-20 is not in force however complete
+> `privacy::system_auth` looks.
+
 ⚠ **The design's stated attachment point does not exist.** §12.1 says "History → the session's own
 row → overflow menu". `SessionListView`'s row has **no** overflow menu: it has a `DropdownMenu`
 whose trigger is a `NewWindow` icon labelled `Launch options for ${session.name}` (`:792-812`)
@@ -18209,13 +18253,17 @@ returns **zero** product hits. `ConfirmationModal` (`ui/desktop/src/components/u
 
 **Files:**
 
+⚠ **The first five rows below already landed, under
+[Task 44](#task-44-windows-hello-and-polkit--dr-24) on 2026-08-04** — see the deviation box above.
+They are kept, re-labelled, so the remaining work is legible; do not re-create what exists.
+
 | Action | Path | Anchor (re-verified at `9558c346`) |
 |---|---|---|
-| Create | `crates/biorouter/src/privacy/system_auth.rs` | new — DR-20's whole mechanism: `AuthRequest`, `AuthOutcome`, the `SystemAuthenticator` trait, `authenticate()` (the **only** constructor of `UserConfirmation`), and the platform resolver |
-| Create | `crates/biorouter/src/privacy/system_auth_macos.rs` | new — `#[cfg(target_os = "macos")]`; the real prompter. ⚠ verify the API before writing it: nothing in this tree has ever raised an OS auth prompt (measured — `LocalAuthentication`, `LAContext`, `promptTouchID`, `systemPreferences` return **zero** hits across `crates/` and `ui/desktop/src/`) |
-| Create | `crates/biorouter/src/privacy/system_auth_seam.rs` | new — `#[cfg(all(debug_assertions, feature = "privacy-test-auth"))]`, and **nothing else in the tree may carry that cfg pair**. Default REFUSE, one-shot arming, records the `AuthRequest` |
-| Modify | `crates/biorouter/Cargo.toml` | `[features]` `:114-124` — add `privacy-test-auth = []` beside `aws-providers`. **Non-default**, and it must never appear in any crate's `[dependencies]` features list |
-| Modify | `crates/biorouter/src/lib.rs` | the unconditional `compile_error!` guard from DR-20 requirement (2). It is the gate; everything else about the seam is a convention |
+| ~~Create~~ **Modify** | `crates/biorouter/src/privacy/system_auth.rs` | ✅ exists — `AuthRequest`, `AuthOutcome`, the `SystemAuthenticator` trait and the platform resolver landed with Task 44. **Still owed here:** `authenticate()`, the **only** constructor of `UserConfirmation`. ⚠ this module deliberately does not yet name that type, because `the_proof_of_user_is_constructed_in_exactly_two_places` asserts the naming set by exact equality — adding `authenticate()` here is what legitimately makes it a third member, and that assertion must be updated in the same commit |
+| ~~Create~~ ✅ done | `crates/biorouter/src/privacy/system_auth_macos.rs` | exists — `LAContext.evaluatePolicy` with `LAPolicyDeviceOwnerAuthentication`, via the objc2 runtime. Task 44 also added `system_auth_windows.rs` (`UserConsentVerifier`) and `system_auth_polkit.rs` (`pkcheck` against a dedicated `auth_self` action) per [DR-24](#dr-24--all-three-platforms-get-a-real-system-authentication-prompt) |
+| ~~Create~~ ✅ done | `crates/biorouter/src/privacy/system_auth_seam.rs` | exists — `#[cfg(all(debug_assertions, feature = "privacy-test-auth"))]`, and **nothing else in the tree may carry that cfg pair** (asserted by `the_test_seam_cannot_be_compiled_into_a_shipped_profile`). Default REFUSE, one-shot arming, records the `AuthRequest` |
+| ~~Modify~~ ✅ done | `crates/biorouter/Cargo.toml` | `privacy-test-auth = []` exists beside `aws-providers`. **Non-default**, and it must never appear in any crate's `[dependencies]` features list |
+| ~~Modify~~ ✅ done | `crates/biorouter/src/lib.rs` | the unconditional `compile_error!` guard from DR-20 requirement (2) exists. It is the gate; everything else about the seam is a convention |
 | Modify | `crates/biorouter-server/Cargo.toml` | `[features]` `:58-61` — `privacy-test-auth = ["biorouter/privacy-test-auth"]`, plus a `[dev-dependencies]` entry on `biorouter` carrying the feature, so `resolver = "2"` (root `Cargo.toml:3`) unifies it into **test** builds and not into `cargo build` |
 | Modify | `crates/biorouter-cli/Cargo.toml` | `[features]` `:76-79` — the same two lines |
 | Create | `crates/biorouter/src/privacy/declassify.rs` | new — the one lowering writer; takes `UserConfirmation` **by value** |
