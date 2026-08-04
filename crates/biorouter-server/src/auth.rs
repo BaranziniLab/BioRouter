@@ -247,38 +247,12 @@ pub async fn check_token(
     }
 }
 
-/// The body of `signature`'s function in `src`: everything after the signature
-/// up to the next line that is a bare `}` at column 0 — which is
-/// `awk '/sig/,/^}/'` in Rust.
-///
-/// It lives here, beside the route-shape scans that need it, because it is the
-/// ONE span a structural assertion about a handler is allowed to read. Several
-/// route facts in this crate cannot be asserted behaviourally — `AppState::new()`
-/// opens the developer's REAL session database — and the failure mode of a
-/// whole-file `contains` is that it finds the fact in the handler *next door*.
-/// A second copy of this extractor is how two scans start disagreeing about
-/// where a function ends, so there is one, and the tests that use it each carry
-/// a negative control proving it did not over-read.
-///
-/// `split_once` rather than byte-index slicing so the whole thing is panic-free
-/// by construction (`clippy::string_slice`).
-///
-/// `#[cfg(test)]`, so it is absent from every shipped binary.
-#[cfg(test)]
-pub(crate) fn body_of<'a>(src: &'a str, signature: &str) -> &'a str {
-    let (_, from_signature) = src
-        .split_once(signature)
-        .unwrap_or_else(|| panic!("`{signature}` is not in this file"));
-    from_signature
-        .split_once("\n}\n")
-        .map_or(from_signature, |(body, _)| body)
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{
-        body_of, is_public_app_get, is_unauthenticated_path, secret_matches, user_action_matches,
-    };
+    use super::{is_public_app_get, is_unauthenticated_path, secret_matches, user_action_matches};
+    /// The shared handler-body extractor. It lives under `src/routes/` rather
+    /// than here for the reason [`secret_matches`] does — see its doc.
+    use crate::routes::body_of;
     use axum::http::Method;
 
     /// SHA-256 of `key` — what the launcher hands the daemon on stdin, and the

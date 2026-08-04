@@ -1882,7 +1882,7 @@ mod cross_affiliation_grant_route_tests {
         let peek = concat!("peek", "_agent(");
         let create = concat!("get", "_agent(");
 
-        let handler = crate::auth::body_of(SOURCE, "async fn agent_cross_affiliation_grant");
+        let handler = crate::routes::body_of(SOURCE, "async fn agent_cross_affiliation_grant");
         assert!(
             handler.contains(peek),
             "the grant route no longer looks the chat up without creating it"
@@ -1897,11 +1897,11 @@ mod cross_affiliation_grant_route_tests {
         for (name, body) in [
             (
                 "agent_add_extension",
-                crate::auth::body_of(SOURCE, "async fn agent_add_extension"),
+                crate::routes::body_of(SOURCE, "async fn agent_add_extension"),
             ),
             (
                 "agent_remove_extension",
-                crate::auth::body_of(SOURCE, "async fn agent_remove_extension"),
+                crate::routes::body_of(SOURCE, "async fn agent_remove_extension"),
             ),
         ] {
             assert!(
@@ -1926,7 +1926,10 @@ mod cross_affiliation_grant_route_tests {
     /// [`super::refuse_grant_unless_user`] and this drives all three arms.
     #[test]
     fn only_a_proven_user_action_gets_past_the_grant_guard() {
-        use crate::auth::UserActionProof;
+        // Through the LIB path, as the handler above imports it: this module is
+        // compiled into the `biorouterd` binary too, where `crate::auth` does
+        // not exist.
+        use biorouter_server::auth::UserActionProof;
 
         super::refuse_grant_unless_user(UserActionProof::Proven)
             .expect("a proven user action is the one verdict that proceeds");
@@ -1948,7 +1951,7 @@ mod cross_affiliation_grant_route_tests {
     /// The pure test above cannot see the order; only the source can.
     #[test]
     fn the_guard_runs_before_the_chat_is_touched() {
-        let handler = crate::auth::body_of(SOURCE, "async fn agent_cross_affiliation_grant");
+        let handler = crate::routes::body_of(SOURCE, "async fn agent_cross_affiliation_grant");
         let guarded = handler
             .find(concat!("refuse_grant_unless_user(", "user_action_proof("))
             .expect(
