@@ -547,6 +547,26 @@ mod tests {
     /// case — a Private↔Private flow the user explicitly may accept — and the
     /// plausible wrong implementation is to conclude from it that the tier
     /// refusal should also become user-authorizable.
+    ///
+    /// ⚠ **Scoped to the span the claim is about, since Task 58.** This handler
+    /// now *does* have a proof-of-user branch — `session_reach(` on its first
+    /// line, which asks whether the caller may address the named chat at all.
+    /// That is a different question with a different answer: it is a no-op for
+    /// every public chat, which is precisely the case this refusal governs. So
+    /// the assertion can no longer be "the word does not appear in this handler".
+    /// That form went on passing through Task 58 by SPELLING — the new branch
+    /// reaches the proof through a helper — and it would go on passing if someone
+    /// bolted `&& !is_user_action(&headers)` onto the tier condition through
+    /// another one. What is asserted instead is the property, in two parts:
+    ///
+    /// 1. the refusal's own guard names **exactly three** things — tiers being
+    ///    enforced, the extension's classification, the bound provider's tier —
+    ///    so a fourth input cannot be added to it, by a helper or otherwise;
+    /// 2. and nothing downstream of the reach gate mentions the proof at all.
+    ///
+    /// The first is what the old form could not do: a conjunct spelled through
+    /// a helper reads as ordinary code to a denylist, and the old assertion
+    /// passed against one.
     #[test]
     fn the_add_extension_route_still_refuses_a_public_session_outright() {
         let handler = body_of(
@@ -557,11 +577,41 @@ mod tests {
             handler.contains("PrivateExtensionOverHttp"),
             "the outright tier refusal has left /agent/add_extension"
         );
-        assert!(
-            !handler.contains("user_action_proof(") && !handler.contains("is_user_action("),
-            "attaching a private extension to a public chat is not a raise the user can \
-             authorize, so this handler must have no proof-of-user branch"
+        // The reach gate is the ONE proof-of-user call this handler may make, and
+        // `routes::session_reach`'s ordering scan pins it ahead of everything
+        // else. If it is ever absent, the whole body is the span — which is the
+        // stricter reading, and the right one.
+        let tier_decision = handler
+            .split_once("session_reach(")
+            .map_or(handler, |(_, after_the_gate)| after_the_gate);
+        let (before_the_refusal, _) = tier_decision
+            .split_once("PrivateExtensionOverHttp")
+            .expect("the tier refusal now runs BEFORE the reach gate, so this scan no longer \
+                     covers the span its claim is about");
+        // Back to the `if` that guards it — the last one before the refusal,
+        // whatever a reformat does to the line breaks inside the condition.
+        let (_, guard) = before_the_refusal
+            .rsplit_once("    if ")
+            .expect("the outright tier refusal is no longer guarded by an `if`");
+        let (condition, _) = guard
+            .split_once('{')
+            .expect("the guarded block is no longer a block");
+        assert_eq!(
+            condition.matches("&&").count(),
+            2,
+            "the outright tier refusal takes a THIRD input beyond the extension's \
+             classification and the bound provider's tier. If that input is the caller, \
+             attaching a private extension to a public chat has become a raise the user can \
+             authorize, which DR-16 says it is not — and a helper would hide it from the scan \
+             below. Guard reads: {condition}"
         );
+        for proof in ["user_action_proof(", "is_user_action(", "X-User-Action"] {
+            assert!(
+                !tier_decision.contains(proof),
+                "attaching a private extension to a public chat is not a raise the user can \
+                 authorize, so nothing downstream of the reach gate may branch on `{proof}`"
+            );
+        }
     }
 
     #[test]
