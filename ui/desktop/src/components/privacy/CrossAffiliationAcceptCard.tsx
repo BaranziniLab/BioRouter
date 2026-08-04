@@ -52,6 +52,12 @@ export function CrossAffiliationAcceptCard({
   // beat late.
   const [mode, setMode] = useState<MixingMode | null>(null);
   const [busy, setBusy] = useState(false);
+  // ⚠ Component-local, so a remount (scrolling a long transcript, reopening the
+  // chat) shows the button again for a flow that is already granted. Harmless —
+  // `grant::record` is idempotent by triple and refreshes the timestamp rather
+  // than erroring — but it is not the same as knowing. There is no route that
+  // answers "is this triple granted", and inventing one to dim a button would
+  // add a second reader of the grant store beside the gate that decides.
   const [accepted, setAccepted] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
