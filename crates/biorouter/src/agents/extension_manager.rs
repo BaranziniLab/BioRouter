@@ -7062,10 +7062,10 @@ mod tests {
             // to the first 800 lines and reported an empty set — a census that
             // finds nothing and a clean tree look identical, which is why the
             // assertion below names the expected site rather than counting.
-            let production = match src.find("\n#[cfg(test)]") {
-                Some(i) => &src[..i],
-                None => &src[..],
-            };
+            // `split(..).next()` rather than `find` + a byte slice: the index
+            // would be at a char boundary here, but the slice is what clippy's
+            // `string_slice` flags and this needs no index at all.
+            let production = src.split("\n#[cfg(test)]").next().unwrap_or(src.as_str());
             let names = |needle: &str| {
                 production
                     .lines()
