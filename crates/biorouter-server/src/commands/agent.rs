@@ -76,11 +76,17 @@ pub async fn run() -> Result<()> {
     let settings = configuration::Settings::new()?;
 
     // Issue #56 Task 30, hardening measure (3): the master privacy switch is
-    // read ONCE, here, straight out of the user's `config.yaml`, and the
-    // authoritative value then lives in daemon memory for the life of the
-    // process. The FIRST of the toggle's exactly two writers; the second is
-    // `/config/upsert`'s gated arm, which is the channel Settings > Privacy
-    // uses.
+    // read ONCE, here, and the authoritative value then lives in daemon memory
+    // for the life of the process. The FIRST of the toggle's exactly two
+    // writers; the second is `/config/upsert`'s gated arm, which is the channel
+    // Settings > Privacy uses.
+    //
+    // ⚠ Task 42 (DR-22): the value comes from `privacy-tiers.json` beside
+    // `config.yaml`, NOT from `config.yaml` itself — a key in that file was a
+    // next-launch disable for anything that could write files. This call also
+    // runs the one-time migration that carries a pre-DR-22 key across and
+    // retires it, which is why it must stay before anything that could serve a
+    // request.
     //
     // It is deliberately not read through `Config::get_param`, whose middle
     // branch resolves an environment variable: the agent holds

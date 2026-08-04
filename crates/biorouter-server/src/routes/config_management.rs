@@ -226,19 +226,19 @@ pub async fn upsert_config(
             return Err((StatusCode::FORBIDDEN, master_switch_refusal(&query.key)));
         }
         // ⚠ And never into the SECRET store. `config.set(.., is_secret)` routes a
-        // secret to the OS credential store, which the startup loader's
-        // `all_values()` does not read — so a confirmed secret write would set
-        // this process's atomic to `off` and then silently revert to `on` at the
-        // next launch, with the panel showing whichever of the two it last read.
-        // Unreachable from the panel, which always sends `false`; refused here so
-        // that stays a property of the daemon rather than of one caller.
+        // secret to the OS credential store, which the start-up loader does not
+        // read — so a confirmed secret write would set this process's atomic to
+        // `off` and then silently revert to `on` at the next launch, with the
+        // panel showing whichever of the two it last read. Unreachable from the
+        // panel, which always sends `false`; refused here so that stays a
+        // property of the daemon rather than of one caller.
         if query.is_secret {
             return Err((
                 StatusCode::FORBIDDEN,
                 format!(
                     "'{}' is the master privacy switch and cannot be stored as a secret: the \
-                     daemon reads it from the configuration file at start-up and would not see \
-                     a value written to the credential store.",
+                     daemon reads it from its own record in the configuration directory at \
+                     start-up and would not see a value written to the credential store.",
                     query.key
                 ),
             ));
@@ -271,23 +271,50 @@ pub async fn upsert_config(
     }
 
     let config = Config::global();
+
+    // Issue #56 Task 42, DR-22. The master switch does NOT go through
+    // `config.set` — its home is its own record beside `config.yaml`, and this
+    // route is the only thing in the tree that writes it.
+    //
+    // ⚠ **A copy left in `config.yaml` would defeat the move.** Task 30 closed
+    // the HTTP channel to this key, but DR-17 descoped the filesystem barrier
+    // that DR-14 had put around `config.yaml`, so writing the key into that file
+    // by hand stayed a next-launch disable — and "only on restart" is not a
+    // control, because daemons restart routinely and a model can wait. Writing
+    // the value here and *also* persisting it there would keep both files
+    // agreeing today and hand the retired key its meaning back tomorrow.
+    if biorouter::privacy::is_privacy_tiers_key(&query.key) {
+        // Parsed through the same function the loader uses, so the running
+        // daemon and the next start-up can never disagree about what was asked
+        // for.
+        let on = biorouter::privacy::privacy_tiers_value_is_on(&query.value).unwrap_or(true);
+        return match biorouter::privacy::master_switch::write_for(config, on) {
+            Ok(()) => {
+                // Hardening measure (3): the authoritative value lives in daemon
+                // memory, so the write to disk is not enough — this is the
+                // SECOND of the toggle's two writers (the first is start-up's
+                // `load_privacy_tiers_from_config`).
+                biorouter_mcp::privacy_toggle::set_privacy_tiers_enabled(on);
+                Ok(Json(Value::String(format!("Upserted key {}", query.key))))
+            }
+            // The live value is deliberately NOT moved when the record could not
+            // be written: a switch that flips for this process and reverts at the
+            // next launch is the divergence Task 30's measure (3) exists to
+            // prevent, and the user would be told it worked.
+            Err(e) => Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!(
+                    "Failed to record the master privacy switch: {e}. The setting was not \
+                     changed."
+                ),
+            )),
+        };
+    }
+
     let result = config.set(&query.key, &query.value, query.is_secret);
 
     match result {
-        Ok(_) => {
-            // Hardening measure (3): the authoritative value lives in daemon
-            // memory, so the write to disk is not enough — this is the SECOND of
-            // the toggle's two writers (the first is startup's
-            // `load_privacy_tiers_from_config`). Re-deriving it from the value
-            // just written, through the same parser the loader uses, so the
-            // running daemon and the next start-up can never disagree.
-            if biorouter::privacy::is_privacy_tiers_key(&query.key) {
-                let on =
-                    biorouter::privacy::privacy_tiers_value_is_on(&query.value).unwrap_or(true);
-                biorouter_mcp::privacy_toggle::set_privacy_tiers_enabled(on);
-            }
-            Ok(Json(Value::String(format!("Upserted key {}", query.key))))
-        }
+        Ok(_) => Ok(Json(Value::String(format!("Upserted key {}", query.key)))),
         Err(_) => Err((
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("Failed to upsert key {}", query.key),
@@ -427,6 +454,11 @@ pub async fn read_config(
         )));
     }
 
+    // Issue #56 Task 42, DR-22.
+    if biorouter::privacy::is_privacy_tiers_key(&query.key) {
+        return Ok(Json(ConfigValueResponse::Value(privacy_tiers_wire_value())));
+    }
+
     let config = Config::global();
 
     let response_value = match config.get(&query.key, query.is_secret) {
@@ -520,11 +552,45 @@ pub async fn remove_extension(Path(name): Path<String>) -> Result<Json<String>, 
 pub async fn read_all_config() -> Result<Json<ConfigResponse>, StatusCode> {
     let config = Config::global();
 
-    let values = config
+    let mut values = config
         .all_values()
         .map_err(|_| StatusCode::UNPROCESSABLE_ENTITY)?;
 
+    // Issue #56 Task 42, DR-22.
+    values.insert(
+        biorouter::privacy::PRIVACY_TIERS_CONFIG_KEY.to_string(),
+        privacy_tiers_wire_value(),
+    );
+
     Ok(Json(ConfigResponse { config: values }))
+}
+
+/// The master switch as the two config READ paths report it (issue #56, DR-22).
+///
+/// ⚠ **Sourced from the live value, and it overrides whatever `config.yaml`
+/// holds.** DR-22 moved the switch's home out of that file; the key can still
+/// appear there — a hand edit, a restored backup, an install that predates the
+/// migration — and it means nothing. Passing such a value through to the
+/// renderer would paint Settings → Privacy and every badge in the app with a
+/// state the daemon is not in, which is precisely the failure
+/// `privacy_tiers_value_is_on`'s own doc-comment refuses: telling the user
+/// something false about the control they just used.
+///
+/// The live atomic rather than the record on disk, because the atomic is what
+/// every gate actually consults (Task 30's hardening measure (3)) — the panel
+/// must report what is enforcing, not what will enforce after the next restart.
+///
+/// A string rather than a bool because that is what the panel writes back and
+/// what both value parsers — Rust's and `privacyTiers.ts`'s — round-trip.
+fn privacy_tiers_wire_value() -> Value {
+    Value::String(
+        if biorouter::privacy::privacy_tiers_enabled() {
+            "on"
+        } else {
+            "off"
+        }
+        .to_string(),
+    )
 }
 
 #[utoipa::path(

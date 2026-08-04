@@ -796,23 +796,41 @@ async fn nothing_ratchets_while_the_toggle_is_off_and_re_enabling_does_not_backf
 
 /// The failure mode is an agent disabling its own protection, and
 /// `Config::get_param`'s env branch is the easiest lever in the tree. The
-/// authoritative value is read from the loaded values map instead.
+/// resolution reads a record on disk instead.
 ///
-/// ⚠ This reads — never writes — whatever `config.yaml` `Config::global()`
-/// resolved. It cannot be redirected: `Config::global()` is a `OnceCell` that
-/// the matrix above has already initialised through the agent's own provider
-/// rebind. The read is harmless, and the one way it can fail for an innocent
-/// reason is named in the message rather than left as a mystery.
+/// ⚠ **Run against a SCRATCH configuration directory, and that changed in Task
+/// 42.** It used to call `load_privacy_tiers_from_config`, which only read
+/// whatever `config.yaml` `Config::global()` had resolved — harmless, and
+/// impossible to redirect, since `Config::global()` is a `OnceCell` the matrix
+/// above has already initialised. DR-22 made the resolution *write*: it migrates
+/// the retired key into its own record on first run. Left as it was, this test
+/// would create `privacy-tiers.json` in the developer's real
+/// `~/.config/biorouter` and delete a key out of their real `config.yaml` — the
+/// exact side effect `privacy_toggle_config.rs`'s fixture doc-comment is a page
+/// long about. `resolve_privacy_tiers` takes the `Config` explicitly for this
+/// reason, and it is the whole body of the loader.
 #[tokio::test]
 async fn no_environment_variable_can_turn_protection_off() {
     let _g = set_privacy_tiers(true).await;
+    let scratch = TempDir::new().expect("scratch config dir");
+    let config = biorouter::config::Config::new_with_file_secrets(
+        scratch.path().join("config.yaml"),
+        scratch.path().join("secrets.yaml"),
+    )
+    .expect("scratch config");
     let _env = env_lock::lock_env([("BIOROUTER_PRIVACY_TIERS", Some("off"))]);
-    biorouter::privacy::load_privacy_tiers_from_config();
     assert!(
-        biorouter::privacy::privacy_tiers_enabled(),
-        "an env var disabled the whole feature — unless this machine's own \
-         config.yaml really does set BIOROUTER_PRIVACY_TIERS to off, in which \
-         case the loader is right and the fixture is wrong"
+        biorouter::privacy::resolve_privacy_tiers(&config),
+        "an env var disabled the whole feature"
+    );
+
+    // …and the same resolution DOES honour a record on disk, so the assertion
+    // above is about the environment rather than about a resolution that can
+    // never say `off` at all.
+    biorouter::privacy::master_switch::write_for(&config, false).expect("record the switch");
+    assert!(
+        !biorouter::privacy::resolve_privacy_tiers(&config),
+        "the switch's own record is what the resolution reads"
     );
 }
 

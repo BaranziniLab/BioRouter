@@ -109,11 +109,31 @@ them means that count query failed; the backfill itself had already committed by
 is deliberately not allowed to fail the migration, because a report that aborted `apply_migration`
 would leave the database backfilled and still numbered below the arm.
 
+## If you turned privacy tiers off by hand
+
+The master switch used to be a `config.yaml` key, `BIOROUTER_PRIVACY_TIERS`. It is now a record
+of its own, `privacy-tiers.json`, in the same directory — because a key in `config.yaml` was
+writable by anything that could write files, including the agent, which made the one control the
+agent is subject to something the agent could switch off and wait for a restart.
+
+**You do not have to do anything.** The first launch after upgrading reads your key once, carries
+your answer into the new record, and removes the key. If you had it set to `off`, it stays off.
+
+From then on the key is **ignored**: putting it back into `config.yaml` does nothing, whatever it
+says. Change the switch in **Settings → Privacy**, which is the only thing that writes the record.
+If you want to check the state from outside the app, read `privacy-tiers.json` — `{"enabled":
+false}` means enforcement is off.
+
 ## Rolling back
 
 Downgrading leaves the columns in place and ignored, and the ledger inert. Nothing is moved,
 re-indexed or rewritten. Rolling forward again re-runs nothing, because the migration is
 versioned. The one-way door is the backfill itself.
+
+A downgrade *does* stop the older build seeing your master switch: it looks for the retired key,
+which the upgrade removed, and so comes up with privacy tiers **on** — the fail-safe direction,
+and the same answer it gives a fresh install. Setting the key again turns it back off on the old
+build, and the newer build will go on ignoring it.
 
 ## Related documentation
 

@@ -1589,12 +1589,30 @@ off — was rejected because it silently privatises sessions the user believes a
 they would first learn of it as a refusal weeks later.
 
 Three hardening measures, because the failure mode is an agent disabling its own protection:
-(1) read it bypassing `Config::get_param`'s env branch, straight from the loaded values map, so no
-environment variable can turn protection off; (2) gate the key in `POST /config/upsert` so the flip
-must come from Settings → Privacy with its confirmation; (3) hold the authoritative value in daemon
-memory from startup — **not** SecretGuard, which cannot enforce this (§9.3 C1). Check *inside* the
-gate rather than in an `is_enabled()`, following the `SensitiveOpsInspector` pattern, so a
-mid-session change is honoured and the opt-out is one auditable line rather than an absent gate.
+(1) read it bypassing `Config::get_param`'s env branch, so no environment variable can turn
+protection off; (2) gate the key in `POST /config/upsert` so the flip must come from Settings →
+Privacy with its confirmation; (3) hold the authoritative value in daemon memory from startup —
+**not** SecretGuard, which cannot enforce this (§9.3 C1). Check *inside* the gate rather than in an
+`is_enabled()`, following the `SensitiveOpsInspector` pattern, so a mid-session change is honoured
+and the opt-out is one auditable line rather than an absent gate.
+
+**Where the answer is recorded, which is not `config.yaml` (DR-22).** The three measures above left
+one channel open: the value's home was a file, and the general filesystem barrier was descoped, so
+writing `BIOROUTER_PRIVACY_TIERS: off` into `config.yaml` by hand was still a **next-launch**
+disable — and "only on restart" is not a control, because daemons restart routinely and a model can
+wait. The value therefore lives in its own record, `privacy-tiers.json`, beside `config.yaml` in the
+configuration directory, written by nothing in the tree except the confirmed `/config/upsert` arm.
+`BIOROUTER_PRIVACY_TIERS` remains the name the switch is *addressed* by — the panel reads and writes
+it over `/config/read` and `/config/upsert`, and the daemon answers those from the live value — but
+as a `config.yaml` **key it is retired**: read once, at the first start-up after the upgrade, to
+carry an existing answer across, and removed and ignored from then on. Honouring it "for
+compatibility" would not be a kindness, it would be a second channel.
+
+⚠ **What this does not claim.** The record is an ordinary file, and the descoped filesystem barrier
+leaves it writable by an agent holding `developer__shell` exactly as it leaves the disclosure
+acknowledgement writable. What the move buys is that the documented key is inert and that the value
+has one writer; closing the file channel outright needs the barrier DR-17 deferred or an
+OS-authenticated store, and neither is in v1.
 
 Because it is now one predicate read by every gate, the test that matters is a **matrix**: each gate
 asserted in both toggle positions. A master toggle wired to three gates out of ten passes every

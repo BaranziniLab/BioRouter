@@ -18,7 +18,8 @@
 use axum::Json;
 use biorouter::config::Config;
 use biorouter_server::routes::config_management::{
-    remove_config, upsert_config, ConfigKeyQuery, UpsertConfigQuery,
+    read_all_config, read_config, remove_config, upsert_config, ConfigKeyQuery,
+    ConfigValueResponse, UpsertConfigQuery,
 };
 use http::{HeaderMap, StatusCode};
 use serde_json::Value;
@@ -264,10 +265,21 @@ fn the_value_parser_agrees_with_the_renderer_about_whitespace() {
 }
 
 /// The other half of hardening measure (1): the value the daemon boots with
-/// comes from the config FILE, and an environment variable cannot reach it.
+/// comes from a FILE the daemon owns, and an environment variable cannot reach
+/// it.
+///
+/// ⚠ **Task 42 re-pointed the second half of this test, and that is the ruling,
+/// not a weakening.** It used to write the retired key into `config.yaml` and
+/// assert the loader honoured it — *"the FILE is what the loader reads"*.
+/// [DR-22] says that file must no longer be the switch's home, so an assertion
+/// that `config.yaml` still steers the loader is now an assertion that the
+/// ruling was not implemented. The property it exists to protect — no
+/// environment variable can turn protection off, and the boot value comes from
+/// disk rather than from the process environment — is asserted unchanged, and
+/// now against the store the loader really reads.
 #[tokio::test]
 #[serial_test::serial]
-async fn the_startup_load_reads_the_file_and_not_the_environment() {
+async fn the_startup_load_reads_the_switch_store_and_not_the_environment() {
     // ⚠ The fixture's env guard FIRST — it is what redirects the config root,
     // and taking a second `lock_env` while it is held would deadlock. This one
     // adds the variable under test to the same process environment by a plain
@@ -283,19 +295,240 @@ async fn the_startup_load_reads_the_file_and_not_the_environment() {
     std::env::set_var(biorouter::privacy::PRIVACY_TIERS_CONFIG_KEY, "off");
     let _unset = EnvVar(biorouter::privacy::PRIVACY_TIERS_CONFIG_KEY);
 
-    // The other test in this binary writes this key into the shared temp config,
-    // and `#[serial]` orders the two but says nothing about which runs first.
-    // Delete it so "absent" means absent whichever order they take.
-    Config::global()
-        .delete(biorouter::privacy::PRIVACY_TIERS_CONFIG_KEY)
-        .ok();
+    // The other tests in this binary write both the key and the store into the
+    // shared temp config root, and `#[serial]` orders them but says nothing
+    // about which runs first. Clear both so "nothing recorded" means exactly
+    // that whichever order they take.
+    reset_switch_storage();
     biorouter_mcp::privacy_toggle::set_privacy_tiers_enabled(false);
     biorouter::privacy::load_privacy_tiers_from_config();
     assert!(
         biorouter::privacy::privacy_tiers_enabled(),
-        "an absent key must resolve to ON, and the env var must not be consulted"
+        "nothing recorded must resolve to ON, and the env var must not be consulted"
     );
 
+    // The record is written here as BYTES rather than through the writer, so
+    // this pins the on-disk format a user's backup and a support answer depend
+    // on — a round-trip through `write_for` would agree with itself whatever it
+    // wrote. `changed_at` is deliberately omitted: it is an audit field, and a
+    // record missing it must still read.
+    std::fs::write(
+        config_dir().join("privacy-tiers.json"),
+        r#"{"enabled": false}"#,
+    )
+    .unwrap();
+    biorouter_mcp::privacy_toggle::set_privacy_tiers_enabled(true);
+    biorouter::privacy::load_privacy_tiers_from_config();
+    assert!(
+        !biorouter::privacy::privacy_tiers_enabled(),
+        "the switch STORE is what the loader reads"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Task 42 (DR-22): the master switch's storage is not `config.yaml`.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The directory `Config::global()` resolved its `config.yaml` into — which is
+/// also where the switch store lives, by construction rather than by a second
+/// env read (see `biorouter::privacy::master_switch`).
+fn config_dir() -> std::path::PathBuf {
+    std::path::Path::new(&Config::global().path())
+        .parent()
+        .expect("config.yaml always has a parent directory")
+        .to_path_buf()
+}
+
+/// Return this install to its pre-migration state: no store, no retired key.
+/// The tests below each start from it, because the fixture's temp config root
+/// is shared by every test in this binary and `#[serial]` fixes no order.
+fn reset_switch_storage() {
+    std::fs::remove_file(config_dir().join("privacy-tiers.json")).ok();
+    Config::global()
+        .delete(biorouter::privacy::PRIVACY_TIERS_CONFIG_KEY)
+        .ok();
+}
+
+/// Is the retired key present in the config FILE? Deliberately not
+/// `get_param`, whose first branch resolves an environment variable — these
+/// tests set that variable, and the question here is only what is on disk.
+fn retired_key_on_disk() -> Option<Value> {
+    Config::global()
+        .all_values()
+        .ok()
+        .and_then(|m| m.get(biorouter::privacy::PRIVACY_TIERS_CONFIG_KEY).cloned())
+}
+
+/// **The gate DR-22 names.** Hand-edit `config.yaml`, restart, and the feature
+/// is still on.
+///
+/// This single test fails the most plausible wrong implementation — the
+/// compatibility reader that consults the new store *and* the old key — which
+/// no amount of testing the happy path would catch. A reader that still
+/// consults `config.yaml` has not closed the channel, it has added a second
+/// one.
+#[tokio::test]
+#[serial_test::serial]
+async fn a_hand_edited_config_yaml_cannot_turn_the_feature_off() {
+    let _fixture = PrivacyToggleFixture::capture();
+    reset_switch_storage();
+
+    // Bring the install to the state a daemon reaches on its first start after
+    // the upgrade: the migration has run and the store exists.
+    biorouter::privacy::load_privacy_tiers_from_config();
+    assert!(
+        biorouter::privacy::privacy_tiers_enabled(),
+        "an install that never disabled the feature comes up ON"
+    );
+
+    // THE HAND EDIT. Exactly the file, the key and the value a user — or an
+    // agent holding `developer__text_editor`, which DR-17 leaves able to write
+    // this file — would put there.
+    Config::global()
+        .set(
+            biorouter::privacy::PRIVACY_TIERS_CONFIG_KEY,
+            &Value::String("off".to_string()),
+            false,
+        )
+        .unwrap();
+
+    // THE RESTART. A fresh process comes up on the fail-safe default and then
+    // loads; `load_privacy_tiers_from_config` is that load, and it is the only
+    // thing a restart does to this value.
+    biorouter_mcp::privacy_toggle::set_privacy_tiers_enabled(true);
+    biorouter::privacy::load_privacy_tiers_from_config();
+
+    assert!(
+        biorouter::privacy::privacy_tiers_enabled(),
+        "a hand-written `config.yaml` key disabled the master switch across a restart — \
+         the retired key must be IGNORED, not honoured for compatibility"
+    );
+}
+
+/// The mirror. Disabling **through** the authenticated path survives a restart —
+/// otherwise the gate above would be satisfied by a switch that simply cannot
+/// be turned off, and the test above would pass while the feature was broken.
+///
+/// It also pins the two consequences of the move that the renderer depends on:
+/// the value does **not** land in `config.yaml`, and `/config/read` and
+/// `/config` still answer for the key — with the LIVE value, so Settings →
+/// Privacy cannot show the user something false about the control they just
+/// used.
+#[tokio::test]
+#[serial_test::serial]
+async fn disabling_through_the_authenticated_path_survives_a_restart() {
+    let _fixture = PrivacyToggleFixture::capture();
+    reset_switch_storage();
+    biorouter::privacy::load_privacy_tiers_from_config();
+    assert!(biorouter::privacy::privacy_tiers_enabled());
+
+    let _ok = upsert_config(
+        HeaderMap::new(),
+        Json(upsert(
+            biorouter::privacy::PRIVACY_TIERS_CONFIG_KEY,
+            "off",
+            Some(biorouter::privacy::PRIVACY_TIERS_DISABLE_PHRASE),
+        )),
+    )
+    .await
+    .expect("the confirmed flip is the one write this route allows");
+    assert!(!biorouter::privacy::privacy_tiers_enabled());
+
+    // The one door writes the store, and NOT `config.yaml`: leaving a copy
+    // there would re-create the channel the move exists to close.
+    assert_eq!(
+        retired_key_on_disk(),
+        None,
+        "the master switch must not be written into config.yaml"
+    );
+
+    // Both config read paths still answer for the key, from the live value.
+    // `ConfigContext` reads the whole map and `PrivacyPanel` reads the single
+    // key; a blind reader would paint every badge as if the feature were on.
+    match read_config(Json(ConfigKeyQuery {
+        key: biorouter::privacy::PRIVACY_TIERS_CONFIG_KEY.to_string(),
+        is_secret: false,
+    }))
+    .await
+    .expect("reading the master switch must not fail")
+    .0
+    {
+        ConfigValueResponse::Value(v) => assert_eq!(v, Value::String("off".to_string())),
+        ConfigValueResponse::MaskedValue(_) => {
+            panic!("the master switch is not a secret and must not be masked")
+        }
+    }
+    assert_eq!(
+        read_all_config()
+            .await
+            .expect("reading the config map must not fail")
+            .0
+            .config
+            .get(biorouter::privacy::PRIVACY_TIERS_CONFIG_KEY),
+        Some(&Value::String("off".to_string())),
+    );
+
+    // THE RESTART.
+    biorouter_mcp::privacy_toggle::set_privacy_tiers_enabled(true);
+    biorouter::privacy::load_privacy_tiers_from_config();
+    assert!(
+        !biorouter::privacy::privacy_tiers_enabled(),
+        "the user's own decision must survive a restart, or the switch is not a switch"
+    );
+}
+
+/// Step 2: the retired key is read **once**, at migration, and then ignored.
+///
+/// The first half is what users who set the key before this version are owed —
+/// their answer is carried across rather than silently reset to ON. The second
+/// half is why the migration is gated on the STORE's existence and not on the
+/// key's: a migration that re-runs whenever the key reappears is the
+/// compatibility reader wearing a different hat.
+#[tokio::test]
+#[serial_test::serial]
+async fn the_retired_key_is_migrated_once_and_then_ignored() {
+    let _fixture = PrivacyToggleFixture::capture();
+    reset_switch_storage();
+
+    // An install upgrading from a version where the key WAS the switch.
+    Config::global()
+        .set(
+            biorouter::privacy::PRIVACY_TIERS_CONFIG_KEY,
+            &Value::String("off".to_string()),
+            false,
+        )
+        .unwrap();
+    biorouter_mcp::privacy_toggle::set_privacy_tiers_enabled(true);
+    biorouter::privacy::load_privacy_tiers_from_config();
+    assert!(
+        !biorouter::privacy::privacy_tiers_enabled(),
+        "a value the user set before this version must be carried across, not reset"
+    );
+    assert!(
+        config_dir().join("privacy-tiers.json").exists(),
+        "the migration must leave the store behind — its existence is what stops \
+         the migration running a second time"
+    );
+    assert_eq!(
+        retired_key_on_disk(),
+        None,
+        "the migration must REMOVE the key, not leave it beside the store to drift"
+    );
+
+    // The user turns it back on through the one door…
+    let _ok = upsert_config(
+        HeaderMap::new(),
+        Json(upsert(
+            biorouter::privacy::PRIVACY_TIERS_CONFIG_KEY,
+            "on",
+            Some(biorouter::privacy::PRIVACY_TIERS_DISABLE_PHRASE),
+        )),
+    )
+    .await
+    .expect("re-enabling goes through the same door");
+    assert!(biorouter::privacy::privacy_tiers_enabled());
+
+    // …and writing the key back by hand never migrates again.
     Config::global()
         .set(
             biorouter::privacy::PRIVACY_TIERS_CONFIG_KEY,
@@ -305,7 +538,7 @@ async fn the_startup_load_reads_the_file_and_not_the_environment() {
         .unwrap();
     biorouter::privacy::load_privacy_tiers_from_config();
     assert!(
-        !biorouter::privacy::privacy_tiers_enabled(),
-        "the FILE is what the loader reads"
+        biorouter::privacy::privacy_tiers_enabled(),
+        "the retired key was read a second time — 'once, at migration' means once"
     );
 }

@@ -25,6 +25,7 @@ pub mod disclosure;
 #[cfg(test)]
 mod disclosure_tests;
 pub mod extensions;
+pub mod master_switch;
 pub mod provenance;
 pub mod refusal;
 mod registry_private;
@@ -57,40 +58,63 @@ pub use refusal::{raise_needs_user_action, PrivacyRefusal};
 /// to consult and reads this directly.
 pub use biorouter_mcp::privacy_toggle::privacy_tiers_enabled;
 
-/// Load the master switch from the user's configuration. Called ONCE per
-/// process, at startup, after the config is available — by BOTH hosts of this
-/// library: `biorouterd` (`commands/agent.rs`) and the `biorouter` CLI (its
-/// `main`). A host that skips it enforces, which is safe and is exactly why the
-/// CLI's omission went a whole round unnoticed.
+/// Load the master switch from disk. Called ONCE per process, at startup, after
+/// the config is available — by BOTH hosts of this library: `biorouterd`
+/// (`commands/agent.rs`) and the `biorouter` CLI (its `main`). A host that skips
+/// it enforces, which is safe and is exactly why the CLI's omission went a whole
+/// round unnoticed.
 ///
-/// The value is read straight from the loaded config values, **never** through
-/// [`crate::config::Config::get_param`], whose middle branch resolves an
-/// environment variable. The threat this closes is specific and cheap: the agent
-/// has `developer__shell`, so if the value were env-readable then
-/// `BIOROUTER_PRIVACY_TIERS=off biorouterd` — or a line in the user's shell
-/// profile — is a one-token disable of the control the agent is subject to.
-/// Because the authoritative value then lives in daemon memory, every gate's
-/// read is a relaxed atomic load and is safe on a hot path.
+/// ⚠ **What it reads changed in Task 42 (DR-22), and the name did not.** The
+/// value now lives in [`master_switch`]'s own record beside `config.yaml`, not
+/// in `config.yaml` itself — because Task 30 closed the HTTP channel while the
+/// FILE channel stayed open, and a next-launch disable of a control the agent is
+/// subject to is not a control. The function keeps its name because three call
+/// sites and a page of design prose refer to it by that name, and because it is
+/// still what it says: the load, from this install's configuration directory.
+///
+/// The value is never read through [`crate::config::Config::get_param`], whose
+/// middle branch resolves an environment variable. The threat that closes is
+/// specific and cheap: the agent has `developer__shell`, so if the value were
+/// env-readable then `BIOROUTER_PRIVACY_TIERS=off biorouterd` — or a line in the
+/// user's shell profile — is a one-token disable. Because the authoritative
+/// value then lives in daemon memory, every gate's read is a relaxed atomic load
+/// and is safe on a hot path.
 ///
 /// A load error resolves to ON, for the same reason absence does: the failure of
 /// the loader must not be a way to disable the control.
 pub fn load_privacy_tiers_from_config() {
-    // ⚠ The loader returns `Result<HashMap<String, Value>, ConfigError>`, not a
-    // map: an earlier draft called `.get(..)` straight off it and does not
-    // compile. Its NAME is deliberately not repeated in this comment — a Step 5
-    // gate counts the token inside this function and expects exactly one, and a
-    // mention in prose is indistinguishable from a second read.
-    let on = crate::config::Config::global()
-        .all_values()
-        .ok()
-        .and_then(|m| m.get(PRIVACY_TIERS_CONFIG_KEY).cloned())
-        .and_then(|v| privacy_tiers_value_is_on(&v))
-        .unwrap_or(true); // absent OR unreadable => on
+    let on = resolve_privacy_tiers(crate::config::Config::global());
     biorouter_mcp::privacy_toggle::set_privacy_tiers_enabled(on);
 }
 
-/// The config key that holds the master switch. One spelling, shared by the
-/// loader, by `/config/upsert`'s gated arm and by the Settings panel.
+/// What [`load_privacy_tiers_from_config`] would store, for an explicit
+/// [`crate::config::Config`].
+///
+/// The seam exists so a test can exercise the real resolution against a scratch
+/// configuration directory instead of the developer's own — this function
+/// *writes* (the migration does), and a test that reached the process-global
+/// `Config` would create a record in `~/.config/biorouter`.
+///
+/// ⚠ **Not a second reader of the switch.** It is the disk resolution; the
+/// authoritative value is the atomic, and gates read
+/// [`privacy_tiers_enabled`]. Calling this from a gate would re-introduce
+/// exactly the per-gate file read hardening measure (3) exists to forbid.
+pub fn resolve_privacy_tiers(config: &crate::config::Config) -> bool {
+    // Once, on the first start-up after the upgrade, and never again — the only
+    // read of the retired `config.yaml` key in the tree.
+    master_switch::migrate_once(config);
+    master_switch::read_for(config).unwrap_or(true) // nothing recorded OR unreadable => on
+}
+
+/// The key the master switch is addressed by — over `/config/upsert`, over
+/// `/config/read`, and by the Settings panel. One spelling, shared by the
+/// route's two refusals, by the migration and by the renderer.
+///
+/// ⚠ **It is no longer where the value is STORED** (Task 42, DR-22). The
+/// record lives in [`master_switch`]; this key names the switch on the wire and
+/// is *ignored* in `config.yaml` from the migration onward. A reader that
+/// consults `config.yaml` for it has not closed the channel DR-22 names, it has
+/// added a second one.
 pub const PRIVACY_TIERS_CONFIG_KEY: &str = "BIOROUTER_PRIVACY_TIERS";
 
 /// Is this key the master privacy switch? **One predicate, every verb** — the
