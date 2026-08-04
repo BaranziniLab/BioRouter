@@ -28,7 +28,50 @@
 //!   and `DELETE /sessions/{id}` are all still open. The list is the five the
 //!   ruling named, and `/reply` dominates them, but "dominates" is an argument
 //!   about capability rather than a proof about every route;
+//! * **`GET /knowledge/active?session_id=…` is still open**, because
+//!   [`gate_knowledge_active`] matches on `POST`. The read half of the very route
+//!   on the list still reports a private chat's knowledge-base set and its
+//!   primary to an unproven caller;
+//! * **`GET /sessions` and `GET /sessions/sidebar` are still open, and they
+//!   enumerate wholesale.** `SessionSummary` carries `id`, `name`, `working_dir`
+//!   and `privacy_tier`, so one unproven request returns every private chat on
+//!   the machine, titled, with the directory it runs in. This does not weaken the
+//!   gate — none of those rows carries a transcript — but it does undercut the
+//!   *reason* [`SESSION_OUT_OF_REACH`] is worded as one sentence for two
+//!   answers. That wording closes an oracle that enumerates private chats one id
+//!   at a time; the bigger one, which returns them all at once, is still there.
+//!   Closing it is a listing-route decision (what a caller with no proof may be
+//!   shown), not a reach decision, and it is not made here;
+//! * **`workspace_read_conversation` is still open, and it is the same capability
+//!   this module closes on `GET /sessions/{id}`.** That MCP tool
+//!   (`crates/biorouter/src/agents/workspace_extension.rs`) loads any named
+//!   session *with messages* and checks only `session_type == Hidden` — no tier
+//!   check — so a model reads a private transcript through a tool call, needing
+//!   no daemon secret at all. ⚠ It is **not fixable with this instrument**: a
+//!   tool call is by definition the model, so it can never carry a proof of the
+//!   user, and refusing it for want of one would refuse it always. It needs §7's
+//!   `may_read`, which [`biorouter::privacy::visibility`] already ships and
+//!   nothing calls yet. So a reader who concludes from this module that private
+//!   transcripts are now protected is wrong, and this bullet is here to stop them
+//!   concluding it;
 //! * and the daemon still has no principal, which is the actual subject of #47.
+//!
+//! # The blast radius is wider than "private chats"
+//!
+//! `Unreadable` is refused **identically** to `Private`, which Step 4.3 requires:
+//! a refusal that answered "no such chat" would be the per-id oracle described
+//! above. The consequence is a behaviour change rather than a wording one, and it
+//! is bigger than the headline. Over HTTP, on these five routes, an unproven
+//! caller naming a session this daemon cannot read is refused **whatever tier
+//! that session would have had** — an id that never existed, one that was
+//! deleted, one a client held across a store reset, one not persisted yet.
+//!
+//! `biorouter sessions send <id>` is the concrete case: `biorouter-cli` posts
+//! `/reply` and sends no proof header, so it is refused for a private chat *and*
+//! for an unknown one. That is the control working — the CLI is precisely the
+//! surface a model with shell access drives, which is why it cannot be proof of a
+//! human — but "private chats now check" describes less than what changed, and a
+//! release note that says only that is wrong.
 //!
 //! # The gated list
 //!
@@ -149,8 +192,9 @@ impl From<SessionOutOfReach> for super::errors::ErrorResponse {
 /// opens the developer's REAL session database — so a scan for
 /// `session_reach(` would keep passing against a call whose result was
 /// discarded. This mapping is pure, so every corner of it is driven for real by
-/// [`tests`], and the one thing a pure function cannot see — that the gate runs
-/// before the route touches anything — stays a source scan and says so.
+/// the `tests` module below (not linked: it is `#[cfg(test)]`, so rustdoc cannot
+/// resolve it), and the one thing a pure function cannot see — that the gate
+/// runs before the route touches anything — stays a source scan and says so.
 ///
 /// `enforced` is DR-15's master opt-out, taken as an argument rather than read
 /// here so that "the switch is off" is a corner this function can be tested at.
