@@ -22504,9 +22504,24 @@ There must be exactly **one** such function. No gate may hand-compare affiliatio
 
 - [ ] **Step 3: The gate**
 
+⚠ **Corrected on 2026-08-04, for the same reason as
+[Task 44's](#task-44-windows-hello-and-polkit--dr-24).**
+As first written this piped to `grep "test result:"`, and libtest prints that line whether the filter
+matched every test or **none** — so a module that did not exist would have printed a green line and
+scored the task as done. A gate asserts a *count*, never the presence of a line. This one was not
+vacuous when it ran (all of the module's tests sit under `privacy::affiliation::tests::`, so the filter
+does resolve), but it could not have told the difference, which is the defect.
+
 ```bash
-cargo test -p biorouter --lib privacy::affiliation 2>&1 | grep "test result:"
+cargo test -p biorouter --lib privacy::affiliation 2>&1 | tail -3
+# expect: a NON-ZERO passed count with 0 failed. "0 passed; 0 failed; N filtered
+# out" is the failure this spelling exists to catch, not a pass.
 ```
+
+Measured at Task 45 as shipped, 2026-08-04: **18 passed, 0 failed** — the module's original 16 plus the
+two review added, `ids_with_equal_contents_but_distinct_pointers_are_equal` and
+`distinct_institution_names_never_collide`. Re-measure it rather than asserting a delta against it; a
+stale figure is worse than none, because "pre + N" reads a shortfall as a pass.
 
 Every row of DR-26's compatibility table, as a named test. Plus the four that catch the real mistakes:
 
