@@ -1,8 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../ui/dialog';
 import { Button } from '../ui/button';
-import { refreshSessionList } from '../../utils/sessionListCache';
-import type { Session } from '../../api';
+import { listSessions, type Session } from '../../api';
 
 /**
  * The numbers the day-one notice quotes, over the population **History actually
@@ -29,6 +28,19 @@ export interface NoticeCounts {
   unknownProviderVisible: number;
   /** The denominator: everything History will list. */
   totalVisible: number;
+  /**
+   * Of the private rows, the ones the **migration** marked — a `backfill:*`
+   * provenance rather than `turn:*`, `mcp:*` or `diverged:*`.
+   *
+   * ⚠ **This, not `privateVisible`, is what makes the notice due.** A fresh
+   * install has no backfilled rows and never will; its private chats arrive one
+   * at a time, from turns the user themselves ran on a private model. Triggering
+   * on `privateVisible` would ambush that user weeks later with a modal
+   * announcing that their chats "are now marked private because that is the
+   * model each of them was last using" — describing a migration that never
+   * touched their database. See {@link shouldShowFirstRunNotice}.
+   */
+  backfilledVisible: number;
   /**
    * The private rows grouped by the provider the migration read, descending by
    * count. This is what makes §15.5's "review by provider" list possible: a
@@ -76,14 +88,17 @@ function providerOf(session: Session): string {
 /**
  * Count the user's own conversations. Pure, and the only place the rule lives.
  *
- * ⚠ **Never hardcode these numbers.** §16's table was re-measured twice while
- * the feature was being designed and moved by a factor of three in four days;
- * the `user` NULL-provider bucket alone went from 29 rows to 2,831. A notice
- * carrying a figure from a design document is a notice that is wrong on every
- * machine including the author's.
+ * ⚠ **Never hardcode these numbers.** §16's table was re-measured three times
+ * while the feature was being designed and moved by a factor of three in four
+ * days; the `user` NULL-provider bucket alone went from 29 rows to 2,831. A
+ * notice carrying a figure from a design document is a notice that is wrong on
+ * every machine including the author's — and this file's own comments were
+ * caught quoting stale ones. Any figure written down in this folder must carry
+ * the date it was measured, and nothing may read it.
  */
 export function computeNoticeCounts(sessions: Session[]): NoticeCounts {
   let privateVisible = 0;
+  let backfilledVisible = 0;
   let publicNamedVisible = 0;
   let unknownProviderVisible = 0;
   const byProvider = new Map<string, number>();
@@ -91,6 +106,7 @@ export function computeNoticeCounts(sessions: Session[]): NoticeCounts {
   for (const session of sessions) {
     if (isPrivate(session)) {
       privateVisible += 1;
+      if ((session.privacy_reason ?? '').startsWith(BACKFILL_PREFIX)) backfilledVisible += 1;
       const provider = providerOf(session);
       byProvider.set(provider, (byProvider.get(provider) ?? 0) + 1);
       continue;
@@ -110,6 +126,7 @@ export function computeNoticeCounts(sessions: Session[]): NoticeCounts {
 
   return {
     privateVisible,
+    backfilledVisible,
     publicNamedVisible,
     unknownProviderVisible,
     totalVisible: sessions.length,
@@ -136,14 +153,45 @@ export function providerLabel(provider: string): string {
 }
 
 /**
- * Worth showing at all? Nothing changed for this user if no visible chat came
- * out of the backfill private.
+ * Worth showing at all? Only if the **migration** marked something the user can
+ * see.
+ *
+ * ⚠ **`backfilledVisible`, not `privateVisible`, and the difference is a real
+ * defect either way round.** Every sentence in this notice is about a thing that
+ * happened once, to data at rest, during an upgrade. On a machine where the
+ * backfill marked nothing — a fresh install, or one whose chats all record a
+ * commercial provider — those sentences describe nothing that occurred, and
+ * `privateVisible` would still climb above zero the first time the user ran a
+ * turn on Ollama. That fires this modal weeks after any upgrade, announcing a
+ * migration that never touched their database.
  *
  * Exported so the surface that mounts the notice can decide **before** rendering
  * a modal, rather than opening one that says "0 conversations changed".
  */
 export function shouldShowFirstRunNotice(counts: NoticeCounts): boolean {
-  return counts.privateVisible > 0;
+  return counts.backfilledVisible > 0;
+}
+
+/**
+ * Read the History population the notice describes.
+ *
+ * ⚠ **Not `refreshSessionList`, and not for want of a cache.** That module's own
+ * comment says its `includeSubagents` argument is part of the cache *identity*
+ * and that a second consumer passing one "would invalidate History's toggle and
+ * silently drop the children" — which is precisely what `refreshSessionList(false)`
+ * did from here: opening the notice reset a user who had subagents shown. The
+ * keyless call is no better, because it sends whatever identity the cache is
+ * holding, and if that is `true` the notice silently counts subagent sessions
+ * that History is not showing — the exact over-count this whole type exists to
+ * avoid. So the notice asks the daemon the one question it means, owns the
+ * answer, and touches no shared state. It costs one GET, once per install.
+ */
+async function fetchVisibleSessions(): Promise<Session[]> {
+  const response = await listSessions<true>({
+    throwOnError: true,
+    query: { include_subagents: false },
+  });
+  return response.data.sessions;
 }
 
 export interface FirstRunPrivacyNoticeProps {
@@ -156,6 +204,17 @@ export interface FirstRunPrivacyNoticeProps {
    * database through the same cache History does.
    */
   counts?: NoticeCounts;
+  /**
+   * §13.5's day-one extension disclosure: the **enabled**, **Public** extensions
+   * that declare clinical-looking credentials, by name. Empty on a machine where
+   * there are none, which hides the paragraph entirely.
+   *
+   * Passed in rather than computed here because the gate already holds the
+   * extension list, and because a notice that renders nothing until a second
+   * fetch lands would show its counts and then grow a paragraph under the user's
+   * cursor.
+   */
+  publicClinicalExtensions?: string[];
 }
 
 /**
@@ -163,13 +222,15 @@ export interface FirstRunPrivacyNoticeProps {
  *
  * ⚠ **It exists because the alternative is a week of unexplained refusals.** The
  * backfill marks a large fraction of an established user's history private in
- * one step — on the machine this was measured against, 963 of the 1,551 user
- * conversations whose provider was known. Every one of those chats then refuses
- * the commercial model its owner normally reaches for, with a modal that
- * explains the rule but not why *this* chat is subject to it. One screen of
- * "here is what just changed, and here is the number" is the whole mitigation.
+ * one step — on the machine this was measured against on 2026-08-03, 654 of the
+ * 4,034 conversations History shows, out of 1,486 rows raised in the database.
+ * Every one of those chats then refuses the commercial model its owner normally
+ * reaches for, with a modal that explains the rule but not why *this* chat is
+ * subject to it. One screen of "here is what just changed, and here is the
+ * number" is the whole mitigation. (Those figures are a dated measurement and
+ * nothing reads them — see {@link computeNoticeCounts}.)
  *
- * ⚠ **Three honesties it is required to carry**, each of which the design would
+ * ⚠ **Five honesties it is required to carry**, each of which the design would
  * otherwise leave for the user to discover:
  *
  * 1. **The counts are computed, never quoted.** See {@link computeNoticeCounts}.
@@ -182,6 +243,14 @@ export interface FirstRunPrivacyNoticeProps {
  * 3. **The review list is broken down by provider**, because a `backfill:*` tier
  *    is the system's inference and not the user's assertion — unlike a `turn:*`
  *    or `mcp:*` tier, which records something that actually happened.
+ * 4. **Knowledge bases start public whatever fed them** (AR-2), and the notice
+ *    names the control that repairs it rather than only the exposure.
+ * 5. **An enabled Public extension wired to clinical data stays reachable from a
+ *    commercial model** (§13.5). This is the one item on the list that no
+ *    refusal will ever teach: the other four announce something the user will
+ *    run into, and this one announces something that will keep quietly working.
+ *    It is also the only item that names specific things on this machine —
+ *    `medcp`, on the operator's — so it is passed in rather than described.
  *
  * ⚠ **Dismissible, unlike `NonPrivateModelDisclosure`.** That one gates an
  * action and has a fact the user must be shown before taking it; this one
@@ -189,7 +258,12 @@ export interface FirstRunPrivacyNoticeProps {
  * in it buys nothing, and a modal that cannot be closed is the surest way to
  * make the next one go unread.
  */
-export function FirstRunPrivacyNotice({ open, onDismiss, counts }: FirstRunPrivacyNoticeProps) {
+export function FirstRunPrivacyNotice({
+  open,
+  onDismiss,
+  counts,
+  publicClinicalExtensions = [],
+}: FirstRunPrivacyNoticeProps) {
   const [fetched, setFetched] = useState<NoticeCounts | null>(null);
   const [failed, setFailed] = useState(false);
 
@@ -197,7 +271,7 @@ export function FirstRunPrivacyNotice({ open, onDismiss, counts }: FirstRunPriva
     if (!open || counts) return;
     let cancelled = false;
     setFailed(false);
-    refreshSessionList(false)
+    fetchVisibleSessions()
       .then((sessions) => {
         if (!cancelled) setFetched(computeNoticeCounts(sessions));
       })
@@ -271,6 +345,24 @@ export function FirstRunPrivacyNotice({ open, onDismiss, counts }: FirstRunPriva
             Knowledge bases that already existed start public, whatever fed them. If one holds
             private material you can mark it private yourself from the Knowledge view.
           </p>
+
+          {/*
+            §13.5's day-one extension disclosure. Rendered only when there is
+            something to name — a paragraph that says "no extensions are
+            affected" is noise on every machine that reads it.
+          */}
+          {publicClinicalExtensions.length > 0 && (
+            <p data-testid="notice-public-clinical-extensions" className="text-text-muted">
+              {publicClinicalExtensions.length === 1
+                ? 'One extension you have enabled is set up for clinical data and is not marked private: '
+                : 'Some extensions you have enabled are set up for clinical data and are not marked private: '}
+              <strong>{publicClinicalExtensions.join(', ')}</strong>. Any model, including
+              commercial models hosted outside UCSF, can still call{' '}
+              {publicClinicalExtensions.length === 1 ? 'it' : 'them'}. Nothing about{' '}
+              {publicClinicalExtensions.length === 1 ? 'it' : 'them'} has changed — this is so you
+              know.
+            </p>
+          )}
         </div>
 
         <div className="flex justify-end">

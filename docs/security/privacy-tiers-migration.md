@@ -29,6 +29,16 @@ Before enforcement starts affecting your chats, Biorouter shows a one-screen not
 model that marked them, and how many record no model at all. Those numbers are computed at
 that moment; nothing in the product quotes a figure from a design document.
 
+The notice appears **once**, on the first launch after the backfill has marked something you
+can see, and it is dismissible. If you never upgraded across this version — a fresh install —
+you will never see it, however many private chats you go on to accumulate: everything it says
+is about a change made to chats that already existed.
+
+It also names one thing that did **not** change, because nothing else will ever tell you: any
+extension you have enabled that is wired to clinical data and is **not** marked private. Those
+stay callable by any model, including commercial models hosted outside UCSF, exactly as they
+were before the upgrade. See [Privacy tiers §13.5](privacy-tiers.md).
+
 ## Why some chats are marked private and others are not
 
 The backfill reads one field: the model a chat was **last** bound to. It does not read a single
@@ -78,15 +88,26 @@ view — you do not have to wait for the next private ingest to raise it.
 
 ## Running it twice
 
-The backfill runs **once**, from the numbered schema migration, and never again. This matters:
+The backfill runs **once**, from schema migration **19**, and never again. This matters:
 declassifying a chat deliberately leaves its bound model alone (a public chat is allowed to run
 a private model), so a backfill that re-ran on every launch would silently re-mark every chat
 you had just declassified. That is the one user-only action in the whole feature, and nothing
 in the product may undo it on your behalf.
 
+The columns and the ledger arrive one migration earlier, at **18**, and are also repaired on
+every startup if they are missing. That split is deliberate and it is not cosmetic. Adding new
+work to a migration number that some installs have already passed means those installs skip it
+silently and forever — which is what happened here during development: the backfill was
+originally written into 18, and every machine that had opened a development build was already
+at 18 and would never have run it. A schema number is consumed the moment anyone applies it.
+If you are on a development build that already reported 18, migration 19 is what backfills you.
+
 For support: the migration logs its four counts at `info` on the run that performs it —
 `backfilled_private`, `backfilled_public_named`, `backfilled_unknown_provider`,
-`backfilled_empty` — alongside the three visible counts the notice showed.
+`backfilled_empty` — alongside the three visible counts the notice showed. A `-1` in any of
+them means that count query failed; the backfill itself had already committed by then, and it
+is deliberately not allowed to fail the migration, because a report that aborted `apply_migration`
+would leave the database backfilled and still numbered below the arm.
 
 ## Rolling back
 

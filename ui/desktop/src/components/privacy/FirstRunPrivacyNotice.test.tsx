@@ -5,26 +5,24 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 /**
  * Task 38 (issue #56 §15.5) — the day-one notice.
  *
- * The property under test is the one the plan singles out: the notice quotes the
- * **History-visible** count, not the raw `sessions` row count. On the operator's
- * machine those differ by nearly 2× (498 visible against 936 raw), and quoting
- * the raw one tells the user to go and act on hundreds of conversations that are
- * not in their window.
+ * ⚠ **What this file can and cannot pin, stated up front because a previous
+ * version of it got this wrong in its test names.** The visible-vs-raw property
+ * — that the notice quotes what History shows, not the raw `sessions` count —
+ * is enforced in SQL, by `list_sessions_by_types`' `INNER JOIN messages`, so
+ * `GET /sessions` never hands the renderer an invisible row at all. There is
+ * therefore no fixture this layer can build that would separate the two
+ * populations: `totalVisible` is `sessions.length`, and it would be
+ * `sessions.length` under a broken daemon too. That property is genuinely tested
+ * one layer down, in `session_manager.rs`'s
+ * `the_notice_quotes_the_history_visible_count_not_the_raw_one`, whose fixture
+ * carries a message-less row and whose assertion moves when the `EXISTS` is
+ * removed.
  *
- * The visibility filter itself lives in SQL — `list_sessions_by_types` INNER
- * JOINs `messages` — so `GET /sessions` never hands the renderer an invisible
- * row at all. That is exactly why the fixture below contains none: a fixture
- * with message-less rows in it would be testing a filter this layer does not
- * own, and would pass whether or not the daemon applied it.
+ * What IS testable here is everything about the population the renderer is
+ * handed: the bucketing rule, the fail-closed tier read, the provider
+ * breakdown, which question the notice asks the daemon, and — the part review
+ * found missing — whether the notice is ever shown at all.
  */
-const mocks = vi.hoisted(() => ({
-  refreshSessionList: vi.fn(),
-}));
-
-vi.mock('../../utils/sessionListCache', () => ({
-  refreshSessionList: mocks.refreshSessionList,
-}));
-
 import {
   computeNoticeCounts,
   FirstRunPrivacyNotice,
@@ -33,6 +31,15 @@ import {
   UNKNOWN_PROVIDER,
 } from './FirstRunPrivacyNotice';
 import type { Session } from '../../api';
+
+const mocks = vi.hoisted(() => ({
+  listSessions: vi.fn(),
+}));
+
+vi.mock('../../api', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  listSessions: mocks.listSessions,
+}));
 
 /** A row shaped the way `GET /sessions` serves one. */
 function row(
@@ -56,6 +63,11 @@ function row(
   } as Session;
 }
 
+/** `GET /sessions` as the generated client returns it. */
+function served(sessions: Session[]) {
+  return { data: { sessions } };
+}
+
 /**
  * The same eight-session shape the Rust test uses, minus the one row the daemon
  * would never send — so the two implementations are checked against one fixture.
@@ -76,12 +88,19 @@ afterEach(() => {
 });
 
 describe('computeNoticeCounts', () => {
-  it('quotes the History-visible count, not the raw one', () => {
+  // ⚠ Named for what it does. It was called "quotes the History-visible count,
+  // not the raw one", which is a property this layer cannot see — see the file
+  // header. It buckets the rows the daemon sent; the Rust test owns the rest.
+  it('partitions the served rows into private, public-named and provider-unknown', () => {
     const counts = computeNoticeCounts(FIXTURE);
     expect(counts.privateVisible).toBe(2);
     expect(counts.publicNamedVisible).toBe(3);
     expect(counts.unknownProviderVisible).toBe(2);
     expect(counts.totalVisible).toBe(7);
+    // The three buckets partition the denominator, on every input.
+    expect(counts.privateVisible + counts.publicNamedVisible + counts.unknownProviderVisible).toBe(
+      counts.totalVisible
+    );
   });
 
   it('groups the private rows by the provider the migration read', () => {
@@ -132,14 +151,30 @@ describe('shouldShowFirstRunNotice', () => {
     );
   });
 
-  it('is true as soon as one visible chat was marked', () => {
+  it('is true as soon as one visible chat was marked by the migration', () => {
     expect(shouldShowFirstRunNotice(computeNoticeCounts(FIXTURE))).toBe(true);
+  });
+
+  it('stays false on a machine the migration never marked, however private it gets', () => {
+    // The whole notice is about a thing the upgrade did. A fresh install
+    // accumulates private chats one turn at a time — `turn:*`, never
+    // `backfill:*` — and firing on those would ambush that user weeks later
+    // with a modal describing a migration that never touched their database.
+    const grownOrganically = [
+      row('s1', 'private', 'ollama', 'turn:ollama'),
+      row('s2', 'private', 'ucsfomopagent', 'mcp:ucsfomopagent'),
+      row('s3', 'private', 'versa_azure', 'diverged:s1'),
+    ];
+    const counts = computeNoticeCounts(grownOrganically);
+    expect(counts.privateVisible).toBe(3);
+    expect(counts.backfilledVisible).toBe(0);
+    expect(shouldShowFirstRunNotice(counts)).toBe(false);
   });
 });
 
 describe('FirstRunPrivacyNotice', () => {
   it('computes its numbers from the user own chat list', async () => {
-    mocks.refreshSessionList.mockResolvedValue(FIXTURE);
+    mocks.listSessions.mockResolvedValue(served(FIXTURE));
     render(<FirstRunPrivacyNotice open onDismiss={vi.fn()} />);
 
     const headline = await screen.findByTestId('notice-headline');
@@ -147,12 +182,19 @@ describe('FirstRunPrivacyNotice', () => {
     expect(headline.textContent).toContain('7');
     // The chats it will not vouch for are stated, not buried.
     expect(screen.getByTestId('notice-unknown').textContent).toContain('2');
-    // ...and it asked for the History population, not the one with subagents.
-    expect(mocks.refreshSessionList).toHaveBeenCalledWith(false);
+    // ...and it asked the daemon for the History population directly, rather
+    // than through `sessionListCache`. That module's `includeSubagents` argument
+    // is part of its cache IDENTITY: passing `false` here reset a user who had
+    // subagents shown, and passing nothing would have counted them when the
+    // cache happened to hold `true`. Either way the notice's denominator stops
+    // matching the window it claims to describe.
+    expect(mocks.listSessions).toHaveBeenCalledWith(
+      expect.objectContaining({ query: { include_subagents: false } })
+    );
   });
 
   it('lists the private chats by the model that marked them', async () => {
-    mocks.refreshSessionList.mockResolvedValue(FIXTURE);
+    mocks.listSessions.mockResolvedValue(served(FIXTURE));
     render(<FirstRunPrivacyNotice open onDismiss={vi.fn()} />);
 
     const list = await screen.findByTestId('notice-by-provider');
@@ -178,7 +220,7 @@ describe('FirstRunPrivacyNotice', () => {
   });
 
   it('admits it could not count rather than reporting zero', async () => {
-    mocks.refreshSessionList.mockRejectedValue(new Error('daemon down'));
+    mocks.listSessions.mockRejectedValue(new Error('daemon down'));
     render(<FirstRunPrivacyNotice open onDismiss={vi.fn()} />);
 
     await screen.findByTestId('notice-count-error');
@@ -187,16 +229,44 @@ describe('FirstRunPrivacyNotice', () => {
 
   it('does not read the chat list until it is opened', () => {
     render(<FirstRunPrivacyNotice open={false} onDismiss={vi.fn()} />);
-    expect(mocks.refreshSessionList).not.toHaveBeenCalled();
+    expect(mocks.listSessions).not.toHaveBeenCalled();
   });
 
   it('acknowledging closes it', async () => {
     const user = userEvent.setup();
     const onDismiss = vi.fn();
-    mocks.refreshSessionList.mockResolvedValue(FIXTURE);
+    mocks.listSessions.mockResolvedValue(served(FIXTURE));
     render(<FirstRunPrivacyNotice open onDismiss={onDismiss} />);
 
     await user.click(await screen.findByTestId('notice-acknowledge'));
     await waitFor(() => expect(onDismiss).toHaveBeenCalledTimes(1));
+  });
+
+  // §13.5's day-one extension disclosure. Open question 13 resolves the naming
+  // question to "Task 38's notice copy" and says to hard-code the machine's own
+  // expectation into the fixture — hence `medcp` by name below.
+  it('names the enabled public extension that is wired to clinical data', () => {
+    render(
+      <FirstRunPrivacyNotice
+        open
+        onDismiss={vi.fn()}
+        counts={computeNoticeCounts(FIXTURE)}
+        publicClinicalExtensions={['medcp']}
+      />
+    );
+    const paragraph = screen.getByTestId('notice-public-clinical-extensions').textContent ?? '';
+    expect(paragraph).toContain('medcp');
+    // The disclosure is about REACHABILITY, not about a change. Saying "now
+    // marked" of an extension nothing happened to would be false, and would send
+    // the user looking for a setting that moved.
+    expect(paragraph).toMatch(/commercial models hosted outside UCSF/i);
+    expect(paragraph).toMatch(/nothing about it has changed/i);
+  });
+
+  it('says nothing about extensions when there are none to name', () => {
+    render(
+      <FirstRunPrivacyNotice open onDismiss={vi.fn()} counts={computeNoticeCounts(FIXTURE)} />
+    );
+    expect(screen.queryByTestId('notice-public-clinical-extensions')).toBeNull();
   });
 });

@@ -1,4 +1,4 @@
-import type { ProviderTier, SessionClassification } from '../../../api/types.gen';
+import type { ExtensionEntry, ProviderTier, SessionClassification } from '../../../api/types.gen';
 import { learnedPrivateExtensionKeys } from '../../baam/privateSet';
 import { nameToKey } from './utils';
 
@@ -69,6 +69,91 @@ export function classifyExtension(name: string): ProviderTier {
   const key = nameToKey(name);
   if (PRIVATE_EXTENSION_KEYS.includes(key)) return 'private';
   return learnedPrivateExtensionKeys().has(key) ? 'private' : 'public';
+}
+
+/**
+ * Substrings that make a declared credential name look like it opens a door onto
+ * patient data (issue #56 §13.5).
+ *
+ * ⚠ **A heuristic over names, and deliberately nothing more.** There is no field
+ * an extension can set to say "I reach clinical data" — `ExtensionEntry` carries
+ * no tier and Task 8's OpenAPI-diff gate froze that schema on purpose, so a local
+ * `config.yaml` can never declare anything about itself that the daemon would
+ * believe. What is left is what the user's own config already shows: the names of
+ * the secrets the extension asked for. `medcp` on the operator's machine declares
+ * `CLINICAL_RECORDS_PASSWORD`, and that is the whole of the evidence.
+ *
+ * It therefore over- and under-matches, and only one direction hurts. A false
+ * positive names an extra extension in an informational notice. A false negative
+ * — an extension reaching patient data through a key called `API_TOKEN` — is
+ * silence, and the badge on its Settings card is the backstop. Widen the list
+ * rather than narrowing it.
+ */
+export const CLINICAL_CREDENTIAL_MARKERS: readonly string[] = [
+  'CLINICAL',
+  'PATIENT',
+  'PHI',
+  'EHR',
+  'EMR',
+  'OMOP',
+  'MRN',
+  'CDW',
+  'EPIC',
+  'MEDICAL',
+];
+
+/** Every credential name an extension declares, however it declares it. */
+function declaredCredentialNames(entry: ExtensionEntry): string[] {
+  const config = entry as { env_keys?: unknown; envs?: unknown };
+  const keys = Array.isArray(config.env_keys) ? (config.env_keys as unknown[]) : [];
+  const envs =
+    config.envs && typeof config.envs === 'object' ? Object.keys(config.envs as object) : [];
+  return [...keys.filter((k): k is string => typeof k === 'string'), ...envs];
+}
+
+/**
+ * Does this extension ask for a secret whose *name* points at patient data?
+ *
+ * See {@link CLINICAL_CREDENTIAL_MARKERS} for why a name is all there is to go
+ * on. Both halves of the declaration are read: `env_keys` (the secrets kept in
+ * the OS credential store) and `envs` (the plaintext ones), because `medcp`
+ * splits its clinical connection across the two and reading only the first would
+ * still find it while a differently-configured sibling would vanish.
+ */
+export function declaresClinicalCredentials(entry: ExtensionEntry): boolean {
+  return declaredCredentialNames(entry).some((name) => {
+    const upper = name.toUpperCase();
+    return CLINICAL_CREDENTIAL_MARKERS.some((marker) => upper.includes(marker));
+  });
+}
+
+/**
+ * §13.5's first-launch disclosure, as one list: the **enabled** extensions that
+ * are **Public** and declare clinical-looking credentials.
+ *
+ * ⚠ **All three conjuncts are load-bearing, and the middle one is the point.**
+ * A *private* clinical extension is the design working — it is unreachable from
+ * a public model, which is what the whole feature is for. A *disabled* one
+ * reaches nothing. What §13.5 exists to surface is the third case, which the
+ * design fails **open** on and which no refusal will ever teach the user about:
+ * an extension that is wired to clinical data, is switched on, and — because it
+ * is not on the marketplace's private list — stays callable by a commercial
+ * model hosted outside UCSF. On the operator's machine that is exactly one
+ * extension, `medcp`, and the day-one notice names it.
+ *
+ * Returned as display names in a stable order, so the notice does not reshuffle
+ * between two renders of the same config.
+ */
+export function publicClinicalExtensions(entries: ExtensionEntry[]): string[] {
+  return entries
+    .filter(
+      (entry) =>
+        entry.enabled &&
+        classifyExtension(entry.name) === 'public' &&
+        declaresClinicalCredentials(entry)
+    )
+    .map((entry) => entry.name)
+    .sort((a, b) => a.localeCompare(b));
 }
 
 /**

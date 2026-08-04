@@ -27,7 +27,7 @@ use std::sync::{Arc, LazyLock};
 use tracing::{debug, info, warn};
 use utoipa::ToSchema;
 
-pub const CURRENT_SCHEMA_VERSION: i32 = 18;
+pub const CURRENT_SCHEMA_VERSION: i32 = 19;
 pub const SESSIONS_FOLDER: &str = "sessions";
 pub const DB_NAME: &str = "sessions.db";
 
@@ -2132,10 +2132,17 @@ pub(crate) struct BackfillCounts {
 /// That qualifier is the whole point of the type. The raw `sessions` table holds
 /// message-less rows — a chat opened and abandoned, a workspace shell — and
 /// `list_sessions_by_types` INNER JOINs `messages`, so those rows exist in the
-/// database and nowhere in the user's window. On the operator's machine the two
-/// populations differ by nearly 2×: 936 would-be-private rows, 498 of them
-/// visible. A notice quoting the raw number tells the user to go and act on
-/// hundreds of conversations they cannot see.
+/// database and nowhere in the user's window. Measured on the operator's
+/// 8,415-row database on 2026-08-03, the two populations differ by more than 2×:
+/// **1,486** rows the backfill would raise, **654** of them visible. A notice
+/// quoting the raw number tells the user to go and act on 832 conversations they
+/// cannot see.
+///
+/// ⚠ Those are a measurement with a date on it, not a constant. §16's table has
+/// been re-measured three times during this work and moved by a factor of three
+/// in four days; a figure in this comment is stale the moment the user opens
+/// another chat. Nothing reads them — every number the user sees is computed —
+/// and any figure quoted here must carry the date it was taken.
 ///
 /// The first three fields partition [`Self::total_visible`]: private (whatever
 /// the migration or a later turn marked), then the public remainder split by
@@ -3125,6 +3132,29 @@ impl SessionStorage {
                 // on a column another build already created is `duplicate
                 // column name`, which aborts startup.
                 Self::ensure_privacy_schema(pool).await?;
+            }
+            19 => {
+                // ⚠ **A SEPARATE arm from 18, and this is not tidiness.** The
+                // columns landed in 18 while this task was still being written,
+                // so every database that ran a build from that window — every
+                // developer's, and the operator's, whose `schema_version` records
+                // 18 applied on 2026-08-01 — already stands AT 18 and would never
+                // re-enter that arm. Folding the backfill in beside the columns
+                // therefore shipped a statement that could not run on any machine
+                // that had opened the branch: 1,486 chats stranded public, on the
+                // very machine the feature was measured against. That is issue
+                // #56's own O10 hazard (a migration number consumed by testers)
+                // recurring one arm later, and the fix is the same one the tree
+                // already applies to the columns — do not add new work to a
+                // number someone has already passed.
+                //
+                // `ensure_privacy_schema` is called again here, and it is not
+                // redundant: this arm must not assume 18 ran. A database that
+                // reached 18 by a route that skipped it (the same collision the
+                // helper exists for) would otherwise hit `no such column:
+                // privacy_tier` and abort startup. The helper is idempotent and
+                // shape-guarded, so the second call is free.
+                Self::ensure_privacy_schema(pool).await?;
                 // ...and the backfill, HERE and nowhere else. See the function's
                 // own comment for why a startup-repeating home would be a silent
                 // one-way regression. The counts it returns are logged inside it;
@@ -3277,6 +3307,41 @@ impl SessionStorage {
     const BACKFILL_PRIVATE_PROVIDERS: [&'static str; 4] =
         ["llamacpp", "ollama", "versa_azure", "versa_bedrock"];
 
+    /// The backfill's `UPDATE`, composed rather than written out — and split out
+    /// here so that the one composed tier assignment in the tree has a name a
+    /// test can point at.
+    ///
+    /// ⚠ **Composition is how a tier assignment hides from the audits.**
+    /// `exactly_one_statement_in_the_tree_assigns_a_public_classification` (in
+    /// `privacy/declassify.rs`) matches one literal spelling, line by line, and
+    /// says of itself that a statement built from variables is invisible to it.
+    /// This is the tree's first runtime-composed `SET privacy_tier`, so it is the
+    /// first thing shaped like that bypass — benign, because it interpolates
+    /// [`SessionClassification::PRIVATE_SQL`] and raises rather than lowers, but
+    /// the shape is now precedent. `the_backfill_statement_raises_and_nothing_else`
+    /// pins the emitted text so the next edit to it has to be deliberate.
+    ///
+    /// It is composed at all because the provider list must stay a single source
+    /// of truth with [`Self::BACKFILL_PRIVATE_PROVIDERS`], which
+    /// `the_backfilled_provider_set_is_every_provider_that_claims_private` checks
+    /// against the shipped provider modules.
+    fn backfill_update_sql() -> String {
+        let quoted: Vec<String> = Self::BACKFILL_PRIVATE_PROVIDERS
+            .iter()
+            .map(|name| format!("'{name}'"))
+            .collect();
+        format!(
+            "UPDATE sessions \
+                SET privacy_tier = '{private}', \
+                    privacy_reason = 'backfill:' || provider_name \
+              WHERE provider_name IN ({list}) \
+                AND privacy_tier = '{public}'",
+            private = SessionClassification::PRIVATE_SQL,
+            public = SessionClassification::PUBLIC_SQL,
+            list = quoted.join(","),
+        )
+    }
+
     /// Issue #56 §15 — the ONE-TIME classification backfill.
     ///
     /// ⚠ **This belongs to the numbered migration arm and to nothing else.**
@@ -3326,49 +3391,70 @@ impl SessionStorage {
             return Ok(BackfillCounts::default());
         }
 
-        let quoted: Vec<String> = Self::BACKFILL_PRIVATE_PROVIDERS
-            .iter()
-            .map(|name| format!("'{name}'"))
-            .collect();
-        let private_list = quoted.join(",");
+        let private = sqlx::query(&Self::backfill_update_sql())
+            .execute(pool)
+            .await?
+            .rows_affected() as i64;
 
-        let private = sqlx::query(&format!(
-            "UPDATE sessions
-                SET privacy_tier = '{private}',
-                    privacy_reason = 'backfill:' || provider_name
-              WHERE provider_name IN ({private_list})
-                AND privacy_tier = '{public}'",
-            private = SessionClassification::PRIVATE_SQL,
-            public = SessionClassification::PUBLIC_SQL,
-        ))
-        .execute(pool)
-        .await?
-        .rows_affected() as i64;
+        // ── Everything below this line is REPORTING, and none of it may fail the
+        // migration. ────────────────────────────────────────────────────────────
+        //
+        // ⚠ The `UPDATE` has already committed by the time these run, but the
+        // version counter has not: `run_migrations` calls `update_schema_version`
+        // only after `apply_migration` returns `Ok`. So a `?` on a COUNT would
+        // leave the database backfilled and still numbered one below the arm —
+        // and the next launch would re-enter this arm and re-run a statement
+        // whose whole contract is that it runs once. The `AND privacy_tier =
+        // 'public'` guard means the re-run is not destructive today, but the
+        // one-shot property must not rest on a second mechanism, and none of
+        // these numbers is worth a failed startup: they feed a log line that
+        // nothing branches on.
+        let count = |sql: &'static str| async move {
+            match sqlx::query_scalar::<_, i64>(sql).fetch_one(pool).await {
+                Ok(value) => value,
+                Err(error) => {
+                    warn!(
+                        %error,
+                        "issue #56: a privacy-backfill report query failed; the backfill \
+                         itself already committed, so this is logged and not raised"
+                    );
+                    -1
+                }
+            }
+        };
 
         // What the migration did, in the four buckets a support conversation
         // actually needs. The first three partition the table; `backfilled_empty`
         // cuts across it and is the gap between these numbers and the ones the
-        // user can see, since History hides message-less rows.
-        let public_named: i64 = sqlx::query_scalar(
+        // user can see, since History hides message-less rows. `-1` in any of
+        // them means "the count failed", which is why they are `i64` and not
+        // `u64`.
+        let public_named = count(
             "SELECT COUNT(*) FROM sessions \
               WHERE IFNULL(privacy_tier, '') = 'public' AND IFNULL(provider_name, '') <> ''",
         )
-        .fetch_one(pool)
-        .await?;
-        let unknown_provider: i64 = sqlx::query_scalar(
+        .await;
+        let unknown_provider = count(
             "SELECT COUNT(*) FROM sessions \
               WHERE IFNULL(privacy_tier, '') = 'public' AND IFNULL(provider_name, '') = ''",
         )
-        .fetch_one(pool)
-        .await?;
-        let empty: i64 = sqlx::query_scalar(
+        .await;
+        let empty = count(
             "SELECT COUNT(*) FROM sessions s \
               WHERE NOT EXISTS (SELECT 1 FROM messages m WHERE m.session_id = s.id)",
         )
-        .fetch_one(pool)
-        .await?;
+        .await;
 
-        let visible = Self::privacy_notice_counts(pool).await?;
+        let visible = Self::privacy_notice_counts(pool)
+            .await
+            .unwrap_or_else(|error| {
+                warn!(
+                    %error,
+                    "issue #56: could not compute the day-one notice counts for the \
+                     migration log; the renderer computes its own from the session list"
+                );
+                PrivacyNoticeCounts::default()
+            });
 
         info!(
             backfilled_private = private,
@@ -12850,20 +12936,29 @@ mod tests {
             }
         }
 
-        /// A database one migration BELOW the privacy arm, holding `seeds`.
+        /// A database one migration BELOW the backfill arm, holding `seeds`.
         ///
         /// Named for what it is rather than for a version number: the plan calls
         /// this `migrated_v16_db_with`, but BR-71 landed `17 =>`
-        /// (`parent_session_id`) first, so the privacy arm is 18 and "one below
-        /// the arm under test" is the only durable way to say this.
+        /// (`parent_session_id`) first and Task 6 took 18 for the columns, so the
+        /// backfill arm is 19 and "one below the arm under test" is the only
+        /// durable way to say this.
+        ///
+        /// ⚠ It leaves the counter at **18 with the privacy columns dropped** —
+        /// a database that has passed the columns arm without having its columns.
+        /// That is not a contrivance; it is exactly the state
+        /// `the_reconcile_adds_the_columns_even_when_the_version_says_it_already_ran`
+        /// exists for, and it is why arm 19 calls `ensure_privacy_schema` again
+        /// rather than assuming 18 ran. If that call is ever removed, every test
+        /// in this module fails with `no such column: privacy_tier`.
         async fn pre_privacy_database_with(data_dir: &Path, seeds: &[Seed]) -> PathBuf {
             let storage = SessionStorage::create(data_dir).await.unwrap();
             storage.close().await;
 
             let db = data_dir.join(SESSIONS_FOLDER).join(DB_NAME);
             let pool = raw_pool(&db).await;
-            // `parent_session_id` is deliberately NOT dropped: it belongs to the
-            // arm below this one, which a database at 17 has already applied.
+            // `parent_session_id` is deliberately NOT dropped: it belongs to
+            // BR-71's arm, which every database down here has already applied.
             for column in ["privacy_tier", "privacy_reason"] {
                 sqlx::query(&format!("ALTER TABLE sessions DROP COLUMN {column}"))
                     .execute(&pool)
@@ -13139,8 +13234,8 @@ mod tests {
         #[tokio::test]
         async fn the_notice_quotes_the_history_visible_count_not_the_raw_one() {
             // `list_sessions_by_types` INNER JOINs messages, so empty sessions
-            // never appear. On the operator's machine that is 498 visible
-            // against 936 raw would-be-private rows.
+            // never appear. Measured on the operator's machine on 2026-08-03:
+            // 654 visible against 1,486 raw would-be-private rows.
             let temp = tempfile::TempDir::new().unwrap();
             let db = pre_privacy_database_with(
                 temp.path(),
@@ -13169,52 +13264,132 @@ mod tests {
             assert_eq!(counts.total_visible, 7);
         }
 
+        /// The production slice of this file: everything above the main test
+        /// module. This module's own helpers call the backfill directly and would
+        /// otherwise count as extra call sites.
+        ///
+        /// Cut at THIS module's header, not at the first `#[cfg(test)]` in the
+        /// file: there are six of those and the first sits near line 627, which
+        /// truncates the slice above every symbol these tests are about and turns
+        /// a `find` into the failure. (It did.)
+        fn production_source() -> String {
+            let src = std::fs::read_to_string("src/session/session_manager.rs").unwrap();
+            let cut = src
+                .find("\n#[cfg(test)]\nmod tests {")
+                .expect("this file's main test module moved");
+            src.get(..cut)
+                .expect("find returns a char boundary")
+                .to_string()
+        }
+
+        /// Every function reachable from `root` through a `Self::…(` call, as
+        /// `(name, body)` pairs including `root` itself.
+        ///
+        /// ⚠ **Why a transitive walk and not one `fn_body`.** Review found the
+        /// hole: `ensure_privacy_schema` is a 25-line `BEGIN IMMEDIATE` wrapper
+        /// and every column it adds lives in `ensure_privacy_schema_locked`, so a
+        /// scan of the wrapper alone reads none of the DDL. An `UPDATE sessions`
+        /// inlined into the `_locked` half would have added no call site and
+        /// appeared in no scanned body — it would have passed a guard whose whole
+        /// purpose is to police that function. A delegating wrapper is the
+        /// obvious shape for the next helper too, so naming one function was
+        /// never going to hold; the closure is the property.
+        ///
+        /// A name with no `fn <name>(` in the production slice is skipped rather
+        /// than fatal: `Self::CONST` and associated types appear in the same
+        /// syntactic position.
+        fn reachable_bodies(production: &str, root: &str) -> Vec<(String, String)> {
+            fn body_of(production: &str, name: &str) -> Option<String> {
+                let start = production.find(&format!("fn {name}("))?;
+                let from_signature = production.get(start..)?;
+                let open = from_signature.find('{')?;
+                let from_body = from_signature.get(open..)?;
+                let mut depth = 0usize;
+                for (offset, ch) in from_body.char_indices() {
+                    match ch {
+                        '{' => depth += 1,
+                        '}' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                return from_body.get(..offset + ch.len_utf8()).map(str::to_string);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                None
+            }
+
+            let mut seen: std::collections::BTreeSet<String> = Default::default();
+            let mut out: Vec<(String, String)> = vec![];
+            let mut queue = vec![root.to_string()];
+            while let Some(name) = queue.pop() {
+                if !seen.insert(name.clone()) {
+                    continue;
+                }
+                let Some(body) = body_of(production, &name) else {
+                    continue;
+                };
+                for (index, _) in body.match_indices("Self::") {
+                    let Some(rest) = body.get(index + "Self::".len()..) else {
+                        continue;
+                    };
+                    let callee: String = rest
+                        .chars()
+                        .take_while(|c| c.is_alphanumeric() || *c == '_')
+                        .collect();
+                    // `Self::CONST` and associated types share this shape; a
+                    // callee is followed by `(`. The identifier is ASCII by
+                    // construction (`is_alphanumeric` plus `_` over source
+                    // Rust), so `callee.len()` is a char boundary in `rest`.
+                    if callee.is_empty()
+                        || !rest.get(callee.len()..).is_some_and(|t| t.starts_with('('))
+                    {
+                        continue;
+                    }
+                    queue.push(callee);
+                }
+                out.push((name, body));
+            }
+            out
+        }
+
         /// The plan's Step 5 gate, as a test rather than a shell command.
         ///
         /// It was written there as two `awk` ranges — "`UPDATE sessions` appears
         /// once in the `17 =>` arm and zero times in `ensure_privacy_schema`" —
-        /// and it does not survive contact with this tree twice over. The arm is
-        /// **18**, because BR-71 landed `17 =>` (`parent_session_id`) first; and
-        /// the statement lives in a named function the arm calls, so a grep for
-        /// it inside the arm's range correctly reports zero. Both would have
-        /// been read as failures, and the second would have invited inlining a
-        /// forty-line statement into a match arm to satisfy a grep.
+        /// and it does not survive contact with this tree three times over. The
+        /// arm is **19**: BR-71 landed `17 =>` (`parent_session_id`) first, Task 6
+        /// took 18 for the columns, and the backfill needs a number no tester of
+        /// this branch has already passed. The statement lives in a named
+        /// function the arm calls, so a grep inside the arm's range correctly
+        /// reports zero. And scanning `ensure_privacy_schema` alone reads a
+        /// delegating wrapper, not the function holding the DDL.
         ///
         /// So the property is asserted directly, and it is the property that
         /// matters: the backfill has exactly one production call site, that site
-        /// is the numbered arm, and the helper that runs on **every** startup
-        /// neither performs it nor reaches it. Unlike the shell gate this runs on
-        /// every CI build, and it cannot pass vacuously — each range is asserted
-        /// non-empty first, which is the failure mode the plan's own gate text
-        /// warns about at length.
+        /// is the numbered arm, and **nothing reachable from the per-startup
+        /// reconcile** performs it or reaches it. Unlike the shell gate this runs
+        /// on every CI build, and it cannot pass vacuously — every range is
+        /// asserted non-empty first, which is the failure mode the plan's own gate
+        /// text warns about at length.
         #[test]
         fn the_backfill_is_reachable_only_from_the_numbered_migration_arm() {
-            let src = std::fs::read_to_string("src/session/session_manager.rs").unwrap();
-            // Production only. This file's own tests call the backfill directly
-            // and would otherwise count as extra call sites.
-            //
-            // Cut at THIS module's header, not at the first `#[cfg(test)]` in
-            // the file: there are six of those and the first sits at line 627,
-            // which truncates the slice above every symbol this test is about
-            // and turns the `expect` below into the failure. (It did.)
-            let cut = src
-                .find("\n#[cfg(test)]\nmod tests {")
-                .expect("this file's main test module moved");
-            let production = src.get(..cut).expect("find returns a char boundary");
+            let production = production_source();
 
             let arm_start = production
-                .find("            18 => {")
-                .expect("no `18 => {` arm at 12-space indentation, like arms 10..17");
+                .find("            19 => {")
+                .expect("no `19 => {` arm at 12-space indentation, like arms 10..18");
             let after_arm = production
                 .get(arm_start..)
                 .expect("find returns a char boundary");
             let arm_len = after_arm
                 .find("\n            }")
-                .expect("the `18 =>` arm does not close");
+                .expect("the `19 =>` arm does not close");
             let arm = after_arm.get(..arm_len).expect("find yields a boundary");
             assert!(
                 arm.lines().count() > 1,
-                "the `18 =>` arm range is empty — every assertion below would pass vacuously"
+                "the `19 =>` arm range is empty — every assertion below would pass vacuously"
             );
 
             // One definition, one call. Anything else is a second door.
@@ -13230,22 +13405,67 @@ mod tests {
                 "the backfill's one call site is not the numbered migration arm"
             );
 
-            // ...and the per-startup reconcile neither performs it nor reaches it.
-            let helper = fn_body("ensure_privacy_schema");
-            assert!(
-                helper.lines().count() > 1,
-                "the `ensure_privacy_schema` body is empty — the name changed, and the two \
-                 assertions below would pass vacuously"
+            // ...and NOTHING the per-startup reconcile reaches performs it. This
+            // is the whole closure, not one function: see `reachable_bodies`.
+            let reconcile = reachable_bodies(&production, "reconcile_loop_schema");
+            let names: Vec<&str> = reconcile.iter().map(|(n, _)| n.as_str()).collect();
+            for required in [
+                "reconcile_loop_schema",
+                "ensure_privacy_schema",
+                // The half that actually holds the privacy DDL. Named
+                // explicitly, because it is the function the previous version of
+                // this gate silently failed to read.
+                "ensure_privacy_schema_locked",
+            ] {
+                assert!(
+                    names.contains(&required),
+                    "`{required}` is not in the per-startup reconcile's reachable set {names:?} \
+                     — the walk broke, and every assertion below would pass vacuously"
+                );
+            }
+
+            for (name, body) in &reconcile {
+                assert!(
+                    !body.contains("SET privacy_tier"),
+                    "`{name}` runs on every startup and assigns `privacy_tier`; a repeated \
+                     assignment re-privatises every session the user has declassified, because \
+                     declassification deliberately leaves `provider_name` in place"
+                );
+                assert!(
+                    !body.contains("backfill_privacy_from_bound_provider"),
+                    "`{name}` runs on every startup and reaches the one-time backfill"
+                );
+            }
+        }
+
+        /// The one runtime-composed tier assignment in the tree, pinned.
+        ///
+        /// ⚠ **Composition is the shape that hides from the audits.**
+        /// `exactly_one_statement_in_the_tree_assigns_a_public_classification`
+        /// matches one literal spelling line by line and documents that a
+        /// statement built from variables is invisible to it. This is the first
+        /// `SET privacy_tier` in the tree that is composed at runtime, so it is
+        /// the first thing shaped like that bypass. It is benign — it raises, and
+        /// it interpolates the constants rather than free text — and this test is
+        /// what keeps it that way: the emitted statement is asserted whole, so
+        /// flipping the assigned tier, dropping the `AND privacy_tier = 'public'`
+        /// ratchet guard, or adding a provider without touching
+        /// `BACKFILL_PRIVATE_PROVIDERS` all fail here.
+        #[test]
+        fn the_backfill_statement_raises_and_nothing_else() {
+            let sql = SessionStorage::backfill_update_sql();
+            assert_eq!(
+                sql,
+                "UPDATE sessions \
+                    SET privacy_tier = 'private', \
+                        privacy_reason = 'backfill:' || provider_name \
+                  WHERE provider_name IN ('llamacpp','ollama','versa_azure','versa_bedrock') \
+                    AND privacy_tier = 'public'"
             );
-            assert!(
-                !helper.contains("UPDATE sessions"),
-                "a per-startup UPDATE appeared in the reconcile helper; it would re-privatise \
-                 every declassified session on the next launch"
-            );
-            assert!(
-                !helper.contains("backfill_privacy_from_bound_provider"),
-                "the reconcile helper now reaches the one-time backfill"
-            );
+            // ...and the two ends of the composition are what this file thinks
+            // they are, so the literal above cannot drift from the enum.
+            assert_eq!(SessionClassification::PRIVATE_SQL, "private");
+            assert_eq!(SessionClassification::PUBLIC_SQL, "public");
         }
 
         /// The backfill's provider list is a **literal** in SQL, because a

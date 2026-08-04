@@ -42,6 +42,7 @@ import 'react-toastify/dist/ReactToastify.css';
 import { useConfig } from './components/ConfigContext';
 import { ModelAndProviderProvider } from './components/ModelAndProviderContext';
 import { AppNonPrivateModelDisclosureGate } from './components/privacy/AppNonPrivateModelDisclosureGate';
+import { FirstRunPrivacyNoticeGate } from './components/privacy/FirstRunPrivacyNoticeGate';
 import { ThemeProvider } from './contexts/ThemeContext';
 import PermissionSettingsView from './components/settings/permission/PermissionSetting';
 
@@ -714,6 +715,22 @@ export default function App() {
           `useSoleDisclosurePresenter` keeps the two mounts to one dialog.
         */}
         <AppNonPrivateModelDisclosureGate />
+        {/*
+          Issue #56 §15.5(3) — the day-one notice, shown once per install after
+          the migration has marked part of the user's history private.
+
+          ⚠ Mounted here for the same reason as the gate above it: the subject is
+          the install, not a view. This one carries an extra obligation, though —
+          Task 38 also ships the backfill, which is irreversible without a
+          per-chat declassification, so a notice that exists only in the source
+          tree leaves "day one is discovered, not shown", which is the failure
+          §15.5 is named after.
+
+          It is due only when the MIGRATION marked something the user can see, so
+          a fresh install never renders it however many private chats it goes on
+          to accumulate.
+        */}
+        <FirstRunPrivacyNoticeGate />
       </ModelAndProviderProvider>
     </ThemeProvider>
   );
