@@ -1064,19 +1064,36 @@ mod bypass_tests {
     /// silently does nothing. So it is exercised through the REAL router tree
     /// (`routes::configure`), not through a hand-built one.
     ///
-    /// ⚠ Only the refusing arm is driven here, deliberately. The accepting arm
-    /// writes a selection pointer into the developer's real knowledge directory;
-    /// the refusing arm is decided before the handler runs and writes nothing.
-    /// That a **public** session is unaffected is
-    /// [`super::tests::a_public_target_is_reachable_by_every_caller`], and the
-    /// middleware has no branch of its own between that decision and the
-    /// handler.
+    /// ⚠ **Every request here must be one the handler REJECTS, and that is a
+    /// constraint of the route rather than a style.** `set_active` writes into
+    /// the developer's real knowledge directory — a selection this test invented,
+    /// silently replacing a list the person at this machine curated. An earlier
+    /// version of this test sent `{"hidden_kbs": []}` at machine scope and did
+    /// exactly that: `~/.config/biorouter/knowledge/.hidden-kbs` was rewritten to
+    /// `[]` on every run, so anyone who had hidden a base and then ran the server
+    /// suite silently got it back.
+    ///
+    /// So the two pass-through arms name a primary that does not exist.
+    /// `apply_selection_unlocked` decides everything before it commits anything,
+    /// and an unknown primary fails in the decide half — which makes the 400 a
+    /// stronger signal than the old `assert_ne!(403)` as well as a harmless one:
+    /// only `set_selection` echoes the kb id back, so nothing but the real
+    /// handler could have produced this body.
     #[tokio::test(flavor = "multi_thread")]
     #[serial]
     async fn the_knowledge_active_gate_is_actually_wired() {
         install_test_user_action_key();
         let state = AppState::new().await.unwrap();
         let private = seed_private_chat(&state, "Task 58 knowledge (test fixture)").await;
+        let public = seed_chat(
+            &state,
+            "Task 58 knowledge public (test fixture)",
+            SessionClassification::Public,
+        )
+        .await;
+        // A base id that exists on no machine, so the handler refuses to pin it
+        // and returns before its commit half.
+        const NO_SUCH_KB: &str = "task58-no-such-kb";
 
         let (status, body) = post_knowledge_active(
             state.clone(),
@@ -1091,17 +1108,41 @@ mod bypass_tests {
              bases: {body}"
         );
 
+        // Step 4.1's other half, for this route: a PUBLIC chat is untouched by
+        // the layer and reaches the handler, which answers on its own terms.
+        let (status, body) = post_knowledge_active(
+            state.clone(),
+            serde_json::json!({ "session_id": public.id(), "primary_kb": NO_SUCH_KB }),
+            None,
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "the layer refused an unproven caller on a PUBLIC chat: {body}"
+        );
+        assert!(
+            body.contains(NO_SUCH_KB),
+            "this 400 did not come from `set_selection` — only it echoes the kb id: {body}"
+        );
+
         // A body naming NO session addresses the machine-wide scope, not a
         // chat, so the gate has nothing to resolve and must let it through to
-        // the handler that owns it. Any answer but 403 shows the middleware did
-        // not invent a session to refuse.
-        let (status, _) =
-            post_knowledge_active(state.clone(), serde_json::json!({ "hidden_kbs": [] }), None)
-                .await;
-        assert_ne!(
+        // the handler that owns it.
+        let (status, body) = post_knowledge_active(
+            state.clone(),
+            serde_json::json!({ "primary_kb": NO_SUCH_KB }),
+            None,
+        )
+        .await;
+        assert_eq!(
             status,
-            StatusCode::FORBIDDEN,
-            "the gate refused a request that names no chat at all"
+            StatusCode::BAD_REQUEST,
+            "the gate refused a request that names no chat at all: {body}"
+        );
+        assert!(
+            body.contains(NO_SUCH_KB),
+            "this 400 did not come from `set_selection` — only it echoes the kb id: {body}"
         );
     }
 }
