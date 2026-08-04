@@ -184,6 +184,14 @@ impl Provider for OllamaProvider {
         crate::providers::self_hosted_tier(&self.resolved_base_url)
     }
 
+    /// DR-26: `Local` exactly while the resolved base URL is loopback. A remote
+    /// `OLLAMA_HOST` is someone else's server, so it gets no affiliation at all
+    /// rather than inheriting `Local`'s blanket permission over every private
+    /// extension.
+    fn affiliation(&self) -> Option<crate::privacy::affiliation::ModelAffiliation> {
+        crate::providers::self_hosted_affiliation(&self.resolved_base_url)
+    }
+
     fn get_model_config(&self) -> ModelConfig {
         self.model.clone()
     }

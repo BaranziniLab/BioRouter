@@ -44,58 +44,58 @@ const DEFAULT_FALLBACK_TURNS: usize = 2;
 static REGISTRY: OnceCell<RwLock<ProviderRegistry>> = OnceCell::const_new();
 
 async fn init_registry() -> RwLock<ProviderRegistry> {
-    let mut registry = ProviderRegistry::new().with_providers(|registry| {
-        registry
-            .register::<AnthropicProvider, _>(|m| Box::pin(AnthropicProvider::from_env(m)), true);
-        registry.register::<AzureProvider, _>(|m| Box::pin(AzureProvider::from_env(m)), false);
-        #[cfg(feature = "aws-providers")]
-        registry.register::<BedrockProvider, _>(|m| Box::pin(BedrockProvider::from_env(m)), false);
-        registry.register::<VersaAzureProvider, _>(
-            |m| Box::pin(VersaAzureProvider::from_env(m)),
-            false,
-        );
-        #[cfg(feature = "aws-providers")]
-        registry.register::<VersaBedrockProvider, _>(
-            |m| Box::pin(VersaBedrockProvider::from_env(m)),
-            false,
-        );
-        registry
-            .register::<DatabricksProvider, _>(|m| Box::pin(DatabricksProvider::from_env(m)), true);
-        registry.register::<GcpVertexAIProvider, _>(
-            |m| Box::pin(GcpVertexAIProvider::from_env(m)),
-            false,
-        );
-        registry.register::<GithubCopilotProvider, _>(
-            |m| Box::pin(GithubCopilotProvider::from_env(m)),
-            false,
-        );
-        registry.register::<GoogleProvider, _>(|m| Box::pin(GoogleProvider::from_env(m)), true);
-        registry.register::<LiteLLMProvider, _>(|m| Box::pin(LiteLLMProvider::from_env(m)), false);
-        registry.register::<LlamaCppProvider, _>(|m| Box::pin(LlamaCppProvider::from_env(m)), true);
-        registry.register::<OllamaProvider, _>(|m| Box::pin(OllamaProvider::from_env(m)), true);
-        registry.register::<OpenAiProvider, _>(|m| Box::pin(OpenAiProvider::from_env(m)), true);
-        registry
-            .register::<OpenRouterProvider, _>(|m| Box::pin(OpenRouterProvider::from_env(m)), true);
-        #[cfg(feature = "aws-providers")]
-        registry.register::<SageMakerTgiProvider, _>(
-            |m| Box::pin(SageMakerTgiProvider::from_env(m)),
-            false,
-        );
-        registry
-            .register::<SnowflakeProvider, _>(|m| Box::pin(SnowflakeProvider::from_env(m)), false);
-        registry.register::<TetrateProvider, _>(|m| Box::pin(TetrateProvider::from_env(m)), true);
-        registry.register::<VeniceProvider, _>(|m| Box::pin(VeniceProvider::from_env(m)), false);
-        registry.register::<XaiProvider, _>(|m| Box::pin(XaiProvider::from_env(m)), false);
-        registry.register::<XiaomiMimoProvider, _>(
-            |m| Box::pin(XiaomiMimoProvider::from_env(m)),
-            false,
-        );
-        registry.register::<ZaiProvider, _>(|m| Box::pin(ZaiProvider::from_env(m)), false);
-    });
+    let mut registry = ProviderRegistry::new().with_providers(register_builtin_providers);
     if let Err(e) = load_custom_providers_into_registry(&mut registry) {
         tracing::warn!("Failed to load custom providers: {}", e);
     }
     RwLock::new(registry)
+}
+
+/// Every provider compiled into this binary, and the single place they are
+/// declared.
+///
+/// ⚠ Extracted from `init_registry` so a test can enumerate exactly this set
+/// without also picking up the bundled and user-written declarative providers
+/// that `load_custom_providers_into_registry` adds — see
+/// `tests::every_registered_provider_is_classified_for_affiliation`, which fails
+/// until a provider added here is classified against DR-26's third axis.
+fn register_builtin_providers(registry: &mut ProviderRegistry) {
+    registry.register::<AnthropicProvider, _>(|m| Box::pin(AnthropicProvider::from_env(m)), true);
+    registry.register::<AzureProvider, _>(|m| Box::pin(AzureProvider::from_env(m)), false);
+    #[cfg(feature = "aws-providers")]
+    registry.register::<BedrockProvider, _>(|m| Box::pin(BedrockProvider::from_env(m)), false);
+    registry
+        .register::<VersaAzureProvider, _>(|m| Box::pin(VersaAzureProvider::from_env(m)), false);
+    #[cfg(feature = "aws-providers")]
+    registry.register::<VersaBedrockProvider, _>(
+        |m| Box::pin(VersaBedrockProvider::from_env(m)),
+        false,
+    );
+    registry.register::<DatabricksProvider, _>(|m| Box::pin(DatabricksProvider::from_env(m)), true);
+    registry
+        .register::<GcpVertexAIProvider, _>(|m| Box::pin(GcpVertexAIProvider::from_env(m)), false);
+    registry.register::<GithubCopilotProvider, _>(
+        |m| Box::pin(GithubCopilotProvider::from_env(m)),
+        false,
+    );
+    registry.register::<GoogleProvider, _>(|m| Box::pin(GoogleProvider::from_env(m)), true);
+    registry.register::<LiteLLMProvider, _>(|m| Box::pin(LiteLLMProvider::from_env(m)), false);
+    registry.register::<LlamaCppProvider, _>(|m| Box::pin(LlamaCppProvider::from_env(m)), true);
+    registry.register::<OllamaProvider, _>(|m| Box::pin(OllamaProvider::from_env(m)), true);
+    registry.register::<OpenAiProvider, _>(|m| Box::pin(OpenAiProvider::from_env(m)), true);
+    registry.register::<OpenRouterProvider, _>(|m| Box::pin(OpenRouterProvider::from_env(m)), true);
+    #[cfg(feature = "aws-providers")]
+    registry.register::<SageMakerTgiProvider, _>(
+        |m| Box::pin(SageMakerTgiProvider::from_env(m)),
+        false,
+    );
+    registry.register::<SnowflakeProvider, _>(|m| Box::pin(SnowflakeProvider::from_env(m)), false);
+    registry.register::<TetrateProvider, _>(|m| Box::pin(TetrateProvider::from_env(m)), true);
+    registry.register::<VeniceProvider, _>(|m| Box::pin(VeniceProvider::from_env(m)), false);
+    registry.register::<XaiProvider, _>(|m| Box::pin(XaiProvider::from_env(m)), false);
+    registry
+        .register::<XiaomiMimoProvider, _>(|m| Box::pin(XiaomiMimoProvider::from_env(m)), false);
+    registry.register::<ZaiProvider, _>(|m| Box::pin(ZaiProvider::from_env(m)), false);
 }
 
 fn load_custom_providers_into_registry(registry: &mut ProviderRegistry) -> Result<()> {
@@ -247,6 +247,147 @@ fn create_worker_model_config(default_model: &ModelConfig) -> Result<ModelConfig
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every built-in provider whose **instances** can carry an affiliation
+    /// (DR-26, Task 46), with the predicate that decides it. Nothing here is a
+    /// name-keyed assignment: the name selects which predicate runs, the
+    /// predicate reads what the instance actually resolved.
+    #[allow(unused_mut)]
+    fn affiliated_providers() -> Vec<(&'static str, &'static str)> {
+        let mut rows = vec![
+            (
+                "llamacpp",
+                "Local: the managed sidecar, or `self_hosted_affiliation` on LLAMACPP_EXTERNAL_HOST",
+            ),
+            (
+                "ollama",
+                "Local: `self_hosted_affiliation` on the resolved OLLAMA_HOST",
+            ),
+            (
+                "versa_azure",
+                "Institution(ucsf): `ucsf_gateway_affiliation` on the resolved AZURE_OPENAI_ENDPOINT",
+            ),
+        ];
+        #[cfg(feature = "aws-providers")]
+        rows.push((
+            "versa_bedrock",
+            "Institution(ucsf): `ucsf_gateway_affiliation` on the resolved bedrock endpoint",
+        ));
+        rows
+    }
+
+    /// Every other built-in provider, each with the one-line reason affiliation
+    /// does not apply to it. These are not `None` by omission — the trait
+    /// default *is* `None`, asserted in `affiliation_tests`, so a provider that
+    /// says nothing gets less reach rather than more. This table records that the
+    /// silence was a decision.
+    #[allow(unused_mut)]
+    fn unaffiliated_providers() -> Vec<(&'static str, &'static str)> {
+        let mut rows = vec![
+            ("anthropic", "public: hosted by an AI company"),
+            (
+                "azure_openai",
+                "public: a large cloud, whatever endpoint it is pointed at",
+            ),
+            ("databricks", "public: a large cloud"),
+            ("gcp_vertex_ai", "public: a large cloud"),
+            ("github_copilot", "public: hosted by a software company"),
+            ("google", "public: hosted by an AI company"),
+            (
+                "litellm",
+                "public: an arbitrary proxy, and it makes no loopback claim",
+            ),
+            ("openai", "public: hosted by an AI company"),
+            ("openrouter", "public: a model marketplace"),
+            ("snowflake", "public: a large cloud"),
+            ("tetrate", "public: a hosted gateway"),
+            ("venice", "public: a hosted inference service"),
+            ("xai", "public: hosted by an AI company"),
+            ("xiaomi_mimo", "public: hosted by an AI company"),
+            ("zai", "public: hosted by an AI company"),
+        ];
+        #[cfg(feature = "aws-providers")]
+        {
+            rows.push(("aws_bedrock", "public: a large cloud"));
+            rows.push((
+                "sagemaker_tgi",
+                "public: an AWS-hosted endpoint, not this machine",
+            ));
+        }
+        rows
+    }
+
+    /// The names `register_builtin_providers` actually registers, in this build's
+    /// feature configuration.
+    ///
+    /// ⚠ Built from a **fresh** registry rather than the process-wide one:
+    /// `init_registry` also loads the bundled and user-written declarative
+    /// providers, so the live registry contains whatever `custom_providers/`
+    /// happens to hold on the machine running the test.
+    fn registered_builtin_names() -> Vec<String> {
+        let mut registry = ProviderRegistry::new();
+        register_builtin_providers(&mut registry);
+        let mut names: Vec<String> = registry.entries.keys().cloned().collect();
+        names.sort();
+        names
+    }
+
+    /// Task 46 Step 3: a new provider cannot be forgotten.
+    ///
+    /// Not a rule someone must remember — the same mechanism Task 18A built for
+    /// `CAPABILITY_CONFIG_KEYS`. Adding a `registry.register::<…>` line above
+    /// fails this test until someone decides whether that provider's instances
+    /// carry an affiliation, and writes down why. ⚠ It lives here, directly
+    /// beneath the registration list, rather than beside the rest of Task 46's
+    /// tests in `affiliation_tests.rs`, because here is where the person adding
+    /// a provider is already looking.
+    ///
+    /// ⚠ The `aws-providers` feature is **default-on**. Running the suite with
+    /// `--no-default-features` compiles neither `versa_bedrock` nor the two AWS
+    /// public providers, and this test then legitimately sees a shorter list —
+    /// which is why both tables are `cfg`-gated in step with the registrations
+    /// rather than being flat constants.
+    #[test]
+    fn every_registered_provider_is_classified_for_affiliation() {
+        let registered = registered_builtin_names();
+        let affiliated = affiliated_providers();
+        let unaffiliated = unaffiliated_providers();
+
+        for name in &registered {
+            let is_affiliated = affiliated.iter().any(|(n, _why)| n == name);
+            let is_not = unaffiliated.iter().any(|(n, _why)| n == name);
+            assert!(
+                is_affiliated ^ is_not,
+                "{name} is in neither affiliation table, or in both — classify it \
+                 (DR-26: does an instance of it carry Local, an Institution, or nothing?)"
+            );
+        }
+
+        // ...and the tables name nothing that is not registered, so a provider
+        // deleted from the factory does not leave a stale classification behind
+        // to make the count look right.
+        for (name, _why) in affiliated.iter().chain(unaffiliated.iter()) {
+            assert!(
+                registered.iter().any(|r| r == name),
+                "{name} is classified but not registered"
+            );
+        }
+
+        // The count closes the loop: without it, adding a provider to BOTH the
+        // registry and one table while deleting another table's row still
+        // passes the two loops above.
+        assert_eq!(
+            registered.len(),
+            affiliated.len() + unaffiliated.len(),
+            "registered: {registered:?}"
+        );
+
+        // Every reason is a real reason. An empty string would satisfy the
+        // tables while recording nothing.
+        for (name, why) in affiliated.iter().chain(unaffiliated.iter()) {
+            assert!(!why.is_empty(), "{name} has no stated reason");
+        }
+    }
 
     #[test_case::test_case(None, None, None, DEFAULT_LEAD_TURNS, DEFAULT_FAILURE_THRESHOLD, DEFAULT_FALLBACK_TURNS ; "defaults")]
     #[test_case::test_case(Some("7"), Some("4"), Some("3"), 7, 4, 3 ; "custom")]

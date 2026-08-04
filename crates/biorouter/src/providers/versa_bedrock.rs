@@ -313,6 +313,13 @@ impl Provider for VersaBedrockProvider {
         crate::providers::ucsf_gateway_tier(&self.resolved_endpoint)
     }
 
+    /// DR-26: `Institution("ucsf")` — decided by the **same** resolved endpoint
+    /// as the tier above, through the same host check, so the two can never
+    /// disagree about a repointed instance.
+    fn affiliation(&self) -> Option<crate::privacy::affiliation::ModelAffiliation> {
+        crate::providers::ucsf_gateway_affiliation(&self.resolved_endpoint)
+    }
+
     fn retry_config(&self) -> RetryConfig {
         self.retry_config.clone()
     }
@@ -458,5 +465,31 @@ mod tests {
             "the type-level claim is still Private; only the instance demotes"
         );
         assert_eq!(elsewhere.tier(), ProviderTier::Public);
+    }
+
+    /// DR-26 (Task 46) rule, **wired** — the same argument as the tier test
+    /// above, for the third axis, and it matters most here: the last fallback in
+    /// `from_env`'s endpoint chain is `AWS_ENDPOINT_URL_BEDROCK_RUNTIME`, which
+    /// `bedrock.rs` sets **process-globally** with `std::env::set_var`. An
+    /// affiliation keyed on the provider's name would keep claiming `ucsf` for
+    /// an instance that another provider's construction had already repointed at
+    /// a plain AWS region.
+    #[tokio::test]
+    async fn affiliation_follows_the_endpoint_this_instance_resolved() {
+        use crate::privacy::affiliation::{InstitutionId, ModelAffiliation};
+
+        let shipped = provider_at(VERSA_BEDROCK_DEFAULT_ENDPOINT).await;
+        assert_eq!(
+            shipped.affiliation(),
+            Some(ModelAffiliation::Institution(InstitutionId::new("ucsf")))
+        );
+
+        let elsewhere = provider_at("https://bedrock-runtime.us-west-2.amazonaws.com").await;
+        assert_eq!(elsewhere.get_name(), shipped.get_name());
+        assert_eq!(
+            elsewhere.affiliation(),
+            None,
+            "an instance that lost Private must lose `ucsf` with it"
+        );
     }
 }

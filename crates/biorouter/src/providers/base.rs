@@ -9,6 +9,7 @@ use crate::config::base::ConfigValue;
 use crate::conversation::message::Message;
 use crate::conversation::Conversation;
 use crate::model::ModelConfig;
+use crate::privacy::affiliation::ModelAffiliation;
 use crate::privacy::ProviderTier;
 use crate::utils::safe_truncate;
 use rmcp::model::Tool;
@@ -571,6 +572,33 @@ pub trait Provider: Send + Sync {
     /// one.
     fn tier(&self) -> ProviderTier {
         ProviderTier::Public
+    }
+
+    /// Whose compliance regime covers what this **instance** actually resolved —
+    /// DR-26's third axis.
+    ///
+    /// [`Self::tier`] asks *how sensitive is this?*; affiliation asks *under
+    /// whose agreements?*, and the two do not compose. A HIPAA-compliant LLM
+    /// approved at one institution has no blanket permission over another
+    /// institution's PHI, so two endpoints can be equally Private and still be
+    /// incompatible. `None` is a public model, for which affiliation never
+    /// applies: the tier gates already keep it away from private data.
+    ///
+    /// An **instance** method for exactly the reasons `tier` is one, recorded
+    /// above: `get_name()` on a composite returns the lead's name, and
+    /// `providers::create` may hand back something other than what was asked
+    /// for. It is also why both Versa providers derive `ucsf` from the same
+    /// gateway-host check that decides their tier rather than from their name —
+    /// a name-keyed table would keep claiming the institution for a module
+    /// repointed elsewhere, which `tier()` had already demoted to Public.
+    ///
+    /// DEFAULT = `None`, fail-safe in the same direction as `tier`'s Public: a
+    /// provider module that forgets this gets less reach, never more.
+    /// [`ModelAffiliation::Local`] in particular is the *most* permissive value
+    /// in the model — it reaches every private extension, because no transfer
+    /// occurs at all — so it must never be reached by omission.
+    fn affiliation(&self) -> Option<ModelAffiliation> {
+        None
     }
 
     // Internal implementation of complete, used by complete_fast and complete

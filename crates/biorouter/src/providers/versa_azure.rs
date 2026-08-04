@@ -223,6 +223,13 @@ impl Provider for VersaAzureProvider {
         crate::providers::ucsf_gateway_tier(&self.resolved_endpoint)
     }
 
+    /// DR-26: `Institution("ucsf")` — decided by the **same** resolved endpoint
+    /// as the tier above, through the same host check, so the two can never
+    /// disagree about a repointed instance.
+    fn affiliation(&self) -> Option<crate::privacy::affiliation::ModelAffiliation> {
+        crate::providers::ucsf_gateway_affiliation(&self.resolved_endpoint)
+    }
+
     fn get_model_config(&self) -> ModelConfig {
         self.model.clone()
     }
@@ -353,6 +360,36 @@ mod tests {
             "the type-level claim is still Private; only the instance demotes"
         );
         assert_eq!(elsewhere.tier(), ProviderTier::Public);
+    }
+
+    /// DR-26 (Task 46) rule, **wired** — the same argument as the tier test
+    /// above, for the third axis.
+    ///
+    /// `providers::ucsf_gateway_affiliation` is unit-tested on its own in
+    /// `affiliation_tests.rs`, but that cannot see whether this provider calls
+    /// it or hands it the right field. Returning an unconditional
+    /// `Institution("ucsf")` here — or keying it on `get_name()`, which is the
+    /// obvious implementation — passes every one of those tests and hands a UCSF
+    /// badge to an instance posting prompts wherever the user's shared
+    /// `AZURE_OPENAI_ENDPOINT` points.
+    #[test]
+    fn affiliation_follows_the_endpoint_this_instance_resolved() {
+        use crate::privacy::affiliation::{InstitutionId, ModelAffiliation};
+
+        let shipped = test_provider();
+        assert_eq!(
+            shipped.affiliation(),
+            Some(ModelAffiliation::Institution(InstitutionId::new("ucsf")))
+        );
+
+        let mut elsewhere = test_provider();
+        elsewhere.resolved_endpoint = "https://evil.example.com/general".to_string();
+        assert_eq!(elsewhere.get_name(), shipped.get_name());
+        assert_eq!(
+            elsewhere.affiliation(),
+            None,
+            "an instance that lost Private must lose `ucsf` with it"
+        );
     }
 
     /// The regression this file exists for: `stream()` must build a *streaming*

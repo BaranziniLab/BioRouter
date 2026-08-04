@@ -511,6 +511,18 @@ impl Provider for LlamaCppProvider {
         }
     }
 
+    /// DR-26: `Local`, following the **same branch** as the tier above rather
+    /// than a new rule — the managed sidecar runs here by construction, and an
+    /// injected `LLAMACPP_EXTERNAL_HOST` is Local only while it is loopback. A
+    /// remote host gets no affiliation rather than inheriting `Local`'s blanket
+    /// permission over every private extension.
+    fn affiliation(&self) -> Option<crate::privacy::affiliation::ModelAffiliation> {
+        match &self.external_base {
+            None => Some(crate::privacy::affiliation::ModelAffiliation::Local),
+            Some(base) => crate::providers::self_hosted_affiliation(base),
+        }
+    }
+
     fn get_model_config(&self) -> ModelConfig {
         // Prefer the running model's real context window (read from `/props`)
         // over the construction-time fallback, so callers (token accounting,
@@ -708,6 +720,48 @@ mod tests {
                 provider_with_external_base(Some(remote)).tier(),
                 ProviderTier::Public,
                 "{remote}"
+            );
+        }
+    }
+
+    /// DR-26 (Task 46), **wired** — all three arms, following the same branch
+    /// as the tier above rather than a new rule.
+    ///
+    /// The remote arm is the one that matters: `Local` is the *most* permissive
+    /// affiliation in DR-26's model, reaching every private extension because no
+    /// transfer occurs at all. An implementation that answered `Local` for any
+    /// `llamacpp` — the obvious one, since the provider is "the local models
+    /// one" — would hand that blanket permission to an unmanaged lab box the
+    /// user pointed `LLAMACPP_EXTERNAL_HOST` at, with no auth in between.
+    #[test]
+    fn affiliation_is_local_only_while_inference_stays_on_this_machine() {
+        use crate::privacy::affiliation::ModelAffiliation;
+
+        assert_eq!(
+            provider_with_external_base(None).affiliation(),
+            Some(ModelAffiliation::Local),
+            "the bundled sidecar is the default install and runs here"
+        );
+
+        for loopback in [
+            "http://localhost:11543/",
+            "http://127.0.0.1:11543/",
+            "http://[::1]:11543/",
+        ] {
+            assert_eq!(
+                provider_with_external_base(Some(loopback)).affiliation(),
+                Some(ModelAffiliation::Local),
+                "{loopback}"
+            );
+        }
+        for remote in [
+            "http://gpu.lab.ucsf.edu:11543/",
+            "https://api.example-saas.com/",
+        ] {
+            assert_eq!(
+                provider_with_external_base(Some(remote)).affiliation(),
+                None,
+                "{remote} must not inherit Local's blanket permission"
             );
         }
     }
