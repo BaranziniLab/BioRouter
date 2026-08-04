@@ -155,15 +155,25 @@ export type MixingMode = 'open' | 'standard' | 'strict';
 /**
  * The config key that holds the mixing policy.
  *
- * ⚠ **Nothing writes it yet.** The setting itself is Task 52's, and until it
- * lands this key is absent on every machine and {@link mixingModeFromConfig}
- * answers `standard` — which is the mode the daemon has always enforced, so the
- * behaviour on a real machine today is exactly what it was. This is a live read
- * of the daemon's config rather than a placeholder, so wiring the setting is a
- * matter of writing the key; but the SPELLING is this task's guess and must be
- * reconciled against Task 52's daemon-side constant when it arrives, in the same
- * way `PRIVACY_TIERS_KEY` is one spelling shared with
- * `biorouter::privacy::PRIVACY_TIERS_CONFIG_KEY`.
+ * ⚠ **Nothing writes it yet, and this SPELLING IS A GUESS.** The mixing-policy
+ * setting is a later task's; measured, `BIOROUTER_PRIVACY_MIXING_POLICY` and
+ * `MixingMode` appear nowhere under `crates/`. Until it lands the key is absent
+ * on every machine and {@link mixingModeFromConfig} answers `standard` — which
+ * is the mode the daemon has always enforced, so today's behaviour on a real
+ * machine is exactly what it was. This is a live read of the daemon's config
+ * rather than a placeholder, so wiring the setting is a matter of writing the
+ * key; but if it lands under a different constant, this read answers `standard`
+ * for ever and **nothing fails**.
+ *
+ * ⚠ **That obligation is recorded where the engineer implementing the setting
+ * will actually look** — as open question 31 in
+ * `docs/security/privacy-tiers-execution-plan.md`, which also carries the
+ * detector this pairing is owed: a Rust test that reads THIS file and asserts
+ * the daemon's constant is contained in it, in the same shape as
+ * `privacy::grant::tests::the_scope_copy_the_user_reads_is_the_one_the_daemon_records`.
+ * `PRIVACY_TIERS_KEY` is the precedent for the shared spelling
+ * (`biorouter::privacy::PRIVACY_TIERS_CONFIG_KEY`) and has no such detector
+ * either, so that entry closes two gaps rather than one.
  */
 export const MIXING_POLICY_KEY = 'BIOROUTER_PRIVACY_MIXING_POLICY';
 

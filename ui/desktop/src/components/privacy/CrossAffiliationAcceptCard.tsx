@@ -137,13 +137,24 @@ export function CrossAffiliationAcceptCard({
         className="mt-3 rounded-lg border border-border-subtle px-3 py-3 text-sm text-text-default space-y-2"
       >
         {/*
-          ⚠ **Fails closed, and that is not the same as unfinished.** Strict
-          requires DR-20's system password on top of the in-app proof, and no
-          surface in this build can raise one (its prompter has no callers yet).
-          Accepting on the weaker proof would be the control quietly downgrading
-          itself under exactly the policy that asked for more, so it is not
-          offered. The other way out — a model covered by the same institution's
-          agreements — is unchanged and is named.
+          ⚠ **Fails closed, and that is the right default — but it IS unfinished,
+          and the two must not be confused.** Strict requires DR-20's system
+          password on top of the in-app proof, and no surface in this build can
+          raise one: the prompter exists (`crates/biorouter/src/privacy/
+          system_auth*.rs`) and has no production callers. Accepting on the
+          weaker proof would be the control quietly downgrading itself under
+          exactly the policy that asked for more, so it is not offered.
+
+          What that leaves is a policy under which a cross-institutional flow
+          cannot be accepted AT ALL — the hard block DR-26 exists to prevent,
+          restored for anyone who sets it. Unreachable today only because nothing
+          writes the mixing key. Recorded as **open question 32** in
+          `docs/security/privacy-tiers-execution-plan.md`, against the task that
+          wires DR-20's authentication to a caller; ⚠ do not close it by falling
+          back to `standard`.
+
+          The other way out — a model covered by the same institution's
+          agreements — is unchanged and is named below.
         */}
         <p className="min-w-0 [overflow-wrap:anywhere]">
           This machine&rsquo;s privacy policy is set to <strong>strict</strong>, which requires a
