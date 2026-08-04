@@ -20286,6 +20286,221 @@ cargo test -p biorouter-server --lib routes::agent 2>&1 | grep "test result:"
    badges and the audit trail keep working.
 5. **An agent cannot change the mode** in any of the three modes.
 
+### Task 53: Pin the fail-safe default, and make every provider's tier a deliberate statement
+
+> **Operator ruling, 2026-08-04:** *"if a provider cannot be verified, then it is public (always
+> assume the least permission)."*
+
+⚠ **An earlier draft of this task got the direction backwards and is corrected here**, because the
+error is the kind a reader would otherwise inherit. It claimed the Public default "fails in the unsafe
+direction". It does not. **Public is the least-permission answer**: a model tagged Public is *refused*
+private data. So the two mistakes are not symmetric —
+
+| Mistake | Consequence |
+| --- | --- |
+| A genuinely **private** provider tagged Public | Over-restricted. The model cannot reach private data it was entitled to. A **usability** loss. |
+| A genuinely **public** provider tagged Private | It is handed PHI. A **disclosure**. |
+
+Only the second is dangerous, and `the_private_set_is_the_four_the_operator_named` already closes it:
+declaring a *new* provider Private fails until the operator's list is updated. `ProviderTier::default()
+= Public` is therefore **correct and must stay** — this task's first job is to say so mechanically,
+not to change it.
+
+What is genuinely missing is a *deliberate statement*. Affiliation has a completeness census
+(`every_registered_provider_is_classified_for_affiliation`); tier has none, so "nobody ever decided"
+is indistinguishable from "we decided Public". That is a bookkeeping gap, not a security hole, and
+the task is sized accordingly.
+
+- [ ] **Step 1: Pin the fail-safe default itself**
+
+A test asserting a provider that declares no tier resolves **Public** — at both levels, the
+`ProviderMetadata` default and the `Provider::tier()` trait default. This is the operator's rule made
+mechanical, and it is what stops a future refactor from "helpfully" inferring Private from a local
+base URL or a familiar hostname.
+
+- [ ] **Step 2: The census, for deliberateness**
+
+Mirror the affiliation census: every registered provider appears in exactly one of a private or an
+explicitly-public table, each row carrying a one-line reason. ⚠ **The census must not change any
+provider's tier** — it records decisions, it does not make them. A row reading `public: general
+commercial endpoint` is a complete and correct answer.
+
+- [ ] **Step 3: Verify the test can fail**
+
+Remove a provider from the table, watch it fail, restore it, and record the observed failure in the
+commit message. A completeness test never seen to fail is not known to work — this plan has already
+shipped a grep gate, a file-exists check and a filter matching nothing, each of which passed by
+accident.
+
+### Task 54: The private set is a closed list, not a guess from prose
+
+> **Operator ruling, 2026-08-04:** *"the description don't matter — only cdw agent and omop agent
+> should be private and are both of institution (ucsf)."*
+
+This **replaces** an earlier draft of this task that would have extended the description-keyword
+heuristic. That draft was wrong in kind, not just in detail. `build-registry.mjs` currently refuses a
+card whose description mentions `patient`, `clinical record`, `ehr`, `phi`, `medical record` or
+`de-identified clinical` — but only when `data-privacy` is absent (`if (!declaresPrivacy)`). Widening
+it looked like closing a hole; it is really doubling down on inferring a security property from
+marketing prose.
+
+**A keyword net is a guess. A closed set is a fact, and the operator has stated it.** The whole
+private set is two entries, both `ucsf`, and it changes only when someone decides it should. That is
+exactly the discipline this plan already uses for providers in
+`the_private_set_is_the_four_the_operator_named`.
+
+- [ ] **Step 1: Assert the closed set in the generator**
+
+`build-registry.mjs` fails the build unless the private set it produces is **exactly**
+`{cdwagent, ucsfomopagent}` and **each carries `affiliation: ["ucsf"]`**. A third private card, a
+missing one, or a private card affiliated elsewhere is a hard failure naming the difference.
+
+⚠ **This is deliberately annoying to change, and that is the feature.** Adding a private extension
+should be an edit someone reviews, not a side effect of writing a card. The failure message must say
+so, and say which file to edit — a gate that only says "unexpected" teaches people to delete the
+gate.
+
+- [ ] **Step 2: Delete the description heuristic**
+
+Remove the keyword list and its `if (!declaresPrivacy)` check. With Step 1 in place it protects
+nothing, and it can only produce **false failures** — a public extension whose description honestly
+mentions clinical data (SPOKE describes diseases; a future imaging or literature tool easily could)
+would be refused for saying a true thing.
+
+⚠ **Record what this trades away, so it is a decision and not an oversight.** The heuristic's one real
+use was a *future* clinical extension whose author forgets to tag it: the closed-set assertion does
+not catch that, because the set simply stays at two. The operator has ruled that prose is not the
+place to catch it. If that case needs covering later, the answer is an explicit field on the card, not
+a return to guessing from the description.
+
+- [ ] **Step 3: The gate**
+
+```bash
+node --test landing/scripts/build-registry.test.mjs
+node landing/scripts/build-registry.mjs --check
+```
+
+Fixtures in the `REJECTED` table, each wrapped in `<div id="extensions-section">` like the others:
+a **third** private card; one of the two **missing**; a private card affiliated to something other
+than `ucsf`. Plus the anti-vacuity pass — flip the real `baam.html` to produce each failure, watch it
+fail, revert, and record the observed failures in the commit message.
+
+⚠ And one case that must **pass**: a public card whose description says "patient". That is the
+false failure Step 2 exists to prevent, and without this test someone will reinstate the keyword list.
+
+### Task 55: Wire DR-20's system password to something — it currently has no callers
+
+Found 2026-08-04. [Task 44](#task-44-windows-hello-and-polkit--dr-24) built the prompter properly on
+all three platforms — `LAContext`, `UserConsentVerifier`, polkit, behind one `AuthOutcome` seam, with
+tests. **Nothing calls it.** A tree-wide search for `system_auth::` outside its own modules returns
+nothing.
+
+So [DR-20](#decisions-of-record) — *"the user types their system password for each declassify
+operation"* — is **not honoured today**. Declassification demands `X-User-Action` plus a typed phrase;
+the master switch demands `X-User-Action` alone; neither reaches the OS.
+
+The cause is visible in the branch history: Task 29 landed before DR-20 was ruled (its own commit says
+*"record that Task 29 shipped its pre-DR-20 design"*), DR-20 never got a wiring task, and Task 44 built
+a mechanism with no consumer. ⚠ Without this task, [Task 52](#task-52-the-mixing-policy-setting--dr-27)'s
+`strict` mode becomes the **first and only** thing in the product that asks for the OS password —
+which is backwards, since declassification is the more consequential act.
+
+- [ ] **Step 1: Declassification demands the system prompt**
+
+On top of the existing `X-User-Action`. ⚠ **The typed phrase stays** for `mcp:`-grade chats — it proves
+*which* chat you meant, which a password cannot. Two proofs answering two different questions is not
+redundancy.
+
+⚠ **A `turn:*` chat keeps its single click** and gains no password prompt. Making the common case
+expensive is how you teach people to stop privatising at all, which costs more than it protects.
+
+- [ ] **Step 2: The master switch demands it too**
+
+Disabling the whole tier system is at least as consequential as declassifying one chat.
+
+- [ ] **Step 3: Batch stays one prompt**
+
+DR-20 says a declassification may cover many chats. One prompt for the batch, not one per chat.
+
+- [ ] **Step 4: The gate**
+
+A refusal from the prompter must leave the chat **private** and write no audit row — the failure mode
+worth testing is a UI that reports success because the request was well-formed. Assert `Unavailable`
+(a platform with no prompter) refuses rather than proceeds, and that the test seam is compiled out of
+release builds per Task 44 Step 3.
+
+### Task 56: Make the affiliation model extensible — more providers, more institutions
+
+> **Operator ruling, 2026-08-04:** *"in the future we might add more providers that are private and
+> potentially are of different institution affiliations. please make sure that code design reflects
+> this flexibility."*
+
+Today's build hard-stops at one institution, deliberately and visibly:
+`factory::tests::this_build_knows_exactly_one_institution` fails unless every affiliated provider is
+`Local` or `Institution(ucsf)`. It exists because `composite_affiliation` has **no representable
+answer** for a lead/worker pair spanning two institutions — it currently returns a sentinel,
+`Institution(*SPANS_INSTITUTIONS_ID)`, whose only virtue is that no real extension is tagged with it.
+
+⚠ **That sentinel is the actual blocker, and it is fragile in a specific way:** it is a fake
+institution id doing the work of a missing variant, so it silently becomes wrong the day someone
+registers an institution with that id. A closed-set count is also the wrong shape of guard — a gate
+that only says *"there should be four"* is one people delete rather than update.
+
+- [ ] **Step 1: Model affiliation becomes set-valued**
+
+`ModelAffiliation::Institution(id)` → a set, mirroring the extension side, so a composite that spans
+two institutions is **representable** rather than sentinel-encoded. `Local` stays a distinct variant
+and keeps its early return.
+
+⚠ **`ModelAffiliation` must stay `Copy`** — `CallCapability` depends on it (`capability.rs:30-34`) and
+threads into `async move` blocks. Intern the set the way `InstitutionId` is already interned, rather
+than putting a `BTreeSet` on the capability.
+
+- [ ] **Step 2: The compatibility rule becomes SUBSET, not membership**
+
+```
+compatible(model, ext) =
+    model is Local                      -> true          (unchanged)
+    ext is Any                          -> true          (unchanged)
+    otherwise                           -> model_institutions ⊆ ext_allowlist
+```
+
+⚠ **Subset, and the direction matters.** A model spanning `{ucsf, stanford}` reaching a `{ucsf}`
+extension must be **refused** — the Stanford half is in the pipeline, so UCSF data reaches Stanford.
+Membership (`ext.contains(any_of_model)`) would allow it. For a single-institution model the subset
+check reduces exactly to today's `contains`, so nothing currently shipping changes behaviour.
+
+- [ ] **Step 3: Institutions become data, with referential integrity instead of a count**
+
+The generator's `INSTITUTIONS = { ucsf: 'UCSF' }` literal becomes a declared list that adding an
+institution edits. Replace `this_build_knows_exactly_one_institution` with an integrity check that
+scales: every institution a card names exists in the map, and every mapped institution is either used
+or carries an explicit "retained, unused" note. That catches the real error — a typo'd or orphaned
+institution — at any size.
+
+- [ ] **Step 4: The private provider set becomes a table of decisions**
+
+Replace the "exactly the four the operator named" count with the shape Task 53 uses for the census:
+every provider appears with a **reason**, and the test asserts completeness rather than cardinality.
+Adding a fifth private provider is then a reviewed row, not a fight with an arithmetic assertion.
+
+- [ ] **Step 5: The gate**
+
+```bash
+cargo test -p biorouter --lib privacy::affiliation 2>&1 | grep "test result:"
+cargo test -p biorouter --lib providers:: 2>&1 | grep "test result:"
+```
+
+1. **A two-institution build works end to end** — register a second institution in a fixture, build a
+   lead/worker pair spanning both, and assert it reaches an `Any` extension and is refused by a
+   single-institution one. This is the test the current build cannot even express.
+2. **The subset direction** — `{ucsf, stanford}` model vs `{ucsf}` extension → **refused**;
+   `{ucsf}` model vs `{ucsf, stanford}` extension → allowed.
+3. **No behaviour change for the shipping single-institution case** — every existing affiliation
+   assertion still passes untouched.
+4. **The sentinel is gone** — assert `SPANS_INSTITUTIONS_ID` no longer exists, so it cannot be
+   reintroduced as a shortcut.
+
 ---
 
 ## Operator rulings DR-21 – DR-25 — the five open questions, answered
