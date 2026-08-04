@@ -20604,6 +20604,17 @@ file Task 8 created.
 > ⚠ **An empty `affiliation: []` must NOT behave like "absent".** Absent means *unconstrained*; an
 > empty list means *nothing is permitted*, and conflating them turns a registry typo into a granted
 > flow. The generator should reject the empty list outright so the ambiguity never reaches a reader.
+>
+> ⚠ **`registry.json` is scraped from hand-written HTML, so the source of truth is `baam.html`.**
+> `build-registry.mjs` parses `landing/baam.html`'s static fallback cards with regexes (extensions at
+> `:93-119`); its header says *"Re-run this whenever baam.html's cards change."* So affiliation lands
+> as a new `data-` attribute on the `ext-card`s plus a new regex here — the same way `data-privacy`
+> does. There is **no** per-extension source file to edit.
+>
+> ⚠ **`organization` is not a substitute for it.** The existing field is free-text prose
+> (`"BaranziniLab · UCSF"`, split on `·`), and treating it as an institution id would tag every
+> UCSF-authored extension — including `spokeagent`, which serves public graph data and must stay
+> untagged. Affiliation is a separate, explicit field.
 
 ⚠ **The join key is right by luck today.** `id` is derived from the download filename by
 `slugFromUrl` (`build-registry.mjs:33-36`), and `spokeagent-0.4.1` is the **only** version-suffixed
@@ -21592,6 +21603,53 @@ git commit -m "docs(security): user documentation for privacy tiers and the desi
 
 ---
 
+### Review provenance — what evidence this branch actually has
+
+> ⚠ **Read before Task 40 and before the merge to `main`.** The original plan reserved adversarial
+> Codex review for exactly this moment. That is no longer available, and the release gate must not
+> be run as though it were.
+
+**Measured across all 61 workflow journals of this campaign, 2026-08-03:**
+
+| Reviewer | Verdicts | Share |
+| --- | --- | --- |
+| Codex (independent second model) | 32 | **19%** |
+| Claude, self-labelled as a basic non-adversarial pass | 134 | 81% |
+
+Most of the shortfall is one incident: a malformed `[agents]` key in `~/.codex/config.toml` left the
+reviewer dead for **30 hours** while returning *"Waiting for the background…"* — a string with no
+verdict in it, which an earlier harness scored as a pass. That is why `usable()` was added, and why
+a verdict-less review now fails closed. As of 2026-08-03 Codex is out of credits, so the forwarding
+path is **removed from the harness entirely** rather than left to fail over: a fallback still spends
+a call and waits for it before failing over, and a 19%-hit-rate reviewer at 0% credits is pure
+latency.
+
+**Every review from here is Claude, and every review says so in its first line.**
+
+⚠ **What that costs, stated plainly.** A reviewer from the same model family as the implementer
+shares its blind spots: a defect the author could not see, the reviewer may not see either. Claude
+review is not worthless here — it reliably catches the mechanical failures this campaign has actually
+shipped — but it is **not** the independent adversarial check the plan assumed at merge time.
+
+**So the merge gate leans on the three things that never depended on the reviewer.** Every
+cross-file defect this campaign actually caught was caught by one of these, not by a review:
+
+1. **The compiler.** Both semantic merge conflicts git merged textually — `SkillsClient` gaining a
+   field, `handle_load_skill` gaining a parameter — were caught by `cargo` and by nothing else.
+2. **Anti-vacuity assertions.** The BR-71 test sandbox versus #63's runtime-resolved store path was
+   invisible to git *and* to the compiler; an assertion that refused to pass vacuously found it.
+3. **Differential test counts.** Run the merged tree's suite and compare against **both** parents by
+   name, not just "it's green" — a suite that silently lost a file is green.
+
+**And one thing to add, because it is the only real substitute available:** where a review still
+matters, use **perspective-diverse** reviewers rather than more identical ones — give each a distinct
+lens (vacuous tests / concurrency / security / does-the-gate-fail-a-wrong-implementation). Diversity
+recovers some of what independence would have given; redundancy recovers none of it.
+
+⚠ **Do not record this branch as "adversarially reviewed" anywhere.** It is 19% adversarially
+reviewed and 81% self-reviewed, and the next person deciding whether to trust it is entitled to that
+number rather than a reassuring adjective.
+
 ### Task 40: Final release gate
 
 - [ ] **Step 1: The whole tree**
@@ -22033,16 +22091,58 @@ sentence is the enumeration trap this campaign has already lost to three times**
 (tool name → tool list → argument shape). A list of call sites is not the answer, because the next call
 site will not be on it.
 
-The answer is that affiliation resolves **in the same place tier already resolves**: it becomes a field
-on **`CallCapability`**, which is sampled once per call and threaded through the gates. Any path that
-reaches an extension without going through the extended `CallCapability` is itself the defect, and
-Task 51 is the audit that proves none does.
+Affiliation resolves where tier already resolves: it becomes a field on **`CallCapability`**, which is
+sampled once per call and threaded through the gates.
+
+⚠ **But that is NOT sufficient, and an implementer who believes it is will ship a hole.** Measured
+against the tree on 2026-08-03: `CallCapability` has **five** production construction sites and covers
+Gates **C**, **E** and **F**. **Four** paths decide extension reach *without ever touching a
+`CallCapability`*, each reading the provider tier or the process-global toggle directly:
+
+| Bypassing path | Site | Why it bypasses |
+| --- | --- | --- |
+| `POST /agent/add_extension` | `routes/agent.rs:932-951` | An HTTP route, not a tool dispatch — no admitted capability to inherit, and the code says so |
+| Subagent spawn | `subagent_tool.rs:1211`, `:1227`, `:1260`, `:1342-1352` | A whole new agent; reads `task_config.provider.tier()` directly |
+| Knowledge-base gates | `knowledge/tier.rs:321`, `:355` | `biorouter-mcp` cannot depend on `biorouter`, so only a bare `bool` crosses the crate boundary |
+| `agent_drafter` catalog | `agent_drafter/catalog.rs:90`, `:146`, `:163-170` | Direct read of the process-global |
+
+⚠ **And `dispatch_meta` ships only a boolean** (`extension_manager.rs:238-251`) — to built-ins only, and
+deliberately nothing to third-party servers. An affiliation added to `CallCapability` reaches **no** MCP
+server without a new `_meta` key and a matching reader.
+
+So the structural answer is **not** "one field covers everything". It is a **census**, in the shape this
+tree already uses twice — `the_proof_of_user_is_constructed_in_exactly_two_places`
+(`declassify.rs:746-755`) and the `CallCapability` census in `tests/privacy_capability.rs`. Task 51 pins
+the **complete set** of sites that decide extension reach, so adding a ninth fails the build rather than
+silently joining the list. That is what makes the operator's *"checked in all scenarios where this need
+to be checked"* mechanical instead of aspirational.
 
 The surfaces that must consult it: Gates **C** (dispatch), **E** (discovery, to mark), **F** (extension
 channels); the **bind** and the **extension-enablement** paths, which are the same mismatch discovered
 from opposite ends and must both warn; **knowledge bases**, whose affiliation is the union of what they
 ingested and ratchets like classification; **subagent spawn**; and **chat recall / cross-session
 ingest**.
+
+### Four measured facts that change how Phase 6 must be built
+
+Established by reconnaissance against the branch, not assumed. Each contradicts the obvious approach.
+
+1. **There is no `tier()` function in `privacy/`.** Tier is a trait method on `Provider`
+   (`providers/base.rs:572`, defaulting to Public) with the deciders as free functions in
+   `providers/mod.rs`: `is_loopback_host` `:77`, `ucsf_gateway_tier` `:94`, `self_hosted_tier` `:104`.
+   Affiliation belongs beside them as a sibling trait method, **not** in `privacy/`.
+2. **`UCSF_GATEWAY_HOST` (`providers/mod.rs:58`) is the only institutional constant in the tree**, and
+   both Versa modules decide their tier by it (`versa_azure.rs:222-224`, `versa_bedrock.rs:312-314`).
+   Affiliation must derive from the **same host check**, so a Versa module repointed at another host
+   loses Private *and* `ucsf` together. Hardcoding `ucsf` per provider name would let those two
+   disagree.
+3. **`UserConfirmation` cannot be reused.** It is capped at exactly two call sites by a repo-walk test
+   (`declassify.rs:746-755`); a third breaks that audit. The reusable proof-of-user is
+   **`X-User-Action`** / `auth.rs:106-118`'s three-way `UserActionProof`.
+4. **The stable extension id DR-23 assumes does not exist.** A `.brxt` install writes
+   `{name, description, type, cmd, args, envs, env_keys, timeout}` and **no** registry id, source URL,
+   hash, organization or version (`BrxtInstallModal.tsx:159-169`, `extension.rs:266-285`). Tasks 43 and
+   47 must **create** provenance, not read it.
 
 ---
 
@@ -22231,11 +22331,47 @@ Implements [DR-23](#dr-23--an-extensions-tier-is-re-derived-from-the-registry-ne
 ⚠ **Sequence after [Task 33](#task-33-registryjson-v2-and-the-generators-first-hard-failures)** — the
 stable id belongs in the registry schema revision already happening there, not in a second one.
 
+- [ ] **Step 0: The stable id does not exist — create it first**
+
+⚠ **DR-23 assumed a stable id that measurement says is absent.** A `.brxt` install records **no**
+provenance whatsoever: `BrxtInstallModal.tsx:159-169` writes `{name, description, type, cmd, args,
+envs, env_keys, timeout}` into `ExtensionConfig::Stdio` (`extension.rs:266-285`), and
+`installBrxtBundle` (`preload.ts:356`, `:582`) returns only `{ installDir }`. Today's join works by
+accident: `name_to_key()` reduces both the registry `id` (`cdwagent`) and the manifest name
+(`CDWAgent`) to one string — `registry_private.rs:22-25` says exactly that.
+
+So this task **adds** provenance before it can re-derive anything: the install path records the
+registry id (and, worth having while you are there, the source URL and bundle hash) alongside the
+config entry. ⚠ **Do not put it on `ExtensionConfig`.** `extension_manager.rs:102-110` records the
+reason `Extension.tier` was deliberately kept off that struct: `ExtensionConfig` round-trips through
+user-writable `config.yaml`, so anything on it is agent-editable — which is the exact hole DR-23
+exists to close.
+
+An extension installed **before** this task has no recorded provenance. Fall back to today's
+`name_to_key` join for those, and say so in the code: a silent fallback that looks like a lookup is
+how "we re-derive it now" becomes untrue for most of the installed base.
+
 - [ ] **Step 1: Stop storing the tier**
 
-`classify_extension` no longer writes `Extension.tier`. The field is resolved at read time by stable
-id. Delete the stored field rather than leaving it unread: a stale value that nothing writes is a
-value something will eventually read.
+`classify_extension` (`privacy/extensions.rs:31-38`) no longer feeds a stored `Extension.tier`
+(`extension_manager.rs:113`). Resolve at read time instead. Delete the stored field rather than
+leaving it unread: a stale value that nothing writes is a value something will eventually read.
+
+⚠ **Three writers and four readers, all measured — cover every one.** Written at
+`extension_manager.rs:1035` (pooled-client insert, where the key may be *server-derived* rather than
+the config name), `:1129` (`add_client`), `:1211` (`add_inprocess_server`). Read at `:1409`
+(`allowed_extension_keys`, feeding Gates E and F2), `:1723` (`get_client_for_tool`, feeding Gate C at
+`:2270`), `:1834` (`assert_extension_reachable`), and `:4384` (a test).
+
+⚠ **`:1834` fails CLOSED and must keep doing so.** `assert_extension_reachable` defaults an unknown
+name to **Private** — the opposite direction from `classify_extension`, which fails **open** to Public
+per operator ruling R11(ii). Preserve both directions exactly. Collapsing them onto one resolver that
+picks a single default breaks one of the two, and the broken one will be the fail-closed half.
+
+⚠ **Three callers re-classify from a name and bypass `Extension.tier` entirely** — Gate F1
+(`extension_manager_extension.rs:158`), `/agent/add_extension` (`routes/agent.rs:942`), and the
+spawn-time partition (`subagent_tool.rs:1348`). They must move to the same resolver, or the rename bug
+survives in three places.
 
 - [ ] **Step 2: Unreachable registry retains, never downgrades**
 
@@ -22339,6 +22475,18 @@ pub enum ExtensionAffiliation { Any, Institutions(BTreeSet<InstitutionId>) }
 mismatch appear between an institution and itself, which fails **open** in the worst way: it trains
 users to click through the warning.
 
+⚠ **`ModelAffiliation` must be `Copy`.** Task 48 puts it on `CallCapability`, whose `Copy` derive is
+load-bearing — `capability.rs:30-34` records that it threads into `async move` blocks owning no
+`&self`. A `String` or `BTreeSet` inside `ModelAffiliation` therefore breaks every gate signature
+downstream. Intern institution ids (a `u16` index, or a `&'static str` from a registry-backed
+interner) so `ModelAffiliation` stays `Copy`. `ExtensionAffiliation` is **not** on `CallCapability` and
+may own a `BTreeSet` freely — the constraint applies to the model side only.
+
+⚠ **Reuse `config::extensions::name_to_key`'s normalisation discipline rather than inventing a second
+one.** That function (lowercase + strip whitespace) is what makes today's extension classification
+work at all; two different normalisers for two axes is how `cdwagent` classifies Private under one and
+mismatches under the other.
+
 Represent `Institution(x)` on the extension side as `Institutions({x})`; one shape, not two.
 
 - [ ] **Step 2: The one compatibility function**
@@ -22373,23 +22521,46 @@ Every row of DR-26's compatibility table, as a named test. Plus the four that ca
 
 ### Task 46: Provider affiliations — Versa is UCSF, local is Local
 
-- [ ] **Step 1: Extend the tier resolver, do not add a second one**
+- [ ] **Step 1: A sibling trait method, decided by the same predicates**
 
-Task 5's provider tier resolver gains an affiliation alongside the tier it already returns, in the
-same function and from the same data. A separate resolver would be a second thing to keep in sync,
-and the two would drift on the first provider added after this task.
+⚠ **There is no `tier()` function in `privacy/` to extend.** Tier is a **trait method** —
+`fn tier(&self) -> ProviderTier` at `providers/base.rs:572`, defaulting to Public — and the deciding
+logic lives in three free functions in `providers/mod.rs`. Affiliation goes beside them, not in
+`privacy/`:
 
-- [ ] **Step 2: The assignments**
+```rust
+// providers/base.rs, beside `tier`
+fn affiliation(&self) -> Option<ModelAffiliation> { None }
+```
 
-- **Both Versa providers → `Institution("ucsf")`.** They are UCSF's MuleSoft-proxied gateway and
-  covered by UCSF's agreements.
-- **`llamacpp` → `Local`.** Bundled sidecar, on-machine.
-- **`ollama` → `Local` only when its base URL is loopback.** Task 5 already makes it Private on
-  exactly that condition; a remote `OLLAMA_HOST` is someone else's server, so it is neither `Local`
-  nor `Institution` and must not inherit `Local`'s blanket permission. ⚠ **This is the sharp one** —
-  reusing Task 5's loopback predicate is required, and reimplementing it here is a defect.
-- Public providers get **no** affiliation. Affiliation never applies to them; the tier gates already
-  hold.
+Like `tier`, it is an **instance** method and never a lookup on `get_name()` — `base.rs:557-571`
+records why: composites return the lead's name, and `providers::create` may hand back something other
+than what was asked for.
+
+- [ ] **Step 2: The assignments, derived not hardcoded**
+
+- **Both Versa providers → `Institution("ucsf")`, derived from `UCSF_GATEWAY_HOST`.**
+  ⚠ **Do not hardcode `ucsf` against the provider names.** `providers/mod.rs:58` holds
+  `UCSF_GATEWAY_HOST = "unified-api.ucsf.edu"`, the tree's only institutional constant, and both
+  modules already decide their tier by it (`ucsf_gateway_tier`, `mod.rs:94`; called at
+  `versa_azure.rs:222-224` and `versa_bedrock.rs:312-314`). Add `ucsf_gateway_affiliation` beside it
+  and read the **same** resolved endpoint. A name-keyed table would let tier and affiliation disagree
+  the moment someone repoints a Versa module at another host — it would go Public while still claiming
+  `ucsf`.
+  ⚠ The two providers are `versa_azure` (`factory.rs:53-56`) and `versa_bedrock`
+  (`factory.rs:58-61`, behind `#[cfg(feature = "aws-providers")]`). The **cfg** matters: a
+  completeness test that does not compile that feature will not see the second one.
+- **`llamacpp` → `Local`**, but by its existing rule, not a new one: `llamacpp.rs:502-513` treats a
+  `None` external base (managed sidecar) as Private and otherwise defers to `self_hosted_tier`.
+  Affiliation follows the same branch.
+- **`ollama` → `Local` only when its base URL is loopback** (`ollama.rs:183-185` →
+  `self_hosted_tier`, `mod.rs:104` → `is_loopback_host`, `mod.rs:77`). A remote `OLLAMA_HOST` is
+  someone else's server: neither `Local` nor `Institution`, and it must not inherit `Local`'s blanket
+  permission. ⚠ **Reuse `is_loopback_host`; reimplementing it is a defect.** It is deliberately narrow
+  and lexical — `127.0.0.2` and `::ffff:127.0.0.1` are **false** — and a "more correct" reimplementation
+  would silently widen who counts as local.
+- Public providers get **no** affiliation (`None`). Affiliation never applies to them; the tier gates
+  already hold.
 
 - [ ] **Step 3: A new provider cannot be forgotten**
 
@@ -22413,14 +22584,63 @@ to fail is not known to work).
 ### Task 47: Extension affiliations, resolved from the registry
 
 ⚠ **Sequence with [Task 43](#task-43-extension-tiers-re-derived-from-the-registry--dr-23)** — DR-23
-already re-derives the extension *tier* from the registry at read time. Affiliation rides the **same**
-resolution, on the same stable id, in the same call. Two lookups would let tier and affiliation
-disagree about the same extension.
+already re-derives the extension *tier* at read time. Affiliation rides the **same** resolution, in the
+same call. Two lookups would let tier and affiliation disagree about the same extension.
+
+> ⚠ **AMENDED 2026-08-04 — Task 43 shipped, and two things this task assumed are now known wrong.**
+> Build against the code, not against DR-23's original wording.
+>
+> **(a) The resolver's shape is not "look up a stable id".** Task 43 found that a rename in
+> `config.yaml` rewrites **both** the map key *and* the entry's own `name`, so a key-only lookup
+> misses and the tier drops to Public — the exact enforcement failure DR-23 exists to close. The
+> shipped resolver is therefore config-aware:
+>
+> ```rust
+> pub fn classify_extension_entry(key: &str, config: Option<&ExtensionConfig>) -> ProviderTier
+> ```
+>
+> It resolves Private if **any** of the key, the config's declared name, or a provenance record found
+> by either of those *or by the install directory in the config's arguments* says so. Affiliation must
+> take the same `(key, config)` pair and the same union — not a second, name-only path.
+> `classify_extension(name)` still exists for genuinely name-only callers and is documented as unable
+> to see a rename; do **not** reach for it from a caller that holds a config.
+>
+> **(b) The union is over ALL matching records, never the first.** First-match-wins made the answer
+> depend on which join matched first, and the losing order is the dangerous one: an entry *named* after
+> a public extension whose `args` point at a private one's install directory resolved **Public**.
+> Pinned by `a_key_match_does_not_mask_an_install_directory_match`. Affiliation inherits this exactly:
+> a base matching several institutions carries all of them.
+>
+> **(c) Step 2 below is vacuous in Rust as literally written, and knowing why matters.** There is no
+> runtime registry fetch on the Rust side — the compiled `PRIVATE_EXTENSIONS` snapshot **is** the
+> registry, linked into the binary. "Unreachable registry retains" therefore holds by construction.
+> What can still go missing or lie are three concrete inputs, and each must be asserted not to lower
+> anything: an absent provenance store, a recorded id the snapshot does not publish, and a recorded
+> PUBLIC id against a name the snapshot knows as private.
+>
+> **(d) The residual is a rename PLUS deleting the record** (`extension-provenance.json`), because
+> DR-17 descoped the filesystem barrier. Two edits, not one — and not a regression, since before
+> Task 43 the rename alone sufficed. Do not claim affiliation is airtight; state the same bar.
 
 - [ ] **Step 1: Read the field Task 33 added**
 
 `registry.json` v2 carries `affiliation` per extension and an `institutions` display-name map
 (see the amendment to Task 33). Resolve `ExtensionAffiliation` from it.
+
+⚠ **Two measured facts about what you are joining against.**
+
+1. **The join key does not exist.** A `.brxt` install writes
+   `{name, description, type, cmd, args, envs, env_keys, timeout}` and nothing else
+   (`BrxtInstallModal.tsx:159-169` → `ExtensionConfig::Stdio`, `extension.rs:266-285`). There is **no**
+   registry id, source URL, bundle hash, organization or version — `privacy/extensions.rs:6-11` already
+   says so in as many words. Today's classification works only because `name_to_key()` lowercases both
+   the registry `id` (`cdwagent`) and the manifest name (`CDWAgent`) to the same string. **Task 43
+   creates that provenance; this task consumes it.** If Task 43 has not landed it, stop and say so —
+   do not re-derive an id from `installDir` in `args[2]`, which is user-editable in `config.yaml`.
+2. **`PRIVATE_EXTENSIONS` is a hand-maintained Rust const**, not a generated one —
+   `registry_private.rs:26` is literally `&["cdwagent", "ucsfomopagent"]`, and its own header
+   (`:1-17`) records that it is hand-maintained and that its drift runs in the **leak** direction.
+   Affiliation must not add a second hand-maintained list beside it.
 
 - [ ] **Step 2: Absent means `Any`, and unknown means mismatch**
 
@@ -22459,6 +22679,18 @@ answers it from that value through Task 45's `compatible`.
 
 Bind and enablement are the same mismatch found from opposite ends. Both warn; neither blocks.
 
+⚠ **The four bypassing paths do not get affiliation for free.** `CallCapability` covers C, E and F.
+`/agent/add_extension` (`routes/agent.rs:932-951`), subagent spawn (`subagent_tool.rs:1211+`), the KB
+gates (`knowledge/tier.rs:321`, `:355`) and the `agent_drafter` catalog (`catalog.rs:90`, `:146`,
+`:163-170`) each read the provider tier or the process-global directly, and each needs affiliation
+wired explicitly. Task 51 is the census that proves you found all of them; do not treat it as a
+formality you satisfy after the fact.
+
+⚠ **`CallCapability` is `Copy`, and that is load-bearing** (`capability.rs:30-34`) — it threads into
+`async move` blocks that own no `&self`. An affiliation field carrying a `BTreeSet` or a `String`
+breaks `Copy` and will cascade into every gate signature. Intern the institution id, or box it behind
+something `Copy`, and verify `Copy` still derives before going further.
+
 - [ ] **Step 3: The gate**
 
 ```bash
@@ -22471,11 +22703,41 @@ every surface in the table**, each as its own named test, with a local model pas
 
 ### Task 49: The grant, and a warning specific enough to act on
 
-- [ ] **Step 1: Reuse the proof-of-user; do not invent a second one**
+- [ ] **Step 1: Ride `X-User-Action`. `UserConfirmation` is NOT available to you.**
 
-The grant is a user act, so it rides Task 18A's `X-User-Action` key and Task 29's `UserConfirmation`.
-⚠ A second proof-of-user mechanism is forbidden — DR-18 already refused one for the same reason: two
-mechanisms mean two things to get right and one to forget.
+⚠ **`UserConfirmation` cannot be reused, and trying will break a passing audit.** It is capped at
+exactly two construction sites by the repo-walk test
+`the_proof_of_user_is_constructed_in_exactly_two_places` (`declassify.rs:746-755`) — a ZST whose whole
+purpose is to be un-forgeable *for declassification specifically*. A third call site fails that test,
+and "relax the audit" is the wrong repair.
+
+The reusable proof-of-user is **`X-User-Action`**: `auth.rs:106-118`'s `user_action_proof(&HeaderMap)`
+returning the three-way `UserActionProof { Proven, Unproven, NoKeyInstalled }` (`auth.rs:82-94`).
+Prefer the three-way form over `is_user_action` (`auth.rs:123-125`) so a keyless daemon is reported
+differently from a missing proof — the distinction Task 18A's open question 23 exists to preserve.
+Join the existing consumers listed at `routes/{agent,session,config_management,knowledge}.rs`.
+
+⚠ **A second proof-of-user mechanism is still forbidden** — DR-18 refused one for the same reason.
+This step is not an exception to that; it is picking the *correct* existing one.
+
+- [ ] **Step 1b: The grant is created over HTTP, never inline during a tool call**
+
+⚠ **This shapes the whole flow, and it is not optional.** `X-User-Action` is an HTTP header and **has
+no channel on a tool-call path** — recorded twice in the tree, at `refusal.rs:170` and
+`subagent_tool.rs:2511`. A Gate C refusal therefore **cannot** escalate to a user prompt in-process.
+
+So the flow is: dispatch refuses → the refusal tells the model to ask the human, reusing the shape of
+`ASK_THE_USER_TO_SWITCH` (`refusal.rs:29`) and `USER_ACTION_REFUSAL_MARKER` (`refusal.rs:53`, mirrored
+in `ui/desktop/src/utils/userAction.ts`) → the user grants in the UI over an HTTP route carrying the
+header → the next call succeeds. That is DR-19 working exactly as intended: the agent can ask, and
+only the user can answer.
+
+⚠ **`/agent/add_extension` has NO user-proof branch today, deliberately** (`routes/agent.rs:928-931`:
+attaching a private extension to a public session *"is not a raise the user can authorize either"*).
+Adding one for affiliation is **legitimate but is a reversal**, and must be argued in the commit
+message rather than slipped in: a public→private raise is not user-authorizable, whereas a
+Private↔Private cross-institution flow explicitly **is** — that is the entire premise of DR-26. Do not
+weaken the existing public/private refusal on that route while adding the affiliation branch beside it.
 
 - [ ] **Step 2: The scope**
 
@@ -22500,11 +22762,40 @@ whose model is bound, and what data would flow where. ⚠ Generic risk language 
 
 ### Task 50: Knowledge bases, subagents, and chat recall
 
+- [ ] **Step 0: Widen the crate boundary first — only ONE BIT crosses it today**
+
+⚠ **This is the structural obstacle in Phase 6 and it must be solved before Steps 1–3 mean anything.**
+`biorouter-mcp` cannot depend on `biorouter` (`knowledge/tier.rs:8-10`), so the KB tier is a bare
+`bool`, not a `ProviderTier`. The caller's privacy reaches the MCP side as a single `_meta` key,
+`CAPABILITY_TIER_META_KEY = "biorouter-capability-tier"` (`tier.rs:62`), written at
+`mcp_client.rs:190-200` from `McpMeta::capability_private` and read back by `tier::caller_is_private`
+(`tier.rs:243`).
+
+⚠ **And that key is set for built-ins ONLY** (`extension_manager.rs:248`); `dispatch_meta`
+(`:238-251`) deliberately ships nothing to third-party servers. So an affiliation on `CallCapability`
+reaches **no** MCP server at all until this step lands.
+
+Two ways across, and the choice must be deliberate:
+
+- **A second `_meta` key** carrying the affiliation, or
+- **widening the existing key's value grammar** beyond a boolean.
+
+Either way `.kb-tiers` must go from `schema: 1` (`tier.rs:54`) to `2`, with a migration. ⚠ **The
+migration must fail closed**: `tier.rs:149-170` already reads a `Missing` file as public and an
+`Unreadable` one as private. A schema-2 reader that treats an unrecognised affiliation as "no
+constraint" inverts that discipline for the new axis.
+
 - [ ] **Step 1: A knowledge base's affiliation is the union of what it ingested, and it ratchets**
 
-Same shape as classification: once a KB holds Institution-B content it carries that affiliation
-permanently. A KB may therefore carry **several** institutions, and a model matching only one of them
-is a mismatch — do not stop at the first match.
+Same shape as classification, and it belongs beside the existing monotone `raise_unlocked`
+(`tier.rs:354-376`) rather than in a parallel writer: once a KB holds Institution-B content it carries
+that affiliation permanently. A KB may therefore carry **several** institutions, and a model matching
+only one of them is a mismatch — ⚠ **do not stop at the first match**.
+
+The barrier is `tier::assert_reachable` (`tier.rs:321-329`), the single refusal for CP1–CP4, reached
+via `assert_kb_reachable` (`server.rs:335-336`) and `agent_drafter/mod.rs:1438`. ⚠ `tier.rs:344-348`
+warns that a raise placed **above** the barrier at any choke point re-opens the hole — that warning
+applies unchanged to the affiliation raise you are adding.
 
 - [ ] **Step 2: Subagents inherit and cannot exceed**
 
@@ -22529,12 +22820,30 @@ its parent lacks.
 
 The task that answers *"checked in all scenarios where this need to be checked"* structurally.
 
-- [ ] **Step 1: Prove the choke point**
+- [ ] **Step 1: A census, not a claim that one field covers everything**
 
-A repo-walk test asserting every extension-reaching path resolves affiliation through
-`CallCapability`. A path that samples independently, or compares affiliations by hand, fails it. This
-is the same shape as Task 18A's `every_config_key_the_tier_resolver_reads_is_classified` and
-Task 29's single-call-site pin — both of which caught real omissions.
+⚠ **Do not write the test that asserts "every path goes through `CallCapability`" — it is false, and
+a test asserting it would either fail immediately or be quietly weakened until it passed.** Measured:
+`CallCapability` has five production construction sites and covers Gates C, E and F. **Four** paths
+decide extension reach without touching one, for reasons that are documented in the tree and are not
+defects:
+
+| Path | Sites | Why it is legitimately separate |
+| --- | --- | --- |
+| `POST /agent/add_extension` | `routes/agent.rs:932-951` | An HTTP route, not a tool dispatch — nothing to inherit |
+| Subagent spawn | `subagent_tool.rs:1211`, `:1227`, `:1260`, `:1342-1352` | A new agent is being constructed |
+| Knowledge-base gates | `knowledge/tier.rs:321`, `:355` | Crate boundary; one bit crosses (Task 50 Step 0) |
+| `agent_drafter` catalog | `agent_drafter/catalog.rs:90`, `:146`, `:163-170` | Direct read of the process-global |
+
+So the audit is a **census**: it pins the **complete set** of sites that decide extension reach — the
+five `CallCapability` constructions plus these four — and fails when a tenth appears. The tree already
+does exactly this twice, and both caught real omissions: `the_proof_of_user_is_constructed_in_exactly_two_places`
+(`declassify.rs:746-755`) and the `CallCapability` census in `tests/privacy_capability.rs`. Model the
+new one on those, and extend the existing `CallCapability` census rather than starting a third.
+
+A path that compares affiliations **by hand** instead of calling Task 45's `compatible` also fails the
+audit. That is the half a census cannot see on its own, so assert it separately: `compatible` is the
+only function permitted to compare two affiliations.
 
 - [ ] **Step 2: Anti-vacuity**
 
